@@ -1,0 +1,108 @@
+/// # The regex Plugin {#regex}
+///
+/// @see mim::plug::regex
+///
+/// [TOC]
+///
+/// A normalizing regex plugin.
+///
+/// ## Dependencies
+///
+import compile;
+plugin core;
+plugin mem;
+plugin direct;
+///
+/// ## Types
+///
+/// ### RE
+///
+/// Char & String
+let Char = I8;
+lam Str(n: Nat): * = %mem.Ptr0 «n; Char»;
+/// A regular expression matcher.
+lam Res (n: Nat): * = [%mem.M 0, Bool, Idx n];
+let RE = {n: Nat} → [%mem.M 0, Str n, Idx n] → Res n;
+///
+/// ## Meta
+///
+/// ### %%regex.conj
+///
+/// A sequence of RE's. <br>
+/// E.g.: `\d\d\d` matches 3 digits: `%%regex.conj (%%regex.cls.d, %%regex.cls.d, %%regex.cls.d)`
+axm %regex.conj: {n: Nat} → «n; RE» → RE, normalize_conj, 2;
+///
+/// ### %%regex.disj
+///
+/// Match any of the sub expressions: `[0123456789]`
+///
+axm %regex.disj: {n: Nat} → «n; RE» → RE, normalize_disj, 2;
+///
+/// ## Values
+///
+/// ### %%regex.range
+///
+/// Wraps a range of literals.
+/// Use: `%%regex.range ('a', 'z')` to match all lower case letters.
+///
+axm %regex.range: «2; Char» → RE, normalize_range, 1;
+///
+/// ### %%regex.lit
+///
+/// Wraps a literal.
+///
+lam %regex.lit(val: Char) = %regex.range (val, val);
+///
+/// ### %%regex.not_
+///
+/// Do not match any of the ranges in the parameter - parameter must only contain `regex.disj`s and `regex.range`s.
+///
+axm %regex.not_: RE → RE, normalize_not, 1;
+///
+/// ### %%regex.neg_lookahead
+///
+/// Do not match the parameter!
+///
+axm %regex.neg_lookahead: RE → RE, 1;
+///
+/// ### %%regex.cls.*
+///
+/// | Subtag | Matches                        |
+/// |--------|--------------------------------|
+/// | `d`    | digits `[0-9]`                 |
+/// | `D`    | No digits                      |
+/// | `w`    | word characters `[a-zA-Z_0-9]` |
+/// | `W`    | No word characters             |
+/// | `s`    | whitespace `[ \t\r\n]`         |
+/// | `S`    | No whitespace                  |
+///
+let %regex.cls.d = %regex.range ('0', '9');
+let %regex.cls.D = %regex.not_ %regex.cls.d;
+let %regex.cls.w = %regex.disj (%regex.range ('0', '9'), %regex.range ('a', 'z'), %regex.range ('A', 'Z'), %regex.lit '_');
+let %regex.cls.W = %regex.not_ %regex.cls.w;
+let %regex.cls.s = %regex.disj (%regex.range ('\t', '\n'), %regex.lit '\r', %regex.lit ' ');
+let %regex.cls.S = %regex.not_ %regex.cls.s;
+///
+/// ### %%regex.any
+///
+/// Match any character.
+///
+axm %regex.any: RE, 0;
+///
+/// ## %%regex.empty
+///
+/// Matches the empty string.
+///
+axm %regex.empty: RE, 0;
+///
+/// ## Quantifiers
+///
+/// ### %%regex.quant.*
+///
+axm %regex.quant(optional,star,plus): RE → RE, normalize_quant, 1;
+///
+/// ## Passes and Phases
+///
+/// ### Passes
+///
+axm %regex.lower_regex: %compile.Pass;

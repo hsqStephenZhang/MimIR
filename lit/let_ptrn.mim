@@ -1,0 +1,11 @@
+// RUN: %mim %s -o -
+axm %foo.F: * → *;
+axm %foo.f: [T: *] → Nat → %foo.F T;
+
+fun extern f(
+        T: *,
+        U: let F = %foo.F T; F,
+        V: F
+    )(
+        W: F
+    ): F = return (%foo.f T 23);

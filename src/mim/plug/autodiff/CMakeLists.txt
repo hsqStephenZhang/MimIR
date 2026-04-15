@@ -1,0 +1,9 @@
+add_mim_plugin(autodiff
+    SOURCES
+        autodiff.cpp
+        pass/eval.cpp
+        auxiliary/autodiff_rewrite_inner.cpp
+        auxiliary/autodiff_rewrite_toplevel.cpp
+        normalizers.cpp
+    INSTALL
+)

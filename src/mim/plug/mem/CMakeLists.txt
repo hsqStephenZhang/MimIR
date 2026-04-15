@@ -1,0 +1,10 @@
+add_mim_plugin(mem
+    SOURCES
+        mem.cpp
+        normalizers.cpp
+        phase/add_mem.cpp
+        pass/copy_prop.cpp
+        pass/reshape.cpp
+        pass/ssa.cpp
+    INSTALL
+)
