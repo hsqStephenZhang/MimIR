@@ -3,29 +3,51 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 
-from ._axioms import AXIOM_NAMESPACE_NAMES, AxiomNode, AxiomStage
+from ._axioms import (
+    AXIOM_NAMESPACE_NAMES,
+    AffineNode,
+    AutodiffNode,
+    AxiomNode,
+    AxiomStage,
+    ClosNode,
+    CompileNode,
+    CoreNode,
+    DemoNode,
+    DirectNode,
+    GpuNode,
+    MathNode,
+    MatrixNode,
+    MemNode,
+    OptNode,
+    OrdNode,
+    ReflyNode,
+    RegexNode,
+    TensorNode,
+    TupleNode,
+    VecNode,
+)
 from ._mim_core import AST, Def, Driver, Lam, Level, Lit, Log, Parser, Pi, PyParser, World
 
 __all__: list[str]
 
-Affine: AxiomNode
-Autodiff: AxiomNode
-Clos: AxiomNode
-Compile: AxiomNode
-Core: AxiomNode
-Demo: AxiomNode
-Direct: AxiomNode
-Gpu: AxiomNode
-Math: AxiomNode
-Matrix: AxiomNode
-Mem: AxiomNode
-Opt: AxiomNode
-Ord: AxiomNode
-Refly: AxiomNode
-Regex: AxiomNode
-Tensor: AxiomNode
-Tuple: AxiomNode
-Vec: AxiomNode
+Affine: AffineNode
+Autodiff: AutodiffNode
+Clos: ClosNode
+Compile: CompileNode
+Core: CoreNode
+Demo: DemoNode
+Direct: DirectNode
+Gpu: GpuNode
+Math: MathNode
+Matrix: MatrixNode
+Mem: MemNode
+Opt: OptNode
+Ord: OrdNode
+Refly: ReflyNode
+Regex: RegexNode
+Tensor: TensorNode
+Tuple: TupleNode
+Vec: VecNode
 
 
 def plugin_search_paths() -> list[Path]: ...

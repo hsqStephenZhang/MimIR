@@ -1,20 +1,25 @@
-import mim
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-Driver = getattr(mim, "Driver")
-Level = getattr(mim, "Level")
-Log = getattr(mim, "Log")
-World = getattr(mim, "World")
-Def = getattr(mim, "Def")
-Lit = getattr(mim, "Lit")
-Lam = getattr(mim, "Lam")
-AST = getattr(mim, "AST")
-Parser = getattr(mim, "Parser")
-PyParser = getattr(mim, "PyParser")
+import mim
+
+if TYPE_CHECKING:
+    from mim._mim_core import AST, Def, Driver, Lam, Level, Lit, Log, Parser, PyParser, World
+else:
+    AST = mim.AST
+    Def = mim.Def
+    Driver = mim.Driver
+    Lam = mim.Lam
+    Level = mim.Level
+    Lit = mim.Lit
+    Log = mim.Log
+    Parser = mim.Parser
+    PyParser = mim.PyParser
+    World = mim.World
 
 
 def _run_in_clean_python(script: str) -> list[str]:
