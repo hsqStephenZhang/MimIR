@@ -9,46 +9,17 @@ from ._mim_core import Def, World
 
 AxiomStage: TypeAlias = Def | Sequence[Def]
 
-
 class AxiomNode:
     @property
     def symbol(self) -> str | None: ...
-    def __call__(self, world: World, *stages: AxiomStage, implicit: bool = False) -> Def: ...
+    def __call__(
+        self, world: World, *stages: AxiomStage, implicit: bool = False
+    ) -> Def: ...
     def __getattr__(self, name: str) -> AxiomNode: ...
-
-class AffineForNode(AxiomNode):
-    pass
-
-class AffineLowerForPhaseNode(AxiomNode):
-    pass
 
 class AffineNode(AxiomNode):
     For: AxiomNode
     lower_for_phase: AxiomNode
-
-class AutodiffADNode(AxiomNode):
-    pass
-
-class AutodiffTangentNode(AxiomNode):
-    pass
-
-class AutodiffAdNode(AxiomNode):
-    pass
-
-class AutodiffAddNode(AxiomNode):
-    pass
-
-class AutodiffEvalPassNode(AxiomNode):
-    pass
-
-class AutodiffSumNode(AxiomNode):
-    pass
-
-class AutodiffZeroNode(AxiomNode):
-    pass
-
-class AutodiffZeroReplNode(AxiomNode):
-    pass
 
 class AutodiffNode(AxiomNode):
     AD: AxiomNode
@@ -60,57 +31,12 @@ class AutodiffNode(AxiomNode):
     zero: AxiomNode
     zero_repl: AxiomNode
 
-class ClosBufPtrNode(AxiomNode):
-    pass
-
-class ClosAllocJmpbufNode(AxiomNode):
-    pass
-
-class ClosAttrBottomNode(AxiomNode):
-    pass
-
-class ClosAttrEscNode(AxiomNode):
-    pass
-
-class ClosAttrFreeBBNode(AxiomNode):
-    pass
-
-class ClosAttrFstclassBBNode(AxiomNode):
-    pass
-
-class ClosAttrReturningNode(AxiomNode):
-    pass
-
 class ClosAttrNode(AxiomNode):
     bottom: AxiomNode
     esc: AxiomNode
     freeBB: AxiomNode
     fstclassBB: AxiomNode
     returning: AxiomNode
-
-class ClosBranchClosPassNode(AxiomNode):
-    pass
-
-class ClosClos2sjljPassNode(AxiomNode):
-    pass
-
-class ClosClosConvPhaseNode(AxiomNode):
-    pass
-
-class ClosClosConvPrepPassNode(AxiomNode):
-    pass
-
-class ClosLongjmpNode(AxiomNode):
-    pass
-
-class ClosLowerTypedClosPhaseNode(AxiomNode):
-    pass
-
-class ClosLowerTypedClosPrepPassNode(AxiomNode):
-    pass
-
-class ClosSetjmpNode(AxiomNode):
-    pass
 
 class ClosNode(AxiomNode):
     BufPtr: AxiomNode
@@ -124,87 +50,6 @@ class ClosNode(AxiomNode):
     lower_typed_clos_phase: AxiomNode
     lower_typed_clos_prep_pass: AxiomNode
     setjmp: AxiomNode
-
-class CompilePassNode(AxiomNode):
-    pass
-
-class CompilePhaseNode(AxiomNode):
-    pass
-
-class CompileReplNode(AxiomNode):
-    pass
-
-class CompileBetaRedPassNode(AxiomNode):
-    pass
-
-class CompileBetaRedPhaseNode(AxiomNode):
-    pass
-
-class CompileBranchNormalizePhaseNode(AxiomNode):
-    pass
-
-class CompileCleanupPhaseNode(AxiomNode):
-    pass
-
-class CompileEtaExpPassNode(AxiomNode):
-    pass
-
-class CompileEtaExpPhaseNode(AxiomNode):
-    pass
-
-class CompileEtaRedPassNode(AxiomNode):
-    pass
-
-class CompileEtaRedPhaseNode(AxiomNode):
-    pass
-
-class CompileInternalCleanupPhaseNode(AxiomNode):
-    pass
-
-class CompileIsLoadedNode(AxiomNode):
-    pass
-
-class CompileLamSpecPassNode(AxiomNode):
-    pass
-
-class CompileNullPassNode(AxiomNode):
-    pass
-
-class CompileNullPhaseNode(AxiomNode):
-    pass
-
-class CompileNullReplNode(AxiomNode):
-    pass
-
-class CompilePass2phaseNode(AxiomNode):
-    pass
-
-class CompilePassesNode(AxiomNode):
-    pass
-
-class CompilePhasesNode(AxiomNode):
-    pass
-
-class CompilePrefixCleanupPhaseNode(AxiomNode):
-    pass
-
-class CompileRepl2phaseNode(AxiomNode):
-    pass
-
-class CompileReplsNode(AxiomNode):
-    pass
-
-class CompileRetWrapPhaseNode(AxiomNode):
-    pass
-
-class CompileScalarizePassNode(AxiomNode):
-    pass
-
-class CompileSymExprOptNode(AxiomNode):
-    pass
-
-class CompileTailRecElimPassNode(AxiomNode):
-    pass
 
 class CompileNode(AxiomNode):
     Pass: AxiomNode
@@ -235,74 +80,11 @@ class CompileNode(AxiomNode):
     sym_expr_opt: AxiomNode
     tail_rec_elim_pass: AxiomNode
 
-class CoreAbsNode(AxiomNode):
-    pass
-
-class CoreBit1FNode(AxiomNode):
-    pass
-
-class CoreBit1IdNode(AxiomNode):
-    pass
-
-class CoreBit1NegNode(AxiomNode):
-    pass
-
-class CoreBit1TNode(AxiomNode):
-    pass
-
 class CoreBit1Node(AxiomNode):
     f: AxiomNode
     id: AxiomNode
     neg: AxiomNode
     t: AxiomNode
-
-class CoreBit2AndNode(AxiomNode):
-    pass
-
-class CoreBit2CiffNode(AxiomNode):
-    pass
-
-class CoreBit2FNode(AxiomNode):
-    pass
-
-class CoreBit2FstNode(AxiomNode):
-    pass
-
-class CoreBit2IffNode(AxiomNode):
-    pass
-
-class CoreBit2NandNode(AxiomNode):
-    pass
-
-class CoreBit2NciffNode(AxiomNode):
-    pass
-
-class CoreBit2NfstNode(AxiomNode):
-    pass
-
-class CoreBit2NiffNode(AxiomNode):
-    pass
-
-class CoreBit2NorNode(AxiomNode):
-    pass
-
-class CoreBit2NsndNode(AxiomNode):
-    pass
-
-class CoreBit2NxorNode(AxiomNode):
-    pass
-
-class CoreBit2OrNode(AxiomNode):
-    pass
-
-class CoreBit2SndNode(AxiomNode):
-    pass
-
-class CoreBit2TNode(AxiomNode):
-    pass
-
-class CoreBit2XorNode(AxiomNode):
-    pass
 
 class CoreBit2Node(AxiomNode):
     and_: AxiomNode
@@ -322,54 +104,15 @@ class CoreBit2Node(AxiomNode):
     t: AxiomNode
     xor_: AxiomNode
 
-class CoreBitcastNode(AxiomNode):
-    pass
-
-class CoreConvSNode(AxiomNode):
-    pass
-
-class CoreConvUNode(AxiomNode):
-    pass
-
 class CoreConvNode(AxiomNode):
     s: AxiomNode
     u: AxiomNode
-
-class CoreDivSdivNode(AxiomNode):
-    pass
-
-class CoreDivSremNode(AxiomNode):
-    pass
-
-class CoreDivUdivNode(AxiomNode):
-    pass
-
-class CoreDivUremNode(AxiomNode):
-    pass
 
 class CoreDivNode(AxiomNode):
     sdiv: AxiomNode
     srem: AxiomNode
     udiv: AxiomNode
     urem: AxiomNode
-
-class CoreExtremaSMNode(AxiomNode):
-    pass
-
-class CoreExtremaSmNode(AxiomNode):
-    pass
-
-class CoreExtremaSmaxNode(AxiomNode):
-    pass
-
-class CoreExtremaSminNode(AxiomNode):
-    pass
-
-class CoreExtremaUmaxNode(AxiomNode):
-    pass
-
-class CoreExtremaUminNode(AxiomNode):
-    pass
 
 class CoreExtremaNode(AxiomNode):
     SM: AxiomNode
@@ -380,90 +123,6 @@ class CoreExtremaNode(AxiomNode):
     smin: AxiomNode
     umax: AxiomNode
     umin: AxiomNode
-
-class CoreIcmpXYGLENode(AxiomNode):
-    pass
-
-class CoreIcmpXYGLeNode(AxiomNode):
-    pass
-
-class CoreIcmpXYGlENode(AxiomNode):
-    pass
-
-class CoreIcmpXYGleNode(AxiomNode):
-    pass
-
-class CoreIcmpXYgLENode(AxiomNode):
-    pass
-
-class CoreIcmpXYgLeNode(AxiomNode):
-    pass
-
-class CoreIcmpXYglENode(AxiomNode):
-    pass
-
-class CoreIcmpXYgleNode(AxiomNode):
-    pass
-
-class CoreIcmpXyGLENode(AxiomNode):
-    pass
-
-class CoreIcmpXyGLeNode(AxiomNode):
-    pass
-
-class CoreIcmpXyGlENode(AxiomNode):
-    pass
-
-class CoreIcmpXyGleNode(AxiomNode):
-    pass
-
-class CoreIcmpXygLENode(AxiomNode):
-    pass
-
-class CoreIcmpXygLeNode(AxiomNode):
-    pass
-
-class CoreIcmpXyglENode(AxiomNode):
-    pass
-
-class CoreIcmpXygleNode(AxiomNode):
-    pass
-
-class CoreIcmpENode(AxiomNode):
-    pass
-
-class CoreIcmpFNode(AxiomNode):
-    pass
-
-class CoreIcmpNeNode(AxiomNode):
-    pass
-
-class CoreIcmpSgNode(AxiomNode):
-    pass
-
-class CoreIcmpSgeNode(AxiomNode):
-    pass
-
-class CoreIcmpSlNode(AxiomNode):
-    pass
-
-class CoreIcmpSleNode(AxiomNode):
-    pass
-
-class CoreIcmpTNode(AxiomNode):
-    pass
-
-class CoreIcmpUgNode(AxiomNode):
-    pass
-
-class CoreIcmpUgeNode(AxiomNode):
-    pass
-
-class CoreIcmpUlNode(AxiomNode):
-    pass
-
-class CoreIcmpUleNode(AxiomNode):
-    pass
 
 class CoreIcmpNode(AxiomNode):
     XYGLE: AxiomNode
@@ -511,30 +170,6 @@ class CoreIcmpNode(AxiomNode):
     xyglE: AxiomNode
     xygle: AxiomNode
 
-class CoreIdxNode(AxiomNode):
-    pass
-
-class CoreIdxUnsafeNode(AxiomNode):
-    pass
-
-class CoreMinusNode(AxiomNode):
-    pass
-
-class CoreModeUSNode(AxiomNode):
-    pass
-
-class CoreModeUsNode(AxiomNode):
-    pass
-
-class CoreModeNswNode(AxiomNode):
-    pass
-
-class CoreModeNuswNode(AxiomNode):
-    pass
-
-class CoreModeNuwNode(AxiomNode):
-    pass
-
 class CoreModeNode(AxiomNode):
     US: AxiomNode
     Us: AxiomNode
@@ -544,55 +179,10 @@ class CoreModeNode(AxiomNode):
     uS: AxiomNode
     us: AxiomNode
 
-class CoreNatAddNode(AxiomNode):
-    pass
-
-class CoreNatMulNode(AxiomNode):
-    pass
-
-class CoreNatSubNode(AxiomNode):
-    pass
-
 class CoreNatNode(AxiomNode):
     add: AxiomNode
     mul: AxiomNode
     sub: AxiomNode
-
-class CoreNcmpGLENode(AxiomNode):
-    pass
-
-class CoreNcmpGLeNode(AxiomNode):
-    pass
-
-class CoreNcmpGlENode(AxiomNode):
-    pass
-
-class CoreNcmpGleNode(AxiomNode):
-    pass
-
-class CoreNcmpENode(AxiomNode):
-    pass
-
-class CoreNcmpFNode(AxiomNode):
-    pass
-
-class CoreNcmpGNode(AxiomNode):
-    pass
-
-class CoreNcmpGeNode(AxiomNode):
-    pass
-
-class CoreNcmpLNode(AxiomNode):
-    pass
-
-class CoreNcmpLeNode(AxiomNode):
-    pass
-
-class CoreNcmpNeNode(AxiomNode):
-    pass
-
-class CoreNcmpTNode(AxiomNode):
-    pass
 
 class CoreNcmpNode(AxiomNode):
     GLE: AxiomNode
@@ -612,54 +202,18 @@ class CoreNcmpNode(AxiomNode):
     ne: AxiomNode
     t: AxiomNode
 
-class CorePeHltNode(AxiomNode):
-    pass
-
-class CorePeIsClosedNode(AxiomNode):
-    pass
-
-class CorePeRunNode(AxiomNode):
-    pass
-
 class CorePeNode(AxiomNode):
     hlt: AxiomNode
     is_closed: AxiomNode
     run: AxiomNode
 
-class CoreSelectNode(AxiomNode):
-    pass
-
-class CoreShrANode(AxiomNode):
-    pass
-
-class CoreShrLNode(AxiomNode):
-    pass
-
 class CoreShrNode(AxiomNode):
     a: AxiomNode
     l: AxiomNode
 
-class CoreTraitAlignNode(AxiomNode):
-    pass
-
-class CoreTraitSizeNode(AxiomNode):
-    pass
-
 class CoreTraitNode(AxiomNode):
     align: AxiomNode
     size: AxiomNode
-
-class CoreWrapAddNode(AxiomNode):
-    pass
-
-class CoreWrapMulNode(AxiomNode):
-    pass
-
-class CoreWrapShlNode(AxiomNode):
-    pass
-
-class CoreWrapSubNode(AxiomNode):
-    pass
 
 class CoreWrapNode(AxiomNode):
     add: AxiomNode
@@ -688,125 +242,14 @@ class CoreNode(AxiomNode):
     trait: CoreTraitNode
     wrap: CoreWrapNode
 
-class DemoConstIdxNode(AxiomNode):
-    pass
-
 class DemoNode(AxiomNode):
     const_idx: AxiomNode
-
-class DirectCps2dsNode(AxiomNode):
-    pass
-
-class DirectCps2dsDepNode(AxiomNode):
-    pass
-
-class DirectCps2dsPhaseNode(AxiomNode):
-    pass
-
-class DirectDs2cpsPhaseNode(AxiomNode):
-    pass
 
 class DirectNode(AxiomNode):
     cps2ds: AxiomNode
     cps2ds_dep: AxiomNode
     cps2ds_phase: AxiomNode
     ds2cps_phase: AxiomNode
-
-class GpuConstMNode(AxiomNode):
-    pass
-
-class GpuConstPtrNode(AxiomNode):
-    pass
-
-class GpuDefaultStreamNode(AxiomNode):
-    pass
-
-class GpuGlobalMNode(AxiomNode):
-    pass
-
-class GpuGlobalPtrNode(AxiomNode):
-    pass
-
-class GpuLocalMNode(AxiomNode):
-    pass
-
-class GpuLocalPtrNode(AxiomNode):
-    pass
-
-class GpuSharedMNode(AxiomNode):
-    pass
-
-class GpuSharedPtrNode(AxiomNode):
-    pass
-
-class GpuStreamNode(AxiomNode):
-    pass
-
-class GpuAddrSpaceConstNode(AxiomNode):
-    pass
-
-class GpuAddrSpaceGlobalNode(AxiomNode):
-    pass
-
-class GpuAddrSpaceLocalNode(AxiomNode):
-    pass
-
-class GpuAddrSpaceSharedNode(AxiomNode):
-    pass
-
-class GpuAllocNode(AxiomNode):
-    pass
-
-class GpuAllocAsyncNode(AxiomNode):
-    pass
-
-class GpuAllocCopyNode(AxiomNode):
-    pass
-
-class GpuAllocCopyAsyncNode(AxiomNode):
-    pass
-
-class GpuCopyToDeviceNode(AxiomNode):
-    pass
-
-class GpuCopyToDeviceAsyncNode(AxiomNode):
-    pass
-
-class GpuCopyToHostNode(AxiomNode):
-    pass
-
-class GpuCopyToHostAsyncNode(AxiomNode):
-    pass
-
-class GpuFreeNode(AxiomNode):
-    pass
-
-class GpuFreeAsyncNode(AxiomNode):
-    pass
-
-class GpuLaunchNode(AxiomNode):
-    pass
-
-class GpuLaunchWithSmemNode(AxiomNode):
-    pass
-
-class GpuMalloc2gpuallocReplNode(AxiomNode):
-    pass
-
-class GpuStreamDeinitNode(AxiomNode):
-    pass
-
-class GpuStreamInitNode(AxiomNode):
-    pass
-
-class GpuStreamSyncNode(AxiomNode):
-    pass
-
-class GpuSyncWorkItemsNode(AxiomNode):
-    pass
-
-class GpuSyncedScopeNode(AxiomNode):
-    pass
 
 class GpuNode(AxiomNode):
     ConstM: AxiomNode
@@ -842,132 +285,12 @@ class GpuNode(AxiomNode):
     sync_work_items: AxiomNode
     synced_scope: AxiomNode
 
-class MathAMDFP24Node(AxiomNode):
-    pass
-
-class MathBF16Node(AxiomNode):
-    pass
-
-class MathFNode(AxiomNode):
-    pass
-
-class MathF16Node(AxiomNode):
-    pass
-
-class MathF32Node(AxiomNode):
-    pass
-
-class MathF64Node(AxiomNode):
-    pass
-
-class MathNVTF32Node(AxiomNode):
-    pass
-
-class MathPXR24Node(AxiomNode):
-    pass
-
-class MathAbsNode(AxiomNode):
-    pass
-
-class MathAmdfp24Node(AxiomNode):
-    pass
-
-class MathArithAddNode(AxiomNode):
-    pass
-
-class MathArithDivNode(AxiomNode):
-    pass
-
-class MathArithMulNode(AxiomNode):
-    pass
-
-class MathArithRemNode(AxiomNode):
-    pass
-
-class MathArithSubNode(AxiomNode):
-    pass
-
 class MathArithNode(AxiomNode):
     add: AxiomNode
     div: AxiomNode
     mul: AxiomNode
     rem: AxiomNode
     sub: AxiomNode
-
-class MathBf16Node(AxiomNode):
-    pass
-
-class MathCmpUGLENode(AxiomNode):
-    pass
-
-class MathCmpUGLeNode(AxiomNode):
-    pass
-
-class MathCmpUGlENode(AxiomNode):
-    pass
-
-class MathCmpUGleNode(AxiomNode):
-    pass
-
-class MathCmpUgLENode(AxiomNode):
-    pass
-
-class MathCmpUgLeNode(AxiomNode):
-    pass
-
-class MathCmpUglENode(AxiomNode):
-    pass
-
-class MathCmpUgleNode(AxiomNode):
-    pass
-
-class MathCmpENode(AxiomNode):
-    pass
-
-class MathCmpFNode(AxiomNode):
-    pass
-
-class MathCmpGNode(AxiomNode):
-    pass
-
-class MathCmpGeNode(AxiomNode):
-    pass
-
-class MathCmpLNode(AxiomNode):
-    pass
-
-class MathCmpLeNode(AxiomNode):
-    pass
-
-class MathCmpNeNode(AxiomNode):
-    pass
-
-class MathCmpONode(AxiomNode):
-    pass
-
-class MathCmpTNode(AxiomNode):
-    pass
-
-class MathCmpUNode(AxiomNode):
-    pass
-
-class MathCmpUeNode(AxiomNode):
-    pass
-
-class MathCmpUgNode(AxiomNode):
-    pass
-
-class MathCmpUgeNode(AxiomNode):
-    pass
-
-class MathCmpUlNode(AxiomNode):
-    pass
-
-class MathCmpUleNode(AxiomNode):
-    pass
-
-class MathCmpUneNode(AxiomNode):
-    pass
 
 class MathCmpNode(AxiomNode):
     UGLE: AxiomNode
@@ -1003,21 +326,6 @@ class MathCmpNode(AxiomNode):
     ule: AxiomNode
     une: AxiomNode
 
-class MathConvF2fNode(AxiomNode):
-    pass
-
-class MathConvF2sNode(AxiomNode):
-    pass
-
-class MathConvF2uNode(AxiomNode):
-    pass
-
-class MathConvS2fNode(AxiomNode):
-    pass
-
-class MathConvU2fNode(AxiomNode):
-    pass
-
 class MathConvNode(AxiomNode):
     f2f: AxiomNode
     f2s: AxiomNode
@@ -1025,51 +333,9 @@ class MathConvNode(AxiomNode):
     s2f: AxiomNode
     u2f: AxiomNode
 
-class MathErFNode(AxiomNode):
-    pass
-
-class MathErFcNode(AxiomNode):
-    pass
-
 class MathErNode(AxiomNode):
     f: AxiomNode
     fc: AxiomNode
-
-class MathExpLBBNode(AxiomNode):
-    pass
-
-class MathExpLBbNode(AxiomNode):
-    pass
-
-class MathExpLbBNode(AxiomNode):
-    pass
-
-class MathExpLbbNode(AxiomNode):
-    pass
-
-class MathExpBinNode(AxiomNode):
-    pass
-
-class MathExpDecNode(AxiomNode):
-    pass
-
-class MathExpExpNode(AxiomNode):
-    pass
-
-class MathExpExp10Node(AxiomNode):
-    pass
-
-class MathExpExp2Node(AxiomNode):
-    pass
-
-class MathExpLogNode(AxiomNode):
-    pass
-
-class MathExpLog10Node(AxiomNode):
-    pass
-
-class MathExpLog2Node(AxiomNode):
-    pass
 
 class MathExpNode(AxiomNode):
     LBB: AxiomNode
@@ -1089,24 +355,6 @@ class MathExpNode(AxiomNode):
     log10: AxiomNode
     log2: AxiomNode
 
-class MathExtremaIMNode(AxiomNode):
-    pass
-
-class MathExtremaImNode(AxiomNode):
-    pass
-
-class MathExtremaFmaxNode(AxiomNode):
-    pass
-
-class MathExtremaFminNode(AxiomNode):
-    pass
-
-class MathExtremaIeee754maxNode(AxiomNode):
-    pass
-
-class MathExtremaIeee754minNode(AxiomNode):
-    pass
-
 class MathExtremaNode(AxiomNode):
     IM: AxiomNode
     Im: AxiomNode
@@ -1117,39 +365,9 @@ class MathExtremaNode(AxiomNode):
     ieee754min: AxiomNode
     im: AxiomNode
 
-class MathGammaLNode(AxiomNode):
-    pass
-
-class MathGammaTNode(AxiomNode):
-    pass
-
 class MathGammaNode(AxiomNode):
     l: AxiomNode
     t: AxiomNode
-
-class MathMinusNode(AxiomNode):
-    pass
-
-class MathNvtf32Node(AxiomNode):
-    pass
-
-class MathPowNode(AxiomNode):
-    pass
-
-class MathPxr24Node(AxiomNode):
-    pass
-
-class MathRoundCNode(AxiomNode):
-    pass
-
-class MathRoundFNode(AxiomNode):
-    pass
-
-class MathRoundRNode(AxiomNode):
-    pass
-
-class MathRoundTNode(AxiomNode):
-    pass
 
 class MathRoundNode(AxiomNode):
     c: AxiomNode
@@ -1157,90 +375,9 @@ class MathRoundNode(AxiomNode):
     r: AxiomNode
     t: AxiomNode
 
-class MathRrtNode(AxiomNode):
-    pass
-
-class MathRtCbNode(AxiomNode):
-    pass
-
-class MathRtSqNode(AxiomNode):
-    pass
-
 class MathRtNode(AxiomNode):
     cb: AxiomNode
     sq: AxiomNode
-
-class MathSgnNode(AxiomNode):
-    pass
-
-class MathSlfNode(AxiomNode):
-    pass
-
-class MathTriAHFFNode(AxiomNode):
-    pass
-
-class MathTriAHFfNode(AxiomNode):
-    pass
-
-class MathTriAHfFNode(AxiomNode):
-    pass
-
-class MathTriAHffNode(AxiomNode):
-    pass
-
-class MathTriAhFFNode(AxiomNode):
-    pass
-
-class MathTriAhFfNode(AxiomNode):
-    pass
-
-class MathTriAhfFNode(AxiomNode):
-    pass
-
-class MathTriAhffNode(AxiomNode):
-    pass
-
-class MathTriANode(AxiomNode):
-    pass
-
-class MathTriAcosNode(AxiomNode):
-    pass
-
-class MathTriAcoshNode(AxiomNode):
-    pass
-
-class MathTriAsinNode(AxiomNode):
-    pass
-
-class MathTriAsinhNode(AxiomNode):
-    pass
-
-class MathTriAtanNode(AxiomNode):
-    pass
-
-class MathTriAtanhNode(AxiomNode):
-    pass
-
-class MathTriCosNode(AxiomNode):
-    pass
-
-class MathTriCoshNode(AxiomNode):
-    pass
-
-class MathTriHNode(AxiomNode):
-    pass
-
-class MathTriSinNode(AxiomNode):
-    pass
-
-class MathTriSinhNode(AxiomNode):
-    pass
-
-class MathTriTanNode(AxiomNode):
-    pass
-
-class MathTriTanhNode(AxiomNode):
-    pass
 
 class MathTriNode(AxiomNode):
     AHFF: AxiomNode
@@ -1307,45 +444,6 @@ class MathNode(AxiomNode):
     slf: AxiomNode
     tri: MathTriNode
 
-class MatrixMatNode(AxiomNode):
-    pass
-
-class MatrixConstMatNode(AxiomNode):
-    pass
-
-class MatrixInitNode(AxiomNode):
-    pass
-
-class MatrixInsertNode(AxiomNode):
-    pass
-
-class MatrixLowerMatrixHighLevelMapReduceNode(AxiomNode):
-    pass
-
-class MatrixLowerMatrixLowLevelNode(AxiomNode):
-    pass
-
-class MatrixLowerMatrixMediumLevelNode(AxiomNode):
-    pass
-
-class MatrixMapReduceNode(AxiomNode):
-    pass
-
-class MatrixProdNode(AxiomNode):
-    pass
-
-class MatrixReadNode(AxiomNode):
-    pass
-
-class MatrixShapeNode(AxiomNode):
-    pass
-
-class MatrixSumNode(AxiomNode):
-    pass
-
-class MatrixTransposeNode(AxiomNode):
-    pass
-
 class MatrixNode(AxiomNode):
     Mat: AxiomNode
     constMat: AxiomNode
@@ -1360,69 +458,6 @@ class MatrixNode(AxiomNode):
     shape: AxiomNode
     sum: AxiomNode
     transpose: AxiomNode
-
-class MemMNode(AxiomNode):
-    pass
-
-class MemPtrNode(AxiomNode):
-    pass
-
-class MemPtr0Node(AxiomNode):
-    pass
-
-class MemAddMemPhaseNode(AxiomNode):
-    pass
-
-class MemAllocNode(AxiomNode):
-    pass
-
-class MemAlloc2mallocReplNode(AxiomNode):
-    pass
-
-class MemCopyPropPassNode(AxiomNode):
-    pass
-
-class MemFreeNode(AxiomNode):
-    pass
-
-class MemLeaNode(AxiomNode):
-    pass
-
-class MemLoadNode(AxiomNode):
-    pass
-
-class MemMallocNode(AxiomNode):
-    pass
-
-class MemMslotNode(AxiomNode):
-    pass
-
-class MemRememNode(AxiomNode):
-    pass
-
-class MemRememReplNode(AxiomNode):
-    pass
-
-class MemReshapeArgNode(AxiomNode):
-    pass
-
-class MemReshapeFlatNode(AxiomNode):
-    pass
-
-class MemReshapeModeNode(AxiomNode):
-    pass
-
-class MemReshapePassNode(AxiomNode):
-    pass
-
-class MemSlotNode(AxiomNode):
-    pass
-
-class MemSsaPassNode(AxiomNode):
-    pass
-
-class MemStoreNode(AxiomNode):
-    pass
 
 class MemNode(AxiomNode):
     M: AxiomNode
@@ -1447,68 +482,17 @@ class MemNode(AxiomNode):
     ssa_pass: AxiomNode
     store: AxiomNode
 
-class OptNode(AxiomNode):
-    pass
-
-class OrdKeyNode(AxiomNode):
-    pass
-
-class OrdMapNode(AxiomNode):
-    pass
-
-class OrdSetNode(AxiomNode):
-    pass
-
-class OrdContainsMapNode(AxiomNode):
-    pass
-
-class OrdContainsSetNode(AxiomNode):
-    pass
-
 class OrdContainsNode(AxiomNode):
     map: AxiomNode
     set: AxiomNode
-
-class OrdCreateMapNode(AxiomNode):
-    pass
-
-class OrdCreateSetNode(AxiomNode):
-    pass
-
-class OrdGetNode(AxiomNode):
-    pass
-
-class OrdInitMapNode(AxiomNode):
-    pass
-
-class OrdInitSetNode(AxiomNode):
-    pass
 
 class OrdInitNode(AxiomNode):
     map: AxiomNode
     set: AxiomNode
 
-class OrdInsertMapNode(AxiomNode):
-    pass
-
-class OrdInsertSetNode(AxiomNode):
-    pass
-
 class OrdInsertNode(AxiomNode):
     map: AxiomNode
     set: AxiomNode
-
-class OrdIsEmptyMapNode(AxiomNode):
-    pass
-
-class OrdIsEmptySetNode(AxiomNode):
-    pass
-
-class OrdSizeMapNode(AxiomNode):
-    pass
-
-class OrdSizeSetNode(AxiomNode):
-    pass
 
 class OrdSizeNode(AxiomNode):
     map: AxiomNode
@@ -1528,42 +512,9 @@ class OrdNode(AxiomNode):
     is_empty_set: AxiomNode
     size: OrdSizeNode
 
-class ReflyCodeNode(AxiomNode):
-    pass
-
-class ReflyCheckNode(AxiomNode):
-    pass
-
-class ReflyDbgPermNode(AxiomNode):
-    pass
-
-class ReflyDbgTmpNode(AxiomNode):
-    pass
-
 class ReflyDbgNode(AxiomNode):
     perm: AxiomNode
     tmp: AxiomNode
-
-class ReflyDebugNode(AxiomNode):
-    pass
-
-class ReflyEquivAENode(AxiomNode):
-    pass
-
-class ReflyEquivAeNode(AxiomNode):
-    pass
-
-class ReflyEquivAlphaEqNode(AxiomNode):
-    pass
-
-class ReflyEquivAlphaNeNode(AxiomNode):
-    pass
-
-class ReflyEquivStrucEqNode(AxiomNode):
-    pass
-
-class ReflyEquivStrucNeNode(AxiomNode):
-    pass
 
 class ReflyEquivNode(AxiomNode):
     AE: AxiomNode
@@ -1574,36 +525,6 @@ class ReflyEquivNode(AxiomNode):
     alpha_ne: AxiomNode
     struc_eq: AxiomNode
     struc_ne: AxiomNode
-
-class ReflyErrorNode(AxiomNode):
-    pass
-
-class ReflyGidNode(AxiomNode):
-    pass
-
-class ReflyInfoNode(AxiomNode):
-    pass
-
-class ReflyRefineNode(AxiomNode):
-    pass
-
-class ReflyReflectNode(AxiomNode):
-    pass
-
-class ReflyReifyNode(AxiomNode):
-    pass
-
-class ReflyRemoveDbgReplNode(AxiomNode):
-    pass
-
-class ReflyTypeNode(AxiomNode):
-    pass
-
-class ReflyVerboseNode(AxiomNode):
-    pass
-
-class ReflyWarnNode(AxiomNode):
-    pass
 
 class ReflyNode(AxiomNode):
     Code: AxiomNode
@@ -1622,18 +543,6 @@ class ReflyNode(AxiomNode):
     verbose: AxiomNode
     warn: AxiomNode
 
-class RegexAnyNode(AxiomNode):
-    pass
-
-class RegexClsDNode(AxiomNode):
-    pass
-
-class RegexClsSNode(AxiomNode):
-    pass
-
-class RegexClsWNode(AxiomNode):
-    pass
-
 class RegexClsNode(AxiomNode):
     D: AxiomNode
     S: AxiomNode
@@ -1642,43 +551,10 @@ class RegexClsNode(AxiomNode):
     s: AxiomNode
     w: AxiomNode
 
-class RegexConjNode(AxiomNode):
-    pass
-
-class RegexDisjNode(AxiomNode):
-    pass
-
-class RegexEmptyNode(AxiomNode):
-    pass
-
-class RegexLitNode(AxiomNode):
-    pass
-
-class RegexLowerRegexNode(AxiomNode):
-    pass
-
-class RegexNegLookaheadNode(AxiomNode):
-    pass
-
-class RegexNotNode(AxiomNode):
-    pass
-
-class RegexQuantOptionalNode(AxiomNode):
-    pass
-
-class RegexQuantPlusNode(AxiomNode):
-    pass
-
-class RegexQuantStarNode(AxiomNode):
-    pass
-
 class RegexQuantNode(AxiomNode):
     optional: AxiomNode
     plus: AxiomNode
     star: AxiomNode
-
-class RegexRangeNode(AxiomNode):
-    pass
 
 class RegexNode(AxiomNode):
     any: AxiomNode
@@ -1692,42 +568,6 @@ class RegexNode(AxiomNode):
     not_: AxiomNode
     quant: RegexQuantNode
     range: AxiomNode
-
-class TensorBroadcastInDimNode(AxiomNode):
-    pass
-
-class TensorDot2d00Node(AxiomNode):
-    pass
-
-class TensorDot2d01Node(AxiomNode):
-    pass
-
-class TensorDot2d10Node(AxiomNode):
-    pass
-
-class TensorDot2d11Node(AxiomNode):
-    pass
-
-class TensorDotGeneralNode(AxiomNode):
-    pass
-
-class TensorMapNode(AxiomNode):
-    pass
-
-class TensorMapReduceNode(AxiomNode):
-    pass
-
-class TensorReduceNode(AxiomNode):
-    pass
-
-class TensorReshapeNode(AxiomNode):
-    pass
-
-class TensorSliceNode(AxiomNode):
-    pass
-
-class TensorTransposeNode(AxiomNode):
-    pass
 
 class TensorNode(AxiomNode):
     broadcast_in_dim: AxiomNode
@@ -1743,24 +583,6 @@ class TensorNode(AxiomNode):
     slice: AxiomNode
     transpose: AxiomNode
 
-class TupleAppendNode(AxiomNode):
-    pass
-
-class TupleCatNode(AxiomNode):
-    pass
-
-class TupleContainsNode(AxiomNode):
-    pass
-
-class TuplePrependNode(AxiomNode):
-    pass
-
-class TupleTypecatNode(AxiomNode):
-    pass
-
-class TupleZipNode(AxiomNode):
-    pass
-
 class TupleNode(AxiomNode):
     append: AxiomNode
     cat: AxiomNode
@@ -1769,46 +591,13 @@ class TupleNode(AxiomNode):
     typecat: AxiomNode
     zip: AxiomNode
 
-class VecCatNode(AxiomNode):
-    pass
-
-class VecDiffNode(AxiomNode):
-    pass
-
-class VecFirstNode(AxiomNode):
-    pass
-
-class VecFoldLNode(AxiomNode):
-    pass
-
-class VecFoldRNode(AxiomNode):
-    pass
-
 class VecFoldNode(AxiomNode):
     l: AxiomNode
     r: AxiomNode
 
-class VecIsUniqueNode(AxiomNode):
-    pass
-
-class VecLastNode(AxiomNode):
-    pass
-
-class VecLenNode(AxiomNode):
-    pass
-
-class VecScanExistsNode(AxiomNode):
-    pass
-
-class VecScanForAllNode(AxiomNode):
-    pass
-
 class VecScanNode(AxiomNode):
     exists: AxiomNode
     for_all: AxiomNode
-
-class VecZipNode(AxiomNode):
-    pass
 
 class VecNode(AxiomNode):
     cat: AxiomNode
@@ -1823,9 +612,7 @@ class VecNode(AxiomNode):
 
 AXIOM_NAMESPACE_NAMES: tuple[str, ...]
 
-
 def list_axioms() -> dict[str, tuple[str, ...]]: ...
-
 
 Affine: AffineNode
 Autodiff: AutodiffNode
@@ -1838,7 +625,7 @@ Gpu: GpuNode
 Math: MathNode
 Matrix: MatrixNode
 Mem: MemNode
-Opt: OptNode
+Opt: AxiomNode
 Ord: OrdNode
 Refly: ReflyNode
 Regex: RegexNode

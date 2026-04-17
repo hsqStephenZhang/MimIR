@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Mapping, Sequence, TypeAlias, cast
+from typing import Mapping, Sequence, TypeAlias
 
-from ._axioms_generated import AXIOM_INDEX, AXIOM_NAMESPACE_NAMES, AXIOM_TREES
+from ._axioms_generated import AXIOM_NAMESPACE_NAMES, AXIOM_TREES
 from ._mim_core import Def, World
 
 AxiomStage: TypeAlias = Def | Sequence[Def]
@@ -35,17 +35,27 @@ class AxiomNode:
 
 
 def _instantiate(tree: Mapping[str, object]) -> AxiomNode:
-    symbol = tree.get("__symbol__")
-    children = {
-        name: _instantiate(cast(Mapping[str, object], child))
-        for name, child in tree.items()
-        if name != "__symbol__" and isinstance(child, dict)
-    }
-    return AxiomNode(symbol if isinstance(symbol, str) else None, children)
+    children: dict[str, AxiomNode] = {}
+    for name, val in tree.items():
+        if isinstance(val, str):
+            children[name] = AxiomNode(val, {})
+        elif isinstance(val, dict):
+            children[name] = _instantiate(val)
+    return AxiomNode(None, children)
+
+
+def _flatten_symbols(tree: Mapping[str, object]) -> list[str]:
+    result: list[str] = []
+    for val in tree.values():
+        if isinstance(val, str):
+            result.append(val)
+        elif isinstance(val, dict):
+            result.extend(_flatten_symbols(val))
+    return result
 
 
 def list_axioms() -> dict[str, tuple[str, ...]]:
-    return dict(AXIOM_INDEX)
+    return {plugin: tuple(sorted(_flatten_symbols(tree))) for plugin, tree in AXIOM_TREES.items()}
 
 
 for _plugin, _tree in AXIOM_TREES.items():
