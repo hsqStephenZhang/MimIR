@@ -165,6 +165,30 @@ print(read_00.proj(1).value())
     assert sorted(lines) == sorted(["3", "(⊥:(%mem.M 0), 5I32)", "5"])
 
 
+def test_axiom_wrappers_list_and_call_plugins() -> None:
+    axioms = mim.list_axioms()
+
+    assert "%mem.Ptr0" in axioms["mem"]
+    assert "%matrix.read" in axioms["matrix"]
+    assert "%core.wrap.add" in axioms["core"]
+
+    driver = mim.configure_driver(Driver())
+    driver.load_plugins(["core", "mem", "matrix"])
+    world = driver.world()
+
+    mem_t = mim.Mem.M(world, world.lit_nat_0())
+    ptr_t = mim.Mem.Ptr0(world, world.type_i8())
+
+    mem = world.bot(mem_t)
+    matrix_type = world.tuple([world.lit_nat(2), world.tuple([world.lit_nat(3), world.lit_nat(5)]), world.type_i32()])
+    matrix = mim.Matrix.constMat(world, matrix_type, [mem, world.lit_i32(5)])
+    shape_0 = mim.Matrix.shape(world, matrix_type, [matrix.proj(1), world.lit_idx(2, 0)])
+
+    assert mem_t.to_string().strip() == "%mem.M 0"
+    assert ptr_t.to_string().strip() == "%mem.Ptr (I8, 0)"
+    assert shape_0.value() == 3
+
+
 def test_tensor_plugin_transpose_builds_expected_type() -> None:
     lines = _run_in_clean_python(
         """

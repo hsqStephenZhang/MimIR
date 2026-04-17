@@ -6,6 +6,28 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Sequence, cast
 
+from ._axioms import (
+    AXIOM_NAMESPACE_NAMES,
+    Affine,
+    Autodiff,
+    Clos,
+    Compile,
+    Core,
+    Demo,
+    Direct,
+    Gpu,
+    Math,
+    Matrix,
+    Mem,
+    Opt,
+    Ord,
+    Refly,
+    Regex,
+    Tensor,
+    Tuple,
+    Vec,
+    list_axioms,
+)
 from . import _mim_core as _core
 from ._mim_core import AST, Def, Driver, Lam, Level, Lit, Log, Parser, Pi, PyParser, World
 from ._mim_core import *
@@ -27,12 +49,14 @@ __all__ = [
     "build_native_main_i32",
     "clang_compile",
     "build_native_executable",
+    "list_axioms",
     "matmul_i32",
     "matrix_i32",
     "matrix_to_list",
     "plugin_search_paths",
     "run_native_executable",
     "transpose_2d",
+    *AXIOM_NAMESPACE_NAMES,
 ]
 
 

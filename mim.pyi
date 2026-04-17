@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-
+from ._axioms import AXIOM_NAMESPACE_NAMES, AxiomNode, AxiomStage
 class Def:
     def type(self) -> Def: ...
     def var(self) -> Def: ...
@@ -99,8 +99,29 @@ class Driver:
     def load_pluins(self, plugins: list[str]) -> None: ...
 
 
+Affine: AxiomNode
+Autodiff: AxiomNode
+Clos: AxiomNode
+Compile: AxiomNode
+Core: AxiomNode
+Demo: AxiomNode
+Direct: AxiomNode
+Gpu: AxiomNode
+Math: AxiomNode
+Matrix: AxiomNode
+Mem: AxiomNode
+Opt: AxiomNode
+Ord: AxiomNode
+Refly: AxiomNode
+Regex: AxiomNode
+Tensor: AxiomNode
+Tuple: AxiomNode
+Vec: AxiomNode
+
+
 def plugin_search_paths() -> list[Path]: ...
 def configure_driver(driver: Driver) -> Driver: ...
+def list_axioms() -> dict[str, tuple[str, ...]]: ...
 def build_native_main_i32(world: World, result: Def, name: str = "main") -> Lam: ...
 def emit_llvm(driver: Driver, world: World, output_path: str | Path) -> Path: ...
 def clang_compile(
