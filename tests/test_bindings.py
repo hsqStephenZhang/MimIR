@@ -1,6 +1,9 @@
 import mim
+import shutil
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 Driver = getattr(mim, "Driver")
 Level = getattr(mim, "Level")
@@ -187,3 +190,32 @@ transposed.dump()
     )
 
     assert lines == ["%tensor.transpose I32 (2, (2, 3)) (((1I32, 2I32, 3I32), (4I32, 5I32, 6I32)), (tt, ff))"]
+
+
+def test_backend_helpers_emit_llvm_and_optionally_compile() -> None:
+    driver = mim.configure_driver(Driver())
+    driver.load_plugins(["core", "mem", "math", "matrix", "tensor"])
+    world = driver.world()
+
+    mem = world.bot(world.call("%mem.M", world.lit_nat_0()))
+    matrix_type = world.tuple([world.lit_nat(2), world.tuple([world.lit_nat(3), world.lit_nat(5)]), world.type_i32()])
+    matrix = world.call("%matrix.constMat", matrix_type, [mem, world.lit_i32(5)])
+    read_00 = world.call(
+        "%matrix.read",
+        matrix_type,
+        [mem, matrix.proj(1), world.tuple([world.lit_idx(3, 0), world.lit_idx(5, 0)])],
+    )
+
+    mim.build_native_main_i32(world, read_00.proj(1))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp = Path(tmp_dir)
+        ll_path = mim.emit_llvm(driver, world, tmp / "shape_main.ll")
+        assert ll_path.exists()
+        assert "define" in ll_path.read_text()
+
+        if shutil.which("clang") is not None:
+            exe_path = mim.build_native_executable(driver, world, tmp / "shape_main")
+            assert exe_path.exists()
+            result = mim.run_native_executable(exe_path, check=False)
+            assert result.returncode == 5

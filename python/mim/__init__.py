@@ -1,8 +1,10 @@
 # pyright: reportMissingModuleSource=false
 
 import ctypes
+import shutil
+import subprocess
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable, Sequence, cast
 
 from . import _mim_core as _core
 from ._mim_core import AST, Def, Driver, Lam, Level, Lit, Log, Parser, Pi, PyParser, World
@@ -21,10 +23,15 @@ __all__ = [
     "PyParser",
     "World",
     "configure_driver",
+    "emit_llvm",
+    "build_native_main_i32",
+    "clang_compile",
+    "build_native_executable",
     "matmul_i32",
     "matrix_i32",
     "matrix_to_list",
     "plugin_search_paths",
+    "run_native_executable",
     "transpose_2d",
 ]
 
@@ -64,6 +71,80 @@ def configure_driver(driver: Driver) -> Driver:
                 break
         driver.add_search_path(path)
     return driver
+
+
+def build_native_main_i32(world: World, result: Def, name: str = "main") -> Lam:
+    mem_t = world.call("%mem.M", world.lit_nat_0())
+    argv_t = world.call("%mem.Ptr0", [world.call("%mem.Ptr0", [world.type_i8()])])
+    i32_t = world.type_i32()
+
+    if result.type().to_string() != i32_t.to_string():
+        raise TypeError(f"build_native_main_i32 expects an I32 result, got {result.type().to_string()}")
+
+    main = world.mut_fun2([mem_t, i32_t, argv_t], [mem_t, i32_t]).set(name)
+    args = main.var().proj(0)
+    ret = main.var().proj(1)
+    mem = args.proj(0)
+
+    main.app(False, ret, [mem, result])
+    main.externalize()
+    return main
+
+
+def emit_llvm(driver: Driver, world: World, output_path: str | Path) -> Path:
+    output = Path(output_path)
+    driver.backend("ll", str(output), world)
+    return output
+
+
+def clang_compile(
+    llvm_ir: str | Path,
+    output_path: str | Path,
+    *,
+    clang: str = "clang",
+    extra_args: Sequence[str] = (),
+) -> Path:
+    clang_path = shutil.which(clang)
+    if clang_path is None:
+        raise FileNotFoundError(f"clang executable not found: {clang}")
+
+    llvm_path = Path(llvm_ir)
+    output = Path(output_path)
+    subprocess.run(
+        [clang_path, str(llvm_path), "-o", str(output), "-Wno-override-module", *extra_args],
+        check=True,
+        text=True,
+    )
+    return output
+
+
+def build_native_executable(
+    driver: Driver,
+    world: World,
+    stem: str | Path,
+    *,
+    clang: str = "clang",
+    extra_args: Sequence[str] = (),
+) -> Path:
+    stem_path = Path(stem)
+    llvm_path = stem_path.with_suffix(".ll")
+    emit_llvm(driver, world, llvm_path)
+    return clang_compile(llvm_path, stem_path, clang=clang, extra_args=extra_args)
+
+
+def run_native_executable(
+    executable: str | Path,
+    args: Sequence[str] = (),
+    *,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    executable_path = Path(executable).resolve()
+    return subprocess.run(
+        [str(executable_path), *args],
+        check=check,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _resolve_annex(self: World, callee: str | Def) -> Def:
