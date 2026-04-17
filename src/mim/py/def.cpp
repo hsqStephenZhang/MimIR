@@ -19,6 +19,11 @@ void init_def(py::module_& m) {
         .def("proj", py::overload_cast<       nat_t>(&mim::Def::proj, py::const_), py::return_value_policy::reference_internal)
         .def("externalize", &mim::Def::externalize)
         .def("dump", py::overload_cast<>(&mim::Def::dump, py::const_), py::return_value_policy::reference_internal)
+        .def("write", py::overload_cast<int>(&mim::Def::write, py::const_))
+        .def("write", py::overload_cast<int, const char*>(&mim::Def::write, py::const_))
+        .def("write_to", [](const mim::Def& d, const std::string& path, int max) {
+            d.write(max, path.c_str());
+        }, py::arg("path"), py::arg("max") = 0xFFFFFF)
         .def("to_string", [](const mim::Def& d) {
             std::ostringstream os;
             d.stream(os, 0xFFFFFF);

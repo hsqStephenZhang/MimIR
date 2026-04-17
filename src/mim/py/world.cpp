@@ -15,6 +15,11 @@ namespace mim {
 void init_world(py::module_& m) {
     py::class_<mim::World, std::unique_ptr<mim::World, py::nodelete>>(m, "World")
         .def("write", py::overload_cast<>(&mim::World::write))
+        .def("write", py::overload_cast<const char*>(&mim::World::write))
+        .def("write_to", [](mim::World& w, const std::string& path) {
+            w.write(path.c_str());
+        })
+        .def("dump", py::overload_cast<>(&mim::World::dump))
         .def("annex", &mim::World::sym2annex, py::return_value_policy::reference_internal)
         .def("top_nat", &mim::World::top_nat, py::return_value_policy::reference_internal)
         .def("type_bool", &mim::World::type_bool, py::return_value_policy::reference_internal)
