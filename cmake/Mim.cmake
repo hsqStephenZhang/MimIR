@@ -19,9 +19,16 @@ function(add_mim_plugin)
     )
 
     set(PLUGIN_MIM      ${CMAKE_CURRENT_LIST_DIR}/${PLUGIN}.mim)
-    set(OUT_PLUGIN_MIM  ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}/mim/${PLUGIN}.mim)
+    if(SKBUILD AND MIM_BUILD_PYTHON)
+        set(MIM_PLUGIN_INSTALL_DIR "mim/plugins")
+        set(OUT_PLUGIN_MIM  ${CMAKE_BINARY_DIR}/${MIM_PLUGIN_INSTALL_DIR}/${PLUGIN}.mim)
+    else()
+        set(MIM_PLUGIN_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/mim")
+        set(OUT_PLUGIN_MIM  ${CMAKE_BINARY_DIR}/${MIM_PLUGIN_INSTALL_DIR}/${PLUGIN}.mim)
+    endif()
     set(PLUGIN_MD       ${CMAKE_BINARY_DIR}/docs/plug/${PLUGIN}.md)
     set(AUTOGEN_H       ${CMAKE_BINARY_DIR}/include/mim/plug/${PLUGIN}/autogen.h)
+    set(AUTOGEN_PY      ${CMAKE_BINARY_DIR}/include/py/${PLUGIN}_plug.py)
 
     file(READ "${PLUGIN_MIM}" plugin_file_contents)
 
@@ -52,15 +59,18 @@ function(add_mim_plugin)
         MAKE_DIRECTORY
             ${CMAKE_BINARY_DIR}/docs/plug/
             ${CMAKE_BINARY_DIR}/include/mim/plug/${PLUGIN}
+            ${CMAKE_BINARY_DIR}/include/py/
     )
 
     add_custom_command(
         OUTPUT
             ${AUTOGEN_H}
+            ${AUTOGEN_PY}
             ${PLUGIN_MD}
         COMMAND $<TARGET_FILE:${MIM_TARGET_NAMESPACE}mim> ${PLUGIN_MIM} -P "${CMAKE_CURRENT_LIST_DIR}/.." --bootstrap
             --output-h ${AUTOGEN_H}
             --output-md ${PLUGIN_MD}
+            --output-py ${AUTOGEN_PY}
         MAIN_DEPENDENCY ${PLUGIN_MIM}
         DEPENDS ${MIM_TARGET_NAMESPACE}mim
         COMMENT "Bootstrapping MimIR plugin '${PLUGIN_MIM}'; dependencies: ${PLUGIN_DEPS}"
@@ -76,6 +86,7 @@ function(add_mim_plugin)
     add_custom_target(mim_internal_${PLUGIN}
         DEPENDS
             ${AUTOGEN_H}
+            ${AUTOGEN_PY}
             ${PLUGIN_MD}
             ${OUT_PLUGIN_MIM}
     )
@@ -115,8 +126,11 @@ function(add_mim_plugin)
             VISIBILITY_INLINES_HIDDEN 1
             WINDOWS_EXPORT_ALL_SYMBOLS OFF
             PREFIX "lib" # always use "lib" as prefix regardless of OS/compiler
-            LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}/mim
+            LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${MIM_PLUGIN_INSTALL_DIR}
     )
+    if(SKBUILD AND MIM_BUILD_PYTHON)
+        set_target_properties(mim_${PLUGIN} PROPERTIES INSTALL_RPATH "$ORIGIN/..")
+    endif()
 
     #
     # install
@@ -126,18 +140,20 @@ function(add_mim_plugin)
             TARGETS
                 mim_${PLUGIN}
             EXPORT mim-targets
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/mim
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/mim
-            RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}/mim
+            LIBRARY DESTINATION ${MIM_PLUGIN_INSTALL_DIR}
+            ARCHIVE DESTINATION ${MIM_PLUGIN_INSTALL_DIR}
+            RUNTIME DESTINATION ${MIM_PLUGIN_INSTALL_DIR}
             INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mim
         )
         install(
-            FILES ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}/mim/${PLUGIN}.mim
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/mim
+            FILES ${CMAKE_BINARY_DIR}/${MIM_PLUGIN_INSTALL_DIR}/${PLUGIN}.mim
+            DESTINATION ${MIM_PLUGIN_INSTALL_DIR}
         )
-        install(
-            FILES ${AUTOGEN_H}
-            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mim/plug/${PLUGIN}
-        )
+        if(NOT SKBUILD)
+            install(
+                FILES ${AUTOGEN_H}
+                DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mim/plug/${PLUGIN}
+            )
+        endif()
     endif()
 endfunction()

@@ -47,7 +47,8 @@ struct AnnexInfo {
 
 class AST {
 public:
-    AST() = default;
+    AST()           = default;
+    AST(const AST&) = delete;
     AST(World& world)
         : world_(&world) {}
     AST(AST&& other)
@@ -95,7 +96,8 @@ public:
     ///@}
 
     void bootstrap(Sym plugin, std::ostream& h);
-
+    void bootstrap_python(Sym plugin, std::ostream& h);
+    void bootstrap_python_subs(std::vector<mim::ast::AnnexInfo> annexes_with_subs, Sym plugin, Tab &tab, std::ostream& h);
     friend void swap(AST& a1, AST& a2) noexcept {
         using std::swap;
         // clang-format off
@@ -446,24 +448,6 @@ private:
     const Def* emit_(Emitter&) const override;
 
     Ptr<Expr> level_;
-};
-
-/// Reform (type of a rule) `Rule type`.
-class RuleExpr : public Expr {
-public:
-    RuleExpr(Loc loc, Ptr<Expr>&& meta_type)
-        : Expr(loc)
-        , meta_type_(std::move(meta_type)) {}
-
-    const Expr* meta_type() const { return meta_type_.get(); }
-
-    void bind(Scopes&) const override;
-    std::ostream& stream(Tab&, std::ostream&) const override;
-
-private:
-    const Def* emit_(Emitter&) const override;
-
-    Ptr<Expr> meta_type_;
 };
 
 // union
@@ -1067,7 +1051,6 @@ public:
         , guard_(std::move(guard))
         , is_normalizer_(is_normalizer) {}
 
-    Dbg dbg() const { return dbg_; }
     const Ptrn* var() const { return var_.get(); }
     const Expr* lhs() const { return lhs_.get(); }
     const Expr* rhs() const { return rhs_.get(); }

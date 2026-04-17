@@ -40,7 +40,7 @@ public:
     Ptr<Module> import(Dbg, std::ostream* md = nullptr);
     Ptr<Module> import(std::istream&, Loc = {}, const fs::path* = nullptr, std::ostream* md = nullptr);
     Ptr<Module> plugin(Dbg);
-    Ptr<Module> plugin(const std::string& s) { return plugin({Loc(), driver().sym(s)}); }
+    Ptr<Module> plugin(std::string_view sv) { return plugin({Loc(), driver().sym(sv)}); }
     Ptr<Module> plugin(const char* name) { return plugin({Loc(), driver().sym(name)}); }
 
 private:
@@ -89,7 +89,6 @@ private:
     Ptr<Expr> parse_lit_expr();
     Ptr<Expr> parse_extremum_expr();
     Ptr<Expr> parse_type_expr();
-    Ptr<Expr> parse_rule_expr();
     Ptr<Expr> parse_ret_expr();
     Ptr<Expr> parse_pi_expr();
     Ptr<Expr> parse_pi_expr(Ptr<Ptrn>&&);

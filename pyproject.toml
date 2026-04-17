@@ -1,0 +1,27 @@
+[build-system]
+requires = ["scikit-build-core>=0.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "mim"
+version = "0.1.0"
+description = "Python bindings for MimIR"
+readme = "docs/README.md"
+requires-python = ">=3.10"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.scikit-build]
+cmake.source-dir = "."
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["python/mim"]
+
+[tool.scikit-build.cmake.define]
+BUILD_SHARED_LIBS = "OFF"
+MIM_BUILD_PYTHON = "ON"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

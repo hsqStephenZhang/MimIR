@@ -145,11 +145,6 @@ const Def* TypeExpr::emit_(Emitter& e) const {
     return e.world().type(l);
 }
 
-const Def* RuleExpr::emit_(Emitter& e) const {
-    auto m = meta_type()->emit(e);
-    return e.world().reform(m);
-}
-
 const Def* PrimaryExpr ::emit_(Emitter& e) const {
     // clang-format off
     switch (tag()) {
@@ -534,13 +529,13 @@ void CDecl::emit(Emitter& e) const {
 void RuleDecl::emit(Emitter& e) const {
     auto _      = e.world().push(loc());
     auto meta_t = e.world().reform(var()->emit_type(e));
-    auto rule   = e.world().mut_rule(meta_t);
-    var()->emit_value(e, rule->var());
+    auto rule_  = e.world().mut_rule(meta_t);
+    var()->emit_value(e, rule_->var());
     auto l = lhs()->emit(e);
     auto r = rhs()->emit(e);
     auto c = guard()->emit(e);
-    rule->set(l, r, c);
-    def_ = rule;
+    rule_->set(l, r, c);
+    // TODO register rule somewhere
 }
 
 } // namespace mim::ast

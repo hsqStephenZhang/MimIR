@@ -27,6 +27,11 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}"
 option(BUILD_SHARED_LIBS    "Build shared libraries." ON)
 option(MIM_BUILD_DOCS       "If ON, build the documentation (requires Doxygen)." OFF)
 option(MIM_BUILD_EXAMPLES   "If ON, build examples." OFF)
+if(SKBUILD)
+    option(MIM_BUILD_PYTHON "If ON, build the Python bindings." ON)
+else()
+    option(MIM_BUILD_PYTHON "If ON, build the Python bindings." OFF)
+endif()
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}; shared libs: ${BUILD_SHARED_LIBS}")
 
@@ -66,6 +71,9 @@ set(ABSL_ENABLE_INSTALL ON)
 set(FE_ABSL ON)
 
 add_subdirectory(external/abseil-cpp)
+if(MIM_BUILD_PYTHON)
+    add_subdirectory(external/pybind11)
+endif()
 add_subdirectory(external/fe)
 add_subdirectory(external/lyra)
 add_subdirectory(external/rang)
@@ -82,38 +90,40 @@ if(MIM_BUILD_DOCS)
     endif()
 endif()
 
-write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/mim-config-version.cmake"
-    VERSION ${Mim_VERSION}
-    COMPATIBILITY SameMajorVersion
-)
-configure_package_config_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/mim-config.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/mim-config.cmake"
-    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mim"
-)
-install(
-    TARGETS libmim
-    EXPORT mim-targets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
-install(
-    FILES "${PROJECT_SOURCE_DIR}/external/half/include/half.hpp"
-    DESTINATION include
-)
-install(
-    FILES
-        cmake/Mim.cmake
-        "${CMAKE_CURRENT_BINARY_DIR}/mim-config.cmake"
+if(NOT SKBUILD)
+    write_basic_package_version_file(
         "${CMAKE_CURRENT_BINARY_DIR}/mim-config-version.cmake"
-    DESTINATION
-        ${CMAKE_INSTALL_LIBDIR}/cmake/mim
-)
-install(
-    EXPORT mim-targets
-    NAMESPACE mim::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/mim
-)
+        VERSION ${Mim_VERSION}
+        COMPATIBILITY SameMajorVersion
+    )
+    configure_package_config_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/mim-config.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/mim-config.cmake"
+        INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/mim"
+    )
+    install(
+        TARGETS libmim
+        EXPORT mim-targets
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+    install(
+        FILES "${PROJECT_SOURCE_DIR}/external/half/include/half.hpp"
+        DESTINATION include
+    )
+    install(
+        FILES
+            cmake/Mim.cmake
+            "${CMAKE_CURRENT_BINARY_DIR}/mim-config.cmake"
+            "${CMAKE_CURRENT_BINARY_DIR}/mim-config-version.cmake"
+        DESTINATION
+            ${CMAKE_INSTALL_LIBDIR}/cmake/mim
+    )
+    install(
+        EXPORT mim-targets
+        NAMESPACE mim::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/mim
+    )
+endif()

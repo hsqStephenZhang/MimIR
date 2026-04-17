@@ -109,7 +109,6 @@ std::ostream& DeclExpr::stream(Tab& tab, std::ostream& os) const {
 }
 
 std::ostream& TypeExpr::stream(Tab& tab, std::ostream& os) const { return print(os, "(Type {})", S(tab, level())); }
-std::ostream& RuleExpr::stream(Tab& tab, std::ostream& os) const { return print(os, "(Rule {})", S(tab, meta_type())); }
 
 std::ostream& ArrowExpr::stream(Tab& tab, std::ostream& os) const {
     return print(os, "{} -> {}", S(tab, dom()), S(tab, codom()));

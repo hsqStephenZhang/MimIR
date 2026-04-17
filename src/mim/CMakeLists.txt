@@ -47,6 +47,10 @@ target_sources(libmim
 )
 
 set_target_properties(libmim PROPERTIES PREFIX "")
+if(SKBUILD AND MIM_BUILD_PYTHON)
+    set_target_properties(libmim PROPERTIES INSTALL_RPATH "$ORIGIN")
+    install(TARGETS libmim LIBRARY DESTINATION mim)
+endif()
 target_compile_features(libmim PUBLIC cxx_std_20)
 
 if(MSVC)
@@ -79,16 +83,21 @@ target_link_libraries(libmim
         ${CMAKE_DL_LIBS}
 )
 
-install(
-    FILES "${CMAKE_BINARY_DIR}/include/mim/config.h"
-    DESTINATION include/mim
-)
-install(
-    DIRECTORY ${PROJECT_SOURCE_DIR}/include/mim
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
+if(NOT SKBUILD)
+    install(
+        FILES "${CMAKE_BINARY_DIR}/include/mim/config.h"
+        DESTINATION include/mim
+    )
+    install(
+        DIRECTORY ${PROJECT_SOURCE_DIR}/include/mim
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+endif()
 
 add_subdirectory(cli)
 add_subdirectory(plug)
+if(MIM_BUILD_PYTHON)
+    add_subdirectory(py)
+endif()
 
 add_dependencies(mim_all libmim)
