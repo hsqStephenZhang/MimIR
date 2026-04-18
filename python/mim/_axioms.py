@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Mapping, Sequence, TypeAlias
 
 from ._axioms_generated import AXIOM_NAMESPACE_NAMES, AXIOM_TREES
-from ._mim_core import Def, World
+from ._mim_core import Def, World # type: ignore
 
 AxiomStage: TypeAlias = Def | Sequence[Def]
 
