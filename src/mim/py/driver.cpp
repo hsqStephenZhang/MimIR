@@ -10,7 +10,7 @@ namespace py = pybind11;
 namespace mim {
 
 void init_driver(py::module_& m) {
-    py::class_<mim::Driver, std::unique_ptr<mim::Driver, py::nodelete>, fe::SymPool>(m, "Driver")
+    py::class_<mim::Driver, std::unique_ptr<mim::Driver>, fe::SymPool>(m, "Driver")
         .def(py::init<>())
         .def("world", &mim::Driver::world, py::return_value_policy::reference_internal)
         .def(
