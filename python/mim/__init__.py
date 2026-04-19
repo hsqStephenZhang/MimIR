@@ -4,7 +4,7 @@ import ctypes
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Callable, Sequence, cast
+from typing import Sequence
 
 from ._axioms import (
     AXIOM_NAMESPACE_NAMES,
@@ -26,6 +26,7 @@ from ._axioms import (
     Tensor,
     Tuple,
     Vec,
+    bind,
     list_axioms,
 )
 from . import _mim_core as _core
@@ -45,6 +46,8 @@ __all__ = [
     "PyParser",
     "World",
     "configure_driver",
+    "make_driver",
+    "bind",
     "emit_llvm",
     "build_native_main_i32",
     "clang_compile",
@@ -94,6 +97,17 @@ def configure_driver(driver: Driver) -> Driver:
                 ctypes.CDLL(str(libmim), mode=ctypes.RTLD_GLOBAL)
                 break
         driver.add_search_path(path)
+    return driver
+
+
+def make_driver(*plugins: str, log_level: Level | None = None, set_stdout: bool = False) -> Driver:
+    driver = configure_driver(Driver())
+    if set_stdout:
+        driver.log().set_stdout()
+    if log_level is not None:
+        driver.log().set(log_level)
+    if plugins:
+        driver.load_plugins(list(plugins))
     return driver
 
 
@@ -171,38 +185,6 @@ def run_native_executable(
     )
 
 
-def _resolve_annex(self: World, callee: str | Def) -> Def:
-    if isinstance(callee, str):
-        return self.annex(self.sym(callee))
-    return callee
-
-
-def _world_call(self: World, callee: str | Def, *stages: object, implicit: bool = False) -> Def:
-    target = _resolve_annex(self, callee)
-    apply: Callable[[Def, list[Def]],
-                    Def] = self.implicit_app if implicit else self.app
-
-    if not stages:
-        return target
-
-    for stage in stages:
-        if isinstance(stage, tuple):
-            stage_args = cast(list[Def], list(stage))
-        elif isinstance(stage, list):
-            stage_args = cast(list[Def], stage)
-        else:
-            stage_args = [cast(Def, stage)]
-        target = apply(target, stage_args)
-
-    return target
-
-
-def _annex_name(self: World, name: str) -> Def:
-    return self.annex(self.sym(name))
-
-
-setattr(World, "call", _world_call)
-setattr(World, "annex_name", _annex_name)
 if not hasattr(Driver, "load_plugins"):
     Driver.load_plugins = Driver.load_pluins
 

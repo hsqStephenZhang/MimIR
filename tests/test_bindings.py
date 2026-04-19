@@ -194,6 +194,20 @@ def test_axiom_wrappers_list_and_call_plugins() -> None:
     assert shape_0.value() == 3
 
 
+def test_make_driver_and_bound_axioms() -> None:
+    driver = mim.make_driver("core", "mem", "matrix", log_level=Level.Info)
+    world = driver.world()
+    ax = mim.bind(world)
+
+    mem = world.bot(ax.Mem.M(world.lit_nat_0()))
+    matrix_type = world.tuple([world.lit_nat(2), world.tuple([world.lit_nat(3), world.lit_nat(5)]), world.type_i32()])
+    matrix = ax.Matrix.constMat(matrix_type, [mem, world.lit_i32(5)])
+    shape_0 = ax.Matrix.shape(matrix_type, [matrix.proj(1), world.lit_idx(2, 0)])
+
+    assert shape_0.value() == 3
+    assert ax.Matrix.read.symbol == "%matrix.read"
+
+
 def test_tensor_plugin_transpose_builds_expected_type() -> None:
     lines = _run_in_clean_python(
         """

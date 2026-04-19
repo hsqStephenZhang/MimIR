@@ -10,6 +10,8 @@ from ._axioms import (
     AutodiffNode,
     AxiomNode,
     AxiomStage,
+    BoundAxiomNode,
+    BoundNamespaces,
     ClosNode,
     CompileNode,
     CoreNode,
@@ -19,7 +21,6 @@ from ._axioms import (
     MathNode,
     MatrixNode,
     MemNode,
-    OptNode,
     OrdNode,
     ReflyNode,
     RegexNode,
@@ -132,7 +133,7 @@ Gpu: GpuNode
 Math: MathNode
 Matrix: MatrixNode
 Mem: MemNode
-Opt: OptNode
+Opt: AxiomNode
 Ord: OrdNode
 Refly: ReflyNode
 Regex: RegexNode
@@ -143,6 +144,8 @@ Vec: VecNode
 
 def plugin_search_paths() -> list[Path]: ...
 def configure_driver(driver: Driver) -> Driver: ...
+def make_driver(*plugins: str, log_level: Level | None = None, set_stdout: bool = False) -> Driver: ...
+def bind(world: World) -> BoundNamespaces: ...
 def list_axioms() -> dict[str, tuple[str, ...]]: ...
 def build_native_main_i32(world: World, result: Def, name: str = "main") -> Lam: ...
 def emit_llvm(driver: Driver, world: World, output_path: str | Path) -> Path: ...

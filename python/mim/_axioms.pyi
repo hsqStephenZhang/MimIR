@@ -17,6 +17,12 @@ class AxiomNode:
     ) -> Def: ...
     def __getattr__(self, name: str) -> AxiomNode: ...
 
+class BoundAxiomNode:
+    @property
+    def symbol(self) -> str | None: ...
+    def __call__(self, *stages: AxiomStage, implicit: bool = False) -> Def: ...
+    def __getattr__(self, name: str) -> BoundAxiomNode: ...
+
 class AffineNode(AxiomNode):
     For: AxiomNode
     lower_for_phase: AxiomNode
@@ -610,9 +616,624 @@ class VecNode(AxiomNode):
     scan: VecScanNode
     zip: AxiomNode
 
+class BoundAffineNode(BoundAxiomNode):
+    For: BoundAxiomNode
+    lower_for_phase: BoundAxiomNode
+
+class BoundAutodiffNode(BoundAxiomNode):
+    AD: BoundAxiomNode
+    Tangent: BoundAxiomNode
+    ad: BoundAxiomNode
+    add: BoundAxiomNode
+    eval_pass: BoundAxiomNode
+    sum: BoundAxiomNode
+    zero: BoundAxiomNode
+    zero_repl: BoundAxiomNode
+
+class BoundClosAttrNode(BoundAxiomNode):
+    bottom: BoundAxiomNode
+    esc: BoundAxiomNode
+    freeBB: BoundAxiomNode
+    fstclassBB: BoundAxiomNode
+    returning: BoundAxiomNode
+
+class BoundClosNode(BoundAxiomNode):
+    BufPtr: BoundAxiomNode
+    alloc_jmpbuf: BoundAxiomNode
+    attr: BoundClosAttrNode
+    branch_clos_pass: BoundAxiomNode
+    clos2sjlj_pass: BoundAxiomNode
+    clos_conv_phase: BoundAxiomNode
+    clos_conv_prep_pass: BoundAxiomNode
+    longjmp: BoundAxiomNode
+    lower_typed_clos_phase: BoundAxiomNode
+    lower_typed_clos_prep_pass: BoundAxiomNode
+    setjmp: BoundAxiomNode
+
+class BoundCompileNode(BoundAxiomNode):
+    Pass: BoundAxiomNode
+    Phase: BoundAxiomNode
+    Repl: BoundAxiomNode
+    beta_red_pass: BoundAxiomNode
+    beta_red_phase: BoundAxiomNode
+    branch_normalize_phase: BoundAxiomNode
+    cleanup_phase: BoundAxiomNode
+    eta_exp_pass: BoundAxiomNode
+    eta_exp_phase: BoundAxiomNode
+    eta_red_pass: BoundAxiomNode
+    eta_red_phase: BoundAxiomNode
+    internal_cleanup_phase: BoundAxiomNode
+    is_loaded: BoundAxiomNode
+    lam_spec_pass: BoundAxiomNode
+    null_pass: BoundAxiomNode
+    null_phase: BoundAxiomNode
+    null_repl: BoundAxiomNode
+    pass2phase: BoundAxiomNode
+    passes: BoundAxiomNode
+    phases: BoundAxiomNode
+    prefix_cleanup_phase: BoundAxiomNode
+    repl2phase: BoundAxiomNode
+    repls: BoundAxiomNode
+    ret_wrap_phase: BoundAxiomNode
+    scalarize_pass: BoundAxiomNode
+    sym_expr_opt: BoundAxiomNode
+    tail_rec_elim_pass: BoundAxiomNode
+
+class BoundCoreBit1Node(BoundAxiomNode):
+    f: BoundAxiomNode
+    id: BoundAxiomNode
+    neg: BoundAxiomNode
+    t: BoundAxiomNode
+
+class BoundCoreBit2Node(BoundAxiomNode):
+    and_: BoundAxiomNode
+    ciff: BoundAxiomNode
+    f: BoundAxiomNode
+    fst: BoundAxiomNode
+    iff: BoundAxiomNode
+    nand: BoundAxiomNode
+    nciff: BoundAxiomNode
+    nfst: BoundAxiomNode
+    niff: BoundAxiomNode
+    nor: BoundAxiomNode
+    nsnd: BoundAxiomNode
+    nxor: BoundAxiomNode
+    or_: BoundAxiomNode
+    snd: BoundAxiomNode
+    t: BoundAxiomNode
+    xor_: BoundAxiomNode
+
+class BoundCoreConvNode(BoundAxiomNode):
+    s: BoundAxiomNode
+    u: BoundAxiomNode
+
+class BoundCoreDivNode(BoundAxiomNode):
+    sdiv: BoundAxiomNode
+    srem: BoundAxiomNode
+    udiv: BoundAxiomNode
+    urem: BoundAxiomNode
+
+class BoundCoreExtremaNode(BoundAxiomNode):
+    SM: BoundAxiomNode
+    Sm: BoundAxiomNode
+    sM: BoundAxiomNode
+    sm: BoundAxiomNode
+    smax: BoundAxiomNode
+    smin: BoundAxiomNode
+    umax: BoundAxiomNode
+    umin: BoundAxiomNode
+
+class BoundCoreIcmpNode(BoundAxiomNode):
+    XYGLE: BoundAxiomNode
+    XYGLe: BoundAxiomNode
+    XYGlE: BoundAxiomNode
+    XYGle: BoundAxiomNode
+    XYgLE: BoundAxiomNode
+    XYgLe: BoundAxiomNode
+    XYglE: BoundAxiomNode
+    XYgle: BoundAxiomNode
+    XyGLE: BoundAxiomNode
+    XyGLe: BoundAxiomNode
+    XyGlE: BoundAxiomNode
+    XyGle: BoundAxiomNode
+    XygLE: BoundAxiomNode
+    XygLe: BoundAxiomNode
+    XyglE: BoundAxiomNode
+    Xygle: BoundAxiomNode
+    e: BoundAxiomNode
+    f: BoundAxiomNode
+    ne: BoundAxiomNode
+    sg: BoundAxiomNode
+    sge: BoundAxiomNode
+    sl: BoundAxiomNode
+    sle: BoundAxiomNode
+    t: BoundAxiomNode
+    ug: BoundAxiomNode
+    uge: BoundAxiomNode
+    ul: BoundAxiomNode
+    ule: BoundAxiomNode
+    xYGLE: BoundAxiomNode
+    xYGLe: BoundAxiomNode
+    xYGlE: BoundAxiomNode
+    xYGle: BoundAxiomNode
+    xYgLE: BoundAxiomNode
+    xYgLe: BoundAxiomNode
+    xYglE: BoundAxiomNode
+    xYgle: BoundAxiomNode
+    xyGLE: BoundAxiomNode
+    xyGLe: BoundAxiomNode
+    xyGlE: BoundAxiomNode
+    xyGle: BoundAxiomNode
+    xygLE: BoundAxiomNode
+    xygLe: BoundAxiomNode
+    xyglE: BoundAxiomNode
+    xygle: BoundAxiomNode
+
+class BoundCoreModeNode(BoundAxiomNode):
+    US: BoundAxiomNode
+    Us: BoundAxiomNode
+    nsw: BoundAxiomNode
+    nusw: BoundAxiomNode
+    nuw: BoundAxiomNode
+    uS: BoundAxiomNode
+    us: BoundAxiomNode
+
+class BoundCoreNatNode(BoundAxiomNode):
+    add: BoundAxiomNode
+    mul: BoundAxiomNode
+    sub: BoundAxiomNode
+
+class BoundCoreNcmpNode(BoundAxiomNode):
+    GLE: BoundAxiomNode
+    GLe: BoundAxiomNode
+    GlE: BoundAxiomNode
+    Gle: BoundAxiomNode
+    e: BoundAxiomNode
+    f: BoundAxiomNode
+    g: BoundAxiomNode
+    gLE: BoundAxiomNode
+    gLe: BoundAxiomNode
+    ge: BoundAxiomNode
+    glE: BoundAxiomNode
+    gle: BoundAxiomNode
+    l: BoundAxiomNode
+    le: BoundAxiomNode
+    ne: BoundAxiomNode
+    t: BoundAxiomNode
+
+class BoundCorePeNode(BoundAxiomNode):
+    hlt: BoundAxiomNode
+    is_closed: BoundAxiomNode
+    run: BoundAxiomNode
+
+class BoundCoreShrNode(BoundAxiomNode):
+    a: BoundAxiomNode
+    l: BoundAxiomNode
+
+class BoundCoreTraitNode(BoundAxiomNode):
+    align: BoundAxiomNode
+    size: BoundAxiomNode
+
+class BoundCoreWrapNode(BoundAxiomNode):
+    add: BoundAxiomNode
+    mul: BoundAxiomNode
+    shl: BoundAxiomNode
+    sub: BoundAxiomNode
+
+class BoundCoreNode(BoundAxiomNode):
+    abs: BoundAxiomNode
+    bit1: BoundCoreBit1Node
+    bit2: BoundCoreBit2Node
+    bitcast: BoundAxiomNode
+    conv: BoundCoreConvNode
+    div: BoundCoreDivNode
+    extrema: BoundCoreExtremaNode
+    icmp: BoundCoreIcmpNode
+    idx: BoundAxiomNode
+    idx_unsafe: BoundAxiomNode
+    minus: BoundAxiomNode
+    mode: BoundCoreModeNode
+    nat: BoundCoreNatNode
+    ncmp: BoundCoreNcmpNode
+    pe: BoundCorePeNode
+    select: BoundAxiomNode
+    shr: BoundCoreShrNode
+    trait: BoundCoreTraitNode
+    wrap: BoundCoreWrapNode
+
+class BoundDemoNode(BoundAxiomNode):
+    const_idx: BoundAxiomNode
+
+class BoundDirectNode(BoundAxiomNode):
+    cps2ds: BoundAxiomNode
+    cps2ds_dep: BoundAxiomNode
+    cps2ds_phase: BoundAxiomNode
+    ds2cps_phase: BoundAxiomNode
+
+class BoundGpuNode(BoundAxiomNode):
+    ConstM: BoundAxiomNode
+    ConstPtr: BoundAxiomNode
+    DefaultStream: BoundAxiomNode
+    GlobalM: BoundAxiomNode
+    GlobalPtr: BoundAxiomNode
+    LocalM: BoundAxiomNode
+    LocalPtr: BoundAxiomNode
+    SharedM: BoundAxiomNode
+    SharedPtr: BoundAxiomNode
+    Stream: BoundAxiomNode
+    addr_space_const: BoundAxiomNode
+    addr_space_global: BoundAxiomNode
+    addr_space_local: BoundAxiomNode
+    addr_space_shared: BoundAxiomNode
+    alloc: BoundAxiomNode
+    alloc_async: BoundAxiomNode
+    alloc_copy: BoundAxiomNode
+    alloc_copy_async: BoundAxiomNode
+    copy_to_device: BoundAxiomNode
+    copy_to_device_async: BoundAxiomNode
+    copy_to_host: BoundAxiomNode
+    copy_to_host_async: BoundAxiomNode
+    free: BoundAxiomNode
+    free_async: BoundAxiomNode
+    launch: BoundAxiomNode
+    launch_with_smem: BoundAxiomNode
+    malloc2gpualloc_repl: BoundAxiomNode
+    stream_deinit: BoundAxiomNode
+    stream_init: BoundAxiomNode
+    stream_sync: BoundAxiomNode
+    sync_work_items: BoundAxiomNode
+    synced_scope: BoundAxiomNode
+
+class BoundMathArithNode(BoundAxiomNode):
+    add: BoundAxiomNode
+    div: BoundAxiomNode
+    mul: BoundAxiomNode
+    rem: BoundAxiomNode
+    sub: BoundAxiomNode
+
+class BoundMathCmpNode(BoundAxiomNode):
+    UGLE: BoundAxiomNode
+    UGLe: BoundAxiomNode
+    UGlE: BoundAxiomNode
+    UGle: BoundAxiomNode
+    UgLE: BoundAxiomNode
+    UgLe: BoundAxiomNode
+    UglE: BoundAxiomNode
+    Ugle: BoundAxiomNode
+    e: BoundAxiomNode
+    f: BoundAxiomNode
+    g: BoundAxiomNode
+    ge: BoundAxiomNode
+    l: BoundAxiomNode
+    le: BoundAxiomNode
+    ne: BoundAxiomNode
+    o: BoundAxiomNode
+    t: BoundAxiomNode
+    u: BoundAxiomNode
+    uGLE: BoundAxiomNode
+    uGLe: BoundAxiomNode
+    uGlE: BoundAxiomNode
+    uGle: BoundAxiomNode
+    ue: BoundAxiomNode
+    ug: BoundAxiomNode
+    ugLE: BoundAxiomNode
+    ugLe: BoundAxiomNode
+    uge: BoundAxiomNode
+    uglE: BoundAxiomNode
+    ugle: BoundAxiomNode
+    ul: BoundAxiomNode
+    ule: BoundAxiomNode
+    une: BoundAxiomNode
+
+class BoundMathConvNode(BoundAxiomNode):
+    f2f: BoundAxiomNode
+    f2s: BoundAxiomNode
+    f2u: BoundAxiomNode
+    s2f: BoundAxiomNode
+    u2f: BoundAxiomNode
+
+class BoundMathErNode(BoundAxiomNode):
+    f: BoundAxiomNode
+    fc: BoundAxiomNode
+
+class BoundMathExpNode(BoundAxiomNode):
+    LBB: BoundAxiomNode
+    LBb: BoundAxiomNode
+    LbB: BoundAxiomNode
+    Lbb: BoundAxiomNode
+    bin: BoundAxiomNode
+    dec: BoundAxiomNode
+    exp: BoundAxiomNode
+    exp10: BoundAxiomNode
+    exp2: BoundAxiomNode
+    lBB: BoundAxiomNode
+    lBb: BoundAxiomNode
+    lbB: BoundAxiomNode
+    lbb: BoundAxiomNode
+    log: BoundAxiomNode
+    log10: BoundAxiomNode
+    log2: BoundAxiomNode
+
+class BoundMathExtremaNode(BoundAxiomNode):
+    IM: BoundAxiomNode
+    Im: BoundAxiomNode
+    fmax: BoundAxiomNode
+    fmin: BoundAxiomNode
+    iM: BoundAxiomNode
+    ieee754max: BoundAxiomNode
+    ieee754min: BoundAxiomNode
+    im: BoundAxiomNode
+
+class BoundMathGammaNode(BoundAxiomNode):
+    l: BoundAxiomNode
+    t: BoundAxiomNode
+
+class BoundMathRoundNode(BoundAxiomNode):
+    c: BoundAxiomNode
+    f: BoundAxiomNode
+    r: BoundAxiomNode
+    t: BoundAxiomNode
+
+class BoundMathRtNode(BoundAxiomNode):
+    cb: BoundAxiomNode
+    sq: BoundAxiomNode
+
+class BoundMathTriNode(BoundAxiomNode):
+    AHFF: BoundAxiomNode
+    AHFf: BoundAxiomNode
+    AHfF: BoundAxiomNode
+    AHff: BoundAxiomNode
+    AhFF: BoundAxiomNode
+    AhFf: BoundAxiomNode
+    AhfF: BoundAxiomNode
+    Ahff: BoundAxiomNode
+    a: BoundAxiomNode
+    aHFF: BoundAxiomNode
+    aHFf: BoundAxiomNode
+    aHfF: BoundAxiomNode
+    aHff: BoundAxiomNode
+    acos: BoundAxiomNode
+    acosh: BoundAxiomNode
+    ahFF: BoundAxiomNode
+    ahFf: BoundAxiomNode
+    ahfF: BoundAxiomNode
+    ahff: BoundAxiomNode
+    asin: BoundAxiomNode
+    asinh: BoundAxiomNode
+    atan: BoundAxiomNode
+    atanh: BoundAxiomNode
+    cos: BoundAxiomNode
+    cosh: BoundAxiomNode
+    h: BoundAxiomNode
+    sin: BoundAxiomNode
+    sinh: BoundAxiomNode
+    tan: BoundAxiomNode
+    tanh: BoundAxiomNode
+
+class BoundMathNode(BoundAxiomNode):
+    AMDFP24: BoundAxiomNode
+    BF16: BoundAxiomNode
+    F: BoundAxiomNode
+    F16: BoundAxiomNode
+    F32: BoundAxiomNode
+    F64: BoundAxiomNode
+    NVTF32: BoundAxiomNode
+    PXR24: BoundAxiomNode
+    abs: BoundAxiomNode
+    amdfp24: BoundAxiomNode
+    arith: BoundMathArithNode
+    bf16: BoundAxiomNode
+    cmp: BoundMathCmpNode
+    conv: BoundMathConvNode
+    er: BoundMathErNode
+    exp: BoundMathExpNode
+    extrema: BoundMathExtremaNode
+    f16: BoundAxiomNode
+    f32: BoundAxiomNode
+    f64: BoundAxiomNode
+    gamma: BoundMathGammaNode
+    minus: BoundAxiomNode
+    nvtf32: BoundAxiomNode
+    pow: BoundAxiomNode
+    pxr24: BoundAxiomNode
+    round: BoundMathRoundNode
+    rrt: BoundAxiomNode
+    rt: BoundMathRtNode
+    sgn: BoundAxiomNode
+    slf: BoundAxiomNode
+    tri: BoundMathTriNode
+
+class BoundMatrixNode(BoundAxiomNode):
+    Mat: BoundAxiomNode
+    constMat: BoundAxiomNode
+    init: BoundAxiomNode
+    insert: BoundAxiomNode
+    lower_matrix_high_level_map_reduce: BoundAxiomNode
+    lower_matrix_low_level: BoundAxiomNode
+    lower_matrix_medium_level: BoundAxiomNode
+    map_reduce: BoundAxiomNode
+    prod: BoundAxiomNode
+    read: BoundAxiomNode
+    shape: BoundAxiomNode
+    sum: BoundAxiomNode
+    transpose: BoundAxiomNode
+
+class BoundMemNode(BoundAxiomNode):
+    M: BoundAxiomNode
+    Ptr: BoundAxiomNode
+    Ptr0: BoundAxiomNode
+    add_mem_phase: BoundAxiomNode
+    alloc: BoundAxiomNode
+    alloc2malloc_repl: BoundAxiomNode
+    copy_prop_pass: BoundAxiomNode
+    free: BoundAxiomNode
+    lea: BoundAxiomNode
+    load: BoundAxiomNode
+    malloc: BoundAxiomNode
+    mslot: BoundAxiomNode
+    remem: BoundAxiomNode
+    remem_repl: BoundAxiomNode
+    reshape_arg: BoundAxiomNode
+    reshape_flat: BoundAxiomNode
+    reshape_mode: BoundAxiomNode
+    reshape_pass: BoundAxiomNode
+    slot: BoundAxiomNode
+    ssa_pass: BoundAxiomNode
+    store: BoundAxiomNode
+
+class BoundOrdContainsNode(BoundAxiomNode):
+    map: BoundAxiomNode
+    set: BoundAxiomNode
+
+class BoundOrdInitNode(BoundAxiomNode):
+    map: BoundAxiomNode
+    set: BoundAxiomNode
+
+class BoundOrdInsertNode(BoundAxiomNode):
+    map: BoundAxiomNode
+    set: BoundAxiomNode
+
+class BoundOrdSizeNode(BoundAxiomNode):
+    map: BoundAxiomNode
+    set: BoundAxiomNode
+
+class BoundOrdNode(BoundAxiomNode):
+    Key: BoundAxiomNode
+    Map: BoundAxiomNode
+    Set: BoundAxiomNode
+    contains: BoundOrdContainsNode
+    create_map: BoundAxiomNode
+    create_set: BoundAxiomNode
+    get: BoundAxiomNode
+    init: BoundOrdInitNode
+    insert: BoundOrdInsertNode
+    is_empty_map: BoundAxiomNode
+    is_empty_set: BoundAxiomNode
+    size: BoundOrdSizeNode
+
+class BoundReflyDbgNode(BoundAxiomNode):
+    perm: BoundAxiomNode
+    tmp: BoundAxiomNode
+
+class BoundReflyEquivNode(BoundAxiomNode):
+    AE: BoundAxiomNode
+    Ae: BoundAxiomNode
+    aE: BoundAxiomNode
+    ae: BoundAxiomNode
+    alpha_eq: BoundAxiomNode
+    alpha_ne: BoundAxiomNode
+    struc_eq: BoundAxiomNode
+    struc_ne: BoundAxiomNode
+
+class BoundReflyNode(BoundAxiomNode):
+    Code: BoundAxiomNode
+    check: BoundAxiomNode
+    dbg: BoundReflyDbgNode
+    debug: BoundAxiomNode
+    equiv: BoundReflyEquivNode
+    error: BoundAxiomNode
+    gid: BoundAxiomNode
+    info: BoundAxiomNode
+    refine: BoundAxiomNode
+    reflect: BoundAxiomNode
+    reify: BoundAxiomNode
+    remove_dbg_repl: BoundAxiomNode
+    type: BoundAxiomNode
+    verbose: BoundAxiomNode
+    warn: BoundAxiomNode
+
+class BoundRegexClsNode(BoundAxiomNode):
+    D: BoundAxiomNode
+    S: BoundAxiomNode
+    W: BoundAxiomNode
+    d: BoundAxiomNode
+    s: BoundAxiomNode
+    w: BoundAxiomNode
+
+class BoundRegexQuantNode(BoundAxiomNode):
+    optional: BoundAxiomNode
+    plus: BoundAxiomNode
+    star: BoundAxiomNode
+
+class BoundRegexNode(BoundAxiomNode):
+    any: BoundAxiomNode
+    cls: BoundRegexClsNode
+    conj: BoundAxiomNode
+    disj: BoundAxiomNode
+    empty: BoundAxiomNode
+    lit: BoundAxiomNode
+    lower_regex: BoundAxiomNode
+    neg_lookahead: BoundAxiomNode
+    not_: BoundAxiomNode
+    quant: BoundRegexQuantNode
+    range: BoundAxiomNode
+
+class BoundTensorNode(BoundAxiomNode):
+    broadcast_in_dim: BoundAxiomNode
+    dot_2d_00: BoundAxiomNode
+    dot_2d_01: BoundAxiomNode
+    dot_2d_10: BoundAxiomNode
+    dot_2d_11: BoundAxiomNode
+    dot_general: BoundAxiomNode
+    map: BoundAxiomNode
+    map_reduce: BoundAxiomNode
+    reduce: BoundAxiomNode
+    reshape: BoundAxiomNode
+    slice: BoundAxiomNode
+    transpose: BoundAxiomNode
+
+class BoundTupleNode(BoundAxiomNode):
+    append: BoundAxiomNode
+    cat: BoundAxiomNode
+    contains: BoundAxiomNode
+    prepend: BoundAxiomNode
+    typecat: BoundAxiomNode
+    zip: BoundAxiomNode
+
+class BoundVecFoldNode(BoundAxiomNode):
+    l: BoundAxiomNode
+    r: BoundAxiomNode
+
+class BoundVecScanNode(BoundAxiomNode):
+    exists: BoundAxiomNode
+    for_all: BoundAxiomNode
+
+class BoundVecNode(BoundAxiomNode):
+    cat: BoundAxiomNode
+    diff: BoundAxiomNode
+    first: BoundAxiomNode
+    fold: BoundVecFoldNode
+    is_unique: BoundAxiomNode
+    last: BoundAxiomNode
+    len: BoundAxiomNode
+    scan: BoundVecScanNode
+    zip: BoundAxiomNode
+
 AXIOM_NAMESPACE_NAMES: tuple[str, ...]
 
 def list_axioms() -> dict[str, tuple[str, ...]]: ...
+
+class BoundNamespaces:
+    Affine: BoundAffineNode
+    Autodiff: BoundAutodiffNode
+    Clos: BoundClosNode
+    Compile: BoundCompileNode
+    Core: BoundCoreNode
+    Demo: BoundDemoNode
+    Direct: BoundDirectNode
+    Gpu: BoundGpuNode
+    Math: BoundMathNode
+    Matrix: BoundMatrixNode
+    Mem: BoundMemNode
+    Opt: BoundAxiomNode
+    Ord: BoundOrdNode
+    Refly: BoundReflyNode
+    Regex: BoundRegexNode
+    Tensor: BoundTensorNode
+    Tuple: BoundTupleNode
+    Vec: BoundVecNode
+
+def bind(world: World) -> BoundNamespaces: ...
 
 Affine: AffineNode
 Autodiff: AutodiffNode

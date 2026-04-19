@@ -12,6 +12,22 @@ namespace py = pybind11;
 
 namespace mim {
 
+namespace {
+
+const Def* resolve_callee(World& w, const py::object& callee_obj) {
+    if (py::isinstance<py::str>(callee_obj))
+        return w.sym2annex(w.sym(callee_obj.cast<std::string_view>()));
+    return callee_obj.cast<const Def*>();
+}
+
+std::vector<const Def*> stage_to_defs(const py::handle& stage) {
+    if (py::isinstance<py::tuple>(stage) || py::isinstance<py::list>(stage))
+        return stage.cast<std::vector<const Def*>>();
+    return {stage.cast<const Def*>()};
+}
+
+} // namespace
+
 void init_world(py::module_& m) {
     py::class_<mim::World, std::unique_ptr<mim::World, py::nodelete>>(m, "World")
         .def("write", py::overload_cast<>(&mim::World::write))
@@ -21,6 +37,11 @@ void init_world(py::module_& m) {
         })
         .def("dump", py::overload_cast<>(&mim::World::dump))
         .def("annex", &mim::World::sym2annex, py::return_value_policy::reference_internal)
+        .def("annex_name",
+            [](mim::World& w, const std::string& name) {
+                return w.sym2annex(w.sym(name));
+            },
+            py::return_value_policy::reference_internal)
         .def("top_nat", &mim::World::top_nat, py::return_value_policy::reference_internal)
         .def("type_bool", &mim::World::type_bool, py::return_value_policy::reference_internal)
         .def("type_i8", &mim::World::type_i8, py::return_value_policy::reference_internal)
@@ -58,6 +79,20 @@ void init_world(py::module_& m) {
         .def("app",
             [](mim::World& w, const mim::Def* callee, std::vector<const Def*> args) {
                 return w.app(callee, Defs(args));
+            },
+            py::return_value_policy::reference_internal)
+        .def("call",
+            [](mim::World& w, py::object callee_obj, py::args stages, py::kwargs kwargs) {
+                bool implicit = false;
+                if (kwargs.contains("implicit"))
+                    implicit = kwargs["implicit"].cast<bool>();
+
+                const Def* target = resolve_callee(w, callee_obj);
+                for (const py::handle& stage : stages) {
+                    auto defs = stage_to_defs(stage);
+                    target = implicit ? w.implicit_app(target, Defs(defs)) : w.app(target, Defs(defs));
+                }
+                return target;
             },
             py::return_value_policy::reference_internal)
         .def("tuple",

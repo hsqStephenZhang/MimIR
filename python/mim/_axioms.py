@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Mapping, Sequence, TypeAlias
+from typing import Mapping, Sequence, TypeAlias, cast
 
 from ._axioms_generated import AXIOM_NAMESPACE_NAMES, AXIOM_TREES
-from ._mim_core import Def, World # type: ignore
+from ._mim_core import Def, World
 
 AxiomStage: TypeAlias = Def | Sequence[Def]
 
@@ -34,13 +34,34 @@ class AxiomNode:
         return self._symbol
 
 
+class BoundAxiomNode:
+    __slots__ = ("_world", "_node")
+
+    def __init__(self, world: World, node: AxiomNode) -> None:
+        self._world = world
+        self._node = node
+
+    def __call__(self, *stages: AxiomStage, implicit: bool = False) -> Def:
+        return self._node(self._world, *stages, implicit=implicit)
+
+    def __getattr__(self, name: str) -> "BoundAxiomNode":
+        return BoundAxiomNode(self._world, getattr(self._node, name))
+
+    def __dir__(self) -> list[str]:
+        return dir(self._node)
+
+    @property
+    def symbol(self) -> str | None:
+        return self._node.symbol
+
+
 def _instantiate(tree: Mapping[str, object]) -> AxiomNode:
     children: dict[str, AxiomNode] = {}
     for name, val in tree.items():
         if isinstance(val, str):
             children[name] = AxiomNode(val, {})
         elif isinstance(val, dict):
-            children[name] = _instantiate(val)
+            children[name] = _instantiate(cast(Mapping[str, object], val))
     return AxiomNode(None, children)
 
 
@@ -50,7 +71,7 @@ def _flatten_symbols(tree: Mapping[str, object]) -> list[str]:
         if isinstance(val, str):
             result.append(val)
         elif isinstance(val, dict):
-            result.extend(_flatten_symbols(val))
+            result.extend(_flatten_symbols(cast(Mapping[str, object], val)))
     return result
 
 
@@ -62,4 +83,22 @@ for _plugin, _tree in AXIOM_TREES.items():
     globals()["".join(part.capitalize() for part in _plugin.split("_"))] = _instantiate(_tree)
 
 
-__all__ = ["AxiomNode", "AxiomStage", "AXIOM_NAMESPACE_NAMES", "list_axioms", *AXIOM_NAMESPACE_NAMES]
+class BoundNamespaces:
+    def __init__(self, world: World) -> None:
+        for name in AXIOM_NAMESPACE_NAMES:
+            setattr(self, name, BoundAxiomNode(world, globals()[name]))
+
+
+def bind(world: World) -> BoundNamespaces:
+    return BoundNamespaces(world)
+
+__all__ = [
+    "AxiomNode",
+    "AxiomStage",
+    "AXIOM_NAMESPACE_NAMES",
+    "BoundAxiomNode",
+    "BoundNamespaces",
+    "bind",
+    "list_axioms",
+    *AXIOM_NAMESPACE_NAMES,
+]

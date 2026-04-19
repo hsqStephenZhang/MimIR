@@ -148,8 +148,13 @@ def main() -> None:
 
         return "".join(sanitize(part) for part in parts) + "Node"
 
+    def bound_class_name(parts: list[str]) -> str:
+        return "Bound" + class_name(parts)
+
     visited: set[str] = set()  # recursion guard
     emitted: set[str] = set()  # classes actually written
+    bound_visited: set[str] = set()
+    bound_emitted: set[str] = set()
     stub_lines = [
         "from __future__ import annotations",
         "",
@@ -168,6 +173,12 @@ def main() -> None:
         "    def symbol(self) -> str | None: ...",
         "    def __call__(self, world: World, *stages: AxiomStage, implicit: bool = False) -> Def: ...",
         "    def __getattr__(self, name: str) -> AxiomNode: ...",
+        "",
+        "class BoundAxiomNode:",
+        "    @property",
+        "    def symbol(self) -> str | None: ...",
+        "    def __call__(self, *stages: AxiomStage, implicit: bool = False) -> Def: ...",
+        "    def __getattr__(self, name: str) -> BoundAxiomNode: ...",
         "",
     ]
 
@@ -199,12 +210,54 @@ def main() -> None:
     for plugin, tree in sorted(axiom_trees.items()):
         emit_node([public_plugin_name(plugin)], tree)
 
+    def emit_bound_node(parts: list[str], tree: dict[str, object]) -> None:
+        name = bound_class_name(parts)
+        if name in bound_visited:
+            return
+        bound_visited.add(name)
+
+        for child_name, child_tree in dict_children(tree):
+            emit_bound_node(parts + [child_name], child_tree)
+
+        children = all_children(tree)
+        if not children:
+            return
+
+        bound_emitted.add(name)
+        stub_lines.append(f"class {name}(BoundAxiomNode):")
+        for child_name, child_val in children:
+            if isinstance(child_val, dict) and all_children(child_val):
+                child_type = bound_class_name(parts + [child_name])
+            else:
+                child_type = "BoundAxiomNode"
+            stub_lines.append(f"    {child_name}: {child_type}")
+        stub_lines.append("")
+
+    for plugin, tree in sorted(axiom_trees.items()):
+        emit_bound_node([public_plugin_name(plugin)], tree)
+
     stub_lines.extend(
         [
             "AXIOM_NAMESPACE_NAMES: tuple[str, ...]",
             "",
             "",
             "def list_axioms() -> dict[str, tuple[str, ...]]: ...",
+            "",
+            "",
+            "class BoundNamespaces:",
+        ]
+    )
+
+    for plugin in sorted(axiom_trees):
+        public = public_plugin_name(plugin)
+        bound_name = bound_class_name([public])
+        stub_lines.append(f"    {public}: {bound_name if bound_name in bound_emitted else 'BoundAxiomNode'}")
+
+    stub_lines.extend(
+        [
+            "",
+            "",
+            "def bind(world: World) -> BoundNamespaces: ...",
             "",
             "",
         ]
