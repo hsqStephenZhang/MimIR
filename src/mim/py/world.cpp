@@ -107,15 +107,12 @@ void init_world(py::module_& m) {
         .def(
             "mut_fun2",
             [](mim::World& w, std::vector<mim::Def*> dom, std::vector<mim::Def*> codom) {
-                auto d = dom;
                 return w.mut_fun(mim::Defs(dom), mim::Defs(codom));
             },
             py::return_value_policy::reference_internal)
         .def(
             "mut_fun",
             [](mim::World& w, const mim::Def* dom, std::vector<mim::Def*> codom) {
-                auto d = dom;
-
                 //std::cout << "called mut_fun with domain: " << d << std::endl;
                 return w.mut_fun(dom, codom);
             },
