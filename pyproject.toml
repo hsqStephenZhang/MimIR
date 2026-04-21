@@ -8,20 +8,25 @@ version = "0.1.0"
 description = "Python bindings for MimIR"
 readme = "docs/README.md"
 requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+torch = ["torch>=2.0"]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "torch>=2.0",
 ]
 
 [tool.scikit-build]
 cmake.source-dir = "."
 build-dir = "build/{wheel_tag}"
-wheel.packages = ["python/mim"]
+wheel.packages = ["python/mim", "torch_backend"]
 
 [tool.scikit-build.cmake.define]
 BUILD_SHARED_LIBS = "OFF"
 MIM_BUILD_PYTHON = "ON"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "torch_backend/tests"]
