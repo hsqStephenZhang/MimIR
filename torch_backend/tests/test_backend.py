@@ -173,6 +173,142 @@ class TestComposedOps:
 
 
 @_requires_clang()
+class TestActivations:
+    def test_relu(self):
+        a = torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0])
+        result = _compile(torch.relu, a)
+        torch.testing.assert_close(result, torch.relu(a))
+
+    def test_tanh(self):
+        a = torch.randn(8)
+        result = _compile(torch.tanh, a)
+        torch.testing.assert_close(result, torch.tanh(a))
+
+    def test_sigmoid(self):
+        a = torch.randn(8)
+        result = _compile(torch.sigmoid, a)
+        torch.testing.assert_close(result, torch.sigmoid(a), atol=1e-6, rtol=1e-6)
+
+    def test_sqrt(self):
+        a = torch.tensor([1.0, 4.0, 9.0, 16.0])
+        result = _compile(torch.sqrt, a)
+        torch.testing.assert_close(result, torch.sqrt(a))
+
+    def test_relu_2d(self):
+        a = torch.randn(4, 4)
+        result = _compile(torch.relu, a)
+        torch.testing.assert_close(result, torch.relu(a))
+
+
+@_requires_clang()
+class TestScalarOps:
+    def test_add_scalar(self):
+        def f(x):
+            return x + 2.0
+        a = torch.tensor([1.0, 2.0, 3.0])
+        result = _compile(f, a)
+        torch.testing.assert_close(result, f(a))
+
+    def test_mul_scalar(self):
+        def f(x):
+            return x * 0.5
+        a = torch.tensor([2.0, 4.0, 6.0])
+        result = _compile(f, a)
+        torch.testing.assert_close(result, f(a))
+
+    def test_div_scalar(self):
+        def f(x):
+            return x / 4.0
+        a = torch.tensor([4.0, 8.0, 12.0])
+        result = _compile(f, a)
+        torch.testing.assert_close(result, f(a))
+
+
+@_requires_clang()
+class TestShapeOps:
+    def test_view(self):
+        def f(x):
+            return x.view(2, 4)
+        a = torch.randn(8)
+        result = _compile(f, a)
+        torch.testing.assert_close(result, f(a))
+
+    def test_reshape(self):
+        def f(x):
+            return x.reshape(4)
+        a = torch.randn(2, 2)
+        result = _compile(f, a)
+        torch.testing.assert_close(result, f(a))
+
+    def test_unsqueeze_squeeze(self):
+        def f(x):
+            return x.unsqueeze(0).squeeze(0)
+        a = torch.randn(4)
+        result = _compile(f, a)
+        torch.testing.assert_close(result, f(a))
+
+
+@_requires_clang()
+class TestTranspose:
+    def test_t(self):
+        a = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # [2, 3]
+        result = _compile(torch.t, a)
+        torch.testing.assert_close(result, torch.t(a))
+
+    def test_t_then_mm(self):
+        def f(x, w):
+            return torch.mm(x, w.t())
+        x = torch.randn(3, 4)
+        w = torch.randn(5, 4)
+        result = _compile(f, x, w)
+        torch.testing.assert_close(result, f(x, w), atol=1e-5, rtol=1e-5)
+
+
+@_requires_clang()
+class TestAddmm:
+    def test_addmm_basic(self):
+        def f(bias, x, w):
+            return torch.addmm(bias, x, w)
+        bias = torch.randn(3)
+        x = torch.randn(2, 4)
+        w = torch.randn(4, 3)
+        result = _compile(f, bias, x, w)
+        torch.testing.assert_close(result, f(bias, x, w), atol=1e-5, rtol=1e-5)
+
+
+@_requires_clang()
+class TestMLP:
+    def test_nn_linear(self):
+        """nn.Linear with bias — exercises get_attr + addmm + t."""
+        import torch.nn as nn
+        model = nn.Linear(4, 3)
+        x = torch.randn(2, 4)
+        compiled = torch.compile(model, backend="mimir")
+        result = compiled(x)
+        torch.testing.assert_close(result, model(x), atol=1e-5, rtol=1e-5)
+
+    def test_two_layer_mlp(self):
+        """Two-layer MLP: Linear → ReLU → Linear."""
+        import torch.nn as nn
+        torch._dynamo.reset()
+
+        class MLP(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc1 = nn.Linear(4, 8)
+                self.fc2 = nn.Linear(8, 2)
+
+            def forward(self, x):
+                return self.fc2(torch.relu(self.fc1(x)))
+
+        model = MLP()
+        x = torch.randn(3, 4)
+        compiled = torch.compile(model, backend="mimir")
+        result = compiled(x)
+        torch.testing.assert_close(result, model(x), atol=1e-4, rtol=1e-4)
+
+
+@_requires_clang()
 class TestFallback:
     def test_unsupported_op_falls_back(self):
         """Unsupported ops should fall back to eager without error."""

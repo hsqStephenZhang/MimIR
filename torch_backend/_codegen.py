@@ -5,18 +5,17 @@ Calling convention
 The externalized MimIR function has the signature (after MimIR's CPS→direct
 lowering and Mem-token elimination):
 
-    void mimir_compute(T0* in0, T1* in1, ..., To0* out0, ...)
+    void mimir_compute(T0* in0, T1* in1, ..., Tc0* const0, ..., To0* out0, ...)
 
-All inputs and outputs are flat, row-major arrays of the appropriate C type.
+All inputs, constants (get_attr), and outputs are flat, row-major arrays.
 Output buffers are pre-allocated by the Python caller.
 
-Design limits (first version)
-------------------------------
+Design limits
+-------------
 * Only float32 tensors.
-* Only ops in _ELEMENTWISE_OPS and aten.mm.
 * Elementwise loops are unrolled at IR build time (total element count ≤
-  _UNROLL_LIMIT).  aten.mm uses %matrix.prod (loop limit is output M×N only).
-  Large tensors raise UnsupportedGraph.
+  _UNROLL_LIMIT).  aten.mm / aten.addmm use %matrix.prod (limit is output
+  M×N only).  Large tensors raise UnsupportedGraph and fall back to eager.
 * Multi-output graphs are supported; intermediate buffers are stack-allocated
   via %mem.alloc.
 """
@@ -25,6 +24,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import struct
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -40,11 +40,15 @@ log = logging.getLogger(__name__)
 # Max elements we'll unroll in one loop.
 _UNROLL_LIMIT = 8192
 
-# ATen target → MimIR float arithmetic axiom symbol.
+# ATen target → MimIR float binary axiom symbol.
 _ELEMENTWISE_OPS: dict[Any, str] = {
     torch.ops.aten.add.Tensor: "%math.arith.add",
     torch.ops.aten.sub.Tensor: "%math.arith.sub",
     torch.ops.aten.mul.Tensor: "%math.arith.mul",
+    torch.ops.aten.div.Tensor: "%math.arith.div",
+    torch.ops.aten.pow.Tensor_Tensor: "%math.pow",
+    torch.ops.aten.maximum.default: "%math.extrema.fmax",
+    torch.ops.aten.minimum.default: "%math.extrema.fmin",
 }
 
 # ATen target → MimIR float unary axiom symbol.
@@ -52,9 +56,43 @@ _UNARY_OPS: dict[Any, str] = {
     torch.ops.aten.neg.default: "%math.minus",
     torch.ops.aten.abs.default: "%math.abs",
     torch.ops.aten.exp.default: "%math.exp.exp",
+    torch.ops.aten.exp2.default: "%math.exp.exp2",
     torch.ops.aten.log.default: "%math.exp.log",
+    torch.ops.aten.log2.default: "%math.exp.log2",
     torch.ops.aten.sin.default: "%math.tri.sin",
     torch.ops.aten.cos.default: "%math.tri.cos",
+    torch.ops.aten.tan.default: "%math.tri.tan",
+    torch.ops.aten.tanh.default: "%math.tri.tanh",
+    torch.ops.aten.sigmoid.default: "%math.slf",
+    torch.ops.aten.sqrt.default: "%math.rt.sq",
+    torch.ops.aten.rsqrt.default: "%math.rrt",
+    torch.ops.aten.erf.default: "%math.er.f",
+    torch.ops.aten.floor.default: "%math.round.f",
+    torch.ops.aten.ceil.default: "%math.round.c",
+    torch.ops.aten.round.default: "%math.round.r",
+    torch.ops.aten.trunc.default: "%math.round.t",
+}
+
+# ATen target → MimIR float binary axiom symbol (tensor op scalar).
+_SCALAR_OPS: dict[Any, str] = {
+    torch.ops.aten.add.Scalar: "%math.arith.add",
+    torch.ops.aten.sub.Scalar: "%math.arith.sub",
+    torch.ops.aten.mul.Scalar: "%math.arith.mul",
+    torch.ops.aten.div.Scalar: "%math.arith.div",
+    torch.ops.aten.pow.Tensor_Scalar: "%math.pow",
+}
+
+# Ops that are pure shape changes — the flat data layout is unchanged.
+_NOOP_OPS: set[Any] = {
+    torch.ops.aten.view.default,
+    torch.ops.aten.reshape.default,
+    torch.ops.aten.contiguous.default,
+    torch.ops.aten.clone.default,
+    torch.ops.aten.squeeze.default,
+    torch.ops.aten.squeeze.dim,
+    torch.ops.aten.squeeze.dims,
+    torch.ops.aten.unsqueeze.default,
+    torch.ops.aten.flatten.using_ints,
 }
 
 
@@ -93,9 +131,12 @@ class GraphCodegen:
 
     def _zero_lit(self, dtype: torch.dtype) -> _core.Def:
         if dtype == torch.float32:
-            # 0.0f as IEEE-754 bits = 0
             return self.w.lit(self._f32_t, 0)
         raise UnsupportedGraph(f"Unsupported dtype: {dtype}")
+
+    def _float_lit(self, val: float) -> _core.Def:
+        bits = struct.unpack("I", struct.pack("f", float(val)))[0]
+        return self.w.lit(self._f32_t, bits)
 
     def _mat_desc(self, shape: tuple[int, ...], dtype: torch.dtype) -> _core.Def:
         """(n, S, T) descriptor tuple used as stage arg for %matrix.* ops."""
@@ -112,6 +153,9 @@ class GraphCodegen:
 
     def _placeholders(self) -> list[fx.Node]:
         return [n for n in self.gm.graph.nodes if n.op == "placeholder"]
+
+    def _get_attr_nodes(self) -> list[fx.Node]:
+        return [n for n in self.gm.graph.nodes if n.op == "get_attr"]
 
     def _output_args(self) -> list[fx.Node]:
         for n in self.gm.graph.nodes:
@@ -141,6 +185,15 @@ class GraphCodegen:
             n *= s
         return n
 
+    def _resolve_get_attr(self, node: fx.Node) -> torch.Tensor:
+        parts = node.target.split(".")
+        obj = self.gm
+        for part in parts:
+            obj = getattr(obj, part)
+        if not isinstance(obj, torch.Tensor):
+            raise UnsupportedGraph(f"get_attr {node.target!r} is not a tensor")
+        return obj
+
     # ------------------------------------------------------------------
     # Main compilation entry
     # ------------------------------------------------------------------
@@ -156,6 +209,7 @@ class GraphCodegen:
     def _build_mimir_fn(self) -> _core.Lam:
         w = self.w
         placeholders = self._placeholders()
+        get_attr_nodes = self._get_attr_nodes()
         output_nodes = self._output_args()
 
         # Use only tensor inputs; dynamo may pass SymInts when recompiling with
@@ -164,17 +218,25 @@ class GraphCodegen:
         in_dtypes = [t.dtype for t in tensor_inputs]
         out_dtypes = [self._node_dtype(n) for n in output_nodes]
 
+        # Resolve constant tensors from get_attr nodes.
+        self._const_tensors: list[torch.Tensor] = [
+            self._resolve_get_attr(n) for n in get_attr_nodes
+        ]
+        const_dtypes = [t.dtype for t in self._const_tensors]
+
         # Validate dtypes before computing shapes for clearer error messages.
         in_ptr_types = [self._ptr_type(d) for d in in_dtypes]
+        const_ptr_types = [self._ptr_type(d) for d in const_dtypes]
         out_ptr_types = [self._ptr_type(d) for d in out_dtypes]
 
         out_shapes = [self._node_shape(n) for n in output_nodes]
 
-        # Signature: (mem, *in_ptrs, *out_ptrs) → (mem,)
+        # Signature: (mem, *in_ptrs, *const_ptrs, *out_ptrs) → (mem,)
         #
         # MimIR's LLVM backend eliminates Mem tokens and applies CPS→direct
-        # conversion, producing:  void fn(T0* in0, ..., To0* out0, ...)
-        dom_types = [self._mem_t] + in_ptr_types + out_ptr_types
+        # conversion, producing:
+        #   void fn(T0* in0, ..., Tc0* const0, ..., To0* out0, ...)
+        dom_types = [self._mem_t] + in_ptr_types + const_ptr_types + out_ptr_types
         fn = w.mut_fun2(dom_types, [self._mem_t])
         fn_args = fn.var().proj(0)   # input bundle
         fn_ret = fn.var().proj(1)    # return continuation
@@ -182,20 +244,26 @@ class GraphCodegen:
         self._mem: _core.Def = fn_args.proj(0)
         self._fn_ret = fn_ret
 
-        # Bind placeholders → input pointers
         self._defs: dict[str, _core.Def] = {}
+
+        # Bind placeholders → input pointers
         for i, ph in enumerate(placeholders):
             self._defs[ph.name] = fn_args.proj(1 + i)
 
-        # Pre-allocated output pointers from caller
+        # Bind get_attr nodes → constant pointers
         n_in = len(in_ptr_types)
+        for i, ga in enumerate(get_attr_nodes):
+            self._defs[ga.name] = fn_args.proj(1 + n_in + i)
+
+        # Pre-allocated output pointers from caller
+        n_in_const = n_in + len(const_ptr_types)
         self._out_ptrs: list[_core.Def] = [
-            fn_args.proj(1 + n_in + i) for i in range(len(out_ptr_types))
+            fn_args.proj(1 + n_in_const + i) for i in range(len(out_ptr_types))
         ]
 
         # Walk the graph
         for node in self.gm.graph.nodes:
-            if node.op == "placeholder":
+            if node.op in ("placeholder", "get_attr"):
                 continue
             if node.op == "output":
                 break
@@ -259,11 +327,68 @@ class GraphCodegen:
                 self._store(self._lea(out_ptr, idx), result)
             self._defs[node.name] = out_ptr
 
+        elif target in _SCALAR_OPS:
+            if n > _UNROLL_LIMIT:
+                raise UnsupportedGraph(
+                    f"{target}: {n} elements exceeds unroll limit {_UNROLL_LIMIT}"
+                )
+            op_sym = _SCALAR_OPS[target]
+            a_ptr = self._arg_ptr(node, 0)
+            b_lit = self._float_lit(float(node.args[1]))
+            out_ptr = self._alloc_temp(shape, dtype)
+            for i in range(n):
+                idx = self.w.lit_nat(i)
+                a_val = self._load(self._lea(a_ptr, idx))
+                result = self.w.call(op_sym, [a_val, b_lit])
+                self._store(self._lea(out_ptr, idx), result)
+            self._defs[node.name] = out_ptr
+
+        elif target == torch.ops.aten.relu.default:
+            if n > _UNROLL_LIMIT:
+                raise UnsupportedGraph(
+                    f"relu: {n} elements exceeds unroll limit {_UNROLL_LIMIT}"
+                )
+            a_ptr = self._arg_ptr(node, 0)
+            zero = self._zero_lit(dtype)
+            out_ptr = self._alloc_temp(shape, dtype)
+            for i in range(n):
+                idx = self.w.lit_nat(i)
+                a_val = self._load(self._lea(a_ptr, idx))
+                result = self.w.call("%math.extrema.fmax", [zero, a_val])
+                self._store(self._lea(out_ptr, idx), result)
+            self._defs[node.name] = out_ptr
+
+        elif target in _NOOP_OPS:
+            # Shape-only ops: flat data layout is unchanged, alias the pointer.
+            self._defs[node.name] = self._defs[node.args[0].name]
+
+        elif target == torch.ops.aten.t.default:
+            self._emit_t(node, shape, dtype, n)
+
         elif target == torch.ops.aten.mm.default:
             self._emit_mm(node, shape, dtype)
 
+        elif target == torch.ops.aten.addmm.default:
+            self._emit_addmm(node, shape, dtype)
+
         else:
             raise UnsupportedGraph(f"Unsupported op: {target}")
+
+    def _emit_t(self, node: fx.Node, out_shape: tuple[int, ...], dtype: torch.dtype, n: int) -> None:
+        in_node = node.args[0]
+        in_shape = self._node_shape(in_node)
+        if len(in_shape) != 2:
+            raise UnsupportedGraph(f"t() only supported for 2D tensors, got shape {in_shape}")
+        if n > _UNROLL_LIMIT:
+            raise UnsupportedGraph(f"t() {in_shape}: {n} elements exceeds unroll limit")
+        M, N = in_shape  # input rows, cols
+        in_ptr = self._defs[in_node.name]
+        out_ptr = self._alloc_temp(out_shape, dtype)  # shape = (N, M)
+        for i in range(M):
+            for j in range(N):
+                val = self._load(self._lea(in_ptr, self.w.lit_nat(i * N + j)))
+                self._store(self._lea(out_ptr, self.w.lit_nat(j * M + i)), val)
+        self._defs[node.name] = out_ptr
 
     def _emit_mm(self, node: fx.Node, out_shape: tuple[int, ...], dtype: torch.dtype) -> None:
         a_node, b_node = node.args[0], node.args[1]
@@ -276,21 +401,12 @@ class GraphCodegen:
                 f"mm [{M}x{K}]@[{K}x{N}]: output {M*N} elements exceeds limit {_UNROLL_LIMIT}"
             )
 
-        a_ptr = self._defs[a_node.name]
-        b_ptr = self._defs[b_node.name]
+        result_mat = self._matrix_prod(
+            self._defs[a_node.name], (M, K),
+            self._defs[b_node.name], (K, N),
+            dtype,
+        )
 
-        # Bitcast flat F32 pointers to matrix types for %matrix.prod
-        mat_a = self.w.call("%core.bitcast", self._ptr_f32, self._mat_t((M, K), dtype), [a_ptr])
-        mat_b = self.w.call("%core.bitcast", self._ptr_f32, self._mat_t((K, N), dtype), [b_ptr])
-
-        # %matrix.prod stage: (M, K, N, (mantissa_bits, exponent_bits)) for F32
-        pe = self.w.tuple([self.w.lit_nat(23), self.w.lit_nat(8)])
-        stage = self.w.tuple([self.w.lit_nat(M), self.w.lit_nat(K), self.w.lit_nat(N), pe])
-        prod_r = self.w.call("%matrix.prod", stage, [self._mem, mat_a, mat_b])
-        self._mem = prod_r.proj(0)
-        result_mat = prod_r.proj(1)
-
-        # Read matrix elements into a flat output buffer
         out_ptr = self._alloc_temp(out_shape, dtype)
         result_desc = self._mat_desc((M, N), dtype)
         for i in range(M):
@@ -301,6 +417,61 @@ class GraphCodegen:
                 self._store(self._lea(out_ptr, self.w.lit_nat(i * N + j)), rd.proj(1))
 
         self._defs[node.name] = out_ptr
+
+    def _emit_addmm(self, node: fx.Node, out_shape: tuple[int, ...], dtype: torch.dtype) -> None:
+        bias_node, mat1_node, mat2_node = node.args[0], node.args[1], node.args[2]
+        beta = node.kwargs.get("beta", 1)
+        alpha = node.kwargs.get("alpha", 1)
+        if beta != 1 or alpha != 1:
+            raise UnsupportedGraph(f"addmm with beta={beta}, alpha={alpha} not supported")
+
+        B, N = out_shape
+        mat1_shape = self._node_shape(mat1_node)
+        mat2_shape = self._node_shape(mat2_node)
+        K = mat1_shape[1]
+
+        if B * N > _UNROLL_LIMIT:
+            raise UnsupportedGraph(
+                f"addmm output {B}x{N}={B*N} elements exceeds limit {_UNROLL_LIMIT}"
+            )
+
+        result_mat = self._matrix_prod(
+            self._defs[mat1_node.name], mat1_shape,
+            self._defs[mat2_node.name], mat2_shape,
+            dtype,
+        )
+
+        out_ptr = self._alloc_temp(out_shape, dtype)
+        bias_ptr = self._defs[bias_node.name]
+        result_desc = self._mat_desc((B, N), dtype)
+        for i in range(B):
+            for j in range(N):
+                idx = self.w.tuple([self.w.lit_idx(B, i), self.w.lit_idx(N, j)])
+                rd = self.w.call("%matrix.read", result_desc, [self._mem, result_mat, idx])
+                self._mem = rd.proj(0)
+                mm_val = rd.proj(1)
+                bias_val = self._load(self._lea(bias_ptr, self.w.lit_nat(j)))
+                result = self.w.call("%math.arith.add", [mm_val, bias_val])
+                self._store(self._lea(out_ptr, self.w.lit_nat(i * N + j)), result)
+
+        self._defs[node.name] = out_ptr
+
+    def _matrix_prod(
+        self,
+        a_ptr: _core.Def, a_shape: tuple[int, int],
+        b_ptr: _core.Def, b_shape: tuple[int, int],
+        dtype: torch.dtype,
+    ) -> _core.Def:
+        """Call %matrix.prod on two flat F32 pointers; returns the result Mat."""
+        M, K = a_shape
+        K2, N = b_shape
+        mat_a = self.w.call("%core.bitcast", self._ptr_f32, self._mat_t((M, K), dtype), [a_ptr])
+        mat_b = self.w.call("%core.bitcast", self._ptr_f32, self._mat_t((K2, N), dtype), [b_ptr])
+        pe = self.w.tuple([self.w.lit_nat(23), self.w.lit_nat(8)])
+        stage = self.w.tuple([self.w.lit_nat(M), self.w.lit_nat(K), self.w.lit_nat(N), pe])
+        prod_r = self.w.call("%matrix.prod", stage, [self._mem, mat_a, mat_b])
+        self._mem = prod_r.proj(0)
+        return prod_r.proj(1)
 
     # ------------------------------------------------------------------
     # Memory helpers (thread self._mem through each op)
@@ -316,23 +487,19 @@ class GraphCodegen:
         """Allocate a flat temporary buffer; returns a typed Ptr."""
         n = self._n_elems(shape)
         elem_t = self._elem_type(dtype)
-        # %mem.alloc : [T] (Mem, count: Nat) → (Mem, Ptr(T))
         result = self.w.call("%mem.alloc", elem_t, [self._mem, self.w.lit_nat(n)])
         self._mem = result.proj(0)
         return result.proj(1)
 
     def _lea(self, ptr: _core.Def, idx: _core.Def) -> _core.Def:
-        # %mem.lea : Ptr(T) × Nat → Ptr(T)  (pointer arithmetic, no Mem)
         return self.w.call("%mem.lea", [ptr, idx])
 
     def _load(self, ptr: _core.Def) -> _core.Def:
-        # %mem.load : (Mem, Ptr(T)) → (Mem, T)
         result = self.w.call("%mem.load", [self._mem, ptr])
         self._mem = result.proj(0)
         return result.proj(1)
 
     def _store(self, ptr: _core.Def, val: _core.Def) -> None:
-        # %mem.store : (Mem, Ptr(T), T) → Mem
         self._mem = self.w.call("%mem.store", [self._mem, ptr, val])
 
     def _emit_copy(self, src: _core.Def, dst: _core.Def, n: int) -> None:
@@ -360,9 +527,11 @@ class GraphCodegen:
         c_fn = lib.mimir_compute
 
         # After Mem-token elimination and CPS→direct lowering the exported
-        # symbol has signature:  void mimir_compute(T0* in0, ..., To0* out0, ...)
+        # symbol has signature:
+        #   void mimir_compute(T0* in0, ..., Tc0* const0, ..., To0* out0, ...)
         n_inputs = len(self._placeholders())
-        n_args = n_inputs + len(self._output_args())
+        n_consts = len(self._get_attr_nodes())
+        n_args = n_inputs + n_consts + len(self._output_args())
         c_fn.argtypes = [ctypes.c_void_p] * n_args
         c_fn.restype = None
 
@@ -371,7 +540,7 @@ class GraphCodegen:
             for n in self._output_args()
         ]
 
-        return _build_python_wrapper(c_fn, n_inputs, out_specs)
+        return _build_python_wrapper(c_fn, n_inputs, self._const_tensors, out_specs)
 
 
 # ------------------------------------------------------------------
@@ -381,9 +550,12 @@ class GraphCodegen:
 def _build_python_wrapper(
     c_fn,
     n_inputs: int,
+    const_tensors: list[torch.Tensor],
     out_specs: list[tuple[tuple[int, ...], torch.dtype]],
 ) -> callable:
     """Returns a Python callable: (*torch.Tensor) → torch.Tensor | tuple."""
+    # Pre-compute constant pointers; keep tensor refs alive via closure.
+    const_ptrs = [ctypes.c_void_p(t.data_ptr()) for t in const_tensors]
 
     def call(*inputs: torch.Tensor):
         if len(inputs) != n_inputs:
@@ -393,6 +565,7 @@ def _build_python_wrapper(
             for shape, dtype in out_specs
         ]
         ptrs = [ctypes.c_void_p(t.data_ptr()) for t in inputs]
+        ptrs += const_ptrs
         ptrs += [ctypes.c_void_p(t.data_ptr()) for t in outputs]
         c_fn(*ptrs)
         return outputs[0] if len(outputs) == 1 else tuple(outputs)
