@@ -113,7 +113,9 @@ class GraphCodegen:
     # ------------------------------------------------------------------
 
     def _setup_world(self) -> None:
-        self.driver = mim.make_driver("core", "mem", "math", "matrix", "clos")
+        self.driver = mim.make_driver(
+            "core", "mem", "math", "matrix", "clos", "direct", "affine", "compile", "opt"
+        )
         self.w = self.driver.world()
         self._mem_t = mim.Mem.M(self.w, self.w.lit_nat_0())
         self._f32_t = self.w.call("%math.F32")
@@ -128,6 +130,15 @@ class GraphCodegen:
         if dtype == torch.float32:
             return self._f32_t
         raise UnsupportedGraph(f"Unsupported dtype: {dtype}")
+
+    def _pe_f32(self) -> _core.Def:
+        return self.w.tuple([self.w.lit_nat(23), self.w.lit_nat(8)])
+
+    def _math_binary(self, op_sym: str, a: _core.Def, b: _core.Def) -> _core.Def:
+        return self.w.call(op_sym, self._pe_f32(), self.w.lit_nat(0), [a, b])
+
+    def _math_unary(self, op_sym: str, a: _core.Def) -> _core.Def:
+        return self.w.call(op_sym, self._pe_f32(), self.w.lit_nat(0), a)
 
     def _zero_lit(self, dtype: torch.dtype) -> _core.Def:
         if dtype == torch.float32:
@@ -165,13 +176,13 @@ class GraphCodegen:
         return []
 
     def _node_shape(self, node: fx.Node) -> tuple[int, ...]:
-        val = node.meta.get("val")
+        val = node.meta.get("val") or node.meta.get("example_value")
         if val is not None:
             return tuple(val.shape)
         raise UnsupportedGraph(f"No shape metadata on node '{node.name}'")
 
     def _node_dtype(self, node: fx.Node) -> torch.dtype:
-        val = node.meta.get("val")
+        val = node.meta.get("val") or node.meta.get("example_value")
         if val is not None:
             return val.dtype
         for t in self.example_inputs:
@@ -207,6 +218,8 @@ class GraphCodegen:
     # ------------------------------------------------------------------
 
     def _build_mimir_fn(self) -> _core.Lam:
+        if any(not isinstance(t, torch.Tensor) for t in self.example_inputs):
+            raise UnsupportedGraph("Dynamic shapes (SymInt inputs) not supported")
         w = self.w
         placeholders = self._placeholders()
         get_attr_nodes = self._get_attr_nodes()
@@ -262,6 +275,7 @@ class GraphCodegen:
         ]
 
         # Walk the graph
+        # op = placeholder|call_method|call_module|call_function|get_attr
         for node in self.gm.graph.nodes:
             if node.op in ("placeholder", "get_attr"):
                 continue
@@ -308,7 +322,7 @@ class GraphCodegen:
                 idx = self.w.lit_nat(i)
                 a_val = self._load(self._lea(a_ptr, idx))
                 b_val = self._load(self._lea(b_ptr, idx))
-                result = self.w.call(op_sym, [a_val, b_val])
+                result = self._math_binary(op_sym, a_val, b_val)
                 self._store(self._lea(out_ptr, idx), result)
             self._defs[node.name] = out_ptr
 
@@ -323,7 +337,7 @@ class GraphCodegen:
             for i in range(n):
                 idx = self.w.lit_nat(i)
                 a_val = self._load(self._lea(a_ptr, idx))
-                result = self.w.call(op_sym, [a_val])
+                result = self._math_unary(op_sym, a_val)
                 self._store(self._lea(out_ptr, idx), result)
             self._defs[node.name] = out_ptr
 
@@ -339,7 +353,7 @@ class GraphCodegen:
             for i in range(n):
                 idx = self.w.lit_nat(i)
                 a_val = self._load(self._lea(a_ptr, idx))
-                result = self.w.call(op_sym, [a_val, b_lit])
+                result = self._math_binary(op_sym, a_val, b_lit)
                 self._store(self._lea(out_ptr, idx), result)
             self._defs[node.name] = out_ptr
 
@@ -354,7 +368,7 @@ class GraphCodegen:
             for i in range(n):
                 idx = self.w.lit_nat(i)
                 a_val = self._load(self._lea(a_ptr, idx))
-                result = self.w.call("%math.extrema.fmax", [zero, a_val])
+                result = self._math_binary("%math.extrema.fmax", zero, a_val)
                 self._store(self._lea(out_ptr, idx), result)
             self._defs[node.name] = out_ptr
 
@@ -451,7 +465,7 @@ class GraphCodegen:
                 self._mem = rd.proj(0)
                 mm_val = rd.proj(1)
                 bias_val = self._load(self._lea(bias_ptr, self.w.lit_nat(j)))
-                result = self.w.call("%math.arith.add", [mm_val, bias_val])
+                result = self._math_binary("%math.arith.add", mm_val, bias_val)
                 self._store(self._lea(out_ptr, self.w.lit_nat(i * N + j)), result)
 
         self._defs[node.name] = out_ptr
@@ -517,6 +531,7 @@ class GraphCodegen:
         ll_path = tmpdir / "compute.ll"
         so_path = tmpdir / "compute.so"
 
+        self.w.optimize()
         mim.emit_llvm(self.driver, self.w, str(ll_path))
         log.debug("MimIR LLVM IR written to %s", ll_path)
 

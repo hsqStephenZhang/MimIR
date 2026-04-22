@@ -82,6 +82,7 @@ class TestElementwiseAdd:
         a = torch.zeros(8)
         b = torch.zeros(8)
         result = _compile(torch.add, a, b)
+        print(result)
         torch.testing.assert_close(result, torch.zeros(8))
 
     def test_add_ones(self):
