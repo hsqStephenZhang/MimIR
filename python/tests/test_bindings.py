@@ -195,7 +195,7 @@ def test_axiom_wrappers_list_and_call_plugins() -> None:
 
 
 def test_make_driver_and_bound_axioms() -> None:
-    driver = mim.make_driver("core", "mem", "matrix", log_level=Level.Info)
+    driver = mim.make_driver(mim.Plugin.CORE, mim.Plugin.MEM, mim.Plugin.MATRIX, log_level=Level.Info)
     world = driver.world()
     ax = mim.bind(world)
 
@@ -206,6 +206,22 @@ def test_make_driver_and_bound_axioms() -> None:
 
     assert shape_0.value() == 3
     assert ax.Matrix.read.symbol == "%matrix.read"
+
+
+def test_make_driver_accepts_mixed_plugin_inputs() -> None:
+    driver = mim.make_driver(mim.Plugin.CORE, "mem", mim.Plugin.MATRIX)
+    assert isinstance(driver.world(), World)
+
+
+def test_driver_builder_builds_configured_driver() -> None:
+    driver = (
+        mim.DriverBuilder()
+        .plugin(mim.Plugin.CORE)
+        .plugins("mem", mim.Plugin.MATRIX)
+        .log_level(Level.Info)
+        .build()
+    )
+    assert isinstance(driver.world(), World)
 
 
 def test_tensor_plugin_transpose_builds_expected_type() -> None:

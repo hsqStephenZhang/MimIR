@@ -70,7 +70,7 @@ class RegexBenchCase:
 
 @pytest.fixture()
 def regex_world() -> tuple[Driver, World]:
-    driver = mim.make_driver("compile", "mem", "core", "regex")
+    driver = mim.make_driver(mim.Plugin.COMPILE, mim.Plugin.MEM, mim.Plugin.CORE, mim.Plugin.REGEX)
     return driver, driver.world()
 
 

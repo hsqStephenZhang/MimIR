@@ -3,6 +3,7 @@
 import ctypes
 import shutil
 import subprocess
+from enum import Enum
 from pathlib import Path
 from typing import Sequence
 
@@ -30,10 +31,83 @@ from ._axioms import (
     list_axioms,
 )
 from . import _mim_core as _core
-from ._mim_core import AST, Def, Driver, Lam, Level, Lit, Log, Parser, Pi, PyParser, World
-from ._mim_core import *
+from ._mim_core import (
+    AST,
+    Def,
+    Driver,
+    Lam,
+    Level,
+    Lit,
+    Log,
+    Parser,
+    Pi,
+    PyParser,
+    World,
+)
+
+
+class Plugin(str, Enum):
+    AFFINE = "affine"
+    AUTODIFF = "autodiff"
+    CLOS = "clos"
+    COMPILE = "compile"
+    CORE = "core"
+    DEMO = "demo"
+    DIRECT = "direct"
+    GPU = "gpu"
+    MATH = "math"
+    MATRIX = "matrix"
+    MEM = "mem"
+    OPT = "opt"
+    ORD = "ord"
+    REFLY = "refly"
+    REGEX = "regex"
+    TENSOR = "tensor"
+    TUPLE = "tuple"
+    VEC = "vec"
+
+
+PluginLike = str | Plugin
+
+
+def _normalize_plugins(plugins: Sequence[PluginLike]) -> list[str]:
+    return [
+        plugin.value if isinstance(plugin, Plugin) else plugin for plugin in plugins
+    ]
+
+
+class DriverBuilder:
+    def __init__(self) -> None:
+        self._plugins: list[str] = []
+        self._log_level: Level | None = None
+        self._set_stdout = False
+
+    def plugin(self, plugin: PluginLike) -> "DriverBuilder":
+        self._plugins.append(plugin.value if isinstance(plugin, Plugin) else plugin)
+        return self
+
+    def plugins(self, *plugins: PluginLike) -> "DriverBuilder":
+        self._plugins.extend(_normalize_plugins(plugins))
+        return self
+
+    def log_level(self, level: Level | None) -> "DriverBuilder":
+        self._log_level = level
+        return self
+
+    def set_stdout(self, enabled: bool = True) -> "DriverBuilder":
+        self._set_stdout = enabled
+        return self
+
+    def build(self) -> Driver:
+        return make_driver(
+            *self._plugins, log_level=self._log_level, set_stdout=self._set_stdout
+        )
+
 
 __all__ = [
+    "DriverBuilder",
+    "Plugin",
+    "PluginLike",
     "AST",
     "Def",
     "Driver",
@@ -45,6 +119,25 @@ __all__ = [
     "Pi",
     "PyParser",
     "World",
+    "Affine",
+    "Autodiff",
+    "Clos",
+    "Compile",
+    "Core",
+    "Demo",
+    "Direct",
+    "Gpu",
+    "Math",
+    "Matrix",
+    "Mem",
+    "Opt",
+    "Ord",
+    "Refly",
+    "Regex",
+    "Tensor",
+    "Tuple",
+    "Vec",
+    "AXIOM_NAMESPACE_NAMES",
     "configure_driver",
     "make_driver",
     "bind",
@@ -59,7 +152,6 @@ __all__ = [
     "plugin_search_paths",
     "run_native_executable",
     "transpose_2d",
-    *AXIOM_NAMESPACE_NAMES,
 ]
 
 
@@ -100,14 +192,16 @@ def configure_driver(driver: Driver) -> Driver:
     return driver
 
 
-def make_driver(*plugins: str, log_level: Level | None = None, set_stdout: bool = False) -> Driver:
+def make_driver(
+    *plugins: PluginLike, log_level: Level | None = None, set_stdout: bool = False
+) -> Driver:
     driver = configure_driver(Driver())
     if set_stdout:
         driver.log().set_stdout()
     if log_level is not None:
         driver.log().set(log_level)
     if plugins:
-        driver.load_plugins(list(plugins))
+        driver.load_plugins(_normalize_plugins(plugins))
     return driver
 
 
@@ -117,7 +211,9 @@ def build_native_main_i32(world: World, result: Def, name: str = "main") -> Lam:
     i32_t = world.type_i32()
 
     if result.type().to_string() != i32_t.to_string():
-        raise TypeError(f"build_native_main_i32 expects an I32 result, got {result.type().to_string()}")
+        raise TypeError(
+            f"build_native_main_i32 expects an I32 result, got {result.type().to_string()}"
+        )
 
     main = world.mut_fun2([mem_t, i32_t, argv_t], [mem_t, i32_t]).set(name)
     args = main.var().proj(0)
@@ -149,7 +245,14 @@ def clang_compile(
     llvm_path = Path(llvm_ir)
     output = Path(output_path)
     subprocess.run(
-        [clang_path, str(llvm_path), "-o", str(output), "-Wno-override-module", *extra_args],
+        [
+            clang_path,
+            str(llvm_path),
+            "-o",
+            str(output),
+            "-Wno-override-module",
+            *extra_args,
+        ],
         check=True,
         text=True,
     )
@@ -190,16 +293,14 @@ if not hasattr(Driver, "load_plugins"):
 
 
 def matrix_i32(world: World, rows: list[list[int]]) -> Def:
-    return world.tuple([
-        world.tuple([world.lit_i32(value) for value in row])
-        for row in rows
-    ])
+    return world.tuple(
+        [world.tuple([world.lit_i32(value) for value in row]) for row in rows]
+    )
 
 
 def matrix_to_list(matrix: Def) -> list[list[int]]:
     return [
-        [matrix.proj(i).proj(j).value()
-         for j in range(matrix.proj(i).num_projs())]
+        [matrix.proj(i).proj(j).value() for j in range(matrix.proj(i).num_projs())]
         for i in range(matrix.num_projs())
     ]
 
@@ -207,10 +308,12 @@ def matrix_to_list(matrix: Def) -> list[list[int]]:
 def transpose_2d(world: World, matrix: Def) -> Def:
     rows = matrix.num_projs()
     cols = matrix.proj(0).num_projs()
-    return world.tuple([
-        world.tuple([matrix.proj(i).proj(j) for i in range(rows)])
-        for j in range(cols)
-    ])
+    return world.tuple(
+        [
+            world.tuple([matrix.proj(i).proj(j) for i in range(rows)])
+            for j in range(cols)
+        ]
+    )
 
 
 def matmul_i32(world: World, lhs: Def, rhs: Def) -> Def:

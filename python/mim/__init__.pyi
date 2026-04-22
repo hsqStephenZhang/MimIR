@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 import subprocess
 
@@ -51,9 +52,42 @@ Tuple: TupleNode
 Vec: VecNode
 
 
+class Plugin(str, Enum):
+    AFFINE: Plugin
+    AUTODIFF: Plugin
+    CLOS: Plugin
+    COMPILE: Plugin
+    CORE: Plugin
+    DEMO: Plugin
+    DIRECT: Plugin
+    GPU: Plugin
+    MATH: Plugin
+    MATRIX: Plugin
+    MEM: Plugin
+    OPT: Plugin
+    ORD: Plugin
+    REFLY: Plugin
+    REGEX: Plugin
+    TENSOR: Plugin
+    TUPLE: Plugin
+    VEC: Plugin
+
+
+PluginLike = str | Plugin
+
+
+class DriverBuilder:
+    def __init__(self) -> None: ...
+    def plugin(self, plugin: PluginLike) -> DriverBuilder: ...
+    def plugins(self, *plugins: PluginLike) -> DriverBuilder: ...
+    def log_level(self, level: Level | None) -> DriverBuilder: ...
+    def set_stdout(self, enabled: bool = True) -> DriverBuilder: ...
+    def build(self) -> Driver: ...
+
+
 def plugin_search_paths() -> list[Path]: ...
 def configure_driver(driver: Driver) -> Driver: ...
-def make_driver(*plugins: str, log_level: Level | None = None, set_stdout: bool = False) -> Driver: ...
+def make_driver(*plugins: PluginLike, log_level: Level | None = None, set_stdout: bool = False) -> Driver: ...
 def bind(world: World) -> BoundNamespaces: ...
 def list_axioms() -> dict[str, tuple[str, ...]]: ...
 def build_native_main_i32(world: World, result: Def, name: str = "main") -> Lam: ...
