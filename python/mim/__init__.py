@@ -205,6 +205,20 @@ def make_driver(
     return driver
 
 
+def _def_iter(self: Def):
+    for i in range(self.num_projs()):
+        yield self.proj(i)
+
+Def.__iter__ = _def_iter  # type: ignore
+
+
+def _def_iter(self: Def):
+    for i in range(self.num_projs()):
+        yield self.proj(i)
+
+Def.__iter__ = _def_iter  # type: ignore
+
+
 def _world_type_mem(self: World, addr_space: int = 0) -> Def:
     return self.call("%mem.M", self.lit_nat(addr_space))
 

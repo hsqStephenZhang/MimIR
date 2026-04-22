@@ -36,6 +36,9 @@ class Def:
     def projs(self, arg0: int) -> list[Def]:
         """Returns a list of projections of a specified size."""
         ...
+    def __iter__(self) -> Any:
+        """Returns an iterator over the projections of this tuple/variable, allowing Python unpacking (e.g. )."""
+        ...
 
 
 class Lit(Def):

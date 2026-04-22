@@ -299,9 +299,7 @@ def _build_matcher(world: World, regex_ir: Def) -> None:
     fn = world.mut_con([mem_t, str_t, ret_t]).set("match_func")
     fn.externalize()
 
-    mem = fn.var().proj(0)
-    str_ptr = fn.var().proj(1)
-    ret = fn.var().proj(2)
+    mem, str_ptr, ret = fn.var()
 
     # Apply regex: implicit n is inferred from str_ptr's array type
     result = world.implicit_app(
