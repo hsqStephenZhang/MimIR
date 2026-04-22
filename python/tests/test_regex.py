@@ -84,7 +84,7 @@ class RegexBenchCase:
 
 @pytest.fixture()
 def regex_world() -> tuple[Driver, World]:
-    driver = mim.make_driver(mim.Plugin.COMPILE, mim.Plugin.MEM, mim.Plugin.CORE, mim.Plugin.REGEX)
+    driver = mim.DriverBuilder().plugins(mim.Plugin.COMPILE, mim.Plugin.MEM, mim.Plugin.CORE, mim.Plugin.REGEX).build()
     return driver, driver.world()
 
 
@@ -292,8 +292,8 @@ def _build_matcher(world: World, regex_ir: Def) -> None:
     After optimize() + LLVM lowering this becomes bool(const char*).
     """
     n = world.top_nat()
-    mem_t = world.call(r"%mem.M", world.lit_nat_0())
-    str_t = world.call(r"%mem.Ptr0", [world.arr(n, world.type_i8())])
+    mem_t = world.type_mem()
+    str_t = world.type_ptr(world.arr(n, world.type_i8()))
     ret_t = world.cn([mem_t, world.type_bool()])
 
     fn = world.mut_con([mem_t, str_t, ret_t]).set("match_func")
@@ -314,7 +314,7 @@ def _compile_pattern(pattern: str, tmp: Path) -> Callable[[bytes], bool]:
     """Transpile, compile, and return a callable bool(bytes) matcher."""
     from mim._mim_core import AST, Parser
 
-    driver = mim.make_driver("compile", "mem", "core", "regex", "opt")
+    driver = mim.DriverBuilder().plugins("compile", "mem", "core", "regex", "opt").build()
     world = driver.world()
 
     # Parser.plugin() parses the .mim file, making lam/let defs (including

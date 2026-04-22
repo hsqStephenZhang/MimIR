@@ -181,8 +181,8 @@ def test_axiom_wrappers_list_and_call_plugins() -> None:
     driver.load_plugins(["core", "mem", "matrix"])
     world = driver.world()
 
-    mem_t = mim.Mem.M(world, world.lit_nat_0())
-    ptr_t = mim.Mem.Ptr0(world, world.type_i8())
+    mem_t = world.type_mem()
+    ptr_t = world.type_ptr(world.type_i8())
 
     mem = world.bot(mem_t)
     matrix_type = world.tuple([world.lit_nat(2), world.tuple([world.lit_nat(3), world.lit_nat(5)]), world.type_i32()])
@@ -195,11 +195,11 @@ def test_axiom_wrappers_list_and_call_plugins() -> None:
 
 
 def test_make_driver_and_bound_axioms() -> None:
-    driver = mim.make_driver(mim.Plugin.CORE, mim.Plugin.MEM, mim.Plugin.MATRIX, log_level=Level.Info)
+    driver = mim.DriverBuilder().plugins(mim.Plugin.CORE, mim.Plugin.MEM, mim.Plugin.MATRIX).log_level(Level.Info).build()
     world = driver.world()
     ax = mim.bind(world)
 
-    mem = world.bot(ax.Mem.M(world.lit_nat_0()))
+    mem = world.bot(world.type_mem())
     matrix_type = world.tuple([world.lit_nat(2), world.tuple([world.lit_nat(3), world.lit_nat(5)]), world.type_i32()])
     matrix = ax.Matrix.constMat(matrix_type, [mem, world.lit_i32(5)])
     shape_0 = ax.Matrix.shape(matrix_type, [matrix.proj(1), world.lit_idx(2, 0)])
@@ -209,7 +209,7 @@ def test_make_driver_and_bound_axioms() -> None:
 
 
 def test_make_driver_accepts_mixed_plugin_inputs() -> None:
-    driver = mim.make_driver(mim.Plugin.CORE, "mem", mim.Plugin.MATRIX)
+    driver = mim.DriverBuilder().plugins(mim.Plugin.CORE, "mem", mim.Plugin.MATRIX).build()
     assert isinstance(driver.world(), World)
 
 

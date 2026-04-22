@@ -216,13 +216,13 @@ class TestTranspose:
     def test_transpose_swaps_dimensions(self, matrix_world: tuple[Driver, World]) -> None:
         """Transpose a 2×4 matrix → 4×2 matrix. Shape queries reflect the swap."""
         _, world = matrix_world
-        mt_24 = _mat_type(world, 2, 4)
+        # mt_24 = _mat_type(world, 2, 4)
         mem, mat = _const_mat_i32(world, 2, 4, 5)
 
         # transpose: [[k, l], T] → ...
         kl = world.tuple([world.lit_nat(2), world.lit_nat(4)])
         transposed = world.call("%matrix.transpose", [kl, world.type_i32()], [mem, mat])
-        mem2 = transposed.proj(0)
+        # mem2 = transposed.proj(0)
         mat2 = transposed.proj(1)
 
         mt_42 = _mat_type(world, 4, 2)

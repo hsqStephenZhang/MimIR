@@ -205,9 +205,21 @@ def make_driver(
     return driver
 
 
+def _world_type_mem(self: World, addr_space: int = 0) -> Def:
+    return self.call("%mem.M", self.lit_nat(addr_space))
+
+def _world_type_ptr(self: World, pointee: Def, addr_space: int = 0) -> Def:
+    if addr_space == 0:
+        return self.call("%mem.Ptr0", [pointee])
+    return self.call("%mem.Ptr", [pointee, self.lit_nat(addr_space)])
+
+World.type_mem = _world_type_mem  # type: ignore
+World.type_ptr = _world_type_ptr  # type: ignore
+
+
 def build_native_main_i32(world: World, result: Def, name: str = "main") -> Lam:
-    mem_t = world.call("%mem.M", world.lit_nat_0())
-    argv_t = world.call("%mem.Ptr0", [world.call("%mem.Ptr0", [world.type_i8()])])
+    mem_t = world.type_mem()
+    argv_t = world.type_ptr(world.type_ptr(world.type_i8()))
     i32_t = world.type_i32()
 
     if result.type().to_string() != i32_t.to_string():
