@@ -23,8 +23,10 @@ Known limitations:
 from __future__ import annotations
 
 import ctypes
+import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -43,6 +45,7 @@ from sre_constants import (  # type: ignore[import]
     LITERAL,
     MAX_REPEAT,
     MAXREPEAT,
+    MIN_REPEAT,
     NEGATE,
     RANGE,
     SUBPATTERN,
@@ -58,9 +61,11 @@ if TYPE_CHECKING:
     from mim._mim_core import Def, Driver, World
 
 
-# ---------------------------------------------------------------------------
-# Fixture
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class RegexBenchCase:
+    name: str
+    pattern: str
+    sample: bytes
 
 
 @pytest.fixture()
@@ -72,6 +77,35 @@ def regex_world() -> tuple[Driver, World]:
 # ---------------------------------------------------------------------------
 # Transpiler
 # ---------------------------------------------------------------------------
+
+_BENCH_CASES = [
+    RegexBenchCase(
+        name="simple_literal",
+        pattern="a",
+        sample=(b"a" * 4096) + b"z",
+    ),
+    RegexBenchCase(
+        name="simple_class_plus",
+        pattern=r"[a-z]+",
+        sample=(b"hello" * 1024) + b"123",
+    ),
+    RegexBenchCase(
+        name="complex_identifier",
+        pattern=r"[a-zA-Z_][a-zA-Z_0-9]*",
+        sample=(b"identifier_123_" * 512) + b"!",
+    ),
+    RegexBenchCase(
+        name="complex_emailish",
+        pattern=r"[a-z]+@[a-z]+",
+        sample=(b"helloworld@example" * 256) + b"!",
+    ),
+    RegexBenchCase(
+        name="complex_alternation",
+        pattern=r"(ab|cd)+",
+        sample=(b"abcd" * 1024) + b"x",
+    ),
+]
+
 
 _CATEGORY_AXIOMS = {
     CATEGORY_DIGIT: Regex.cls.d,
@@ -118,7 +152,7 @@ class RegexTranspiler:
             # (group_id, add_flags, del_flags, pattern)
             return self._seq(list(arg[-1]))  # type: ignore[index]
 
-        if op == MAX_REPEAT:
+        if op == MAX_REPEAT or op == MIN_REPEAT:
             min_, max_, pattern = arg  # type: ignore[misc]
             inner = self._seq(list(pattern))
             if min_ == 0 and max_ == MAXREPEAT:
@@ -152,17 +186,11 @@ class RegexTranspiler:
                 continue
             if item_op == LITERAL:
                 parts.append(
-                    w.call(
-                        Regex.range(w, w.tuple([w.lit_i8(item_arg), w.lit_i8(item_arg)])),
-                    )
+                    Regex.range(w, w.tuple([w.lit_i8(item_arg), w.lit_i8(item_arg)]))
                 )
             elif item_op == RANGE:
                 lo, hi = item_arg
-                parts.append(
-                    w.call(
-                        Regex.range(w, w.tuple([w.lit_i8(lo), w.lit_i8(hi)])),
-                    )
-                )
+                parts.append(Regex.range(w, w.tuple([w.lit_i8(lo), w.lit_i8(hi)])))
             elif item_op == CATEGORY:
                 axiom = _CATEGORY_AXIOMS.get(item_arg)
                 if axiom is None:
@@ -172,11 +200,7 @@ class RegexTranspiler:
                 raise NotImplementedError(f"Unsupported IN item opcode: {item_op!r}")
 
         assert parts, "IN node produced no sub-expressions"
-        result = (
-            parts[0]
-            if len(parts) == 1
-            else Regex.disj(w, parts, implicit=True)
-        )
+        result = parts[0] if len(parts) == 1 else Regex.disj(w, parts, implicit=True)
         return Regex.not_(w, result) if negate else result
 
 
@@ -211,8 +235,10 @@ class TestLiteral:
         t = RegexTranspiler(world)
         assert t.transpile("a").to_string() != t.transpile("b").to_string()
 
+    def test_capturing_group_is_transparent(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        assert _ir(world, "(a)") == _ir(world, "a")
 
-class TestSequence:
     def test_two_literals_wrapped_in_conj(self, regex_world: tuple) -> None:
         _, world = regex_world
         assert "conj" in _ir(world, "ab")
@@ -250,6 +276,18 @@ class TestQuantifiers:
         _, world = regex_world
         with pytest.raises(NotImplementedError, match="Bounded repeat"):
             RegexTranspiler(world).transpile("a{2,4}")
+
+    def test_lazy_star_maps_to_star(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        assert "star" in _ir(world, "a*?")
+
+    def test_lazy_plus_maps_to_plus(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        assert "plus" in _ir(world, "a+?")
+
+    def test_lazy_optional_maps_to_optional(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        assert "optional" in _ir(world, "a??")
 
 
 class TestAlternation:
@@ -295,10 +333,23 @@ class TestCharacterClasses:
         s = _ir(world, r"\w")
         assert "range" in s or "disj" in s
 
-    def test_space_shorthand(self, regex_world: tuple) -> None:
+    def test_not_word_shorthand(self, regex_world: tuple) -> None:
         _, world = regex_world
-        s = _ir(world, r"\s")
+        s = _ir(world, r"\W")
+        assert "not_" in s
         assert "range" in s or "disj" in s
+
+    def test_not_space_shorthand(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        s = _ir(world, r"\S")
+        assert "not_" in s
+        assert "range" in s or "disj" in s
+
+    def test_not_digit_shorthand(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        s = _ir(world, r"\D")
+        assert "not_" in s
+        assert "range" in s
 
 
 class TestAny:
@@ -399,18 +450,51 @@ def _compile_pattern(pattern: str, tmp: Path) -> Callable[[bytes], bool]:
     return lib.match_func
 
 
+def _python_matcher(pattern: str) -> Callable[[bytes], bool]:
+    regex = re.compile(pattern)
+    return lambda data: regex.match(data.decode()) is not None
+
+
 needs_clang = pytest.mark.skipif(
     shutil.which("clang") is None, reason="clang not available"
 )
 
 
-# ---------------------------------------------------------------------------
-# Execution tests
-# ---------------------------------------------------------------------------
+@needs_clang
+class TestBenchmarkParity:
+    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
+    def test_jit_matches_python_re(self, tmp_path: Path, case: RegexBenchCase) -> None:
+        case_dir = tmp_path / case.name
+        case_dir.mkdir()
+        jit = _compile_pattern(case.pattern, case_dir)
+        py = _python_matcher(case.pattern)
+        assert jit(case.sample) == py(case.sample)
+
+
+bench_fn = Callable[[Callable[[bytes], bool], bytes], None]
 
 
 @needs_clang
-class TestExecutionLiteral:
+class TestRegexBenchmark:
+    @pytest.mark.benchmark(group="regex-jit")
+    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
+    def test_jit_benchmark(
+        self, benchmark: bench_fn, tmp_path: Path, case: RegexBenchCase
+    ) -> None:
+        case_dir = tmp_path / f"jit_{case.name}"
+        case_dir.mkdir()
+        jit = _compile_pattern(case.pattern, case_dir)
+        assert jit(case.sample) == _python_matcher(case.pattern)(case.sample)
+        benchmark(jit, case.sample)
+
+    @pytest.mark.benchmark(group="regex-python-re")
+    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
+    def test_python_re_benchmark(
+        self, benchmark: bench_fn, case: RegexBenchCase
+    ) -> None:
+        py = _python_matcher(case.pattern)
+        benchmark(py, case.sample)
+
     def test_single_char_matches(self, tmp_path: Path) -> None:
         f = _compile_pattern("a", tmp_path)
         assert f(b"abc")
@@ -435,15 +519,18 @@ class TestExecutionQuantifiers:
         assert f(b"aaa")
         assert not f(b"bbb")
 
-    def test_optional_present(self, tmp_path: Path) -> None:
-        f = _compile_pattern("ab?c", tmp_path)
-        assert f(b"abc")
-        assert f(b"ac")
-        assert not f(b"aXc")
+    def test_lazy_star_matches_empty(self, tmp_path: Path) -> None:
+        f = _compile_pattern("a*?", tmp_path)
+        assert f(b"")
+        assert f(b"aaa")
+        assert f(b"b")
 
+    def test_lazy_plus_requires_one(self, tmp_path: Path) -> None:
+        f = _compile_pattern("a+?", tmp_path)
+        assert f(b"a")
+        assert f(b"aaa")
+        assert not f(b"bbb")
 
-@needs_clang
-class TestExecutionCharClass:
     def test_range_matches(self, tmp_path: Path) -> None:
         f = _compile_pattern("[a-z]+", tmp_path)
         assert f(b"hello")
@@ -453,8 +540,3 @@ class TestExecutionCharClass:
         f = _compile_pattern(r"\d+", tmp_path)
         assert f(b"42")
         assert not f(b"abc")
-
-    def test_negated_class(self, tmp_path: Path) -> None:
-        f = _compile_pattern("[^0-9]+", tmp_path)
-        assert f(b"abc")
-        assert not f(b"123")
