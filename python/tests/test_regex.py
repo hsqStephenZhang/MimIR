@@ -1,23 +1,28 @@
 """
-Transpile Python's regex IR (sre_parse) into MimIR's regex dialect and verify
-the resulting IR nodes.
+MimIR Regex Compiler
 
-Opcode mapping:
-  LITERAL c              -> %regex.lit c          (lam: range(c,c))
-  ANY                    -> %regex.any
-  MAX_REPEAT(0,MAX,p)    -> %regex.quant.star(p)
-  MAX_REPEAT(1,MAX,p)    -> %regex.quant.plus(p)
-  MAX_REPEAT(0,1,p)      -> %regex.quant.optional(p)
-  BRANCH(branches)       -> %regex.disj(branches)
-  IN [RANGE lo hi]       -> %regex.range(lo, hi)
-  IN [LITERAL c]         -> %regex.range(c, c)
-  IN [CATEGORY cat]      -> %regex.cls.{d,D,w,W,s,S}
-  IN [NEGATE, ...]       -> %regex.not_(...)
-  sequence               -> %regex.conj(parts)    (1-element: no wrap)
+A high-performance regex compilation library that transpiles Python's regex IR
+into MimIR's functional representation, and natively compiles it via LLVM/Clang.
 
-Known limitations:
-- the re._parser module is private, so the type checker may not be happy
+Supported Features:
+  - Literals: `a`, `b`, `c`
+  - Any Char: `.`
+  - Quantifiers: `*`, `+`, `?`, `{m,n}`, `{m}`, `{m,}`
+  - Alternations: `a|b`
+  - Character Classes: `[a-z]`, `[^a-z]`
+  - Categories: `\d`, `\D`, `\w`, `\W`, `\s`, `\S`
+  - Non-capturing groups: `(?:...)`
+  - Capturing groups (treated as non-capturing): `(...)`
 
+Unsupported Features (Raises UnsupportedRegexError):
+  - Anchors: `^`, `$`
+  - Assertions / Lookarounds: `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)`
+  - Backreferences: `\1`, `(?P=name)`
+  - Conditionals: `(?(id/name)yes-pattern|no-pattern)`
+
+Note: MimIR compiles the regex to a pure Deterministic Finite Automaton (DFA),
+meaning advanced PCRE features that require an NFA or backtracking are
+fundamentally unsupported at the IR level.
 """
 
 from __future__ import annotations
@@ -49,6 +54,10 @@ from sre_constants import (  # type: ignore[import]
     NEGATE,
     RANGE,
     SUBPATTERN,
+    AT,
+    ASSERT,
+    ASSERT_NOT,
+    GROUPREF,
 )
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +68,11 @@ from mim import Regex
 
 if TYPE_CHECKING:
     from mim._mim_core import Def, Driver, World
+
+
+class UnsupportedRegexError(NotImplementedError):
+    """Raised when the regex pattern contains features not supported by MimIR."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -124,7 +138,10 @@ class RegexTranspiler:
         self.world = world
 
     def transpile(self, pattern: str) -> Def:
-        ops = list(_sre_parse.parse(pattern))
+        try:
+            ops = list(_sre_parse.parse(pattern))
+        except re.error as e:
+            raise ValueError(f"Invalid regex pattern: {e}") from e
         return self._seq(ops)
 
     # -- internal ------------------------------------------------------------
@@ -161,7 +178,18 @@ class RegexTranspiler:
                 return Regex.quant.plus(w, inner)
             if min_ == 0 and max_ == 1:
                 return Regex.quant.optional(w, inner)
-            raise NotImplementedError(f"Bounded repeat {{{min_},{max_}}} not supported")
+
+            parts = [inner] * min_
+            if max_ == MAXREPEAT:
+                parts.append(Regex.quant.star(w, inner))
+            else:
+                parts.extend([Regex.quant.optional(w, inner)] * (max_ - min_))
+
+            if not parts:
+                return Regex.empty(w)
+            if len(parts) == 1:
+                return parts[0]
+            return Regex.conj(w, parts, implicit=True)
 
         if op == BRANCH:
             _, branches = arg  # type: ignore[misc]
@@ -171,8 +199,11 @@ class RegexTranspiler:
 
         if op == IN:
             return self._in(arg)  # type: ignore[arg-type]
+            
+        if op in (AT, ASSERT, ASSERT_NOT, GROUPREF):
+            raise UnsupportedRegexError(f"Unsupported regex opcode: {op!r}. MimIR DFA matching only supports a subset of standard Python regex features.")
 
-        raise NotImplementedError(f"Unsupported sre opcode: {op!r}")
+        raise UnsupportedRegexError(f"Unknown or unsupported regex opcode: {op!r}.")
 
     def _in(self, items: list) -> Def:
         """Translate a character-class or single-char alternation (IN node)."""
@@ -194,10 +225,10 @@ class RegexTranspiler:
             elif item_op == CATEGORY:
                 axiom = _CATEGORY_AXIOMS.get(item_arg)
                 if axiom is None:
-                    raise NotImplementedError(f"Unsupported sre category: {item_arg!r}")
+                    raise UnsupportedRegexError(f"Unsupported regex category: {item_arg!r}")
                 parts.append(axiom(w))
             else:
-                raise NotImplementedError(f"Unsupported IN item opcode: {item_op!r}")
+                raise UnsupportedRegexError(f"Unsupported character class item opcode: {item_op!r}")
 
         assert parts, "IN node produced no sub-expressions"
         result = parts[0] if len(parts) == 1 else Regex.disj(w, parts, implicit=True)
@@ -205,18 +236,235 @@ class RegexTranspiler:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Public API
 # ---------------------------------------------------------------------------
 
+class MimPattern:
+    """Compiled regular expression object."""
+
+    def __init__(self, match_func: Callable[[bytes], bool]) -> None:
+        self._match_func = match_func
+
+    def match(self, string: bytes | str) -> bool:
+        """
+        Determine if the RE matches at the beginning of the string.
+        Returns True on match, False otherwise.
+        """
+        if isinstance(string, str):
+            string = string.encode('utf-8')
+        return self._match_func(string)
+
+
+def compile(pattern: str) -> MimPattern:
+    """
+    Compile a regular expression pattern into a native MimPattern object.
+    
+    This leverages the MimIR compiler pipeline (JIT -> LLVM -> Clang -> CDLL).
+    NOTE: In a true production environment, compiled assets would be cached
+    to disk rather than generated into temporary paths on each invocation.
+    """
+    import tempfile
+    
+    tmp_path = Path(tempfile.mkdtemp(prefix="mim_regex_"))
+    try:
+        matcher_func = _compile_pattern(pattern, tmp_path)
+        return MimPattern(matcher_func)
+    except Exception as e:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        raise e
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _ir(world: World, pattern: str) -> str:
     """Build and return the MimIR string for the transpiled pattern."""
     return RegexTranspiler(world).transpile(pattern).to_string()
 
 
+def _build_matcher(world: World, regex_ir: Def) -> None:
+    """
+    Wire `regex_ir` into an externally-visible CPS continuation:
+
+        match_func : cn [%mem.M, %mem.Ptr0(«⊤; I8»), cn[%mem.M, Bool]]
+
+    After optimize() + LLVM lowering this becomes bool(const char*).
+    """
+    n = world.top_nat()
+    mem_t = world.call(r"%mem.M", world.lit_nat_0())
+    str_t = world.call(r"%mem.Ptr0", [world.arr(n, world.type_i8())])
+    ret_t = world.cn([mem_t, world.type_bool()])
+
+    fn = world.mut_con([mem_t, str_t, ret_t]).set("match_func")
+    fn.externalize()
+
+    mem = fn.var().proj(0)
+    str_ptr = fn.var().proj(1)
+    ret = fn.var().proj(2)
+
+    # Apply regex: implicit n is inferred from str_ptr's array type
+    result = world.implicit_app(
+        regex_ir, [mem, str_ptr, world.lit(world.type_idx(n), 0)]
+    )
+    fn.app(False, ret, [result.proj(0), result.proj(1)])
+
+
+def _compile_pattern(pattern: str, tmp: Path) -> Callable[[bytes], bool]:
+    """Transpile, compile, and return a callable bool(bytes) matcher."""
+    from mim._mim_core import AST, Parser
+
+    driver = mim.make_driver("compile", "mem", "core", "regex", "opt")
+    world = driver.world()
+
+    # Parser.plugin() parses the .mim file, making lam/let defs (including
+    # _default_compile from opt.mim) available. load_plugins() only registers
+    # C++ normalizers/stages — it does NOT parse .mim definitions.
+    ast = AST(world)
+    p = Parser(ast)
+    for plugin_name in ("compile", "mem", "core", "regex", "opt"):
+        p.plugin(plugin_name)
+
+    regex_ir = RegexTranspiler(world).transpile(pattern)
+    _build_matcher(world, regex_ir)
+    world.optimize()
+
+    ll = tmp / "regex.ll"
+    so = tmp / "regex.so"
+    driver.backend("ll", str(ll), world)
+    subprocess.run(
+        ["clang", str(ll), "-o", str(so), "-Wno-override-module", "-shared"],
+        check=True,
+        capture_output=True,
+    )
+
+    lib = ctypes.CDLL(str(so))
+    lib.match_func.argtypes = [ctypes.c_char_p]
+    lib.match_func.restype = ctypes.c_bool
+    return lib.match_func
+
+
+def _python_matcher(pattern: str) -> Callable[[bytes], bool]:
+    regex = re.compile(pattern)
+    return lambda data: regex.match(data.decode()) is not None
+
+
+needs_clang = pytest.mark.skipif(
+    shutil.which("clang") is None, reason="clang not available"
+)
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+class TestUnsupportedFeatures:
+    def test_unsupported_anchor_raises(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        t = RegexTranspiler(world)
+        with pytest.raises(UnsupportedRegexError):
+            t.transpile("^abc")
+        with pytest.raises(UnsupportedRegexError):
+            t.transpile("abc$")
+            
+    def test_unsupported_lookaround_raises(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        t = RegexTranspiler(world)
+        with pytest.raises(UnsupportedRegexError):
+            t.transpile("foo(?=bar)")
+
+
+@needs_clang
+class TestPublicAPI:
+    def test_compile_and_match(self) -> None:
+        pattern = compile(r"a+b*c?")
+        assert pattern.match(b"a") is True
+        assert pattern.match(b"aaabbb") is True
+        assert pattern.match(b"abc") is True
+        assert pattern.match(b"b") is False
+        assert pattern.match("aaabbb") is True  # String input support
+
+
+@needs_clang
+class TestBenchmarkParity:
+    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
+    def test_jit_matches_python_re(self, tmp_path: Path, case: RegexBenchCase) -> None:
+        case_dir = tmp_path / case.name
+        case_dir.mkdir()
+        jit = _compile_pattern(case.pattern, case_dir)
+        py = _python_matcher(case.pattern)
+        assert jit(case.sample) == py(case.sample)
+
+
+bench_fn = Callable[[Callable[[bytes], bool], bytes], None]
+
+
+@needs_clang
+class TestRegexBenchmark:
+    @pytest.mark.benchmark(group="regex-jit")
+    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
+    def test_jit_benchmark(
+        self, benchmark: bench_fn, tmp_path: Path, case: RegexBenchCase
+    ) -> None:
+        case_dir = tmp_path / f"jit_{case.name}"
+        case_dir.mkdir()
+        jit = _compile_pattern(case.pattern, case_dir)
+        assert jit(case.sample) == _python_matcher(case.pattern)(case.sample)
+        benchmark(jit, case.sample)
+
+    @pytest.mark.benchmark(group="regex-python-re")
+    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
+    def test_python_re_benchmark(
+        self, benchmark: bench_fn, case: RegexBenchCase
+    ) -> None:
+        py = _python_matcher(case.pattern)
+        benchmark(py, case.sample)
+
+    def test_single_char_matches(self, tmp_path: Path) -> None:
+        f = _compile_pattern("a", tmp_path)
+        assert f(b"abc")
+
+    def test_single_char_no_match(self, tmp_path: Path) -> None:
+        f = _compile_pattern("a", tmp_path)
+        assert not f(b"bcd")
+
+
+@needs_clang
+class TestExecutionQuantifiers:
+    def test_star_matches_empty(self, tmp_path: Path) -> None:
+        # a* matches the empty prefix of any string
+        f = _compile_pattern("a*", tmp_path)
+        assert f(b"")
+        assert f(b"aaa")
+        assert f(b"b")  # empty match at position 0
+
+    def test_plus_requires_one(self, tmp_path: Path) -> None:
+        f = _compile_pattern("a+", tmp_path)
+        assert f(b"a")
+        assert f(b"aaa")
+        assert not f(b"bbb")
+
+    def test_lazy_star_matches_empty(self, tmp_path: Path) -> None:
+        f = _compile_pattern("a*?", tmp_path)
+        assert f(b"")
+        assert f(b"aaa")
+        assert f(b"b")
+
+    def test_lazy_plus_requires_one(self, tmp_path: Path) -> None:
+        f = _compile_pattern("a+?", tmp_path)
+        assert f(b"a")
+        assert f(b"aaa")
+        assert not f(b"bbb")
+
+    def test_range_matches(self, tmp_path: Path) -> None:
+        f = _compile_pattern("[a-z]+", tmp_path)
+        assert f(b"hello")
+        assert not f(b"123")
+
+    def test_digit_shorthand(self, tmp_path: Path) -> None:
+        f = _compile_pattern(r"\d+", tmp_path)
+        assert f(b"42")
+        assert not f(b"abc")
 
 
 class TestLiteral:
@@ -272,10 +520,17 @@ class TestQuantifiers:
         assert "star" in s
         assert "conj" in s
 
-    def test_bounded_repeat_raises(self, regex_world: tuple) -> None:
+    def test_bounded_repeat_exact(self, regex_world: tuple) -> None:
         _, world = regex_world
-        with pytest.raises(NotImplementedError, match="Bounded repeat"):
-            RegexTranspiler(world).transpile("a{2,4}")
+        s = _ir(world, "a{3}")
+        assert "conj" in s
+        assert "optional" not in s
+
+    def test_bounded_repeat_range(self, regex_world: tuple) -> None:
+        _, world = regex_world
+        s = _ir(world, "a{2,4}")
+        assert "conj" in s
+        assert "optional" in s
 
     def test_lazy_star_maps_to_star(self, regex_world: tuple) -> None:
         _, world = regex_world
@@ -377,166 +632,3 @@ class TestComplex:
         s = _ir(world, r"colou?r")
         assert "optional" in s
         assert "conj" in s
-
-
-# ---------------------------------------------------------------------------
-# Execution helpers
-# ---------------------------------------------------------------------------
-
-# match_func signature after CPS optimisation:
-#   bool match_func(const char* str)
-# — mem is zero-sized and optimised away; the return continuation becomes the
-#   native return path.
-
-
-def _build_matcher(world: World, regex_ir: Def) -> None:
-    """
-    Wire `regex_ir` into an externally-visible CPS continuation:
-
-        match_func : cn [%mem.M, %mem.Ptr0(«⊤; I8»), cn[%mem.M, Bool]]
-
-    After optimize() + LLVM lowering this becomes bool(const char*).
-    """
-    n = world.top_nat()
-    mem_t = world.call(r"%mem.M", world.lit_nat_0())
-    str_t = world.call(r"%mem.Ptr0", [world.arr(n, world.type_i8())])
-    ret_t = world.cn([mem_t, world.type_bool()])
-
-    fn = world.mut_con([mem_t, str_t, ret_t]).set("match_func")
-    fn.externalize()
-
-    mem = fn.var().proj(0)
-    str_ptr = fn.var().proj(1)
-    ret = fn.var().proj(2)
-
-    # Apply regex: implicit n is inferred from str_ptr's array type
-    result = world.implicit_app(
-        regex_ir, [mem, str_ptr, world.lit(world.type_idx(n), 0)]
-    )
-    fn.app(False, ret, [result.proj(0), result.proj(1)])
-
-
-def _compile_pattern(pattern: str, tmp: Path) -> Callable[[bytes], bool]:
-    """Transpile, compile, and return a callable bool(bytes) matcher."""
-    from mim._mim_core import AST, Parser
-
-    driver = mim.make_driver("compile", "mem", "core", "regex", "opt")
-    world = driver.world()
-
-    # Parser.plugin() parses the .mim file, making lam/let defs (including
-    # _default_compile from opt.mim) available. load_plugins() only registers
-    # C++ normalizers/stages — it does NOT parse .mim definitions.
-    ast = AST(world)
-    p = Parser(ast)
-    for plugin_name in ("compile", "mem", "core", "regex", "opt"):
-        p.plugin(plugin_name)
-
-    regex_ir = RegexTranspiler(world).transpile(pattern)
-    _build_matcher(world, regex_ir)
-    world.optimize()
-
-    ll = tmp / "regex.ll"
-    so = tmp / "regex.so"
-    driver.backend("ll", str(ll), world)
-    subprocess.run(
-        ["clang", str(ll), "-o", str(so), "-Wno-override-module", "-shared"],
-        check=True,
-        capture_output=True,
-    )
-
-    lib = ctypes.CDLL(str(so))
-    lib.match_func.argtypes = [ctypes.c_char_p]
-    lib.match_func.restype = ctypes.c_bool
-    return lib.match_func
-
-
-def _python_matcher(pattern: str) -> Callable[[bytes], bool]:
-    regex = re.compile(pattern)
-    return lambda data: regex.match(data.decode()) is not None
-
-
-needs_clang = pytest.mark.skipif(
-    shutil.which("clang") is None, reason="clang not available"
-)
-
-
-@needs_clang
-class TestBenchmarkParity:
-    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
-    def test_jit_matches_python_re(self, tmp_path: Path, case: RegexBenchCase) -> None:
-        case_dir = tmp_path / case.name
-        case_dir.mkdir()
-        jit = _compile_pattern(case.pattern, case_dir)
-        py = _python_matcher(case.pattern)
-        assert jit(case.sample) == py(case.sample)
-
-
-bench_fn = Callable[[Callable[[bytes], bool], bytes], None]
-
-
-@needs_clang
-class TestRegexBenchmark:
-    @pytest.mark.benchmark(group="regex-jit")
-    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
-    def test_jit_benchmark(
-        self, benchmark: bench_fn, tmp_path: Path, case: RegexBenchCase
-    ) -> None:
-        case_dir = tmp_path / f"jit_{case.name}"
-        case_dir.mkdir()
-        jit = _compile_pattern(case.pattern, case_dir)
-        assert jit(case.sample) == _python_matcher(case.pattern)(case.sample)
-        benchmark(jit, case.sample)
-
-    @pytest.mark.benchmark(group="regex-python-re")
-    @pytest.mark.parametrize("case", _BENCH_CASES, ids=lambda case: case.name)
-    def test_python_re_benchmark(
-        self, benchmark: bench_fn, case: RegexBenchCase
-    ) -> None:
-        py = _python_matcher(case.pattern)
-        benchmark(py, case.sample)
-
-    def test_single_char_matches(self, tmp_path: Path) -> None:
-        f = _compile_pattern("a", tmp_path)
-        assert f(b"abc")
-
-    def test_single_char_no_match(self, tmp_path: Path) -> None:
-        f = _compile_pattern("a", tmp_path)
-        assert not f(b"bcd")
-
-
-@needs_clang
-class TestExecutionQuantifiers:
-    def test_star_matches_empty(self, tmp_path: Path) -> None:
-        # a* matches the empty prefix of any string
-        f = _compile_pattern("a*", tmp_path)
-        assert f(b"")
-        assert f(b"aaa")
-        assert f(b"b")  # empty match at position 0
-
-    def test_plus_requires_one(self, tmp_path: Path) -> None:
-        f = _compile_pattern("a+", tmp_path)
-        assert f(b"a")
-        assert f(b"aaa")
-        assert not f(b"bbb")
-
-    def test_lazy_star_matches_empty(self, tmp_path: Path) -> None:
-        f = _compile_pattern("a*?", tmp_path)
-        assert f(b"")
-        assert f(b"aaa")
-        assert f(b"b")
-
-    def test_lazy_plus_requires_one(self, tmp_path: Path) -> None:
-        f = _compile_pattern("a+?", tmp_path)
-        assert f(b"a")
-        assert f(b"aaa")
-        assert not f(b"bbb")
-
-    def test_range_matches(self, tmp_path: Path) -> None:
-        f = _compile_pattern("[a-z]+", tmp_path)
-        assert f(b"hello")
-        assert not f(b"123")
-
-    def test_digit_shorthand(self, tmp_path: Path) -> None:
-        f = _compile_pattern(r"\d+", tmp_path)
-        assert f(b"42")
-        assert not f(b"abc")
