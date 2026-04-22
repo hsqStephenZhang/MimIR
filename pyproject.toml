@@ -29,4 +29,4 @@ BUILD_SHARED_LIBS = "OFF"
 MIM_BUILD_PYTHON = "ON"
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "torch_backend/tests"]
+testpaths = ["python/tests", "torch_backend/tests"]
