@@ -23,6 +23,17 @@ Unsupported Features (Raises UnsupportedRegexError):
 Note: MimIR compiles the regex to a pure Deterministic Finite Automaton (DFA),
 meaning advanced PCRE features that require an NFA or backtracking are
 fundamentally unsupported at the IR level.
+
+Example benchmark result(i5-14600KF, 64Gg):
+
+Case,JIT Mean (ns),Python Mean (ns),Speedup
+complex_alternation,"9,331","71,718",7.69x
+backtracking_heavy,"3,256","45,814",14.07x
+large_alternation,"6,150","14,605",2.37x
+complex_email_full,640,716,1.12x
+simple_literal,494,726,1.47x
+long_repetition,"3,234",638,0.20x (Slower)
+
 """
 
 from __future__ import annotations
@@ -117,6 +128,26 @@ _BENCH_CASES = [
         name="complex_alternation",
         pattern=r"(ab|cd)+",
         sample=(b"abcd" * 1024) + b"x",
+    ),
+    RegexBenchCase(
+        name="large_alternation",
+        pattern=r"(apple|banana|cherry|date|elderberry|fig|grape|honeydew|kiwi|lemon|mango|nectarine|orange|papaya|quince|raspberry|strawberry|tangerine|ugli|vanilla|watermelon|xigua|yam|zucchini)+",
+        sample=(b"applebananaorange" * 100) + b"!",
+    ),
+    RegexBenchCase(
+        name="backtracking_heavy",
+        pattern=r"(a|ab)*c",
+        sample=(b"a" * 1000) + b"b", # This won't match, causing backtracking in NFA
+    ),
+    RegexBenchCase(
+        name="long_repetition",
+        pattern=r"a{500}b",
+        sample=(b"a" * 500) + b"b",
+    ),
+    RegexBenchCase(
+        name="complex_email_full",
+        pattern=r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+",
+        sample=(b"user.name+suffix@very-long-domain-name.example.com" * 50) + b"!",
     ),
 ]
 
