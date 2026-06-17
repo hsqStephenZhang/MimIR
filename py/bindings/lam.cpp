@@ -17,8 +17,12 @@ void init_lam(nb::module_& m) {
 
     nb::class_<Lam, Def>(m, "Lam", nb::never_destruct())
         .def("var", static_cast<const Def* (Lam::*)()>(&Def::var), nb::rv_policy::reference_internal)
+        .def("var", [](Lam& l, nat_t i) { return l.var(i); }, nb::rv_policy::reference_internal)
+        .def("ret_var", &Lam::ret_var, nb::rv_policy::reference_internal)
         .def("app", [](Lam& l, bool filter, Def* callee, std::vector<Def*> args) { return l.app(filter, callee, Defs(args)); }, nb::rv_policy::reference_internal)
         .def("set", [](Lam& l, std::string s) { return l.set(s); }, nb::rv_policy::reference_internal)
+        .def("set_body", [](Lam& l, bool filter, Def* body) { return l.set(filter, body); }, nb::rv_policy::reference_internal)
+        .def("body", [](Lam& l) { return l.body(); }, nb::rv_policy::reference_internal)
         .def("externalize", &Lam::externalize);
 
     nb::class_<App, Def>(m, "App", nb::never_destruct())

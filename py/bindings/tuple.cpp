@@ -10,8 +10,11 @@ namespace mim {
 
 void init_tuple(nb::module_& m) {
     nb::class_<Prod, Def>(m, "Prod", nb::never_destruct());
-    nb::class_<Seq, Def>(m, "Seq", nb::never_destruct());
-    nb::class_<Sigma, Prod>(m, "Sigma", nb::never_destruct());
+    nb::class_<Seq, Def>(m, "Seq", nb::never_destruct())
+        .def("arity", &Seq::arity, nb::rv_policy::reference_internal)
+        .def("body", &Seq::body, nb::rv_policy::reference_internal);
+    nb::class_<Sigma, Prod>(m, "Sigma", nb::never_destruct())
+        .def("set", [](Sigma& s, size_t i, const Def* def) { return s.set(i, def); }, nb::rv_policy::reference_internal);
     nb::class_<Tuple, Prod>(m, "Tuple", nb::never_destruct());
     nb::class_<Extract, Def>(m, "Extract", nb::never_destruct());
     nb::class_<Insert, Def>(m, "Insert", nb::never_destruct());

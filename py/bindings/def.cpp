@@ -15,10 +15,13 @@ void init_def(nb::module_& m) {
     nb::class_<Def>(m, "Def", nb::never_destruct())
         .def("world",  [](Def& d) { return &d.world(); }, nb::rv_policy::reference_internal)
         .def("driver", [](Def& d) { return &d.world().driver(); }, nb::rv_policy::reference_internal)
+        .def("type", &Def::type, nb::rv_policy::reference_internal)
+        .def("arity", &Def::arity, nb::rv_policy::reference_internal)
         .def("var",  nb::overload_cast<            >(&Def::var             ), nb::rv_policy::reference_internal)
         .def("proj", nb::overload_cast<nat_t, nat_t>(&Def::proj, nb::const_), nb::rv_policy::reference_internal)
         .def("proj", nb::overload_cast<       nat_t>(&Def::proj, nb::const_), nb::rv_policy::reference_internal)
         .def("dump", nb::overload_cast<            >(&Def::dump, nb::const_))
+        .def("write", [](const Def& d, int max, std::string file) { d.write(max, file.c_str()); })
         .def("__getitem__", [](const Def& d, nb::object index) -> const Def* {
             if (nb::isinstance<nb::int_ >(index)) return d.proj(nb::cast<nat_t>(index));
             if (nb::isinstance<nb::tuple>(index)) {
@@ -47,7 +50,8 @@ void init_def(nb::module_& m) {
             },
             nb::rv_policy::reference_internal);
 
-    nb::class_<Lit, Def>(m, "Lit", nb::never_destruct());
+    nb::class_<Lit, Def>(m, "Lit", nb::never_destruct())
+        .def("get_nat", [](const Lit& lit) { return lit.get<nat_t>(); });
 }
 
 } // namespace mim
