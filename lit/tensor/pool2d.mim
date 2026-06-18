@@ -1,4 +1,6 @@
-// RUN: %mim %s --output-ll - | %FileCheck %s
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p direct -p affine -p ll -o -
+// RUN: %FileCheck %s < %{s:stem}.ll
 
 plugin core;
 plugin tensor;
@@ -25,7 +27,7 @@ lam max_in (oh ow kh kw: %affine.index): «2; %affine.index» =
      %affine.op.add (%affine.semiop.mul (ow, 2), kw));
 
 fun extern avgpool2d_4x4 (input: «4, 4; F32»): «3, 3; F32» =
-    let padded = %tensor.pad @(F32, 2) ((4, 4), (1, 1), (1, 1), input, 0:F32);
+    let padded = %tensor.pad @(F32, 2) (4, 4) (0, (1, 1), (1, 1)) (input, 0:F32);
     return (%tensor.map_reduce_aff @1 @(F32, 2, 2) ((3, 3), (3, 3, 2, 2))
                 @(F32, 2, (6, 6))
                 (avg_step, 0:F32)
@@ -33,15 +35,14 @@ fun extern avgpool2d_4x4 (input: «4, 4; F32»): «3, 3; F32» =
                 padded);
 
 fun extern maxpool2d_4x4 (input: «4, 4; F32»): «3, 3; F32» =
-    let padded = %tensor.pad @(F32, 2) ((4, 4), (1, 1), (1, 1), input, 0xFF800000 : F32);
+    let padded = %tensor.pad @(F32, 2) (4, 4) (0, (1, 1), (1, 1)) (input, 0xFF800000 : F32);
     return (%tensor.map_reduce_aff @1 @(F32, 2, 2) ((3, 3), (3, 3, 2, 2))
                 @(F32, 2, (6, 6))
                 (max_step, 0xFF800000 : F32)
                 max_out max_in
                 padded);
 
-// CHECK: define
-// CHECK: @avgpool2d_4x4
-// CHECK: @maxpool2d_4x4
+// CHECK-DAG: @avgpool2d_4x4
+// CHECK-DAG: @maxpool2d_4x4
 // CHECK-NOT: %tensor.window_reduce2d
 // CHECK-NOT: %tensor.pad

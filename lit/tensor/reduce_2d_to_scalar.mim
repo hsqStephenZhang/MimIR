@@ -1,3 +1,10 @@
+// RUN: %mim -p opt %s -p direct -p affine -o %t
+// RUN: cat %t | %FileCheck %s
+
+// CHECK-DAG: fun extern reduce1
+// CHECK-DAG: fun extern reduce2
+// CHECK-DAG: fun extern reduce3
+
 // Reduce a 3D tensor by 1, 2, or 3 axes.
 plugin tensor;
 plugin core;
@@ -18,7 +25,7 @@ fun extern reduce1(input: «2, 3, 4; I32»): «2, 3; I32» =
 fun extern reduce2(input: «2, 3, 4; I32»): «2; I32» =
     return (%tensor.map_reduce_aff @1 @(I32, 1, 2) (2, (2, 3, 4)) @(I32, 3, (2, 3, 4)) (add, 0I32) keep_0 read_012 input);
 
-fun extern reduce3(input: «2, 3, 4; I32»): I32 =
+fun extern reduce3(input: «2, 3, 4; I32»): «(); I32» =
     return (%tensor.map_reduce_aff @1 @(I32, 0, 3) ((), (2, 3, 4)) @(I32, 3, (2, 3, 4)) (add, 0I32) keep_none read_012 input);
 
 lam extern _compile (): %compile.Phase =

@@ -1,5 +1,5 @@
-// RUN: %mim %s -p direct -p affine -o - | %FileCheck %s
-// RUN: %mim %s -p direct -p affine -o - | %FileCheck %s --check-prefix=GONE
+// RUN: %mim -p opt %s -p direct -p affine -o - | %FileCheck %s
+// RUN: %mim -p opt %s -p direct -p affine -o - | %FileCheck %s --check-prefix=GONE
 
 // A minimal 2x2 avgpool written only with existing tensor axioms.
 // We model the window sum with %tensor.map_reduce_aff and fold the
