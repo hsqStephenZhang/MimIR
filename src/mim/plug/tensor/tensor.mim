@@ -561,3 +561,4 @@ axm %tensor.fuse_tensor: %compile.Phase;
 /// Memory is threaded by `%%mem.add_mem` (scheduled next in the pipeline); run `%%buffer.lower_ptr` afterwards to reach `%%mem.Ptr`.
 ///
 axm %tensor.lower_to_mem: %compile.Phase;
+axm %tensor.analyze_op_pattern: %compile.Phase;

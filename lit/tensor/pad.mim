@@ -1,4 +1,4 @@
-// RUN: %mim %s -p opt -o %t
+// RUN: %mim -p opt %s -p direct -p affine -o %t
 // RUN: cat %t | %FileCheck %s
 // RUN: cat %t | %FileCheck %s --check-prefix=GONE
 

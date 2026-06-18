@@ -1,12 +1,12 @@
-// RUN: %mim %s -o - | %FileCheck %s
+// RUN: %mim -p opt %s -p direct -p affine -o - | %FileCheck %s
 
 plugin core;
 plugin tensor;
 plugin affine;
 plugin mem;
 
-fun extern test_pad {n m p q r s: Nat} (input: «n, m; I32»): «pad_shape ((n, m), (p, q), (r, s)); I32» =
-    return (%tensor.pad @(I32, 2) ((n, m), (p, q), (r, s), input, 0I32));
+fun extern test_pad {n m p q r s: Nat} (input: «n, m; I32»): «pad_shape ((p, q), (n, m), (r, s)); I32» =
+    return (%tensor.pad @(I32, 2) (n, m) (0, (p, q), (r, s)) (input, 0I32));
 
 // CHECK: fun extern test_pad
 // CHECK-NOT: %tensor.pad

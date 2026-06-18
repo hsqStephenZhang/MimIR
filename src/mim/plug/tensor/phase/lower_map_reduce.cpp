@@ -313,7 +313,8 @@ const Def* LowerMapReduce::lower_pad(const App* app) {
     DefVec so(rn);
     auto inner_type = type;
     for (u64 d = 0; d < rn; ++d) {
-        auto inner_type_seq = inner_type->as<Seq>();
+        assert(inner_type->node() == Node::Arr || inner_type->node() == Node::Pack);
+        auto inner_type_seq = (const Seq*)inner_type;
         so[d]               = inner_type_seq->arity();
         inner_type          = inner_type_seq->body();
     }

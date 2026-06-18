@@ -1,0 +1,27 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+// CHECK-DAG: fun extern transpose
+// CHECK-DAG: %affine.For
+// CHECK-DAG: Insert
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin direct;
+import compile;
+
+fun copy (x: I32, y: «1; I32»)@tt = return (y#0_1);
+lam id2 (i,j: %affine.index): «2; %affine.index» = (i, j);
+lam tr  (i,j: %affine.index): «2; %affine.index» = (j, i);
+
+fun extern transpose (input: «2, 3; I32»): «3, 2; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 2, 0) ((3,2), (2, 3))
+                @(‹1; I32›, ‹1; 2›, ‹1; (2, 3)›) (copy, ⊥:I32) tr id2 input);
+
+// don't lower %tensor.get/set
+lam extern _compile(): %compile.Phase =
+    %compile.phases ff (
+        %compile.named_phase "%tensor.lower_tensor",
+        %compile.named_phase "%tensor.lower_map_reduce", // no lower_get_set
+    );

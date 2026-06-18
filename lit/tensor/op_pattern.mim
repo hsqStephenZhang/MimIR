@@ -1,4 +1,4 @@
-// RUN: %mim %s -VV -o /dev/null 2>&1 | %FileCheck %s
+// RUN: %mim -p opt %s -p direct -p affine -VV -o /dev/null 2>&1 | %FileCheck %s
 
 plugin compile;
 plugin core;

@@ -7,6 +7,7 @@
 #include "mim/plug/tensor/phase/lower_get_set.h"
 #include "mim/plug/tensor/phase/lower_map_reduce.h"
 #include "mim/plug/tensor/phase/lower_to_mem.h"
+#include "mim/plug/tensor/phase/op_pattern.h"
 
 using namespace mim;
 using namespace mim::plug;

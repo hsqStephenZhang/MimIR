@@ -285,7 +285,8 @@ const Def* normalize_shape(const Def*, const Def* c, const Def* arg) {
     DefVec dims;
     auto ty = arg->type();
     for (u64 i = 0; i != *r; ++i)
-        if (auto a = ty->isa<Seq>()) {
+        if (ty->node() == Node::Arr || ty->node() == Node::Pack) {
+            auto a = (const Seq*)ty;
             dims.emplace_back(a->arity());
             ty = a->body();
         } else

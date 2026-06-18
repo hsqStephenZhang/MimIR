@@ -1,5 +1,5 @@
 // RUN: rm -f %{s:stem}.ll
-// RUN: %mim %s -p opt -p ll -o - | %FileCheck %s
+// RUN: %mim -p opt %s -p ll -p refly -o - | %FileCheck %s
 // RUN: clang %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t       ; test $? -eq 9
 // RUN: %t 1 2 3 ; test $? -eq 21

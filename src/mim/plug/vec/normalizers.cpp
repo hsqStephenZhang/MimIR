@@ -30,7 +30,8 @@ const Def* normalize_fold(const Def* type, const Def* c, const Def* arg) {
         return acc;
     }
 
-    if (auto seq = vec->isa<Seq>()) {
+    if (vec->node() == Node::Arr || vec->node() == Node::Pack) {
+        auto seq = (const Seq*)vec;
         if (auto n = Lit::isa<u64>(seq->arity()); n && type->isa<Nat>()) {
             if constexpr (id == fold::l)
                 for (auto proj : seq->projs(*n)) acc = w.app(f, {acc, proj});

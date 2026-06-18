@@ -2,4 +2,6 @@
 
 plugin tensor;
 
-fun extern test(): Nat = 0;
+fun extern test(): Nat = return 0;
+
+// CHECK: fun extern test
