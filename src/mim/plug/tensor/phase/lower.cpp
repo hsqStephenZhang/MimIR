@@ -65,6 +65,10 @@ const Def* Lower::rewrite_imm_App(const App* app) {
         return lower_via_impl(app, w.annex<tensor::conv_impl>());
     else if (Axm::isa<tensor::pool>(app))
         return lower_via_impl(app, w.annex<tensor::pool_impl>());
+    else if (Axm::isa<tensor::gather>(app))
+        return lower_via_impl(app, w.annex<tensor::gather_impl>());
+    else if (Axm::isa<tensor::scatter>(app))
+        return lower_via_impl(app, w.annex<tensor::scatter_impl>());
     return RWPhase::rewrite_imm_App(app);
 }
 

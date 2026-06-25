@@ -93,11 +93,13 @@ static std::pair<Lam*, const Def*> counting_for(const Def* bound, const Def* acc
 
 static const Def* get_element_type(const Def* type, u64 r) {
     auto cur = type;
-    for (u64 i = 0; i < r; ++i)
-        if (auto seq = cur->isa<Seq>())
-            cur = seq->body();
-        else
+    for (u64 i = 0; i < r; ++i) {
+        if (cur->node() == Node::Arr || cur->node() == Node::Pack) {
+            cur = ((const Seq*)cur)->body();
+        } else {
             break;
+        }
+    }
     return cur;
 }
 
@@ -106,10 +108,135 @@ static const Def* nested_extract(World& w, const Def* matrix, const Def* coords,
     return op_get(T, w.lit_nat(r), shape, matrix, coords);
 }
 
-static const Def*
-nested_insert(World& w, const Def* matrix, const Def* coords, const Def* shape, u64 r, const Def* elem) {
-    auto T = get_element_type(matrix->type(), r);
+static const Def* nested_insert(World& w, const Def* matrix, const Def* coords, const Def* shape, u64 r,
+                                const Def* elem) {
+    auto T = elem->type();
     return op_set(T, w.lit_nat(r), shape, matrix, coords, elem);
+}
+
+static std::tuple<Vector<u64>, Vector<u64>, absl::flat_hash_map<u64, const Def*>, Vector<u64>>
+extract_indices(const u64 n_nat, const u64 nis_nat, const Def* S, const Def* Ris, const Def* Sis, const Def* subs) {
+    auto& w = S->world();
+
+    absl::flat_hash_map<u64, const Def*> dims; // idx ↦ nat (size bound = dimension)
+    Vector<u64> out_indices;                   // output indices 0..n-1
+    Vector<u64> in_indices;                    // input indices ≥ n
+
+    Vector<const Def*> output_dims; // i<n ↦ nat (dimension S#i)
+    Vector<DefVec> input_dims;      // i<nis ↦ j<Ris#i ↦ nat (dimension Sis#i#j)
+    Vector<u64> n_input;            // i<nis ↦ nat (number of dimensions of Sis#i)
+
+    // collect output dimensions
+    w.DLOG("out dims (n) = {}", n_nat);
+    for (u64 i = 0; i < n_nat; ++i) {
+        auto dim = S->proj(n_nat, i);
+        w.DLOG("dim {} = {}", i, dim);
+        dims[i] = dim;
+        output_dims.push_back(dim);
+    }
+
+    // collect other (input) dimensions
+    w.DLOG("matrix count (nis) = {}", nis_nat);
+
+    for (u64 i = 0; i < nis_nat; ++i) {
+        auto ni     = Ris->proj(nis_nat, i);
+        auto ni_lit = Lit::isa(ni);
+        if (!ni_lit) error("matrix {} has non-constant dimension count", i);
+        u64 ni_nat = *ni_lit;
+        w.DLOG("  dims({}) = {}", i, ni_nat);
+        auto Sis_i = Sis->proj(nis_nat, i);
+        DefVec input_dims_i;
+        for (u64 j = 0; j < ni_nat; ++j) {
+            auto dim = Sis_i->proj(ni_nat, j);
+            w.DLOG("    dim {} {} = {}", i, j, dim);
+            input_dims_i.push_back(dim);
+        }
+        input_dims.push_back(input_dims_i);
+        n_input.push_back(ni_nat);
+    }
+
+    // extracts bounds for each index (in, out)
+    for (u64 i = 0; i < nis_nat; ++i) {
+        w.DLOG("investigate {} / {}", i, nis_nat);
+        auto indices = subs->proj(nis_nat, i);
+        w.DLOG("  indices {} = {}", i, indices);
+
+        for (u64 j = 0; j < n_input[i]; ++j) {
+            auto idx     = indices->proj(n_input[i], j);
+            auto idx_lit = Lit::isa(idx);
+            if (!idx_lit) error("index {} {} is not a literal", i, j);
+            u64 idx_nat = *idx_lit;
+            auto dim    = input_dims[i][j];
+            w.DLOG("      index {} = {}", j, idx);
+            w.DLOG("        dim {} = {}", idx, dim);
+            if (!dims.contains(idx_nat)) {
+                dims[idx_nat] = dim;
+                w.DLOG("        {} ↦ {}", idx_nat, dim);
+            } else {
+                auto prev_dim = dims[idx_nat];
+                w.DLOG("        prev dim {} = {}", idx_nat, prev_dim);
+                // override with more precise information
+                if (auto dim_lit = Lit::isa<u64>(dim)) {
+                    if (auto prev_dim_lit = Lit::isa<u64>(prev_dim)) {
+                        if (dim != prev_dim) {
+                            if (!dim_lit) error("dimension {} is not a literal", dim);
+                            if (!prev_dim_lit) error("previous dimension {} is not a literal", prev_dim);
+                            assert(*dim_lit == *prev_dim_lit && "dimensions must be equal");
+                        }
+                    } else
+                        dims[idx_nat] = dim;
+                } else if (dim != prev_dim) {
+                    error("dimensions {} and {} must be equal", dim, prev_dim);
+                }
+            }
+        }
+    }
+
+    for (auto [idx, dim] : dims) {
+        w.ILOG("dim {} = {}", idx, dim);
+        if (idx < n_nat)
+            out_indices.push_back(idx);
+        else
+            in_indices.push_back(idx);
+    }
+    // sort indices to make checks easier later.
+    std::sort(out_indices.begin(), out_indices.end());
+    std::sort(in_indices.begin(), in_indices.end());
+
+    return {in_indices, out_indices, dims, n_input};
+}
+
+static std::tuple<const Def*, const Def*, absl::flat_hash_map<u64, const Def*>, Lam*>
+create_outer_loop(Lam* fun, const Vector<u64>& out_indices, const absl::flat_hash_map<u64, const Def*>& dims) {
+    auto& w = fun->world();
+
+    // The function on where to continue -- return after all output loops.
+    auto cont        = fun->var(1);
+    auto current_mut = fun;
+
+    // First create the output matrix.
+    auto init_mat = w.bot(cont->type()->as<Pi>()->dom());
+    w.DLOG("init_mat {} : {}", init_mat, init_mat->type());
+
+    // Each of the outer loops contains the memory and matrix as accumulator (in an inner monad).
+    auto acc = init_mat;
+
+    absl::flat_hash_map<u64, const Def*> iterator; // idx ↦ %Idx (S/NI#i)
+
+    for (auto idx : out_indices) {
+        auto for_name    = w.sym("forIn_" + std::to_string(idx));
+        auto dim_nat_def = dims.at(idx);
+        auto dim         = w.call<core::bitcast>(w.type_i64(), dim_nat_def);
+        w.DLOG("out_cont {} : {}", cont, cont->type());
+
+        auto [body, for_call]       = counting_for(dim, acc, cont, for_name);
+        auto [iter, new_acc, yield] = body->template vars<3>();
+        cont                        = yield;
+        iterator[idx]               = w.call(core::conv::u, dim_nat_def, iter);
+        acc                         = new_acc;
+        current_mut = body;
+    }
+    return {acc, cont, iterator, current_mut};
 }
 
 const Def* LowerMapReduce::lower_map_reduce(const App* app) {
@@ -424,6 +551,126 @@ const Def* LowerMapReduce::lower_concat(const App* app) {
     return build_pointwise(args, type, s_out, rn, compute);
 }
 
+const Def* LowerMapReduce::lower_gather(const App* app) {
+    auto& w = new_world();
+    auto c  = rewrite(app->callee())->as<App>();
+    auto args = rewrite(app->arg());
+    auto type = rewrite(app->type());
+
+    auto [Tr, shapes, dim_arg] = c->uncurry_args<3>();
+    auto [T, r] = Tr->projs<2>();
+    auto [s_src, s_idx] = shapes->projs<2>();
+    auto dim = dim_arg;
+
+    auto r_l = Lit::isa<u64>(r);
+    if (!r_l) {
+        WLOG("{} doesn't have a lowering-time known rank", app);
+        return nullptr;
+    }
+    auto rn = *r_l;
+
+    auto dim_l = Lit::isa<u64>(dim);
+    if (!dim_l) {
+        WLOG("{} doesn't have a lowering-time known dim", app);
+        return nullptr;
+    }
+    auto dim_val = *dim_l;
+
+    auto compute = [&](const DefVec& out_iters, const Def* new_inputs) -> const Def* {
+        auto [input, index] = new_inputs->projs<2>();
+
+        DefVec idx_coords(rn);
+        for (u64 i = 0; i < rn; ++i) {
+            idx_coords[i] = w.call(core::conv::u, s_idx->proj(rn, i), out_iters[i]);
+        }
+
+        auto idx_val = nested_extract(w, index, w.tuple(idx_coords), s_idx, rn);
+        auto idx_val_i64 = w.call<core::bitcast>(w.type_i64(), idx_val);
+
+        DefVec src_coords(rn);
+        for (u64 i = 0; i < rn; ++i) {
+            auto src_coord_i64 = (i == dim_val) ? idx_val_i64 : out_iters[i];
+            src_coords[i] = w.call(core::conv::u, s_src->proj(rn, i), src_coord_i64);
+        }
+
+        return nested_extract(w, input, w.tuple(src_coords), s_src, rn);
+    };
+
+    return build_pointwise(args, type, s_idx, rn, compute);
+}
+
+const Def* LowerMapReduce::lower_scatter(const App* app) {
+    auto& w = new_world();
+    auto c  = rewrite(app->callee())->as<App>();
+    auto args = rewrite(app->arg());
+    auto type = rewrite(app->type());
+
+    auto [Tr, shapes, dim_arg] = c->uncurry_args<3>();
+    auto [T, r] = Tr->projs<2>();
+    auto [s_src, s_idx] = shapes->projs<2>();
+    auto dim = dim_arg;
+
+    auto r_l = Lit::isa<u64>(r);
+    if (!r_l) {
+        WLOG("{} doesn't have a lowering-time known rank", app);
+        return nullptr;
+    }
+    auto rn = *r_l;
+
+    auto dim_l = Lit::isa<u64>(dim);
+    if (!dim_l) {
+        WLOG("{} doesn't have a lowering-time known dim", app);
+        return nullptr;
+    }
+    auto dim_val = *dim_l;
+
+    auto fun    = w.mut_fun(args->type(), type)->set("scatter");
+    auto ds_fun = cps::op_cps2ds_dep(fun)->set("dsFun");
+    auto call   = w.app(ds_fun, args)->set("call");
+
+    auto new_inputs = fun->var(0)->set("is");
+    auto [input, index, updates] = new_inputs->projs<3>();
+
+    auto cont        = fun->var(1);
+    auto acc         = input;
+    auto current_mut = fun;
+
+    DefVec out_iters;
+    out_iters.reserve(rn);
+    for (u64 i = 0; i < rn; ++i) {
+        auto dim_size               = s_idx->proj(rn, i);
+        auto bound                  = w.call<core::bitcast>(w.type_i64(), dim_size);
+        auto [body, for_call]       = counting_for(bound, acc, cont, w.sym("forOut_" + std::to_string(i)));
+        auto [iter, new_acc, yield] = body->vars<3>();
+        cont                        = yield;
+        out_iters.push_back(iter);
+        acc = new_acc;
+        current_mut->set(true, for_call);
+        current_mut = body;
+    }
+
+    DefVec idx_coords(rn);
+    for (u64 i = 0; i < rn; ++i) {
+        idx_coords[i] = w.call(core::conv::u, s_idx->proj(rn, i), out_iters[i]);
+    }
+
+    auto idx_val = nested_extract(w, index, w.tuple(idx_coords), s_idx, rn);
+    auto idx_val_i64 = w.call<core::bitcast>(w.type_i64(), idx_val);
+
+    auto update_val = nested_extract(w, updates, w.tuple(idx_coords), s_idx, rn);
+
+    DefVec write_coords(rn);
+    for (u64 i = 0; i < rn; ++i) {
+        auto coord_i64 = (i == dim_val) ? idx_val_i64 : out_iters[i];
+        write_coords[i] = w.call(core::conv::u, s_src->proj(rn, i), coord_i64);
+    }
+
+    auto next_acc = nested_insert(w, acc, w.tuple(write_coords), s_src, rn, update_val);
+    current_mut->app(true, cont, next_acc);
+
+    return call;
+}
+
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (auto bc = Axm::isa<tensor::broadcast>(app)) {
         if (auto res = lower_broadcast(bc)) return res;
@@ -433,6 +680,10 @@ const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
         if (auto res = lower_pad(pad)) return res;
     } else if (auto cat = Axm::isa<tensor::concat>(app)) {
         if (auto res = lower_concat(cat)) return res;
+    } else if (auto gather = Axm::isa<tensor::gather_impl_axm>(app)) {
+        if (auto res = lower_gather(gather)) return res;
+    } else if (auto scatter = Axm::isa<tensor::scatter_impl_axm>(app)) {
+        if (auto res = lower_scatter(scatter)) return res;
     }
     return RWPhase::rewrite_imm_App(app);
 }

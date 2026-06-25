@@ -1,0 +1,12 @@
+// RUN: %mim -p opt %s -p direct -p affine -o - | %FileCheck %s
+plugin core;
+plugin tensor;
+plugin affine;
+
+// CHECK-DAG: fun extern scatter1d
+fun extern scatter1d (input: «4; I32», index: «2; Idx 4», updates: «2; I32»): «4; I32» =
+    return (%tensor.scatter @(I32, 1) (4, 2) 0_1 (input, index, updates));
+
+// CHECK-DAG: fun extern scatter2d
+fun extern scatter2d (input: «2, 3; I32», index: «2, 2; Idx 3», updates: «2, 2; I32»): «2, 3; I32» =
+    return (%tensor.scatter @(I32, 2) ((2, 3), (2, 2)) 1_2 (input, index, updates));
