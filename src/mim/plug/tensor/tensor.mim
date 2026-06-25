@@ -546,6 +546,47 @@ axm %tensor.select: {T: *}
 
 lam %tensor.select_impl {T: *} {r: Nat, s: «r; Nat»} (is: [«s; Bool», «s; T», «s; T»]): «s; T» =
   %tensor.map_impl @(T, 3, (Bool, T, T)) (%core.select @T) @(r, s) is;
+
+/// ### %%tensor.gather
+axm %tensor.gather: {T: *, r: Nat}
+                  → [s_src: «r; Nat», s_idx: «r; Nat»]
+                  → [dim: Idx r]
+                  → [input: «s_src; T», index: «s_idx; Idx (s_src#dim)»]
+                  → «s_idx; T»;
+
+axm %tensor.gather_impl_axm: {T: *, r: Nat}
+                           → [s_src: «r; Nat», s_idx: «r; Nat»]
+                           → [dim: Idx r]
+                           → [input: «s_src; T», index: «s_idx; Idx (s_src#dim)»]
+                           → «s_idx; T»;
+
+lam %tensor.gather_impl {T: *, r: Nat}
+                        (s_src: «r; Nat», s_idx: «r; Nat»)
+                        (dim: Idx r)
+                        (input: «s_src; T», index: «s_idx; Idx (s_src#dim)»)
+                      : «s_idx; T»
+                      = %tensor.gather_impl_axm @(T, r) (s_src, s_idx) dim (input, index);
+
+/// ### %%tensor.scatter
+axm %tensor.scatter: {T: *, r: Nat}
+                   → [s_src: «r; Nat», s_idx: «r; Nat»]
+                   → [dim: Idx r]
+                   → [input: «s_src; T», index: «s_idx; Idx (s_src#dim)», updates: «s_idx; T»]
+                   → «s_src; T»;
+
+axm %tensor.scatter_impl_axm: {T: *, r: Nat}
+                            → [s_src: «r; Nat», s_idx: «r; Nat»]
+                            → [dim: Idx r]
+                            → [input: «s_src; T», index: «s_idx; Idx (s_src#dim)», updates: «s_idx; T»]
+                            → «s_src; T»;
+
+lam %tensor.scatter_impl {T: *, r: Nat}
+                         (s_src: «r; Nat», s_idx: «r; Nat»)
+                         (dim: Idx r)
+                         (input: «s_src; T», index: «s_idx; Idx (s_src#dim)», updates: «s_idx; T»)
+                       : «s_src; T»
+                       = %tensor.scatter_impl_axm @(T, r) (s_src, s_idx) dim (input, index, updates);
+
 ///
 /// ## Phases
 ///
