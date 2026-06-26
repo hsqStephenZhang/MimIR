@@ -2,7 +2,7 @@
 
 // CHECK-DAG: fun extern transpose
 // CHECK-DAG: %affine.For
-// CHECK-DAG: Insert
+// CHECK-DAG: %tensor.set
 
 plugin core;
 plugin tensor;
