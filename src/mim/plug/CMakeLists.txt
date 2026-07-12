@@ -4,13 +4,15 @@ set(MIM_PLUGINS
     clos
     compile
     core
-    demo
     cps
+    demo
     gpu
     ll
+    ll_nvptx
     math
     matrix
     mem
+    nvptx
     opt
     option
     ord
