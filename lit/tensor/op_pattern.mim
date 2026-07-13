@@ -1,0 +1,70 @@
+// RUN: %mim %s -VV -o /dev/null 2>&1 | %FileCheck %s
+
+plugin compile;
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+
+fun add1 (acc: I32, y: «1; I32»)@tt : I32 = return (%core.wrap.add 0 (acc, y#0_1));
+fun add2 (acc: I32, y: «2; I32»)@tt : I32 = return (%core.wrap.add 0 (%core.wrap.add 0 (acc, y#0_2), y#1_2));
+fun copy (acc: I32, y: «1; I32»)@tt : I32 = return (y#0_1);
+lam id1i(i,j: %affine.index): «1; %affine.index» = (i,);
+lam id2 (i,j: %affine.index): «2; %affine.index» = (i, j);
+lam tr  (i,j: %affine.index): «2; %affine.index» = (j, i);
+lam proj_j (i, j: %affine.index): «1; %affine.index» = (j,);
+lam offset (i, j: %affine.index): «2; %affine.index» = (%affine.op.add (i, j), j);
+lam unit_bcast (i, j: %affine.index): «2; %affine.index» = (%affine.constant 0, j);
+
+// 1. Reduce (kind 3)
+fun extern row_sum (input: «3, 4; I32»): «3; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 1, 1) (3, (3, 4))
+                @(I32, 2, (3, 4)) (add1, 0I32) id1i id2 input);
+// CHECK-DAG: OpPatternAnalysis: kind 3 (CommReduce) for {{.*}} (nis=1, Ro=1, Rr=1, map_out=broadcast, maps=[elemwise])
+
+// 1b. Reduce with affine reuse pattern (kind 4)
+fun extern offset_reduce (input: «3, 4; I32»): «3; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 1, 1) (3, (3, 4))
+                @(I32, 2, (3, 4)) (add1, 0I32) id1i offset input);
+// CHECK-DAG: OpPatternAnalysis: kind 4 (OutEWiseFusable) for {{.*}} (nis=1, Ro=1, Rr=1, map_out=broadcast, maps=[injective])
+
+// 2. ElemWise (kind 0)
+fun extern elem_wise (input: «3, 4; I32»): «3, 4; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 2, 0) ((3, 4), (3, 4))
+                @(I32, 2, (3, 4)) (copy, ⊥:I32) id2 id2 input);
+// CHECK-DAG: OpPatternAnalysis: kind 0 (ElemWise) for {{.*}} (nis=1, Ro=2, Rr=0, map_out=elemwise, maps=[elemwise])
+
+// 3. Transpose (Injective, kind 2)
+fun extern transpose_out (input: «3, 4; I32»): «4, 3; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 2, 0) ((4, 3), (3, 4))
+                @(I32, 2, (3, 4)) (copy, ⊥:I32) tr id2 input);
+// CHECK-DAG: OpPatternAnalysis: kind 2 (Injective) for {{.*}} (nis=1, Ro=2, Rr=0, map_out=injective, maps=[elemwise])
+
+// 4. Pure Broadcast (kind 1)
+fun extern pure_broadcast (input: «4; I32»): «3, 4; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 2, 0) ((3, 4), (3, 4))
+                @(I32, 1, (4,)) (copy, ⊥:I32) id2 proj_j input);
+// CHECK-DAG: OpPatternAnalysis: kind 1 (Broadcast) for {{.*}} (nis=1, Ro=2, Rr=0, map_out=elemwise, maps=[broadcast])
+
+// 5. Assimilated ElemWise (kind 0) - Mix of ElemWise and Broadcast
+fun extern mixed_elem_wise (in1: «3, 4; I32», in2: «4; I32»): «3, 4; I32» =
+    return (%tensor.map_reduce_aff @2 @(I32, 2, 0) ((3, 4), (3, 4))
+                @((I32, I32), (2, 1), ((3, 4), (4,))) (add2, 0I32) id2 (id2, proj_j) (in1, in2));
+// CHECK-DAG: OpPatternAnalysis: kind 0 (ElemWise) for {{.*}} (nis=2, Ro=2, Rr=0, map_out=elemwise, maps=[elemwise,broadcast])
+
+// 6. Unit-dim Broadcast (kind 1) - TVM-style broadcast with a singleton dimension.
+fun extern unit_dim_broadcast (input: «1, 4; I32»): «3, 4; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 2, 0) ((3, 4), (3, 4))
+                @(I32, 2, (1, 4)) (copy, ⊥:I32) id2 unit_bcast input);
+// CHECK-DAG: OpPatternAnalysis: kind 1 (Broadcast) for {{.*}} (nis=1, Ro=2, Rr=0, map_out=elemwise, maps=[broadcast])
+
+// 7. Opaque fallback (kind 8)
+fun extern opaque_get (input: «2, 2; I32»): I32 =
+    return (%tensor.get @(I32, 2, (2, 2)) (input, (0_2, 0_2)));
+// CHECK-DAG: OpPatternAnalysis: kind 8 (Opaque) for {{.*}}
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %tensor.analyze_op_pattern,
+        %compile.internal_cleanup_phase
+    );

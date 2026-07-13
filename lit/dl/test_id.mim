@@ -1,0 +1,5 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin tensor;
+
+fun extern test(): Nat = 0;

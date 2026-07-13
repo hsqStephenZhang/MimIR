@@ -1,0 +1,27 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin math;
+plugin tensor;
+plugin compile;
+plugin dl;
+
+let F32 = %math.F32;
+
+fun extern dl_ops (x: «2; «3; F32»», y: «2; «3; F32»»): «2; «3; F32»» =
+    let z = %dl.add_f32 @(2, (2, 3)) (x, y);
+    let w = %dl.mul_f32 @(2, (2, 3)) (z, y);
+    return (%dl.relu_f32 @(2, (2, 3)) w);
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup_phase,
+        %tensor.lower_tensor,
+        %tensor.fuse_tensor,
+        %compile.internal_cleanup_phase,
+    );
+
+// CHECK-DAG: fun extern dl_ops
+// CHECK-NOT: %dl.add_f32
+// CHECK-NOT: %dl.mul_f32
+// CHECK-NOT: %dl.relu_f32

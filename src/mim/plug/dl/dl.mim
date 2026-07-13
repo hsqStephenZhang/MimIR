@@ -1,0 +1,37 @@
+/// # The dl Plugin {#dl}
+///
+/// @see mim::plug::dl
+///
+/// Tensor-level DL helpers used by FX import.
+///
+/// [TOC]
+///
+/// ## Dependencies
+///
+plugin core;
+plugin math;
+plugin tensor;
+
+/// ### %%dl.add_f32
+///
+/// Elementwise tensor addition for F32.
+///
+lam %dl.add_f32 {r: Nat, s: «r; Nat»} (is: [«s; %math.F32», «s; %math.F32»]): «s; %math.F32» =
+    %tensor.binary_impl (%math.arith.add @%math.f32 0) @(r, s) is;
+
+/// ### %%dl.mul_f32
+///
+/// Elementwise tensor multiplication for F32.
+///
+lam %dl.mul_f32 {r: Nat, s: «r; Nat»} (is: [«s; %math.F32», «s; %math.F32»]): «s; %math.F32» =
+    %tensor.binary_impl (%math.arith.mul @%math.f32 0) @(r, s) is;
+
+/// ### %%dl.relu_f32
+///
+/// Elementwise tensor rectified linear unit for F32.
+///
+lam relu_scalar_f32 (x: %math.F32): %math.F32 =
+    %math.extrema.iM @%math.f32 0 (x, 0:(%math.F32));
+
+lam %dl.relu_f32 {r: Nat, s: «r; Nat»} (i: «s; %math.F32»): «s; %math.F32» =
+    %tensor.unary_impl relu_scalar_f32 @(r, s) i;

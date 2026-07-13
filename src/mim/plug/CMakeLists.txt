@@ -5,8 +5,8 @@ set(MIM_PLUGINS
     clos
     compile
     core
-    demo
     cps
+    dl
     gpu
     ll
     math
