@@ -1,0 +1,30 @@
+// Reduce a 3D tensor by 1, 2, or 3 axes.
+plugin tensor;
+plugin core;
+plugin opt;
+plugin affine;
+
+fun add (x: I32, y: «1; I32»)@tt = return (%core.wrap.add 0 (x, y#0_1));
+
+lam keep_01 (i j k: %affine.index): «2; %affine.index» = (i, j);
+lam keep_0  (i j k: %affine.index): «1; %affine.index» = i;
+lam keep_none (i j k: %affine.index): «0; %affine.index» = ();
+
+lam read_012 (i j k: %affine.index): «3; %affine.index» = (i, j, k);
+
+fun extern reduce1(input: «2, 3, 4; I32»): «2, 3; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 2, 1) ((2, 3), (2, 3, 4)) @(I32, 3, (2, 3, 4)) (add, 0I32) keep_01 read_012 input);
+
+fun extern reduce2(input: «2, 3, 4; I32»): «2; I32» =
+    return (%tensor.map_reduce_aff @1 @(I32, 1, 2) (2, (2, 3, 4)) @(I32, 3, (2, 3, 4)) (add, 0I32) keep_0 read_012 input);
+
+fun extern reduce3(input: «2, 3, 4; I32»): I32 =
+    return (%tensor.map_reduce_aff @1 @(I32, 0, 3) ((), (2, 3, 4)) @(I32, 3, (2, 3, 4)) (add, 0I32) keep_none read_012 input);
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup_phase,
+        %tensor.lower_tensor,
+        %tensor.fuse_tensor,
+        %compile.internal_cleanup_phase,
+    );

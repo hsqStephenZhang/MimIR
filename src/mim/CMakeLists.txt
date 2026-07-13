@@ -18,6 +18,8 @@ target_sources(libmim
         sexpr.cpp
         tuple.cpp
         world.cpp
+        arith/rewriter.cpp
+        arith/modular_set.cpp
         ast/ast.cpp
         ast/bind.cpp
         ast/emit.cpp

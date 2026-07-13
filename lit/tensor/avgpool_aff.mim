@@ -1,0 +1,31 @@
+// RUN: %mim %s -p direct -p affine -o - | %FileCheck %s
+// RUN: %mim %s -p direct -p affine -o - | %FileCheck %s --check-prefix=GONE
+
+// A minimal 2x2 avgpool written only with existing tensor axioms.
+// We model the window sum with %tensor.map_reduce_aff and fold the
+// average factor 1/4 into the combiner.
+// CHECK: fun extern avgpool2x2
+// CHECK-NOT: %tensor.map_reduce_aff
+// GONE-NOT: %tensor.map_reduce_aff
+
+plugin tensor;
+plugin refly;
+plugin core;
+plugin direct;
+plugin affine;
+plugin math;
+
+let f32 = %math.f32;
+let F32 = %math.F32;
+
+fun avgpool2x2_step (acc: F32, x: F32)@tt : F32 =
+    return (%math.arith.add 0 (acc, %math.arith.mul 0 (x, 0x3E800000 : F32)));
+
+lam avgpool2x2_out (oh ow kh kw: %affine.index): «2; %affine.index» = (oh, ow);
+lam avgpool2x2_in  (oh ow kh kw: %affine.index): «2; %affine.index» =
+    (%affine.op.add (%affine.semiop.mul (oh, 2), kh),
+     %affine.op.add (%affine.semiop.mul (ow, 2), kw));
+
+fun extern avgpool2x2 (input: «4, 4; F32»): «2, 2; F32» =
+    return (%tensor.map_reduce_aff @1 @(F32, 2, 2) ((2, 2), (2, 2, 2, 2))
+                @(F32, 2, (4, 4)) (avgpool2x2_step, 0:F32) avgpool2x2_out avgpool2x2_in input);

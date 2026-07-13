@@ -83,7 +83,8 @@ void AST::bootstrap(Sym plugin, std::ostream& h) {
         flags_t ax_id = annex.base();
 
         auto& os = outer_namespace.emplace_back();
-        std::print(os, "template<> constexpr flags_t Annex::Base<plug::{}::{}> = 0x{:x};\n", plugin, sym.tag, ax_id);
+        std::print(os, "template<> constexpr mim::flags_t mim::Annex::Base<mim::plug::{}::{}", plugin, sym.tag);
+        std::println(os, "> = 0x{:x};", ax_id);
 
         if (auto& subs = annex.subs; !subs.empty()) {
             for (const auto& aliases : subs) {
@@ -94,22 +95,30 @@ void AST::bootstrap(Sym plugin, std::ostream& h) {
                 if (auto norm = annex.normalizer) {
                     auto sub = aliases.front();
                     auto& os = normalizers.emplace_back();
-                    std::print(os, "normalizers[flags_t({}::{})] = &{}<{}::{}>;", sym.tag, sub, norm, sym.tag, sub);
+                    std::print(os, "normalizers[flags_t({}::{})] = &{}", sym.tag, sub, norm);
+                    std::print(os, "<");
+                    std::print(os, "{}::{}", sym.tag, sub);
+                    std::print(os, ">;");
                 }
             }
         } else {
-            if (auto norm = annex.normalizer)
-                std::print(normalizers.emplace_back(), "normalizers[flags_t(Annex::Base<{}>)] = &{};", sym.tag, norm);
+            if (auto norm = annex.normalizer) {
+                auto& os = normalizers.emplace_back();
+                std::print(os, "normalizers[mim::flags_t(mim::Annex::Base<{}", sym.tag);
+                std::print(os, ">)] = &{};", norm);
+            }
         }
         --tab;
-        std::println(h, "{}}};\n", tab);
+        std::println(h, "{}{}", tab, "};\n");
 
-        std::println(outer_namespace.emplace_back(), "template<> constexpr size_t Annex::Num<plug::{}::{}> = {};", plugin, sym.tag, annex.subs.size());
+        auto& os_num = outer_namespace.emplace_back();
+        std::print(os_num, "template<> constexpr size_t mim::Annex::Num<mim::plug::{}::{}", plugin, sym.tag);
+        std::println(os_num, "> = {};", annex.subs.size());
 
         if (auto norm = annex.normalizer) {
             if (auto& subs = annex.subs; !subs.empty()) {
-                std::println(h, "{}template<{}>\nconst Def* {}(const Def*, const Def*, const Def*);\n", tab, sym.tag,
-                           norm);
+                std::print(h, "{}template<{}", tab, sym.tag);
+                std::println(h, ">\nconst Def* {}(const Def*, const Def*, const Def*);\n", norm);
             } else {
                 std::println(h, "{}const Def* {}(const Def*, const Def*, const Def*);", tab, norm);
             }
@@ -122,16 +131,18 @@ void AST::bootstrap(Sym plugin, std::ostream& h) {
         std::println(h, "{}void register_normalizers(Normalizers& normalizers);\n", tab);
         std::println(h, "{}#define MIM_{}_NORMALIZER_IMPL \\", tab, plugin);
         ++tab;
-        std::println(h, "{}void register_normalizers(Normalizers& normalizers) {{\\", tab);
+        std::print(h, "{}void register_normalizers(Normalizers& normalizers) ", tab);
+        std::println(h, "{}\\", "{");
         ++tab;
         for (const auto& normalizer : normalizers)
-            std::println(h, "{}{} \\", tab, normalizer.str());
+            if (normalizer)
+                std::println(h, "{}{} \\", tab, normalizer.str());
         --tab;
-        std::println(h, "{}}}", tab);
+        std::println(h, "{}{}", tab, "}");
         --tab;
     }
 
-    std::println(h, "{}}} // namespace plug::{}\n", tab, plugin);
+    std::println(h, "{}{} // namespace plug::{}\n", tab, "}", plugin);
 
     std::println(h, "{}#ifndef DOXYGEN // don't include in Doxygen documentation\n", tab);
     for (const auto& line : outer_namespace)
@@ -141,20 +152,23 @@ void AST::bootstrap(Sym plugin, std::ostream& h) {
     // emit helpers for non-function axm
     for (const auto& [tag, ax] : infos) {
         auto sym = ax.sym;
-        if ((ax.pi && *ax.pi) || sym.plugin != plugin) continue; // from function or other plugin?
-        std::println(h, "{}template<> struct Axm::IsANode<plug::{}::{}> {{ using type = Axm; }};", tab, sym.plugin,
-                     sym.tag);
+        if ((ax.pi && *ax.pi) || sym.plugin != plugin) continue;
+        std::print(h, "{}template<> struct Axm::IsANode<plug::{}::{}", tab, sym.plugin, sym.tag);
+        std::print(h, "> ");
+        std::println(h, "{{ using type = Axm; }};");
     }
 
     std::println(h, "{}\n#endif", tab);
-    std::println(h, "{}}} // namespace mim\n", tab);
+    std::println(h, "{}{} // namespace mim\n", tab, "}");
 
     std::println(h, "{}#ifndef DOXYGEN // don't include in Doxygen documentation\n", tab);
     for (const auto& [key, annex] : infos) {
         if (!annex.subs.empty()) {
             auto sym = annex.sym;
-            std::println(h, "{}template<> struct fe::is_bit_enum<mim::plug::{}::{}> : std::true_type {{}};", tab,
+            std::print(h, "{}template<> struct fe::is_bit_enum<mim::plug::{}::{}", tab,
                          sym.plugin, sym.tag);
+            std::print(h, "> : std::true_type ");
+            std::println(h, "{{}};");
         }
     }
 

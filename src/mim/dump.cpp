@@ -480,7 +480,7 @@ void Dumper::dump_lam(Lam* lam) {
         else
             std::println(os, "{}{};", tab, Dump(last->body()));
     } else {
-        std::println(os, "{}<unset>;", tab);
+        std::println(os, "{}{}", tab, "<unset>;");
     }
     --tab;
     std::println(os, "{}", tab);
