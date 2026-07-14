@@ -1,0 +1,23 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+
+lam nat_ring (): %tensor.Ring = (Nat, 0, %core.nat.add, %core.nat.mul);
+
+// CHECK-LABEL: fun extern conv_img2col
+// CHECK-NOT: %tensor.conv
+// CHECK: %tensor.dot_product
+// CHECK: %tensor.reshape
+// CHECK: %tensor.transpose
+fun extern conv_img2col (input: «2, 2, 5, 5; Nat», weight: «3, 2, 3, 3; Nat»): «2, 3, 5, 5; Nat» =
+    return (%tensor.conv (nat_ring ()) ((1, 1), (1, 1), (1, 1)) (input, weight));
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.conv_to_img2col,
+        %compile.internal_cleanup,
+    );

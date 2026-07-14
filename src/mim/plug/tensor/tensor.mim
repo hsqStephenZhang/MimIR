@@ -278,6 +278,23 @@ lam %tensor.conv_impl [R: %tensor.Ring] {n cin cout h w kh kw: Nat}
         (%tensor.proj_map @(7, 4) (0, 1, 2, 3))
         (conv2d_in_map (stride, dilation), %tensor.proj_map @(7, 4) (1, 4, 5, 6))
         (padded, weight);
+
+/// Img2col read map for current NCHW/OIHW convolution layout.
+/// The output loop vector is `(n, m, k)`, where `m = oh * ow` and `k = cin * kh * kw`.
+/// `m` is delinearized to `(oh, ow)`, and `k` to `(ci, kh, kw)`.
+lam conv2d_img2col_map (out_hw: «2; Nat», weight_ci_kh_kw: «3; Nat», stride: «2; Nat», dilation: «2; Nat»)
+                       (o: «3; %affine.index»): «4; %affine.index» =
+    let out_ij = %affine.delinearize (o#1_3, out_hw);
+    let k_ijk  = %affine.delinearize (o#2_3, weight_ci_kh_kw);
+    (o#0_3, k_ijk#0_3,
+     %affine.op.add (%affine.semiop.mul (out_ij#0_2, stride#0_2), %affine.semiop.mul (k_ijk#1_3, dilation#0_2)),
+     %affine.op.add (%affine.semiop.mul (out_ij#1_2, stride#1_2), %affine.semiop.mul (k_ijk#2_3, dilation#1_2)));
+
+/// Flattens OIHW weights to a row-major `(cin * kh * kw, cout)` matrix.
+lam conv2d_weight_col_map (weight_ci_kh_kw: «3; Nat») (o: «2; %affine.index»): «4; %affine.index» =
+    let k_ijk = %affine.delinearize (o#0_2, weight_ci_kh_kw);
+    (o#1_2, k_ijk#0_3, k_ijk#1_3, k_ijk#2_3);
+
 ///
 /// ### %%tensor.pool
 ///
@@ -454,6 +471,44 @@ axm %tensor.transpose_2d: {T: *}
 
 lam %tensor.transpose_2d_impl {T: *} {s: «2; Nat»} (input: «s; T»): «s#tt, s#ff; T» =
   %tensor.transpose_impl @(T, 2, s) (input, (tt, ff));
+
+/// Conv2D via img2col:
+///   input  NCHW  -> columns `(n, oh*ow, cin*kh*kw)`
+///   weight OIHW  -> matrix  `(cin*kh*kw, cout)`
+///   matmul        -> `(n, oh*ow, cout)`
+///   reshape+transpose back to NCHW `(n, cout, oh, ow)`.
+///
+/// This is intentionally a separate template from `%tensor.conv_impl`: a C++ conversion phase decides when to use
+/// this form, while existing `%tensor.lower_tensor` keeps the direct windowed map-reduce lowering.
+lam %tensor.conv_img2col_impl [R: %tensor.Ring] {n cin cout h w kh kw: Nat}
+                              (stride: «2; Nat», dilation: «2; Nat», padding: «2; Nat»)
+                              (input: «n, cin, h, w; R#T», weight: «cout, cin, kh, kw; R#T»)
+                            : «conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding); R#T» =
+    let s_in        = (n, cin, h, w);
+    let pad_lohi    = (0, 0, padding#0_2, padding#1_2);
+    let padded      = %tensor.pad s_in (0, pad_lohi, pad_lohi) (input, R#_0);
+    let s_padded    = %tensor.shape 4 padded;
+    let s_out       = conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding);
+    let oh          = s_out#2_4;
+    let ow          = s_out#3_4;
+    let m           = %core.nat.mul (oh, ow);
+    let k_flat      = %core.nat.mul (cin, %core.nat.mul (kh, kw));
+    let out_hw      = (oh, ow);
+    let weight_ijk  = (cin, kh, kw);
+    let cols        = %tensor.map_reduce @1 @(R#T, 3, 0) ((n, m, k_flat), (n, m, k_flat))
+        @(R#T, 4, s_padded) (tensor_copy @(R#T), ⊥: (R#T))
+        (%affine.id @3)
+        (conv2d_img2col_map (out_hw, weight_ijk, stride, dilation),)
+        padded;
+    let weight_col  = %tensor.map_reduce @1 @(R#T, 2, 0) ((k_flat, cout), (k_flat, cout))
+        @(R#T, 4, (cout, cin, kh, kw)) (tensor_copy @(R#T), ⊥: (R#T))
+        (%affine.id @2)
+        (conv2d_weight_col_map weight_ijk,)
+        weight;
+    let mm          = %tensor.dot_product R @(3, 2) (2_3, 0_2, (), ()) @((n, m, k_flat), (k_flat, cout))
+        (cols, weight_col);
+    let nhwc        = %tensor.reshape (n, m, cout) (n, oh, ow, cout) mm;
+    %tensor.transpose @(R#T, 4, (n, oh, ow, cout)) (nhwc, (0_4, 2_4, 3_4, 1_4));
 ///
 /// ### %%tensor.broadcast
 ///
@@ -521,6 +576,24 @@ axm %tensor.unary: {Ti To: *}
 
 lam %tensor.unary_impl {Ti To : *} [app: Ti → To] {r: Nat, s: «r; Nat»} (i: «s; Ti»): «s; To» =
   %tensor.map_impl @(To, 1, Ti) app @(r, s) i;
+///
+/// ### %%tensor.relu
+///
+/// Maps `max(x, zero)` over a tensor. The scalar `max` is explicit so this stays generic over element types.
+///
+axm %tensor.relu: {T: *}
+                → [zero: T, max: [T, T] → T]
+                → {r: Nat, s: «r; Nat»}
+                → [i: «s; T»]
+                → «s; T»;
+
+lam relu_fun {T: *} (zero: T, max: [T, T] → T) (x: T): T = max (x, zero);
+
+lam %tensor.relu_impl {T: *}
+                      (zero: T, max: [T, T] → T)
+                      {r: Nat, s: «r; Nat»}
+                      (i: «s; T»): «s; T» =
+  %tensor.unary_impl @(T, T) (relu_fun (zero, max)) @(r, s) i;
 ///
 /// ### %%tensor.binary
 ///
@@ -591,6 +664,7 @@ lam %tensor.scatter_impl {T: *, r: Nat}
 /// ## Phases
 ///
 axm %tensor.lower_tensor: %compile.Phase;
+axm %tensor.conv_to_img2col: %compile.Phase;
 axm %tensor.lower_map_reduce: %compile.Phase;
 axm %tensor.lower_get_set: %compile.Phase;
 axm %tensor.fuse_tensor: %compile.Phase;

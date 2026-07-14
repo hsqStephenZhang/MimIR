@@ -2,6 +2,7 @@ add_mim_plugin(tensor
     SOURCES
         tensor.cpp
         normalizers.cpp
+        phase/conv_to_img2col.cpp
         phase/lower.cpp
         phase/lower_get_set.cpp
         phase/lower_map_reduce.cpp
