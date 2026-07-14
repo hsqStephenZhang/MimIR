@@ -236,9 +236,9 @@ axm %gpu.host_malloc2gpualloc_repl: %compile.Phase;
 ///
 /// ### Phases
 ///
-axm %gpu.mem_checks:                 %compile.Phase;
-axm %gpu.remove_double_syncs:              %compile.Phase;
-axm %gpu.split_apply:                      %compile.Phase;
+axm %gpu.mem_checks:          %compile.Phase;
+axm %gpu.remove_double_syncs: %compile.Phase;
+axm %gpu.split_apply:         %compile.Phase;
 ///
 /// ### Pipelines
 ///
