@@ -31,44 +31,39 @@ const Def* Lower::lower_via_impl(const App* app, const Def* impl_annex) {
 }
 
 const Def* Lower::rewrite_imm_App(const App* app) {
-    auto& w = new_world();
+    auto via_impl = [&]<class Src, class Impl>() -> const Def* {
+        static_assert(Annex::base<Src>() != flags_t(-1), "invalid source axiom");
+        static_assert(Annex::base<Impl>() != flags_t(-1), "invalid implementation axiom");
+        if (!Axm::isa<Src>(app)) return nullptr;
+        return lower_via_impl(app, new_world().annex<Impl>());
+    };
 
-    if (Axm::isa<tensor::broadcast_in_dim>(app))
-        return lower_via_impl(app, w.annex<tensor::broadcast_in_dim_impl>());
-    else if (Axm::isa<tensor::product_2d>(app))
-        return lower_via_impl(app, w.annex<tensor::product_2d_impl>());
-    else if (Axm::isa<tensor::bmm>(app))
-        return lower_via_impl(app, w.annex<tensor::bmm_impl>());
-    else if (Axm::isa<tensor::dot_product>(app))
-        return lower_via_impl(app, w.annex<tensor::dot_product_impl>());
-    else if (Axm::isa<tensor::transpose>(app))
-        return lower_via_impl(app, w.annex<tensor::transpose_impl>());
-    else if (Axm::isa<tensor::transpose_2d>(app))
-        return lower_via_impl(app, w.annex<tensor::transpose_2d_impl>());
-    else if (Axm::isa<tensor::map>(app))
-        return lower_via_impl(app, w.annex<tensor::map_impl>());
-    else if (Axm::isa<tensor::unary>(app))
-        return lower_via_impl(app, w.annex<tensor::unary_impl>());
-    else if (Axm::isa<tensor::binary>(app))
-        return lower_via_impl(app, w.annex<tensor::binary_impl>());
-    else if (Axm::isa<tensor::select>(app))
-        return lower_via_impl(app, w.annex<tensor::select_impl>());
-    else if (Axm::isa<tensor::repeat>(app))
-        return lower_via_impl(app, w.annex<tensor::repeat_impl>());
-    else if (Axm::isa<tensor::reshape>(app))
-        return lower_via_impl(app, w.annex<tensor::reshape_impl>());
-    else if (Axm::isa<tensor::slice>(app))
-        return lower_via_impl(app, w.annex<tensor::slice_impl>());
-    else if (Axm::isa<tensor::flip>(app))
-        return lower_via_impl(app, w.annex<tensor::flip_impl>());
-    else if (Axm::isa<tensor::conv>(app))
-        return lower_via_impl(app, w.annex<tensor::conv_impl>());
-    else if (Axm::isa<tensor::pool>(app))
-        return lower_via_impl(app, w.annex<tensor::pool_impl>());
-    else if (Axm::isa<tensor::gather>(app))
-        return lower_via_impl(app, w.annex<tensor::gather_impl>());
-    else if (Axm::isa<tensor::scatter>(app))
-        return lower_via_impl(app, w.annex<tensor::scatter_impl>());
+    const Def* lowered = nullptr;
+#define MIM_TRY_VIA_IMPL(src, impl) \
+    if (!lowered) lowered = via_impl.template operator()<tensor::src, tensor::impl>()
+    MIM_TRY_VIA_IMPL(broadcast_in_dim, broadcast_in_dim_impl);
+    MIM_TRY_VIA_IMPL(product_2d, product_2d_impl);
+    MIM_TRY_VIA_IMPL(bmm, bmm_impl);
+    MIM_TRY_VIA_IMPL(dot_product, dot_product_impl);
+    MIM_TRY_VIA_IMPL(transpose, transpose_impl);
+    MIM_TRY_VIA_IMPL(transpose_2d, transpose_2d_impl);
+    MIM_TRY_VIA_IMPL(map, map_impl);
+    MIM_TRY_VIA_IMPL(unary, unary_impl);
+    MIM_TRY_VIA_IMPL(relu, relu_impl);
+    MIM_TRY_VIA_IMPL(binary, binary_impl);
+    MIM_TRY_VIA_IMPL(select, select_impl);
+    MIM_TRY_VIA_IMPL(repeat, repeat_impl);
+    MIM_TRY_VIA_IMPL(reshape, reshape_impl);
+    MIM_TRY_VIA_IMPL(slice, slice_impl);
+    MIM_TRY_VIA_IMPL(flip, flip_impl);
+    MIM_TRY_VIA_IMPL(conv, conv_impl);
+    MIM_TRY_VIA_IMPL(pool, pool_impl);
+    MIM_TRY_VIA_IMPL(gather, gather_impl);
+    MIM_TRY_VIA_IMPL(scatter, scatter_impl);
+#undef MIM_TRY_VIA_IMPL
+
+    if (lowered) return lowered;
+
     return RWPhase::rewrite_imm_App(app);
 }
 

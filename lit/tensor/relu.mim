@@ -1,0 +1,22 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+plugin tensor;
+plugin core;
+plugin math;
+plugin opt;
+
+let f32 = %math.f32;
+let F32 = %math.F32;
+
+// CHECK-LABEL: fun extern relu_f32
+// CHECK-NOT: %tensor.relu
+// CHECK: %tensor.map_reduce
+fun extern relu_f32 (input: «2, 3; F32»): «2, 3; F32» =
+    return (%tensor.relu (0: F32, %math.extrema.fmax @f32 0) @(2, (2, 3)) input);
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_tensor,
+        %compile.internal_cleanup,
+    );
