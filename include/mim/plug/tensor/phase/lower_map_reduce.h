@@ -20,6 +20,7 @@ private:
 
     const Def* lower_broadcast(const App*);
     const Def* lower_map_reduce(const App*);
+    const Def* lower_pointwise_loop(const App*);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
     const Def* lower_gather(const App*);
@@ -33,6 +34,7 @@ private:
                                const Def* So,
                                u64 ro,
                                std::function<const Def*(const DefVec&, const Def*)> compute);
+    const Def* build_pointwise_loop(const Def* inputs, const Def* type, const Def* So, const Def* r, const Def* body);
 
     const Def* rec_broadcast(const Def* s_in, const Def* s_out, const Def* input, u64 r, u64 i);
 };

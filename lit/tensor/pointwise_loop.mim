@@ -1,0 +1,28 @@
+// RUN: %mim -p opt %s -p affine -o - | %FileCheck %s
+
+// Direct smoke test for the structure-only %tensor.pointwise_loop axm. The body is ordinary Mim code; the
+// LowerMapReduce phase only provides the nested %affine.For skeleton and identity output store.
+// CHECK-DAG: fun extern loop_id
+// CHECK-DAG: %affine.For
+// CHECK-DAG: %tensor.get
+// CHECK-DAG: %tensor.set
+// CHECK-NOT: pointwise_loop
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+lam body (idxs: «1; I64») (input: «3; I32»): I32 =
+    let coord = %core.conv.u 3 (idxs#0_1);
+    %tensor.get @(I32, 1, 3) (input, coord);
+
+fun extern loop_id (input: «3; I32»): «3; I32» =
+    return (%tensor.pointwise_loop @(«3; I32», I32, 1) 3 body input);
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_map_reduce,
+        %compile.internal_cleanup,
+    );

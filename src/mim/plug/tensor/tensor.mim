@@ -43,6 +43,43 @@ axm %tensor.get: {T: *, r: Nat, s: «r; Nat»} → [arr: «s; T», index: «i: r
 /// %tensor.set arr (a, b, c) x = Insert arr a (Insert (arr#a) b (Insert (arr#a#b) c x));
 ///
 axm %tensor.set: {T: *, r: Nat, s: «r; Nat»} → [arr: «s; T», index: «i: r; Idx (s#i)», x: T] → «s; T», normalize_set;
+
+lam %tensor.indexed_load_impl {T: *, r: Nat}
+                              (s: «r; Nat»)
+                              (arr: «s; T», index: «i: r; Idx (s#i)»)
+                            : T =
+    %tensor.get @(T, r, s) (arr, index);
+
+lam %tensor.indexed_store_impl {T: *, r: Nat}
+                               (s: «r; Nat»)
+                               (arr: «s; T», index: «i: r; Idx (s#i)», x: T)
+                             : «s; T» =
+    %tensor.set @(T, r, s) (arr, index, x);
+
+lam %tensor.affine_apply_impl {m n: Nat}
+                              (sin: «n; Nat», sout: «m; Nat»)
+                              (f: [«n; %affine.index»] → «m; %affine.index»)
+                              (idxs: «i: n; Idx (sin#i)»)
+                            : «i: m; Idx (sout#i)» =
+    let (_, mapped) = %affine.map @(m, n) @(sin, sout) f idxs (⊥:(%mem.M 0));
+    mapped;
+
+lam %tensor.pointwise_store_impl {T: *, r: Nat}
+                                 (s: «r; Nat»)
+                                 (out_iters: «r; I64»)
+                                 (acc: «s; T», elem: T)
+                               : «s; T» =
+    let coords = ‹i: r; %core.conv.u (s#i) (out_iters#i)›;
+    %tensor.set @(T, r, s) (acc, coords, elem);
+
+/// Structure-only pointwise loop. The body receives raw I64 loop counters and the original input tuple.
+/// LowerMapReduce turns this into nested %affine.For loops and stores each computed element at the identity output
+/// coordinate.
+axm %tensor.pointwise_loop: {Tin T: *, r: Nat}
+                          → [s_out: «r; Nat»]
+                          → [body: [«r; I64»] → [Tin] → T]
+                          → [inputs: Tin]
+                          → «s_out; T»;
 ///
 /// ### %tensor.shape
 ///
@@ -189,6 +226,26 @@ axm %tensor.pad: {T: *, r: Nat}
                → [mode: Nat, lo: «r; Nat», hi: «r; Nat»]
                → [input: «s_in; T», value: T]
                → «pad_shape (lo, s_in, hi); T», normalize_pad;
+
+lam %tensor.pad_pointwise_elem_impl {T: *, r: Nat}
+                                    (s_in: «r; Nat»)
+                                    (mode: Nat, lo: «r; Nat», hi: «r; Nat»)
+                                    (out_iters: «r; I64»)
+                                    (input: «s_in; T», value: T)
+                                  : T =
+    let raw_i64 = ‹d: r; %core.wrap.sub 0 (out_iters#d, %core.bitcast I64 (lo#d))›;
+    let valid = ‹d: r; %core.icmp.ul (raw_i64#d, %core.bitcast I64 (s_in#d))›;
+    let all_valid = %vec.scan.for_all (λ (b: Bool): Bool = b) valid;
+    let const_coords = ‹d: r; %core.conv.u (s_in#d) (%core.select (valid#d, raw_i64#d, 0I64))›;
+    let const_elem = %tensor.get @(T, r, s_in) (input, const_coords);
+    let const_result = %core.select @T (all_valid, const_elem, value);
+    let repl_coords = ‹d: r;
+        let sin_i64 = %core.bitcast I64 (s_in#d);
+        let sin_m1 = %core.wrap.sub 0 (sin_i64, 1I64);
+        let clamped = %core.extrema.smax (0I64, %core.extrema.smin (raw_i64#d, sin_m1));
+        %core.conv.u (s_in#d) clamped›;
+    let repl_elem = %tensor.get @(T, r, s_in) (input, repl_coords);
+    %core.select @T (%core.ncmp.e (mode, 0), const_result, repl_elem);
 ///
 /// ### %%tensor.concat
 ///
@@ -214,6 +271,23 @@ axm %tensor.concat: {T: *, nis r: Nat}
                   → {Sis: «i: nis; «r; Nat»»}
                   → [is: «i: nis; «Sis#i; T»»]
                   → «concat_shape (ax, Sis); T», normalize_concat;
+
+lam %tensor.concat_pointwise_elem_impl {T: *, nis r: Nat}
+                                       (ax: Idx r)
+                                       (Sis: «i: nis; «r; Nat»»)
+                                       (offs: «nis; I64»)
+                                       (out_iters: «r; I64»)
+                                       (is: «i: nis; «Sis#i; T»»)
+                                     : T =
+    let o_ax = out_iters#ax;
+    let owner_flags = ‹i: nis; %core.icmp.uge (o_ax, offs#i)›;
+    let (_, owner) = %vec.last (%core.icmp.e @2) (owner_flags, tt);
+    let S = Sis#owner;
+    let loc = %core.wrap.sub 0 (o_ax, offs#owner);
+    let extent_m1 = %core.wrap.sub 0 (%core.bitcast I64 (S#ax), 1I64);
+    let ax_coord = %core.extrema.smax (0I64, %core.extrema.smin (loc, extent_m1));
+    let coords = ‹d: r; %core.conv.u (S#d) (%core.select (%core.icmp.e @r (d, ax), ax_coord, out_iters#d))›;
+    %tensor.get @(T, r, S) (is#owner, coords);
 ///
 /// ### %%tensor.conv
 ///
@@ -640,6 +714,18 @@ lam %tensor.gather_impl {T: *, r: Nat}
                       : «s_idx; T»
                       = %tensor.gather_impl_axm @(T, r) (s_src, s_idx) dim (input, index);
 
+lam %tensor.gather_pointwise_elem_impl {T: *, r: Nat}
+                                       (s_src: «r; Nat», s_idx: «r; Nat»)
+                                       (dim: Idx r)
+                                       (out_iters: «r; I64»)
+                                       (input: «s_src; T», index: «s_idx; Idx (s_src#dim)»)
+                                     : T =
+  let idx_coords = ‹i: r; %core.conv.u (s_idx#i) (out_iters#i)›;
+  let idx_val = %tensor.get @(Idx (s_src#dim), r, s_idx) (index, idx_coords);
+  let idx_val_i64 = %core.bitcast I64 idx_val;
+  let src_coords = ‹i: r; %core.conv.u (s_src#i) (%core.select (%core.icmp.e @r (i, dim), idx_val_i64, out_iters#i))›;
+  %tensor.get @(T, r, s_src) (input, src_coords);
+
 /// ### %%tensor.scatter
 axm %tensor.scatter: {T: *, r: Nat}
                    → [s_src: «r; Nat», s_idx: «r; Nat»]
@@ -659,6 +745,19 @@ lam %tensor.scatter_impl {T: *, r: Nat}
                          (input: «s_src; T», index: «s_idx; Idx (s_src#dim)», updates: «s_idx; T»)
                        : «s_src; T»
                        = %tensor.scatter_impl_axm @(T, r) (s_src, s_idx) dim (input, index, updates);
+
+lam %tensor.scatter_step_impl {T: *, r: Nat}
+                              (s_src: «r; Nat», s_idx: «r; Nat»)
+                              (dim: Idx r)
+                              (out_iters: «r; I64»)
+                              (acc: «s_src; T», index: «s_idx; Idx (s_src#dim)», updates: «s_idx; T»)
+                            : «s_src; T» =
+  let idx_coords = ‹i: r; %core.conv.u (s_idx#i) (out_iters#i)›;
+  let idx_val = %tensor.get @(Idx (s_src#dim), r, s_idx) (index, idx_coords);
+  let idx_val_i64 = %core.bitcast I64 idx_val;
+  let update_val = %tensor.get @(T, r, s_idx) (updates, idx_coords);
+  let write_coords = ‹i: r; %core.conv.u (s_src#i) (%core.select (%core.icmp.e @r (i, dim), idx_val_i64, out_iters#i))›;
+  %tensor.set @(T, r, s_src) (acc, write_coords, update_val);
 
 ///
 /// ## Phases

@@ -2,10 +2,11 @@
 // RUN: cat %t | %FileCheck %s
 // RUN: cat %t | %FileCheck %s --check-prefix=GONE
 
-// %tensor.concat: joins `nis` inputs along axis `ax`. The per-output-range source selection needs a %core.select
-// chain (not an affine function), so it is lowered directly in C++ (LowerMapReduce::lower_concat). Checked on the
-// lowered Mim IR (no codegen), as for slice / flip.
+// %tensor.concat: joins `nis` inputs along axis `ax`. The per-output-range source selection needs non-affine
+// predicates, so LowerMapReduce builds the loop skeleton and expands the pointwise read via a Mim helper. Checked on
+// the lowered Mim IR (no codegen), as for slice / flip.
 // GONE-NOT: %tensor.concat
+// GONE-NOT: concat_pointwise_elem_impl
 // GONE-NOT: map_reduce
 // GONE-NOT: %affine
 

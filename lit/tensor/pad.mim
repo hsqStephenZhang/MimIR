@@ -3,9 +3,10 @@
 // RUN: cat %t | %FileCheck %s --check-prefix=GONE
 
 // %tensor.pad: pads each axis (s_out#d = lo#d + s_in#d + hi#d). The guarded/clamped read needs %core.icmp /
-// %core.select, which an affine map cannot express, so it is lowered directly in C++ (LowerMapReduce::lower_pad).
+// %core.select, so LowerMapReduce builds the loop skeleton and expands the pointwise read via a Mim helper.
 // Checked on the lowered Mim IR (no codegen), as for slice / flip.
 // GONE-NOT: %tensor.pad
+// GONE-NOT: pad_pointwise_elem_impl
 // GONE-NOT: map_reduce
 // GONE-NOT: %affine
 
