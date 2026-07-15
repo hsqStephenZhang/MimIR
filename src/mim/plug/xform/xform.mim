@@ -24,15 +24,30 @@ axm %xform.split_for_1d: {m n: Nat, Ts: «n; *»}
                          → Cn [begin _end step: Idx m, init: «i: n; Ts#i»];
 
 ///
-/// ### %%xform.exchange_for_2d
+/// ### %%xform.split
 ///
-/// One-shot loop interchange marker. It has the same surface shape as `%%affine.For`, but
-/// `%%xform.schedule_for` expects the body to be a perfect nest whose body is exactly an inner `%%affine.For`.
-/// If conservative legality checks pass, it emits the interchanged plain `%%affine.For` nest.
-axm %xform.exchange_for_2d: {m n: Nat, Ts: «n; *»}
-                              → [Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»]]
-                              → [Cn «i: n; Ts#i»]
-                              → Cn [begin _end step: Idx m, init: «i: n; Ts#i»];
+/// TVM-style multi-factor split of one flat `%%affine.For`.
+/// `factors` describes normalized loop extents. At most one entry may be `top: Nat`, which means "infer this factor"
+/// from the static trip count and the product of the other static factors. The first implementation is conservative:
+/// if the inferred factor cannot be proven statically, `%%xform.schedule_for` falls back to the original loop.
+axm %xform.split: {m n r: Nat, Ts: «n; *»}
+                  → «r; Nat»
+                  → [Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»]]
+                  → [Cn «i: n; Ts#i»]
+                  → Cn [begin _end step: Idx m, init: «i: n; Ts#i»];
+
+///
+/// ### %%xform.reorder
+///
+/// TVM-style loop reorder marker over a perfect `%%affine.For` nest.
+/// `order` is a static permutation of the loops starting at this root, e.g. `(1, 0)` exchanges a two-level nest.
+/// The first implementation is conservative: it requires a rectangular perfect nest and falls back to the original
+/// loop when legality cannot be proven.
+axm %xform.reorder: {m n r: Nat, Ts: «n; *»}
+                    → «r; Nat»
+                    → [Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»]]
+                    → [Cn «i: n; Ts#i»]
+                    → Cn [begin _end step: Idx m, init: «i: n; Ts#i»];
 
 lam %xform.split_for_1d_impl {m n: Nat, Ts: «n; *»}
                               (factor: Nat)

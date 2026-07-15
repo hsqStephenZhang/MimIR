@@ -2,6 +2,8 @@
 
 #include <mim/phase.h>
 
+#include <optional>
+
 namespace mim::plug::xform::phase {
 
 /// Expands xform loop schedule markers into plain affine.For nests.
@@ -16,7 +18,8 @@ private:
     const Def* rewrite_via_impl(const App*, const Def* impl_annex);
     const Def* rewrite_via_impl(const App*, const Def* impl_annex, const Def* extra_arg);
     std::optional<u64> static_u64(const Def*);
-    const Def* rewrite_exchange_for_2d(const App*);
+    const Def* rewrite_split(const App*);
+    const Def* rewrite_reorder(const App*);
     const Def* rewrite_split_for_1d(const App*);
 };
 

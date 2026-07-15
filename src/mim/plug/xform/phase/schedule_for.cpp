@@ -1,12 +1,15 @@
 #include "mim/plug/xform/phase/schedule_for.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "mim/def.h"
+#include "mim/lattice.h"
 #include "mim/lam.h"
 #include "mim/tuple.h"
 
 #include "mim/plug/affine/affine.h"
+#include "mim/plug/core/core.h"
 #include "mim/plug/xform/xform.h"
 
 namespace mim::plug::xform::phase {
@@ -21,6 +24,21 @@ bool depends_on(const Def* def, const Def* var) {
 bool any_depends_on(std::initializer_list<const Def*> defs, const Def* var) {
     return std::ranges::any_of(defs, [var](const Def* def) { return depends_on(def, var); });
 }
+
+u64 ceil_div(u64 x, u64 y) { return y == 0 ? 0 : (x + y - 1) / y; }
+
+struct LoopFrame {
+    Lam* body_lam;
+    const Def* exit;
+    const Def* begin;
+    const Def* end;
+    const Def* step;
+    const Def* init;
+
+    const Def* iter() const { return body_lam->var(0); }
+    const Def* acc() const { return body_lam->var(1); }
+    const Def* yield() const { return body_lam->var(2); }
+};
 
 } // namespace
 
@@ -80,68 +98,210 @@ const Def* ScheduleFor::rewrite_split_for_1d(const App* app) {
     return rewrite_via_impl(app, new_world().annex<xform::split_for_1d_tail_impl>(), begin->world().lit(begin->type(), main_end));
 }
 
-const Def* ScheduleFor::rewrite_exchange_for_2d(const App* app) {
+const Def* ScheduleFor::rewrite_split(const App* app) {
     auto& w = new_world();
-    auto exchange = Axm::isa<xform::exchange_for_2d>(app);
-    auto [old_outer_body, old_exit, old_outer_args]  = exchange->uncurry_args<3>();
-    auto [old_obegin, old_oend, old_ostep, old_init] = old_outer_args->projs<4>();
+    auto split = Axm::isa<xform::split>(app);
+    auto [factors, old_body, old_exit, old_args] = split->uncurry_args<4>();
+    auto [begin, end, step, old_init] = old_args->projs<4>();
 
     auto fallback = [&]() {
-        return w.call<affine::For>(rewrite(old_outer_body), rewrite(old_exit), rewrite(old_outer_args));
+        return w.call<affine::For>(rewrite(old_body), rewrite(old_exit), rewrite(old_args));
     };
 
-    auto old_outer_lam = old_outer_body->isa_mut<Lam>();
-    if (!old_outer_lam) return fallback();
+    auto factors_tuple = rewrite(factors)->isa<Tuple>();
+    auto body_lam = old_body->isa_mut<Lam>();
+    auto idx_size = Idx::isa(begin->type());
+    if (!factors_tuple || factors_tuple->num_ops() == 0 || !body_lam || !idx_size) return fallback();
+    auto idx_size_new = rewrite(idx_size);
+    auto begin_new = rewrite(begin);
+    auto end_new = rewrite(end);
+    auto step_new = rewrite(step);
+    auto idx_type = begin_new->type();
 
-    auto old_inner_for = Axm::isa<affine::For>(old_outer_lam->body());
-    if (!old_inner_for) return fallback();
+    std::vector<const Def*> split_factors;
+    split_factors.reserve(factors_tuple->num_ops());
 
-    auto [old_inner_body, old_inner_exit, old_inner_args] = old_inner_for->uncurry_args<3>();
-    auto [old_ibegin, old_iend, old_istep, old_iinit]     = old_inner_args->projs<4>();
-    auto old_inner_lam                                    = old_inner_body->isa_mut<Lam>();
-    if (!old_inner_lam) return fallback();
+    std::optional<size_t> infer_pos;
+    std::optional<u64> known_product = 1;
+    for (size_t i = 0; i < factors_tuple->num_ops(); ++i) {
+        auto factor = factors_tuple->op(i);
+        if (factor->isa<Top>() && factor->type() == w.type_nat()) {
+            if (infer_pos) return fallback();
+            infer_pos = i;
+            split_factors.push_back(nullptr);
+            continue;
+        }
 
-    auto old_outer_iter  = old_outer_lam->var(0);
-    auto old_outer_acc   = old_outer_lam->var(1);
-    auto old_outer_yield = old_outer_lam->var(2);
-    auto old_inner_iter  = old_inner_lam->var(0);
-    auto old_inner_acc   = old_inner_lam->var(1);
-    auto old_inner_yield = old_inner_lam->var(2);
+        if (auto lit = Lit::isa<u64>(factor)) {
+            if (*lit == 0) return fallback();
+            if (known_product) *known_product *= *lit;
+        } else {
+            known_product = {};
+        }
+        split_factors.push_back(factor);
+    }
 
-    // Conservative perfect-nest check: the inner loop must thread exactly the outer accumulator and yield exactly to
-    // the outer continuation. Bounds must describe a rectangular iteration domain.
-    if (old_inner_exit != old_outer_yield) return fallback();
-    if (old_iinit != old_outer_acc) return fallback();
-    if (depends_on(old_outer_lam->filter(), old_outer_iter)) return fallback();
-    if (any_depends_on({old_ibegin, old_iend, old_istep}, old_outer_iter)) return fallback();
-    if (any_depends_on({old_inner_lam->filter(), old_inner_lam->body()}, old_outer_yield)) return fallback();
+    auto begin_lit = static_u64(begin);
+    auto end_lit = static_u64(end);
+    auto step_lit = static_u64(step);
+    std::optional<u64> trip;
+    if (begin_lit && end_lit && step_lit && *step_lit != 0)
+        trip = *end_lit <= *begin_lit ? 0 : ceil_div(*end_lit - *begin_lit, *step_lit);
 
-    auto new_outer = w.mut_con(rewrite(old_inner_lam->dom()))->set("exchange_outer");
-    auto new_inner = w.mut_con(rewrite(old_outer_lam->dom()))->set("exchange_inner");
+    if (infer_pos) {
+        if (!trip || !known_product || *known_product == 0) return fallback();
+        auto inferred = *trip == 0 ? 0 : ceil_div(*trip, *known_product);
+        split_factors[*infer_pos] = w.lit_nat(inferred);
+        *known_product *= inferred;
+    } else if (trip && known_product && *known_product < *trip) {
+        return fallback();
+    }
 
-    // Rebuild the original inner body under swapped loop variables:
-    //   old outer iter -> new inner iter
-    //   old inner iter -> new outer iter
+    auto zero = w.lit(idx_type, 0);
+    auto one = w.lit(idx_type, 1);
+
+    DefVec factor_idxs;
+    factor_idxs.reserve(split_factors.size());
+    for (auto factor : split_factors)
+        factor_idxs.push_back(w.call<core::idx>(idx_size_new, core::Mode::nuw, factor));
+
+    std::vector<Lam*> loops;
+    loops.reserve(split_factors.size());
+    auto loop_dom = rewrite(body_lam->dom());
+    for (size_t i = 0; i < split_factors.size(); ++i)
+        loops.push_back(w.mut_con(loop_dom)->set("split_loop"));
+
+    auto linear = loops.front()->var(0);
+    for (size_t i = 1; i < loops.size(); ++i) {
+        linear = w.call(core::wrap::mul, core::Mode::nuw, Defs{linear, factor_idxs[i]});
+        linear = w.call(core::wrap::add, core::Mode::nuw, Defs{linear, loops[i]->var(0)});
+    }
+    auto offset = w.call(core::wrap::mul, core::Mode::nuw, Defs{linear, step_new});
+    auto iter = w.call(core::wrap::add, core::Mode::nuw, Defs{begin_new, offset});
+    auto in_bounds = w.call(core::icmp::ul, Defs{iter, end_new});
+
+    auto skip = w.mut_con(loop_dom)->set("split_skip");
+    skip->set(true, w.app(skip->var(2), skip->var(1)));
+    auto branch = w.extract(w.tuple({skip, rewrite(body_lam)}), in_bounds);
+    loops.back()->set(true, w.app(branch, Defs{iter, loops.back()->var(1), loops.back()->var(2)}));
+
+    for (size_t pos = loops.size() - 1; pos-- > 0;) {
+        auto args = w.tuple({zero, factor_idxs[pos + 1], one, loops[pos]->var(1)});
+        loops[pos]->set(true, w.call<affine::For>(loops[pos + 1], loops[pos]->var(2), args));
+    }
+
+    auto root_args = w.tuple({zero, factor_idxs.front(), one, rewrite(old_init)});
+    return w.call<affine::For>(loops.front(), rewrite(old_exit), root_args);
+}
+
+const Def* ScheduleFor::rewrite_reorder(const App* app) {
+    auto& w = new_world();
+    auto reorder = Axm::isa<xform::reorder>(app);
+    auto [order, root_body, root_exit, root_args] = reorder->uncurry_args<4>();
+    auto [root_begin, root_end, root_step, root_init] = root_args->projs<4>();
+
+    auto fallback = [&]() {
+        return w.call<affine::For>(rewrite(root_body), rewrite(root_exit), rewrite(root_args));
+    };
+
+    auto order_tuple = rewrite(order)->isa<Tuple>();
+    if (!order_tuple || order_tuple->num_ops() == 0) return fallback();
+
+    std::vector<size_t> perm;
+    perm.reserve(order_tuple->num_ops());
+    std::vector<bool> seen(order_tuple->num_ops(), false);
+    for (auto op : order_tuple->ops()) {
+        auto index = Lit::isa<u64>(op);
+        if (!index || *index >= order_tuple->num_ops() || seen[*index]) return fallback();
+        seen[*index] = true;
+        perm.push_back(*index);
+    }
+
+    std::vector<LoopFrame> loops;
+    loops.reserve(perm.size());
+
+    auto body_lam = root_body->isa_mut<Lam>();
+    if (!body_lam) return fallback();
+    loops.push_back({body_lam, root_exit, root_begin, root_end, root_step, root_init});
+
+    for (size_t i = 1; i < perm.size(); ++i) {
+        auto inner_for = Axm::isa<affine::For>(loops.back().body_lam->body());
+        if (!inner_for) return fallback();
+
+        auto [inner_body, inner_exit, inner_args] = inner_for->uncurry_args<3>();
+        auto [inner_begin, inner_end, inner_step, inner_init] = inner_args->projs<4>();
+        auto inner_lam = inner_body->isa_mut<Lam>();
+        if (!inner_lam) return fallback();
+
+        // Strict perfect nest: each inner loop threads exactly the parent accumulator and continuation.
+        if (inner_exit != loops.back().yield()) return fallback();
+        if (inner_init != loops.back().acc()) return fallback();
+
+        loops.push_back({inner_lam, inner_exit, inner_begin, inner_end, inner_step, inner_init});
+    }
+
+    auto leaf = loops.back().body_lam;
+
+    // First implementation is intentionally rectangular. This enforces TVM's "outer domain cannot depend on inner
+    // loops" condition by rejecting all loop-carried bound dependencies.
+    for (auto& loop : loops) {
+        for (auto& other : loops) {
+            if (any_depends_on({loop.begin, loop.end, loop.step, loop.body_lam->filter()}, other.iter())) return fallback();
+        }
+    }
+
+    // Keep continuation threading simple: the leaf may use all loop iterators, plus only the innermost acc/yield pair.
+    for (size_t i = 0; i + 1 < loops.size(); ++i) {
+        if (any_depends_on({leaf->filter(), leaf->body()}, loops[i].acc())) return fallback();
+        if (any_depends_on({leaf->filter(), leaf->body()}, loops[i].yield())) return fallback();
+    }
+
+    std::vector<Lam*> new_lams;
+    new_lams.reserve(perm.size());
+    for (auto old_index : perm) {
+        auto lam = w.mut_con(rewrite(loops[old_index].body_lam->dom()))->set("reorder_loop");
+        new_lams.push_back(lam);
+    }
+
+    auto new_lam_for_old = [&](size_t old_index) -> Lam* {
+        auto it = std::ranges::find(perm, old_index);
+        return new_lams[std::distance(perm.begin(), it)];
+    };
+
     push();
-    map(old_outer_iter, new_inner->var(0));
-    map(old_outer_acc, new_inner->var(1));
-    map(old_outer_yield, new_outer->var(2));
-    map(old_inner_iter, new_outer->var(0));
-    map(old_inner_acc, new_inner->var(1));
-    map(old_inner_yield, new_inner->var(2));
-    new_inner->set(rewrite(old_inner_lam->filter()), rewrite(old_inner_lam->body()));
+    for (size_t old_index = 0; old_index < loops.size(); ++old_index)
+        map(loops[old_index].iter(), new_lam_for_old(old_index)->var(0));
+    map(leaf->var(1), new_lams.back()->var(1));
+    map(leaf->var(2), new_lams.back()->var(2));
+    new_lams.back()->set(rewrite(leaf->filter()), rewrite(leaf->body()));
     pop();
 
-    auto new_inner_args = w.tuple({rewrite(old_obegin), rewrite(old_oend), rewrite(old_ostep), new_outer->var(1)});
-    new_outer->set(rewrite(old_outer_lam->filter()), w.call<affine::For>(new_inner, new_outer->var(2), new_inner_args));
+    for (size_t pos = new_lams.size() - 1; pos-- > 0;) {
+        auto old_index = perm[pos + 1];
+        auto args = w.tuple({
+            rewrite(loops[old_index].begin),
+            rewrite(loops[old_index].end),
+            rewrite(loops[old_index].step),
+            new_lams[pos]->var(1),
+        });
+        new_lams[pos]->set(rewrite(loops[perm[pos]].body_lam->filter()),
+                           w.call<affine::For>(new_lams[pos + 1], new_lams[pos]->var(2), args));
+    }
 
-    auto new_outer_args = w.tuple({rewrite(old_ibegin), rewrite(old_iend), rewrite(old_istep), rewrite(old_init)});
-    return w.call<affine::For>(new_outer, rewrite(old_exit), new_outer_args);
+    auto outer_old_index = perm.front();
+    auto outer_args = w.tuple({
+        rewrite(loops[outer_old_index].begin),
+        rewrite(loops[outer_old_index].end),
+        rewrite(loops[outer_old_index].step),
+        rewrite(root_init),
+    });
+    return w.call<affine::For>(new_lams.front(), rewrite(root_exit), outer_args);
 }
 
 const Def* ScheduleFor::rewrite_imm_App(const App* app) {
+    if (Axm::isa<xform::split>(app)) return rewrite_split(app);
     if (Axm::isa<xform::split_for_1d>(app)) return rewrite_split_for_1d(app);
-    if (Axm::isa<xform::exchange_for_2d>(app)) return rewrite_exchange_for_2d(app);
+    if (Axm::isa<xform::reorder>(app)) return rewrite_reorder(app);
 
     return RWPhase::rewrite_imm_App(app);
 }

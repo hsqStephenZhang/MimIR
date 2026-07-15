@@ -1,0 +1,39 @@
+// RUN: %mim %s -p opt -o %t.scheduled
+// RUN: cat %t.scheduled | %FileCheck %s --check-prefix=SCHEDULED
+
+plugin core;
+plugin affine;
+plugin xform;
+
+con extern main [mem: %mem.M 0, argc: I32, argv: %mem.Ptr (%mem.Ptr (I8, 0), 0), return: Cn [%mem.M 0, I32]] =
+    %xform.reorder (2, 0, 1) loop_i for_exit (0I32, argc, 1I32, 0I32)
+    where
+        con loop_i [i: I32, acc: I32, continue_i: Cn [I32]] =
+            %affine.For loop_j continue_i (0I32, 4I32, 1I32, acc)
+            where
+                con loop_j [j: I32, acc: I32, continue_j: Cn [I32]] =
+                    %affine.For loop_k continue_j (0I32, 6I32, 1I32, acc)
+                    where
+                        con loop_k [k: I32, acc: I32, continue_k: Cn [I32]] =
+                            let ij = %core.wrap.add 0 (%core.wrap.mul 0 (i, 10I32), j);
+                            let ijk = %core.wrap.add 0 (%core.wrap.mul 0 (ij, 10I32), k);
+                            continue_k (%core.wrap.add 0 (ijk, acc));
+                    end;
+            end;
+
+        con for_exit [acc: I32] =
+            return (mem, acc);
+    end;
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %xform.schedule_for,
+        %compile.internal_cleanup,
+    );
+
+// SCHEDULED-NOT: %xform.reorder
+// SCHEDULED: fun reorder_loop
+// SCHEDULED-DAG: %affine.For {{.*}}reorder_loop{{.*}}(0I32, 6I32, 1I32
+// SCHEDULED-DAG: %affine.For {{.*}}reorder_loop{{.*}}(0I32, argc_{{[0-9]+}}, 1I32
+// SCHEDULED-DAG: %affine.For {{.*}}reorder_loop{{.*}}(0I32, 4I32, 1I32

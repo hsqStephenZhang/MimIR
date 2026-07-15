@@ -5,7 +5,7 @@ plugin affine;
 plugin xform;
 
 con extern main [mem: %mem.M 0, argc: I32, argv: %mem.Ptr (%mem.Ptr (I8, 0), 0), return: Cn [%mem.M 0, I32]] =
-    %xform.exchange_for_2d outer_body for_exit (0I32, argc, 1I32, 0I32)
+    %xform.reorder (1, 0) outer_body for_exit (0I32, argc, 1I32, 0I32)
     where
         con outer_body [i: I32, acc: I32, outer_continue: Cn [I32]] =
             %affine.For inner_body outer_continue (0I32, 4I32, 1I32, acc)
@@ -28,5 +28,5 @@ lam extern _compile (): %compile.Phase =
     );
 
 // CHECK: fun extern main
-// CHECK-NOT: %xform.exchange_for_2d
+// CHECK-NOT: %xform.reorder
 // CHECK-NOT: %affine.For
