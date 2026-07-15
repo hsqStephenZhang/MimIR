@@ -1,0 +1,31 @@
+// RUN: %mim %s -p opt -o %t.scheduled
+// RUN: cat %t.scheduled | %FileCheck %s --check-prefix=SCHEDULED
+
+plugin core;
+plugin affine;
+plugin xform;
+
+con extern main [mem: %mem.M 0, argc: I32, argv: %mem.Ptr (%mem.Ptr (I8, 0), 0), return: Cn [%mem.M 0, I32]] =
+    %xform.split_for_1d 4 for_body for_exit (0I32, 10I32, 1I32, 0I32)
+    where
+        con for_body [i: I32, acc: I32, continue: Cn [I32]] =
+            continue (%core.wrap.add 0 (i, acc));
+
+        con for_exit [acc: I32] =
+            return (mem, acc);
+    end;
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %xform.schedule_for,
+        %compile.internal_cleanup,
+    );
+
+// SCHEDULED-NOT: %xform.split_for_1d
+// SCHEDULED-NOT: skip_tail
+// SCHEDULED-NOT: %core.icmp
+// SCHEDULED: con tail_exit
+// SCHEDULED-DAG: %affine.For {{.*}}(0I32, 4I32, 1I32
+// SCHEDULED-DAG: %affine.For {{.*}}(0I32, 8I32, 4I32
+// SCHEDULED-DAG: %affine.For {{.*}}(8I32, 10I32, 1I32

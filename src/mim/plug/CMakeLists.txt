@@ -18,6 +18,7 @@ set(MIM_PLUGINS
     refly
     regex
     tensor
+    xform
     tuple
     vec
 )

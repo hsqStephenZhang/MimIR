@@ -1,0 +1,33 @@
+// RUN: %mim %s -p opt -o %t.scheduled
+// RUN: cat %t.scheduled | %FileCheck %s --check-prefix=SCHEDULED
+
+plugin core;
+plugin affine;
+plugin xform;
+
+con extern main [mem: %mem.M 0, argc: I32, argv: %mem.Ptr (%mem.Ptr (I8, 0), 0), return: Cn [%mem.M 0, I32]] =
+    %xform.exchange_for_2d outer_body for_exit (0I32, argc, 1I32, 0I32)
+    where
+        con outer_body [i: I32, acc: I32, outer_continue: Cn [I32]] =
+            %affine.For inner_body outer_continue (0I32, 4I32, 1I32, acc)
+            where
+                con inner_body [j: I32, acc: I32, inner_continue: Cn [I32]] =
+                    let ij = %core.wrap.add 0 (%core.wrap.mul 0 (i, 10I32), j);
+                    inner_continue (%core.wrap.add 0 (ij, acc));
+            end;
+
+        con for_exit [acc: I32] =
+            return (mem, acc);
+    end;
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %xform.schedule_for,
+        %compile.internal_cleanup,
+    );
+
+// SCHEDULED-NOT: %xform.exchange_for_2d
+// SCHEDULED: fun exchange_outer
+// SCHEDULED: %affine.For {{.*}}exchange_inner{{.*}}(0I32, argc_{{[0-9]+}}, 1I32
+// SCHEDULED: %affine.For {{.*}}exchange_outer{{.*}}(0I32, 4I32, 1I32

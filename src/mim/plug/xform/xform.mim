@@ -1,0 +1,110 @@
+/// # The xform Plugin {#xform}
+///
+/// Experimental IR transformation markers and phases.
+///
+/// The plugin intentionally depends on affine instead of extending the affine dialect itself:
+/// affine owns the loop IR, xform owns scheduling-style rewrites over that IR.
+///
+import affine;
+import compile;
+
+///
+/// ## Affine Loop Scheduling
+///
+/// ### %%xform.split_for_1d
+///
+/// TVM-style split of one flat `%%affine.For` into `(outer, inner)` loops with a fixed factor.
+/// The outer loop iterates base coordinates with stride `factor * step`; the inner loop iterates `0..factor`.
+/// `%%xform.schedule_for` selects a no-tail impl, a main-loop plus tail-loop impl, or a guarded fallback based on
+/// whether `begin`, `_end`, `step`, and `factor` can be folded to static literals.
+axm %xform.split_for_1d: {m n: Nat, Ts: «n; *»}
+                         → Nat
+                         → [Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»]]
+                         → [Cn «i: n; Ts#i»]
+                         → Cn [begin _end step: Idx m, init: «i: n; Ts#i»];
+
+///
+/// ### %%xform.exchange_for_2d
+///
+/// One-shot loop interchange marker. It has the same surface shape as `%%affine.For`, but
+/// `%%xform.schedule_for` expects the body to be a perfect nest whose body is exactly an inner `%%affine.For`.
+/// If conservative legality checks pass, it emits the interchanged plain `%%affine.For` nest.
+axm %xform.exchange_for_2d: {m n: Nat, Ts: «n; *»}
+                              → [Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»]]
+                              → [Cn «i: n; Ts#i»]
+                              → Cn [begin _end step: Idx m, init: «i: n; Ts#i»];
+
+lam %xform.split_for_1d_impl {m n: Nat, Ts: «n; *»}
+                              (factor: Nat)
+                              (body: Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»])
+                              (exit: Cn «i: n; Ts#i»)
+                              (begin _end step: Idx m, init: «i: n; Ts#i») =
+    let factor_idx = %core.idx m %core.mode.nuw factor;
+    let one        = %core.idx m %core.mode.nuw 1;
+    let outer_step = %core.wrap.mul %core.mode.nuw (step, factor_idx);
+    %affine.For outer_body exit (begin, _end, outer_step, init)
+    where
+        con outer_body [outer: Idx m, acc: «i: n; Ts#i», outer_continue: Cn «i: n; Ts#i»] =
+            %affine.For inner_body outer_continue (0:(Idx m), factor_idx, one, acc)
+            where
+                con inner_body [inner: Idx m, acc: «i: n; Ts#i», inner_continue: Cn «i: n; Ts#i»] =
+                    let inner_offset = %core.wrap.mul %core.mode.nuw (inner, step);
+                    let iter = %core.wrap.add %core.mode.nuw (outer, inner_offset);
+                    (skip_tail, body)#(%core.icmp.ul (iter, _end)) (iter, acc, inner_continue)
+                    where
+                        con skip_tail [_: Idx m, acc: «i: n; Ts#i», _: Cn «i: n; Ts#i»] =
+                            inner_continue acc;
+                    end;
+            end;
+    end;
+
+lam %xform.split_for_1d_no_tail_impl {m n: Nat, Ts: «n; *»}
+                                      (factor: Nat)
+                                      (body: Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»])
+                                      (exit: Cn «i: n; Ts#i»)
+                                      (begin _end step: Idx m, init: «i: n; Ts#i») =
+    let factor_idx = %core.idx m %core.mode.nuw factor;
+    let one        = %core.idx m %core.mode.nuw 1;
+    let outer_step = %core.wrap.mul %core.mode.nuw (step, factor_idx);
+    %affine.For outer_body exit (begin, _end, outer_step, init)
+    where
+        con outer_body [outer: Idx m, acc: «i: n; Ts#i», outer_continue: Cn «i: n; Ts#i»] =
+            %affine.For inner_body outer_continue (0:(Idx m), factor_idx, one, acc)
+            where
+                con inner_body [inner: Idx m, acc: «i: n; Ts#i», inner_continue: Cn «i: n; Ts#i»] =
+                    let inner_offset = %core.wrap.mul %core.mode.nuw (inner, step);
+                    let iter = %core.wrap.add %core.mode.nuw (outer, inner_offset);
+                    body (iter, acc, inner_continue);
+            end;
+    end;
+
+lam %xform.split_for_1d_tail_impl {m n: Nat, Ts: «n; *»}
+                                  (factor: Nat)
+                                  (body: Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»])
+                                  (exit: Cn «i: n; Ts#i»)
+                                  (begin _end step: Idx m, init: «i: n; Ts#i»)
+                                  (main_end: Idx m) =
+    let factor_idx = %core.idx m %core.mode.nuw factor;
+    let one        = %core.idx m %core.mode.nuw 1;
+    let outer_step = %core.wrap.mul %core.mode.nuw (step, factor_idx);
+    %affine.For outer_body tail_exit (begin, main_end, outer_step, init)
+    where
+        con outer_body [outer: Idx m, acc: «i: n; Ts#i», outer_continue: Cn «i: n; Ts#i»] =
+            %affine.For inner_body outer_continue (0:(Idx m), factor_idx, one, acc)
+            where
+                con inner_body [inner: Idx m, acc: «i: n; Ts#i», inner_continue: Cn «i: n; Ts#i»] =
+                    let inner_offset = %core.wrap.mul %core.mode.nuw (inner, step);
+                    let iter = %core.wrap.add %core.mode.nuw (outer, inner_offset);
+                    body (iter, acc, inner_continue);
+            end;
+
+        con tail_exit [acc: «i: n; Ts#i»] =
+            %affine.For body exit (main_end, _end, step, acc);
+    end;
+
+///
+/// ### %%xform.schedule_for
+///
+/// Expands xform loop schedule markers into plain `%%affine.For` nests.
+///
+axm %xform.schedule_for: %compile.Phase;

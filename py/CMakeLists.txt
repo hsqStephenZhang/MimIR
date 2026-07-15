@@ -35,7 +35,7 @@ endif()
 list(APPEND _venv_commands
     COMMAND "${MIM_PY_BOOTSTRAP_PYTHON}" -m venv "${MIM_PY_VENV}"
     COMMAND ${_mim_py_python_command} -m pip install --upgrade pip setuptools wheel
-    COMMAND ${_mim_py_python_command} -m pip install pytest
+    COMMAND ${_mim_py_python_command} -m pip install pytest lit psutil
     COMMAND "${CMAKE_COMMAND}" -E touch "${MIM_PY_VENV_STAMP}"
 )
 
