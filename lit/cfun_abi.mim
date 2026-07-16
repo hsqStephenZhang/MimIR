@@ -1,0 +1,21 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p ll %s
+// RUN: %FileCheck %s --check-prefix=LLVM < %{s:stem}.ll
+// RUN: clang %S/lib.c %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t | %FileCheck %s --check-prefix=OUT
+
+plugin core;
+
+cfun cfun_add3[mem: %mem.M 0, a: I32, b: I32, c: I32]: [%mem.M 0, I32];
+cfun println_i32[mem: %mem.M 0, value: I32]: %mem.M 0;
+
+fun extern main(mem: %mem.M 0, argc: I32, argv: %mem.Ptr0 (%mem.Ptr0 I8)): [%mem.M 0, I32] =
+    ret (mem, sum) = cfun_add3 $ (mem, 11I32, 13I32, 17I32);
+    ret mem = println_i32 $ (mem, sum);
+    return (mem, 0I32);
+
+// LLVM-DAG: declare i32 @cfun_add3(i32, i32, i32)
+// LLVM-DAG: declare void @println_i32(i32)
+// LLVM: call i32 @cfun_add3(i32 11, i32 13, i32 17)
+// LLVM: call void @println_i32(i32 {{%[^)]+}})
+// OUT: 41

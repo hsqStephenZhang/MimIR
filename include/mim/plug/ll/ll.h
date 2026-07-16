@@ -303,16 +303,27 @@ inline void Emitter::start() {
 
 inline void Emitter::emit_imported(Lam* lam) {
     // TODO merge with declare method
-    std::print(func_decls_, "declare {} {}(", convert_ret_pi(lam->type()->ret_pi()), id(lam));
+    std::ostringstream decl;
+    std::print(decl, "declare {} {}(", convert_ret_pi(lam->type()->ret_pi()), id(lam));
 
     auto doms = lam->doms();
     for (auto sep = ""; auto dom : doms.view().rsubspan(1)) {
-        if (Axm::isa<mem::M>(dom)) continue;
-        std::print(func_decls_, "{}{}", sep, convert(dom));
-        sep = ", ";
+        auto emit_arg = [&](const Def* type) {
+            if (Axm::isa<mem::M>(type)) return;
+            std::print(decl, "{}{}", sep, convert(type));
+            sep = ", ";
+        };
+
+        if (auto sigma = dom->isa<Sigma>()) {
+            for (auto type : sigma->ops())
+                emit_arg(type);
+        } else {
+            emit_arg(dom);
+        }
     }
 
-    std::print(func_decls_, ")\n");
+    std::print(decl, ")");
+    decls_.emplace(decl.str());
 }
 
 inline std::string Emitter::prepare() {
@@ -510,11 +521,30 @@ inline void Emitter::emit_epilogue(Lam* lam) {
         return bb.tail("unreachable");
     } else if (Pi::isa_returning(app->callee_type())) { // function call
         auto v_callee = emit(app->callee());
+        auto imported_cfun = [](const Def* callee) {
+            auto lam = callee->isa_mut<Lam>();
+            return lam && !lam->is_set() && Pi::isa_returning(lam->type());
+        };
 
         std::vector<std::string> args;
         auto app_args = app->args();
-        for (auto arg : app_args.view().rsubspan(1))
-            if (auto v_arg = emit_unsafe(arg); !v_arg.empty()) args.emplace_back(convert(arg->type()) + " " + v_arg);
+        for (auto arg : app_args.view().rsubspan(1)) {
+            auto emit_arg = [&](const Def* value) {
+                if (auto v_arg = emit_unsafe(value); !v_arg.empty())
+                    args.emplace_back(convert(value->type()) + " " + v_arg);
+            };
+
+            if (imported_cfun(app->callee())) {
+                if (auto sigma = arg->type()->isa<Sigma>()) {
+                    for (size_t i = 0, n = sigma->num_ops(); i != n; ++i)
+                        emit_arg(arg->proj(n, i));
+                } else {
+                    emit_arg(arg);
+                }
+            } else {
+                emit_arg(arg);
+            }
+        }
 
         if (app->args().back()->isa<Bot>()) {
             // TODO: Perhaps it'd be better to simply η-wrap this prior to the BE...

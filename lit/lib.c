@@ -16,6 +16,7 @@ void println_str(const char* s) { printf("%s\n", s); }
 void print_i32(int32_t i) { printf("%" PRId32, i); }
 void println_i32(int32_t i) { printf("%" PRId32 "\n", i); }
 void newline() { printf("\n"); }
+int32_t cfun_add3(int32_t a, int32_t b, int32_t c) { return a + b + c; }
 
 void print_integer(int i) { printf("%d, ", i); }
 void print_int_newline(int i) { printf("%d\n", i); }
