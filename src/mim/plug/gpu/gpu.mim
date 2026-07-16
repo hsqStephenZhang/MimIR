@@ -208,6 +208,22 @@ axm %gpu.launch: {n: Nat, Ts: «n; *»}
                → Fn [%mem.M 0, %gpu.GlobalM, %gpu.ConstM]
                → [%mem.M 0, %gpu.GlobalM, %gpu.ConstM];
 ///
+/// #### %%gpu.launch_3d
+///
+/// Launches a kernel function on the device with 3D grid and block dimensions.
+axm %gpu.launch_3d: {n: Nat, Ts: «n; *»}
+                  → [grid_x: Nat, grid_y: Nat, grid_z: Nat,
+                     block_x: Nat, block_y: Nat, block_z: Nat,
+                     %gpu.Stream, m: Bool, MT: «%core.bitcast Nat m; *»]
+                  → Cn [%gpu.GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM,
+                        Idx grid_x, Idx grid_y, Idx grid_z,
+                        Idx block_x, Idx block_y, Idx block_z,
+                        «i: %core.bitcast Nat m; %gpu.SharedPtr MT#i», «i: n; Ts#i»,
+                        Cn [%gpu.GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM]]
+                  → «i: n; Ts#i»
+                  → Fn [%mem.M 0, %gpu.GlobalM, %gpu.ConstM]
+                  → [%mem.M 0, %gpu.GlobalM, %gpu.ConstM];
+///
 /// ### Work-Item Synchronization
 ///
 /// #### %%gpu.sync_work_items

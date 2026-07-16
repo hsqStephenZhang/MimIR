@@ -39,9 +39,9 @@ MemFinder::IsaMem MemFinder::next_mem() {
 } // namespace
 
 const Def* MemChecks::rewrite_imm_App(const App* app) {
-    if (auto launch = Axm::isa<gpu::launch>(app)) {
-        auto kernel        = launch->decurry()->decurry()->arg();
-        auto kernel_args   = launch->decurry()->arg();
+    auto check_launch = [&](auto launch) {
+        auto kernel      = launch->decurry()->decurry()->arg();
+        auto kernel_args = launch->decurry()->arg();
         auto kernel_args_t = kernel_args->type();
 
         MemFinder mem_finder(kernel_args_t);
@@ -49,7 +49,12 @@ const Def* MemChecks::rewrite_imm_App(const App* app) {
             error("You may not pass any %mem.M across device boundaries: passing {} : {} from host to kernel '{}'",
                   kernel_args, kernel_args_t, kernel);
         }
-    }
+    };
+
+    if (auto launch = Axm::isa<gpu::launch>(app))
+        check_launch(launch);
+    else if (auto launch = Axm::isa<gpu::launch_3d>(app))
+        check_launch(launch);
     return Super::rewrite_imm_App(app);
 }
 

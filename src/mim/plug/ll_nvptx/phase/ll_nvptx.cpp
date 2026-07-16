@@ -103,9 +103,9 @@ void HostEmitter::find_kernels(const Def* def) {
     for (auto d : def->deps())
         find_kernels(d);
 
-    if (auto launch = Axm::isa<gpu::launch>(def)) {
+    auto register_kernel = [&](auto launch) {
         auto kernel     = launch->decurry()->decurry()->arg();
-        auto kernel_lam = kernel->isa_mut<Lam>();
+        auto kernel_lam = kernel->template isa_mut<Lam>();
         assert(kernel_lam && "Expect kernel passed to %gpu.launch to be a mutable lambda");
         if (kernel_ids_.contains(kernel_lam)) return;
         auto name = id(kernel_lam).substr(1);
@@ -117,7 +117,12 @@ void HostEmitter::find_kernels(const Def* def) {
             kernel_id2name_[kid]  = name;
         }
         kernel_ids_[kernel_lam] = kid;
-    }
+    };
+
+    if (auto launch = Axm::isa<gpu::launch>(def))
+        register_kernel(launch);
+    else if (auto launch = Axm::isa<gpu::launch_3d>(def))
+        register_kernel(launch);
 }
 
 constexpr auto CU_INIT                = "cuInit";
@@ -464,6 +469,58 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
                         CU_LAUNCH_KERNEL, func_inner, n_groups, n_items, shared_mem_bytes, stream, args_inner);
         emit_cu_error_handling(bb, launch_res);
         return ret_lam;
+    } else if (auto launch = Axm::isa<gpu::launch_3d>(def)) {
+        // TODO: rewrite to use modern cuLaunchKernelEx instead
+        declare("i32 @{}(ptr, i32, i32, i32, i32, i32, i32, i32, ptr, ptr, ptr)", CU_LAUNCH_KERNEL);
+
+        auto [implicits, launch_config, kernel_def, arg_def, func_args] = launch->uncurry_args<5>();
+        auto [grid_x_def, grid_y_def, grid_z_def, block_x_def, block_y_def, block_z_def, stream_def, m, MT]
+            = launch_config->projs<9>();
+        auto [mem, ret_lam_def] = func_args->projs<2>();
+
+        Lam* lam = kernel_def->isa_mut<Lam>();
+        if (!lam) error("kernel is not a lamda {}", kernel_def);
+        if (!kernel_ids_.contains(lam)) error("unknown kernel {}", lam);
+        auto kid = kernel_ids_[lam];
+
+        auto shared_mem_bytes = 0;
+        if (auto smem_count = Lit::as(m)) {
+            if (smem_count != 1) error("You can only have one dynamic allocation of shared memory per kernel");
+            shared_mem_bytes = Lit::as(world().call(core::trait::size, MT));
+        }
+
+        emit_unsafe(mem);
+        auto grid_x  = emit(grid_x_def);
+        auto grid_y  = emit(grid_y_def);
+        auto grid_z  = emit(grid_z_def);
+        auto block_x = emit(block_x_def);
+        auto block_y = emit(block_y_def);
+        auto block_z = emit(block_z_def);
+        auto stream  = emit(stream_def);
+        auto kernel  = emit(kernel_def);
+        auto arg     = emit(arg_def);
+        auto arg_type = convert(arg_def->type());
+        auto ret_lam = emit(ret_lam_def);
+
+        auto func_ptr = bb.assign(name + "_kernptr", "getelementptr inbounds [{} x ptr], [{} x ptr]* {}, i64 0, i64 {}",
+                                  kernel_id2name_.size(), kernel_id2name_.size(), kernel_array_name_, kid);
+        auto func_inner = bb.assign(name + "_kernel", "load ptr, ptr {}", func_ptr);
+
+        auto arg_wrap = bb.assign(name + "_arg_wrap", "alloca {}", arg_type);
+        std::print(bb.body().emplace_back(), "store {} {}, ptr {}", arg_type, arg, arg_wrap);
+
+        auto args_ptr = bb.assign(name + "_args_ptr", "alloca [1 x ptr]");
+        std::print(bb.body().emplace_back(), "store ptr {}, ptr {}", arg_wrap, args_ptr);
+        auto args_inner
+            = bb.assign(name + "_args_inner", "getelementptr inbounds [1 x ptr], ptr {}, i64 0, i64 0", args_ptr);
+        auto launch_res
+            = bb.assign(name,
+                        "call i32 @{}(ptr {}, i32 {}, i32 {}, i32 {}, i32 {}, i32 {}, i32 {}, "
+                        "i32 {}, ptr {}, ptr {}, ptr null)",
+                        CU_LAUNCH_KERNEL, func_inner, grid_x, grid_y, grid_z, block_x, block_y, block_z,
+                        shared_mem_bytes, stream, args_inner);
+        emit_cu_error_handling(bb, launch_res);
+        return ret_lam;
     }
     return std::nullopt;
 }
@@ -485,7 +542,20 @@ std::string DeviceEmitter::prepare() {
 
     std::print(func_impls_, "define ptx_kernel {} {}(", convert_ret_pi(kernel->type()->ret_pi()), id(kernel));
 
-    auto [m1, m3, m4, m5, group_id, item_id, smem, arg, ret_lam] = kernel->vars<9>();
+    const Def* smem = nullptr;
+    const Def* arg  = nullptr;
+    if (kernel->num_vars() == 9) {
+        auto [m1, m3, m4, m5, group_id, item_id, smem_1d, arg_1d, ret_lam] = kernel->vars<9>();
+        smem = smem_1d;
+        arg  = arg_1d;
+    } else if (kernel->num_vars() == 13) {
+        auto [m1, m3, m4, m5, block_x, block_y, block_z, thread_x, thread_y, thread_z, smem_3d, arg_3d, ret_lam]
+            = kernel->vars<13>();
+        smem = smem_3d;
+        arg  = arg_3d;
+    } else {
+        error("kernel '{}' has unsupported GPU entry arity {}", kernel, kernel->num_vars());
+    }
 
     auto arg_name = id(arg);
     locals_[arg]  = arg_name;
@@ -501,7 +571,7 @@ std::string DeviceEmitter::prepare() {
         if (!opt_idx_lit) error("Type of '{}' must have known index type but has {}", def, type);
         auto idx_lit = opt_idx_lit.value();
         locals_[def] = name;
-        declare("i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()");
+        declare("i32 @llvm.nvvm.read.ptx.sreg.{}()", sreg);
         if (type_name == "i0") {
             locals_[def] = "0";
         } else if (type_name == "i32") {
@@ -513,8 +583,21 @@ std::string DeviceEmitter::prepare() {
             error("Warp ID too large, must fit into I32");
         }
     };
-    register_sreg_idx(group_id, "ctaid.x");
-    register_sreg_idx(item_id, "tid.x");
+
+    if (kernel->num_vars() == 9) {
+        auto [m1, m3, m4, m5, group_id, item_id, smem_1d, arg_1d, ret_lam] = kernel->vars<9>();
+        register_sreg_idx(group_id, "ctaid.x");
+        register_sreg_idx(item_id, "tid.x");
+    } else {
+        auto [m1, m3, m4, m5, block_x, block_y, block_z, thread_x, thread_y, thread_z, smem_3d, arg_3d, ret_lam]
+            = kernel->vars<13>();
+        register_sreg_idx(block_x, "ctaid.x");
+        register_sreg_idx(block_y, "ctaid.y");
+        register_sreg_idx(block_z, "ctaid.z");
+        register_sreg_idx(thread_x, "tid.x");
+        register_sreg_idx(thread_y, "tid.y");
+        register_sreg_idx(thread_z, "tid.z");
+    }
 
     auto shared_as = Lit::as(world().annex<gpu::addr_space_shared>());
     if (auto sigma = smem->type()->isa<Sigma>()) {

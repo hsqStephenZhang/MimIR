@@ -1,0 +1,52 @@
+// REQUIRES: system-linux, cuda
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim %s -p ll_nvptx -o -
+// RUN: %FileCheck %s --check-prefix=DEV < %{s:stem}_dev.ll
+// RUN: %FileCheck %s --check-prefix=HOST < %{s:stem}.ll
+// RUN: rm -f %t
+// RUN: clang %{s:stem}.ll -o %t -lcuda -Wno-override-module
+// RUN: %t; test $? -eq 16
+
+plugin core;
+plugin gpu;
+
+con kernel_3d (m1: %gpu.GlobalM, m3: %gpu.SharedM, m4: %gpu.ConstM, m5: %gpu.LocalM,
+               block_x: Idx 2, block_y: Idx 2, block_z: Idx 1,
+               thread_x: Idx 2, thread_y: Idx 2, thread_z: Idx 1,
+               (), data: %gpu.GlobalPtr «16; I32»,
+               return: Cn [%gpu.GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM]) =
+    let bx = %core.bitcast I32 block_x;
+    let by = %core.bitcast I32 block_y;
+    let tx = %core.bitcast I32 thread_x;
+    let ty = %core.bitcast I32 thread_y;
+    let x  = %core.wrap.add 0 (%core.wrap.mul 0 (bx, 2I32), tx);
+    let y  = %core.wrap.add 0 (%core.wrap.mul 0 (by, 2I32), ty);
+    let i  = %core.wrap.add 0 (%core.wrap.mul 0 (y, 4I32), x);
+    let idx = %core.conv.u 16 i;
+    let val = %core.wrap.add 0 (i, 1I32);
+    let m1 = %mem.store (m1, %mem.lea (data, idx), val);
+    return (m1, m3, m4, m5);
+
+fun extern main (m0: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr («⊤:Nat; I8», 0)», 0))
+              : [%mem.M 0, I32] =
+    let (m0, arr) = %mem.alloc («16; I32», 0) m0;
+    let (m0, m1, m4) = %gpu.init m0;
+
+    let (m1, d_arr) = %mem.alloc («16; I32», 1) m1;
+
+    ret (m0, m1, m4) = %gpu.launch_3d (2, 2, 1, 2, 2, 1, %gpu.default_stream, ff, ())
+        kernel_3d d_arr $ (m0, m1, m4);
+
+    let (m0, m1) = %gpu.copy_to_host.block (m0, m1, d_arr, arr);
+    let m1 = %mem.free (m1, d_arr);
+    let m0 = %gpu.deinit (m0, m1, m4);
+
+    let (m0, val) = %mem.load (m0, %mem.lea (arr, 15_16));
+    let m0 = %mem.free (m0, arr);
+    return (m0, val);
+
+// DEV-DAG: call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()
+// DEV-DAG: call i32 @llvm.nvvm.read.ptx.sreg.ctaid.y()
+// DEV-DAG: call i32 @llvm.nvvm.read.ptx.sreg.tid.x()
+// DEV-DAG: call i32 @llvm.nvvm.read.ptx.sreg.tid.y()
+// HOST: call i32 @cuLaunchKernel_ptsz(ptr {{%[^,]+}}, i32 2, i32 2, i32 1, i32 2, i32 2, i32 1,

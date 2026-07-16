@@ -26,10 +26,15 @@ bool SplitOffKernels::analyze() {
 void SplitOffKernels::analyze(const Def* def) {
     if (auto [_, ins] = analyzed_.emplace(def); !ins) return;
 
-    if (auto launch = Axm::isa<gpu::launch>(def)) {
+    auto find_kernel = [&](auto launch) {
         auto kernel = launch->decurry()->decurry()->arg();
-        if (auto lam = kernel->isa_mut<Lam>()) kernels_.emplace(lam);
-    }
+        if (auto lam = kernel->template isa_mut<Lam>()) kernels_.emplace(lam);
+    };
+
+    if (auto launch = Axm::isa<gpu::launch>(def))
+        find_kernel(launch);
+    else if (auto launch = Axm::isa<gpu::launch_3d>(def))
+        find_kernel(launch);
 
     for (auto d : def->deps())
         analyze(d);
