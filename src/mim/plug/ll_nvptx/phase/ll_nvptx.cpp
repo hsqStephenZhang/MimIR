@@ -49,6 +49,8 @@ private:
 
     std::optional<std::string> device_fatbin_file_;
     LamMap<int> kernel_ids_;
+    absl::btree_map<std::string, int> kernel_name2id_;
+    absl::btree_map<int, std::string> kernel_id2name_;
 
     DefSet analyzed_;
 };
@@ -85,13 +87,12 @@ void HostEmitter::start() {
     for (auto def : world().externals().muts())
         find_kernels(def);
 
-    for (auto [kernel, kid] : kernel_ids_) {
-        auto name = id(kernel).substr(1);
+    for (auto [kid, name] : kernel_id2name_) {
         std::print(vars_decls_, "{}{} = private constant [{} x i8] c\"{}\\00\"\n", kernel_name_prefix, kid,
                    name.size() + 1, name);
     }
     std::print(vars_decls_, "{} = dso_local global [{} x ptr] zeroinitializer\n", kernel_array_name_,
-               kernel_ids_.size());
+               kernel_id2name_.size());
 
     Super::start();
 }
@@ -107,7 +108,14 @@ void HostEmitter::find_kernels(const Def* def) {
         auto kernel_lam = kernel->isa_mut<Lam>();
         assert(kernel_lam && "Expect kernel passed to %gpu.launch to be a mutable lambda");
         if (kernel_ids_.contains(kernel_lam)) return;
-        auto kid                = kernel_ids_.size();
+        auto name = id(kernel_lam).substr(1);
+        auto kid  = kernel_name2id_.size();
+        if (auto i = kernel_name2id_.find(name); i != kernel_name2id_.end())
+            kid = i->second;
+        else {
+            kernel_name2id_[name] = kid;
+            kernel_id2name_[kid]  = name;
+        }
         kernel_ids_[kernel_lam] = kid;
     }
 }
@@ -233,8 +241,7 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
         auto mod_inner = bb.assign(name + "_mod_inner", "load ptr, ptr {}", mod_name_);
 
         declare("i32 @{}(ptr, ptr, ptr)", CU_MODULE_GET_FUNCTION);
-        for (auto [kernel, kid] : kernel_ids_) {
-            auto kname    = id(kernel).substr(1);
+        for (auto [kid, kname] : kernel_id2name_) {
             auto func_ptr = bb.assign("%" + kname + "_funcptr", "getelementptr inbounds ptr, ptr {}, i64 {}",
                                       kernel_array_name_, kid);
             auto func_res = bb.assign("%" + kname + "_getfuncres", "call i32 @{}(ptr {}, ptr {}, ptr {}{})",
@@ -440,7 +447,7 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
         auto ret_lam  = emit(ret_lam_def);
 
         auto func_ptr = bb.assign(name + "_kernptr", "getelementptr inbounds [{} x ptr], [{} x ptr]* {}, i64 0, i64 {}",
-                                  kernel_ids_.size(), kernel_ids_.size(), kernel_array_name_, kid);
+                                  kernel_id2name_.size(), kernel_id2name_.size(), kernel_array_name_, kid);
         auto func_inner = bb.assign(name + "_kernel", "load ptr, ptr {}", func_ptr);
 
         auto arg_wrap = bb.assign(name + "_arg_wrap", "alloca {}", arg_type);

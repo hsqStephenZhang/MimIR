@@ -34,7 +34,11 @@ static std::string get_compute_capability() {
     // out should now have form "7.5" referencing the compute capability "sm_75"
 
     auto dot_pos = out.find('.');
-    assert(dot_pos < out.size());
+    if (dot_pos >= out.size()) {
+        std::println(std::cerr, "Could not determine compute capability, continuing with default: '{}'.",
+                     default_compute_cap);
+        return default_compute_cap;
+    }
 
     for (size_t i = 0; i < out.size(); ++i)
         if (i != dot_pos && !std::isdigit(out[i])) {
