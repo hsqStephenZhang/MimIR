@@ -27,6 +27,34 @@ axm %affine.For: {m n: Nat, Ts: «n; *»}
                → [Cn «i: n; Ts#i»]                                             // exit
                → Cn [begin _end step: Idx m, init: «i: n; Ts#i»];
 ///
+/// ### %%affine.unroll
+///
+/// Like %%%affine.For, but its bounds must be compile-time literals and %%%affine.unroll_repl
+/// expands all iterations during compilation. Use this as a DSL/template construct when the
+/// loop structure must not survive into backend code generation.
+axm %affine.unroll: {m n: Nat, Ts: «n; *»}
+                  → [Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»]] // body
+                  → [Cn «i: n; Ts#i»]                                             // exit
+                  → Cn [begin _end step: Idx m, init: «i: n; Ts#i»];
+
+lam %affine.unroll_impl {m n: Nat, Ts: «n; *»}
+    (body: Cn [iter: Idx m, acc: «i: n; Ts#i», yield: Cn «i: n; Ts#i»])
+    (exit: Cn «i: n; Ts#i»)
+    (begin: Idx m, _end: Idx m, step: Idx m, init: «i: n; Ts#i») =
+    head (begin, init)
+    where
+        con head (iter: Idx m, acc: «i: n; Ts#i»)@(%core.pe.is_closed iter) =
+            let cond = %core.icmp.ul (iter, _end);
+            (done, run)#cond ()
+            where
+                con run () =
+                    body (iter, acc, cn next_acc: «i: n; Ts#i» =
+                        head (%core.wrap.add 0 (iter, step), next_acc));
+                con done () =
+                    exit acc;
+            end;
+    end;
+///
 /// ## Affine Index Operations
 ///
 /// ### %%affine.index
@@ -82,6 +110,12 @@ axm %affine.map: {m n: Nat}
 /// Lowers the %%%affine.For operation to recursive function calls.
 ///
 axm %affine.lower_for: %compile.Phase;
+///
+/// ### %%affine.unroll_repl
+///
+/// Expands %%%affine.unroll into a straight-line chain of continuation calls.
+///
+axm %affine.unroll_repl: %compile.Phase;
 ///
 /// ### %%affine.lower_index
 ///

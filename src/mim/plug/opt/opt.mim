@@ -42,6 +42,7 @@ lam extern _default_compile (): %compile.Phase =
         %compile.named "%matrix.lower_matrix_medium_level",
         %compile.named "%matrix.lower_matrix_low_level",
         %compile.named "%cps.conv",
+        %compile.named "%affine.unroll_repl",
         %compile.named "%affine.lower_index",
         %compile.named "%affine.lower_for",
         %compile.internal_cleanup,

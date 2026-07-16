@@ -5,6 +5,7 @@
 
 #include "mim/plug/affine/phase/lower_for.h"
 #include "mim/plug/affine/phase/lower_index.h"
+#include "mim/plug/affine/phase/unroll.h"
 
 using namespace mim;
 using namespace mim::plug;
@@ -12,6 +13,7 @@ using namespace mim::plug;
 void reg_phases(Flags2Phases& phases) {
     Phase::hook<affine::lower_for, affine::phase::LowerFor>(phases);
     Phase::hook<affine::lower_index, affine::phase::LowerIndex>(phases);
+    Phase::hook<affine::unroll_repl, affine::phase::Unroll>(phases);
 }
 
 extern "C" MIM_EXPORT Plugin mim_get_plugin() { return {"affine", MIM_VERSION, nullptr, reg_phases}; }
