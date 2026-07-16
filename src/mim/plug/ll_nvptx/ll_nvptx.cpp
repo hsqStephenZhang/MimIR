@@ -109,12 +109,12 @@ static void link_libdevice(const std::string& libdevice_path, const std::string&
     if (rc != 0) error("Command exited with error code {}", rc);
 }
 
-static void optimize_bytecode(const std::string& in_name, const std::string& out_name) {
+static void optimize_bytecode(const std::string& in_name, const std::string& out_name, bool linked_libdevice) {
     auto opt = sys::find_cmd("opt");
     if (!std::filesystem::exists(opt)) error("Could not find command: opt {}", opt);
     // TODO: consider adding more (NVPTX-specific) passes
     // TODO: consider setting other optimization level
-    auto passes = "default<O2>,nvvm-reflect";
+    auto passes = linked_libdevice ? "default<O2>,nvvm-reflect" : "default<O2>";
     auto cmd    = std::format("{} -passes=\"{}\" {} -o {}", opt, passes, in_name, out_name);
     auto rc     = sys::system(cmd);
     if (rc != 0) error("Command exited with error code {}", rc);
@@ -186,14 +186,15 @@ public:
         embed_device_code = false;
 #elif defined(__linux__)
         embed_device_code = true;
+        auto opt_input = dev_ll_name;
         if (device_flags.uses_libdevice) {
             // TODO: search for libdevice or pass via argument
             auto libdevice_path = find_libdevice();
             link_libdevice(libdevice_path, dev_ll_name, dev_bc_raw_name);
-            optimize_bytecode(dev_bc_raw_name, dev_bc_opt_name);
+            opt_input = dev_bc_raw_name;
         }
-        auto compile_input = device_flags.uses_libdevice ? dev_bc_opt_name : dev_ll_name;
-        compile2ptx(compute_cap, compile_input, dev_ptx_name);
+        optimize_bytecode(opt_input, dev_bc_opt_name, device_flags.uses_libdevice);
+        compile2ptx(compute_cap, dev_bc_opt_name, dev_ptx_name);
         compile2cubin(compute_cap, dev_ptx_name, dev_cubin_name);
         compile2fatbin(compute_cap, dev_cubin_name, dev_fatbin_name);
 #endif

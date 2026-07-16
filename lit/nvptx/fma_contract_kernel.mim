@@ -1,0 +1,39 @@
+// REQUIRES: system-linux, cuda
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim %s -p ll_nvptx -o -
+// RUN: %FileCheck %s --check-prefix=DEV < %{s:stem}_dev.ll
+
+plugin core;
+plugin math;
+plugin gpu;
+
+let FP_CONTRACT = 16;
+
+con kernel (m1: %gpu.GlobalM, m3: %gpu.SharedM, m4: %gpu.ConstM, m5: %gpu.LocalM,
+            group_id: Idx 1, item_id: Idx 1, (), data: %gpu.GlobalPtr «4; %math.F32»,
+            return: Cn [%gpu.GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM]) =
+    let (m1, a) = %mem.load (m1, %mem.lea (data, 0_4));
+    let (m1, b) = %mem.load (m1, %mem.lea (data, 1_4));
+    let (m1, c) = %mem.load (m1, %mem.lea (data, 2_4));
+    let fused_prod = %math.arith.mul FP_CONTRACT (a, b);
+    let fused = %math.arith.add FP_CONTRACT (fused_prod, c);
+    let m1 = %mem.store (m1, %mem.lea (data, 0_4), fused);
+
+    let strict_prod = %math.arith.mul 0 (a, b);
+    let strict = %math.arith.add 0 (strict_prod, c);
+    let m1 = %mem.store (m1, %mem.lea (data, 3_4), strict);
+    return (m1, m3, m4, m5);
+
+fun extern main (m0: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr («⊤:Nat; I8», 0)», 0))
+              : [%mem.M 0, I32] =
+    let (m0, m1, m4) = %gpu.init m0;
+    let (m1, d_ptr) = %mem.alloc («4; %math.F32», 1) m1;
+    ret (m0, m1, m4) = %gpu.launch (1, 1, %gpu.default_stream, ff, ()) kernel d_ptr $ (m0, m1, m4);
+    let m1 = %mem.free (m1, d_ptr);
+    let m0 = %gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);
+
+// DEV: declare float @llvm.fma.f32(float, float, float)
+// DEV: call float @llvm.fma.f32
+// DEV: fmul float
+// DEV: fadd float

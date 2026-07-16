@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <deque>
 #include <format>
 #include <iomanip>
@@ -218,7 +219,7 @@ inline std::string Emitter::convert(const Def* type, bool simd) {
     if (type->isa<Nat>()) {
         return types_[type] = "i64";
     } else if (auto size = Idx::isa(type)) {
-        return types_[type] = "i" + std::to_string(*Idx::size2bitwidth(size));
+        return types_[type] = "i" + std::to_string(std::max<nat_t>(1, *Idx::size2bitwidth(size)));
     } else if (auto w = math::isa_f(type)) {
         switch (*w) {
             case 16: return types_[type] = "half";
@@ -703,8 +704,10 @@ inline std::string Emitter::emit_bb(BB& bb, const Def* def) {
         auto t_tup = convert(tuple->type());
         if (auto li = Lit::isa(index)) {
             if (internals::isa_mem_sigma_2(tuple->type())) return v_tup;
-            // Adjust index, if mem is present.
-            auto v_i = Axm::isa<mem::M>(tuple->proj(0)->type()) ? std::to_string(*li - 1) : std::to_string(*li);
+            nat_t mems_before = 0;
+            for (nat_t i = 0; i < *li; ++i)
+                if (Axm::isa<mem::M>(tuple->proj(i)->type())) ++mems_before;
+            auto v_i = std::to_string(*li - mems_before);
 
             return bb.assign(name, "extractvalue {} {}, {}", t_tup, v_tup, v_i);
         }
@@ -1022,6 +1025,8 @@ inline std::string Emitter::emit_bb(BB& bb, const Def* def) {
         // auto v_size = emit(mslot->arg(1));
         std::print(bb.body().emplace_back(), "{} = alloca {}", name, convert(pointee, false));
         return name;
+    } else if (auto target_specific = isa_targetspecific_intrinsic(bb, def)) {
+        return target_specific.value();
     } else if (auto load = Axm::isa<mem::load>(def)) {
         emit_unsafe(load->arg(0));
         auto v_ptr     = emit(load->arg(1));
@@ -1050,6 +1055,8 @@ inline std::string Emitter::emit_bb(BB& bb, const Def* def) {
         emit_unsafe(mem);
         auto v_jb = emit(jmpbuf);
         return bb.assign(name, "call i32 @_setjmp(i8* {})", v_jb);
+    } else if (auto target_specific = isa_targetspecific_intrinsic(bb, def)) {
+        return target_specific.value();
     } else if (auto arith = Axm::isa<math::arith>(def)) {
         auto [mode, ab] = arith->uncurry_args<2>();
         auto [a, b]     = ab->projs<2>([this](auto def) { return emit(def); });

@@ -9,6 +9,7 @@
 #include <mim/plug/core/core.h>
 #include <mim/plug/gpu/gpu.h>
 #include <mim/plug/ll_nvptx/ll_nvptx.h>
+#include <mim/plug/math/math.h>
 #include <mim/plug/mem/mem.h>
 
 using namespace std::string_literals;
@@ -17,6 +18,7 @@ namespace mim::plug::ll_nvptx {
 
 namespace core = mim::plug::core;
 namespace ll   = mim::plug::ll;
+namespace math = mim::plug::math;
 namespace mem  = mim::plug::mem;
 namespace gpu  = mim::plug::gpu;
 
@@ -60,7 +62,8 @@ public:
     using Super = ll::Emitter;
 
     DeviceEmitter(World& world, std::ostream& ostream)
-        : Super(world, "llvm_nvptx_device_emitter", ostream) {}
+        : Super(world, "llvm_nvptx_device_emitter", ostream)
+        , uses_libdevice(false) {}
 
     void start() final;
 
@@ -72,7 +75,7 @@ public:
     const std::string& get_extra_flags() const { return extra_flags; }
 
 private:
-    std::string convert(const Def* def, bool simd = false) override { return Super::convert(def, simd); }
+    std::string convert(const Def* def, bool simd = false) override;
 
     absl::btree_map<std::string, int> symbols_;
     LamSet kernels_;
@@ -615,17 +618,108 @@ std::string DeviceEmitter::prepare() {
     return kernel->unique_name();
 }
 
+std::string DeviceEmitter::convert(const Def* def, bool simd) {
+    if (auto ptr = Axm::isa<mem::Ptr>(def)) {
+        auto [T, addr_space] = ptr->args<2>();
+        auto local_as        = Lit::as(world().annex<gpu::addr_space_local>());
+        if (Lit::as(addr_space) == local_as) return std::format("{}*", Super::convert(T, false));
+        if (auto arr = T->isa<Arr>(); arr && math::match_f32(arr->body())) {
+            if (auto arity = Lit::isa(arr->arity()); arity && (*arity == 2 || *arity == 4))
+                return std::format("<{} x float> addrspace({})*", *arity, Lit::as(addr_space));
+        }
+    }
+    return Super::convert(def, simd);
+}
+
 std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& bb, const Def* def) {
     auto name = id(def);
 
     auto shared_as = Lit::as(world().annex<gpu::addr_space_shared>());
+    auto local_as  = Lit::as(world().annex<gpu::addr_space_local>());
 
-    if (auto mslot = Axm::isa<mem::mslot>(def)) {
+    auto simd_f32_arr = [](const Def* type) -> std::optional<nat_t> {
+        auto arr = type->isa<Arr>();
+        if (!arr || !math::match_f32(arr->body())) return std::nullopt;
+        auto arity = Lit::isa(arr->arity());
+        if (!arity || (*arity != 2 && *arity != 4)) return std::nullopt;
+        return *arity;
+    };
+
+    auto simd_ptr_type = [&](const Def* ptr_type) -> std::optional<std::string> {
+        auto ptr = Axm::isa<mem::Ptr>(ptr_type);
+        if (!ptr) return std::nullopt;
+        auto [pointee, addr_space] = ptr->args<2>();
+        auto width = simd_f32_arr(pointee);
+        if (!width) return std::nullopt;
+        return std::format("<{} x float> addrspace({})*", *width, Lit::as(addr_space));
+    };
+
+    auto has_contract = [](const Def* mode) {
+        auto m = static_cast<math::Mode>(Lit::as(mode));
+        return m == math::Mode::fast || fe::has_flag(m, math::Mode::contract);
+    };
+
+    auto match_contract_mul = [&](const Def* candidate,
+                                  const Def* add_mode) -> std::optional<std::pair<const Def*, const Def*>> {
+        auto mul = Axm::isa<math::arith>(candidate);
+        if (!mul || mul.id() != math::arith::mul) return std::nullopt;
+        auto [mul_mode, args] = mul->uncurry_args<2>();
+        if (!has_contract(mul_mode) || Lit::as(mul_mode) != Lit::as(add_mode)) return std::nullopt;
+        auto [a, b] = args->projs<2>();
+        return std::pair{a, b};
+    };
+
+    if (auto load = Axm::isa<mem::load>(def); load && simd_ptr_type(load->arg(1)->type())) {
+        emit_unsafe(load->arg(0));
+        auto ptr_t = *simd_ptr_type(load->arg(1)->type());
+        auto width = *simd_f32_arr(Axm::as<mem::Ptr>(load->arg(1)->type())->arg(0));
+        return bb.assign(name, "load <{} x float>, {} {}", width, ptr_t, emit(load->arg(1)));
+    } else if (auto store = Axm::isa<mem::store>(def); store && simd_ptr_type(store->arg(1)->type())) {
+        emit_unsafe(store->arg(0));
+        auto ptr_t = *simd_ptr_type(store->arg(1)->type());
+        auto width = *simd_f32_arr(Axm::as<mem::Ptr>(store->arg(1)->type())->arg(0));
+        std::print(bb.body().emplace_back(), "store <{} x float> {}, {} {}", width, emit(store->arg(2)), ptr_t,
+                   emit(store->arg(1)));
+        return {};
+    } else if (auto arith = Axm::isa<math::arith>(def);
+        arith && arith.id() == math::arith::add && math::isa_f(arith->type())) {
+        auto [mode, args] = arith->uncurry_args<2>();
+        if (has_contract(mode)) {
+            auto [a, b] = args->projs<2>();
+            const Def* mul_lhs = nullptr;
+            const Def* mul_rhs = nullptr;
+            const Def* addend  = nullptr;
+
+            if (auto mul = match_contract_mul(a, mode)) {
+                mul_lhs = mul->first;
+                mul_rhs = mul->second;
+                addend  = b;
+            } else if (auto mul = match_contract_mul(b, mode)) {
+                mul_lhs = mul->first;
+                mul_rhs = mul->second;
+                addend  = a;
+            }
+
+            if (mul_lhs) {
+                auto t     = convert(arith->type());
+                auto width = *math::isa_f(arith->type());
+                declare("{} @llvm.fma.f{}({}, {}, {})", t, width, t, t, t);
+                return bb.assign(name, "call {} @llvm.fma.f{}({} {}, {} {}, {} {})", t, width, t, emit(mul_lhs), t,
+                                 emit(mul_rhs), t, emit(addend));
+            }
+        }
+    } else if (auto mslot = Axm::isa<mem::mslot>(def)) {
         auto [T, a] = mslot->decurry()->args<2>();
         if (Lit::as(a) == shared_as) {
             name = "@" + def->unique_name();
             emit_unsafe(mslot->arg(0));
             std::print(vars_decls_, "{} = internal addrspace({}) global {} undef\n", name, a, convert(T));
+            return name;
+        }
+        if (Lit::as(a) == local_as) {
+            emit_unsafe(mslot->arg(0));
+            auto type = convert(T, false);
+            std::print(bb.body().emplace_back(), "{} = alloca {}", name, type);
             return name;
         }
     } else if (auto sync_work_items = Axm::isa<gpu::sync_work_items>(def)) {
