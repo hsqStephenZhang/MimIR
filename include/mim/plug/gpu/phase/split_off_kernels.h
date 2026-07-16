@@ -22,6 +22,7 @@ private:
 
     DefSet analyzed_;
     LamSet kernels_;
+    fe::SymMap<const Def*> emitted_kernel_sym2def_;
 };
 
 } // namespace mim::plug::gpu::phase

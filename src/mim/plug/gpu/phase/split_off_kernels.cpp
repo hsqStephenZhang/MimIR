@@ -44,7 +44,19 @@ const Def* SplitOffKernels::rewrite_mut_Lam(Lam* old_lam) {
             assert(!old_lam->sym().empty());
             new_lam->set(old_lam->sym());
         }
-        new_lam->externalize();
+        if (!new_lam->is_external()) {
+            auto sym = new_lam->sym();
+            if (auto i = emitted_kernel_sym2def_.find(sym); i != emitted_kernel_sym2def_.end()) {
+                old_lam->unset();
+                return i->second;
+            }
+            if (auto existing = new_lam->world().externals()[sym]) {
+                old_lam->unset();
+                return existing;
+            }
+            new_lam->externalize();
+            emitted_kernel_sym2def_.emplace(sym, new_lam);
+        }
         old_lam->unset();
     }
 
