@@ -493,10 +493,8 @@ con tvm_style_gemm_scalar (m1: %gpu.GlobalM, m3: %gpu.SharedM, m4: %gpu.ConstM, 
                 return (m1, m3);
         end;
 
-    fun update_acc (group: I32, row_inner: I32, col_inner: I32,
-                    m3: %gpu.SharedM, acc0: %math.F32): [%gpu.SharedM, %math.F32] =
-        let b_local_col = %core.wrap.add 0 (thread_col_base, col_inner);
-
+    fun update_acc_scalar (group: I32, row_inner: I32, col_inner: I32,
+                           m3: %gpu.SharedM, acc0: %math.F32): [%gpu.SharedM, %math.F32] =
         %affine.For rv_body rv_exit (0I32, 2I32, 1I32, (m3, acc0))
         where
             con rv_body [rv_1: I32, [m3: %gpu.SharedM, acc0: %math.F32],
@@ -526,6 +524,177 @@ con tvm_style_gemm_scalar (m1: %gpu.GlobalM, m3: %gpu.SharedM, m4: %gpu.ConstM, 
             con rv_exit [[m3: %gpu.SharedM, acc: %math.F32]] =
                 return (m3, acc);
         end;
+
+    fun compute_tvm_row (group: I32, row_inner: I32, m3: %gpu.SharedM,
+                         c0: %math.F32, c1: %math.F32, c2: %math.F32, c3: %math.F32)
+                      : [%gpu.SharedM, %math.F32, %math.F32, %math.F32, %math.F32] =
+        %affine.unroll col_body col_exit (0I32, 4I32, 1I32, (m3, (c0, c1, c2, c3)))
+        where
+            con col_body [col_inner: I32, [m3: %gpu.SharedM, cs: [%math.F32, %math.F32, %math.F32, %math.F32]],
+                          col_continue: Cn [[%gpu.SharedM, [%math.F32, %math.F32, %math.F32, %math.F32]]]] =
+                let col_idx = %core.bitcast (Idx 4) col_inner;
+                let acc0 = cs#col_idx;
+                ret (m3, acc) = update_acc_scalar $ (group, row_inner, col_inner, m3, acc0);
+                let cs = ins(cs, col_idx, acc);
+                col_continue (m3, cs);
+
+            con col_exit [[m3: %gpu.SharedM, cs: [%math.F32, %math.F32, %math.F32, %math.F32]]] =
+                return (m3, cs#(0_4), cs#(1_4), cs#(2_4), cs#(3_4));
+        end;
+
+    fun compute_tvm_group (group: I32, m3: %gpu.SharedM,
+                           c00: %math.F32, c01: %math.F32, c02: %math.F32, c03: %math.F32,
+                           c10: %math.F32, c11: %math.F32, c12: %math.F32, c13: %math.F32,
+                           c20: %math.F32, c21: %math.F32, c22: %math.F32, c23: %math.F32,
+                           c30: %math.F32, c31: %math.F32, c32: %math.F32, c33: %math.F32)
+                        : [%gpu.SharedM, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32] =
+        %affine.unroll row_body row_exit (0I32, 4I32, 1I32,
+            (m3, (c00, c01, c02, c03, c10, c11, c12, c13,
+                  c20, c21, c22, c23, c30, c31, c32, c33)))
+        where
+            con row_body [row_inner: I32,
+                          [m3: %gpu.SharedM,
+                           cs: [%math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32]],
+                          row_continue: Cn [[%gpu.SharedM,
+                                             [%math.F32, %math.F32, %math.F32, %math.F32,
+                                              %math.F32, %math.F32, %math.F32, %math.F32,
+                                              %math.F32, %math.F32, %math.F32, %math.F32,
+                                              %math.F32, %math.F32, %math.F32, %math.F32]]]] =
+                let base_i32 = %core.wrap.mul 0 (row_inner, 4I32);
+                let idx0 = %core.bitcast (Idx 16) base_i32;
+                let idx1 = %core.bitcast (Idx 16) (%core.wrap.add 0 (base_i32, 1I32));
+                let idx2 = %core.bitcast (Idx 16) (%core.wrap.add 0 (base_i32, 2I32));
+                let idx3 = %core.bitcast (Idx 16) (%core.wrap.add 0 (base_i32, 3I32));
+                ret (m3, c0, c1, c2, c3) = compute_tvm_row $ (group, row_inner, m3, cs#idx0, cs#idx1, cs#idx2, cs#idx3);
+                let cs = ins(cs, idx0, c0);
+                let cs = ins(cs, idx1, c1);
+                let cs = ins(cs, idx2, c2);
+                let cs = ins(cs, idx3, c3);
+                row_continue (m3, cs);
+
+            con row_exit [[m3: %gpu.SharedM,
+                           cs: [%math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32]]] =
+                return (m3, cs#(0_16), cs#(1_16), cs#(2_16), cs#(3_16),
+                        cs#(4_16), cs#(5_16), cs#(6_16), cs#(7_16),
+                        cs#(8_16), cs#(9_16), cs#(10_16), cs#(11_16),
+                        cs#(12_16), cs#(13_16), cs#(14_16), cs#(15_16));
+        end;
+
+    fun compute_tvm_tile (m3: %gpu.SharedM,
+                          c0: %math.F32, c1: %math.F32, c2: %math.F32, c3: %math.F32,
+                          c4: %math.F32, c5: %math.F32, c6: %math.F32, c7: %math.F32,
+                          c8: %math.F32, c9: %math.F32, c10: %math.F32, c11: %math.F32,
+                          c12: %math.F32, c13: %math.F32, c14: %math.F32, c15: %math.F32,
+                          c16: %math.F32, c17: %math.F32, c18: %math.F32, c19: %math.F32,
+                          c20: %math.F32, c21: %math.F32, c22: %math.F32, c23: %math.F32,
+                          c24: %math.F32, c25: %math.F32, c26: %math.F32, c27: %math.F32,
+                          c28: %math.F32, c29: %math.F32, c30: %math.F32, c31: %math.F32,
+                          c32: %math.F32, c33: %math.F32, c34: %math.F32, c35: %math.F32,
+                          c36: %math.F32, c37: %math.F32, c38: %math.F32, c39: %math.F32,
+                          c40: %math.F32, c41: %math.F32, c42: %math.F32, c43: %math.F32,
+                          c44: %math.F32, c45: %math.F32, c46: %math.F32, c47: %math.F32,
+                          c48: %math.F32, c49: %math.F32, c50: %math.F32, c51: %math.F32,
+                          c52: %math.F32, c53: %math.F32, c54: %math.F32, c55: %math.F32,
+                          c56: %math.F32, c57: %math.F32, c58: %math.F32, c59: %math.F32,
+                          c60: %math.F32, c61: %math.F32, c62: %math.F32, c63: %math.F32)
+                       : [%gpu.SharedM,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32] =
+        ret (m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15) =
+            compute_tvm_group $ (0I32, m3, c0, c1, c2, c3, c4, c5, c6, c7,
+                                 c8, c9, c10, c11, c12, c13, c14, c15);
+        ret (m3, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31) =
+            compute_tvm_group $ (1I32, m3, c16, c17, c18, c19, c20, c21, c22, c23,
+                                 c24, c25, c26, c27, c28, c29, c30, c31);
+        ret (m3, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47) =
+            compute_tvm_group $ (2I32, m3, c32, c33, c34, c35, c36, c37, c38, c39,
+                                 c40, c41, c42, c43, c44, c45, c46, c47);
+        ret (m3, c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63) =
+            compute_tvm_group $ (3I32, m3, c48, c49, c50, c51, c52, c53, c54, c55,
+                                 c56, c57, c58, c59, c60, c61, c62, c63);
+        return (m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63);
+
+    let ComputeTileFn =
+        Fn [%gpu.SharedM,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32]
+          → [%gpu.SharedM,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32];
+
+    fun tvm_tile_step (ktile: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM,
+                       load_tile: Fn [I32, %gpu.GlobalM, %gpu.SharedM] → [%gpu.GlobalM, %gpu.SharedM],
+                       compute_tile: ComputeTileFn,
+                           c0: %math.F32, c1: %math.F32, c2: %math.F32, c3: %math.F32,
+                           c4: %math.F32, c5: %math.F32, c6: %math.F32, c7: %math.F32,
+                           c8: %math.F32, c9: %math.F32, c10: %math.F32, c11: %math.F32,
+                           c12: %math.F32, c13: %math.F32, c14: %math.F32, c15: %math.F32,
+                           c16: %math.F32, c17: %math.F32, c18: %math.F32, c19: %math.F32,
+                           c20: %math.F32, c21: %math.F32, c22: %math.F32, c23: %math.F32,
+                           c24: %math.F32, c25: %math.F32, c26: %math.F32, c27: %math.F32,
+                           c28: %math.F32, c29: %math.F32, c30: %math.F32, c31: %math.F32,
+                           c32: %math.F32, c33: %math.F32, c34: %math.F32, c35: %math.F32,
+                           c36: %math.F32, c37: %math.F32, c38: %math.F32, c39: %math.F32,
+                           c40: %math.F32, c41: %math.F32, c42: %math.F32, c43: %math.F32,
+                           c44: %math.F32, c45: %math.F32, c46: %math.F32, c47: %math.F32,
+                           c48: %math.F32, c49: %math.F32, c50: %math.F32, c51: %math.F32,
+                           c52: %math.F32, c53: %math.F32, c54: %math.F32, c55: %math.F32,
+                           c56: %math.F32, c57: %math.F32, c58: %math.F32, c59: %math.F32,
+                           c60: %math.F32, c61: %math.F32, c62: %math.F32, c63: %math.F32)
+                        : [%gpu.GlobalM, %gpu.SharedM,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32] =
+        let (m1, m3) = %gpu.sync_work_items (m1, m3);
+        ret (m1, m3) = load_tile $ (ktile, m1, m3);
+        let (m1, m3) = %gpu.sync_work_items (m1, m3);
+        ret (m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                 c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                 c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                 c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63) =
+            compute_tile $ (m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                            c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                            c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                            c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63);
+        return (m1, m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63);
 
     %affine.For tile_body tile_exit (0I32, %core.bitcast I32 TVM_K_TILES, 1I32, (m1, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
                                              0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
@@ -559,75 +728,16 @@ con tvm_style_gemm_scalar (m1: %gpu.GlobalM, m3: %gpu.SharedM, m4: %gpu.ConstM, 
                               %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
                               %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
                               %math.F32, %math.F32, %math.F32]]] =
-            let (m1, m3) = %gpu.sync_work_items (m1, m3);
-
-            ret (m1, m3) = load_tvm_tile_vectorized $ (ktile, m1, m3);
-            let (m1, m3) = %gpu.sync_work_items (m1, m3);
-
-            ret (m3, c0) = update_acc $ (0I32, 0I32, 0I32, m3, c0);
-                    ret (m3, c1) = update_acc $ (0I32, 0I32, 1I32, m3, c1);
-                    ret (m3, c2) = update_acc $ (0I32, 0I32, 2I32, m3, c2);
-                    ret (m3, c3) = update_acc $ (0I32, 0I32, 3I32, m3, c3);
-                    ret (m3, c4) = update_acc $ (0I32, 1I32, 0I32, m3, c4);
-                    ret (m3, c5) = update_acc $ (0I32, 1I32, 1I32, m3, c5);
-                    ret (m3, c6) = update_acc $ (0I32, 1I32, 2I32, m3, c6);
-                    ret (m3, c7) = update_acc $ (0I32, 1I32, 3I32, m3, c7);
-                    ret (m3, c8) = update_acc $ (0I32, 2I32, 0I32, m3, c8);
-                    ret (m3, c9) = update_acc $ (0I32, 2I32, 1I32, m3, c9);
-                    ret (m3, c10) = update_acc $ (0I32, 2I32, 2I32, m3, c10);
-                    ret (m3, c11) = update_acc $ (0I32, 2I32, 3I32, m3, c11);
-                    ret (m3, c12) = update_acc $ (0I32, 3I32, 0I32, m3, c12);
-                    ret (m3, c13) = update_acc $ (0I32, 3I32, 1I32, m3, c13);
-                    ret (m3, c14) = update_acc $ (0I32, 3I32, 2I32, m3, c14);
-                    ret (m3, c15) = update_acc $ (0I32, 3I32, 3I32, m3, c15);
-                    ret (m3, c16) = update_acc $ (1I32, 0I32, 0I32, m3, c16);
-                    ret (m3, c17) = update_acc $ (1I32, 0I32, 1I32, m3, c17);
-                    ret (m3, c18) = update_acc $ (1I32, 0I32, 2I32, m3, c18);
-                    ret (m3, c19) = update_acc $ (1I32, 0I32, 3I32, m3, c19);
-                    ret (m3, c20) = update_acc $ (1I32, 1I32, 0I32, m3, c20);
-                    ret (m3, c21) = update_acc $ (1I32, 1I32, 1I32, m3, c21);
-                    ret (m3, c22) = update_acc $ (1I32, 1I32, 2I32, m3, c22);
-                    ret (m3, c23) = update_acc $ (1I32, 1I32, 3I32, m3, c23);
-                    ret (m3, c24) = update_acc $ (1I32, 2I32, 0I32, m3, c24);
-                    ret (m3, c25) = update_acc $ (1I32, 2I32, 1I32, m3, c25);
-                    ret (m3, c26) = update_acc $ (1I32, 2I32, 2I32, m3, c26);
-                    ret (m3, c27) = update_acc $ (1I32, 2I32, 3I32, m3, c27);
-                    ret (m3, c28) = update_acc $ (1I32, 3I32, 0I32, m3, c28);
-                    ret (m3, c29) = update_acc $ (1I32, 3I32, 1I32, m3, c29);
-                    ret (m3, c30) = update_acc $ (1I32, 3I32, 2I32, m3, c30);
-                    ret (m3, c31) = update_acc $ (1I32, 3I32, 3I32, m3, c31);
-                    ret (m3, c32) = update_acc $ (2I32, 0I32, 0I32, m3, c32);
-                    ret (m3, c33) = update_acc $ (2I32, 0I32, 1I32, m3, c33);
-                    ret (m3, c34) = update_acc $ (2I32, 0I32, 2I32, m3, c34);
-                    ret (m3, c35) = update_acc $ (2I32, 0I32, 3I32, m3, c35);
-                    ret (m3, c36) = update_acc $ (2I32, 1I32, 0I32, m3, c36);
-                    ret (m3, c37) = update_acc $ (2I32, 1I32, 1I32, m3, c37);
-                    ret (m3, c38) = update_acc $ (2I32, 1I32, 2I32, m3, c38);
-                    ret (m3, c39) = update_acc $ (2I32, 1I32, 3I32, m3, c39);
-                    ret (m3, c40) = update_acc $ (2I32, 2I32, 0I32, m3, c40);
-                    ret (m3, c41) = update_acc $ (2I32, 2I32, 1I32, m3, c41);
-                    ret (m3, c42) = update_acc $ (2I32, 2I32, 2I32, m3, c42);
-                    ret (m3, c43) = update_acc $ (2I32, 2I32, 3I32, m3, c43);
-                    ret (m3, c44) = update_acc $ (2I32, 3I32, 0I32, m3, c44);
-                    ret (m3, c45) = update_acc $ (2I32, 3I32, 1I32, m3, c45);
-                    ret (m3, c46) = update_acc $ (2I32, 3I32, 2I32, m3, c46);
-                    ret (m3, c47) = update_acc $ (2I32, 3I32, 3I32, m3, c47);
-                    ret (m3, c48) = update_acc $ (3I32, 0I32, 0I32, m3, c48);
-                    ret (m3, c49) = update_acc $ (3I32, 0I32, 1I32, m3, c49);
-                    ret (m3, c50) = update_acc $ (3I32, 0I32, 2I32, m3, c50);
-                    ret (m3, c51) = update_acc $ (3I32, 0I32, 3I32, m3, c51);
-                    ret (m3, c52) = update_acc $ (3I32, 1I32, 0I32, m3, c52);
-                    ret (m3, c53) = update_acc $ (3I32, 1I32, 1I32, m3, c53);
-                    ret (m3, c54) = update_acc $ (3I32, 1I32, 2I32, m3, c54);
-                    ret (m3, c55) = update_acc $ (3I32, 1I32, 3I32, m3, c55);
-                    ret (m3, c56) = update_acc $ (3I32, 2I32, 0I32, m3, c56);
-                    ret (m3, c57) = update_acc $ (3I32, 2I32, 1I32, m3, c57);
-                    ret (m3, c58) = update_acc $ (3I32, 2I32, 2I32, m3, c58);
-                    ret (m3, c59) = update_acc $ (3I32, 2I32, 3I32, m3, c59);
-                    ret (m3, c60) = update_acc $ (3I32, 3I32, 0I32, m3, c60);
-                    ret (m3, c61) = update_acc $ (3I32, 3I32, 1I32, m3, c61);
-                    ret (m3, c62) = update_acc $ (3I32, 3I32, 2I32, m3, c62);
-                    ret (m3, c63) = update_acc $ (3I32, 3I32, 3I32, m3, c63);
+            ret (m1, m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                     c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                     c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                     c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63) =
+                tvm_tile_step $ (ktile, m1, m3,
+                                 load_tvm_tile_vectorized, compute_tvm_tile,
+                                 c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                                 c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                                 c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                                 c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63);
             continue (m1, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
                       c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40,
                       c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60,
