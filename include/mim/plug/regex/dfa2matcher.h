@@ -45,9 +45,10 @@ const Def* encode_dfa_table(World&, const DFATable&);
 /// All state continuations are allocated before any body is emitted. This
 /// forms a finite specialization cache: cyclic edges refer to existing
 /// placeholders rather than recursively expanding the table interpreter.
-/// Transition ranges are emitted as constant unsigned byte comparisons;
-/// unmatched bytes use `fallback`, and NUL selects accept/reject from the
-/// current state's `accepting` flag.
+/// Transition ranges are emitted as constant unsigned byte comparisons. Hot
+/// transitions are tested before the cold miss path; unmatched non-NUL bytes
+/// use `fallback`, while NUL selects accept/reject from the current state's
+/// `accepting` flag without being consumed.
 ///
 /// The returned function has CPS type
 /// `Cn [%mem.M 0, Str n, Idx n, Cn [%mem.M 0, Bool, Idx n]]`.

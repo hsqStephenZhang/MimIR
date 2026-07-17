@@ -303,28 +303,42 @@ const Def* dfa_table2matcher(World& w, const DFATable& dfa, const Def* n) {
 
         auto ptr       = w.call<mem::lea>(Defs{string, i});
         auto [mem2, c] = w.call<mem::load>(Defs{mem, ptr})->projs<2>();
-        auto is_end    = w.call(core::icmp::e, Defs{c, w.lit_i8(0)});
-        auto not_end   = mem::mut_con(w.type_idx(n));
-        not_end->debug_prefix("not_end_state_" + std::to_string(state_id));
+        auto advanced = w.call(core::wrap::add, core::Mode::nsuw, w.tuple({i, w.call(core::conv::u, n, w.lit_i64(1))}));
 
-        state_lam->app(false, w.select(is_end, table_state.accepting ? accept : reject, not_end), {mem2, i});
+        // Keep EOF handling on the cold transition-miss path. In particular,
+        // an accepting self-loop should test its hot byte range and branch
+        // back directly instead of materializing `(c == 0)` on every byte.
+        auto miss = mem::mut_con(w.type_idx(n));
+        miss->debug_prefix("miss_state_" + std::to_string(state_id));
+        {
+            auto [miss_mem, miss_pos] = miss->vars<2>();
+            auto is_end               = w.call(core::icmp::e, Defs{c, w.lit_i8(0)});
+            auto on_end               = table_state.accepting ? accept : reject;
+            miss->app(false, w.select(is_end, on_end, states[table_state.fallback]),
+                      {miss_mem, w.select(is_end, miss_pos, advanced)});
+        }
 
-        const Def* next = states[table_state.fallback];
+        const Def* next = miss;
         for (nat_t transition_id = 0; transition_id != table_state.transitions.size(); ++transition_id) {
             const auto& transition = table_state.transitions[transition_id];
-            auto checker           = mem::mut_con(w.type_idx(n));
+            // NUL terminates `Input`; it is never part of the matched byte
+            // stream, even if a closed table contains a range starting at 0.
+            auto lo = std::max<std::uint8_t>(transition.lo, 1);
+            if (lo > transition.hi) continue;
+
+            auto checker = mem::mut_con(w.type_idx(n));
             checker->debug_prefix("check_state_" + std::to_string(state_id) + "_transition_"
                                   + std::to_string(transition_id));
             auto [check_mem, check_pos] = checker->vars<2>();
-            auto in_range               = match_range(c, transition.lo, transition.hi);
-            checker->app(false, w.select(in_range, states[transition.target], next), {check_mem, check_pos});
+            auto in_range               = match_range(c, lo, transition.hi);
+            checker->app(false, w.select(in_range, states[transition.target], next),
+                         {check_mem, w.select(in_range, advanced, check_pos)});
             next = checker;
         }
 
-        auto [next_mem, next_pos] = not_end->vars<2>();
-        auto advanced
-            = w.call(core::wrap::add, core::Mode::nsuw, w.tuple({next_pos, w.call(core::conv::u, n, w.lit_i64(1))}));
-        not_end->app(true, next, {next_mem, advanced});
+        // State continuations are recursive CFG nodes and must remain opaque to
+        // partial evaluation; the checker chain itself may still inline.
+        state_lam->app(false, next, {mem2, i});
     }
 
     matcher->app(false, states[dfa.entry], {memory, pos});

@@ -112,30 +112,35 @@ Build/setup time:
 
 | Engine | Time |
 |---|---:|
-| python-lower-regex | 24.509 s |
-| native-lower-regex | 3.649 s |
-| rust-regex-bytes | 2.775 s |
-| rust-regex-bytes-native | 2.945 s |
-| graal-style-pe | 3.615 s |
+| python-lower-regex | 26.184 s |
+| native-lower-regex | 3.832 s |
+| rust-regex-bytes | 2.917 s |
+| rust-regex-bytes-native | 3.079 s |
+| graal-style-pe | 4.254 s |
 
 Representative steady-state results:
 
 | Pattern | Workload | Bytes | python-lower-regex | native-lower-regex | rust-regex-bytes | rust-regex-bytes-native | graal-style-pe |
 |---|---|---:|---:|---:|---:|---:|---:|
-| literal_abc | short-match | 3 | 6.2 | 5.3 | 73.4 | 75.3 | 4.3 |
-| literal_abc | short-reject | 3 | 6.1 | 5.2 | 13.7 | 14.1 | 1.3 |
-| a_plus_b | medium-match | 256 | 56.4 | 56.5 | 303.2 | 302.1 | 56.4 |
-| a_plus_b | huge-match | 65536 | 12428.6 | 12442.3 | 74444.1 | 74461.5 | 12438.4 |
-| abc_plus | medium-match | 255 | 393.2 | 392.9 | 300.9 | 301.9 | 40.6 |
-| abc_plus | huge-match | 65535 | 99969.3 | 100053.1 | 74473.5 | 74461.7 | 8311.1 |
-| ascii_word_plus | medium-match | 256 | 683.8 | 685.6 | 302.2 | 302.3 | 115.8 |
-| ascii_word_plus | huge-match | 65536 | 174899.6 | 174865.9 | 74434.0 | 74418.9 | 27601.3 |
-| digit_plus | medium-match | 256 | 57.3 | 57.0 | 302.2 | 302.1 | 85.3 |
-| digit_plus | huge-match | 65536 | 12435.7 | 12440.1 | 74431.9 | 74439.6 | 23486.1 |
-| identifier | medium-match | 256 | 684.4 | 685.3 | 302.4 | 302.4 | 113.0 |
-| identifier | huge-match | 65536 | 174794.0 | 174954.6 | 74435.3 | 74442.1 | 27205.3 |
-| color_optional | short-match | 6 | 2.0 | 2.2 | 18.3 | 18.8 | 1.3 |
-| keyword_alt | short-match | 3 | 1.5 | 1.6 | 15.3 | 15.8 | 1.5 |
-| fowler_basic26 | short-match | 4 | 1.5 | 1.3 | 15.7 | 16.2 | 1.5 |
-| paper_email | paper-valid | 34 | 26.6 | 26.5 | 50.0 | 50.7 | 22.8 |
-| paper_email | paper-invalid | 15 | 12.5 | 11.4 | 28.1 | 28.2 | 8.7 |
+| literal_abc | short-match | 3 | 1.7 | 1.4 | 19.3 | 21.2 | 1.6 |
+| literal_abc | short-reject | 3 | 1.9 | 1.6 | 19.7 | 20.6 | 2.2 |
+| a_plus_b | medium-match | 256 | 92.6 | 80.5 | 303.4 | 301.5 | 37.8 |
+| a_plus_b | huge-match | 65536 | 12424.8 | 12421.7 | 74418.2 | 74435.3 | 6915.4 |
+| abc_plus | medium-match | 255 | 392.9 | 392.4 | 300.3 | 301.4 | 33.9 |
+| abc_plus | huge-match | 65535 | 100041.7 | 100045.2 | 74410.4 | 74421.0 | 6365.9 |
+| ascii_word_plus | medium-match | 256 | 683.9 | 685.0 | 301.8 | 301.5 | 94.0 |
+| ascii_word_plus | huge-match | 65536 | 174377.6 | 174425.5 | 74421.6 | 74427.0 | 17999.2 |
+| digit_plus | medium-match | 256 | 57.3 | 67.8 | 301.9 | 301.5 | 44.5 |
+| digit_plus | huge-match | 65536 | 12415.9 | 12427.6 | 74408.1 | 74410.6 | 8290.8 |
+| identifier | medium-match | 256 | 683.1 | 685.2 | 301.8 | 301.5 | 76.4 |
+| identifier | huge-match | 65536 | 174362.1 | 174523.1 | 74422.4 | 74426.2 | 15626.0 |
+| color_optional | short-match | 6 | 2.0 | 2.0 | 19.2 | 18.3 | 1.5 |
+| keyword_alt | short-match | 3 | 1.5 | 1.7 | 14.9 | 15.0 | 1.3 |
+| fowler_basic26 | short-match | 4 | 1.5 | 1.3 | 15.3 | 15.7 | 1.1 |
+| paper_email | paper-valid | 34 | 26.6 | 26.5 | 49.7 | 49.7 | 19.4 |
+| paper_email | paper-invalid | 15 | 11.3 | 11.4 | 27.5 | 27.8 | 9.4 |
+
+The specialized DFA tests explicit non-NUL transitions before its EOF/fallback
+path. This keeps the common transition on the hot edge and moves acceptance
+result materialization out of self-loops. For `digit_plus`, Clang consequently
+emits a range-checking loop without a per-byte NUL comparison or `setcc`.

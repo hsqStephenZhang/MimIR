@@ -606,6 +606,9 @@ lam %regex.dfa.states {ns k: Nat}
 /// compilation-constant state node. It first allocates one continuation per
 /// state, then fills their bodies with constant range checks and direct edges.
 /// Statically empty ranges (`lo > hi`) are discarded as table padding.
+/// Range checks precede the cold EOF/fallback path, which keeps accepting
+/// self-loops free of per-byte result materialization. NUL remains an input
+/// terminator even if a closed table contains a transition range starting at 0.
 /// Allocating all placeholders first is essential: a DFA back edge references
 /// an existing continuation instead of recursively expanding the interpreter.
 /// Code size is `O(ns * k)` and does not depend on input length.
