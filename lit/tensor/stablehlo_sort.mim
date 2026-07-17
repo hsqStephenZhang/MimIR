@@ -1,0 +1,47 @@
+// RUN: %mim -p opt %s -p affine -o - | %FileCheck %s
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+let I32_SIGNED = (I32, %tensor.compare_type.signed_int, %core.icmp.sl @i32);
+
+// CHECK-DAG: fun extern sort_rows
+// CHECK-DAG: fun extern sort_key_value
+// CHECK-DAG: fun sortPass
+// CHECK-DAG: fun sortAdjacent
+// CHECK-DAG: %core.icmp.xYgLe
+// CHECK-NOT: %tensor.stablehlo_sort
+// CHECK-NOT: stablehlo_sort_impl_axm
+
+lam i32_less (lhs rhs: I32): Bool =
+    %tensor.stablehlo_compare I32_SIGNED (lhs, rhs);
+
+// Sort each row independently along dimension 1.
+fun extern sort_rows (input: «2, 4; I32»): «2, 4; I32» =
+    return (%tensor.stablehlo_sort @(1, 2, I32) (2, 4) (1_2, tt) i32_less input);
+
+// Stable lockstep key/value sort. The comparator receives
+// (lhs_key, rhs_key, lhs_value, rhs_value) and intentionally compares only keys.
+// In Python-like pseudocode, one slice is lowered as:
+//
+//   for _ in range(len(keys)):
+//       for j in range(len(keys) - 1):
+//           if key_less(keys[j + 1], keys[j], values[j + 1], values[j]):
+//               keys[j], keys[j + 1] = keys[j + 1], keys[j]
+//               values[j], values[j + 1] = values[j + 1], values[j]
+lam key_less (lhs_key rhs_key: I32, lhs_value rhs_value: I64): Bool =
+    %tensor.stablehlo_compare I32_SIGNED (lhs_key, rhs_key);
+
+fun extern sort_key_value (keys: «4; I32», values: «4; I64»): [«4; I32», «4; I64»] =
+    return (%tensor.stablehlo_sort @(2, 1, (I32, I64)) 4 (0_1, ff) key_less (keys, values));
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_tensor,
+        %compile.internal_cleanup,
+        %tensor.lower_map_reduce,
+        %compile.internal_cleanup,
+    );

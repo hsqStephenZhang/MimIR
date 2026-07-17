@@ -1,0 +1,25 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+plugin core;
+plugin tensor;
+plugin compile;
+
+let I32_SIGNED = (I32, %tensor.compare_type.signed_int, %core.icmp.sl @i32);
+let BOOL_UNSIGNED = (Bool, %tensor.compare_type.unsigned_int, %core.icmp.ul @2);
+
+// The compare policy is carried by the witness and the high-level operation is removed.
+// CHECK-NOT: %tensor.stablehlo_compare
+// CHECK-DAG: %core.icmp.xYgLe i32
+// CHECK-DAG: %core.icmp.XygLe 2
+fun extern compare_i32 (lhs rhs: I32): Bool =
+    return (%tensor.stablehlo_compare I32_SIGNED (lhs, rhs));
+
+fun extern compare_bool (lhs rhs: Bool): Bool =
+    return (%tensor.stablehlo_compare BOOL_UNSIGNED (lhs, rhs));
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_tensor,
+        %compile.internal_cleanup,
+    );

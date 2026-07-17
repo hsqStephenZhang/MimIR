@@ -464,6 +464,85 @@ const Def* LowerMapReduce::lower_scatter(const App* app) {
     return call;
 }
 
+const Def* LowerMapReduce::lower_stablehlo_sort(const App* app) {
+    auto& w   = new_world();
+    auto c    = rewrite(app->callee())->as<App>();
+    auto args = rewrite(app->arg());
+    auto type = rewrite(app->type());
+
+    // callee: stablehlo_sort_impl_axm {n, r, Ts} s (dimension, is_stable) comparator
+    auto [nrTs, s, attrs, comparator] = c->uncurry_args<4>();
+    auto [n, r, Ts]                   = nrTs->projs<3>();
+    auto [dimension, is_stable]       = attrs->projs<2>();
+    (void)Ts;
+    (void)is_stable; // A stable result is also a valid result when stability is not requested.
+
+    auto n_l = Lit::isa<u64>(n);
+    auto r_l = Lit::isa<u64>(r);
+    if (!(n_l && *n_l > 0)) {
+        WLOG("{} doesn't have a lowering-time known, non-empty input count", app);
+        return nullptr;
+    }
+    if (!r_l) {
+        WLOG("{} doesn't have a lowering-time known rank", app);
+        return nullptr;
+    }
+    auto rn = *r_l;
+
+    auto fun    = w.mut_fun(args->type(), type)->set("stablehlo_sort");
+    auto ds_fun = cps::op_cps2ds_dep(fun)->set("dsFun");
+    auto call   = w.app(ds_fun, args)->set("call");
+
+    auto cont        = fun->var(1);
+    auto acc         = fun->var(0)->set("inputs");
+    auto current_mut = fun;
+    DefVec outer_iters;
+    outer_iters.reserve(rn);
+
+    // Iterate every slice once. The sort dimension itself gets a unit outer bound,
+    // while all other dimensions enumerate the independent one-dimensional slices.
+    for (u64 i = 0; i < rn; ++i) {
+        auto axis    = w.lit(dimension->type(), i);
+        auto is_dim  = w.call(core::icmp::e, Defs{axis, dimension});
+        auto dim_nat = w.extract(w.tuple({s->proj(rn, i), w.lit_nat(1)}), is_dim);
+        auto bound   = w.call<core::bitcast>(w.type_i64(), dim_nat);
+
+        auto [body, for_call]       = counting_for(bound, acc, cont, w.sym("sortOuter_" + std::to_string(i)));
+        auto [iter, new_acc, yield] = body->vars<3>();
+        current_mut->set(true, for_call);
+        current_mut = body;
+        outer_iters.push_back(iter);
+        acc  = new_acc;
+        cont = yield;
+    }
+
+    auto extent_nat = w.extract(s, dimension);
+    auto extent     = w.call<core::bitcast>(w.type_i64(), extent_nat);
+    auto nonempty   = w.call(core::icmp::ug, Defs{extent, w.lit_i64(0)});
+    auto extent_m1  = w.call(core::wrap::sub, core::Mode::none, Defs{extent, w.lit_i64(1)});
+    auto inner_bound = w.extract(w.tuple({w.lit_i64(0), extent_m1}), nonempty);
+
+    // Stable bubble sort. Each pass scans adjacent elements and swaps when
+    // comparator(rhs, lhs) is true. The accumulator is a tuple of all input tensors,
+    // so one predicate updates every variadic operand in lockstep.
+    auto [pass_body, pass_call]       = counting_for(extent, acc, cont, w.sym("sortPass"));
+    auto [pass, pass_acc, pass_yield] = pass_body->vars<3>();
+    (void)pass;
+    current_mut->set(true, pass_call);
+
+    auto [item_body, item_call]    = counting_for(inner_bound, pass_acc, pass_yield, w.sym("sortAdjacent"));
+    auto [j, item_acc, item_yield] = item_body->vars<3>();
+    pass_body->set(true, item_call);
+
+    auto step = w.app(w.annex<tensor::stablehlo_sort_swap_impl>(), Defs{n, r, nrTs->proj(3, 2)});
+    step      = w.app(step, s);
+    step      = w.app(step, dimension);
+    step      = w.app(step, comparator);
+    step      = w.app(step, Defs{w.tuple(outer_iters), j});
+    item_body->app(true, item_yield, w.app(step, item_acc));
+    return call;
+}
+
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (auto bc = Axm::isa<tensor::broadcast>(app)) {
         if (auto res = lower_broadcast(bc)) return res;
@@ -479,6 +558,8 @@ const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
         if (auto res = lower_gather(gather)) return res;
     } else if (auto scatter = Axm::isa<tensor::scatter_impl_axm>(app)) {
         if (auto res = lower_scatter(scatter)) return res;
+    } else if (auto sort = Axm::isa<tensor::stablehlo_sort_impl_axm>(app)) {
+        if (auto res = lower_stablehlo_sort(sort)) return res;
     }
     return RWPhase::rewrite_imm_App(app);
 }
