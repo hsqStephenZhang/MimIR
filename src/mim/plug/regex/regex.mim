@@ -212,6 +212,195 @@ lam %regex.interpret (expr: %regex.Expr) {n: Nat}
         | p: %regex.Concat => %regex.interpret_conj p args
         | p: %regex.Alt => %regex.interpret_disj p args
         | p: %regex.Optional => %regex.interpret_optional p args;
+
+/// ## Closed DFA Tables
+///
+/// `%regex.DFA ns k` is a homogeneous sparse transition table:
+///
+/// - `ns` is the number of states;
+/// - `k` is the fixed transition capacity of every state;
+/// - `entry` is the initial state;
+/// - `error` is a designated state that rejects immediately;
+/// - `accepting` is consulted only when the next input byte is NUL;
+/// - `fallback` is selected when no explicit transition matches.
+///
+/// A transition `[lo, hi, target]` matches the inclusive unsigned byte range
+/// `lo <= c <= hi`. Well-formed DFA tables use disjoint ranges. If ranges do
+/// overlap, the later transition in the array has priority. `[255, 0, error]`
+/// is consequently a useful never-matching padding transition.
+lam %regex.dfa.Transition (ns: Nat): * = [lo hi: Char, target: Idx ns];
+lam %regex.dfa.State (ns: Nat) (k: Nat): * =
+    [accepting: Bool, fallback: Idx ns, transitions: «k; %regex.dfa.Transition ns»];
+lam %regex.DFA (ns: Nat) (k: Nat): * =
+    [entry error: Idx ns, states: «ns; %regex.dfa.State ns k»];
+
+/// Named accessors hide the positional encoding of table records. They are
+/// ordinary lambdas and disappear through beta reduction.
+lam %regex.dfa.transition_lo {ns: Nat}
+    (transition: %regex.dfa.Transition ns): Char = transition#(0:(Idx 3));
+lam %regex.dfa.transition_hi {ns: Nat}
+    (transition: %regex.dfa.Transition ns): Char = transition#(1:(Idx 3));
+lam %regex.dfa.transition_target {ns: Nat}
+    (transition: %regex.dfa.Transition ns): Idx ns = transition#(2:(Idx 3));
+lam %regex.dfa.state_accepting {ns k: Nat}
+    (state: %regex.dfa.State ns k): Bool = state#(0:(Idx 3));
+lam %regex.dfa.state_fallback {ns k: Nat}
+    (state: %regex.dfa.State ns k): Idx ns = state#(1:(Idx 3));
+lam %regex.dfa.state_transitions {ns k: Nat}
+    (state: %regex.dfa.State ns k): «k; %regex.dfa.Transition ns» = state#(2:(Idx 3));
+lam %regex.dfa.entry {ns k: Nat} (dfa: %regex.DFA ns k): Idx ns = dfa#(0:(Idx 3));
+lam %regex.dfa.error {ns k: Nat} (dfa: %regex.DFA ns k): Idx ns = dfa#(1:(Idx 3));
+lam %regex.dfa.states {ns k: Nat}
+    (dfa: %regex.DFA ns k): «ns; %regex.dfa.State ns k» = dfa#(2:(Idx 3));
+
+/// ### `%regex.specialize_dfa`
+///
+/// Stages a closed DFA table into a residual full-string matcher. Its result
+/// is semantically equivalent to `%regex.dfa.interpret`, but the table and the
+/// dynamic state index are absent from residual code.
+///
+/// The normalizer performs the equivalent of Truffle's `@ExplodeLoop` plus a
+/// compilation-constant state node. It first allocates one continuation per
+/// state, then fills their bodies with constant range checks and direct edges.
+/// Statically empty ranges (`lo > hi`) are discarded as table padding.
+/// Allocating all placeholders first is essential: a DFA back edge references
+/// an existing continuation instead of recursively expanding the interpreter.
+/// Code size is `O(ns * k)` and does not depend on input length.
+///
+/// The DFA argument must be closed and projectable to literal table fields.
+/// If it is dynamic, this staging axiom remains unresolved; callers that need
+/// runtime table interpretation should use `%regex.dfa.interpret` instead.
+axm %regex.specialize_dfa: {ns k n: Nat} →
+    [%regex.DFA ns k, Input n] → Res n, normalize_dfa_specialize, 2;
+
+/// ### `%regex.dfa.compile`
+///
+/// Higher-order first Futamura projection. Applying it to a closed table
+/// produces an `RE`; applying that matcher to dynamic input exposes
+/// `%regex.specialize_dfa` with the table already fixed. Beta reduction removes
+/// this wrapper, so it has no residual runtime cost.
+let %regex.dfa.compile = lm {ns k: Nat} (dfa: %regex.DFA ns k): RE =
+    lm {n: Nat} (input: Input n): Res n = %regex.specialize_dfa (dfa, input);
+
+/// ### `%regex.dfa.pick`
+///
+/// `ns` is the total number of states, so both `next` and
+/// `transition.target` are statically bounded by `Idx ns`. `c` is the dynamic
+/// input byte. This helper implements one transition update:
+///
+/// ```python
+/// def pick(c, next_state, transition):
+///     lo, hi, target = transition
+///     return target if lo <= c <= hi else next_state
+/// ```
+lam %regex.dfa.pick {ns: Nat} (c: Char)
+    (next: Idx ns, transition: %regex.dfa.Transition ns): Idx ns =
+    let in_range = %core.bit2.and_ 0
+        (%core.icmp.uge (c, %regex.dfa.transition_lo transition),
+         %core.icmp.ule (c, %regex.dfa.transition_hi transition));
+    %core.select (in_range, %regex.dfa.transition_target transition, next);
+
+/// ### `%regex.dfa.fold_transitions`
+///
+/// `ns` is the state count, `k` is the transition capacity, `transitions` is
+/// one state's fixed-size transition array, `i` is the current compile-time
+/// slot, and `next` is the accumulated successor. Its semantics are:
+///
+/// ```python
+/// def fold_transitions(transitions, c, i, next_state):
+///     while i < k:
+///         next_state = pick(c, next_state, transitions[i])
+///         i += 1
+///     return next_state
+/// ```
+///
+/// The `is_closed i` filter exposes the fixed `k` iterations to partial
+/// evaluation. Since every match replaces `next`, a later overlapping
+/// transition takes priority over an earlier one.
+lam %regex.dfa.fold_transitions {ns k: Nat}
+    (transitions: «k; %regex.dfa.Transition ns», c: Char)
+    (i: Nat, next: Idx ns)@(%core.pe.is_closed i): Idx ns =
+    %core.select (%core.ncmp.le (k, i), done, more) ()
+    where
+        lam done (): Idx ns = next;
+        lam more (): Idx ns =
+            let transition = transitions#(%core.idx k 0 i);
+            %regex.dfa.fold_transitions (transitions, c)
+                (%core.nat.add (i, 1), %regex.dfa.pick c (next, transition));
+    end;
+
+/// ### `%regex.dfa.next`
+///
+/// `state` contains one accepting flag, one fallback state, and exactly `k`
+/// transition slots. `next` starts from the fallback and folds every explicit
+/// range over it:
+///
+/// ```python
+/// def next_state(state, c):
+///     return fold_transitions(
+///         transitions=state.transitions,
+///         c=c,
+///         i=0,
+///         next_state=state.fallback,
+///     )
+/// ```
+///
+/// The result remains `Idx ns`, so the type guarantees that it names a state
+/// in the same DFA table.
+lam %regex.dfa.next {ns k: Nat}
+    (state: %regex.dfa.State ns k, c: Char): Idx ns =
+    %regex.dfa.fold_transitions (%regex.dfa.state_transitions state, c)
+        (0, %regex.dfa.state_fallback state);
+
+/// ### `%regex.dfa.interpret`
+///
+/// Reference table interpreter. It reads bytes beginning at `input.pos`,
+/// accepts only when NUL is reached in an accepting state, and returns the
+/// position of NUL on success or the position after the rejecting byte on an
+/// error transition. The designated error state rejects without loading.
+///
+/// This function makes the static/dynamic split explicit, but a dynamic state
+/// still indexes the aggregate table. Current LLVM lowering does not eliminate
+/// that lookup by itself; `%regex.specialize_dfa` is the executable staged path.
+///
+/// Python-like pseudocode for the positional operations below:
+///
+/// ```python
+/// state_id = dfa.entry
+/// while state_id != dfa.error:
+///     current = dfa.states[state_id]
+///     c = input.bytes[pos]
+///     if c == 0:
+///         return current.accepting, pos
+///     state_id = next_state(current.transitions, current.fallback, c)
+///     pos += 1
+/// return False, pos
+/// ```
+fun %regex.dfa.interpret {ns k n: Nat}
+    (dfa: %regex.DFA ns k, input: Input n)@tt: Res n =
+    (head, reject)#(%core.icmp.e (%regex.dfa.entry dfa, %regex.dfa.error dfa))
+        (input#(0:(Idx 3)), input#(2:(Idx 3)), %regex.dfa.entry dfa)
+    where
+        con head (mem: %mem.M 0, pos: Idx n, state: Idx ns) =
+            let ptr = %mem.lea (input#(1:(Idx 3)), pos);
+            let (mem, c) = %mem.load (mem, ptr);
+            (consume, finish)#(%core.icmp.e (c, 0I8)) (mem, pos, state, c)
+            where
+                con finish (mem: %mem.M 0, pos: Idx n, state: Idx ns, _: Char) =
+                    let current = (%regex.dfa.states dfa)#state;
+                    return (mem, %regex.dfa.state_accepting current, pos);
+
+                con consume (mem: %mem.M 0, pos: Idx n, state: Idx ns, c: Char) =
+                    let current = (%regex.dfa.states dfa)#state;
+                    let next = %regex.dfa.next (current, c);
+                    let next_pos = %core.wrap.add 0 (pos, %core.idx n 0 1);
+                    let failed = %core.icmp.e (next, %regex.dfa.error dfa);
+                    (head, reject)#failed (mem, next_pos, next);
+            end;
+
+        con reject (mem: %mem.M 0, pos: Idx n, _: Idx ns) =
+            return (mem, ff, pos);
+    end;
 ///
 /// ## Passes and Phases
 ///

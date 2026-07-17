@@ -31,7 +31,19 @@ This is only a representation alias; it does not add an effect system or
 change memory threading. The explicit memory token remains part of the
 runtime contract and is carried through the residual matcher.
 
-The two paths should remain available as separate strategies. The Python/DFA
-path is the mature general-purpose implementation, while the tagged-AST path
-is the minimal case study for object-language interpreters, partial
-evaluation, and future JIT specialization.
+There is now also an intermediate closed-DFA experiment. `%regex.DFA ns k`
+stores accepting flags, fallback states, and fixed-capacity range transitions.
+`%regex.specialize_dfa` decodes a closed table and preallocates one residual
+continuation per state before filling any body. This finite specialization
+cache handles DFA cycles and removes dynamic static-table extraction. It is
+the MimIR analogue of combining Truffle loop explosion with a
+partial-evaluation-constant state node.
+
+The three paths should remain available while the design is evaluated. The
+Python/DFA path is the mature general-purpose implementation; the tagged-AST
+path demonstrates object-language pattern matching; and the closed-DFA path
+demonstrates cyclic control-flow specialization and LLVM/JIT. Building the
+NFA and DFA in the MimIR object language is still pending.
+
+Implementation details, matcher semantics, residual-IR expectations, and the
+test matrix are documented in [Closed DFA Specialization](regex_dfa_specialization.md).

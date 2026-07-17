@@ -1,8 +1,10 @@
 // RUN: rm -f %{s:stem}.ll ; \
 // RUN: %mim -p opt %s -o - -p ll | %FileCheck %s
 // RUN: clang %{s:stem}.ll -o %t -Wno-override-module
-// RUN: %t "ab"; test $? -eq 0
-// RUN: %t "a"; test $? -eq 1
+// RUN: %t "ab"; test $? -eq 1
+// RUN: %t "a"; test $? -eq 0
+// `%regex.interpret` preserves the existing RE prefix-match semantics.
+// RUN: %t "abc"; test $? -eq 1
 
 plugin mem;
 plugin core;

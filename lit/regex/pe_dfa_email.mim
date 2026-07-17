@@ -1,0 +1,71 @@
+// RUN: rm -f %{s:stem}.ll ; \
+// RUN: %mim -p opt %s -o - -p ll | %FileCheck %s
+// RUN: clang %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t "test@test.de"; test $? -eq 1
+// RUN: %t "test.b-a@test-domain.com"; test $? -eq 1
+// RUN: %t "A0_b@x9.ZZ"; test $? -eq 1
+// RUN: %t "test.de"; test $? -eq 0
+// RUN: %t "test@.de"; test $? -eq 0
+// RUN: %t "test@test.d"; test $? -eq 0
+// RUN: %t "test..b@test.de"; test $? -eq 0
+// RUN: %t "test@test.de#x"; test $? -eq 0
+
+plugin mem;
+plugin core;
+plugin regex;
+
+let Top = ⊤:Nat;
+let error = 9:(Idx 10);
+let none = (255I8, 0I8, error);
+
+lam alnum (target: Idx 10): «7; %regex.dfa.Transition 10» =
+    (('0', '9', target), ('A', 'Z', target), ('a', 'z', target),
+     none, none, none, none);
+
+lam alpha (target: Idx 10): «7; %regex.dfa.Transition 10» =
+    (('A', 'Z', target), ('a', 'z', target),
+     none, none, none, none, none);
+
+let no_transitions = (none, none, none, none, none, none, none);
+
+// A DFA for the representative subset used by the Python email example:
+// [A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*@
+// [A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\.[A-Za-z]{2,}
+let dfa = (
+    0:(Idx 10),
+    error,
+    ((ff, error, alnum (1:(Idx 10))),
+     (ff, error,
+        (('0', '9', 1:(Idx 10)), ('A', 'Z', 1:(Idx 10)), ('a', 'z', 1:(Idx 10)),
+         ('.', '.', 2:(Idx 10)), ('_', '_', 2:(Idx 10)), ('-', '-', 2:(Idx 10)),
+         ('@', '@', 3:(Idx 10)))),
+     (ff, error, alnum (1:(Idx 10))),
+     (ff, error, alnum (4:(Idx 10))),
+     (ff, error,
+        (('0', '9', 4:(Idx 10)), ('A', 'Z', 4:(Idx 10)), ('a', 'z', 4:(Idx 10)),
+         ('-', '-', 5:(Idx 10)), ('.', '.', 6:(Idx 10)), none, none)),
+     (ff, error, alnum (4:(Idx 10))),
+     (ff, error, alpha (7:(Idx 10))),
+     (ff, error, alpha (8:(Idx 10))),
+     (tt, error,
+        (('A', 'Z', 8:(Idx 10)), ('a', 'z', 8:(Idx 10)),
+         none, none, none, none, none)),
+     (ff, error, no_transitions)));
+let matcher = %regex.dfa.compile dfa;
+
+con extern main[mem: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr («⊤:Nat; I8», 0)», 0), exit : Cn [%mem.M 0, I32]] =
+    (exit, match_argument)#(%core.icmp.ug (argc, 1I32)) (mem, 0I32)
+    where
+        con match_argument[mem: %mem.M 0, I32] =
+            let arg1 = %mem.lea (argv, %core.idx_unsafe 1);
+            let (mem, to_match) = %mem.load (mem, arg1);
+            let (mem, matched, _) = matcher (mem, to_match, 0:(Idx Top));
+            exit (mem, %core.conv.u i32 matched);
+    end;
+
+// CHECK-NOT: %regex.specialize_dfa
+// CHECK-NOT: static_states
+// CHECK-NOT: 255I8
+// CHECK-DAG: state_0
+// CHECK-DAG: state_8
+// CHECK: %mem.load
