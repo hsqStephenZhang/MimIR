@@ -50,6 +50,10 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     MIM_TRY_VIA_IMPL(map, map_impl);
     MIM_TRY_VIA_IMPL(unary, unary_impl);
     MIM_TRY_VIA_IMPL(relu, relu_impl);
+    MIM_TRY_VIA_IMPL(torch_triu, torch_triu_impl);
+    MIM_TRY_VIA_IMPL(torch_tril, torch_tril_impl);
+    MIM_TRY_VIA_IMPL(stablehlo_compare, stablehlo_compare_impl);
+    MIM_TRY_VIA_IMPL(stablehlo_sort, stablehlo_sort_impl);
     MIM_TRY_VIA_IMPL(binary, binary_impl);
     MIM_TRY_VIA_IMPL(select, select_impl);
     MIM_TRY_VIA_IMPL(repeat, repeat_impl);

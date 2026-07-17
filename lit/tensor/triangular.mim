@@ -1,0 +1,34 @@
+// RUN: %mim -p opt %s -p affine -o - | %FileCheck %s
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+// CHECK-DAG: fun extern tril_diag_minus1
+// CHECK-DAG: fun extern triu_diag1
+// CHECK-DAG: fun extern triu_dynamic_diagonal
+// CHECK-DAG: %core.icmp.xYgLE
+// CHECK-DAG: %core.icmp.XyGlE
+// CHECK-DAG: %core.wrap.add
+// CHECK-NOT: %tensor.torch_triu
+// CHECK-NOT: %tensor.torch_tril
+// CHECK-NOT: %tensor.pointwise_loop
+fun extern triu_diag1 (input: «2, 3, 5; I32»): «2, 3, 5; I32» =
+    return (%tensor.torch_triu (0I32, 1I64) @(3, (2, 3, 5)) input);
+
+fun extern tril_diag_minus1 (input: «3, 5; I32»): «3, 5; I32» =
+    return (%tensor.torch_tril (0I32, -1I64) @(2, (3, 5)) input);
+
+// A runtime diagonal remains a scalar add/compare; no iota or mask tensor is materialized.
+fun extern triu_dynamic_diagonal (input: «3, 5; I32», diagonal: I64): «3, 5; I32» =
+    return (%tensor.torch_triu (0I32, diagonal) @(2, (3, 5)) input);
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_tensor,
+        %compile.internal_cleanup,
+        %tensor.lower_map_reduce,
+        %compile.internal_cleanup,
+    );

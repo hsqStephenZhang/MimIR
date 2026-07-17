@@ -27,6 +27,21 @@ let %tensor.Ring = [
     mul: [T, T] → T,
 ];
 /// let nat_ring = (Nat, 0, %core.nat.add, %core.nat.mul);
+
+/// A type-indexed comparison witness. This is MimIR's explicit dictionary form of a
+/// typeclass: the element type and the comparison policy travel together with the
+/// implementation. Keeping the policy in the witness prevents a sort comparator from
+/// silently losing the StableHLO `compare_type` chosen by its producer.
+let %tensor.StableHloCompare = [
+    T: *,
+    compare_type: Nat,
+    compare: [T, T] → Bool,
+];
+
+let %tensor.compare_type.signed_int   = 0;
+let %tensor.compare_type.unsigned_int = 1;
+let %tensor.compare_type.float_cmp    = 2;
+let %tensor.compare_type.total_order = 3;
 ///
 /// ## Operations
 ///
@@ -43,6 +58,18 @@ axm %tensor.get: {T: *, r: Nat, s: «r; Nat»} → [arr: «s; T», index: «i: r
 /// %tensor.set arr (a, b, c) x = Insert arr a (Insert (arr#a) b (Insert (arr#a#b) c x));
 ///
 axm %tensor.set: {T: *, r: Nat, s: «r; Nat»} → [arr: «s; T», index: «i: r; Idx (s#i)», x: T] → «s; T», normalize_set;
+
+/// StableHLO compare with an explicit comparison-policy witness. The witness is
+/// intentionally passed as a value rather than inferred from `T`: MimIR currently
+/// has no built-in signedness/float/quantized typeclass solver. Canonical witnesses
+/// should be constructed with the matching `%core.icmp` or `%math.cmp` operation.
+axm %tensor.stablehlo_compare: [C: %tensor.StableHloCompare]
+                               → [lhs: C#T, rhs: C#T]
+                               → Bool;
+
+lam %tensor.stablehlo_compare_impl [C: %tensor.StableHloCompare]
+                                   (lhs: C#T, rhs: C#T): Bool =
+    C#compare (lhs, rhs);
 
 lam %tensor.indexed_load_impl {T: *, r: Nat}
                               (s: «r; Nat»)
@@ -80,6 +107,132 @@ axm %tensor.pointwise_loop: {Tin T: *, r: Nat}
                           → [body: [«r; I64»] → [Tin] → T]
                           → [inputs: Tin]
                           → «s_out; T»;
+
+/// PyTorch-style triangular masking over the last two dimensions. `diagonal` is signed:
+/// positive values move the retained diagonal upward, negative values move it downward.
+axm %tensor.torch_triu: {T: *}
+                       → [zero: T, diagonal: I64]
+                       → {r: Nat, s: «r; Nat»}
+                       → [input: «s; T»]
+                       → «s; T»;
+
+axm %tensor.torch_tril: {T: *}
+                       → [zero: T, diagonal: I64]
+                       → {r: Nat, s: «r; Nat»}
+                       → [input: «s; T»]
+                       → «s; T»;
+
+lam %tensor.triangular_pointwise_elem_impl {T: *, r: Nat}
+                                           (s: «r; Nat»)
+                                           (upper: Bool, zero: T, diagonal: I64)
+                                           (out_iters: «r; I64»)
+                                           (input: «s; T»)
+                                         : T =
+    let row_axis = %core.idx r 0 (%core.nat.sub (r, 2));
+    let col_axis = %core.idx r 0 (%core.nat.sub (r, 1));
+    let row = out_iters#row_axis;
+    let col = out_iters#col_axis;
+    let shifted_row = %core.wrap.add 0 (row, diagonal);
+    let keep_upper = %core.icmp.sge (col, shifted_row);
+    let keep_lower = %core.icmp.sle (col, shifted_row);
+    let keep = %core.select (upper, keep_upper, keep_lower);
+    let coords = ‹d: r; %core.conv.u (s#d) (out_iters#d)›;
+    let elem = %tensor.get @(T, r, s) (input, coords);
+    %core.select @T (keep, elem, zero);
+
+lam %tensor.torch_triu_impl {T: *}
+                            (zero: T, diagonal: I64)
+                            {r: Nat, s: «r; Nat»}
+                            (input: «s; T»)
+                          : «s; T» =
+    let body = %tensor.triangular_pointwise_elem_impl @(T, r) s (tt, zero, diagonal);
+    %tensor.pointwise_loop @(«s; T», T, r) s body input;
+
+lam %tensor.torch_tril_impl {T: *}
+                            (zero: T, diagonal: I64)
+                            {r: Nat, s: «r; Nat»}
+                            (input: «s; T»)
+                          : «s; T» =
+    let body = %tensor.triangular_pointwise_elem_impl @(T, r) s (ff, zero, diagonal);
+    %tensor.pointwise_loop @(«s; T», T, r) s body input;
+
+/// StableHLO-compatible variadic sort. `dimension` is the already-adjusted non-negative
+/// StableHLO dimension; using `Idx r` makes the dimension range constraint intrinsic.
+/// The comparator arguments are interleaved as `(lhs0, rhs0, ..., lhsN, rhsN)`.
+///
+/// The value-semantics lowering uses stable bubble sort for each one-dimensional slice:
+///
+///     for every slice orthogonal to `dimension`:
+///         for pass in range(slice_length):
+///             for j in range(slice_length - 1):
+///                 if comparator(rhs[j], lhs[j]):
+///                     swap(lhs[j], rhs[j])
+///
+/// Calling the comparator in the reverse order is intentional. The StableHLO comparator
+/// returns whether its first argument is less than its second argument, so `rhs < lhs`
+/// is exactly the condition under which adjacent elements must be exchanged. Elements
+/// for which both comparator directions are false are never exchanged, preserving their
+/// relative order and therefore satisfying stable-sort semantics.
+axm %tensor.stablehlo_sort: {n r: Nat, Ts: «n; *»}
+                            → [s: «r; Nat»]
+                            → [dimension: Idx r, is_stable: Bool]
+                            → [comparator: [«k: %core.nat.mul (2, n);
+                                  Ts#(%core.idx n 0 (%core.nat.div (%core.bitcast Nat k, 2)))»] → Bool]
+                            → [inputs: «i: n; «s; Ts#i»»]
+                            → «i: n; «s; Ts#i»»;
+
+axm %tensor.stablehlo_sort_impl_axm: {n r: Nat, Ts: «n; *»}
+                                     → [s: «r; Nat»]
+                                     → [dimension: Idx r, is_stable: Bool]
+                                     → [comparator: [«k: %core.nat.mul (2, n);
+                                           Ts#(%core.idx n 0 (%core.nat.div (%core.bitcast Nat k, 2)))»] → Bool]
+                                     → [inputs: «i: n; «s; Ts#i»»]
+                                     → «i: n; «s; Ts#i»»;
+
+lam %tensor.stablehlo_sort_impl {n r: Nat, Ts: «n; *»}
+                                (s: «r; Nat»)
+                                (dimension: Idx r, is_stable: Bool)
+                                (comparator: [«k: %core.nat.mul (2, n);
+                                      Ts#(%core.idx n 0 (%core.nat.div (%core.bitcast Nat k, 2)))»] → Bool)
+                                (inputs: «i: n; «s; Ts#i»»)
+                              : «i: n; «s; Ts#i»» =
+    %tensor.stablehlo_sort_impl_axm @(n, r, Ts) s (dimension, is_stable) comparator inputs;
+
+lam %tensor.stablehlo_sort_swap_impl {n r: Nat, Ts: «n; *»}
+                                     (s: «r; Nat»)
+                                     (dimension: Idx r)
+                                     (comparator: [«k: %core.nat.mul (2, n);
+                                           Ts#(%core.idx n 0 (%core.nat.div (%core.bitcast Nat k, 2)))»] → Bool)
+                                     (outer_iters: «r; I64», j: I64)
+                                   (inputs: «i: n; «s; Ts#i»»)
+                                 : «i: n; «s; Ts#i»» =
+    // Read the adjacent pair at positions j and j + 1. Only the selected dimension
+    // changes; all other coordinates identify the slice currently being sorted.
+    let lhs_coords = ‹d: r; %core.conv.u (s#d)
+        (%core.select (%core.icmp.e @r (d, dimension), j, outer_iters#d))›;
+    let rhs_j = %core.wrap.add 0 (j, 1I64);
+    let rhs_coords = ‹d: r; %core.conv.u (s#d)
+        (%core.select (%core.icmp.e @r (d, dimension), rhs_j, outer_iters#d))›;
+    let lhs = ‹i: n; %tensor.get @(Ts#i, r, s) (inputs#i, lhs_coords)›;
+    let rhs = ‹i: n; %tensor.get @(Ts#i, r, s) (inputs#i, rhs_coords)›;
+
+    // Build the exact StableHLO comparator argument list:
+    // (lhs0, rhs0, lhs1, rhs1, ...). The parity of the flattened index
+    // selects the left or right value while division by two selects the input.
+    let cmp_args = ‹k: %core.nat.mul (2, n);
+        let k_nat = %core.bitcast Nat k;
+        let i_nat = %core.nat.div (k_nat, 2);
+        let i = %core.idx n 0 i_nat;
+        %core.select @Ts#i (%core.ncmp.e (%core.nat.mod (k_nat, 2), 0), rhs#i, lhs#i)›;
+    let swap = comparator cmp_args;
+
+    // Update every input tensor with the same swap predicate. This is what keeps
+    // variadic sort operands synchronized, e.g. keys and their payload tensors.
+    ‹i: n;
+        let with_lhs = %tensor.set @(Ts#i, r, s)
+            (inputs#i, lhs_coords, %core.select @Ts#i (swap, rhs#i, lhs#i));
+        %tensor.set @(Ts#i, r, s)
+            (with_lhs, rhs_coords, %core.select @Ts#i (swap, lhs#i, rhs#i))›;
 ///
 /// ### %tensor.shape
 ///
