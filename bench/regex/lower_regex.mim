@@ -1,0 +1,174 @@
+plugin mem;
+plugin core;
+plugin regex;
+plugin cps;
+
+let Top = ⊤:Nat;
+
+let literal_abc_re = %regex.conj (%regex.lit 'a', %regex.lit 'b', %regex.lit 'c');
+let a_plus_b_re = %regex.conj (%regex.quant.plus (%regex.lit 'a'), %regex.lit 'b');
+let abc_plus_re = %regex.quant.plus literal_abc_re;
+let ascii_word_plus_re = %regex.quant.plus %regex.cls.w;
+let digit_plus_re = %regex.quant.plus %regex.cls.d;
+let identifier_first_re = %regex.disj (%regex.range ('a', 'z'), %regex.range ('A', 'Z'), %regex.lit '_');
+let identifier_re = %regex.conj (identifier_first_re, %regex.quant.star %regex.cls.w);
+let color_optional_re = %regex.conj
+    (%regex.lit 'c',
+     %regex.lit 'o',
+     %regex.lit 'l',
+     %regex.lit 'o',
+     %regex.quant.optional (%regex.lit 'u'),
+     %regex.lit 'r');
+let fowler_basic26_re = %regex.conj
+    (%regex.disj (%regex.conj (%regex.lit 'a', %regex.lit 'b'), %regex.lit 'a'),
+     %regex.disj (%regex.conj (%regex.lit 'b', %regex.lit 'c'), %regex.lit 'c'));
+let keyword_alt_re = %regex.disj
+    (%regex.conj (%regex.lit 'c', %regex.lit 'a', %regex.lit 't'),
+     %regex.conj (%regex.lit 'c', %regex.lit 'a', %regex.lit 'r'),
+     %regex.conj (%regex.lit 'd', %regex.lit 'o', %regex.lit 'g'));
+let paper_email_letter_or_digit_re = %regex.disj
+    (%regex.range ('0', '9'),
+     %regex.range ('a', 'z'),
+     %regex.range ('A', 'Z'));
+let paper_email_letter_re = %regex.disj
+    (%regex.range ('a', 'z'),
+     %regex.range ('A', 'Z'));
+let paper_email_user_sep_re = %regex.disj
+    (%regex.lit '.',
+     %regex.lit '_',
+     %regex.lit '-');
+let paper_email_domain_sep_re = %regex.disj
+    (%regex.lit '_',
+     %regex.lit '-');
+let paper_email_domain_label_tail_re = %regex.quant.star (%regex.conj
+    (%regex.quant.star paper_email_letter_or_digit_re,
+     %regex.quant.plus paper_email_domain_sep_re,
+     paper_email_letter_or_digit_re));
+let paper_email_re = %regex.conj
+    (paper_email_letter_or_digit_re,
+     %regex.quant.star (%regex.conj
+        (%regex.quant.star paper_email_letter_or_digit_re,
+         %regex.quant.plus paper_email_user_sep_re,
+         paper_email_letter_or_digit_re)),
+     %regex.quant.star paper_email_letter_or_digit_re,
+     %regex.lit '@',
+     paper_email_letter_or_digit_re,
+     paper_email_domain_label_tail_re,
+     %regex.quant.star paper_email_letter_or_digit_re,
+     %regex.lit '.',
+     %regex.quant.star (%regex.conj
+        (paper_email_domain_label_tail_re,
+         %regex.quant.plus paper_email_letter_or_digit_re,
+         %regex.lit '.')),
+     paper_email_letter_re,
+     %regex.quant.plus paper_email_letter_re);
+
+con extern match_literal_abc[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = literal_abc_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_a_plus_b[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = a_plus_b_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_abc_plus[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = abc_plus_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_ascii_word_plus[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = ascii_word_plus_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_color_optional[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = color_optional_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_digit_plus[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = digit_plus_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_identifier[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = identifier_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_fowler_basic26[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = fowler_basic26_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_keyword_alt[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = keyword_alt_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
+
+con extern match_paper_email[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, pos) = paper_email_re (mem, input, 0:(Idx Top));
+    let end_ptr = %mem.lea (input, pos);
+    let (mem, end_byte) = %mem.load (mem, end_ptr);
+    let at_end = %core.icmp.e (end_byte, 0I8);
+    exit (mem, %core.bit2.and_ 0 (matched, at_end));
