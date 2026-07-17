@@ -170,3 +170,81 @@ extern "C" const Def* dfa2matcher(World& w, const DFA& dfa, const Def* n) {
     matcher->app(false, state2matcher[dfa.get_start()], {mem, pos});
     return matcher;
 }
+
+namespace mim::plug::regex {
+
+const Def* dfa_table2matcher(World& w, const DFATable& dfa, const Def* n) {
+    assert(dfa.entry < dfa.states.size());
+    assert(dfa.error < dfa.states.size());
+
+    auto matcher = w.mut_fun({w.call<mem::M>(0), w.call<mem::Ptr0>(w.arr(n, w.type_i8())), w.type_idx(n)},
+                             {w.call<mem::M>(0), w.type_bool(), w.type_idx(n)});
+    matcher->debug_prefix("match_dfa_table");
+    auto [args, exit]          = matcher->vars<2>();
+    auto [memory, string, pos] = args->projs<3>();
+
+    auto reject = mem::mut_con(w.type_idx(n));
+    reject->debug_prefix("reject");
+    {
+        auto [mem, i] = reject->vars<2>();
+        reject->app(false, exit, {mem, w.lit_ff(), i});
+    }
+
+    auto accept = mem::mut_con(w.type_idx(n));
+    accept->debug_prefix("accept");
+    {
+        auto [mem, i] = accept->vars<2>();
+        accept->app(false, exit, {mem, w.lit_tt(), i});
+    }
+
+    // Allocate all state continuations before emitting bodies. This is the
+    // finite memo table that makes cyclic DFA specialization terminate.
+    std::vector<Lam*> states;
+    states.reserve(dfa.states.size());
+    for (nat_t i = 0; i != dfa.states.size(); ++i) {
+        auto state = mem::mut_con(w.type_idx(n));
+        state->debug_prefix("state_" + std::to_string(i));
+        states.emplace_back(state);
+    }
+
+    for (nat_t state_id = 0; state_id != dfa.states.size(); ++state_id) {
+        auto state_lam          = states[state_id];
+        const auto& table_state = dfa.states[state_id];
+        auto [mem, i]           = state_lam->vars<2>();
+
+        if (state_id == dfa.error) {
+            state_lam->app(true, reject, {mem, i});
+            continue;
+        }
+
+        auto ptr       = w.call<mem::lea>(Defs{string, i});
+        auto [mem2, c] = w.call<mem::load>(Defs{mem, ptr})->projs<2>();
+        auto is_end    = w.call(core::icmp::e, Defs{c, w.lit_i8(0)});
+        auto not_end   = mem::mut_con(w.type_idx(n));
+        not_end->debug_prefix("not_end_state_" + std::to_string(state_id));
+
+        state_lam->app(false, w.select(is_end, table_state.accepting ? accept : reject, not_end), {mem2, i});
+
+        const Def* next = states[table_state.fallback];
+        for (nat_t transition_id = 0; transition_id != table_state.transitions.size(); ++transition_id) {
+            const auto& transition = table_state.transitions[transition_id];
+            auto checker           = mem::mut_con(w.type_idx(n));
+            checker->debug_prefix("check_state_" + std::to_string(state_id) + "_transition_"
+                                  + std::to_string(transition_id));
+            auto [check_mem, check_pos] = checker->vars<2>();
+            auto in_range               = match_range(c, transition.lo, transition.hi);
+            checker->app(false, w.select(in_range, states[transition.target], next), {check_mem, check_pos});
+            next = checker;
+        }
+
+        auto [next_mem, next_pos] = not_end->vars<2>();
+        auto advanced
+            = w.call(core::wrap::add, core::Mode::nsuw, w.tuple({next_pos, w.call(core::conv::u, n, w.lit_i64(1))}));
+        not_end->app(true, next, {next_mem, advanced});
+    }
+
+    matcher->app(false, states[dfa.entry], {memory, pos});
+    return matcher;
+}
+
+} // namespace mim::plug::regex

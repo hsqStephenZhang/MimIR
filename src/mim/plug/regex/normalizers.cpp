@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <iterator>
 #include <numeric>
+#include <optional>
 #include <ranges>
 #include <vector>
 
@@ -15,7 +16,9 @@
 #include "mim/util/dbg.h"
 #include "mim/util/log.h"
 
+#include "mim/plug/cps/cps.h"
 #include "mim/plug/regex/autogen.h"
+#include "mim/plug/regex/dfa2matcher.h"
 #include "mim/plug/regex/regex.h"
 
 using Range  = automaton::Range;
@@ -242,6 +245,67 @@ const Def* normalize_not(const Def*, const Def* callee, const Def* arg) {
             .error(unwanted->loc(), "found unwanted: {}", unwanted);
     }
     return {};
+}
+
+namespace {
+
+/// Decode only projectable literal fields. Returning `nullopt` leaves the
+/// staging axiom intact, which is required when the DFA is not actually
+/// available to partial evaluation despite having a statically known type.
+std::optional<DFATable> decode_dfa_table(const Def* def, nat_t expected_states, nat_t expected_transitions) {
+    auto [entry_def, error_def, states_def] = def->projs<3>();
+    auto entry                              = Lit::isa(entry_def);
+    auto error                              = Lit::isa(error_def);
+    auto num_states                         = Lit::isa(states_def->arity());
+    if (!entry || !error || !num_states || *num_states != expected_states || *entry >= *num_states
+        || *error >= *num_states)
+        return {};
+
+    DFATable table{*entry, *error, {}};
+    table.states.reserve(*num_states);
+    for (nat_t state_id = 0; state_id != *num_states; ++state_id) {
+        auto state_def                                = states_def->proj(*num_states, state_id);
+        auto [accepting_def, fallback_def, trans_def] = state_def->projs<3>();
+        auto accepting                                = Lit::isa(accepting_def);
+        auto fallback                                 = Lit::isa(fallback_def);
+        auto num_transitions                          = Lit::isa(trans_def->arity());
+        if (!accepting || !fallback || !num_transitions || *num_transitions != expected_transitions
+            || *fallback >= *num_states)
+            return {};
+
+        TableState state{*accepting != 0, *fallback, {}};
+        state.transitions.reserve(*num_transitions);
+        for (nat_t transition_id = 0; transition_id != *num_transitions; ++transition_id) {
+            auto transition_def               = trans_def->proj(*num_transitions, transition_id);
+            auto [lo_def, hi_def, target_def] = transition_def->projs<3>();
+            auto lo                           = Lit::isa<std::uint8_t>(lo_def);
+            auto hi                           = Lit::isa<std::uint8_t>(hi_def);
+            auto target                       = Lit::isa(target_def);
+            if (!lo || !hi || !target || *target >= *num_states) return {};
+            state.transitions.push_back({*lo, *hi, *target});
+        }
+        table.states.emplace_back(std::move(state));
+    }
+    return table;
+}
+
+} // namespace
+
+const Def* normalize_dfa_specialize(const Def* type, const Def* callee, const Def* arg) {
+    auto& w                 = type->world();
+    auto [ns_def, k_def, n] = callee->as<App>()->args<3>();
+    auto ns                 = Lit::isa(ns_def);
+    auto k                  = Lit::isa(k_def);
+    auto [dfa, input]       = arg->projs<2>();
+    // The type fixes table dimensions, while closedness is the binding-time
+    // precondition that allows state identities and all edges to become code.
+    if (!ns || !k || !dfa->is_closed()) return {};
+
+    auto table = decode_dfa_table(dfa, *ns, *k);
+    if (!table) return {};
+
+    auto matcher = dfa_table2matcher(w, *table, n);
+    return w.app(cps::op_cps2ds_dep(matcher), input);
 }
 
 MIM_regex_NORMALIZER_IMPL
