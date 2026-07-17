@@ -1,0 +1,29 @@
+// RUN: rm -f %{s:stem}.ll ; \
+// RUN: %mim -p opt %s -o - -p ll | %FileCheck %s
+// RUN: clang %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t "ab"; test $? -eq 0
+// RUN: %t "a"; test $? -eq 1
+
+plugin mem;
+plugin core;
+plugin regex;
+plugin cps;
+
+// The syntax is static.  The interpreter must reduce to the ordinary RE
+// matcher before the regex lowering phase sees the program.
+let Top = ⊤:Nat;
+let expr = %regex.expr.conj (%regex.expr.lit 'a', %regex.expr.lit 'b');
+
+con extern main[mem: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr («⊤:Nat; I8», 0)», 0), exit : Cn [%mem.M 0, I32]] =
+    (exit, match_argument) # (%core.icmp.ug (argc, 1I32)) (mem, 0I32)
+    where
+        con match_argument[mem: %mem.M 0, I32] =
+            let arg1 = %mem.lea (argv, %core.idx_unsafe 1);
+            let (mem, to_match) = %mem.load (mem, arg1);
+            let (mem, matched, pos) = %regex.interpret expr (mem, to_match, 0:(Idx Top));
+            exit (mem, %core.conv.u i32 matched);
+    end;
+
+// CHECK-NOT: %regex.expr
+// CHECK-NOT: Match
+// CHECK: %mem.load

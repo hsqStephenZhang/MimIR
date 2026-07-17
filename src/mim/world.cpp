@@ -663,6 +663,17 @@ const Def* World::match(Defs ops_) {
         type = type ? this->join({type, pi->codom()}) : pi->codom();
     }
 
+    // A static union injection is a compile-time constructor application.
+    // Selecting its arm here specializes tagged interpreters just like beta
+    // reduction specializes ordinary lambda applications; dynamic unions
+    // continue to use the residual Match node.
+    if (auto inj = scrutinee->isa<Inj>()) {
+        auto payload_type = inj->op(0)->type()->zonk();
+        for (size_t i = 0, e = join->num_ops(); i != e; ++i)
+            if (Checker::alpha<Checker::Check>(payload_type, join->op(i)))
+                return app(arms[i], inj->op(0));
+    }
+
     return unify<Match>(type, ops);
 }
 
