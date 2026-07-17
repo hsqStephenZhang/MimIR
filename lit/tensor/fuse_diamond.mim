@@ -1,0 +1,32 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+// The producer `base` is shared by both sides of a diamond.  The partitioner
+// may put the complete injective diamond in one group, but the current
+// continuation materializer must not inline `base` twice.  It leaves `base`
+// materialized and fuses left, right, and join into one map_reduce.
+plugin tensor;
+plugin core;
+plugin opt;
+
+lam add1 (x: Nat): Nat = %core.nat.add (x, 1);
+lam mul2 (x: Nat): Nat = %core.nat.mul (x, 2);
+lam add  (xs: [Nat, Nat]): Nat = %core.nat.add xs;
+
+con extern f [v: «2; «3; Nat»», return: Cn «2; «3; Nat»»] =
+    let base  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) v;
+    let left  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) base;
+    let right = %tensor.unary @(Nat, Nat) mul2 @(2, (2, 3)) base;
+    let join  = %tensor.binary @(Nat, Nat, Nat) add @(2, (2, 3)) (left, right);
+    return join;
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_tensor,
+        %tensor.fuse_tensor,
+        %compile.internal_cleanup,
+    );
+
+// CHECK: %tensor.map_reduce
+// CHECK: %tensor.map_reduce
+// CHECK-NOT: %tensor.map_reduce

@@ -9,6 +9,7 @@ add_mim_plugin(tensor
         phase/add_mem_buf.cpp
         phase/lower_to_mem.cpp
         phase/fuse.cpp
+        phase/fusion_partition.cpp
         phase/op_pattern.cpp
     INSTALL
 )

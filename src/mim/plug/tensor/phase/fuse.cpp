@@ -85,13 +85,16 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     bool any_fusible = false;
 
     for (u64 k = 0; k < nis_nat; ++k) {
+        auto old_input_k = app->arg()->proj(nis_nat, k);
+        auto old_inner   = Axm::isa<tensor::map_reduce>(old_input_k);
+        if (!old_inner || !partition_.can_inline(old_inner, app)) continue;
+
         auto input_k = is->proj(nis_nat, k);
         auto inner   = Axm::isa<tensor::map_reduce>(input_k);
         if (!inner) continue;
 
         auto [inner_nis, inner_meta, inner_shapes, inner_TisRisSis, inner_comb_init, inner_map_out, inner_maps,
-              inner_is]                       
-            = inner->uncurry_args<8>();
+              inner_is]                        = inner->uncurry_args<8>();
         auto [inner_To, inner_Ro, inner_Rr]    = inner_meta->projs<3>();
         auto [inner_So, inner_Sr]              = inner_shapes->projs<2>();
         auto [inner_comb, inner_init]          = inner_comb_init->projs<2>();

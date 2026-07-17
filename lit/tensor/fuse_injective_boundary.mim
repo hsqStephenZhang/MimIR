@@ -1,0 +1,27 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+// A transpose is kInjective.  Its output map is still identity, so the
+// existing continuation materializer can compose its input access map with a
+// following injective map.  This is the positive injective-path case from
+// TVM's later fusion phase.
+plugin tensor;
+plugin core;
+plugin opt;
+
+lam add1 (x: Nat): Nat = %core.nat.add (x, 1);
+
+con extern f [v: «2; «3; Nat»», return: Cn «2; «3; Nat»»] =
+    let transposed = %tensor.transpose @(Nat, 2, (2, 3)) (v, (1_2, 0_2));
+    let restored   = %tensor.transpose @(Nat, 2, (3, 2)) (transposed, (1_2, 0_2));
+    return restored;
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_tensor,
+        %tensor.fuse_tensor,
+        %compile.internal_cleanup,
+    );
+
+// CHECK: %tensor.map_reduce
+// CHECK-NOT: %tensor.map_reduce
