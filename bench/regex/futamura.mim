@@ -1,139 +1,78 @@
 plugin mem;
 plugin core;
 plugin regex;
+plugin cps;
 
 let Top = ⊤:Nat;
 
-// /abc/
-let literal_abc_error = 4:(Idx 5);
-let literal_abc_none = (255I8, 0I8, literal_abc_error);
-let literal_abc_dfa = (
-    0:(Idx 5),
-    literal_abc_error,
-    ((ff, literal_abc_error, (('a', 'a', 1:(Idx 5)), literal_abc_none)),
-     (ff, literal_abc_error, (('b', 'b', 2:(Idx 5)), literal_abc_none)),
-     (ff, literal_abc_error, (('c', 'c', 3:(Idx 5)), literal_abc_none)),
-     (tt, literal_abc_error, (literal_abc_none, literal_abc_none)),
-     (ff, literal_abc_error, (literal_abc_none, literal_abc_none))));
-let literal_abc_matcher = %regex.dfa.compile literal_abc_dfa;
+let literal_abc_re = %regex.conj (%regex.lit 'a', %regex.lit 'b', %regex.lit 'c');
+let a_plus_b_re = %regex.conj (%regex.quant.plus (%regex.lit 'a'), %regex.lit 'b');
+let abc_plus_re = %regex.quant.plus literal_abc_re;
+let ascii_word_plus_re = %regex.quant.plus %regex.cls.w;
+let digit_plus_re = %regex.quant.plus %regex.cls.d;
+let identifier_first_re = %regex.disj (%regex.range ('a', 'z'), %regex.range ('A', 'Z'), %regex.lit '_');
+let identifier_re = %regex.conj (identifier_first_re, %regex.quant.star %regex.cls.w);
+let color_optional_re = %regex.conj
+    (%regex.lit 'c',
+     %regex.lit 'o',
+     %regex.lit 'l',
+     %regex.lit 'o',
+     %regex.quant.optional (%regex.lit 'u'),
+     %regex.lit 'r');
+let fowler_basic26_re = %regex.conj
+    (%regex.disj (%regex.conj (%regex.lit 'a', %regex.lit 'b'), %regex.lit 'a'),
+     %regex.disj (%regex.conj (%regex.lit 'b', %regex.lit 'c'), %regex.lit 'c'));
+let keyword_alt_re = %regex.disj
+    (%regex.conj (%regex.lit 'c', %regex.lit 'a', %regex.lit 't'),
+     %regex.conj (%regex.lit 'c', %regex.lit 'a', %regex.lit 'r'),
+     %regex.conj (%regex.lit 'd', %regex.lit 'o', %regex.lit 'g'));
+let paper_email_letter_or_digit_re = %regex.disj
+    (%regex.range ('0', '9'),
+     %regex.range ('a', 'z'),
+     %regex.range ('A', 'Z'));
+let paper_email_letter_re = %regex.disj
+    (%regex.range ('a', 'z'),
+     %regex.range ('A', 'Z'));
+let paper_email_user_sep_re = %regex.disj
+    (%regex.lit '.',
+     %regex.lit '_',
+     %regex.lit '-');
+let paper_email_domain_sep_re = %regex.disj
+    (%regex.lit '_',
+     %regex.lit '-');
+let paper_email_domain_label_tail_re = %regex.quant.star (%regex.conj
+    (%regex.quant.star paper_email_letter_or_digit_re,
+     %regex.quant.plus paper_email_domain_sep_re,
+     paper_email_letter_or_digit_re));
+let paper_email_re = %regex.conj
+    (paper_email_letter_or_digit_re,
+     %regex.quant.star (%regex.conj
+        (%regex.quant.star paper_email_letter_or_digit_re,
+         %regex.quant.plus paper_email_user_sep_re,
+         paper_email_letter_or_digit_re)),
+     %regex.quant.star paper_email_letter_or_digit_re,
+     %regex.lit '@',
+     paper_email_letter_or_digit_re,
+     paper_email_domain_label_tail_re,
+     %regex.quant.star paper_email_letter_or_digit_re,
+     %regex.lit '.',
+     %regex.quant.star (%regex.conj
+        (paper_email_domain_label_tail_re,
+         %regex.quant.plus paper_email_letter_or_digit_re,
+         %regex.lit '.')),
+     paper_email_letter_re,
+     %regex.quant.plus paper_email_letter_re);
 
-// /a+b/
-let a_plus_b_error = 3:(Idx 4);
-let a_plus_b_none = (255I8, 0I8, a_plus_b_error);
-let a_plus_b_dfa = (
-    0:(Idx 4),
-    a_plus_b_error,
-    ((ff, a_plus_b_error, (('a', 'a', 1:(Idx 4)), a_plus_b_none)),
-     (ff, a_plus_b_error, (('a', 'a', 1:(Idx 4)), ('b', 'b', 2:(Idx 4)))),
-     (tt, a_plus_b_error, (a_plus_b_none, a_plus_b_none)),
-     (ff, a_plus_b_error, (a_plus_b_none, a_plus_b_none))));
-let a_plus_b_matcher = %regex.dfa.compile a_plus_b_dfa;
-
-// /(abc)+/
-let abc_plus_error = 4:(Idx 5);
-let abc_plus_none = (255I8, 0I8, abc_plus_error);
-let abc_plus_dfa = (
-    0:(Idx 5),
-    abc_plus_error,
-    ((ff, abc_plus_error, (('a', 'a', 1:(Idx 5)), abc_plus_none)),
-     (ff, abc_plus_error, (('b', 'b', 2:(Idx 5)), abc_plus_none)),
-     (ff, abc_plus_error, (('c', 'c', 3:(Idx 5)), abc_plus_none)),
-     (tt, abc_plus_error, (('a', 'a', 1:(Idx 5)), abc_plus_none)),
-     (ff, abc_plus_error, (abc_plus_none, abc_plus_none))));
-let abc_plus_matcher = %regex.dfa.compile abc_plus_dfa;
-
-// /[A-Za-z0-9_]+/
-let ascii_word_error = 2:(Idx 3);
-let ascii_word_none = (255I8, 0I8, ascii_word_error);
-let ascii_word_transitions = (
-    ('0', '9', 1:(Idx 3)),
-    ('A', 'Z', 1:(Idx 3)),
-    ('_', '_', 1:(Idx 3)),
-    ('a', 'z', 1:(Idx 3)));
-let ascii_word_dfa = (
-    0:(Idx 3),
-    ascii_word_error,
-    ((ff, ascii_word_error, ascii_word_transitions),
-     (tt, ascii_word_error, ascii_word_transitions),
-     (ff, ascii_word_error, (ascii_word_none, ascii_word_none, ascii_word_none, ascii_word_none))));
-let ascii_word_plus_matcher = %regex.dfa.compile ascii_word_dfa;
-
-// /[0-9]+/
-let digit_error = 2:(Idx 3);
-let digit_none = (255I8, 0I8, digit_error);
-let digit_dfa = (
-    0:(Idx 3),
-    digit_error,
-    ((ff, digit_error, (('0', '9', 1:(Idx 3)), digit_none)),
-     (tt, digit_error, (('0', '9', 1:(Idx 3)), digit_none)),
-     (ff, digit_error, (digit_none, digit_none))));
-let digit_plus_matcher = %regex.dfa.compile digit_dfa;
-
-// /[A-Za-z_][A-Za-z0-9_]*/
-let identifier_error = 2:(Idx 3);
-let identifier_none = (255I8, 0I8, identifier_error);
-let identifier_first_transitions = (
-    ('A', 'Z', 1:(Idx 3)),
-    ('_', '_', 1:(Idx 3)),
-    ('a', 'z', 1:(Idx 3)),
-    identifier_none);
-let identifier_rest_transitions = (
-    ('0', '9', 1:(Idx 3)),
-    ('A', 'Z', 1:(Idx 3)),
-    ('_', '_', 1:(Idx 3)),
-    ('a', 'z', 1:(Idx 3)));
-let identifier_dfa = (
-    0:(Idx 3),
-    identifier_error,
-    ((ff, identifier_error, identifier_first_transitions),
-     (tt, identifier_error, identifier_rest_transitions),
-     (ff, identifier_error, (identifier_none, identifier_none, identifier_none, identifier_none))));
-let identifier_matcher = %regex.dfa.compile identifier_dfa;
-
-// /colou?r/
-let color_error = 7:(Idx 8);
-let color_none = (255I8, 0I8, color_error);
-let color_dfa = (
-    0:(Idx 8),
-    color_error,
-    ((ff, color_error, (('c', 'c', 1:(Idx 8)), color_none)),
-     (ff, color_error, (('o', 'o', 2:(Idx 8)), color_none)),
-     (ff, color_error, (('l', 'l', 3:(Idx 8)), color_none)),
-     (ff, color_error, (('o', 'o', 4:(Idx 8)), color_none)),
-     (ff, color_error, (('u', 'u', 5:(Idx 8)), ('r', 'r', 6:(Idx 8)))),
-     (ff, color_error, (('r', 'r', 6:(Idx 8)), color_none)),
-     (tt, color_error, (color_none, color_none)),
-     (ff, color_error, (color_none, color_none))));
-let color_optional_matcher = %regex.dfa.compile color_dfa;
-
-// Fowler basic26: /(ab|a)(bc|c)/
-let fowler_error = 5:(Idx 6);
-let fowler_none = (255I8, 0I8, fowler_error);
-let fowler_dfa = (
-    0:(Idx 6),
-    fowler_error,
-    ((ff, fowler_error, (('a', 'a', 1:(Idx 6)), fowler_none)),
-     (ff, fowler_error, (('b', 'b', 2:(Idx 6)), ('c', 'c', 4:(Idx 6)))),
-     (ff, fowler_error, (('b', 'b', 3:(Idx 6)), ('c', 'c', 4:(Idx 6)))),
-     (ff, fowler_error, (('c', 'c', 4:(Idx 6)), fowler_none)),
-     (tt, fowler_error, (fowler_none, fowler_none)),
-     (ff, fowler_error, (fowler_none, fowler_none))));
-let fowler_basic26_matcher = %regex.dfa.compile fowler_dfa;
-
-// /cat|car|dog/
-let keyword_error = 6:(Idx 7);
-let keyword_none = (255I8, 0I8, keyword_error);
-let keyword_dfa = (
-    0:(Idx 7),
-    keyword_error,
-    ((ff, keyword_error, (('c', 'c', 1:(Idx 7)), ('d', 'd', 4:(Idx 7)))),
-     (ff, keyword_error, (('a', 'a', 2:(Idx 7)), keyword_none)),
-     (ff, keyword_error, (('r', 'r', 3:(Idx 7)), ('t', 't', 3:(Idx 7)))),
-     (tt, keyword_error, (keyword_none, keyword_none)),
-     (ff, keyword_error, (('o', 'o', 5:(Idx 7)), keyword_none)),
-     (ff, keyword_error, (('g', 'g', 3:(Idx 7)), keyword_none)),
-     (ff, keyword_error, (keyword_none, keyword_none))));
-let keyword_alt_matcher = %regex.dfa.compile keyword_dfa;
+let literal_abc_matcher = %regex.host.compile literal_abc_re;
+let a_plus_b_matcher = %regex.host.compile a_plus_b_re;
+let abc_plus_matcher = %regex.host.compile abc_plus_re;
+let ascii_word_plus_matcher = %regex.host.compile ascii_word_plus_re;
+let digit_plus_matcher = %regex.host.compile digit_plus_re;
+let identifier_matcher = %regex.host.compile identifier_re;
+let color_optional_matcher = %regex.host.compile color_optional_re;
+let fowler_basic26_matcher = %regex.host.compile fowler_basic26_re;
+let keyword_alt_matcher = %regex.host.compile keyword_alt_re;
+let paper_email_matcher = %regex.host.compile paper_email_re;
 
 con extern match_literal_abc[
     mem: %mem.M 0,
@@ -205,4 +144,12 @@ con extern match_keyword_alt[
     exit: Cn [%mem.M 0, Bool]
 ] =
     let (mem, matched, _) = keyword_alt_matcher (mem, input, 0:(Idx Top));
+    exit (mem, matched);
+
+con extern match_paper_email[
+    mem: %mem.M 0,
+    input: %mem.Ptr («Top; I8», 0),
+    exit: Cn [%mem.M 0, Bool]
+] =
+    let (mem, matched, _) = paper_email_matcher (mem, input, 0:(Idx Top));
     exit (mem, matched);

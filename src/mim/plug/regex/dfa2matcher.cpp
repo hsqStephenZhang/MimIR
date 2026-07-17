@@ -173,6 +173,90 @@ extern "C" const Def* dfa2matcher(World& w, const DFA& dfa, const Def* n) {
 
 namespace mim::plug::regex {
 
+DFATable dfa_to_table(World& w, const automaton::DFA& dfa) {
+    auto reachable = dfa.get_reachable_states();
+
+    DFAMap<nat_t> state2id;
+    std::vector<const DFANode*> id2state;
+    id2state.reserve(reachable.size() + 1);
+    for (auto state : reachable) {
+        state2id.emplace(state, id2state.size());
+        id2state.emplace_back(state);
+    }
+
+    auto error_it = std::ranges::find_if(id2state, [](const DFANode* state) { return state->is_erroring(); });
+    nat_t error_id;
+    if (error_it == id2state.end()) {
+        // Some incomplete automata do not carry an explicit error node. The
+        // table interpreter still wants one so unmatched input has a concrete
+        // rejecting target.
+        error_id = id2state.size();
+    } else {
+        error_id = std::distance(id2state.begin(), error_it);
+    }
+
+    DFATable table{state2id[dfa.get_start()], error_id, {}};
+    table.states.reserve(id2state.size() + (error_it == id2state.end() ? 1 : 0));
+    nat_t max_transitions = 0;
+
+    for (auto state : id2state) {
+        TableState row{state->is_accepting(), error_id, {}};
+        if (!state->is_erroring()) {
+            auto state2ranges = transitions_to_ranges(w, state);
+            for (auto& [target, ranges] : state2ranges) {
+                auto found = state2id.find(target);
+                nat_t target_id = found == state2id.end() ? error_id : found->second;
+                if (target_id == error_id) continue;
+                for (auto [lo, hi] : ranges)
+                    row.transitions.push_back({static_cast<std::uint8_t>(lo), static_cast<std::uint8_t>(hi), target_id});
+            }
+        }
+        max_transitions = std::max(max_transitions, nat_t(row.transitions.size()));
+        table.states.emplace_back(std::move(row));
+    }
+
+    if (error_it == id2state.end()) table.states.push_back(TableState{false, error_id, {}});
+
+    // Keep at least two slots: a one-element pack collapses to the element in
+    // the current C++ tuple builder, while `%regex.DFA ns k` needs an array.
+    max_transitions = std::max<nat_t>(max_transitions, 2);
+    for (auto& state : table.states) {
+        state.transitions.resize(max_transitions, TableTransition{255, 0, error_id});
+    }
+
+    return table;
+}
+
+const Def* encode_dfa_table(World& w, const DFATable& dfa) {
+    auto ns     = nat_t(dfa.states.size());
+    auto k      = dfa.states.empty() ? nat_t(1) : nat_t(dfa.states.front().transitions.size());
+    auto ns_def = w.lit_nat(ns);
+    auto k_def  = w.lit_nat(k);
+
+    auto transition_ty = w.call(dfa::Transition, ns_def);
+    auto state_ty      = w.call(dfa::State, ns_def, k_def);
+    auto dfa_ty        = w.call<regex::DFA>(ns_def, k_def);
+
+    DefVec state_defs;
+    state_defs.reserve(ns);
+    for (auto& state : dfa.states) {
+        DefVec transition_defs;
+        transition_defs.reserve(k);
+        for (auto transition : state.transitions) {
+            transition_defs.emplace_back(w.tuple(transition_ty,
+                                                 Defs{w.lit_i8(transition.lo), w.lit_i8(transition.hi),
+                                                      w.lit_idx(ns, transition.target)}));
+        }
+
+        state_defs.emplace_back(w.tuple(state_ty,
+                                        Defs{state.accepting ? w.lit_tt() : w.lit_ff(), w.lit_idx(ns, state.fallback),
+                                             w.tuple(w.arr(k_def, transition_ty), transition_defs)}));
+    }
+
+    return w.tuple(dfa_ty, Defs{w.lit_idx(ns, dfa.entry), w.lit_idx(ns, dfa.error),
+                                w.tuple(w.arr(ns_def, state_ty), state_defs)});
+}
+
 const Def* dfa_table2matcher(World& w, const DFATable& dfa, const Def* n) {
     assert(dfa.entry < dfa.states.size());
     assert(dfa.error < dfa.states.size());

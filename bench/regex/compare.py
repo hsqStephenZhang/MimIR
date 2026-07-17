@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-r"""Correctness and runtime comparison for three MimIR regex staging paths.
+r"""Correctness and runtime comparison for MimIR regex staging paths.
 
 The comparison is deliberately limited to ASCII byte regexes with full-match
 semantics. Rust uses ``regex::bytes::Regex`` with ``\A(?:...)\z`` anchors;
-Python ``RegBuilder`` adds its existing end-of-input check; and the Futamura
-path accepts only when NUL is observed in an accepting DFA state.
+Python ``RegBuilder`` adds its existing end-of-input check; and the
+Graal-style host-staged path accepts only when NUL is observed in an accepting
+DFA state.
 """
 
 from __future__ import annotations
@@ -340,252 +341,6 @@ PATTERNS = (
 )
 
 
-@dataclass(frozen=True)
-class MiniRegex:
-    op: str
-    args: tuple[object, ...] = ()
-
-    def __add__(self, other: "MiniRegex") -> "MiniRegex":
-        return MiniRegex("concat", (self, other))
-
-    def __or__(self, other: "MiniRegex") -> "MiniRegex":
-        return MiniRegex("alt", (self, other))
-
-    def __getitem__(self, postfix_operator: str) -> "MiniRegex":
-        if postfix_operator == "*":
-            return MiniRegex("star", (self,))
-        if postfix_operator == "+":
-            return MiniRegex("plus", (self,))
-        if postfix_operator == "?":
-            return MiniRegex("optional", (self,))
-        raise ValueError(f"unsupported postfix operator: {postfix_operator!r}")
-
-
-class MiniBuilder:
-    def lit(self, lit: str) -> MiniRegex:
-        if not lit:
-            return MiniRegex("empty")
-        acc = MiniRegex("range", (ord(lit[0]), ord(lit[0])))
-        for char in lit[1:]:
-            acc = acc + MiniRegex("range", (ord(char), ord(char)))
-        return acc
-
-    def range(self, left: str, right: str) -> MiniRegex:
-        return MiniRegex("range", (ord(left), ord(right)))
-
-    def alnum(self) -> MiniRegex:
-        return self.range("a", "z") | self.range("A", "Z") | self.range("0", "9")
-
-    def alpha(self) -> MiniRegex:
-        return self.range("a", "z") | self.range("A", "Z")
-
-
-@dataclass
-class Nfa:
-    start: int
-    accept: int
-    eps: dict[int, set[int]]
-    ranges: dict[int, list[tuple[int, int, int]]]
-
-
-def regex_to_nfa(expr: MiniRegex) -> Nfa:
-    eps: dict[int, set[int]] = {}
-    ranges: dict[int, list[tuple[int, int, int]]] = {}
-    next_state = 0
-
-    def state() -> int:
-        nonlocal next_state
-        result = next_state
-        next_state += 1
-        return result
-
-    def add_eps(src: int, dst: int) -> None:
-        eps.setdefault(src, set()).add(dst)
-
-    def add_range(src: int, lo: int, hi: int, dst: int) -> None:
-        ranges.setdefault(src, []).append((lo, hi, dst))
-
-    def lower(node: MiniRegex) -> tuple[int, int]:
-        match node.op:
-            case "empty":
-                start, accept = state(), state()
-                add_eps(start, accept)
-                return start, accept
-            case "range":
-                start, accept = state(), state()
-                lo, hi = node.args
-                add_range(start, int(lo), int(hi), accept)
-                return start, accept
-            case "concat":
-                left, right = node.args
-                lstart, laccept = lower(left)
-                rstart, raccept = lower(right)
-                add_eps(laccept, rstart)
-                return lstart, raccept
-            case "alt":
-                left, right = node.args
-                start, accept = state(), state()
-                lstart, laccept = lower(left)
-                rstart, raccept = lower(right)
-                add_eps(start, lstart)
-                add_eps(start, rstart)
-                add_eps(laccept, accept)
-                add_eps(raccept, accept)
-                return start, accept
-            case "star":
-                (child,) = node.args
-                start, accept = state(), state()
-                cstart, caccept = lower(child)
-                add_eps(start, accept)
-                add_eps(start, cstart)
-                add_eps(caccept, cstart)
-                add_eps(caccept, accept)
-                return start, accept
-            case "plus":
-                (child,) = node.args
-                cstart, caccept = lower(child)
-                start, accept = state(), state()
-                add_eps(start, cstart)
-                add_eps(caccept, cstart)
-                add_eps(caccept, accept)
-                return start, accept
-            case "optional":
-                (child,) = node.args
-                start, accept = state(), state()
-                cstart, caccept = lower(child)
-                add_eps(start, accept)
-                add_eps(start, cstart)
-                add_eps(caccept, accept)
-                return start, accept
-            case _:
-                raise ValueError(f"unsupported regex op: {node.op}")
-
-    start, accept = lower(expr)
-    return Nfa(start, accept, eps, ranges)
-
-
-def epsilon_closure(nfa: Nfa, states: frozenset[int]) -> frozenset[int]:
-    closure = set(states)
-    stack = list(states)
-    while stack:
-        current = stack.pop()
-        for target in nfa.eps.get(current, ()):
-            if target not in closure:
-                closure.add(target)
-                stack.append(target)
-    return frozenset(closure)
-
-
-def dfa_from_regex(expr: MiniRegex) -> tuple[int, int, list[tuple[bool, list[tuple[int, int, int]]]], int]:
-    nfa = regex_to_nfa(expr)
-    start_set = epsilon_closure(nfa, frozenset({nfa.start}))
-    state_ids = {start_set: 0}
-    queue = [start_set]
-    dfa: list[tuple[bool, list[tuple[int, int, int]]]] = []
-
-    while queue:
-        current = queue.pop(0)
-        boundaries = {0, 256}
-        for nfa_state in current:
-            for lo, hi, _ in nfa.ranges.get(nfa_state, ()):
-                boundaries.add(lo)
-                boundaries.add(hi + 1)
-        intervals = sorted(boundaries)
-        transitions = []
-        for lo, hi_exclusive in zip(intervals, intervals[1:]):
-            targets = set()
-            for nfa_state in current:
-                for rlo, rhi, target in nfa.ranges.get(nfa_state, ()):
-                    if lo >= rlo and hi_exclusive - 1 <= rhi:
-                        targets.add(target)
-            if not targets:
-                continue
-            closed = epsilon_closure(nfa, frozenset(targets))
-            if closed not in state_ids:
-                state_ids[closed] = len(state_ids)
-                queue.append(closed)
-            transitions.append((lo, hi_exclusive - 1, state_ids[closed]))
-
-        merged: list[tuple[int, int, int]] = []
-        for lo, hi, target in transitions:
-            if merged and merged[-1][2] == target and merged[-1][1] + 1 == lo:
-                merged[-1] = (merged[-1][0], hi, target)
-            else:
-                merged.append((lo, hi, target))
-        dfa.append((nfa.accept in current, merged))
-
-    error = len(dfa)
-    dfa.append((False, []))
-    k = max(2, max((len(transitions) for _, transitions in dfa), default=0))
-    return 0, error, dfa, k
-
-
-def mim_char(byte: int) -> str:
-    escapes = {9: r"'\t'", 10: r"'\n'", 13: r"'\r'", 39: r"'\''", 92: r"'\\'"}
-    if byte in escapes:
-        return escapes[byte]
-    if 32 <= byte <= 126:
-        return f"'{chr(byte)}'"
-    return f"{byte}I8"
-
-
-def mim_tuple(items: list[str]) -> str:
-    if len(items) == 1:
-        return f"({items[0]},)"
-    return f"({', '.join(items)})"
-
-
-def mim_array(items: list[str]) -> str:
-    if len(items) == 1:
-        return f"‹i: 1; {items[0]}›"
-    return mim_tuple(items)
-
-
-def emit_dfa_source() -> str:
-    chunks = ["plugin mem;\nplugin core;\nplugin regex;\n\nlet Top = ⊤:Nat;\n"]
-    externs = []
-    for pattern in PATTERNS:
-        expr = pattern.build_python(MiniBuilder())
-        entry, error, states, k = dfa_from_regex(expr)
-        ns = len(states)
-        none = f"{pattern.name}_none"
-        chunks.append(f"// /{pattern.rust}/")
-        chunks.append(f"let {none} = (255I8, 0I8, {error}:(Idx {ns}));")
-        state_rows = []
-        for accepting, transitions in states:
-            padded = transitions + [(255, 0, error)] * (k - len(transitions))
-            transition_text = mim_array(
-                [
-                    f"({mim_char(lo)}, {mim_char(hi)}, {target}:(Idx {ns}))"
-                    for lo, hi, target in padded
-                ]
-            )
-            state_rows.append(f"({'tt' if accepting else 'ff'}, {error}:(Idx {ns}), {transition_text})")
-        states_text = mim_array(
-            [
-                f"\n     {state}"
-                for state in state_rows
-            ]
-        )
-        chunks.append(
-            f"let {pattern.name}_dfa = (\n"
-            f"    {entry}:(Idx {ns}),\n"
-            f"    {error}:(Idx {ns}),\n"
-            f"    {states_text});"
-        )
-        chunks.append(f"let {pattern.name}_matcher = %regex.dfa.compile {pattern.name}_dfa;\n")
-        externs.append(
-            f"con extern match_{pattern.name}[\n"
-            f"    mem: %mem.M 0,\n"
-            f"    input: %mem.Ptr («Top; I8», 0),\n"
-            f"    exit: Cn [%mem.M 0, Bool]\n"
-            f"] =\n"
-            f"    let (mem, matched, _) = {pattern.name}_matcher (mem, input, 0:(Idx Top));\n"
-            f"    exit (mem, matched);\n"
-        )
-    return "\n".join(chunks + externs)
-
-
 @dataclass
 class BatchMatcher:
     name: str
@@ -712,20 +467,18 @@ def build_python_matchers(work: Path) -> tuple[dict[str, BatchMatcher], float]:
     return matchers, elapsed
 
 
-def build_futamura_matchers(work: Path, mim_binary: Path) -> tuple[dict[str, BatchMatcher], float]:
-    output_dir = work / "futamura"
+def build_graal_style_matchers(work: Path, mim_binary: Path) -> tuple[dict[str, BatchMatcher], float]:
+    output_dir = work / "graal-style"
     output_dir.mkdir()
-    generated = output_dir / "futamura_generated.mim"
-    generated.write_text(emit_dfa_source())
     start = time.perf_counter()
-    run([str(mim_binary), "-p", "opt", str(generated), "-o", "-", "-p", "ll"], output_dir, quiet=True)
+    run([str(mim_binary), "-p", "opt", str(FUTAMURA_SOURCE), "-o", "-", "-p", "ll"], output_dir, quiet=True)
     shim = output_dir / "batch.c"
     write_batch_shim(shim, {f"bench_{p.name}": f"match_{p.name}" for p in PATTERNS})
     output = output_dir / "batch.so"
     run(
         [
             "clang",
-            generated.with_suffix(".ll").name,
+            FUTAMURA_SOURCE.with_suffix(".ll").name,
             str(shim),
             "-O3",
             "-shared",
@@ -737,7 +490,7 @@ def build_futamura_matchers(work: Path, mim_binary: Path) -> tuple[dict[str, Bat
         output_dir,
     )
     elapsed = time.perf_counter() - start
-    return load_c_batch_library(output, [p.name for p in PATTERNS], "futamura-pe"), elapsed
+    return load_c_batch_library(output, [p.name for p in PATTERNS], "graal-style-pe"), elapsed
 
 
 def build_native_lower_regex_matchers(work: Path, mim_binary: Path) -> tuple[dict[str, BatchMatcher], float]:
@@ -1004,7 +757,7 @@ def main() -> None:
         work = Path(tmp)
         python_matchers, python_time = build_python_matchers(work)
         native_matchers, native_time = build_native_lower_regex_matchers(work, args.mim)
-        futamura_matchers, futamura_time = build_futamura_matchers(work, args.mim)
+        graal_matchers, graal_time = build_graal_style_matchers(work, args.mim)
         rust_matchers, rust_time = build_rust_matchers(work, args.rust_regex_dir.resolve())
         rust_native_matchers, rust_native_time = build_rust_matchers(
             work,
@@ -1017,7 +770,7 @@ def main() -> None:
             "native-lower-regex": native_matchers,
             "rust-regex-bytes": rust_matchers,
             "rust-regex-bytes-native": rust_native_matchers,
-            "futamura-pe": futamura_matchers,
+            "graal-style-pe": graal_matchers,
         }
         verify(all_matchers)
         print("Cross-engine correctness: PASS")
@@ -1036,7 +789,7 @@ def main() -> None:
                 "native-lower-regex": native_time,
                 "rust-regex-bytes": rust_time,
                 "rust-regex-bytes-native": rust_native_time,
-                "futamura-pe": futamura_time,
+                "graal-style-pe": graal_time,
             },
         )
 

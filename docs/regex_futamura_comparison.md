@@ -1,7 +1,8 @@
 # Regex Staging Comparison
 
-MimIR currently has two regex construction paths. They share the same low-level
-memory and LLVM infrastructure, but stage the compiler at different levels.
+MimIR currently has three regex construction paths. They share the same
+low-level memory and LLVM infrastructure, but stage the compiler at different
+levels.
 
 | Aspect | Python `RegBuilder` path | MimIR tagged-AST path |
 |---|---|---|
@@ -35,21 +36,29 @@ There are now also two intermediate automaton experiments. `%regex.nfa.*`
 defines an object-language NFA representation with fixed-size bitset state
 sets, epsilon closure, and character move. For a closed NFA, these operations
 are ordinary MimIR computations and the current test shows them reducing to
-constants after partial evaluation. `%regex.DFA ns k` stores accepting flags,
-fallback states, and fixed-capacity range transitions. `%regex.specialize_dfa`
-still decodes a closed table in C++ and preallocates one residual continuation
-per state before filling any body. This finite specialization cache handles
-DFA cycles and removes dynamic static-table extraction. It is the MimIR
-analogue of combining Truffle loop explosion with a
+constants after partial evaluation. `%regex.ast.to_nfa` starts the next step:
+it lowers a closed postorder regex AST to a Thompson-style closed NFA in MimIR.
+The current executable test covers a literal AST; larger expressions expose PE
+cost in the naive fixed-edge encoding and need a more compact construction
+before being used in the benchmark harness. `%regex.DFA ns k` stores accepting
+flags, fallback states, and fixed-capacity range transitions.
+`%regex.specialize_dfa` still decodes a closed table in C++ and preallocates
+one residual continuation per state before filling any body. This finite
+specialization cache handles DFA cycles and removes dynamic static-table
+extraction. It is the MimIR analogue of combining Truffle loop explosion with a
 partial-evaluation-constant state node.
 
-The three paths should remain available while the design is evaluated. The
-Python/DFA path is the mature general-purpose implementation; the tagged-AST
-path demonstrates object-language pattern matching; the object-language NFA
-path starts migrating automaton construction into MimIR; and the closed-DFA
-path demonstrates cyclic control-flow specialization and LLVM/JIT. The next
-missing piece is object-language subset construction from NFA state sets to a
-closed `%regex.DFA` table.
+The paths should remain available while the design is evaluated. The
+Python/DFA and native `%regex.*` paths are the mature direct-lowering
+implementations. The Graal-style baseline uses `%regex.host.compile`: regex
+syntax is high-level MimIR, but C++ still performs NFA/DFA construction and
+materializes a closed `%regex.DFA` before `%regex.specialize_dfa` erases the
+static table. The tagged-AST path demonstrates object-language pattern
+matching, the object-language NFA path starts migrating automaton construction
+into MimIR, and the closed-DFA path demonstrates cyclic control-flow
+specialization and LLVM/JIT. The next missing piece for the stronger Futamura
+route is object-language subset construction from NFA state sets to a closed
+`%regex.DFA` table.
 
 Implementation details, matcher semantics, residual-IR expectations, and the
 test matrix are documented in [Closed DFA Specialization](regex_dfa_specialization.md).

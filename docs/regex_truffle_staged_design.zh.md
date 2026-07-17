@@ -206,6 +206,15 @@ relaxation，`%regex.nfa.move` 使用原始 source set 判断可达边，并把
 dispatch、epsilon closure 和 move 在这个静态场景下已经被 partial
 evaluation 消除。
 
+`%regex.ast.to_nfa` 进一步把 closed postorder AST lowering 到
+Thompson-style NFA 也放进 MimIR object language：每个 AST node 分配两个
+state，并使用固定 edge slot 表示 epsilon/range transitions。
+`lit/regex/ast_to_nfa_object_language.mim` 目前验证了 literal AST 到 NFA
+再到 `move` 的链路可以被 `opt` 消成常量。需要注意的是，这个 naive
+fixed-edge encoding 在 `a+b` 这类多节点表达式上已经会造成明显 PE 成本，
+因此还不能直接替代 benchmark harness 里的 Graal-style host DFA
+baseline。
+
 ## 6. NFA 到 DFA
 
 DFA subset construction 的核心操作是：
@@ -413,10 +422,17 @@ RegexExpr
 
 当前 tagged-AST POC 仍然弱于 `LowerRegex`，因为它只有有限深度并且尚未支持 `Star/Plus/Not/NegLookahead`。要达到等价，必须同时补齐递归 AST 和完整 automata semantics。
 
-当前 closed-DFA POC 又向前验证了一步：手工构造的静态 DFA table 已经可以生成有环 matcher 并通过 LLVM/JIT，但 `RegexExpr -> NFA -> DFA` 仍未在 MimIR object language 中实现。因此当前完成的路径是：
+当前 Graal-style baseline 又向前验证了一步：`%regex.host.compile` 接收
+高层 `%regex.*` 表达式，由 host C++ 复用 `regex2nfa -> nfa2dfa ->
+minimize` 构造 DFA，然后 materialize 为 closed `%regex.DFA` table，并
+交给 `%regex.specialize_dfa` 生成有环 matcher。也就是说，benchmark
+不再手工构造 DFA table，但 `RegexExpr -> NFA -> DFA` 仍未在 MimIR
+object language 中实现。因此当前完成的路径是：
 
 ```text
-closed DFA table
+%regex.* expression
+    -> host C++ NFA/DFA construction
+    -> closed %regex.DFA table
     -> specialization normalizer
     -> cyclic continuation graph
     -> LLVM/JIT
@@ -426,16 +442,22 @@ closed DFA table
 
 ### Phase 1: DFA interpreter
 
-保留现有 C++ `regex2nfa` 和 DFA construction，只把静态 DFA table 交给 MimIR matcher interpreter：
+保留现有 C++ `regex2nfa` 和 DFA construction，只把结果编码成静态
+`%regex.DFA`，再交给 MimIR matcher specialization：
 
 ```text
 C++ RegexExpr/NFA/DFA
-    -> MimIR DFA interpreter
+    -> closed %regex.DFA
+    -> MimIR DFA specialization
     -> partial evaluation
     -> LLVM/JIT
 ```
 
-这是最低风险的验证，可以直接比较 MimIR residual matcher 和 `dfa2matcher.cpp` 的输出。
+这是最低风险的验证，可以直接比较 MimIR residual matcher 和
+`dfa2matcher.cpp` 的 direct-native 输出。它对应 Truffle/TRegex 中
+`@TruffleBoundary` 外构造 automaton、executor 内把 state table 当作
+compilation constant 的基线；更强的 Futamura 路径会把 NFA/DFA
+construction 也迁移到 MimIR。
 
 ### Phase 2: NFA interpreter
 

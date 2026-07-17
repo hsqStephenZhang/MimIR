@@ -1,0 +1,33 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+plugin core;
+plugin regex;
+
+// Postorder AST for /a/.
+let nodes: «1; %regex.ast.Node 1» =
+    (%regex.ast.lit @1 'a',);
+let expr: %regex.ast.Expr 1 = (0:(Idx 1), nodes);
+let nfa = %regex.ast.to_nfa expr;
+let start = %regex.nfa.epsilon_closure (nfa, %regex.nfa.singleton (nfa#(0:(Idx 3))));
+let after_a = %regex.nfa.move (nfa, start, 'a');
+let after_b = %regex.nfa.move (nfa, start, 'b');
+let accept = nfa#(1:(Idx 3));
+
+fun extern start_is_not_accepting (): I32 =
+    return (%core.conv.u i32 (start#accept));
+
+fun extern after_a_accepts (): I32 =
+    return (%core.conv.u i32 (after_a#accept));
+
+fun extern after_b_rejects (): I32 =
+    return (%core.conv.u i32 (after_b#accept));
+
+// CHECK-DAG: fun extern start_is_not_accepting
+// CHECK-DAG: return{{.*}}0I32
+// CHECK-DAG: fun extern after_a_accepts
+// CHECK-DAG: return{{.*}}1I32
+// CHECK-DAG: fun extern after_b_rejects
+// CHECK-DAG: return{{.*}}0I32
+// CHECK-NOT: %regex.ast
+// CHECK-NOT: %regex.nfa
+// CHECK-NOT: Match

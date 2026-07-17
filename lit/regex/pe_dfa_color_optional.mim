@@ -1,0 +1,47 @@
+// Common-subset test against Rust regex `colou?r`.
+// We check ASCII full-match acceptance only.
+// RUN: rm -f %{s:stem}.ll ; \
+// RUN: %mim -p opt %s -o - -p ll | %FileCheck %s
+// RUN: clang %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t "color"; test $? -eq 1
+// RUN: %t "colour"; test $? -eq 1
+// RUN: %t "colouur"; test $? -eq 0
+// RUN: %t "colr"; test $? -eq 0
+// RUN: %t "xcolor"; test $? -eq 0
+
+plugin mem;
+plugin core;
+plugin regex;
+
+let Top = ⊤:Nat;
+let error = 7:(Idx 8);
+let none = (255I8, 0I8, error);
+let dfa = (
+    0:(Idx 8),
+    error,
+    ((ff, error, (('c', 'c', 1:(Idx 8)), none)),
+     (ff, error, (('o', 'o', 2:(Idx 8)), none)),
+     (ff, error, (('l', 'l', 3:(Idx 8)), none)),
+     (ff, error, (('o', 'o', 4:(Idx 8)), none)),
+     (ff, error, (('u', 'u', 5:(Idx 8)), ('r', 'r', 6:(Idx 8)))),
+     (ff, error, (('r', 'r', 6:(Idx 8)), none)),
+     (tt, error, (none, none)),
+     (ff, error, (none, none))));
+let matcher = %regex.dfa.compile dfa;
+
+con extern main[mem: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr («⊤:Nat; I8», 0)», 0), exit : Cn [%mem.M 0, I32]] =
+    (exit, match_argument)#(%core.icmp.ug (argc, 1I32)) (mem, 0I32)
+    where
+        con match_argument[mem: %mem.M 0, I32] =
+            let arg1 = %mem.lea (argv, %core.idx_unsafe 1);
+            let (mem, to_match) = %mem.load (mem, arg1);
+            let (mem, matched, _) = matcher (mem, to_match, 0:(Idx Top));
+            exit (mem, %core.conv.u i32 matched);
+    end;
+
+// CHECK-NOT: %regex.specialize_dfa
+// CHECK-NOT: static_states
+// CHECK-NOT: 255I8
+// CHECK-DAG: state_0
+// CHECK-DAG: state_6
+// CHECK: %mem.load

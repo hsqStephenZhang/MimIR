@@ -33,6 +33,13 @@ struct DFATable {
     std::vector<TableState> states;
 };
 
+/// Converts an automaton DFA into the compact host-side table form used by
+/// `%regex.DFA`. Missing transitions fall back to the designated error state.
+DFATable dfa_to_table(World&, const automaton::DFA&);
+
+/// Materializes a host-side DFA table as a closed MimIR `%regex.DFA` value.
+const Def* encode_dfa_table(World&, const DFATable&);
+
 /// Specializes a closed DFA table into a full-string matcher.
 ///
 /// All state continuations are allocated before any body is emitted. This

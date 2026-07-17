@@ -1,0 +1,47 @@
+// Common-subset test against Rust regex `[A-Za-z0-9_]+`.
+// We check ASCII full-match acceptance only.
+// RUN: rm -f %{s:stem}.ll ; \
+// RUN: %mim -p opt %s -o - -p ll | %FileCheck %s
+// RUN: clang %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t "abc_09XYZ"; test $? -eq 1
+// RUN: %t "Z"; test $? -eq 1
+// RUN: %t ""; test $? -eq 0
+// RUN: %t "abc-def"; test $? -eq 0
+// RUN: %t "abc!"; test $? -eq 0
+
+plugin mem;
+plugin core;
+plugin regex;
+
+let Top = ⊤:Nat;
+let error = 2:(Idx 3);
+let none = (255I8, 0I8, error);
+let transitions = (
+    ('0', '9', 1:(Idx 3)),
+    ('A', 'Z', 1:(Idx 3)),
+    ('_', '_', 1:(Idx 3)),
+    ('a', 'z', 1:(Idx 3)));
+let dfa = (
+    0:(Idx 3),
+    error,
+    ((ff, error, transitions),
+     (tt, error, transitions),
+     (ff, error, (none, none, none, none))));
+let matcher = %regex.dfa.compile dfa;
+
+con extern main[mem: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr («⊤:Nat; I8», 0)», 0), exit : Cn [%mem.M 0, I32]] =
+    (exit, match_argument)#(%core.icmp.ug (argc, 1I32)) (mem, 0I32)
+    where
+        con match_argument[mem: %mem.M 0, I32] =
+            let arg1 = %mem.lea (argv, %core.idx_unsafe 1);
+            let (mem, to_match) = %mem.load (mem, arg1);
+            let (mem, matched, _) = matcher (mem, to_match, 0:(Idx Top));
+            exit (mem, %core.conv.u i32 matched);
+    end;
+
+// CHECK-NOT: %regex.specialize_dfa
+// CHECK-NOT: static_states
+// CHECK-NOT: 255I8
+// CHECK-DAG: state_0
+// CHECK-DAG: state_1
+// CHECK: %mem.load

@@ -233,9 +233,12 @@ let %regex.ast.Range = «2; Char»;
 lam %regex.ast.Concat (n: Nat): * = [Bool, Idx n, Idx n];
 lam %regex.ast.Alt (n: Nat): * = [Nat, Idx n, Idx n];
 lam %regex.ast.Optional (n: Nat): * = [I1, Idx n];
+lam %regex.ast.Star (n: Nat): * = [I8, Idx n];
+lam %regex.ast.Plus (n: Nat): * = [I16, Idx n];
 lam %regex.ast.Node (n: Nat): * =
     %regex.ast.Empty ∪ %regex.ast.Any ∪ %regex.ast.Lit ∪ %regex.ast.Range
-    ∪ (%regex.ast.Concat n) ∪ (%regex.ast.Alt n) ∪ (%regex.ast.Optional n);
+    ∪ (%regex.ast.Concat n) ∪ (%regex.ast.Alt n) ∪ (%regex.ast.Optional n)
+    ∪ (%regex.ast.Star n) ∪ (%regex.ast.Plus n);
 lam %regex.ast.Expr (n: Nat): * = [root: Idx n, nodes: «n; %regex.ast.Node n»];
 
 lam %regex.ast.empty {n: Nat} (): %regex.ast.Node n =
@@ -252,6 +255,10 @@ lam %regex.ast.disj {n: Nat} (lhs rhs: Idx n): %regex.ast.Node n =
     (0, lhs, rhs) inj %regex.ast.Node n;
 lam %regex.ast.optional {n: Nat} (child: Idx n): %regex.ast.Node n =
     (0I1, child) inj %regex.ast.Node n;
+lam %regex.ast.star {n: Nat} (child: Idx n): %regex.ast.Node n =
+    (0I8, child) inj %regex.ast.Node n;
+lam %regex.ast.plus {n: Nat} (child: Idx n): %regex.ast.Node n =
+    (0I16, child) inj %regex.ast.Node n;
 
 /// Compile one closed AST node to a monomorphic matcher. This is an
 /// object-language interpreter: it indexes and pattern matches the AST in
@@ -303,7 +310,15 @@ lam %regex.ast.compile_node {nn n: Nat}
                         (nodes, p#(1:(Idx 2)), %core.nat.sub (fuel, 1));
                     lm (args: Input n): Res n =
                         let (mem, hit, pos) = child args;
-                        (mem, tt, %core.select (hit, pos, args#(2:(Idx 3))));
+                        (mem, tt, %core.select (hit, pos, args#(2:(Idx 3))))
+                | _: %regex.ast.Star nn =>
+                    lm (args: Input n): Res n =
+                        %runtime.fail @(Res n, 40)
+                            "regex AST star direct matcher is pending"
+                | _: %regex.ast.Plus nn =>
+                    lm (args: Input n): Res n =
+                        %runtime.fail @(Res n, 40)
+                            "regex AST plus direct matcher is pending";
         lam exhausted (): Input n → Res n =
             lm (args: Input n): Res n =
                 %runtime.fail @(Res n, 53)
@@ -424,6 +439,123 @@ lam %regex.nfa.move {ns ne: Nat}
     end;
     %regex.nfa.epsilon_closure (nfa, moved);
 
+/// Thompson-style object-language AST-to-NFA lowering. Every AST node owns two
+/// NFA states: `2 * node` is the fragment start and `2 * node + 1` is the
+/// fragment accept state. Every node also owns six fixed edge slots; unused
+/// slots carry `%regex.nfa.empty_label`, which never matches and is ignored by
+/// epsilon closure and move.
+let %regex.ast.edges_per_node = 6;
+
+lam %regex.ast.nfa_state_count (nn: Nat): Nat = %core.nat.mul (2, nn);
+lam %regex.ast.nfa_edge_count (nn: Nat): Nat =
+    %core.nat.mul (%regex.ast.edges_per_node, nn);
+
+lam %regex.ast.node_start {nn: Nat}
+    (node: Idx nn): Idx (%regex.ast.nfa_state_count nn) =
+    %core.idx (%regex.ast.nfa_state_count nn) 0
+        (%core.nat.mul (2, %core.bitcast Nat node));
+
+lam %regex.ast.node_accept {nn: Nat}
+    (node: Idx nn): Idx (%regex.ast.nfa_state_count nn) =
+    %core.idx (%regex.ast.nfa_state_count nn) 0
+        (%core.nat.add (%core.nat.mul (2, %core.bitcast Nat node), 1));
+
+lam %regex.ast.nfa_invalid_edge {nn: Nat} (): %regex.nfa.Edge (%regex.ast.nfa_state_count nn) =
+    let zero = %core.idx (%regex.ast.nfa_state_count nn) 0 0;
+    (zero, zero, %regex.nfa.empty_label ());
+
+lam %regex.ast.nfa_epsilon_edge {nn: Nat}
+    (src dst: Idx (%regex.ast.nfa_state_count nn))
+    : %regex.nfa.Edge (%regex.ast.nfa_state_count nn) =
+    (src, dst, %regex.nfa.epsilon ());
+
+lam %regex.ast.nfa_range_edge {nn: Nat}
+    (src dst: Idx (%regex.ast.nfa_state_count nn), lo hi: Char)
+    : %regex.nfa.Edge (%regex.ast.nfa_state_count nn) =
+    (src, dst, %regex.nfa.range (lo, hi));
+
+lam %regex.ast.nfa_edge_for {nn: Nat}
+    (node_id: Idx nn, slot: Nat, node: %regex.ast.Node nn)
+    : %regex.nfa.Edge (%regex.ast.nfa_state_count nn) =
+    let self_start = %regex.ast.node_start node_id;
+    let self_accept = %regex.ast.node_accept node_id;
+    let invalid = %regex.ast.nfa_invalid_edge @nn ();
+    match node with
+        | _: %regex.ast.Empty =>
+            %core.select (%core.ncmp.e (slot, 0),
+                %regex.ast.nfa_epsilon_edge (self_start, self_accept), invalid)
+        | _: %regex.ast.Any =>
+            %core.select (%core.ncmp.e (slot, 0),
+                %regex.ast.nfa_range_edge (self_start, self_accept, 1I8, 255I8), invalid)
+        | c: %regex.ast.Lit =>
+            %core.select (%core.ncmp.e (slot, 0),
+                %regex.ast.nfa_range_edge (self_start, self_accept, c, c), invalid)
+        | r: %regex.ast.Range =>
+            %core.select (%core.ncmp.e (slot, 0),
+                %regex.ast.nfa_range_edge
+                    (self_start, self_accept, r#(0:(Idx 2)), r#(1:(Idx 2))),
+                invalid)
+        | p: %regex.ast.Concat nn =>
+            let lhs = p#(1:(Idx 3));
+            let rhs = p#(2:(Idx 3));
+            let e0 = %regex.ast.nfa_epsilon_edge (self_start, %regex.ast.node_start lhs);
+            let e1 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept lhs, %regex.ast.node_start rhs);
+            let e2 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept rhs, self_accept);
+            %core.select (%core.ncmp.e (slot, 0), e0,
+                %core.select (%core.ncmp.e (slot, 1), e1,
+                    %core.select (%core.ncmp.e (slot, 2), e2, invalid)))
+        | p: %regex.ast.Alt nn =>
+            let lhs = p#(1:(Idx 3));
+            let rhs = p#(2:(Idx 3));
+            let e0 = %regex.ast.nfa_epsilon_edge (self_start, %regex.ast.node_start lhs);
+            let e1 = %regex.ast.nfa_epsilon_edge (self_start, %regex.ast.node_start rhs);
+            let e2 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept lhs, self_accept);
+            let e3 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept rhs, self_accept);
+            %core.select (%core.ncmp.e (slot, 0), e0,
+                %core.select (%core.ncmp.e (slot, 1), e1,
+                    %core.select (%core.ncmp.e (slot, 2), e2,
+                        %core.select (%core.ncmp.e (slot, 3), e3, invalid))))
+        | p: %regex.ast.Optional nn =>
+            let child = p#(1:(Idx 2));
+            let e0 = %regex.ast.nfa_epsilon_edge (self_start, self_accept);
+            let e1 = %regex.ast.nfa_epsilon_edge (self_start, %regex.ast.node_start child);
+            let e2 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept child, self_accept);
+            %core.select (%core.ncmp.e (slot, 0), e0,
+                %core.select (%core.ncmp.e (slot, 1), e1,
+                    %core.select (%core.ncmp.e (slot, 2), e2, invalid)))
+        | p: %regex.ast.Star nn =>
+            let child = p#(1:(Idx 2));
+            let e0 = %regex.ast.nfa_epsilon_edge (self_start, self_accept);
+            let e1 = %regex.ast.nfa_epsilon_edge (self_start, %regex.ast.node_start child);
+            let e2 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept child, %regex.ast.node_start child);
+            let e3 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept child, self_accept);
+            %core.select (%core.ncmp.e (slot, 0), e0,
+                %core.select (%core.ncmp.e (slot, 1), e1,
+                    %core.select (%core.ncmp.e (slot, 2), e2,
+                        %core.select (%core.ncmp.e (slot, 3), e3, invalid))))
+        | p: %regex.ast.Plus nn =>
+            let child = p#(1:(Idx 2));
+            let e0 = %regex.ast.nfa_epsilon_edge (self_start, %regex.ast.node_start child);
+            let e1 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept child, %regex.ast.node_start child);
+            let e2 = %regex.ast.nfa_epsilon_edge (%regex.ast.node_accept child, self_accept);
+            %core.select (%core.ncmp.e (slot, 0), e0,
+                %core.select (%core.ncmp.e (slot, 1), e1,
+                    %core.select (%core.ncmp.e (slot, 2), e2, invalid)));
+
+lam %regex.ast.to_nfa {nn: Nat} (expr: %regex.ast.Expr nn)
+    @(%core.pe.is_closed expr)
+    : %regex.NFA (%regex.ast.nfa_state_count nn) (%regex.ast.nfa_edge_count nn) =
+    let nodes = expr#(1:(Idx 2));
+    let edges = ‹edge_id: %regex.ast.nfa_edge_count nn;
+        let edge_nat = %core.bitcast Nat edge_id;
+        let node_id = %core.idx nn 0
+            (%core.nat.div (edge_nat, %regex.ast.edges_per_node));
+        let slot = %core.nat.mod (edge_nat, %regex.ast.edges_per_node);
+        %regex.ast.nfa_edge_for (node_id, slot, nodes#node_id)›;
+    (%regex.ast.node_start (expr#(0:(Idx 2))),
+     %regex.ast.node_accept (expr#(0:(Idx 2))),
+     edges);
+
 /// ## Closed DFA Tables
 ///
 /// `%regex.DFA ns k` is a homogeneous sparse transition table:
@@ -492,6 +624,22 @@ axm %regex.specialize_dfa: {ns k n: Nat} →
 /// this wrapper, so it has no residual runtime cost.
 let %regex.dfa.compile = lm {ns k: Nat} (dfa: %regex.DFA ns k): RE =
     lm {n: Nat} (input: Input n): Res n = %regex.specialize_dfa (dfa, input);
+
+/// ### `%regex.host.compile`
+///
+/// Graal-style staging boundary. The regex expression is still written with
+/// the high-level `%regex.*` combinators, but `%regex.lower_regex` constructs
+/// the NFA/DFA on the host, materializes a closed `%regex.DFA` table, and then
+/// routes the call through `%regex.specialize_dfa`.
+///
+/// This is intentionally separate from the object-language Futamura path under
+/// `%regex.ast` and `%regex.nfa`: host construction is a baseline where
+/// automaton construction is outside MimIR partial evaluation, while the
+/// object-language path keeps those algorithms expressible in MimIR.
+axm %regex.host_match: {n: Nat} → [RE, Input n] → Res n, 2;
+
+let %regex.host.compile = lm (re: RE): RE =
+    lm {n: Nat} (input: Input n): Res n = %regex.host_match (re, input);
 
 /// ### `%regex.dfa.pick`
 ///
