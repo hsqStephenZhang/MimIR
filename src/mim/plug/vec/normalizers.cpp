@@ -12,7 +12,7 @@
 namespace mim::plug::vec {
 
 template<fold id>
-const Def* normalize_fold(const Def* type, const Def* c, const Def* arg) {
+const Def* normalize_fold(const Def*, const Def* c, const Def* arg) {
     auto& w     = c->world();
     auto callee = c->as<App>();
     auto f      = callee->arg();
@@ -32,7 +32,7 @@ const Def* normalize_fold(const Def* type, const Def* c, const Def* arg) {
 
     if (vec->node() == Node::Arr || vec->node() == Node::Pack) {
         auto seq = (const Seq*)vec;
-        if (auto n = Lit::isa<u64>(seq->arity()); n && type->isa<Nat>()) {
+        if (auto n = Lit::isa<u64>(seq->arity())) {
             if constexpr (id == fold::l)
                 for (auto proj : seq->projs(*n)) acc = w.app(f, {acc, proj});
             else // fold::r

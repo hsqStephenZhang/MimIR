@@ -189,6 +189,23 @@ StateSet = «num_nfa_states; Bool»
 
 这样 epsilon closure 可以通过静态循环和 bitset membership 实现。
 
+当前 MimIR POC 已经落地这一层基础表示：
+
+```mim
+lam %regex.nfa.StateSet (ns: Nat): * = «ns; Bool»;
+lam %regex.nfa.Edge (ns: Nat): * =
+    [src: Idx ns, dst: Idx ns, label: %regex.nfa.Label];
+lam %regex.NFA (ns: Nat) (ne: Nat): * =
+    [start accept: Idx ns, edges: «ne; %regex.nfa.Edge ns»];
+```
+
+`%regex.nfa.epsilon_closure` 使用固定长度 `%vec.fold.l` 做 `ns` 次
+relaxation，`%regex.nfa.move` 使用原始 source set 判断可达边，并把
+目标 state 插入 accumulator。`lit/regex/nfa_object_language.mim` 中的
+闭合 NFA 会在 `opt` 后归约为常量 `1/1/0`，说明 NFA table、edge
+dispatch、epsilon closure 和 move 在这个静态场景下已经被 partial
+evaluation 消除。
+
 ## 6. NFA 到 DFA
 
 DFA subset construction 的核心操作是：
@@ -223,6 +240,10 @@ find_state(set, states) -> Option (Idx n)
 ```
 
 这不是最优的 runtime 算法，但当整个 DFA construction 在 compile time 消除时，不会进入最终 matcher。
+
+这一段目前仍是下一步：还没有把 `find_state`、worklist、subset
+construction 和 DFA table materialization 完整写成 MimIR library
+abstraction。
 
 ## 7. DFA Matcher Interpreter
 

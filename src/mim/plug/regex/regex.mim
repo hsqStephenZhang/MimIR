@@ -12,6 +12,8 @@ import compile;
 plugin core;
 plugin mem;
 plugin cps;
+plugin runtime;
+plugin vec;
 ///
 /// ## Types
 ///
@@ -212,6 +214,215 @@ lam %regex.interpret (expr: %regex.Expr) {n: Nat}
         | p: %regex.Concat => %regex.interpret_conj p args
         | p: %regex.Alt => %regex.interpret_disj p args
         | p: %regex.Optional => %regex.interpret_optional p args;
+
+/// ## Recursive Regex AST
+///
+/// MimIR does not currently expose an iso-recursive type constructor. A
+/// postorder node table gives the interpreter the same expressive power for a
+/// finite regex tree: child references are indices into the table, while the
+/// node payload remains a tagged union that can be pattern matched normally.
+/// The whole table is expected to be closed when `%regex.ast.compile` is used.
+///
+/// Marker fields distinguish union alternatives that otherwise have the same
+/// payload shape. They carry no runtime meaning and disappear during partial
+/// evaluation.
+let %regex.ast.Empty = [Bool, Nat];
+let %regex.ast.Any = [Nat, Bool];
+let %regex.ast.Lit = Char;
+let %regex.ast.Range = «2; Char»;
+lam %regex.ast.Concat (n: Nat): * = [Bool, Idx n, Idx n];
+lam %regex.ast.Alt (n: Nat): * = [Nat, Idx n, Idx n];
+lam %regex.ast.Optional (n: Nat): * = [I1, Idx n];
+lam %regex.ast.Node (n: Nat): * =
+    %regex.ast.Empty ∪ %regex.ast.Any ∪ %regex.ast.Lit ∪ %regex.ast.Range
+    ∪ (%regex.ast.Concat n) ∪ (%regex.ast.Alt n) ∪ (%regex.ast.Optional n);
+lam %regex.ast.Expr (n: Nat): * = [root: Idx n, nodes: «n; %regex.ast.Node n»];
+
+lam %regex.ast.empty {n: Nat} (): %regex.ast.Node n =
+    (ff, 0) inj %regex.ast.Node n;
+lam %regex.ast.any {n: Nat} (): %regex.ast.Node n =
+    (0, ff) inj %regex.ast.Node n;
+lam %regex.ast.lit {n: Nat} (c: Char): %regex.ast.Node n =
+    c inj %regex.ast.Node n;
+lam %regex.ast.range {n: Nat} (lo hi: Char): %regex.ast.Node n =
+    (lo, hi) inj %regex.ast.Node n;
+lam %regex.ast.conj {n: Nat} (lhs rhs: Idx n): %regex.ast.Node n =
+    (ff, lhs, rhs) inj %regex.ast.Node n;
+lam %regex.ast.disj {n: Nat} (lhs rhs: Idx n): %regex.ast.Node n =
+    (0, lhs, rhs) inj %regex.ast.Node n;
+lam %regex.ast.optional {n: Nat} (child: Idx n): %regex.ast.Node n =
+    (0I1, child) inj %regex.ast.Node n;
+
+/// Compile one closed AST node to a monomorphic matcher. This is an
+/// object-language interpreter: it indexes and pattern matches the AST in
+/// MimIR, rather than asking the C++ regex lowering pass to inspect it. `fuel`
+/// bounds malformed cyclic tables. For a valid finite tree, `id`, `fuel`,
+/// union dispatch, and all recursive calls are eliminated before the input
+/// string is available.
+lam %regex.ast.compile_node {nn n: Nat}
+    (nodes: «nn; %regex.ast.Node nn», id: Idx nn, fuel: Nat)
+    @(%core.bit2.and_ 0
+        (%core.pe.is_closed nodes,
+         %core.bit2.and_ 0 (%core.pe.is_closed id, %core.pe.is_closed fuel)))
+    : Input n → Res n =
+    %core.select (%core.ncmp.g (fuel, 0), compile, exhausted) () where
+        lam compile (): Input n → Res n =
+            match nodes#id with
+                | _: %regex.ast.Empty => lm (args: Input n): Res n =
+                    %regex.matcher.empty args
+                | _: %regex.ast.Any => lm (args: Input n): Res n =
+                    %regex.matcher.any args
+                | c: %regex.ast.Lit => lm (args: Input n): Res n =
+                    %regex.matcher.lit c args
+                | r: %regex.ast.Range => lm (args: Input n): Res n =
+                    %regex.matcher.range r args
+                | p: %regex.ast.Concat nn =>
+                    let lhs = %regex.ast.compile_node
+                        (nodes, p#(1:(Idx 3)), %core.nat.sub (fuel, 1));
+                    let rhs = %regex.ast.compile_node
+                        (nodes, p#(2:(Idx 3)), %core.nat.sub (fuel, 1));
+                    lm (args: Input n): Res n =
+                        let (mem, lhit, lpos) = lhs args;
+                        let (mem, rhit, rpos) =
+                            rhs (mem, args#(1:(Idx 3)), lpos);
+                        let hit = %core.bit2.and_ 0 (lhit, rhit);
+                        (mem, hit, %core.select (hit, rpos, args#(2:(Idx 3))))
+                | p: %regex.ast.Alt nn =>
+                    let lhs = %regex.ast.compile_node
+                        (nodes, p#(1:(Idx 3)), %core.nat.sub (fuel, 1));
+                    let rhs = %regex.ast.compile_node
+                        (nodes, p#(2:(Idx 3)), %core.nat.sub (fuel, 1));
+                    lm (args: Input n): Res n =
+                        let (mem, lhit, lpos) = lhs args;
+                        let (mem, rhit, rpos) =
+                            rhs (mem, args#(1:(Idx 3)), args#(2:(Idx 3)));
+                        let hit = %core.select (lhit, lhit, rhit);
+                        (mem, hit, %core.select (lhit, lpos, rpos))
+                | p: %regex.ast.Optional nn =>
+                    let child = %regex.ast.compile_node
+                        (nodes, p#(1:(Idx 2)), %core.nat.sub (fuel, 1));
+                    lm (args: Input n): Res n =
+                        let (mem, hit, pos) = child args;
+                        (mem, tt, %core.select (hit, pos, args#(2:(Idx 3))));
+        lam exhausted (): Input n → Res n =
+            lm (args: Input n): Res n =
+                %runtime.fail @(Res n, 53)
+                    "regex AST contains a cycle or invalid child reference";
+    end;
+
+/// First Futamura projection for a closed regex AST. The node count is also a
+/// sufficient recursion bound for an acyclic table, so no AST-dependent value
+/// remains in the returned matcher.
+lam %regex.ast.compile {nn: Nat} (expr: %regex.ast.Expr nn): RE =
+    lm {n: Nat} (input: Input n): Res n =
+        (%regex.ast.compile_node (expr#(1:(Idx 2)), expr#(0:(Idx 2)), nn)) input;
+
+/// ## Object-language NFA building blocks
+///
+/// These definitions are intentionally ordinary MimIR values. A state set is a
+/// fixed-size bitset represented as a `Bool` array. Insertion and union are
+/// tuple comprehensions over the finite state domain; when the NFA and loop
+/// fuel are closed, these arrays are expected to disappear through partial
+/// evaluation.
+lam %regex.nfa.StateSet (ns: Nat): * = «ns; Bool»;
+let %regex.nfa.Epsilon = [Bool, Nat];
+let %regex.nfa.Range = «2; Char»;
+let %regex.nfa.EmptyLabel = [Nat, Bool];
+let %regex.nfa.Label = %regex.nfa.Epsilon ∪ %regex.nfa.Range ∪ %regex.nfa.EmptyLabel;
+lam %regex.nfa.Edge (ns: Nat): * =
+    [src: Idx ns, dst: Idx ns, label: %regex.nfa.Label];
+lam %regex.NFA (ns: Nat) (ne: Nat): * =
+    [start accept: Idx ns, edges: «ne; %regex.nfa.Edge ns»];
+
+lam %regex.nfa.epsilon (): %regex.nfa.Label =
+    (ff, 0) inj %regex.nfa.Label;
+lam %regex.nfa.range (lo hi: Char): %regex.nfa.Label =
+    (lo, hi) inj %regex.nfa.Label;
+lam %regex.nfa.empty_label (): %regex.nfa.Label =
+    (0, ff) inj %regex.nfa.Label;
+
+lam %regex.nfa.edge_src {ns: Nat} (edge: %regex.nfa.Edge ns): Idx ns =
+    edge#(0:(Idx 3));
+lam %regex.nfa.edge_dst {ns: Nat} (edge: %regex.nfa.Edge ns): Idx ns =
+    edge#(1:(Idx 3));
+lam %regex.nfa.edge_label {ns: Nat} (edge: %regex.nfa.Edge ns): %regex.nfa.Label =
+    edge#(2:(Idx 3));
+
+lam %regex.nfa.empty_set {ns: Nat} (): %regex.nfa.StateSet ns =
+    ‹_: ns; ff›;
+lam %regex.nfa.singleton {ns: Nat} (state: Idx ns): %regex.nfa.StateSet ns =
+    ‹query: ns; %core.icmp.e (query, state)›;
+lam %regex.nfa.insert {ns: Nat}
+    (set: %regex.nfa.StateSet ns, state: Idx ns): %regex.nfa.StateSet ns =
+    ‹query: ns; %core.bit2.or_ 0 (set#query, %core.icmp.e (query, state))›;
+lam %regex.nfa.merge {ns: Nat}
+    (lhs rhs: %regex.nfa.StateSet ns): %regex.nfa.StateSet ns =
+    ‹query: ns; %core.bit2.or_ 0 (lhs#query, rhs#query)›;
+
+lam %regex.nfa.is_epsilon (label: %regex.nfa.Label): Bool =
+    match label with
+        | _: %regex.nfa.Epsilon => tt
+        | _: %regex.nfa.Range => ff
+        | _: %regex.nfa.EmptyLabel => ff;
+
+lam %regex.nfa.matches_char (label: %regex.nfa.Label, c: Char): Bool =
+    match label with
+        | _: %regex.nfa.Epsilon => ff
+        | r: %regex.nfa.Range =>
+            %core.bit2.and_ 0
+                (%core.icmp.uge (c, r#(0:(Idx 2))),
+                 %core.icmp.ule (c, r#(1:(Idx 2))))
+        | _: %regex.nfa.EmptyLabel => ff;
+
+/// One epsilon-closure relaxation over every edge. Repeating it `ns` times is
+/// sufficient for an NFA with `ns` states, because each pass can add at least
+/// one new reachable state along an epsilon path.
+lam %regex.nfa.epsilon_step {ns: Nat}
+    (set: %regex.nfa.StateSet ns, edge: %regex.nfa.Edge ns): %regex.nfa.StateSet ns =
+    let can_follow = %core.bit2.and_ 0
+        (set#(%regex.nfa.edge_src edge),
+         %regex.nfa.is_epsilon (%regex.nfa.edge_label edge));
+    %core.select (can_follow, %regex.nfa.insert (set, %regex.nfa.edge_dst edge), set);
+
+lam %regex.nfa.epsilon_pass {ns ne: Nat}
+    (edges: «ne; %regex.nfa.Edge ns», set: %regex.nfa.StateSet ns)
+    : %regex.nfa.StateSet ns =
+    %vec.fold.l step (set, edges) where
+        lam step (acc: %regex.nfa.StateSet ns, edge: %regex.nfa.Edge ns)
+            : %regex.nfa.StateSet ns =
+            %regex.nfa.epsilon_step (acc, edge);
+    end;
+
+lam %regex.nfa.epsilon_closure {ns ne: Nat}
+    (nfa: %regex.NFA ns ne, set: %regex.nfa.StateSet ns)
+    : %regex.nfa.StateSet ns =
+    let edges = nfa#(2:(Idx 3));
+    let ticks: «ns; Nat» = ‹_: ns; 0›;
+    %vec.fold.l step (set, ticks) where
+        lam step (acc: %regex.nfa.StateSet ns, _: Nat)
+            : %regex.nfa.StateSet ns =
+            %regex.nfa.epsilon_pass (edges, acc);
+    end;
+
+lam %regex.nfa.move_step {ns: Nat} (source: %regex.nfa.StateSet ns, c: Char)
+    (acc: %regex.nfa.StateSet ns, edge: %regex.nfa.Edge ns): %regex.nfa.StateSet ns =
+    let can_follow = %core.bit2.and_ 0
+        (source#(%regex.nfa.edge_src edge),
+         %regex.nfa.matches_char (%regex.nfa.edge_label edge, c));
+    %core.select (can_follow, %regex.nfa.insert (acc, %regex.nfa.edge_dst edge), acc);
+
+lam %regex.nfa.move {ns ne: Nat}
+    (nfa: %regex.NFA ns ne, set: %regex.nfa.StateSet ns, c: Char)
+    @(%core.bit2.and_ 0
+        (%core.pe.is_closed nfa,
+         %core.bit2.and_ 0 (%core.pe.is_closed set, %core.pe.is_closed c)))
+    : %regex.nfa.StateSet ns =
+    let moved = %vec.fold.l step (%regex.nfa.empty_set (), nfa#(2:(Idx 3))) where
+        lam step (acc: %regex.nfa.StateSet ns, edge: %regex.nfa.Edge ns)
+            : %regex.nfa.StateSet ns =
+            %regex.nfa.move_step (set, c) (acc, edge);
+    end;
+    %regex.nfa.epsilon_closure (nfa, moved);
 
 /// ## Closed DFA Tables
 ///

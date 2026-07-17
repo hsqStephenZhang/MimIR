@@ -31,19 +31,25 @@ This is only a representation alias; it does not add an effect system or
 change memory threading. The explicit memory token remains part of the
 runtime contract and is carried through the residual matcher.
 
-There is now also an intermediate closed-DFA experiment. `%regex.DFA ns k`
-stores accepting flags, fallback states, and fixed-capacity range transitions.
-`%regex.specialize_dfa` decodes a closed table and preallocates one residual
-continuation per state before filling any body. This finite specialization
-cache handles DFA cycles and removes dynamic static-table extraction. It is
-the MimIR analogue of combining Truffle loop explosion with a
+There are now also two intermediate automaton experiments. `%regex.nfa.*`
+defines an object-language NFA representation with fixed-size bitset state
+sets, epsilon closure, and character move. For a closed NFA, these operations
+are ordinary MimIR computations and the current test shows them reducing to
+constants after partial evaluation. `%regex.DFA ns k` stores accepting flags,
+fallback states, and fixed-capacity range transitions. `%regex.specialize_dfa`
+still decodes a closed table in C++ and preallocates one residual continuation
+per state before filling any body. This finite specialization cache handles
+DFA cycles and removes dynamic static-table extraction. It is the MimIR
+analogue of combining Truffle loop explosion with a
 partial-evaluation-constant state node.
 
 The three paths should remain available while the design is evaluated. The
 Python/DFA path is the mature general-purpose implementation; the tagged-AST
-path demonstrates object-language pattern matching; and the closed-DFA path
-demonstrates cyclic control-flow specialization and LLVM/JIT. Building the
-NFA and DFA in the MimIR object language is still pending.
+path demonstrates object-language pattern matching; the object-language NFA
+path starts migrating automaton construction into MimIR; and the closed-DFA
+path demonstrates cyclic control-flow specialization and LLVM/JIT. The next
+missing piece is object-language subset construction from NFA state sets to a
+closed `%regex.DFA` table.
 
 Implementation details, matcher semantics, residual-IR expectations, and the
 test matrix are documented in [Closed DFA Specialization](regex_dfa_specialization.md).
