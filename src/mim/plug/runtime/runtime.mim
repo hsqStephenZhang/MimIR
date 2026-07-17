@@ -1,0 +1,34 @@
+/// # The runtime Plugin {#runtime}
+///
+/// Runtime checks whose success continuation protects computations that rely on
+/// the checked condition.
+///
+/// [TOC]
+///
+/// ## Dependencies
+///
+plugin core;
+///
+/// ## Assertions
+///
+/// Target-specific failure primitive. Host LLVM lowering prints the message with
+/// libc `puts`, calls `abort`, and terminates the block with `unreachable`.
+axm %runtime.fail: {T: *, n: Nat} → «n; I8» → T;
+
+/// Invokes `success` when `condition` holds. The continuation prevents strict
+/// evaluation from executing protected code before the check.
+lam %runtime.assert {T: *, n: Nat}
+                    (condition: Bool, message: «n; I8»)
+                    (success: [] → T)
+                  : T =
+    (%core.select (condition, success, failure)) () where
+        lam failure(): T = %runtime.fail @(T, n) message;
+    end;
+
+/// Library-level precondition combinator. This is deliberately a lambda rather
+/// than a new language construct.
+lam %runtime.require {T: *, n: Nat}
+                     (condition: Bool, message: «n; I8»)
+                     (body: [] → T)
+                   : T =
+    %runtime.assert @(T, n) (condition, message) body;

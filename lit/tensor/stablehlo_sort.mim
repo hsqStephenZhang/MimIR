@@ -13,6 +13,7 @@ let I32_SIGNED = (I32, %tensor.compare_type.signed_int, %core.icmp.sl @i32);
 // CHECK-DAG: fun sortAdjacent
 // CHECK-DAG: %core.icmp.xYgLe
 // CHECK-NOT: %tensor.stablehlo_sort
+// CHECK-NOT: %runtime.assert
 // CHECK-NOT: stablehlo_sort_impl_axm
 
 lam i32_less (lhs rhs: I32): Bool =

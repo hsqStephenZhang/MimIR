@@ -1,0 +1,19 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin runtime;
+
+// CHECK: lam extern static_success
+// CHECK-NOT: %runtime.assert
+// CHECK: 42
+lam extern static_success(): Nat =
+    %runtime.require (tt, "must hold") body where
+        lam body(): Nat = 42;
+    end;
+
+// CHECK: lam extern dynamic_check
+// CHECK: %runtime.fail
+lam extern dynamic_check(condition: Bool): Nat =
+    %runtime.require (condition, "dynamic precondition") body where
+        lam body(): Nat = 7;
+    end;

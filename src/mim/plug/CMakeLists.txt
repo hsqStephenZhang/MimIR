@@ -17,6 +17,7 @@ set(MIM_PLUGINS
     ord
     refly
     regex
+    runtime
     tensor
     xform
     tuple

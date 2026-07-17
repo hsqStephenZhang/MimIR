@@ -13,6 +13,7 @@ plugin compile;
 // CHECK-DAG: %core.wrap.add
 // CHECK-NOT: %tensor.torch_triu
 // CHECK-NOT: %tensor.torch_tril
+// CHECK-NOT: %runtime.assert
 // CHECK-NOT: %tensor.pointwise_loop
 fun extern triu_diag1 (input: «2, 3, 5; I32»): «2, 3, 5; I32» =
     return (%tensor.torch_triu (0I32, 1I64) @(3, (2, 3, 5)) input);

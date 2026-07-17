@@ -13,6 +13,7 @@ plugin cps;
 plugin affine;
 plugin buffer;
 plugin matrix;
+plugin runtime;
 ///
 /// A tensor plugin
 ///
@@ -145,16 +146,22 @@ lam %tensor.torch_triu_impl {T: *}
                             {r: Nat, s: «r; Nat»}
                             (input: «s; T»)
                           : «s; T» =
-    let body = %tensor.triangular_pointwise_elem_impl @(T, r) s (tt, zero, diagonal);
-    %tensor.pointwise_loop @(«s; T», T, r) s body input;
+    %runtime.require (%core.ncmp.ge (r, 2), "triu requires rank >= 2") checked where
+        lam checked(): «s; T» =
+            let body = %tensor.triangular_pointwise_elem_impl @(T, r) s (tt, zero, diagonal);
+            %tensor.pointwise_loop @(«s; T», T, r) s body input;
+    end;
 
 lam %tensor.torch_tril_impl {T: *}
                             (zero: T, diagonal: I64)
                             {r: Nat, s: «r; Nat»}
                             (input: «s; T»)
                           : «s; T» =
-    let body = %tensor.triangular_pointwise_elem_impl @(T, r) s (ff, zero, diagonal);
-    %tensor.pointwise_loop @(«s; T», T, r) s body input;
+    %runtime.require (%core.ncmp.ge (r, 2), "tril requires rank >= 2") checked where
+        lam checked(): «s; T» =
+            let body = %tensor.triangular_pointwise_elem_impl @(T, r) s (ff, zero, diagonal);
+            %tensor.pointwise_loop @(«s; T», T, r) s body input;
+    end;
 
 /// StableHLO-compatible variadic sort. `dimension` is the already-adjusted non-negative
 /// StableHLO dimension; using `Idx r` makes the dimension range constraint intrinsic.
@@ -196,7 +203,10 @@ lam %tensor.stablehlo_sort_impl {n r: Nat, Ts: «n; *»}
                                       Ts#(%core.idx n 0 (%core.nat.div (%core.bitcast Nat k, 2)))»] → Bool)
                                 (inputs: «i: n; «s; Ts#i»»)
                               : «i: n; «s; Ts#i»» =
-    %tensor.stablehlo_sort_impl_axm @(n, r, Ts) s (dimension, is_stable) comparator inputs;
+    %runtime.require (%core.ncmp.ge (n, 1), "stablehlo.sort requires at least one input") checked where
+        lam checked(): «i: n; «s; Ts#i»» =
+            %tensor.stablehlo_sort_impl_axm @(n, r, Ts) s (dimension, is_stable) comparator inputs;
+    end;
 
 lam %tensor.stablehlo_sort_swap_impl {n r: Nat, Ts: «n; *»}
                                      (s: «r; Nat»)
