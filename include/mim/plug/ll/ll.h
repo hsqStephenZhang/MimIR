@@ -13,7 +13,9 @@
 #include <mim/plug/clos/clos.h>
 #include <mim/plug/math/math.h>
 #include <mim/plug/mem/mem.h>
+#include <mim/plug/runtime/runtime.h>
 #include <mim/plug/vec/vec.h>
+#include <mim/tuple.h>
 
 #include "mim/be/emitter.h"
 
@@ -41,6 +43,7 @@ namespace clos = mim::plug::clos;
 namespace core = mim::plug::core;
 namespace math = mim::plug::math;
 namespace mem  = mim::plug::mem;
+namespace runtime = mim::plug::runtime;
 namespace vec  = mim::plug::vec;
 
 namespace {
@@ -118,6 +121,9 @@ public:
     void start() override;
     void emit_imported(Lam*);
     virtual void emit_epilogue(Lam*);
+    /// Emits the target-specific realization of the backend-neutral runtime.fail.
+    /// Host LLVM uses libc diagnostics; GPU emitters can override this with a trap.
+    virtual void emit_runtime_fail(BB&, const Def*);
     std::string emit_bb(BB&, const Def*);
     virtual std::string prepare();
     void finalize();
@@ -148,6 +154,32 @@ private:
     std::ostringstream func_impls_;
     LamMap<const Def*> simd_phi_;
 };
+
+inline void Emitter::emit_runtime_fail(BB& bb, const Def* def) {
+    auto fail    = Axm::as<runtime::fail>(def);
+    auto message = tuple2str(fail->arg());
+    auto global  = ".mimir_assert_" + std::to_string(fail->gid());
+    std::ostringstream escaped;
+    for (unsigned char c : message) {
+        if (c == '\\' || c == '"')
+            escaped << '\\' << std::hex << std::uppercase << static_cast<unsigned>(c) << std::dec;
+        else if (c < 0x20 || c >= 0x7f)
+            escaped << '\\' << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
+                    << static_cast<unsigned>(c) << std::dec << std::setfill(' ');
+        else
+            escaped << static_cast<char>(c);
+    }
+    escaped << "\\00";
+    auto size = message.size() + 1;
+    std::print(vars_decls_, "@{} = private unnamed_addr constant [{} x i8] c\"{}\"\n", global, size,
+               escaped.str());
+    declare("i32 @puts(i8*)");
+    declare("void @abort() noreturn");
+    bb.tail("call i32 @puts(i8* getelementptr inbounds ([{} x i8], [{} x i8]* @{}, i64 0, i64 0))", size, size,
+            global);
+    bb.tail("call void @abort()");
+    bb.tail("unreachable");
+}
 
 /*
  * convert
@@ -619,7 +651,10 @@ inline std::string Emitter::emit_bb(BB& bb, const Def* def) {
         return std::pair(v_i, t_i);
     };
 
-    if (auto lit = def->isa<Lit>()) {
+    if (auto fail = Axm::isa<runtime::fail>(def)) {
+        emit_runtime_fail(bb, fail);
+        return {};
+    } else if (auto lit = def->isa<Lit>()) {
         if (lit->type()->isa<Nat>() || Idx::isa(lit->type())) {
             return std::to_string(lit->get());
         } else if (auto w = math::isa_f(lit->type())) {

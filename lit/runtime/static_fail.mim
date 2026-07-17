@@ -1,0 +1,11 @@
+// RUN: (! %mim %s -o - 2>&1) | %FileCheck %s
+
+plugin core;
+plugin runtime;
+
+lam extern statically_invalid(): Nat =
+    %runtime.require (ff, "static failure") body where
+        lam body(): Nat = 99;
+    end;
+
+// CHECK: error: static runtime assertion failed: static failure

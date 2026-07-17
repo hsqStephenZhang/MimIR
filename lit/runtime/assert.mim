@@ -3,6 +3,9 @@
 plugin core;
 plugin runtime;
 
+fun extern effectful_assert(mem: %mem.M 0, condition: Bool): %mem.M 0 =
+    return (%runtime.assert (mem, condition, "effectful assertion"));
+
 // CHECK: lam extern static_success
 // CHECK-NOT: %runtime.assert
 // CHECK: 42
@@ -11,9 +14,19 @@ lam extern static_success(): Nat =
         lam body(): Nat = 42;
     end;
 
-// CHECK: lam extern dynamic_check
-// CHECK: %runtime.fail
-lam extern dynamic_check(condition: Bool): Nat =
+// The dynamic-success and dynamic-failure cases share the same runtime branch;
+// the caller supplies true or false at execution time. Both the branch and its
+// failure continuation must remain in the normalized IR.
+// CHECK: lam extern dynamic_success
+// CHECK: (failure{{.*}}body{{.*}})#cond
+lam extern dynamic_success(condition: Bool): Nat =
     %runtime.require (condition, "dynamic precondition") body where
         lam body(): Nat = 7;
+    end;
+
+// CHECK: lam extern dynamic_failure
+// CHECK: (failure{{.*}}body{{.*}})#cond
+lam extern dynamic_failure(condition: Bool): Nat =
+    %runtime.require (condition, "dynamic precondition") body where
+        lam body(): Nat = 8;
     end;

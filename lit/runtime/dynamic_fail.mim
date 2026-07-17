@@ -1,0 +1,15 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin runtime;
+
+fun extern main(argc: I32, argv: %mem.Ptr0 (%mem.Ptr0 I8)): I32 =
+    let condition = %core.icmp.ug (argc, 1I32);
+    let result = %runtime.require (condition, "dynamic panic message") body where
+        lam body(): I32 = 0I32;
+    end;
+    return result;
+
+// CHECK: %runtime.static_check
+// CHECK: %runtime.fail
+// CHECK: 100I8

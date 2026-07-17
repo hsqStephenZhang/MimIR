@@ -8,6 +8,7 @@
 /// ## Dependencies
 ///
 plugin core;
+plugin mem;
 ///
 /// ## Assertions
 ///
@@ -15,20 +16,21 @@ plugin core;
 /// libc `puts`, calls `abort`, and terminates the block with `unreachable`.
 axm %runtime.fail: {T: *, n: Nat} → «n; I8» → T;
 
-/// Invokes `success` when `condition` holds. The continuation prevents strict
-/// evaluation from executing protected code before the check.
-lam %runtime.assert {T: *, n: Nat}
-                    (condition: Bool, message: «n; I8»)
-                    (success: [] → T)
-                  : T =
-    (%core.select (condition, success, failure)) () where
-        lam failure(): T = %runtime.fail @(T, n) message;
-    end;
+// Checks only the statically decidable case. Dynamic conditions are preserved.
+axm %runtime.static_check: {n: Nat} → [Bool, «n; I8»] → Bool, normalize_static_check;
 
-/// Library-level precondition combinator. This is deliberately a lambda rather
-/// than a new language construct.
+/// Effectful statement-style assertion. The memory token sequences the check
+/// with subsequent effects; it is not a memory mutation by itself.
+axm %runtime.assert: {a n: Nat}
+                     → [%mem.M a, Bool, «n; I8»]
+                     → %mem.M a;
+
+/// Pure expression-style precondition. The continuation prevents strict
+/// evaluation from executing protected code before the check.
 lam %runtime.require {T: *, n: Nat}
                      (condition: Bool, message: «n; I8»)
-                     (body: [] → T)
+                     (success: [] → T)
                    : T =
-    %runtime.assert @(T, n) (condition, message) body;
+    (%core.select (%runtime.static_check (condition, message), success, failure)) () where
+        lam failure(): T = %runtime.fail @(T, n) message;
+    end;
