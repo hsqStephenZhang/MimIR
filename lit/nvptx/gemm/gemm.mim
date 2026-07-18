@@ -1015,6 +1015,769 @@ con tvm_style_gemm_scalar (m1: %gpu.GlobalM, m3: %gpu.SharedM, m4: %gpu.ConstM, 
     end;
 
 
+// Pipelined TVM-style GEMM: identical 64-register accumulator compute shape,
+// with two 512-float shared stages filled by cp.async.
+con tvm_style_gemm_pipelined (m1: %gpu.GlobalM, m3: %gpu.SharedM, m4: %gpu.ConstM, m5: %gpu.LocalM,
+                           block_x: Idx TVM_GRID_X, block_y: Idx 1, block_z: Idx 1,
+                           thread_x: Idx TVM_BLOCK_X, thread_y: Idx 1, thread_z: Idx 1,
+                           (),
+                           (A: %gpu.GlobalPtr «MK; %math.F32»,
+                            B: %gpu.GlobalPtr «KN; %math.F32»,
+                            C: %gpu.GlobalPtr «MN; %math.F32»),
+                           return: Cn [%gpu.GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM]) =
+    let (m3, A_shared) = %mem.slot («1024; %math.F32», 3) (m3, 0);
+    let (m3, B_shared) = %mem.slot («1024; %math.F32», 3) (m3, 1);
+
+    let bx = %core.bitcast I32 block_x;
+    let tid = %core.bitcast I32 thread_x;
+    let block_tile_row = %core.shr.l (bx, 4I32);
+    let block_tile_col = %core.bit2.and_ 0 (bx, 15I32);
+    let block_row = %core.wrap.mul 0 (block_tile_row, 64I32);
+    let block_col = %core.wrap.mul 0 (block_tile_col, 64I32);
+    let thread_group = %core.shr.l (tid, 4I32);
+    let thread_lane = %core.bit2.and_ 0 (tid, 15I32);
+    let thread_row_base = %core.wrap.mul 0 (thread_group, 4I32);
+    let thread_col_base = %core.wrap.mul 0 (thread_lane, 4I32);
+
+    fun load_tvm_tile_vectorized (ktile: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM): [%gpu.GlobalM, %gpu.SharedM] =
+        let a_row0 = %core.wrap.add 0 (block_row, %core.shr.l (tid, 1I32));
+        let a_k0 = %core.wrap.add 0 (%core.wrap.mul 0 (ktile, 8I32), %core.wrap.mul 0 (%core.bit2.and_ 0 (tid, 1I32), 4I32));
+        let a_src0_i32 = %core.wrap.add 0 (%core.wrap.mul 0 (a_row0, %core.bitcast I32 K), a_k0);
+        let a_src1_i32 = %core.wrap.add 0 (a_src0_i32, %core.wrap.mul 0 (32I32, %core.bitcast I32 K));
+        let a_dst0_i32 = %core.wrap.mul 0 (tid, 4I32);
+        let a_dst1_i32 = %core.wrap.add 0 (a_dst0_i32, 256I32);
+
+        let a_src0 = %core.bitcast (%gpu.GlobalPtr «4; %math.F32») (%mem.lea (A, %core.conv.u MK a_src0_i32));
+        let a_src1 = %core.bitcast (%gpu.GlobalPtr «4; %math.F32») (%mem.lea (A, %core.conv.u MK a_src1_i32));
+        let a_dst0 = %core.bitcast (%gpu.SharedPtr «4; %math.F32») (%mem.lea (A_shared, %core.conv.u 1024 a_dst0_i32));
+        let a_dst1 = %core.bitcast (%gpu.SharedPtr «4; %math.F32») (%mem.lea (A_shared, %core.conv.u 1024 a_dst1_i32));
+        let (m1, a_vec0) = %mem.load (m1, a_src0);
+        let (m1, a_vec1) = %mem.load (m1, a_src1);
+        let m3 = %mem.store (m3, a_dst0, a_vec0);
+        let m3 = %mem.store (m3, a_dst1, a_vec1);
+
+        let b_k0 = %core.wrap.add 0 (%core.wrap.mul 0 (ktile, 8I32), %core.shr.l (tid, 5I32));
+        let b_col0 = %core.wrap.add 0 (block_col, %core.wrap.mul 0 (%core.bit2.and_ 0 (tid, 31I32), 2I32));
+        let b_src0_i32 = %core.wrap.add 0 (%core.wrap.mul 0 (b_k0, %core.bitcast I32 N), b_col0);
+        let b_src1_i32 = %core.wrap.add 0 (b_src0_i32, %core.wrap.mul 0 (2I32, %core.bitcast I32 N));
+        let b_src2_i32 = %core.wrap.add 0 (b_src0_i32, %core.wrap.mul 0 (4I32, %core.bitcast I32 N));
+        let b_src3_i32 = %core.wrap.add 0 (b_src0_i32, %core.wrap.mul 0 (6I32, %core.bitcast I32 N));
+        let b_dst0_i32 = %core.wrap.mul 0 (tid, 2I32);
+        let b_dst1_i32 = %core.wrap.add 0 (b_dst0_i32, 128I32);
+        let b_dst2_i32 = %core.wrap.add 0 (b_dst0_i32, 256I32);
+        let b_dst3_i32 = %core.wrap.add 0 (b_dst0_i32, 384I32);
+
+        let b_src0 = %core.bitcast (%gpu.GlobalPtr «2; %math.F32») (%mem.lea (B, %core.conv.u KN b_src0_i32));
+        let b_src1 = %core.bitcast (%gpu.GlobalPtr «2; %math.F32») (%mem.lea (B, %core.conv.u KN b_src1_i32));
+        let b_src2 = %core.bitcast (%gpu.GlobalPtr «2; %math.F32») (%mem.lea (B, %core.conv.u KN b_src2_i32));
+        let b_src3 = %core.bitcast (%gpu.GlobalPtr «2; %math.F32») (%mem.lea (B, %core.conv.u KN b_src3_i32));
+        let b_dst0 = %core.bitcast (%gpu.SharedPtr «2; %math.F32») (%mem.lea (B_shared, %core.conv.u 1024 b_dst0_i32));
+        let b_dst1 = %core.bitcast (%gpu.SharedPtr «2; %math.F32») (%mem.lea (B_shared, %core.conv.u 1024 b_dst1_i32));
+        let b_dst2 = %core.bitcast (%gpu.SharedPtr «2; %math.F32») (%mem.lea (B_shared, %core.conv.u 1024 b_dst2_i32));
+        let b_dst3 = %core.bitcast (%gpu.SharedPtr «2; %math.F32») (%mem.lea (B_shared, %core.conv.u 1024 b_dst3_i32));
+        let (m1, b_vec0) = %mem.load (m1, b_src0);
+        let (m1, b_vec1) = %mem.load (m1, b_src1);
+        let (m1, b_vec2) = %mem.load (m1, b_src2);
+        let (m1, b_vec3) = %mem.load (m1, b_src3);
+        let m3 = %mem.store (m3, b_dst0, b_vec0);
+        let m3 = %mem.store (m3, b_dst1, b_vec1);
+        let m3 = %mem.store (m3, b_dst2, b_vec2);
+        let m3 = %mem.store (m3, b_dst3, b_vec3);
+        return (m1, m3);
+
+    fun load_tvm_tile_async (ktile: I32, stage: Idx 2, m1: %gpu.GlobalM, m3: %gpu.SharedM): [%gpu.GlobalM, %gpu.SharedM] =
+        let stage_base = %core.wrap.mul 0 (%core.bitcast I32 stage, 512I32);
+        let a_row0 = %core.wrap.add 0 (block_row, %core.shr.l (tid, 1I32));
+        let a_k0 = %core.wrap.add 0 (%core.wrap.mul 0 (ktile, 8I32), %core.wrap.mul 0 (%core.bit2.and_ 0 (tid, 1I32), 4I32));
+        let a_src0_i32 = %core.wrap.add 0 (%core.wrap.mul 0 (a_row0, %core.bitcast I32 K), a_k0);
+        let a_src1_i32 = %core.wrap.add 0 (a_src0_i32, %core.wrap.mul 0 (32I32, %core.bitcast I32 K));
+        let a_dst0_i32 = %core.wrap.add 0 (stage_base, %core.wrap.mul 0 (tid, 4I32));
+        let a_dst1_i32 = %core.wrap.add 0 (a_dst0_i32, 256I32);
+        let a_src0 = %core.bitcast (%gpu.GlobalPtr «4; %math.F32») (%mem.lea (A, %core.conv.u MK a_src0_i32));
+        let a_src1 = %core.bitcast (%gpu.GlobalPtr «4; %math.F32») (%mem.lea (A, %core.conv.u MK a_src1_i32));
+        let a_dst0 = %core.bitcast (%gpu.SharedPtr «4; %math.F32») (%mem.lea (A_shared, %core.conv.u 1024 a_dst0_i32));
+        let a_dst1 = %core.bitcast (%gpu.SharedPtr «4; %math.F32») (%mem.lea (A_shared, %core.conv.u 1024 a_dst1_i32));
+        let (m1, m3) = %gpu.cp_async (m1, m3, a_dst0, a_src0);
+        let (m1, m3) = %gpu.cp_async (m1, m3, a_dst1, a_src1);
+        let b_k0 = %core.wrap.add 0 (%core.wrap.mul 0 (ktile, 8I32), %core.shr.l (tid, 5I32));
+        let b_col0 = %core.wrap.add 0 (block_col, %core.wrap.mul 0 (%core.bit2.and_ 0 (tid, 31I32), 2I32));
+        let b_src0_i32 = %core.wrap.add 0 (%core.wrap.mul 0 (b_k0, %core.bitcast I32 N), b_col0);
+        let b_src1_i32 = %core.wrap.add 0 (b_src0_i32, %core.wrap.mul 0 (2I32, %core.bitcast I32 N));
+        let b_src2_i32 = %core.wrap.add 0 (b_src0_i32, %core.wrap.mul 0 (4I32, %core.bitcast I32 N));
+        let b_src3_i32 = %core.wrap.add 0 (b_src0_i32, %core.wrap.mul 0 (6I32, %core.bitcast I32 N));
+        let b_dst0_i32 = %core.wrap.add 0 (stage_base, %core.wrap.mul 0 (tid, 2I32));
+        let b_dst1_i32 = %core.wrap.add 0 (b_dst0_i32, 128I32);
+        let b_dst2_i32 = %core.wrap.add 0 (b_dst0_i32, 256I32);
+        let b_dst3_i32 = %core.wrap.add 0 (b_dst0_i32, 384I32);
+        let b_src0 = %core.bitcast (%gpu.GlobalPtr «2; %math.F32») (%mem.lea (B, %core.conv.u KN b_src0_i32));
+        let b_src1 = %core.bitcast (%gpu.GlobalPtr «2; %math.F32») (%mem.lea (B, %core.conv.u KN b_src1_i32));
+        let b_src2 = %core.bitcast (%gpu.GlobalPtr «2; %math.F32») (%mem.lea (B, %core.conv.u KN b_src2_i32));
+        let b_src3 = %core.bitcast (%gpu.GlobalPtr «2; %math.F32») (%mem.lea (B, %core.conv.u KN b_src3_i32));
+        let b_dst0 = %core.bitcast (%gpu.SharedPtr «2; %math.F32») (%mem.lea (B_shared, %core.conv.u 1024 b_dst0_i32));
+        let b_dst1 = %core.bitcast (%gpu.SharedPtr «2; %math.F32») (%mem.lea (B_shared, %core.conv.u 1024 b_dst1_i32));
+        let b_dst2 = %core.bitcast (%gpu.SharedPtr «2; %math.F32») (%mem.lea (B_shared, %core.conv.u 1024 b_dst2_i32));
+        let b_dst3 = %core.bitcast (%gpu.SharedPtr «2; %math.F32») (%mem.lea (B_shared, %core.conv.u 1024 b_dst3_i32));
+        let (m1, m3) = %gpu.cp_async (m1, m3, b_dst0, b_src0);
+        let (m1, m3) = %gpu.cp_async (m1, m3, b_dst1, b_src1);
+        let (m1, m3) = %gpu.cp_async (m1, m3, b_dst2, b_src2);
+        let (m1, m3) = %gpu.cp_async (m1, m3, b_dst3, b_src3);
+        return (m1, m3);
+
+    fun load_tvm_tile_scalar (ktile: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM): [%gpu.GlobalM, %gpu.SharedM] =
+        %affine.For load_body load_exit (0I32, 8I32, 1I32, (m1, m3))
+        where
+            con load_body [load: I32, [m1: %gpu.GlobalM, m3: %gpu.SharedM],
+                           load_continue: Cn [[%gpu.GlobalM, %gpu.SharedM]]] =
+                let shared_i32 = %core.wrap.add 0 (%core.wrap.mul 0 (tid, 8I32), load);
+                let shared_idx = %core.conv.u 1024 shared_i32;
+
+                let a_row = %core.wrap.add 0 (block_row, %core.shr.l (shared_i32, 3I32));
+                let a_k = %core.wrap.add 0 (%core.wrap.mul 0 (ktile, 8I32), %core.bit2.and_ 0 (shared_i32, 7I32));
+                let a_i32 = %core.wrap.add 0 (%core.wrap.mul 0 (a_row, %core.bitcast I32 K), a_k);
+                let (m1, a_val) = %mem.load (m1, %mem.lea (A, %core.conv.u MK a_i32));
+                let m3 = %mem.store (m3, %mem.lea (A_shared, shared_idx), a_val);
+
+                let b_k = %core.wrap.add 0 (%core.wrap.mul 0 (ktile, 8I32), %core.shr.l (shared_i32, 6I32));
+                let b_col = %core.wrap.add 0 (block_col, %core.bit2.and_ 0 (shared_i32, 63I32));
+                let b_i32 = %core.wrap.add 0 (%core.wrap.mul 0 (b_k, %core.bitcast I32 N), b_col);
+                let (m1, b_val) = %mem.load (m1, %mem.lea (B, %core.conv.u KN b_i32));
+                let m3 = %mem.store (m3, %mem.lea (B_shared, shared_idx), b_val);
+                load_continue (m1, m3);
+
+            con load_exit [[m1: %gpu.GlobalM, m3: %gpu.SharedM]] =
+                return (m1, m3);
+        end;
+
+    fun update_acc_scalar (stage_base: I32, group: I32, row_inner: I32, col_inner: I32,
+                           m3: %gpu.SharedM, acc0: %math.F32): [%gpu.SharedM, %math.F32] =
+        %affine.For rv_body rv_exit (0I32, 2I32, 1I32, (m3, acc0))
+        where
+            con rv_body [rv_1: I32, [m3: %gpu.SharedM, acc0: %math.F32],
+                         rv_continue: Cn [[%gpu.SharedM, %math.F32]]] =
+                let a_base = %core.wrap.add 0 (
+                    %core.wrap.mul 0 (
+                        %core.wrap.add 0 (%core.wrap.mul 0 (group, 16I32), thread_row_base),
+                        8I32),
+                    %core.wrap.mul 0 (rv_1, 4I32));
+                let b_base = %core.wrap.add 0 (%core.wrap.mul 0 (%core.wrap.mul 0 (rv_1, 4I32), 64I32), thread_col_base);
+
+                %affine.For kk_body kk_exit (0I32, 4I32, 1I32, (m3, acc0))
+                where
+                    con kk_body [kk: I32, [m3: %gpu.SharedM, acc: %math.F32],
+                                 kk_continue: Cn [[%gpu.SharedM, %math.F32]]] =
+                        let a_shared_i32 = %core.wrap.add 0 (stage_base, %core.wrap.add 0 (a_base, %core.wrap.add 0 (%core.wrap.mul 0 (row_inner, 8I32), kk)));
+                        let b_shared_i32 = %core.wrap.add 0 (stage_base, %core.wrap.add 0 (b_base, %core.wrap.add 0 (%core.wrap.mul 0 (kk, 64I32), col_inner)));
+                        let (m3, a_val) = %mem.load (m3, %mem.lea (A_shared, %core.conv.u 1024 a_shared_i32));
+                        let (m3, b_val) = %mem.load (m3, %mem.lea (B_shared, %core.conv.u 1024 b_shared_i32));
+                        let acc = %math.arith.add FP_CONTRACT (acc, %math.arith.mul FP_CONTRACT (a_val, b_val));
+                        kk_continue (m3, acc);
+
+                    con kk_exit [[m3: %gpu.SharedM, acc: %math.F32]] =
+                        rv_continue (m3, acc);
+                end;
+
+            con rv_exit [[m3: %gpu.SharedM, acc: %math.F32]] =
+                return (m3, acc);
+        end;
+
+    fun compute_tvm_row (stage_base: I32, group: I32, row_inner: I32, m3: %gpu.SharedM,
+                         c0: %math.F32, c1: %math.F32, c2: %math.F32, c3: %math.F32)
+                      : [%gpu.SharedM, %math.F32, %math.F32, %math.F32, %math.F32] =
+        %affine.unroll col_body col_exit (0I32, 4I32, 1I32, (m3, (c0, c1, c2, c3)))
+        where
+            con col_body [col_inner: I32, [m3: %gpu.SharedM, cs: [%math.F32, %math.F32, %math.F32, %math.F32]],
+                          col_continue: Cn [[%gpu.SharedM, [%math.F32, %math.F32, %math.F32, %math.F32]]]] =
+                let col_idx = %core.bitcast (Idx 4) col_inner;
+                let acc0 = cs#col_idx;
+                ret (m3, acc) = update_acc_scalar $ (stage_base, group, row_inner, col_inner, m3, acc0);
+                let cs = ins(cs, col_idx, acc);
+                col_continue (m3, cs);
+
+            con col_exit [[m3: %gpu.SharedM, cs: [%math.F32, %math.F32, %math.F32, %math.F32]]] =
+                return (m3, cs#(0_4), cs#(1_4), cs#(2_4), cs#(3_4));
+        end;
+
+    fun compute_tvm_group (stage_base: I32, group: I32, m3: %gpu.SharedM,
+                           c00: %math.F32, c01: %math.F32, c02: %math.F32, c03: %math.F32,
+                           c10: %math.F32, c11: %math.F32, c12: %math.F32, c13: %math.F32,
+                           c20: %math.F32, c21: %math.F32, c22: %math.F32, c23: %math.F32,
+                           c30: %math.F32, c31: %math.F32, c32: %math.F32, c33: %math.F32)
+                        : [%gpu.SharedM, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32] =
+        %affine.unroll row_body row_exit (0I32, 4I32, 1I32,
+            (m3, (c00, c01, c02, c03, c10, c11, c12, c13,
+                  c20, c21, c22, c23, c30, c31, c32, c33)))
+        where
+            con row_body [row_inner: I32,
+                          [m3: %gpu.SharedM,
+                           cs: [%math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32]],
+                          row_continue: Cn [[%gpu.SharedM,
+                                             [%math.F32, %math.F32, %math.F32, %math.F32,
+                                              %math.F32, %math.F32, %math.F32, %math.F32,
+                                              %math.F32, %math.F32, %math.F32, %math.F32,
+                                              %math.F32, %math.F32, %math.F32, %math.F32]]]] =
+                let base_i32 = %core.wrap.mul 0 (row_inner, 4I32);
+                let idx0 = %core.bitcast (Idx 16) base_i32;
+                let idx1 = %core.bitcast (Idx 16) (%core.wrap.add 0 (base_i32, 1I32));
+                let idx2 = %core.bitcast (Idx 16) (%core.wrap.add 0 (base_i32, 2I32));
+                let idx3 = %core.bitcast (Idx 16) (%core.wrap.add 0 (base_i32, 3I32));
+                ret (m3, c0, c1, c2, c3) = compute_tvm_row $ (stage_base, group, row_inner, m3, cs#idx0, cs#idx1, cs#idx2, cs#idx3);
+                let cs = ins(cs, idx0, c0);
+                let cs = ins(cs, idx1, c1);
+                let cs = ins(cs, idx2, c2);
+                let cs = ins(cs, idx3, c3);
+                row_continue (m3, cs);
+
+            con row_exit [[m3: %gpu.SharedM,
+                           cs: [%math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32,
+                                %math.F32, %math.F32, %math.F32, %math.F32]]] =
+                return (m3, cs#(0_16), cs#(1_16), cs#(2_16), cs#(3_16),
+                        cs#(4_16), cs#(5_16), cs#(6_16), cs#(7_16),
+                        cs#(8_16), cs#(9_16), cs#(10_16), cs#(11_16),
+                        cs#(12_16), cs#(13_16), cs#(14_16), cs#(15_16));
+        end;
+
+    fun compute_tvm_tile (stage_base: I32, m3: %gpu.SharedM,
+                          c0: %math.F32, c1: %math.F32, c2: %math.F32, c3: %math.F32,
+                          c4: %math.F32, c5: %math.F32, c6: %math.F32, c7: %math.F32,
+                          c8: %math.F32, c9: %math.F32, c10: %math.F32, c11: %math.F32,
+                          c12: %math.F32, c13: %math.F32, c14: %math.F32, c15: %math.F32,
+                          c16: %math.F32, c17: %math.F32, c18: %math.F32, c19: %math.F32,
+                          c20: %math.F32, c21: %math.F32, c22: %math.F32, c23: %math.F32,
+                          c24: %math.F32, c25: %math.F32, c26: %math.F32, c27: %math.F32,
+                          c28: %math.F32, c29: %math.F32, c30: %math.F32, c31: %math.F32,
+                          c32: %math.F32, c33: %math.F32, c34: %math.F32, c35: %math.F32,
+                          c36: %math.F32, c37: %math.F32, c38: %math.F32, c39: %math.F32,
+                          c40: %math.F32, c41: %math.F32, c42: %math.F32, c43: %math.F32,
+                          c44: %math.F32, c45: %math.F32, c46: %math.F32, c47: %math.F32,
+                          c48: %math.F32, c49: %math.F32, c50: %math.F32, c51: %math.F32,
+                          c52: %math.F32, c53: %math.F32, c54: %math.F32, c55: %math.F32,
+                          c56: %math.F32, c57: %math.F32, c58: %math.F32, c59: %math.F32,
+                          c60: %math.F32, c61: %math.F32, c62: %math.F32, c63: %math.F32)
+                       : [%gpu.SharedM,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                         %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32] =
+        ret (m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15) =
+            compute_tvm_group $ (stage_base, 0I32, m3, c0, c1, c2, c3, c4, c5, c6, c7,
+                                 c8, c9, c10, c11, c12, c13, c14, c15);
+        ret (m3, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31) =
+            compute_tvm_group $ (stage_base, 1I32, m3, c16, c17, c18, c19, c20, c21, c22, c23,
+                                 c24, c25, c26, c27, c28, c29, c30, c31);
+        ret (m3, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47) =
+            compute_tvm_group $ (stage_base, 2I32, m3, c32, c33, c34, c35, c36, c37, c38, c39,
+                                 c40, c41, c42, c43, c44, c45, c46, c47);
+        ret (m3, c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63) =
+            compute_tvm_group $ (stage_base, 3I32, m3, c48, c49, c50, c51, c52, c53, c54, c55,
+                                 c56, c57, c58, c59, c60, c61, c62, c63);
+        return (m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63);
+
+    let ComputeTileFn =
+        Fn [I32, %gpu.SharedM,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32]
+          → [%gpu.SharedM,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+            %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32];
+
+    fun tvm_tile_step (ktile: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM,
+                       load_tile: Fn [I32, %gpu.GlobalM, %gpu.SharedM] → [%gpu.GlobalM, %gpu.SharedM],
+                       compute_tile: ComputeTileFn,
+                           c0: %math.F32, c1: %math.F32, c2: %math.F32, c3: %math.F32,
+                           c4: %math.F32, c5: %math.F32, c6: %math.F32, c7: %math.F32,
+                           c8: %math.F32, c9: %math.F32, c10: %math.F32, c11: %math.F32,
+                           c12: %math.F32, c13: %math.F32, c14: %math.F32, c15: %math.F32,
+                           c16: %math.F32, c17: %math.F32, c18: %math.F32, c19: %math.F32,
+                           c20: %math.F32, c21: %math.F32, c22: %math.F32, c23: %math.F32,
+                           c24: %math.F32, c25: %math.F32, c26: %math.F32, c27: %math.F32,
+                           c28: %math.F32, c29: %math.F32, c30: %math.F32, c31: %math.F32,
+                           c32: %math.F32, c33: %math.F32, c34: %math.F32, c35: %math.F32,
+                           c36: %math.F32, c37: %math.F32, c38: %math.F32, c39: %math.F32,
+                           c40: %math.F32, c41: %math.F32, c42: %math.F32, c43: %math.F32,
+                           c44: %math.F32, c45: %math.F32, c46: %math.F32, c47: %math.F32,
+                           c48: %math.F32, c49: %math.F32, c50: %math.F32, c51: %math.F32,
+                           c52: %math.F32, c53: %math.F32, c54: %math.F32, c55: %math.F32,
+                           c56: %math.F32, c57: %math.F32, c58: %math.F32, c59: %math.F32,
+                           c60: %math.F32, c61: %math.F32, c62: %math.F32, c63: %math.F32)
+                        : [%gpu.GlobalM, %gpu.SharedM,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                          %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32] =
+        let (m1, m3) = %gpu.sync_work_items (m1, m3);
+        ret (m1, m3) = load_tile $ (ktile, m1, m3);
+        let (m1, m3) = %gpu.sync_work_items (m1, m3);
+        ret (m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                 c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                 c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                 c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63) =
+            compute_tile $ (0I32, m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                            c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                            c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                            c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63);
+        return (m1, m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63);
+
+    let AccState = [
+        %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+        %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+        %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+        %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+        %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+        %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+        %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+        %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32
+    ];
+
+    fun pipeline_load (iter: I32, stage: Idx 2, m1: %gpu.GlobalM, m3: %gpu.SharedM): [%gpu.GlobalM, %gpu.SharedM] =
+        ret (m1, m3) = load_tvm_tile_async $ (iter, stage, m1, m3);
+        return (m1, m3);
+
+    fun pipeline_compute (iter: I32, stage: Idx 2, m1: %gpu.GlobalM, m3: %gpu.SharedM, state: AccState)
+                       : [%gpu.GlobalM, %gpu.SharedM, AccState] =
+        let stage_base = %core.wrap.mul 0 (%core.bitcast I32 stage, 512I32);
+        ret (m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63) = compute_tvm_tile $ (stage_base, m3,
+            state#(0_64), state#(1_64), state#(2_64), state#(3_64), state#(4_64), state#(5_64), state#(6_64), state#(7_64),
+            state#(8_64), state#(9_64), state#(10_64), state#(11_64), state#(12_64), state#(13_64), state#(14_64), state#(15_64),
+            state#(16_64), state#(17_64), state#(18_64), state#(19_64), state#(20_64), state#(21_64), state#(22_64), state#(23_64),
+            state#(24_64), state#(25_64), state#(26_64), state#(27_64), state#(28_64), state#(29_64), state#(30_64), state#(31_64),
+            state#(32_64), state#(33_64), state#(34_64), state#(35_64), state#(36_64), state#(37_64), state#(38_64), state#(39_64),
+            state#(40_64), state#(41_64), state#(42_64), state#(43_64), state#(44_64), state#(45_64), state#(46_64), state#(47_64),
+            state#(48_64), state#(49_64), state#(50_64), state#(51_64), state#(52_64), state#(53_64), state#(54_64), state#(55_64),
+            state#(56_64), state#(57_64), state#(58_64), state#(59_64), state#(60_64), state#(61_64), state#(62_64), state#(63_64));
+        return (m1, m3, (
+            c0, c1, c2, c3, c4, c5, c6, c7,
+            c8, c9, c10, c11, c12, c13, c14, c15,
+            c16, c17, c18, c19, c20, c21, c22, c23,
+            c24, c25, c26, c27, c28, c29, c30, c31,
+            c32, c33, c34, c35, c36, c37, c38, c39,
+            c40, c41, c42, c43, c44, c45, c46, c47,
+            c48, c49, c50, c51, c52, c53, c54, c55,
+            c56, c57, c58, c59, c60, c61, c62, c63));
+
+    ret (m1, m3, state) = %gpu.pipelined pipeline_load pipeline_compute $ (%core.bitcast I32 TVM_K_TILES, m1, m3, (
+            0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
+            0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
+            0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
+            0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
+            0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
+            0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
+            0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32,
+            0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32, 0.0:%math.F32));
+    let c0 = state#(0_64);
+    let c1 = state#(1_64);
+    let c2 = state#(2_64);
+    let c3 = state#(3_64);
+    let c4 = state#(4_64);
+    let c5 = state#(5_64);
+    let c6 = state#(6_64);
+    let c7 = state#(7_64);
+    let c8 = state#(8_64);
+    let c9 = state#(9_64);
+    let c10 = state#(10_64);
+    let c11 = state#(11_64);
+    let c12 = state#(12_64);
+    let c13 = state#(13_64);
+    let c14 = state#(14_64);
+    let c15 = state#(15_64);
+    let c16 = state#(16_64);
+    let c17 = state#(17_64);
+    let c18 = state#(18_64);
+    let c19 = state#(19_64);
+    let c20 = state#(20_64);
+    let c21 = state#(21_64);
+    let c22 = state#(22_64);
+    let c23 = state#(23_64);
+    let c24 = state#(24_64);
+    let c25 = state#(25_64);
+    let c26 = state#(26_64);
+    let c27 = state#(27_64);
+    let c28 = state#(28_64);
+    let c29 = state#(29_64);
+    let c30 = state#(30_64);
+    let c31 = state#(31_64);
+    let c32 = state#(32_64);
+    let c33 = state#(33_64);
+    let c34 = state#(34_64);
+    let c35 = state#(35_64);
+    let c36 = state#(36_64);
+    let c37 = state#(37_64);
+    let c38 = state#(38_64);
+    let c39 = state#(39_64);
+    let c40 = state#(40_64);
+    let c41 = state#(41_64);
+    let c42 = state#(42_64);
+    let c43 = state#(43_64);
+    let c44 = state#(44_64);
+    let c45 = state#(45_64);
+    let c46 = state#(46_64);
+    let c47 = state#(47_64);
+    let c48 = state#(48_64);
+    let c49 = state#(49_64);
+    let c50 = state#(50_64);
+    let c51 = state#(51_64);
+    let c52 = state#(52_64);
+    let c53 = state#(53_64);
+    let c54 = state#(54_64);
+    let c55 = state#(55_64);
+    let c56 = state#(56_64);
+    let c57 = state#(57_64);
+    let c58 = state#(58_64);
+    let c59 = state#(59_64);
+    let c60 = state#(60_64);
+    let c61 = state#(61_64);
+    let c62 = state#(62_64);
+    let c63 = state#(63_64);
+    %affine.For tile_body tile_exit (0I32, 0I32, 1I32, (m1,
+            c0, c1, c2, c3, c4, c5, c6, c7,
+            c8, c9, c10, c11, c12, c13, c14, c15,
+            c16, c17, c18, c19, c20, c21, c22, c23,
+            c24, c25, c26, c27, c28, c29, c30, c31,
+            c32, c33, c34, c35, c36, c37, c38, c39,
+            c40, c41, c42, c43, c44, c45, c46, c47,
+            c48, c49, c50, c51, c52, c53, c54, c55,
+            c56, c57, c58, c59, c60, c61, c62, c63))
+    where
+        con tile_body [ktile: I32, [m1: %gpu.GlobalM,
+                     c0: %math.F32, c1: %math.F32, c2: %math.F32, c3: %math.F32, c4: %math.F32, c5: %math.F32,
+                     c6: %math.F32, c7: %math.F32, c8: %math.F32, c9: %math.F32, c10: %math.F32, c11: %math.F32,
+                     c12: %math.F32, c13: %math.F32, c14: %math.F32, c15: %math.F32, c16: %math.F32, c17: %math.F32,
+                     c18: %math.F32, c19: %math.F32, c20: %math.F32, c21: %math.F32, c22: %math.F32, c23: %math.F32,
+                     c24: %math.F32, c25: %math.F32, c26: %math.F32, c27: %math.F32, c28: %math.F32, c29: %math.F32,
+                     c30: %math.F32, c31: %math.F32, c32: %math.F32, c33: %math.F32, c34: %math.F32, c35: %math.F32,
+                     c36: %math.F32, c37: %math.F32, c38: %math.F32, c39: %math.F32, c40: %math.F32, c41: %math.F32,
+                     c42: %math.F32, c43: %math.F32, c44: %math.F32, c45: %math.F32, c46: %math.F32, c47: %math.F32,
+                     c48: %math.F32, c49: %math.F32, c50: %math.F32, c51: %math.F32, c52: %math.F32, c53: %math.F32,
+                     c54: %math.F32, c55: %math.F32, c56: %math.F32, c57: %math.F32, c58: %math.F32, c59: %math.F32,
+                     c60: %math.F32, c61: %math.F32, c62: %math.F32, c63: %math.F32],
+                       continue: Cn [[%gpu.GlobalM, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                              %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                              %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                              %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                              %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                              %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                              %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32, %math.F32,
+                              %math.F32, %math.F32, %math.F32]]] =
+            ret (m1, m3, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                     c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                     c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                     c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63) =
+                tvm_tile_step $ (ktile, m1, m3,
+                                 load_tvm_tile_vectorized, compute_tvm_tile,
+                                 c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15,
+                                 c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31,
+                                 c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47,
+                                 c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63);
+            continue (m1, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20,
+                      c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40,
+                      c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60,
+                      c61, c62, c63);
+
+        con tile_exit [[m1: %gpu.GlobalM,
+                     c0: %math.F32, c1: %math.F32, c2: %math.F32, c3: %math.F32, c4: %math.F32, c5: %math.F32,
+                     c6: %math.F32, c7: %math.F32, c8: %math.F32, c9: %math.F32, c10: %math.F32, c11: %math.F32,
+                     c12: %math.F32, c13: %math.F32, c14: %math.F32, c15: %math.F32, c16: %math.F32, c17: %math.F32,
+                     c18: %math.F32, c19: %math.F32, c20: %math.F32, c21: %math.F32, c22: %math.F32, c23: %math.F32,
+                     c24: %math.F32, c25: %math.F32, c26: %math.F32, c27: %math.F32, c28: %math.F32, c29: %math.F32,
+                     c30: %math.F32, c31: %math.F32, c32: %math.F32, c33: %math.F32, c34: %math.F32, c35: %math.F32,
+                     c36: %math.F32, c37: %math.F32, c38: %math.F32, c39: %math.F32, c40: %math.F32, c41: %math.F32,
+                     c42: %math.F32, c43: %math.F32, c44: %math.F32, c45: %math.F32, c46: %math.F32, c47: %math.F32,
+                     c48: %math.F32, c49: %math.F32, c50: %math.F32, c51: %math.F32, c52: %math.F32, c53: %math.F32,
+                     c54: %math.F32, c55: %math.F32, c56: %math.F32, c57: %math.F32, c58: %math.F32, c59: %math.F32,
+                     c60: %math.F32, c61: %math.F32, c62: %math.F32, c63: %math.F32]] =
+            let global_row_0 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_0 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_0 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_0, %core.bitcast I32 N), global_col_0);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_0), c0);
+            let global_row_1 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_1 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_1 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_1, %core.bitcast I32 N), global_col_1);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_1), c1);
+            let global_row_2 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_2 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_2 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_2, %core.bitcast I32 N), global_col_2);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_2), c2);
+            let global_row_3 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_3 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_3 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_3, %core.bitcast I32 N), global_col_3);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_3), c3);
+            let global_row_4 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_4 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_4 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_4, %core.bitcast I32 N), global_col_4);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_4), c4);
+            let global_row_5 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_5 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_5 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_5, %core.bitcast I32 N), global_col_5);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_5), c5);
+            let global_row_6 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_6 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_6 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_6, %core.bitcast I32 N), global_col_6);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_6), c6);
+            let global_row_7 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_7 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_7 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_7, %core.bitcast I32 N), global_col_7);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_7), c7);
+            let global_row_8 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_8 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_8 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_8, %core.bitcast I32 N), global_col_8);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_8), c8);
+            let global_row_9 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_9 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_9 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_9, %core.bitcast I32 N), global_col_9);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_9), c9);
+            let global_row_10 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_10 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_10 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_10, %core.bitcast I32 N), global_col_10);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_10), c10);
+            let global_row_11 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_11 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_11 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_11, %core.bitcast I32 N), global_col_11);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_11), c11);
+            let global_row_12 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_12 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_12 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_12, %core.bitcast I32 N), global_col_12);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_12), c12);
+            let global_row_13 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_13 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_13 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_13, %core.bitcast I32 N), global_col_13);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_13), c13);
+            let global_row_14 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_14 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_14 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_14, %core.bitcast I32 N), global_col_14);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_14), c14);
+            let global_row_15 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (0I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_15 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_15 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_15, %core.bitcast I32 N), global_col_15);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_15), c15);
+            let global_row_16 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_16 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_16 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_16, %core.bitcast I32 N), global_col_16);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_16), c16);
+            let global_row_17 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_17 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_17 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_17, %core.bitcast I32 N), global_col_17);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_17), c17);
+            let global_row_18 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_18 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_18 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_18, %core.bitcast I32 N), global_col_18);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_18), c18);
+            let global_row_19 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_19 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_19 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_19, %core.bitcast I32 N), global_col_19);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_19), c19);
+            let global_row_20 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_20 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_20 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_20, %core.bitcast I32 N), global_col_20);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_20), c20);
+            let global_row_21 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_21 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_21 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_21, %core.bitcast I32 N), global_col_21);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_21), c21);
+            let global_row_22 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_22 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_22 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_22, %core.bitcast I32 N), global_col_22);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_22), c22);
+            let global_row_23 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_23 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_23 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_23, %core.bitcast I32 N), global_col_23);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_23), c23);
+            let global_row_24 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_24 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_24 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_24, %core.bitcast I32 N), global_col_24);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_24), c24);
+            let global_row_25 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_25 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_25 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_25, %core.bitcast I32 N), global_col_25);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_25), c25);
+            let global_row_26 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_26 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_26 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_26, %core.bitcast I32 N), global_col_26);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_26), c26);
+            let global_row_27 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_27 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_27 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_27, %core.bitcast I32 N), global_col_27);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_27), c27);
+            let global_row_28 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_28 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_28 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_28, %core.bitcast I32 N), global_col_28);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_28), c28);
+            let global_row_29 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_29 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_29 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_29, %core.bitcast I32 N), global_col_29);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_29), c29);
+            let global_row_30 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_30 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_30 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_30, %core.bitcast I32 N), global_col_30);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_30), c30);
+            let global_row_31 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (1I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_31 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_31 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_31, %core.bitcast I32 N), global_col_31);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_31), c31);
+            let global_row_32 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_32 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_32 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_32, %core.bitcast I32 N), global_col_32);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_32), c32);
+            let global_row_33 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_33 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_33 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_33, %core.bitcast I32 N), global_col_33);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_33), c33);
+            let global_row_34 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_34 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_34 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_34, %core.bitcast I32 N), global_col_34);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_34), c34);
+            let global_row_35 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_35 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_35 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_35, %core.bitcast I32 N), global_col_35);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_35), c35);
+            let global_row_36 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_36 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_36 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_36, %core.bitcast I32 N), global_col_36);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_36), c36);
+            let global_row_37 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_37 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_37 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_37, %core.bitcast I32 N), global_col_37);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_37), c37);
+            let global_row_38 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_38 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_38 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_38, %core.bitcast I32 N), global_col_38);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_38), c38);
+            let global_row_39 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_39 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_39 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_39, %core.bitcast I32 N), global_col_39);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_39), c39);
+            let global_row_40 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_40 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_40 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_40, %core.bitcast I32 N), global_col_40);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_40), c40);
+            let global_row_41 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_41 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_41 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_41, %core.bitcast I32 N), global_col_41);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_41), c41);
+            let global_row_42 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_42 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_42 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_42, %core.bitcast I32 N), global_col_42);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_42), c42);
+            let global_row_43 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_43 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_43 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_43, %core.bitcast I32 N), global_col_43);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_43), c43);
+            let global_row_44 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_44 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_44 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_44, %core.bitcast I32 N), global_col_44);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_44), c44);
+            let global_row_45 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_45 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_45 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_45, %core.bitcast I32 N), global_col_45);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_45), c45);
+            let global_row_46 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_46 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_46 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_46, %core.bitcast I32 N), global_col_46);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_46), c46);
+            let global_row_47 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (2I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_47 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_47 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_47, %core.bitcast I32 N), global_col_47);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_47), c47);
+            let global_row_48 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_48 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_48 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_48, %core.bitcast I32 N), global_col_48);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_48), c48);
+            let global_row_49 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_49 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_49 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_49, %core.bitcast I32 N), global_col_49);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_49), c49);
+            let global_row_50 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_50 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_50 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_50, %core.bitcast I32 N), global_col_50);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_50), c50);
+            let global_row_51 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 0I32)));
+            let global_col_51 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_51 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_51, %core.bitcast I32 N), global_col_51);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_51), c51);
+            let global_row_52 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_52 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_52 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_52, %core.bitcast I32 N), global_col_52);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_52), c52);
+            let global_row_53 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_53 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_53 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_53, %core.bitcast I32 N), global_col_53);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_53), c53);
+            let global_row_54 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_54 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_54 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_54, %core.bitcast I32 N), global_col_54);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_54), c54);
+            let global_row_55 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 1I32)));
+            let global_col_55 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_55 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_55, %core.bitcast I32 N), global_col_55);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_55), c55);
+            let global_row_56 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_56 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_56 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_56, %core.bitcast I32 N), global_col_56);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_56), c56);
+            let global_row_57 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_57 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_57 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_57, %core.bitcast I32 N), global_col_57);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_57), c57);
+            let global_row_58 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_58 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_58 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_58, %core.bitcast I32 N), global_col_58);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_58), c58);
+            let global_row_59 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 2I32)));
+            let global_col_59 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_59 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_59, %core.bitcast I32 N), global_col_59);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_59), c59);
+            let global_row_60 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_60 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 0I32));
+            let c_i32_60 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_60, %core.bitcast I32 N), global_col_60);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_60), c60);
+            let global_row_61 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_61 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 1I32));
+            let c_i32_61 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_61, %core.bitcast I32 N), global_col_61);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_61), c61);
+            let global_row_62 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_62 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 2I32));
+            let c_i32_62 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_62, %core.bitcast I32 N), global_col_62);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_62), c62);
+            let global_row_63 = %core.wrap.add 0 (block_row, %core.wrap.add 0 (%core.wrap.mul 0 (3I32, 16I32), %core.wrap.add 0 (thread_row_base, 3I32)));
+            let global_col_63 = %core.wrap.add 0 (block_col, %core.wrap.add 0 (thread_col_base, 3I32));
+            let c_i32_63 = %core.wrap.add 0 (%core.wrap.mul 0 (global_row_63, %core.bitcast I32 N), global_col_63);
+            let m1 = %mem.store (m1, %mem.lea (C, %core.conv.u MN c_i32_63), c63);
+            return (m1, m3, m4, m5);
+    end;
+
+
 fun extern main (m0: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr («⊤:Nat; I8», 0)», 0))
               : [%mem.M 0, I32] =
     let (m0, start_time) = %mem.slot (Timespec, 0) (m0, 0);
@@ -1113,6 +1876,12 @@ fun extern main (m0: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr (�
                     tvm_style_gemm_scalar (d_A, d_B, d_C) $ (m0, m1, m4);
                 return (m0, m1, m4);
 
+            fun launch_pipeline (m0: %mem.M 0, m1: %gpu.GlobalM, m4: %gpu.ConstM): [%mem.M 0, %gpu.GlobalM, %gpu.ConstM] =
+                ret (m0, m1, m4) = %gpu.launch_3d (TVM_GRID_X, 1, 1, TVM_BLOCK_X, 1, 1,
+                                                   %gpu.default_stream, ff, ())
+                    tvm_style_gemm_pipelined (d_A, d_B, d_C) $ (m0, m1, m4);
+                return (m0, m1, m4);
+
             con verify_result [m0: %mem.M 0, m1: %gpu.GlobalM, m4: %gpu.ConstM,
                                status_in: I32, variant: I32,
                                next: Fn [%mem.M 0, %gpu.GlobalM, %gpu.ConstM, I32] → [%mem.M 0, I32],
@@ -1158,8 +1927,11 @@ fun extern main (m0: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr (�
                         %affine.For bench_body bench_exit (0I32, %core.bitcast I32 ITERS, 1I32, (m0, m1, m4));
                 end;
 
+            fun run_pipeline (m0: %mem.M 0, m1: %gpu.GlobalM, m4: %gpu.ConstM, status: I32): [%mem.M 0, I32] =
+                run_bench (m0, m1, m4, status, 4I32, launch_pipeline, cleanup, return);
+
             fun run_tvm (m0: %mem.M 0, m1: %gpu.GlobalM, m4: %gpu.ConstM, status: I32): [%mem.M 0, I32] =
-                run_bench (m0, m1, m4, status, 3I32, launch_tvm, cleanup, return);
+                run_bench (m0, m1, m4, status, 3I32, launch_tvm, run_pipeline, return);
 
             fun run_double (m0: %mem.M 0, m1: %gpu.GlobalM, m4: %gpu.ConstM, status: I32): [%mem.M 0, I32] =
                 run_bench (m0, m1, m4, status, 2I32, launch_double, run_tvm, return);
@@ -1184,6 +1956,9 @@ fun extern main (m0: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr (�
 // DEV-DAG: call i32 @llvm.nvvm.read.ptx.sreg.tid.x()
 // DEV-DAG: call i32 @llvm.nvvm.read.ptx.sreg.tid.y()
 // DEV: define ptx_kernel void @tvm_style_gemm_scalar
+// PIPE-DAG: define ptx_kernel void @tvm_style_gemm_pipelined
+// PIPE-DAG: call void @llvm.nvvm.cp.async.ca.shared.global.16
+// PIPE-DAG: call void @llvm.nvvm.cp.async.wait.group(i32 1)
 // DEV-NOT: alloca [64 x float]
 // DEV-NOT: addrspacecast [64 x float]* {{%[^ ]+}} to [64 x float] addrspace(5)*
 // DEV: call void @llvm.nvvm.barrier0()
@@ -1191,3 +1966,4 @@ fun extern main (m0: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr (�
 // HOST: call i32 @cuLaunchKernel_ptsz(ptr {{%[^,]+}}, i32 64, i32 64, i32 1, i32 16, i32 16, i32 1,
 // HOST: call i32 @cuLaunchKernel_ptsz(ptr {{%[^,]+}}, i32 256, i32 1, i32 1, i32 64, i32 1, i32 1,
 // HOST: call void @bench_print_gemm_result(i32 3,
+// HOST: call void @bench_print_gemm_result(i32 4,

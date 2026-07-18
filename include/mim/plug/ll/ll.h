@@ -695,7 +695,13 @@ inline std::string Emitter::emit_bb(BB& bb, const Def* def) {
         auto tuple = extract->tuple();
         auto index = extract->index();
         auto v_tup = emit_unsafe(tuple);
-        if (is_simd(tuple->type()) && !Axm::isa<mem::M>(tuple->type())) return v_tup;
+        if (is_simd(tuple->type()) && !Axm::isa<mem::M>(tuple->type())) {
+            auto t_tup = convert(tuple->type());
+            if (auto li = Lit::isa(index))
+                return bb.assign(name, "extractelement {} {}, i64 {}", t_tup, v_tup, *li);
+            auto [v_i, t_i] = emit_gep_index(index);
+            return bb.assign(name, "extractelement {} {}, {} {}", t_tup, v_tup, t_i, v_i);
+        }
 
         // this exact location is important: after emitting the tuple -> ordering of mem ops
         // before emitting the index, as it might be a weird value for mem vars.
@@ -731,7 +737,7 @@ inline std::string Emitter::emit_bb(BB& bb, const Def* def) {
             auto v_idx = emit(insert->index());
             if (is_simd(insert->tuple()->type()))
 
-                return bb.assign(name, "insertelement {} {}, {} {}, i32 {}", t_tup, v_tup, t_val, v_val, v_idx);
+                return bb.assign(name, "insertelement {} {}, {} {}, i32 {}", t_tup, v_tup, t_val, v_val, *idx);
             else
 
                 return bb.assign(name, " insertvalue {} {}, {} {}, {}", t_tup, v_tup, t_val, v_val, v_idx);
