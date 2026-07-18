@@ -729,6 +729,34 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         emit_unsafe(sync_work_items->arg(1));
         std::print(bb.body().emplace_back(), "call void @llvm.nvvm.barrier0()");
         return name;
+    } else if (auto cp_async = Axm::isa<gpu::cp_async>(def)) {
+        auto [T] = cp_async->decurry()->args<1>();
+        auto size = Lit::as(world().call(core::trait::size, T));
+        if (size != 4 && size != 8 && size != 16)
+            error("gpu.cp_async supports only 4, 8, or 16 byte copies, got {} bytes for {}", size, T);
+        emit_unsafe(cp_async->arg(0));
+        emit_unsafe(cp_async->arg(1));
+        auto dst = emit(cp_async->arg(2));
+        auto src = emit(cp_async->arg(3));
+        auto intrinsic = std::format("llvm.nvvm.cp.async.ca.shared.global.{}", size);
+        declare("void @{}(ptr addrspace(3), ptr addrspace(1))", intrinsic);
+        std::print(bb.body().emplace_back(), "call void @{}(ptr addrspace(3) {}, ptr addrspace(1) {})", intrinsic, dst, src);
+        return name;
+    } else if (auto commit = Axm::isa<gpu::cp_async_commit_group>(def)) {
+        declare("void @llvm.nvvm.cp.async.commit.group()");
+        emit_unsafe(commit->arg(0));
+        emit_unsafe(commit->arg(1));
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.cp.async.commit.group()");
+        return name;
+    } else if (auto wait = Axm::isa<gpu::cp_async_wait_group>(def)) {
+        auto [groups] = wait->decurry()->args<1>();
+        if (!Lit::isa(groups)) error("gpu.cp_async_wait_group requires a literal group count, got {}", groups);
+        auto count = Lit::as(groups);
+        declare("void @llvm.nvvm.cp.async.wait.group(i32 immarg)");
+        emit_unsafe(wait->arg(0));
+        emit_unsafe(wait->arg(1));
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.cp.async.wait.group(i32 {})", count);
+        return name;
     }
     return std::nullopt;
 }

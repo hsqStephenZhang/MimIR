@@ -231,6 +231,84 @@ axm %gpu.launch_3d: {n: Nat, Ts: «n; *»}
 /// Low-level operation to synchronize all work-items in the same work-group
 axm %gpu.sync_work_items: [%gpu.GlobalM, %gpu.SharedM] → [%gpu.GlobalM, %gpu.SharedM];
 ///
+/// ### Device-Side Asynchronous Copy
+///
+/// Copies 4, 8, or 16 bytes from global to shared memory asynchronously.
+/// All work-items in a work-group must execute commit/wait operations uniformly.
+axm %gpu.cp_async: {T: *}
+                  → [%gpu.GlobalM, %gpu.SharedM, %gpu.SharedPtr T, %gpu.GlobalPtr T]
+                  → [%gpu.GlobalM, %gpu.SharedM];
+axm %gpu.cp_async_commit_group: [%gpu.GlobalM, %gpu.SharedM]
+                              → [%gpu.GlobalM, %gpu.SharedM];
+axm %gpu.cp_async_wait_group: Nat
+                            → [%gpu.GlobalM, %gpu.SharedM]
+                            → [%gpu.GlobalM, %gpu.SharedM];
+///
+/// ### %%gpu.pipelined
+///
+/// Runs a two-stage device pipeline. `load` asynchronously fills `stage`, while
+/// `compute` consumes the preceding stage. `count` must be uniform across the work-group.
+fun %gpu.pipelined {T: *}
+    (load: Fn [iter: I32, stage: Idx 2, %gpu.GlobalM, %gpu.SharedM]
+          → [%gpu.GlobalM, %gpu.SharedM])
+    (compute: Fn [iter: I32, stage: Idx 2, %gpu.GlobalM, %gpu.SharedM, T]
+             → [%gpu.GlobalM, %gpu.SharedM, T])
+    (count: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM, init: T)
+  : [%gpu.GlobalM, %gpu.SharedM, T] =
+    (empty, start)#(%core.icmp.ul (0I32, count)) (m1, m3)
+    where
+        con empty (m1: %gpu.GlobalM, m3: %gpu.SharedM) = return (m1, m3, init);
+
+        con start (m1: %gpu.GlobalM, m3: %gpu.SharedM) =
+            ret (m1, m3) = load $ (0I32, 0_2, m1, m3);
+            let (m1, m3) = %gpu.cp_async_commit_group (m1, m3);
+            (run, prefetch_second)#(%core.icmp.ul (1I32, count)) (m1, m3)
+            where
+                con prefetch_second (m1: %gpu.GlobalM, m3: %gpu.SharedM) =
+                    ret (m1, m3) = load $ (1I32, 1_2, m1, m3);
+                    let (m1, m3) = %gpu.cp_async_commit_group (m1, m3);
+                    run (m1, m3);
+            end;
+
+        con run (m1: %gpu.GlobalM, m3: %gpu.SharedM) = loop (0I32, m1, m3, init)
+            where
+                con loop (iter: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM, state: T) =
+                    let next = %core.wrap.add 0 (iter, 1I32);
+                    let last = %core.icmp.e (next, count);
+                    (wait_steady, wait_last)#last (iter, next, m1, m3, state)
+                    where
+                        con wait_steady (iter: I32, next: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM, state: T) =
+                            let (m1, m3) = %gpu.cp_async_wait_group 1 (m1, m3);
+                            ready (iter, next, m1, m3, state);
+                        con wait_last (iter: I32, next: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM, state: T) =
+                            let (m1, m3) = %gpu.cp_async_wait_group 0 (m1, m3);
+                            ready (iter, next, m1, m3, state);
+                        con ready (iter: I32, next: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM, state: T) =
+                            let stage_i32 = %core.bit2.and_ 0 (iter, 1I32);
+                            let stage = %core.bitcast (Idx 2) stage_i32;
+                            let (m1, m3) = %gpu.sync_work_items (m1, m3);
+                            ret (m1, m3, state) = compute $ (iter, stage, m1, m3, state);
+                            let (m1, m3) = %gpu.sync_work_items (m1, m3);
+                            let prefetch = %core.wrap.add 0 (iter, 2I32);
+                            (finish, refill)#(%core.icmp.ul (prefetch, count)) (next, prefetch, stage, m1, m3, state);
+                        con refill (next: I32, prefetch: I32, stage: Idx 2,
+                                    m1: %gpu.GlobalM, m3: %gpu.SharedM, state: T) =
+                            ret (m1, m3) = load $ (prefetch, stage, m1, m3);
+                            let (m1, m3) = %gpu.cp_async_commit_group (m1, m3);
+                            loop (next, m1, m3, state);
+                        con finish (next: I32, prefetch: I32, stage: Idx 2,
+                                    m1: %gpu.GlobalM, m3: %gpu.SharedM, state: T) =
+                            (done, continue)#(%core.icmp.ul (next, count)) (next, m1, m3, state)
+                            where
+                                con continue (next: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM, state: T) =
+                                    loop (next, m1, m3, state);
+                                con done (next: I32, m1: %gpu.GlobalM, m3: %gpu.SharedM, state: T) =
+                                    return (m1, m3, state);
+                            end;
+                    end;
+            end;
+    end;
+///
 /// #### %%gpu.synced_scope
 ///
 /// Operation to provide scoped parallelism to work items
