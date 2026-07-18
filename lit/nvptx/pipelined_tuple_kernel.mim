@@ -1,0 +1,73 @@
+// REQUIRES: system-linux, cuda
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim %s -p ll_nvptx -o -
+// RUN: %FileCheck %s --check-prefix=DEV < %{s:stem}_dev.ll
+// RUN: rm -f %t
+// RUN: clang %{s:stem}.ll -o %t -lcuda -Wno-override-module
+// RUN: %t; test $? -eq 41
+
+plugin core;
+plugin gpu;
+
+let ACCS = «64; I32»;
+
+con pipelined_tuple_kernel
+    (m1: %gpu.GlobalM, m3: %gpu.SharedM, m4: %gpu.ConstM, m5: %gpu.LocalM,
+     group_id: Idx 1, item_id: Idx 4, (),
+     data: %gpu.GlobalPtr «4; I32»,
+     return: Cn [%gpu.GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM]) =
+    let (m3, tile) = %mem.slot («8; I32», 3) (m3, 0);
+    let tid = %core.bitcast I32 item_id;
+
+    fun load (iter: I32, stage: Idx 2, m1: %gpu.GlobalM, m3: %gpu.SharedM)
+             : [%gpu.GlobalM, %gpu.SharedM] =
+        let stage_i32 = %core.bitcast I32 stage;
+        let off = %core.wrap.add 0 (%core.wrap.mul 0 (stage_i32, 4I32), tid);
+        let src = %mem.lea (data, %core.conv.u 4 tid);
+        let dst = %mem.lea (tile, %core.conv.u 8 off);
+        let (m1, m3) = %gpu.cp_async (m1, m3, dst, src);
+        return (m1, m3);
+
+    fun compute (iter: I32, stage: Idx 2, m1: %gpu.GlobalM, m3: %gpu.SharedM, state: ACCS)
+                : [%gpu.GlobalM, %gpu.SharedM, ACCS] =
+        let stage_i32 = %core.bitcast I32 stage;
+        let off = %core.wrap.add 0 (%core.wrap.mul 0 (stage_i32, 4I32), tid);
+        let (m3, value) = %mem.load (m3, %mem.lea (tile, %core.conv.u 8 off));
+        let sum = %core.wrap.add 0 (state#(0_64), value);
+        let state = ins(state, 0_64, sum);
+        return (m1, m3, state);
+
+    ret (m1, m3, state) = %gpu.pipelined load compute $ (1I32, m1, m3, (
+             0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32,
+             0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32,
+             0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32,
+             0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32,
+             0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32,
+             0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32,
+             0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32,
+             0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32, 0I32));
+    let m1 = %mem.store (m1, %mem.lea (data, %core.conv.u 4 tid), %core.wrap.add 0 (state#(0_64), 1I32));
+    return (m1, m3, m4, m5);
+
+fun extern main (m0: %mem.M 0, argc: I32, argv: %mem.Ptr («⊤:Nat; %mem.Ptr («⊤:Nat; I8», 0)», 0))
+              : [%mem.M 0, I32] =
+    let (m0, arr) = %mem.alloc («4; I32», 0) m0;
+    let m0 = %mem.store (m0, %mem.lea (arr, 0_4), 40I32);
+    let m0 = %mem.store (m0, %mem.lea (arr, 1_4), 40I32);
+    let m0 = %mem.store (m0, %mem.lea (arr, 2_4), 40I32);
+    let m0 = %mem.store (m0, %mem.lea (arr, 3_4), 40I32);
+    let (m0, m1, m4) = %gpu.init m0;
+    let (m1, d_arr) = %mem.alloc («4; I32», 1) m1;
+    let (m0, m1) = %gpu.copy_to_device.block (m0, m1, arr, d_arr);
+    ret (m0, m1, m4) = %gpu.launch (1, 4, %gpu.default_stream, ff, ())
+        pipelined_tuple_kernel d_arr $ (m0, m1, m4);
+    let (m0, m1) = %gpu.copy_to_host.block (m0, m1, d_arr, arr);
+    let m1 = %mem.free (m1, d_arr);
+    let m0 = %gpu.deinit (m0, m1, m4);
+    let (m0, value) = %mem.load (m0, %mem.lea (arr, 0_4));
+    let m0 = %mem.free (m0, arr);
+    return (m0, value);
+
+// DEV: call void @llvm.nvvm.cp.async.ca.shared.global.4
+// DEV: call void @llvm.nvvm.cp.async.wait.group(i32 0)
+

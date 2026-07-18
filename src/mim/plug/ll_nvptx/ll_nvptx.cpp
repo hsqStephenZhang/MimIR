@@ -24,13 +24,13 @@ static auto get_setup_phase(World& world) {
     return std::make_pair(std::move(stage), phase);
 }
 
-constexpr auto default_compute_cap = "75";
+constexpr auto default_compute_cap = "80";
 
 static std::string get_compute_capability() {
     auto out      = sys::exec("nvidia-smi --query-gpu=compute_cap");
-    auto start    = out.find('\n') + 1;
-    auto newline2 = out.find('\n', start);
-    if (start < out.size()) out = out.substr(start, newline2 - start);
+    auto start = out.find_first_of("0123456789");
+    auto end = start == std::string::npos ? start : out.find_first_not_of("0123456789.", start);
+    if (start != std::string::npos) out = out.substr(start, end - start);
     // out should now have form "7.5" referencing the compute capability "sm_75"
 
     auto dot_pos = out.find('.');
