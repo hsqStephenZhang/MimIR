@@ -21,3 +21,12 @@ Current TVM-style GEMM baseline (M=N=K=1024, 10 iterations, A100):
 - Pipelined TVM-style: 0.598 ms, 3592.981 GFLOPS; correctness successful
 - Relative performance: 0.752x baseline (24.8% slower)
 - ptxas: scalar 128 registers / 4096 B shared; pipelined 96 registers / 8192 B shared; no spills.
+## Three-stage pipelined TVM-style GEMM
+
+- Shape: M=N=K=1024, 10 timed iterations per run, NVIDIA A100 sm80.
+- Five-run median: TVM-style 0.449 ms; 2-stage 0.597 ms; 3-stage 0.405 ms.
+- Median throughput: TVM-style 4787 GFLOPS; 2-stage 3594 GFLOPS; 3-stage 5296 GFLOPS.
+- Relative performance: 3-stage is 1.106x baseline (10.6% faster) and 1.474x the 2-stage pipeline.
+- Correctness: all six variants passed full 1024x1024 output comparison in every run.
+- PTX: 3-stage steady state contains `cp.async.wait_group 2`; tail drains with `wait_group 0`.
+- ptxas: 3-stage uses 147 registers / 12288 B shared; no spills. The 2-stage and scalar variants use 96 / 8192 B and 128 / 4096 B respectively.

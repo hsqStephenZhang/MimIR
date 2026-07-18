@@ -59,6 +59,7 @@ void bench_print_gemm_result(int32_t variant,
     if (variant == 2) name = "Double Buffered GEMM";
     if (variant == 3) name = "TVM-style GEMM";
     if (variant == 4) name = "Pipelined TVM-style GEMM";
+    if (variant == 5) name = "3-stage Pipelined TVM-style GEMM";
 
     printf("%-30s : %8.3f ms | %8.3f GFLOPS\n", name, avg_ms, gflops);
 }
@@ -70,6 +71,7 @@ void bench_print_gemm_verify(int32_t variant, int32_t status) {
     if (variant == 2) name = "Double Buffered GEMM";
     if (variant == 3) name = "TVM-style GEMM";
     if (variant == 4) name = "Pipelined TVM-style GEMM";
+    if (variant == 5) name = "3-stage Pipelined TVM-style GEMM";
 
     if (status == 0)
         printf("  %s Verification successful!\n", name);

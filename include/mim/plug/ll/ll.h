@@ -620,7 +620,7 @@ inline std::string Emitter::emit_bb(BB& bb, const Def* def) {
                 // TODO: check dst vs src
                 auto namei = name + "." + std::to_string(dst);
                 if (t.front() == '<') // not using is_simd to respect the pointer context (Pointer Pointee case)
-                    prev = bb.assign(namei, "insertelement {} {}, {} {}, {} {}", t, prev, elem_t, elem, elem_t, dst);
+                    prev = bb.assign(namei, "insertelement {} {}, {} {}, i64 {}", t, prev, elem_t, elem, dst);
                 else
                     prev = bb.assign(namei, "insertvalue {} {}, {} {}, {}", t, prev, elem_t, elem, dst);
                 dst++;
