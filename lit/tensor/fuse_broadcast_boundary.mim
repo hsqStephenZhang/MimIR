@@ -1,16 +1,17 @@
 // RUN: %mim -p opt %s -o - | %FileCheck %s
 
-// TVM classifies a broadcast producer as kBroadcast.  MimIR's broadcast
-// lowering keeps an identity output map, so the continuation materializer can
-// safely fuse this producer with the following elementwise operation.
+// TVM classifies a broadcast producer as kBroadcast. `broadcast_in_dim`
+// normalizes to a map_reduce with an identity output map and a broadcast input
+// access map, so the continuation materializer can fuse it with the following
+// elementwise operation.
 plugin tensor;
 plugin core;
 plugin opt;
 
 lam add1 (x: Nat): Nat = %core.nat.add (x, 1);
 
-con extern f [v: «2; «1; Nat»», return: Cn «2; «3; Nat»»] =
-    let broadcast = %tensor.broadcast ((2, 1), (2, 3), v);
+con extern f [v: «3; Nat», return: Cn «2; «3; Nat»»] =
+    let broadcast = %tensor.broadcast_in_dim (3, (2, 3), v, (1_2,));
     let mapped    = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) broadcast;
     return mapped;
 
@@ -22,5 +23,5 @@ lam extern _compile (): %compile.Phase =
         %compile.internal_cleanup,
     );
 
-// CHECK: %tensor.map_reduce
+// CHECK-COUNT-1: = %tensor.map_reduce
 // CHECK-NOT: %tensor.map_reduce

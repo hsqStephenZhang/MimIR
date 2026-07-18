@@ -19,7 +19,7 @@ public:
 
 private:
     const Def* rewrite_imm_App(const App*) override;
-    const Def* lower_map_reduce_aff(const App*);
+    const Def* lower_map_reduce_aff(const App*, bool has_epilogue = false);
     const Def* lower_broadcast(const App*);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);

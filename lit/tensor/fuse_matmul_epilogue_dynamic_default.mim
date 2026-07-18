@@ -1,0 +1,29 @@
+// RUN: not %mim -p opt %s -o %t 2>&1 | %FileCheck %s
+
+// Fusion supports symbolic extents, but the default buffer pipeline does not
+// yet convert a dependent tensor return continuation to its buffer ABI.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+plugin opt;
+
+let f32 = %math.f32;
+let F32 = %math.F32;
+let R: %tensor.Ring = (F32, 0: F32, %math.arith.add @f32 0, %math.arith.mul @f32 0);
+
+lam relu (x: F32): F32 = %math.extrema.fmax @f32 0 (x, 0: F32);
+lam add  (xs: [F32, F32]): F32 = %math.arith.add @f32 0 xs;
+lam mul2 (x: F32): F32 = %math.arith.mul @f32 0 (x, 2: F32);
+
+fun extern f {m k n: Nat}
+             (a: «m, k; F32», b: «k, n; F32», bias: «m, n; F32»)
+           : «m, n; F32» =
+    let mm     = %tensor.product_2d R (a, b);
+    let active = %tensor.unary @(F32, F32) relu @(2, (m, n)) mm;
+    let biased = %tensor.binary @(F32, F32, F32) add @(2, (m, n)) (active, bias);
+    let result = %tensor.unary @(F32, F32) mul2 @(2, (m, n)) biased;
+    return result;
+
+// CHECK: error: cannot apply argument to callee
+// CHECK: %buffer.Buf (2,

@@ -107,6 +107,8 @@ const Def* OpPatternAnalysis::rewrite_imm_App(const App* app) {
 
     if (auto mr = Axm::isa<tensor::map_reduce>(app)) {
         record_kind(classify_map_reduce(mr), summarize_map_reduce_aff(mr));
+    } else if (Axm::isa<tensor::map_reduce_epilogue>(app)) {
+        record_kind(OpPatternKind::kOutEWiseFusable);
     } else if (Axm::isa<tensor::dot_product>(app) || Axm::isa<tensor::product_2d>(app)) {
         // Simple map_reduce and dot products are reductions.
         // We could be more precise for map_reduce if we check if subs covers all output dims.

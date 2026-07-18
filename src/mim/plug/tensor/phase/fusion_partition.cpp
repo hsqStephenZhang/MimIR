@@ -174,6 +174,21 @@ bool FusionPartitionAnalysis::check_path(size_t src, size_t sink, bool allow_red
     return true;
 }
 
+bool FusionPartitionAnalysis::check_output_path(size_t src, size_t sink) const {
+    absl::flat_hash_set<size_t> visited;
+    std::function<bool(size_t)> check = [&](size_t id) {
+        if (!visited.emplace(id).second) return true;
+        if (groups_[find(id)].pattern > OpPatternKind::kBroadcast) return false;
+        if (id == sink) return true;
+        for (auto output : nodes_[id].outputs)
+            if (!check(output)) return false;
+        return true;
+    };
+    for (auto output : nodes_[src].outputs)
+        if (!check(output)) return false;
+    return true;
+}
+
 size_t FusionPartitionAnalysis::count_path_groups(size_t src, size_t sink) const {
     absl::flat_hash_set<size_t> visited_nodes;
     absl::flat_hash_set<size_t> visited_groups;
@@ -226,7 +241,12 @@ void FusionPartitionAnalysis::partition() {
 
             bool candidate
                 = phase == 0 ? src_pattern <= OpPatternKind::kBroadcast : src_pattern == OpPatternKind::kInjective;
-            if (!candidate || !check_path(id, sink, phase == 0)) continue;
+            bool valid_path = candidate && check_path(id, sink, phase == 0);
+            if (phase == 0 && src_pattern == OpPatternKind::kOutEWiseFusable) {
+                candidate  = true;
+                valid_path = check_output_path(id, sink);
+            }
+            if (!candidate || !valid_path) continue;
             if (count_path_groups(id, sink) > max_fuse_nodes_) continue;
             commit_fuse(id, sink);
         }

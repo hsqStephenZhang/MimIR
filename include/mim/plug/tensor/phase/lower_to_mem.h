@@ -35,7 +35,7 @@ private:
     const Def* lower_get(const App*);
     const Def* lower_set(const App*);
     const Def* lower_broadcast(const App*);
-    const Def* lower_map_reduce(const App*);
+    const Def* lower_map_reduce(const App*, bool has_epilogue = false);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
 
@@ -100,7 +100,6 @@ private:
     /// they receive element values, never buffers — even when a parameter type incidentally collides with a
     /// tensor type (pure type-based role tracking aliases, e.g. an `(x y: I32)` group *is* `«2; I32»`).
     LamSet op_args_;
-
 };
 
 } // namespace mim::plug::tensor::phase

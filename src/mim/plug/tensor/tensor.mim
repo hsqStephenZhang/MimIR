@@ -280,6 +280,27 @@ axm %tensor.map_reduce: {nis: Nat}
                       → [is: «i: nis; «Sis#i; Tis#i»»]
                       → «So; To», normalize_map_reduce;
 
+/// Internal fusion form of `%tensor.map_reduce`. The reduction still produces
+/// `Ta`; after all reduction loops finish, `epilogue` transforms the final
+/// accumulator at its output coordinate into `To` immediately before store.
+/// `eis` and `epilogue_maps` make all tensor reads explicit at that coordinate.
+/// This keeps a complex reduction anchor (matmul/conv) and its pointwise
+/// output chain in one loop nest without applying the epilogue per reduction
+/// iteration.
+axm %tensor.map_reduce_epilogue: {nis: Nat}
+                               → {neis: Nat}
+                               → {Ta To: *, Ro Rr: Nat}
+                               → [So: «Ro; Nat», Sr: «%core.nat.add (Ro, Rr); Nat»]
+                               → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+                               → {Teis: «neis; *», Reis: «i: neis; Nat», Seis: «i: neis; «Reis#i; Nat»»}
+                               → [f: Fn [Ta, «i: nis; Tis#i»] → Ta, init: Ta]
+                               → [epilogue: Cn [Ta, «i: neis; Teis#i», Cn To]]
+                               → [map_out: [«%core.nat.add (Ro, Rr); %affine.index»] → «Ro; %affine.index»]
+                               → [maps: «i: nis; ([«%core.nat.add (Ro, Rr); %affine.index»] → «Ris#i; %affine.index»)»]
+                               → [epilogue_maps: «i: neis; ([«Ro; %affine.index»] → «Reis#i; %affine.index»)»]
+                               → [is: «i: nis; «Sis#i; Tis#i»», eis: «i: neis; «Seis#i; Teis#i»»]
+                               → «So; To»;
+
 /// `subs ↦ λ o. ‹j; o#(subs#j)›`: the access map that reads input axis `j` at loop variable `subs#j`,
 /// e.g. `((0, 2), (2, 1))` for the two inputs of a matrix product.
 lam %tensor.proj_map {n r: Nat} (subs: «r; Nat») (o: «n; %affine.index»): «r; %affine.index» =
@@ -928,6 +949,9 @@ lam %tensor.scatter_step_impl {T: *, r: Nat}
 axm %tensor.lower_tensor: %compile.Phase;
 axm %tensor.conv_to_img2col: %compile.Phase;
 axm %tensor.lower_map_reduce: %compile.Phase;
+/// Lowers only `%tensor.map_reduce_epilogue` before bufferization. Ordinary
+/// `%tensor.map_reduce` operations remain available to the matrix backend.
+axm %tensor.lower_epilogue: %compile.Phase;
 axm %tensor.lower_get_set: %compile.Phase;
 axm %tensor.fuse_tensor: %compile.Phase;
 ///

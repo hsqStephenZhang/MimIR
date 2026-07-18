@@ -58,6 +58,7 @@ private:
     size_t find(size_t) const;
     size_t find(size_t);
     bool check_path(size_t src, size_t sink, bool allow_reduction_sink) const;
+    bool check_output_path(size_t src, size_t sink) const;
     size_t count_path_groups(size_t src, size_t sink) const;
     void commit_fuse(size_t src, size_t sink);
 

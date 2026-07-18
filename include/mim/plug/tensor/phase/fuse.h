@@ -16,6 +16,7 @@ private:
     const Def* rewrite_imm_App(const App*) final;
 
     const Def* fuse_map_reduce(const App*);
+    const Def* fuse_reduction_epilogue(const App*);
 
     FusionPartitionAnalysis partition_;
 };

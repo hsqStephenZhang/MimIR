@@ -100,6 +100,24 @@ axm %matrix.map_reduce_aff: {nis: Nat}
                           → [accs: «i: nis; ([«%core.nat.add (Ro, Rr); %affine.index»] → «Ris#i; %affine.index»)»]
                           → [%mem.M 0, is: «i: nis; %buffer.Buf (Ris#i, Sis#i, Tis#i)»]
                           → [%mem.M 0, %buffer.Buf (Ro, So, To)];
+
+/// Buffer-world form of a reduction with a pure output epilogue. `eis` are
+/// read only after the reduction has completed for one output coordinate.
+axm %matrix.map_reduce_aff_epilogue: {nis: Nat}
+                                   → {neis: Nat}
+                                   → {Ta To: *, Ro Rr: Nat}
+                                   → [So: «Ro; Nat», Sr: «%core.nat.add (Ro, Rr); Nat»]
+                                   → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+                                   → {Teis: «neis; *», Reis: «i: neis; Nat», Seis: «i: neis; «Reis#i; Nat»»}
+                                   → [f: Fn [%mem.M 0, Ta, «i: nis; Tis#i»] → [%mem.M 0, Ta], init: Ta]
+                                   → [epilogue: Cn [Ta, «i: neis; Teis#i», Cn To]]
+                                   → [acc_out: [«%core.nat.add (Ro, Rr); %affine.index»] → «Ro; %affine.index»]
+                                   → [accs: «i: nis; ([«%core.nat.add (Ro, Rr); %affine.index»] → «Ris#i; %affine.index»)»]
+                                   → [epilogue_maps: «i: neis; ([«Ro; %affine.index»] → «Reis#i; %affine.index»)»]
+                                   → [%mem.M 0,
+                                      is: «i: nis; %buffer.Buf (Ris#i, Sis#i, Tis#i)»,
+                                      eis: «i: neis; %buffer.Buf (Reis#i, Seis#i, Teis#i)»]
+                                   → [%mem.M 0, %buffer.Buf (Ro, So, To)];
 ///
 /// ### %%matrix.broadcast
 ///

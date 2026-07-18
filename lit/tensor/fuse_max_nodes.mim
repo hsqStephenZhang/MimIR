@@ -1,14 +1,33 @@
 // RUN: %mim -p opt %s -o - | %FileCheck %s
 
-// The default partition limit is 16 operations per fusion group.  A chain of
-// 17 maps must therefore be split into two map_reduce operations.
+// The default partition limit is 16 operations per fusion group. Check both
+// sides of the boundary: 16 maps form one group, while 17 maps form two.
 plugin tensor;
 plugin core;
 plugin opt;
 
 lam add1 (x: Nat): Nat = %core.nat.add (x, 1);
 
-con extern f [v: «2; «3; Nat»», return: Cn «2; «3; Nat»»] =
+con extern exactly_16 [v: «2; «3; Nat»», return: Cn «2; «3; Nat»»] =
+    let m0  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) v;
+    let m1  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m0;
+    let m2  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m1;
+    let m3  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m2;
+    let m4  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m3;
+    let m5  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m4;
+    let m6  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m5;
+    let m7  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m6;
+    let m8  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m7;
+    let m9  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m8;
+    let m10 = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m9;
+    let m11 = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m10;
+    let m12 = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m11;
+    let m13 = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m12;
+    let m14 = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m13;
+    let m15 = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m14;
+    return m15;
+
+con extern over_16 [v: «2; «3; Nat»», return: Cn «2; «3; Nat»»] =
     let m0  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) v;
     let m1  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m0;
     let m2  = %tensor.unary @(Nat, Nat) add1 @(2, (2, 3)) m1;
@@ -36,6 +55,5 @@ lam extern _compile (): %compile.Phase =
         %compile.internal_cleanup,
     );
 
-// CHECK: %tensor.map_reduce
-// CHECK: %tensor.map_reduce
-// CHECK-NOT: %tensor.map_reduce
+// One group for exactly_16 and two groups for over_16.
+// CHECK-COUNT-3: %tensor.map_reduce

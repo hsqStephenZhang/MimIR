@@ -1,0 +1,39 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s --check-prefix=FUSED
+
+// A TVM-style kOutEWiseFusable anchor: matmul is reduced once, then the final
+// accumulator flows through relu, bias add, and another elementwise map before
+// the output store. None of the epilogue functions may run per contraction.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+plugin opt;
+
+let f32 = %math.f32;
+let F32 = %math.F32;
+let R: %tensor.Ring = (F32, 0: F32, %math.arith.add @f32 0, %math.arith.mul @f32 0);
+
+lam relu (x: F32): F32 = %math.extrema.fmax @f32 0 (x, 0: F32);
+lam add  (xs: [F32, F32]): F32 = %math.arith.add @f32 0 xs;
+lam mul2 (x: F32): F32 = %math.arith.mul @f32 0 (x, 2: F32);
+
+con extern f [a: «2; «3; F32»», b: «3; «4; F32»», bias: «2; «4; F32»», return: Cn «2; «4; F32»»] =
+    let mm     = %tensor.product_2d R (a, b);
+    let active = %tensor.unary @(F32, F32) relu @(2, (2, 4)) mm;
+    let biased = %tensor.binary @(F32, F32, F32) add @(2, (2, 4)) (active, bias);
+    let result = %tensor.unary @(F32, F32) mul2 @(2, (2, 4)) biased;
+    return result;
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_tensor,
+        %tensor.fuse_tensor,
+        %compile.internal_cleanup,
+    );
+
+// FUSED: %tensor.map_reduce_epilogue
+// FUSED: %math.extrema.iM
+// FUSED: %math.arith.add
+// FUSED: %math.arith.mul
+// FUSED-NOT: %tensor.map_reduce @

@@ -90,7 +90,7 @@ static std::pair<Lam*, const Def*> counting_for(const Def* bound, const Def* acc
     return {body, for_loop};
 }
 
-const Def* LowerMapReduce::lower_map_reduce(const App* app) {
+const Def* LowerMapReduce::lower_map_reduce(const App* app, bool has_epilogue) {
     // meta arguments:
     // * nis = in-count (nat)
     // * To = out-type (*), Ro = #output loops = result rank, Rr = #reduction loops
@@ -105,23 +105,44 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
     // * accs = per-input affine map from the (Ro+Rr) loop vector to the input's read coordinates
     // * is = input tensors
     auto& w     = new_world();
-    auto c      = rewrite(app->callee())->as<App>();
+    auto callee = rewrite(app->callee())->as<App>();
     auto inputs = rewrite(app->arg());
     auto type   = rewrite(app->type());
 
-    auto [nis, meta, shapes, TisRisSis, comb_init, acc_out, accs] = c->uncurry_args<7>();
-    auto [To, Ro, Rr]                                             = meta->projs<3>();
-    auto [So, Sr]                                                 = shapes->projs<2>();
-    auto [Tis, Ris, Sis]                                          = TisRisSis->projs<3>();
-    auto [comb, init]                                             = comb_init->projs<2>();
+    const Def *nis, *neis = nullptr, *meta, *shapes, *TisRisSis, *TeisReisSeis = nullptr, *comb_init;
+    const Def *epilogue = nullptr, *acc_out, *accs, *epilogue_maps = nullptr;
+    if (has_epilogue) {
+        auto [a, b, c, d, e, f, g, h, i, j, k] = callee->uncurry_args<11>();
+        nis = a, neis = b, meta = c, shapes = d, TisRisSis = e, TeisReisSeis = f, comb_init = g;
+        epilogue = h, acc_out = i, accs = j, epilogue_maps = k;
+    } else {
+        auto [a, b, c, d, e, f, g] = callee->uncurry_args<7>();
+        nis = a, meta = b, shapes = c, TisRisSis = d, comb_init = e, acc_out = f, accs = g;
+    }
 
-    auto nis_l = Lit::isa<u64>(nis);
+    const Def *Ta, *To, *Ro, *Rr;
+    if (has_epilogue) {
+        auto [a, b, c, d] = meta->projs<4>();
+        Ta = a, To = b, Ro = c, Rr = d;
+    } else {
+        auto [a, b, c] = meta->projs<3>();
+        Ta = To = a, Ro = b, Rr = c;
+    }
+    auto [So, Sr]        = shapes->projs<2>();
+    auto [Tis, Ris, Sis] = TisRisSis->projs<3>();
+    auto [comb, init]    = comb_init->projs<2>();
+    const Def *Teis = nullptr, *Reis = nullptr, *Seis = nullptr;
+    if (has_epilogue) std::tie(Teis, Reis, Seis) = TeisReisSeis->projs<3>();
+
+    auto nis_l  = Lit::isa<u64>(nis);
+    auto neis_l = has_epilogue ? Lit::isa<u64>(neis) : std::optional<u64>(0);
     auto ro_l = Lit::isa<u64>(Ro), rr_l = Lit::isa<u64>(Rr);
-    if (!nis_l || !ro_l || !rr_l) {
-        WLOG("{} doesn't have lowering-time known rank counts (nis/Ro/Rr)", app);
+    if (!nis_l || !neis_l || !ro_l || !rr_l) {
+        WLOG("{} doesn't have lowering-time known rank counts (nis/neis/Ro/Rr)", app);
         return nullptr;
     }
-    auto nis_nat = *nis_l;
+    auto nis_nat  = *nis_l;
+    auto neis_nat = *neis_l;
     auto ro = *ro_l, rr = *rr_l;
     auto nloops = ro + rr;           // length of the full loop vector (= length of Sr)
     auto n      = w.lit_nat(nloops); // passed as the affine maps' domain length
@@ -131,6 +152,12 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         auto l = Lit::isa<u64>(Ris->proj(nis_nat, i));
         if (!l) {
             WLOG("input {} of {} has a non-literal rank", i, app);
+            return nullptr;
+        }
+    }
+    for (u64 i = 0; i < neis_nat; ++i) {
+        if (!Lit::isa<u64>(Reis->proj(neis_nat, i))) {
+            WLOG("epilogue input {} of {} has a non-literal rank", i, app);
             return nullptr;
         }
     }
@@ -149,7 +176,9 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         auto ds_fun = cps::op_cps2ds_dep(fun)->set("dsFun");
         auto call   = w.app(ds_fun, inputs)->set("call");
 
-        auto new_inputs = fun->var(0)->set("is");
+        auto all_inputs    = fun->var(0)->set("allInputs");
+        auto new_inputs    = has_epilogue ? all_inputs->proj(2, 0) : all_inputs;
+        auto new_ep_inputs = has_epilogue ? all_inputs->proj(2, 1) : nullptr;
 
         // Outer (parallel) loops over the leading Ro bounds of `Sr`, collecting the output iteration indices.
         auto cont        = fun->var(1);
@@ -174,7 +203,7 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         // Write-back: narrow the accumulated element into the result at the affine write coordinates `acc_out`.
         // acc_out takes the full (Ro+Rr) loop vector, but the reduction loops have already been folded away here, so we
         // pass 0 for those slots; acc_out must depend only on the leading Ro output indices.
-        auto write_back    = w.mut_con(To)->set("writeBack");
+        auto write_back    = w.mut_con(Ta)->set("writeBack");
         auto element_final = write_back->var(0);
         DefVec wb_iters    = out_iters;
         for (u64 j = 0; j < rr; ++j)
@@ -182,7 +211,24 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         auto write_coords = affine_map(acc_out, Ro, n, Sr, So, w.tuple(wb_iters)); // «Ro; Idx (So#k)»
         auto store        = w.app(w.annex<tensor::indexed_store_impl>(), Defs{To, Ro});
         store             = w.app(store, So);
-        write_back->app(true, cont, w.app(store, Defs{wb_matrix, write_coords, element_final}));
+        if (has_epilogue) {
+            DefVec epilogue_elements(neis_nat);
+            for (u64 i = 0; i < neis_nat; ++i) {
+                auto Teis_i = Teis->proj(neis_nat, i);
+                auto Reis_i = Reis->proj(neis_nat, i);
+                auto Seis_i = Seis->proj(neis_nat, i);
+                auto coords = affine_map(epilogue_maps->proj(neis_nat, i), Reis_i, Ro, So, Seis_i, write_coords);
+                auto load   = w.app(w.annex<tensor::indexed_load_impl>(), Defs{Teis_i, Reis_i});
+                load        = w.app(load, Seis_i);
+                epilogue_elements[i] = w.app(load, Defs{new_ep_inputs->proj(neis_nat, i), coords});
+            }
+            auto epilogue_ret = w.mut_con(To)->set("epilogueRet");
+            auto epilogue_val = epilogue_ret->var(0);
+            epilogue_ret->app(true, cont, w.app(store, Defs{wb_matrix, write_coords, epilogue_val}));
+            write_back->app(true, epilogue, {element_final, w.tuple(epilogue_elements), epilogue_ret});
+        } else {
+            write_back->app(true, cont, w.app(store, Defs{wb_matrix, write_coords, element_final}));
+        }
 
         // Inner (reduction) loops over the trailing Rr bounds of `Sr`, collecting the reduction iteration indices.
         acc  = init;
@@ -277,12 +323,9 @@ const Def* LowerMapReduce::lower_pointwise_loop(const App* app) {
     return build_pointwise_loop(args, type, s_out, r, body);
 }
 
-const Def* LowerMapReduce::build_pointwise_loop(const Def* inputs,
-                                                const Def* type,
-                                                const Def* So,
-                                                const Def* r,
-                                                const Def* body) {
-    auto& w = new_world();
+const Def*
+LowerMapReduce::build_pointwise_loop(const Def* inputs, const Def* type, const Def* So, const Def* r, const Def* body) {
+    auto& w  = new_world();
     auto r_l = Lit::isa<u64>(r);
     if (!r_l) {
         WLOG("pointwise loop doesn't have a lowering-time known rank");
@@ -388,15 +431,15 @@ const Def* LowerMapReduce::lower_concat(const App* app) {
 }
 
 const Def* LowerMapReduce::lower_gather(const App* app) {
-    auto& w = new_world();
-    auto c  = rewrite(app->callee())->as<App>();
+    auto& w   = new_world();
+    auto c    = rewrite(app->callee())->as<App>();
     auto args = rewrite(app->arg());
     auto type = rewrite(app->type());
 
     auto [Tr, shapes, dim_arg] = c->uncurry_args<3>();
-    auto [T, r] = Tr->projs<2>();
-    auto [s_src, s_idx] = shapes->projs<2>();
-    auto dim = dim_arg;
+    auto [T, r]                = Tr->projs<2>();
+    auto [s_src, s_idx]        = shapes->projs<2>();
+    auto dim                   = dim_arg;
 
     auto r_l = Lit::isa<u64>(r);
     if (!r_l) {
@@ -412,15 +455,15 @@ const Def* LowerMapReduce::lower_gather(const App* app) {
 }
 
 const Def* LowerMapReduce::lower_scatter(const App* app) {
-    auto& w = new_world();
-    auto c  = rewrite(app->callee())->as<App>();
+    auto& w   = new_world();
+    auto c    = rewrite(app->callee())->as<App>();
     auto args = rewrite(app->arg());
     auto type = rewrite(app->type());
 
     auto [Tr, shapes, dim_arg] = c->uncurry_args<3>();
-    auto [T, r] = Tr->projs<2>();
-    auto [s_src, s_idx] = shapes->projs<2>();
-    auto dim = dim_arg;
+    auto [T, r]                = Tr->projs<2>();
+    auto [s_src, s_idx]        = shapes->projs<2>();
+    auto dim                   = dim_arg;
 
     auto r_l = Lit::isa<u64>(r);
     if (!r_l) {
@@ -433,7 +476,7 @@ const Def* LowerMapReduce::lower_scatter(const App* app) {
     auto ds_fun = cps::op_cps2ds_dep(fun)->set("dsFun");
     auto call   = w.app(ds_fun, args)->set("call");
 
-    auto new_inputs = fun->var(0)->set("is");
+    auto new_inputs              = fun->var(0)->set("is");
     auto [input, index, updates] = new_inputs->projs<3>();
 
     auto cont        = fun->var(1);
@@ -454,10 +497,10 @@ const Def* LowerMapReduce::lower_scatter(const App* app) {
         current_mut = body;
     }
 
-    auto step = w.app(w.annex<tensor::scatter_step_impl>(), Defs{T, r});
-    step      = w.app(step, Defs{s_src, s_idx});
-    step      = w.app(step, dim);
-    step      = w.app(step, w.tuple(out_iters));
+    auto step     = w.app(w.annex<tensor::scatter_step_impl>(), Defs{T, r});
+    step          = w.app(step, Defs{s_src, s_idx});
+    step          = w.app(step, dim);
+    step          = w.app(step, w.tuple(out_iters));
     auto next_acc = w.app(step, Defs{acc, index, updates});
     current_mut->app(true, cont, next_acc);
 
@@ -516,10 +559,10 @@ const Def* LowerMapReduce::lower_stablehlo_sort(const App* app) {
         cont = yield;
     }
 
-    auto extent_nat = w.extract(s, dimension);
-    auto extent     = w.call<core::bitcast>(w.type_i64(), extent_nat);
-    auto nonempty   = w.call(core::icmp::ug, Defs{extent, w.lit_i64(0)});
-    auto extent_m1  = w.call(core::wrap::sub, core::Mode::none, Defs{extent, w.lit_i64(1)});
+    auto extent_nat  = w.extract(s, dimension);
+    auto extent      = w.call<core::bitcast>(w.type_i64(), extent_nat);
+    auto nonempty    = w.call(core::icmp::ug, Defs{extent, w.lit_i64(0)});
+    auto extent_m1   = w.call(core::wrap::sub, core::Mode::none, Defs{extent, w.lit_i64(1)});
     auto inner_bound = w.extract(w.tuple({w.lit_i64(0), extent_m1}), nonempty);
 
     // Stable bubble sort. Each pass scans adjacent elements and swaps when
@@ -544,6 +587,11 @@ const Def* LowerMapReduce::lower_stablehlo_sort(const App* app) {
 }
 
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
+    if (auto mr = Axm::isa<tensor::map_reduce_epilogue>(app)) {
+        if (auto res = lower_map_reduce(mr, true)) return res;
+    }
+    if (epilogue_only_) return RWPhase::rewrite_imm_App(app);
+
     if (auto bc = Axm::isa<tensor::broadcast>(app)) {
         if (auto res = lower_broadcast(bc)) return res;
     } else if (auto mr = Axm::isa<tensor::map_reduce>(app)) {

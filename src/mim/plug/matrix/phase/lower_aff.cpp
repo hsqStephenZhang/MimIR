@@ -91,6 +91,7 @@ const Def* build_pointwise(World& w,
 const Def* LowerAff::rewrite_imm_App(const App* app) {
     if (is_bootstrapping()) return RWPhase::rewrite_imm_App(app);
     if (Axm::isa<matrix::map_reduce_aff>(app)) return lower_map_reduce_aff(app);
+    if (Axm::isa<matrix::map_reduce_aff_epilogue>(app)) return lower_map_reduce_aff(app, true);
     if (Axm::isa<matrix::broadcast>(app)) return lower_broadcast(app);
     if (Axm::isa<matrix::pad>(app)) return lower_pad(app);
     if (Axm::isa<matrix::concat>(app)) return lower_concat(app);
@@ -102,42 +103,64 @@ const Def* LowerAff::lower_buffer_constant(const App* app) {
     // `%buffer.constant (r, s, T) (mem, val)` fills every element with `val`. Emit a fill loop (via the same
     // pointwise scaffold as pad/concat) so the store never materializes as one giant literal array. A
     // non-literal rank has no static loop nest, so leave it for `%buffer.lower_ptr`'s monolithic fallback.
-    auto [r, s, T]  = app->callee()->as<App>()->args<3>();
-    auto s_out      = rewrite(s);
-    auto rn         = Lit::isa<u64>(rewrite(r));
+    auto [r, s, T] = app->callee()->as<App>()->args<3>();
+    auto s_out     = rewrite(s);
+    auto rn        = Lit::isa<u64>(rewrite(r));
     if (!rn) return RWPhase::rewrite_imm_App(app);
 
     auto& w         = new_world();
     auto [mem, val] = rewrite(app->arg())->projs<2>();
     auto result_ty  = rewrite(app->type()); // [%mem.M 0, %buffer.Buf (r, s, T)]
     // `compute` ignores the loop counters and writes the (loop-invariant) scalar `ins` everywhere.
-    return build_pointwise(w, result_ty, mem, val, s_out, *rn, "constant_fill",
-                           [](const DefVec&, const Def* ins, const Def* m) -> std::pair<const Def*, const Def*> {
-                               return {m, ins};
-                           });
+    return build_pointwise(
+        w, result_ty, mem, val, s_out, *rn, "constant_fill",
+        [](const DefVec&, const Def* ins, const Def* m) -> std::pair<const Def*, const Def*> { return {m, ins}; });
 }
 
-const Def* LowerAff::lower_map_reduce_aff(const App* app) {
+const Def* LowerAff::lower_map_reduce_aff(const App* app, bool has_epilogue) {
     auto& w = new_world();
     auto c  = rewrite(app->callee())->as<App>();
 
-    auto [nis, meta, shapes, TisRisSis, comb_init, acc_out, accs] = c->uncurry_args<7>();
-    auto [To, Ro, Rr]                                             = meta->projs<3>();
-    auto [So, Sr]                                                 = shapes->projs<2>();
-    auto [Tis, Ris, Sis]                                          = TisRisSis->projs<3>();
-    auto [comb, init]                                             = comb_init->projs<2>();
+    const Def *nis, *neis = nullptr, *meta, *shapes, *TisRisSis, *TeisReisSeis = nullptr, *comb_init;
+    const Def *epilogue = nullptr, *acc_out, *accs, *epilogue_maps = nullptr;
+    if (has_epilogue) {
+        auto [a, b, cc, d, e, f, g, h, i, j, k] = c->uncurry_args<11>();
+        nis = a, neis = b, meta = cc, shapes = d, TisRisSis = e, TeisReisSeis = f, comb_init = g;
+        epilogue = h, acc_out = i, accs = j, epilogue_maps = k;
+    } else {
+        auto [a, b, cc, d, e, f, g] = c->uncurry_args<7>();
+        nis = a, meta = b, shapes = cc, TisRisSis = d, comb_init = e, acc_out = f, accs = g;
+    }
+    const Def *Ta, *To, *Ro, *Rr;
+    if (has_epilogue) {
+        auto [a, b, cc, d] = meta->projs<4>();
+        Ta = a, To = b, Ro = cc, Rr = d;
+    } else {
+        auto [a, b, cc] = meta->projs<3>();
+        Ta = To = a, Ro = b, Rr = cc;
+    }
+    auto [So, Sr]        = shapes->projs<2>();
+    auto [Tis, Ris, Sis] = TisRisSis->projs<3>();
+    auto [comb, init]    = comb_init->projs<2>();
+    const Def *Teis = nullptr, *Reis = nullptr, *Seis = nullptr;
+    if (has_epilogue) std::tie(Teis, Reis, Seis) = TeisReisSeis->projs<3>();
 
-    // The final argument is `[mem, is]`; the result is `[mem, Buf]`.
-    auto [op_mem, op_is] = rewrite(app->arg())->projs<2>();
-    auto result_ty       = rewrite(app->type()); // [%mem.M 0, %buffer.Buf (Ro, So, To)]
+    // The final argument is `[mem, is]` or `[mem, is, eis]`; the result is `[mem, Buf]`.
+    auto rewritten_args = rewrite(app->arg());
+    auto op_mem         = rewritten_args->proj(has_epilogue ? 3 : 2, 0);
+    auto op_is          = rewritten_args->proj(has_epilogue ? 3 : 2, 1);
+    auto op_eis         = has_epilogue ? rewritten_args->proj(3, 2) : nullptr;
+    auto result_ty      = rewrite(app->type()); // [%mem.M 0, %buffer.Buf (Ro, So, To)]
 
-    auto nis_l = Lit::isa<u64>(nis);
+    auto nis_l  = Lit::isa<u64>(nis);
+    auto neis_l = has_epilogue ? Lit::isa<u64>(neis) : std::optional<u64>(0);
     auto ro_l = Lit::isa<u64>(Ro), rr_l = Lit::isa<u64>(Rr);
-    if (!nis_l || !ro_l || !rr_l) {
-        WLOG("{} doesn't have lowering-time known rank counts (nis/Ro/Rr)", app);
+    if (!nis_l || !neis_l || !ro_l || !rr_l) {
+        WLOG("{} doesn't have lowering-time known rank counts (nis/neis/Ro/Rr)", app);
         return RWPhase::rewrite_imm_App(app);
     }
-    auto nis_nat = *nis_l;
+    auto nis_nat  = *nis_l;
+    auto neis_nat = *neis_l;
     auto ro = *ro_l, rr = *rr_l;
     auto nloops = ro + rr;
     auto n      = w.lit_nat(nloops);
@@ -183,14 +206,34 @@ const Def* LowerAff::lower_map_reduce_aff(const App* app) {
     auto [wb_mem, wb_buf] = acc->projs<2>();
 
     // Write-back continuation `Cn[mem, To]`.
-    auto write_back                 = mem::mut_con(To)->set("writeBack");
+    auto write_back                 = mem::mut_con(Ta)->set("writeBack");
     auto [wb_in_mem, element_final] = write_back->vars<2>();
     DefVec wb_iters                 = out_iters;
     for (u64 j = 0; j < rr; ++j)
         wb_iters.push_back(w.call(core::conv::u, Sr->proj(nloops, ro + j), w.lit(w.type_i64(), 0)));
     auto [wc_mem, write_coords] = affine_map(acc_out, Ro, n, Sr, So, w.tuple(wb_iters), wb_in_mem);
-    auto stored                 = buffer::op_write(obr, obs, obT, wc_mem, wb_buf, fold_index(So, write_coords), element_final);
-    write_back->app(true, cont, w.tuple({stored->proj(0), wb_buf}));
+    if (has_epilogue) {
+        auto cur = wc_mem;
+        DefVec epilogue_elements(neis_nat);
+        for (u64 i = 0; i < neis_nat; ++i) {
+            auto [mc_mem, coords] = affine_map(epilogue_maps->proj(neis_nat, i), Reis->proj(neis_nat, i), Ro, So,
+                                               Seis->proj(neis_nat, i), write_coords, cur);
+            cur                   = mc_mem;
+            auto in_buf           = op_eis->proj(neis_nat, i);
+            auto [ir, is_, iT]    = Axm::isa<buffer::Buf>(in_buf->type())->args<3>();
+            auto [rd_mem, rd_val]
+                = buffer::op_read(ir, is_, iT, cur, in_buf, fold_index(Seis->proj(neis_nat, i), coords))->projs<2>();
+            cur                  = rd_mem;
+            epilogue_elements[i] = rd_val;
+        }
+        auto epilogue_ret = w.mut_con(To)->set("epilogueRet");
+        auto stored = buffer::op_write(obr, obs, obT, cur, wb_buf, fold_index(So, write_coords), epilogue_ret->var(0));
+        epilogue_ret->app(true, cont, w.tuple({stored->proj(0), wb_buf}));
+        write_back->app(true, epilogue, {element_final, w.tuple(epilogue_elements), epilogue_ret});
+    } else {
+        auto stored = buffer::op_write(obr, obs, obT, wc_mem, wb_buf, fold_index(So, write_coords), element_final);
+        write_back->app(true, cont, w.tuple({stored->proj(0), wb_buf}));
+    }
 
     // Reduction loops; accumulator `{mem, element}`.
     acc  = w.tuple({wb_mem, init});
@@ -326,7 +369,8 @@ const Def* LowerAff::lower_pad(const App* app) {
             }
             clamped[d] = w.call(core::conv::u, s_in->proj(rn, d), idx_i64);
         }
-        auto [rd_mem, elem] = buffer::op_read(ibr, ibs, ibT, mem, in_buf, fold_index(s_in, w.tuple(clamped)))->projs<2>();
+        auto [rd_mem, elem]
+            = buffer::op_read(ibr, ibs, ibT, mem, in_buf, fold_index(s_in, w.tuple(clamped)))->projs<2>();
         if (mode_nat != 0) return {rd_mem, elem}; // replicate: always a (clamped) read
         auto all_valid = valid.empty() ? w.lit_tt() : valid[0];
         for (u64 d = 1; d < valid.size(); ++d)
@@ -375,8 +419,8 @@ const Def* LowerAff::lower_concat(const App* app) {
     auto sel = [&](const Def* cond, const Def* t, const Def* f) { return w.extract(w.tuple({f, t}), cond); };
 
     auto compute = [&](const DefVec& iters, const Def* ins, const Def* mem) -> std::pair<const Def*, const Def*> {
-        auto o_ax       = iters[axn];
-        const Def* cur  = mem;
+        auto o_ax      = iters[axn];
+        const Def* cur = mem;
         // Read input `i` at `iters`, but with the `ax` coordinate shifted by off#i and clamped into input `i`.
         auto read_i = [&](u64 i) -> const Def* {
             auto in_buf          = ins->proj(nisn, i);
@@ -391,8 +435,9 @@ const Def* LowerAff::lower_concat(const App* app) {
                 auto idx_i64 = (d == axn) ? clamp : iters[d];
                 coords[d]    = w.call(core::conv::u, Sis_i->proj(rn, d), idx_i64);
             }
-            auto [rd_mem, rd_val] = buffer::op_read(ibr, ibs, ibT, cur, in_buf, fold_index(Sis_i, w.tuple(coords)))->projs<2>();
-            cur                   = rd_mem;
+            auto [rd_mem, rd_val]
+                = buffer::op_read(ibr, ibs, ibT, cur, in_buf, fold_index(Sis_i, w.tuple(coords)))->projs<2>();
+            cur = rd_mem;
             return rd_val;
         };
         // Select chain: the highest `i` with off#i ≤ o_ax owns the cell (offsets increase, later wins).

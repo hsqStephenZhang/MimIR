@@ -12,14 +12,15 @@ namespace mim::plug::tensor::phase {
 /// these low-level axioms by an earlier `Lower` phase.
 class LowerMapReduce : public RWPhase {
 public:
-    LowerMapReduce(World& world, flags_t annex)
-        : RWPhase(world, annex) {}
+    LowerMapReduce(World& world, flags_t annex, bool epilogue_only = false)
+        : RWPhase(world, annex)
+        , epilogue_only_(epilogue_only) {}
 
 private:
     const Def* rewrite_imm_App(const App*) final;
 
     const Def* lower_broadcast(const App*);
-    const Def* lower_map_reduce(const App*);
+    const Def* lower_map_reduce(const App*, bool has_epilogue = false);
     const Def* lower_pointwise_loop(const App*);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
@@ -38,6 +39,14 @@ private:
     const Def* build_pointwise_loop(const Def* inputs, const Def* type, const Def* So, const Def* r, const Def* body);
 
     const Def* rec_broadcast(const Def* s_in, const Def* s_out, const Def* input, u64 r, u64 i);
+
+    bool epilogue_only_;
+};
+
+class LowerEpilogue final : public LowerMapReduce {
+public:
+    LowerEpilogue(World& world, flags_t annex)
+        : LowerMapReduce(world, annex, true) {}
 };
 
 } // namespace mim::plug::tensor::phase

@@ -1,0 +1,37 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+// TVM permits a kOutEWiseFusable anchor to absorb an output chain whose paths
+// are elementwise or broadcast. MimIR's same-rank broadcast is a direct pack
+// operation rather than a map_reduce producer; the add must still become the
+// matmul epilogue and consume the expanded bias explicitly.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+plugin opt;
+
+let f32 = %math.f32;
+let F32 = %math.F32;
+let R: %tensor.Ring = (F32, 0: F32, %math.arith.add @f32 0, %math.arith.mul @f32 0);
+
+lam add (xs: [F32, F32]): F32 = %math.arith.add @f32 0 xs;
+
+con extern f [a: «2; «3; F32»», b: «3; «4; F32»», bias: «1; «4; F32»», return: Cn «2; «4; F32»»] =
+    let mm       = %tensor.product_2d R (a, b);
+    let expanded = %tensor.broadcast ((1, 4), (2, 4), bias);
+    let result   = %tensor.binary @(F32, F32, F32) add @(2, (2, 4)) (mm, expanded);
+    return result;
+
+lam extern _compile (): %compile.Phase =
+    %compile.phases ff (
+        %compile.internal_cleanup,
+        %tensor.lower_tensor,
+        %tensor.fuse_tensor,
+        %compile.internal_cleanup,
+    );
+
+// CHECK-LABEL: fun extern f
+// CHECK: = %tensor.broadcast
+// CHECK-NOT: = %tensor.map_reduce {{[0-9]}}
+// CHECK: = %tensor.map_reduce_epilogue
+// CHECK: %math.arith.add

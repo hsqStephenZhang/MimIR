@@ -20,6 +20,162 @@ static const Def* compose_map(World& w, const Def* inner, const Def* outer) {
     return lam;
 }
 
+static bool is_identity_map(const Def* map) {
+    auto lam = map->isa_mut<Lam>();
+    return lam && lam->is_set() && lam->body() == lam->var();
+}
+
+// Turns a reduction producer followed by a pointwise map into one reduction
+// with an output epilogue. Bottom-up rewriting may encounter another
+// pointwise map later; in that case the new map is composed after the existing
+// epilogue instead of materializing its intermediate tensor. Non-anchor tensor
+// operands become explicit epilogue inputs, so bufferization controls their
+// reads and the epilogue closure remains pure.
+const Def* Fuse::fuse_reduction_epilogue(const App* app) {
+    auto outer_callee                                             = rewrite(app->callee())->as<App>();
+    auto [nis, meta, shapes, TisRisSis, comb_init, map_out, maps] = outer_callee->uncurry_args<7>();
+    auto [To, Ro, Rr]                                             = meta->projs<3>();
+    auto [So, Sr]                                                 = shapes->projs<2>();
+    auto [Tis, Ris, Sis]                                          = TisRisSis->projs<3>();
+    auto [comb, init]                                             = comb_init->projs<2>();
+
+    auto nis_lit = Lit::isa<u64>(nis);
+    auto ro_lit  = Lit::isa<u64>(Ro);
+    auto rr_lit  = Lit::isa<u64>(Rr);
+    if (!nis_lit || !ro_lit || !rr_lit || *rr_lit != 0 || So != Sr || !is_identity_map(map_out)) return nullptr;
+
+    auto nis_nat  = *nis_lit;
+    auto old_is   = app->arg();
+    auto new_is   = rewrite(old_is);
+    u64 anchor_ix = nis_nat;
+
+    for (u64 i = 0; i < nis_nat; ++i) {
+        auto old_input = old_is->proj(nis_nat, i);
+        auto old_inner = Axm::isa<tensor::map_reduce>(old_input);
+        if (!old_inner || !partition_.can_inline(old_inner, app)) continue;
+
+        auto input            = new_is->proj(nis_nat, i);
+        bool reduction_anchor = false;
+        if (auto inner = Axm::isa<tensor::map_reduce>(input)) {
+            auto [_a, inner_meta, _c, _d, _e, _f, _g, _h] = inner->uncurry_args<8>();
+            (void)_a;
+            (void)_c;
+            (void)_d;
+            (void)_e;
+            (void)_f;
+            (void)_g;
+            (void)_h;
+            auto inner_rr    = Lit::isa<u64>(inner_meta->proj(3, 2));
+            reduction_anchor = inner_rr && *inner_rr > 0;
+        } else {
+            reduction_anchor = Axm::isa<tensor::map_reduce_epilogue>(input) != nullptr;
+        }
+        if (!reduction_anchor) continue;
+        if (anchor_ix != nis_nat) return nullptr; // A group cannot contain two complex anchors.
+        if (!is_identity_map(maps->proj(nis_nat, i))) return nullptr;
+        anchor_ix = i;
+    }
+    if (anchor_ix == nis_nat) return nullptr;
+
+    const Def* anchor = new_is->proj(nis_nat, anchor_ix);
+    const Def *base_nis, *base_shapes, *base_types, *base_comb_init, *base_map_out, *base_maps, *base_is;
+    const Def *Ta, *anchor_To, *base_Ro, *base_Rr, *old_epilogue = nullptr;
+    const Def *old_ep_types = nullptr, *old_ep_maps = nullptr, *old_ep_is = nullptr;
+    u64 old_neis = 0;
+
+    if (auto inner = Axm::isa<tensor::map_reduce>(anchor)) {
+        auto [a, b, c, d, e, f, g, h] = inner->uncurry_args<8>();
+        auto [ta, ro, rr]             = b->projs<3>();
+        base_nis = a, Ta = anchor_To = ta, base_Ro = ro, base_Rr = rr;
+        base_shapes = c, base_types = d, base_comb_init = e, base_map_out = f, base_maps = g, base_is = h;
+    } else {
+        auto ep_inner = Axm::isa<tensor::map_reduce_epilogue>(anchor);
+        if (!ep_inner) return nullptr;
+        auto [a, b, c, d, e, f, g, h, i, j, k, l] = ep_inner->uncurry_args<12>();
+        auto old_neis_lit                         = Lit::isa<u64>(b);
+        if (!old_neis_lit) return nullptr;
+        auto [ta, ti, ro, rr] = c->projs<4>();
+        base_nis = a, old_neis = *old_neis_lit, Ta = ta, anchor_To = ti, base_Ro = ro, base_Rr = rr;
+        base_shapes = d, base_types = e, old_ep_types = f, base_comb_init = g, old_epilogue = h;
+        base_map_out = i, base_maps = j, old_ep_maps = k;
+        auto [reduction_inputs, epilogue_inputs] = l->projs<2>();
+        base_is = reduction_inputs, old_ep_is = epilogue_inputs;
+    }
+
+    auto [base_So, _base_Sr] = base_shapes->projs<2>();
+    (void)_base_Sr;
+    if (base_So != So || base_Ro != Ro) return nullptr;
+
+    auto& w       = new_world();
+    auto new_neis = old_neis + nis_nat - 1;
+    DefVec ep_Tis(new_neis), ep_Ris(new_neis), ep_Sis(new_neis), ep_maps(new_neis), ep_is(new_neis);
+    if (old_neis != 0) {
+        auto [old_Tis, old_Ris, old_Sis] = old_ep_types->projs<3>();
+        for (u64 i = 0; i < old_neis; ++i) {
+            ep_Tis[i]  = old_Tis->proj(old_neis, i);
+            ep_Ris[i]  = old_Ris->proj(old_neis, i);
+            ep_Sis[i]  = old_Sis->proj(old_neis, i);
+            ep_maps[i] = old_ep_maps->proj(old_neis, i);
+            ep_is[i]   = old_ep_is->proj(old_neis, i);
+        }
+    }
+
+    Vector<u64> ep_pos(nis_nat, new_neis);
+    u64 next_ep = old_neis;
+    for (u64 i = 0; i < nis_nat; ++i) {
+        if (i == anchor_ix) continue;
+        ep_pos[i]        = next_ep;
+        ep_Tis[next_ep]  = Tis->proj(nis_nat, i);
+        ep_Ris[next_ep]  = Ris->proj(nis_nat, i);
+        ep_Sis[next_ep]  = Sis->proj(nis_nat, i);
+        ep_maps[next_ep] = maps->proj(nis_nat, i);
+        ep_is[next_ep]   = new_is->proj(nis_nat, i);
+        ++next_ep;
+    }
+
+    auto epilogue  = w.mut_con({Ta, w.sigma(ep_Tis), w.cn(To)})->set("fusedEpilogue");
+    auto reduced   = epilogue->var(0);
+    auto ep_values = epilogue->var(1);
+    auto ret       = epilogue->var(2);
+
+    auto emit_outer = [&](Lam* caller, const Def* anchor_value, const Def* final_ret) {
+        DefVec elements(nis_nat);
+        for (u64 i = 0; i < nis_nat; ++i) {
+            if (i == anchor_ix) {
+                elements[i] = anchor_value;
+                continue;
+            }
+            elements[i] = ep_values->proj(new_neis, ep_pos[i]);
+        }
+        caller->app(true, comb, {w.tuple({init, w.tuple(elements)}), final_ret});
+    };
+
+    if (old_epilogue) {
+        auto old_ret = w.mut_con(anchor_To)->set("priorEpilogueRet");
+        emit_outer(old_ret, old_ret->var(0), ret);
+        DefVec prior_values(old_neis);
+        for (u64 i = 0; i < old_neis; ++i)
+            prior_values[i] = ep_values->proj(new_neis, i);
+        epilogue->app(true, old_epilogue, {reduced, w.tuple(prior_values), old_ret});
+    } else {
+        emit_outer(epilogue, reduced, ret);
+    }
+
+    auto fused = w.annex<tensor::map_reduce_epilogue>();
+    fused      = w.app(fused, base_nis);
+    fused      = w.app(fused, w.lit_nat(new_neis));
+    fused      = w.app(fused, {Ta, To, base_Ro, base_Rr});
+    fused      = w.app(fused, base_shapes);
+    fused      = w.app(fused, base_types);
+    fused      = w.app(fused, {w.tuple(ep_Tis), w.tuple(ep_Ris), w.tuple(ep_Sis)});
+    fused      = w.app(fused, base_comb_init);
+    fused      = w.app(fused, epilogue);
+    fused      = w.app(fused, base_map_out);
+    fused      = w.app(fused, base_maps);
+    fused      = w.app(fused, w.tuple(ep_maps));
+    return w.app(fused, {base_is, w.tuple(ep_is)});
+}
+
 // Fuses an outer `tensor.map_reduce` with any number of its inputs — and, recursively, any
 // fusible inputs of those inputs — whenever each such input is itself a `tensor.map_reduce`
 // without reduction loops (`Rr = 0`) that writes its full loop domain through the identity output
@@ -258,6 +414,10 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
 const Def* Fuse::rewrite_imm_App(const App* app) {
     if (auto mr = Axm::isa<tensor::map_reduce>(app)) {
+        if (auto res = fuse_reduction_epilogue(mr)) {
+            DLOG("Fused reduction epilogue at {} into {}", app, res);
+            return res;
+        }
         if (auto res = fuse_map_reduce(mr)) {
             DLOG("Fused map_reduce at {} into a new map_reduce {}", app, res);
             return res;

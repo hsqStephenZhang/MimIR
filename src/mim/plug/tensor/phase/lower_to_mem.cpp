@@ -30,14 +30,16 @@ bool contains_pi(const Def* t) {
 /// pack `‹i; f i›` or a genuine literal `((1, 2), (3, 4))` yields `nullptr`.
 const Def* splat_scalar(const Def* d) {
     if (!d->isa<Pack>()) return nullptr;
-    while (auto pack = d->isa<Pack>()) d = pack->body();
+    while (auto pack = d->isa<Pack>())
+        d = pack->body();
     return (d->is_closed() && !d->type()->isa<Arr>()) ? d : nullptr;
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
 bool is_tensor_op(const App* app) {
     return Axm::isa<tensor::get>(app) || Axm::isa<tensor::set>(app) || Axm::isa<tensor::broadcast>(app)
-        || Axm::isa<tensor::map_reduce>(app) || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app);
+        || Axm::isa<tensor::map_reduce>(app) || Axm::isa<tensor::map_reduce_epilogue>(app) || Axm::isa<tensor::pad>(app)
+        || Axm::isa<tensor::concat>(app);
 }
 
 } // namespace
@@ -71,17 +73,37 @@ void LowerToMem::collect_tensor_types() {
                 auto [T, r, s] = app->callee()->as<App>()->args<3>();
                 if (T->isa<Arr>()) gate("tensor with array element type", T);
                 add_tensor_ty(app->arg()->proj(0)->type());
-            } else if (Axm::isa<tensor::map_reduce>(app)) {
+            } else if (Axm::isa<tensor::map_reduce>(app) || Axm::isa<tensor::map_reduce_epilogue>(app)) {
                 // result and each of the `nis` inputs are tensors.
                 add_tensor_ty(app->type());
-                auto [nis, meta, shapes, TisRisSis, comb_init, acc_out, accs]
-                    = app->callee()->as<App>()->uncurry_args<7>();
-                if (meta->proj(3, 0)->isa<Arr>()) gate("tensor with array element type", meta->proj(3, 0));
+                auto has_epilogue = Axm::isa<tensor::map_reduce_epilogue>(app) != nullptr;
+                const Def *nis, *neis = nullptr, *meta, *TisRisSis, *TeisReisSeis = nullptr;
+                if (has_epilogue) {
+                    auto [a, b, c, d, e, f, g, h, i, j, k] = app->callee()->as<App>()->uncurry_args<11>();
+                    nis = a, neis = b, meta = c, TisRisSis = e, TeisReisSeis = f;
+                } else {
+                    auto [a, b, c, d, e, f, g] = app->callee()->as<App>()->uncurry_args<7>();
+                    nis = a, meta = b, TisRisSis = d;
+                }
+                auto meta_arity = has_epilogue ? 4 : 3;
+                if (meta->proj(meta_arity, 0)->isa<Arr>())
+                    gate("tensor with array element type", meta->proj(meta_arity, 0));
                 if (auto nis_l = Lit::isa<u64>(nis)) {
                     auto Tis = TisRisSis->proj(3, 0);
+                    auto is  = has_epilogue ? app->arg()->proj(2, 0) : app->arg();
                     for (u64 i = 0; i < *nis_l; ++i) {
                         if (Tis->proj(*nis_l, i)->isa<Arr>()) gate("tensor with array element type", Tis);
-                        add_tensor_ty(app->arg()->proj(*nis_l, i)->type());
+                        add_tensor_ty(is->proj(*nis_l, i)->type());
+                    }
+                }
+                if (has_epilogue) {
+                    if (auto neis_l = Lit::isa<u64>(neis)) {
+                        auto Teis = TeisReisSeis->proj(3, 0);
+                        auto eis  = app->arg()->proj(2, 1);
+                        for (u64 i = 0; i < *neis_l; ++i) {
+                            if (Teis->proj(*neis_l, i)->isa<Arr>()) gate("tensor with array element type", Teis);
+                            add_tensor_ty(eis->proj(*neis_l, i)->type());
+                        }
                     }
                 }
             } else if (Axm::isa<tensor::broadcast>(app)) {
@@ -118,8 +140,8 @@ void LowerToMem::collect_tensor_types() {
                         add_tensor_ty(app->arg()->proj(*nis_l, i)->type());
                     }
                 }
-            } else if (auto [axm, curry, trip] = Axm::get(app); axm && curry == 0
-                                                                && axm->plugin() == tensor::Plugin_Id) {
+            } else if (auto [axm, curry, trip] = Axm::get(app);
+                       axm && curry == 0 && axm->plugin() == tensor::Plugin_Id) {
                 // Any other tensor op (a symbolic `shape`, …) has no buffer-world lowering.
                 gate("unbufferizable tensor op", app);
             }
@@ -295,6 +317,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::set>(app)) return lower_set(app);
     if (Axm::isa<tensor::broadcast>(app)) return lower_broadcast(app);
     if (Axm::isa<tensor::map_reduce>(app)) return lower_map_reduce(app);
+    if (Axm::isa<tensor::map_reduce_epilogue>(app)) return lower_map_reduce(app, true);
     if (Axm::isa<tensor::pad>(app)) return lower_pad(app);
     if (Axm::isa<tensor::concat>(app)) return lower_concat(app);
 
@@ -441,32 +464,51 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     return out;
 }
 
-const Def* LowerToMem::lower_map_reduce(const App* app) {
+const Def* LowerToMem::lower_map_reduce(const App* app, bool has_epilogue) {
     // Thin bufferization: map the SSA `tensor.map_reduce` onto the buffer-world `matrix.map_reduce_aff`,
     // reusing the (rewritten) meta. The loop generation lives in the matrix plugin (`%matrix.lower_aff`).
-    auto& w     = new_world();
-    auto c      = rewrite(app->callee())->as<App>();
-    auto inputs = rewrite(app->arg()); // the (bufferized) input buffers `is`
+    auto& w   = new_world();
+    auto c    = rewrite(app->callee())->as<App>();
+    auto args = rewrite(app->arg());
 
-    auto [nis, meta, shapes, TisRisSis, comb_init, acc_out, accs] = c->uncurry_args<7>();
-    auto [comb, init]                                             = comb_init->projs<2>();
+    const Def *nis, *neis = nullptr, *meta, *shapes, *TisRisSis, *TeisReisSeis = nullptr, *comb_init;
+    const Def *epilogue = nullptr, *acc_out, *accs, *epilogue_maps = nullptr;
+    if (has_epilogue) {
+        auto [a, b, cc, d, e, f, g, h, i, j, k] = c->uncurry_args<11>();
+        nis = a, neis = b, meta = cc, shapes = d, TisRisSis = e, TeisReisSeis = f, comb_init = g;
+        epilogue = h, acc_out = i, accs = j, epilogue_maps = k;
+    } else {
+        auto [a, b, cc, d, e, f, g] = c->uncurry_args<7>();
+        nis = a, meta = b, shapes = cc, TisRisSis = d, comb_init = e, acc_out = f, accs = g;
+    }
+    auto [comb, init]    = comb_init->projs<2>();
+    auto inputs          = has_epilogue ? args->proj(2, 0) : args;
+    auto epilogue_inputs = has_epilogue ? args->proj(2, 1) : nullptr;
 
     // Value-world tensor inputs (e.g. literals): materialize them into buffers.
-    if (auto nis_l = Lit::isa<u64>(nis)) {
-        DefVec ins(*nis_l);
-        for (u64 i = 0; i < *nis_l; ++i) {
-            ins[i] = inputs->proj(*nis_l, i);
+    auto materialize_inputs = [&](const Def* count, const Def* old_inputs, const Def* rewritten_inputs) {
+        auto count_l = Lit::isa<u64>(count);
+        if (!count_l) return rewritten_inputs;
+        DefVec ins(*count_l);
+        for (u64 i = 0; i < *count_l; ++i) {
+            ins[i] = rewritten_inputs->proj(*count_l, i);
             if (!Axm::isa<buffer::Buf>(ins[i]->type())) {
-                auto old_in = app->arg()->proj(*nis_l, i);
+                auto old_in = old_inputs->proj(*count_l, i);
                 ins[i]      = materialize(old_in->type(), old_in);
-                if (!Axm::isa<buffer::Buf>(ins[i]->type()))
-                    return RWPhase::rewrite_imm_App(app); // not a recorded tensor type: leave it alone
+                if (!Axm::isa<buffer::Buf>(ins[i]->type())) return static_cast<const Def*>(nullptr);
             }
         }
         // Re-tuple the inputs: the generic rewrite rebuilds the argument tuple with its stale value-array
         // type even when its elements were converted to buffers, which would not be assignable to the op's
         // `«nis; %buffer.Buf …»` domain.
-        inputs = w.tuple(ins);
+        return static_cast<const Def*>(w.tuple(ins));
+    };
+    auto old_inputs = has_epilogue ? app->arg()->proj(2, 0) : app->arg();
+    inputs          = materialize_inputs(nis, old_inputs, inputs);
+    if (!inputs) return RWPhase::rewrite_imm_App(app);
+    if (has_epilogue) {
+        epilogue_inputs = materialize_inputs(neis, app->arg()->proj(2, 1), epilogue_inputs);
+        if (!epilogue_inputs) return RWPhase::rewrite_imm_App(app);
     }
 
     // Wrap the pure tensor combiner `Fn [To, «nis; Tis»] → To` into the mem-threaded combiner
@@ -481,15 +523,20 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     after->app(true, cret, w.tuple({cm, after->var(0_n)}));
     memcomb->set(true, w.app(comb, w.tuple({w.tuple({cacc, cins}), after})));
 
-    auto op       = w.annex<matrix::map_reduce_aff>();
-    op            = w.app(op, nis);
-    op            = w.app(op, meta);
-    op            = w.app(op, shapes);
-    op            = w.app(op, TisRisSis);
-    op            = w.app(op, w.tuple({memcomb, init}));
-    op            = w.app(op, acc_out);
-    op            = w.app(op, accs);
-    auto [m, out] = w.app(op, w.tuple({bot_mem(), inputs}))->projs<2>();
+    auto op = has_epilogue ? w.annex<matrix::map_reduce_aff_epilogue>() : w.annex<matrix::map_reduce_aff>();
+    op      = w.app(op, nis);
+    if (has_epilogue) op = w.app(op, neis);
+    op = w.app(op, meta);
+    op = w.app(op, shapes);
+    op = w.app(op, TisRisSis);
+    if (has_epilogue) op = w.app(op, TeisReisSeis);
+    op = w.app(op, w.tuple({memcomb, init}));
+    if (has_epilogue) op = w.app(op, epilogue);
+    op = w.app(op, acc_out);
+    op = w.app(op, accs);
+    if (has_epilogue) op = w.app(op, epilogue_maps);
+    auto final_args = has_epilogue ? w.tuple({bot_mem(), inputs, epilogue_inputs}) : w.tuple({bot_mem(), inputs});
+    auto [m, out]   = w.app(op, final_args)->projs<2>();
     return out;
 }
 
@@ -518,9 +565,8 @@ const Def* LowerToMem::lower_pad(const App* app) {
     // must keep size-1 axes (the result type's `Buf` folds them away and cannot be used here).
     DefVec so(*r_l);
     for (u64 d = 0; d < *r_l; ++d)
-        so[d] = w.call(core::nat::add,
-                       DefVec{w.call(core::nat::add, DefVec{lo->proj(*r_l, d), s_in->proj(*r_l, d)}),
-                              hi->proj(*r_l, d)});
+        so[d] = w.call(core::nat::add, DefVec{w.call(core::nat::add, DefVec{lo->proj(*r_l, d), s_in->proj(*r_l, d)}),
+                                              hi->proj(*r_l, d)});
     auto s_out = w.tuple(so);
 
     auto op       = w.annex<matrix::pad>();

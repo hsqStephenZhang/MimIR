@@ -18,6 +18,7 @@ void reg_phases(Flags2Phases& phases) {
     Phase::hook<lower_tensor, phase::Lower>(phases);
     Phase::hook<conv_to_img2col, phase::ConvToImg2Col>(phases);
     Phase::hook<lower_map_reduce, phase::LowerMapReduce>(phases);
+    Phase::hook<lower_epilogue, phase::LowerEpilogue>(phases);
     Phase::hook<lower_get_set, phase::LowerGetSet>(phases);
     Phase::hook<fuse_tensor, phase::Fuse>(phases);
     Phase::hook<lower_to_mem, phase::LowerToMem>(phases);
