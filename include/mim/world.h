@@ -113,6 +113,13 @@ public:
     u32 curr_gid() const { return state_.pod.curr_gid; }
     u32 next_gid() { return ++state_.pod.curr_gid; }
 
+    /// Diagnostic memory/object counters for phase-level profiling.
+    size_t defs_count() const { return move_.defs.size(); }
+    size_t substs_count() const { return move_.substs.size(); }
+    size_t defs_arena_used() const { return move_.arena.defs.bytes_used(); }
+    size_t defs_arena_reserved() const { return move_.arena.defs.bytes_reserved(); }
+    size_t defs_arena_pages() const { return move_.arena.defs.page_count(); }
+
     /// Manage run - used to track fixed-point iterations to compute Def::free_vars
     u32 curr_run() const { return data_.curr_run; }
     u32 next_run() { return ++data_.curr_run; }
