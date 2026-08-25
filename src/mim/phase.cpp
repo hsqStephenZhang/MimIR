@@ -1,6 +1,8 @@
 #include "mim/phase.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <utility>
 
@@ -32,10 +34,28 @@ std::unique_ptr<Phase> Phase::recreate() {
 }
 
 void Phase::run() {
+    const bool memory_profile = std::getenv("MIM_PHASE_MEMORY") != nullptr;
+    auto dump_memory = [&](const char* event) {
+        if (!memory_profile) return;
+        std::fprintf(
+            stderr,
+            "[mim.phase.memory] %s phase=%.*s gid=%u defs=%zu substs=%zu arena_used=%zu arena_reserved=%zu pages=%zu\n",
+            event,
+            static_cast<int>(name().size()),
+            name().data(),
+            world().curr_gid(),
+            world().defs_count(),
+            world().substs_count(),
+            world().defs_arena_used(),
+            world().defs_arena_reserved(),
+            world().defs_arena_pages());
+    };
+    dump_memory("begin");
     auto profiling = driver().flags().profile != Flags::Profile::None;
     if (profiling) driver().profiler().start(name());
     world().verify().ILOG("🚀 Phase launch: `{}`", name());
     start();
+    dump_memory("after");
     world().verify().ILOG("🏁 Phase finish: `{}`", name());
     if (profiling) driver().profiler().stop();
 }
