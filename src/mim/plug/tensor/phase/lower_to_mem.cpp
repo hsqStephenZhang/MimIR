@@ -639,12 +639,44 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     auto [comb, init, post]                                        = comb_init->projs<3>();
 
     // The generic rewrite rebuilds the argument tuple with its stale value-array type even when its
-    // elements were converted to buffers, which would not be assignable to the op's
-    // `«nis; %buffer.Buf …»` domain - hence the re-tupling in `buffer_list`.
-    auto [old_is, old_post_is] = app->arg()->projs<2>();
-    is                         = buffer_list(is, old_is, nis);
-    post_is                    = buffer_list(post_is, old_post_is, nps);
-    if (!is || !post_is) return RWPhase::rewrite_imm_App(app); // leave it alone
+    // elements were converted to buffers, which would not be assignable to the corresponding buffer tuple.
+    // Literal singleton axes are normalized away and leave a scalar here. Recover the logical array from
+    // map_reduce_post's type/shape metadata before materializing it.
+    auto [old_is, old_post_is]                         = app->arg()->projs<2>();
+    auto [Tis, Ris, Sis, Tps, Rps, Sps]                 = in_tys->projs<6>();
+    auto recover_list = [&](const Def* rewritten, const Def* old, const Def* tys, const Def* shapes, const Def* n,
+                            const char* kind) -> const Def* {
+        auto n_l = Lit::isa<u64>(n);
+        if (!n_l) return rewritten;
+        DefVec vals(*n_l);
+        for (u64 i = 0; i < *n_l; ++i) {
+            vals[i] = rewritten->proj(*n_l, i);
+            if (Axm::isa<buffer::Buf>(vals[i]->type())) continue;
+
+            auto old_val    = old->proj(*n_l, i);
+            auto logical_ty = w.arr(shapes->proj(*n_l, i), tys->proj(*n_l, i));
+            auto scalar     = splat_scalar(old_val);
+            // A tensor with only literal singleton axes is represented by its scalar element.
+            if (!scalar && !old_val->type()->isa<Arr>()) scalar = old_val;
+            if (scalar) {
+                vals[i] = splat_buffer(logical_ty, rewrite(scalar));
+            } else {
+                auto value = rewrite(old_val);
+                if (Axm::isa<buffer::Buf>(value->type())) {
+                    vals[i] = value;
+                } else {
+                    auto [br, bs, bT] = Axm::isa<buffer::Buf>(buf_of(logical_ty))->args<3>();
+                    vals[i]           = buffer::op_init(br, bs, bT, bot_mem(), value)->proj(1);
+                }
+            }
+            if (!Axm::isa<buffer::Buf>(vals[i]->type()))
+                fe::throwf("cannot bufferize `%tensor.map_reduce_post` {} input {}: {}", kind, i, old_val);
+        }
+        return w.tuple(vals);
+    };
+    is      = recover_list(is, old_is, Tis, Sis, nis, "map");
+    post_is = recover_list(post_is, old_post_is, Tps, Sps, nps, "post");
+    if (!is || !post_is) return RWPhase::rewrite_imm_App(app); // leave unknown-rank lists alone
 
     // Wrap the pure tensor combiner `Fn [To, «nis; Tis»] → To` into the mem-threaded combiner
     // `Fn [%mem.M 0, To, «nis; Tis»] → [%mem.M 0, To]` that `btensor.map_reduce_post` expects.
