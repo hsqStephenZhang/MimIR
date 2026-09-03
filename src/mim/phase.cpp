@@ -37,16 +37,13 @@ void Phase::run() {
         if (!memory_profile) return;
         std::fprintf(
             stderr,
-            "[mim.phase.memory] %s phase=%.*s gid=%u defs=%zu substs=%zu arena_used=%zu arena_reserved=%zu pages=%zu\n",
+            "[mim.phase.memory] %s phase=%.*s gid=%u defs=%zu substs=%zu\n",
             event,
             static_cast<int>(name().size()),
             name().data(),
             world().curr_gid(),
             world().defs_count(),
-            world().substs_count(),
-            world().defs_arena_used(),
-            world().defs_arena_reserved(),
-            world().defs_arena_pages());
+            world().substs_count());
     };
     dump_memory("begin");
     auto profiling = driver().flags().profile != Flags::Profile::None;

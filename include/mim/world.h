@@ -116,9 +116,6 @@ public:
     /// Diagnostic memory/object counters for phase-level profiling.
     size_t defs_count() const { return move_.sea.size(); }
     size_t substs_count() const { return move_.substs.size(); }
-    size_t defs_arena_used() const { return move_.arena.defs.bytes_used(); }
-    size_t defs_arena_reserved() const { return move_.arena.defs.bytes_reserved(); }
-    size_t defs_arena_pages() const { return move_.arena.defs.page_count(); }
 
     /// Manage run - used to track fixed-point iterations to compute Def::free_vars
     u32 curr_run() const { return data_.curr_run; }
