@@ -486,7 +486,7 @@ const Def* LowerMapReduce::lower_gather(const App* app) {
     auto r_l   = Lit::isa<u64>(r);
     auto dim_l = Lit::isa<u64>(dim);
     if (!r_l || !dim_l) {
-        WLOG("{} doesn't have lowering-time known rank/axis", app);
+        log().w("{} doesn't have lowering-time known rank/axis", app);
         return RWPhase::rewrite_imm_App(app);
     }
     auto rn = *r_l, axis = *dim_l;
@@ -528,7 +528,7 @@ const Def* LowerMapReduce::lower_scatter(const App* app) {
     auto r_l   = Lit::isa<u64>(r);
     auto dim_l = Lit::isa<u64>(dim);
     if (!r_l || !dim_l) {
-        WLOG("{} doesn't have lowering-time known rank/axis", app);
+        log().w("{} doesn't have lowering-time known rank/axis", app);
         return RWPhase::rewrite_imm_App(app);
     }
     auto rn = *r_l, axis = *dim_l;

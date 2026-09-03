@@ -311,7 +311,7 @@ const Def* LowerMapReduce::lower_generate(const App* app) {
     auto [T, r]        = meta->projs<2>();
     auto r_l           = Lit::isa<u64>(r);
     if (!r_l) {
-        WLOG("{} doesn't have a lowering-time known rank", app);
+        log().w("{} doesn't have a lowering-time known rank", app);
         return nullptr;
     }
     auto rn = *r_l;

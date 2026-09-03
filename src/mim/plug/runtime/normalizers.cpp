@@ -10,7 +10,7 @@ const Def* normalize_static_check(const Def* type, const Def* callee, const Def*
     auto [condition, message] = arg->projs<2>();
     if (condition == w.lit_tt()) return w.lit_tt();
     if (condition == w.lit_ff()) {
-        mim::error(callee->loc(), "static runtime assertion failed: {}", tuple2str(message));
+        callee->blame("static runtime assertion failed: {}", tuple2str(message)).bail();
         return w.bot(type);
     }
     return nullptr;

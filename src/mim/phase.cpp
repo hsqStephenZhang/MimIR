@@ -54,7 +54,7 @@ void Phase::run() {
     world().verify().log().i("🚀 launch phase `{}`", name());
     start();
     dump_memory("after");
-    world().verify().ILOG("🏁 Phase finish: `{}`", name());
+    world().verify().log().i("🏁 finish phase `{}`", name());
     if (profiling) driver().profiler().stop();
 }
 

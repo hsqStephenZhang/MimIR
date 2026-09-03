@@ -590,11 +590,13 @@ lam torch_reduce_subscripts {r: Nat} (dimension: Idx r): «r; Nat» =
     let ro = %core.nat.sub (r, 1);
     let kept = torch_kept_dims @r dimension;
     ‹d: r;
-        let position = (%vec.first (%core.icmp.e @r) (kept, d))#tt;
+        let position = match %vec.first (%core.icmp.e @r) (kept, d) with
+            | i: Idx (%core.nat.sub (r, 1)) => %core.bitcast Nat i
+            | _: [] => ro;
         %core.select (
             %core.icmp.e @r (d, dimension),
             ro,
-            %core.bitcast Nat position)›;
+            position)›;
 
 /// Reduces one arbitrary dimension and removes it from the result shape.
 /// A static `dimension` specializes all projection maps to affine projections.
@@ -711,7 +713,8 @@ lam torch_multi_reduce_shape {r nr: Nat}
 lam torch_multi_keepdim_shape {r nr: Nat}
                               (s: «r; Nat», dimensions: «nr; Idx r»): «r; Nat» =
     ‹i: r;
-        let reduced = (%vec.first (%core.icmp.e @r) (dimensions, i))#ff;
+        let reduced = %option.is_some
+            (%vec.first (%core.icmp.e @r) (dimensions, i));
         %core.select (reduced, 1, s#i)›;
 
 /// Chooses the physical reduced tensor or its keepdim reshape. This is the
@@ -737,9 +740,12 @@ lam torch_multi_reduce_subscripts {r nr: Nat}
     let ro = torch_reduced_rank dimensions;
     let kept = torch_kept_axes @(r, nr) dimensions;
     ‹d: r;
-        let (is_reduced, reduced_pos) =
-            %vec.first (%core.icmp.e @r) (dimensions, d);
-        let kept_pos = (%vec.first (%core.icmp.e @r) (kept, d))#tt;
+        let reduced = %vec.first (%core.icmp.e @r) (dimensions, d);
+        let is_reduced = %option.is_some reduced;
+        let reduced_pos = %option.unwrap_or reduced (%core.idx nr 0 0);
+        let kept_pos = match %vec.first (%core.icmp.e @r) (kept, d) with
+            | i: Idx ro => %core.bitcast Nat i
+            | _: [] => 0;
         %core.select (
             is_reduced,
             %core.nat.add (ro, %core.bitcast Nat reduced_pos),
@@ -1633,7 +1639,7 @@ lam torch_indexed_unary
 
 lam torch_permute_map {r: Nat}
                       (dims: «r; Idx r»)
-                      (o: «r; %affine.index»): «r; %affine.index» =
+                      (o: «r; %affine.Idx»): «r; %affine.Idx» =
     ‹i: r; o#(torch_transpose_source_axis (dims, i))›;
 
 /// PyTorch API: https://pytorch.org/docs/stable/generated/torch.permute.html
@@ -1829,7 +1835,7 @@ lam %torch.shape_impl.repeat {T: *, r: Nat, s: «r; Nat»}
 
 lam torch_roll_map {r nr: Nat}
                    (s: «r; Nat», shifts: «nr; Nat», dimensions: «nr; Idx r»)
-                   (indices: «r; %affine.index»): «r; %affine.index» =
+                   (indices: «r; %affine.Idx»): «r; %affine.Idx» =
     ‹d: r;
         let candidates = ‹i: nr;
             %core.select (
@@ -1840,7 +1846,7 @@ lam torch_roll_map {r nr: Nat}
         let normalized_shift = %core.nat.mod (shift, s#d);
         let offset = %core.nat.sub (s#d, normalized_shift);
         %affine.semiop.mod (
-            %affine.op.add (indices#d, %affine.constant offset),
+            %affine.op.add (indices#d, %affine.lit offset),
             s#d)›;
 
 /// PyTorch API: https://pytorch.org/docs/stable/generated/torch.roll.html
@@ -1881,13 +1887,13 @@ lam torch_unfold_shape {r: Nat}
 /// and the original output coordinate on every other axis.
 lam torch_unfold_map {r: Nat}
                      (dimension: Idx r, step: Nat)
-                     (indices: «%core.nat.add (r, 1); %affine.index»)
-                   : «r; %affine.index» =
+                     (indices: «%core.nat.add (r, 1); %affine.Idx»)
+                   : «r; %affine.Idx» =
     let window_offset = indices#(%core.idx (%core.nat.add (r, 1)) 0 r);
     ‹d: r;
         let output_d = indices#(%core.idx (%core.nat.add (r, 1)) 0
             (%core.bitcast Nat d));
-        %core.select @%affine.index (
+        %core.select @%affine.Idx (
             %core.icmp.e @r (d, dimension),
             %affine.op.add (
                 %affine.semiop.mul (output_d, step), window_offset),
@@ -3425,7 +3431,7 @@ axm %torch.linalg(mm): [A: %torch.Arithmetic]
                  → «m, n; A#R#T»;
 lam %torch.linalg_impl.mm [A: %torch.Arithmetic] {m k n: Nat}
                       (lhs: «m, k; A#R#T», rhs: «k, n; A#R#T»): «m, n; A#R#T» =
-    %tensor.product_2d_impl A#R @(m, k, n) (lhs, rhs);
+    %tensor.product_2d_impl 1 A#R @(m, k, n) (lhs, rhs);
 
 /// PyTorch API: https://pytorch.org/docs/stable/generated/torch.bmm.html
 /// Types: `[b, m, k] x [b, k, n] -> [b, m, n]` over one element dictionary.
@@ -3435,7 +3441,7 @@ axm %torch.linalg(bmm): [A: %torch.Arithmetic]
                   → «b, m, n; A#R#T»;
 lam %torch.linalg_impl.bmm [A: %torch.Arithmetic] {b m k n: Nat}
                        (lhs: «b, m, k; A#R#T», rhs: «b, k, n; A#R#T»): «b, m, n; A#R#T» =
-    %tensor.bmm_impl A#R @(b, m, k, n) (lhs, rhs);
+    %tensor.bmm_impl 1 A#R @(b, m, k, n) (lhs, rhs);
 
 lam torch_nat_max (a b: Nat): Nat =
     %core.select (%core.ncmp.ge (a, b), a, b);
@@ -3581,7 +3587,7 @@ lam torch_matmul_matrices [A: %torch.Arithmetic] {rb m k n: Nat}
     let rhs_3d = %tensor.reshape_impl
         @(A#R#T, %core.nat.add (rb, 2), 3)
         rhs_shape (batch, k, n) rhs;
-    let product = %tensor.bmm_impl A#R @(batch, m, k, n) (lhs_3d, rhs_3d);
+    let product = %tensor.bmm_impl 1 A#R @(batch, m, k, n) (lhs_3d, rhs_3d);
     %tensor.reshape_impl
         @(A#R#T, 3, %core.nat.add (rb, 2))
         (batch, m, n) out_shape product;
@@ -3639,7 +3645,7 @@ lam %torch.linalg_impl.matmul [A: %torch.Arithmetic]
 lam torch_grouped_conv2d_in_map
     (cin_per_group cout_per_group: Nat,
      stride dilation: «2; Nat»)
-    (o: «7; %affine.index»): «4; %affine.index» =
+    (o: «7; %affine.Idx»): «4; %affine.Idx» =
     let group = %affine.semiop.floordiv (o#1_7, cout_per_group);
     let channel = %affine.op.add
         (%affine.semiop.mul (group, cin_per_group), o#4_7);
@@ -3903,7 +3909,7 @@ lam %torch.pool_impl.max_pool2d_with_indices
 
 lam torch_pool3d_in_map
     (stride dilation: «3; Nat»)
-    (o: «8; %affine.index»): «5; %affine.index» =
+    (o: «8; %affine.Idx»): «5; %affine.Idx» =
     (o#0_8, o#1_8,
      %affine.op.add
         (%affine.semiop.mul (o#2_8, stride#0_3),
@@ -4589,7 +4595,7 @@ lam %torch.linalg_impl.addmm [A: %torch.Arithmetic]
         body
     where
         lam body(): «m, n; A#R#T» =
-            let product = %tensor.product_2d_impl A#R @(m, k, n) (mat1, mat2);
+            let product = %tensor.product_2d_impl 1 A#R @(m, k, n) (mat1, mat2);
             let scaled_product = %tensor.unary_impl @(A#R#T, A#R#T)
                 (torch_scale_scalar A alpha) @(2, (m, n)) product;
             (%core.select (A#is_zero beta, without_self, with_self)) ()
@@ -5870,7 +5876,7 @@ lam conv3d_shape
 lam torch_grouped_conv3d_in_map
     (cin_per_group cout_per_group: Nat,
      stride dilation: «3; Nat»)
-    (o: «9; %affine.index»): «5; %affine.index» =
+    (o: «9; %affine.Idx»): «5; %affine.Idx» =
     let group = %affine.semiop.floordiv (o#1_9, cout_per_group);
     let channel = %affine.op.add
         (%affine.semiop.mul (group, cin_per_group), o#5_9);
@@ -6002,16 +6008,16 @@ lam torch_conv_transpose_upsampled_dim
         output_padding);
 
 lam torch_conv_transpose2d_flip_weight_map
-    (kh kw: Nat) (o: «4; %affine.index»): «4; %affine.index» =
+    (kh kw: Nat) (o: «4; %affine.Idx»): «4; %affine.Idx» =
     (o#0_4, o#1_4,
      %core.select (
         %core.ncmp.e (kh, 1), o#2_4,
         %affine.op.sub
-            (%affine.constant (%core.nat.sub (kh, 1)), o#2_4)),
+            (%affine.lit (%core.nat.sub (kh, 1)), o#2_4)),
      %core.select (
         %core.ncmp.e (kw, 1), o#3_4,
         %affine.op.sub
-            (%affine.constant (%core.nat.sub (kw, 1)), o#3_4)));
+            (%affine.lit (%core.nat.sub (kw, 1)), o#3_4)));
 
 fun torch_conv_weight_copy [A: %torch.Arithmetic]
                            (acc: A#R#T, value: «1; A#R#T»)@tt
@@ -6396,20 +6402,20 @@ lam conv_transpose3d_shape
     (n, cout, dhw#0_3, dhw#1_3, dhw#2_3);
 
 lam torch_conv_transpose3d_flip_weight_map
-    (kd kh kw: Nat) (o: «5; %affine.index»): «5; %affine.index» =
+    (kd kh kw: Nat) (o: «5; %affine.Idx»): «5; %affine.Idx» =
     (o#0_5, o#1_5,
      %core.select (
         %core.ncmp.e (kd, 1), o#2_5,
         %affine.op.sub
-            (%affine.constant (%core.nat.sub (kd, 1)), o#2_5)),
+            (%affine.lit (%core.nat.sub (kd, 1)), o#2_5)),
      %core.select (
         %core.ncmp.e (kh, 1), o#3_5,
         %affine.op.sub
-            (%affine.constant (%core.nat.sub (kh, 1)), o#3_5)),
+            (%affine.lit (%core.nat.sub (kh, 1)), o#3_5)),
      %core.select (
         %core.ncmp.e (kw, 1), o#4_5,
         %affine.op.sub
-            (%affine.constant (%core.nat.sub (kw, 1)), o#4_5)));
+            (%affine.lit (%core.nat.sub (kw, 1)), o#4_5)));
 
 lam torch_conv_transpose3d_weight
     [A: %torch.Arithmetic]
@@ -6918,12 +6924,12 @@ lam torch_i64_add (lhs rhs: I64): I64 =
     %core.wrap.add 0 (lhs, rhs);
 
 lam torch_reverse_window_out_map_2d
-    (indices: «3; %affine.index»): «2; %affine.index» =
+    (indices: «3; %affine.Idx»): «2; %affine.Idx» =
     (indices#0_3, indices#1_3);
 
 lam torch_reverse_window_in_map_2d
     (dimension: Idx 2)
-    (indices: «3; %affine.index»): «2; %affine.index» =
+    (indices: «3; %affine.Idx»): «2; %affine.Idx» =
     let axis0 = %core.icmp.e @2 (dimension, 0_2);
     let shifted0 = %affine.op.add (indices#0_3, indices#2_3);
     let shifted1 = %affine.op.add (indices#1_3, indices#2_3);
@@ -7110,7 +7116,8 @@ lam torch_flip_element {T: *, r nr: Nat}
                        (s: «r; Nat», dimensions: «nr; Idx r»)
                        (input: «s; T») (indices: «r; I64»): T =
     let coords = ‹d: r;
-        let reverse = (%vec.first (%core.icmp.e @r) (dimensions, d))#ff;
+        let reverse = %option.is_some
+            (%vec.first (%core.icmp.e @r) (dimensions, d));
         let last = %core.wrap.sub 0 (%core.bitcast I64 (s#d), 1I64);
         let coordinate = %core.select (
             reverse,

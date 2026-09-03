@@ -16,7 +16,7 @@ const Def* normalize_resolve(const Def* type, const Def* callee, const Def* arg)
         auto [candidate, value] = instances->proj(*instance_count, i)->projs<2>();
         if (candidate != key) continue;
         if (result) {
-            mim::error(callee->loc(), "duplicate exact Torch interface instance for key '{}'", key);
+            callee->blame("duplicate exact Torch interface instance for key '{}'", key).bail();
             return world.bot(type);
         }
         result = value;
@@ -24,7 +24,7 @@ const Def* normalize_resolve(const Def* type, const Def* callee, const Def* arg)
 
     if (result) return result;
     if (key->isa<Var>()) return nullptr;
-    mim::error(callee->loc(), "no exact Torch interface instance for key '{}'", key);
+    callee->blame("no exact Torch interface instance for key '{}'", key).bail();
     return world.bot(type);
 }
 

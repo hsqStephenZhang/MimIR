@@ -122,7 +122,7 @@ const Def* ClosConvPrep::rewrite_arg(const App* app, const Def* old_op) {
 
 const Def* ClosConvPrep::rewrite_callee_op(const Def* old_op) {
     if (auto bb = Lam::isa_mut_basicblock(old_op); bb && local_bbs_.contains(bb)) {
-        DLOG("found shared-scope BB in callee position: {}", bb);
+        log().d("found shared-scope BB in callee position: {}", bb);
         return new_world().call(attr::local_bb, rewrite(bb));
     }
     if (!old_op->isa_mut<Lam>()) {

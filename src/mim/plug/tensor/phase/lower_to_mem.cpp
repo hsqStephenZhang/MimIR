@@ -6,8 +6,6 @@
 #include <mim/def.h>
 #include <mim/lam.h>
 
-#include <mim/util/util.h>
-
 #include <mim/plug/affine/affine.h>
 #include <mim/plug/btensor/btensor.h>
 #include <mim/plug/buffer/buffer.h>

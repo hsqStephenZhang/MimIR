@@ -114,7 +114,7 @@ public:
     u32 next_gid() { return ++state_.pod.curr_gid; }
 
     /// Diagnostic memory/object counters for phase-level profiling.
-    size_t defs_count() const { return move_.defs.size(); }
+    size_t defs_count() const { return move_.sea.size(); }
     size_t substs_count() const { return move_.substs.size(); }
     size_t defs_arena_used() const { return move_.arena.defs.bytes_used(); }
     size_t defs_arena_reserved() const { return move_.arena.defs.bytes_reserved(); }
