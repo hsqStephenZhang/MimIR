@@ -452,6 +452,40 @@ axm conv: [R: Ring]
         → [input: «n, cin, h, w; R#T», weight: «cout, cin, kh, kw; R#T»]
         → «conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding); R#T»;
 ///
+/// ### im2col_shape
+///
+/// `(n, c, (H, W), (KH, KW), stride, dilation, padding) ↦ (n, c·KH·KW, OH·OW)` with `OH`/`OW` as in `conv_shape`.
+pub lam im2col_shape (n c: Nat, s k stride dilation padding: «2; Nat»): «3; Nat» =
+    let (_, _, oh, ow) = conv_shape (n, c, s, k, stride, dilation, padding);
+    (n, c * k#0_2 * k#1_2, oh * ow);
+///
+/// ### im2col
+///
+/// Unfolds the `kernel` windows of `input: «N, C, H, W; T»` into the columns of `«N, C·KH·KW, OH·OW; T»`
+/// (PyTorch's `unfold`):
+/// \f[
+///     \mathit{out}_{n,(c,kh,kw),(oh,ow)} = \mathit{padded}_{n,c,ih,iw},
+///     \qquad ih = \mathit{stride}_0 \cdot oh + \mathit{dilation}_0 \cdot kh,
+///     \qquad iw = \mathit{stride}_1 \cdot ow + \mathit{dilation}_1 \cdot kw
+/// \f]
+/// The row and column indices are row-major linearized; `padding` pads the spatial axes with `value`.
+
+axm im2col: {T: *}
+          → {n c h w: Nat}
+          → [kernel stride dilation padding: «2; Nat»]
+          → [input: «n, c, h, w; T», value: T]
+          → «im2col_shape (n, c, (h, w), kernel, stride, dilation, padding); T»;
+///
+/// ### conv_im2col
+///
+/// `conv` computed as `im2col` followed by a matrix product with the `«Cout, Cin·KH·KW»`-reshaped weight.
+
+axm conv_im2col: [R: Ring]
+               → {n cin cout h w kh kw: Nat}
+               → [stride dilation padding: «2; Nat»]
+               → [input: «n, cin, h, w; R#T», weight: «cout, cin, kh, kw; R#T»]
+               → «conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding); R#T»;
+///
 /// ### dot_general_shape
 ///
 /// The result shape: the batching extents, then the left operand's free extents, then the right
@@ -1385,6 +1419,45 @@ priv anx lam select_impl {T: *} {r: Nat, s: «r; Nat»} (is: [«s; Bool», «s; 
 /// `map_impl` over one tensor.
 priv anx lam unary_impl {Ti To : *} (app: Ti → To) {r: Nat, s: «r; Nat»} (i: «s; Ti»): «s; To» =
   map_impl app i;
+///
+/// ### im2col_in_map
+///
+/// Windowed input read over the loop vector `(n, c, kh, kw, oh, ow)`:
+/// `(n, c, stride#0·oh + dilation#0·kh, stride#1·ow + dilation#1·kw)`.
+lam im2col_in_map (stride dilation: «2; Nat») (o: «6; affine.Index»): «4; affine.Index» =
+    (o#0_6, o#1_6,
+     affine.op.add (affine.semiop.mul (o#4_6, stride#0_2), affine.semiop.mul (o#2_6, dilation#0_2)),
+     affine.op.add (affine.semiop.mul (o#5_6, stride#1_2), affine.semiop.mul (o#3_6, dilation#1_2)));
+///
+/// ### im2col_impl
+
+priv anx lam im2col_impl {T: *} {n c h w: Nat}
+                        (kernel stride dilation padding: «2; Nat»)
+                        (input: «n, c, h, w; T», value: T)
+                      : «im2col_shape (n, c, (h, w), kernel, stride, dilation, padding); T» =
+    let pad_lohi       = (0, 0, padding#0_2, padding#1_2);
+    let padded         = pad (n, c, h, w) (0, pad_lohi, pad_lohi) (input, value);
+    let (_, _, oh, ow) = conv_shape (n, c, (h, w), kernel, stride, dilation, padding);
+    let s_cols         = (n, c, kernel#0_2, kernel#1_2, oh, ow);
+    let cols           = map_reduce (s_cols, s_cols) (tensor_copy, ⊥: T)
+                             affine.id (im2col_in_map (stride, dilation),) padded;
+    reshape s_cols (im2col_shape (n, c, (h, w), kernel, stride, dilation, padding)) cols;
+///
+/// ### conv_im2col_impl
+///
+/// `W · cols` per batch as a `dot_product` of the reshaped weight against the `im2col` columns, contracting `Cin·KH·KW`;
+/// its `«Cout, N, OH·OW»` result is transposed and reshaped back to NCHW.
+
+priv anx lam conv_im2col_impl (R: Ring) {n cin cout h w kh kw: Nat}
+                             (stride dilation padding: «2; Nat»)
+                             (input: «n, cin, h, w; R#T», weight: «cout, cin, kh, kw; R#T»)
+                           : «conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding); R#T» =
+    let (_, _, oh, ow) = conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding);
+    let k    = cin * kh * kw;
+    let cols = im2col ((kh, kw), stride, dilation, padding) (input, R#_0);
+    let w2   = reshape (cout, cin, kh, kw) (cout, k) weight;
+    let prod = dot_product R (1_2, 1_3, (), ()) (w2, cols);
+    reshape (n, cout, oh * ow) (n, cout, oh, ow) (transpose (1_3, 0_3, 2_3) prod);
 ///
 /// ## Phases
 ///

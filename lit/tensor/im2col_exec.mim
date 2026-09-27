@@ -1,0 +1,35 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/im2col_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// Executable tensor.im2col and tensor.conv_im2col, driven by im2col_aux.cpp against scalar references.
+// Both are lowered by tensor.lower_tensor via their frontend `_impl`s; conv_im2col is checked next to
+// tensor.conv on the same operands.
+plugin tensor;
+plugin refly;
+plugin core;
+plugin cps;
+plugin affine;
+plugin mem;
+plugin math;
+
+let F32 = math.F32;
+
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+// 3x2 kernel, stride (2, 1), dilation (1, 2), padding (1, 1): «2, 3, 6, 5» -> «2, 3·3·2, 3·5».
+// The pad value is a parameter, as an extern whose sole parameter is an array takes it element-wise.
+extern fun cols (x: «2, 3, 6, 5; F32», value: F32): «2, 18, 15; F32» =
+    return (tensor.im2col ((3, 2), (2, 1), (1, 2), (1, 1)) (x, value));
+
+// A 3x3 "same" convolution: «2, 3, 8, 8» * «4, 3, 3, 3» -> «2, 4, 8, 8».
+extern fun conv_same (x: «2, 3, 8, 8; F32», w: «4, 3, 3, 3; F32»): «2, 4, 8, 8; F32» =
+    return (tensor.conv_im2col R ((1, 1), (1, 1), (1, 1)) (x, w));
+
+extern fun conv_same_ref (x: «2, 3, 8, 8; F32», w: «4, 3, 3, 3; F32»): «2, 4, 8, 8; F32» =
+    return (tensor.conv R ((1, 1), (1, 1), (1, 1)) (x, w));
+
+// Stride 2, dilation 2, padding 1: «2, 2, 9, 9» * «3, 2, 3, 3» -> «2, 3, 4, 4».
+extern fun conv_sd (x: «2, 2, 9, 9; F32», w: «3, 2, 3, 3; F32»): «2, 3, 4, 4; F32» =
+    return (tensor.conv_im2col R ((2, 2), (2, 2), (1, 1)) (x, w));

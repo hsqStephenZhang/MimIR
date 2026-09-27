@@ -102,6 +102,8 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::flip>(app)) return lower_via_impl(app, annex<tensor::flip_impl>());
     if (Axm::isa<tensor::conv>(app)) return lower_via_impl(app, annex<tensor::conv_impl>());
     if (Axm::isa<tensor::pool>(app)) return lower_via_impl(app, annex<tensor::pool_impl>());
+    if (Axm::isa<tensor::im2col>(app)) return lower_via_impl(app, annex<tensor::im2col_impl>());
+    if (Axm::isa<tensor::conv_im2col>(app)) return lower_via_impl(app, annex<tensor::conv_im2col_impl>());
 
     // The dot family's `_impl`s take a leading `fastest_2` with no axiom counterpart — the
     // `tensor.fastest_axis` reflection of the right operand, pre-applied here at the staging
