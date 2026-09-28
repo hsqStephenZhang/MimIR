@@ -1,0 +1,23 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/dot_block_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// Executable cache-blocked contractions (see dot_block.mim), driven by dot_block_aux.cpp against a scalar reference:
+// N blocked alone, N and the hoisted K blocked, and a conv-like product with a batch outside the blocks.
+plugin tensor;
+plugin refly;
+plugin core;
+plugin cps;
+plugin affine;
+plugin mem;
+plugin math;
+
+let F32 = math.F32;
+
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+extern fun nblk (a: «8, 100; F32», b: «100, 512; F32»): «8, 512; F32» = return (tensor.product_2d R (a, b));
+extern fun kblk (a: «8, 1152; F32», b: «1152, 512; F32»): «8, 512; F32» = return (tensor.product_2d R (a, b));
+extern fun conv (w: «6, 96; F32», c: «2, 96, 640; F32»): «6, 2, 640; F32» =
+    return (tensor.dot_product R (1_2, 1_3, (), ()) (w, c));

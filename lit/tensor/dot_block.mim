@@ -1,0 +1,47 @@
+// RUN: %mim %s -p opt -o %t
+// RUN: cat %t | %FileCheck %s
+// RUN: cat %t | %FileCheck %s --check-prefix=SCHED
+
+// Cache blocking of a contraction (tensor.dot_schedule_nblk). The last output dim N is blocked by nc and its block
+// loop runs outside the left operand's free dims, so the right operand's panel stays in cache for all of them.
+// A contraction whose whole panel does not fit is blocked too and hoisted outside the left free dims
+// (tensor.hoist_red), which the schedule carries as (vdim, unroll, tail, pout, rout) with rout = 1.
+// The packed output is reshaped back; lower_to_mem makes that reshape a view of the buffer.
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin compile;
+
+let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
+
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 2, 0\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(2, 1, 0, 1, 1\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(2, 1, 0, 1, 0\)}}
+
+// A conv-like product, (Cout, K) x (N, K, P): the batch and the P blocks outside Cout, K = 96 fits whole.
+// CHECK-LABEL: extern fun conv
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((6, 2, 5, 128), (2, 5, 6, 128, 1, 24, 4),
+extern fun conv (w: «6, 96; Nat», c: «2, 96, 640; Nat»): «6, 2, 640; Nat» =
+    return (tensor.dot_product R (1_2, 1_3, (), ()) (w, c));
+
+// K = 1152 with nc = 256: 6 blocks of 48 x 4 contraction steps, hoisted outside M.
+// CHECK-LABEL: extern fun kblk
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((8, 2, {{[a-z0-9]+}}), (2, 8, {{[a-z0-9]+}}, 6, 48, 4),
+extern fun kblk (a: «8, 1152; Nat», b: «1152, 512; Nat»): «8, 512; Nat» =
+    return (tensor.product_2d R (a, b));
+
+// K = 100 fits whole: only N is blocked.
+// CHECK-LABEL: extern fun nblk
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((8, 2, {{[a-z0-9]+}}), (2, 8, {{[a-z0-9]+}}, 1, 25, 4),
+extern fun nblk (a: «8, 100; Nat», b: «100, 512; Nat»): «8, 512; Nat» =
+    return (tensor.product_2d R (a, b));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        compile.cleanup,
+        tensor.lower_tensor,
+        tensor.fuse_tensor,
+        compile.cleanup,
+    );

@@ -118,10 +118,13 @@ axm map_reduce_post: {nis nps: Nat}
 ///   `mr_nest`), and `vdim ≥ Rn` means "none";
 /// - `unroll`, the number of trailing reduction dims to unroll into straight-line code;
 /// - `tail`, `0` for none, else the innermost looped reduction dim's last iteration is peeled, and the first unrolled
-///   dim runs only its first `tail` points in it — the remainder of a loop partition.
+///   dim runs only its first `tail` points in it — the remainder of a loop partition;
+/// - `pout`/`rout`, the loop order: the leading `rout` reduction dims run between the leading `pout` parallel dims and
+///   the others — the reduction-outer order of a cache-blocked contraction; `rout = 0` keeps all reductions inside.
 ///
 /// `tensor.mk_sched` is an alias for this lam: `btensor` owns it for the same reason it owns `Ring`.
-anx lam mk_sched (vdim unroll tail: Nat) (N: *) (mk: [vdim unroll tail: Nat] → N): N = mk (vdim, unroll, tail);
+anx lam mk_sched (vdim unroll tail pout rout: Nat) (N: *) (mk: [vdim unroll tail pout rout: Nat] → N): N =
+    mk (vdim, unroll, tail, pout, rout);
 ///
 /// ### proj_map
 ///
@@ -394,9 +397,11 @@ anx lam NestT (ro rr: Nat, Sr: «ro + rr; Nat», To U: *): * =
 ///
 /// A non-zero `tail` peels the last iteration of the innermost looped reduction dim (see `mk_sched`); the
 /// reduction-vectorized nest has no such loop and is only selected without one.
+/// A non-zero `rout` with a parallel vector dim and no `tail` selects the tiled nest (`tiled` below); the other nests
+/// ignore `pout`/`rout`, which only order the loops.
 ///
 /// Per-cell fold order is untouched by any of these transforms.
-anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail: Nat)
+anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail pout rout: Nat)
                    : NestT (ro, rr, Sr, To, U) =
     let r    = ro + rr;
     // The unroll window must stay within the reduction dims.
@@ -568,8 +573,54 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail: N
                 (range_unroll (r, Sr_rv) U (rv_bd, ro) fill) (pref, m, u, s1);
             (range_nest (r, Sr) U (affine_for @U, 0, rv_bd) at_block) (‹r; 0I32›, mem1, u0, done);
 
+        // TILED (`rout ≠ 0`): the cache-blocked, reduction-outer order. Per cell of the outer parallel dims
+        // [0, pout), a panel of accumulators spans the inner parallel dims [pout, vd] — the vector dim last — and
+        // stays live across the hoisted reduction loops [ro, ro + rout), inside which the inner parallel dims and
+        // then the remaining reductions run, the vector loop innermost; the panel is written back afterwards.
+        // Clamps as above: the non-selected branch is still elaborated.
+        let tl_ok = core.bit2.and_ 2 (rout != 0, core.bit2.and_ 2 (vec_ok, core.bit2.and_ 2 (tail == 0,
+                    core.bit2.and_ 2 (pout <= vd, ro + rout <= u_lo))));
+        let tl_p  = (vd, pout)#(pout <= vd);
+        let tl_r  = (0, rout)#(ro + rout <= u_lo);
+        let tl_n  = vd + 1 - tl_p;
+        // Listed from the vector dim down: the right fold makes the first listed dim the fastest-varying panel axis.
+        let tl_ds = ‹i: tl_n; vd - core.bitcast Nat i›;
+        lam tl_mul (d: Nat, acc: Nat): Nat = acc * Sr#(core.idx 0 r d);
+        let Nt    = vec.fold.r @(Nat, Nat) @tl_n tl_mul (tl_ds, 1);
+
+        con tiled (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
+            lam tl_lin (pref: «r; I32») (d: Nat, acc: I32): I32 =
+                core.wrap.add 0 (core.wrap.mul 0 (acc, core.bitcast I32 (Sr#(core.idx 0 r d))), pref#(core.idx 0 r d));
+            let ti_of = lm (pref: «r; I32»): Idx Nt = core.conv.u Nt (vec.fold.r @(I32, Nat) @tl_n (tl_lin pref) (tl_ds, 0I32));
+            let (mem1, panel) = buffer.alloc (1, Nt, To) mem0;
+            con at_block (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+                con fill (pref2: «r; I32», memf: mem.M 0, uf: U, kf: Cn [mem.M 0, U]) =
+                    let (memf2, panel2) = buffer.write (1, Nt, To) (memf, panel, ti_of pref2, init);
+                    kf (memf2, uf);
+                con at_point (pref2: «r; I32», memp: mem.M 0, up: U, kp: Cn [mem.M 0, U]) =
+                    let (memp1, acc0) = buffer.read (1, Nt, To) (memp, panel, ti_of pref2);
+                    con after_win (memp2: mem.M 0, accn: To) =
+                        let (memp3, panel3) = buffer.write (1, Nt, To) (memp2, panel, ti_of pref2, accn);
+                        kp (memp3, up);
+                    win (pref2, memp1, acc0, after_win);
+                con wb_cell (pref2: «r; I32», memw: mem.M 0, uw: U, kw: Cn [mem.M 0, U]) =
+                    let (memw1, v) = buffer.read (1, Nt, To) (memw, panel, ti_of pref2);
+                    wb (memw1, uw, v, pref2, kw);
+                con s2 (memB: mem.M 0, uB: U) =
+                    (range_nest (r, Sr) U (affine_for @U, tl_p, vd)
+                        (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) wb_cell)) (pref, memB, uB, k);
+                con s1 (memA: mem.M 0, uA: U) =
+                    (range_nest (r, Sr) U (affine_for @U, ro, ro + tl_r)
+                        (range_nest (r, Sr) U (affine_for @U, tl_p, vd)
+                            (range_nest (r, Sr) U (affine_for @U, ro + tl_r, u_lo)
+                                (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) at_point))))
+                        (pref, memA, uA, s2);
+                (range_nest (r, Sr) U (affine_for @U, tl_p, vd)
+                    (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) fill)) (pref, m, u, s1);
+            (range_nest (r, Sr) U (affine_for @U, 0, tl_p) at_block) (‹r; 0I32›, mem1, u0, done);
+
         con run (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
-            ((((classic, vectorized)#vec_ok, blocked)#block_ok, redvec)#redvec_ok) (mem0, u0, done);
+            (((((classic, vectorized)#vec_ok, blocked)#block_ok, redvec)#redvec_ok, tiled)#tl_ok) (mem0, u0, done);
         run;
     nest;
 ///
