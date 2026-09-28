@@ -1,0 +1,39 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/compute_at_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// Executable tensor.compute_at, driven by compute_at_aux.cpp against scalar references:
+// * `att`:  exp(q · kt) · v with the scores computed per query row inside the second product (a reduction producer);
+// * `mlp`:  relu(a) · b with relu computed per row of a (an elementwise producer);
+// * `pool`: a 2x2/stride-2 max-pool over relu(x), per output row: a strided, overlapping window read;
+// * `twice`: a producer with a second consumer, which stays materialized.
+plugin tensor;
+plugin refly;
+plugin core;
+plugin cps;
+plugin affine;
+plugin mem;
+plugin math;
+
+let F32 = math.F32;
+
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+lam relu (x: F32): F32 = math.extrema.fmax 0 (0:F32, x);
+
+extern fun att (q: «48, 16; F32», kt: «16, 40; F32», v: «40, 24; F32»): «48, 24; F32» =
+    let s = tensor.unary (math.exp.exp 0) (tensor.product_2d R (q, kt));
+    return (tensor.product_2d R (tensor.compute_at 1 s, v));
+
+extern fun mlp (a: «20, 36; F32», b: «36, 28; F32»): «20, 28; F32» =
+    return (tensor.product_2d R (tensor.compute_at 1 (tensor.unary relu a), b));
+
+extern fun pool (x: «2, 3, 8, 10; F32», _: F32): «2, 3, 4, 5; F32» =
+    let y = tensor.compute_at 3 (tensor.unary relu x);
+    return (tensor.pool (math.extrema.fmax 0, 0:F32) ((2, 2), (2, 2), (1, 1), (0, 0), (4, 5)) y);
+
+extern fun twice (a: «20, 36; F32», b: «36, 28; F32»): «20, 28; F32» =
+    let r = tensor.unary relu a;
+    let p = tensor.product_2d R (tensor.compute_at 1 r, b);
+    return (tensor.binary (math.arith.add 0) (p, tensor.product_2d R (r, b)));

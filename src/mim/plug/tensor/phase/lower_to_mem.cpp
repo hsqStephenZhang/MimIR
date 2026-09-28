@@ -178,6 +178,8 @@ void LowerToMem::collect_tensor_types() {
                 }
             } else if (Axm::isa<tensor::barrier>(app)) {
                 add_tensor_ty(app->type());
+            } else if (Axm::isa<tensor::compute_at>(app)) {
+                add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::if_static>(app)) {
                 // Value-level binding-time dispatch; this phase's rewrite residualizes it to its
                 // dynamic branch - not a tensor op.
@@ -421,6 +423,11 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (is_bootstrapping()) return RWPhase::rewrite_imm_App(app);
     if (Axm::isa<tensor::buf>(app)) return rewrite(app->arg()); // consumed: the buffer *is* the tensor now
     if (Axm::isa<tensor::barrier>(app)) return rewrite(app->arg());
+    if (auto at = Axm::isa<tensor::compute_at>(app)) {
+        auto x = rewrite(at->arg());
+        if (!Axm::isa<buffer::Buf>(x->type())) return x;
+        return new_world().call<btensor::compute_at>(rewrite(at->callee()->as<App>()->arg()), x);
+    }
     // A `tensor.if_static` still stuck at lowering time guards a runtime value: residualize to
     // its dynamic branch.
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));

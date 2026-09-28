@@ -10,6 +10,10 @@
 #include <mim/plug/cps/cps.h>
 #include <mim/plug/mem/mem.h>
 
+#include <algorithm>
+
+#include <fe/worklist.h>
+
 #include "mim/plug/btensor/btensor.h"
 
 namespace mim::plug::btensor::phase {
@@ -80,6 +84,7 @@ const Def* build_pointwise(World& w,
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (is_bootstrapping()) return RWPhase::rewrite_imm_App(app);
     if (Axm::isa<btensor::map_reduce_post>(app)) return lower_map_reduce_post(app);
+    if (Axm::isa<btensor::compute_at>(app)) return rewrite(app->arg());
     if (Axm::isa<btensor::broadcast>(app)) return lower_broadcast(app);
     if (Axm::isa<btensor::pad>(app)) return lower_pad(app);
     if (Axm::isa<btensor::concat>(app)) return lower_concat(app);
@@ -107,10 +112,15 @@ const Def* LowerMapReduce::lower_buffer_lit(const App* app) {
         [](const DefVec&, const Def* ins, const Def* m) -> std::pair<const Def*, const Def*> { return {m, ins}; });
 }
 
-const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
-    auto& w = new_world();
-    auto c  = rewrite(app->callee())->as<App>();
+/// The pieces of a (new-world) `btensor.map_reduce_post` callee.
+struct MrOp {
+    u64 nis, nps, ro, rr;
+    const Def *To, *Tp, *Ro, *Sr, *So, *sched, *Ris, *Sis, *Rps, *Sps, *comb, *init, *post, *accs, *post_accs, *acc_out;
+};
 
+namespace {
+
+std::optional<MrOp> mr_op(const App* c) {
     auto [nis_nps, meta, shapes, in_tys, comb_init, acc_out, accs_all] = c->uncurry_args<7>();
     auto [nis, nps]                                                    = nis_nps->projs<2>();
     auto [To, Tp, Ro, Rn, TSched]                                      = meta->projs<5>();
@@ -118,23 +128,182 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto [Tis, Ris, Sis, Tps, Rps, Sps]                                = in_tys->projs<6>();
     auto [comb, init, post]                                            = comb_init->projs<3>();
     auto [accs, post_accs]                                             = accs_all->projs<2>();
+    auto nis_l = Lit::isa<u64>(nis), nps_l = Lit::isa<u64>(nps), ro_l = Lit::isa<u64>(Ro), rn_l = Lit::isa<u64>(Rn);
+    if (!nis_l || !nps_l || !ro_l || !rn_l || *rn_l < *ro_l) return {};
+    return MrOp{*nis_l, *nps_l, *ro_l, *rn_l - *ro_l, To, Tp, Ro, Sr, So, sched, Ris, Sis, Rps, Sps,
+                comb, init, post, accs, post_accs, acc_out};
+}
 
-    // The final argument is `[mem, is, post_is]`; the result is `[mem, Buf]`.
-    auto [op_mem, op_is, op_post_is] = rewrite(app->arg())->projs<3>();
-    auto result_ty                   = rewrite(app->type()); // [mem.M 0, buffer.Buf (Ro, So, Tp)]
-
-    auto nis_l = Lit::isa<u64>(nis);
-    auto nps_l = Lit::isa<u64>(nps);
-    auto ro_l = Lit::isa<u64>(Ro), rn_l = Lit::isa<u64>(Rn);
-    if (!nis_l || !nps_l || !ro_l || !rn_l || *rn_l < *ro_l) {
-        log().w("rank counts (nis/nps/Ro/Rn) of {} are not known at lowering time", app);
-        return RWPhase::rewrite_imm_App(app);
+/// The coordinate `e` of an access map over the loop vector `var` of `n` dims as `cst + Σ coef[d] · var#d`.
+std::optional<LowerMapReduce::Lin> linear(const Def* var, u64 n, const Def* e) {
+    auto lin = LowerMapReduce::Lin{std::vector<s64>(n, 0), 0};
+    if (n == 1 && e == var) return lin.coef[0] = 1, lin;
+    if (auto ex = e->isa<Extract>(); ex && ex->tuple() == var) {
+        if (auto i = Lit::isa<u64>(ex->index()); i && *i < n) return lin.coef[*i] = 1, lin;
+        return {};
     }
-    auto nis_nat = *nis_l;
-    auto nps_nat = *nps_l;
-    auto ro = *ro_l, rr = *rn_l - *ro_l;
-    auto nloops = *rn_l;
+    if (auto l = Axm::isa<affine::lit>(e)) {
+        if (auto c = Lit::isa<u64>(l->arg())) return lin.cst = s64(*c), lin;
+        return {};
+    }
+    if (auto mul = Axm::isa(affine::semiop::mul, e)) {
+        auto [x, c] = mul->args<2>();
+        auto k      = Lit::isa<u64>(c);
+        auto lx     = k ? linear(var, n, x) : std::nullopt;
+        if (!lx) return {};
+        for (auto& a : lx->coef)
+            a *= s64(*k);
+        lx->cst *= s64(*k);
+        return lx;
+    }
+    if (auto op = Axm::isa<affine::op>(e); op && (op.id() == affine::op::add || op.id() == affine::op::sub)) {
+        auto [a, b] = op->args<2>();
+        auto la = linear(var, n, a), lb = linear(var, n, b);
+        if (!la || !lb) return {};
+        s64 sign = op.id() == affine::op::add ? 1 : -1;
+        for (u64 d = 0; d != n; ++d)
+            la->coef[d] += sign * lb->coef[d];
+        la->cst += sign * lb->cst;
+        return la;
+    }
+    return {};
+}
+
+/// The coordinates of the access map `map` (a lam over «n; affine.Index») as linear forms.
+std::optional<std::vector<LowerMapReduce::Lin>> linear_map(const Def* map, u64 n, u64 r) {
+    auto lam = map->isa_mut<Lam>();
+    if (!lam || !lam->is_set()) return {};
+    auto var  = lam->var();
+    auto body = lam->body();
+    if (body == var && n == r) {
+        auto res = std::vector<LowerMapReduce::Lin>(r, LowerMapReduce::Lin{std::vector<s64>(n, 0), 0});
+        for (u64 a = 0; a != r; ++a)
+            res[a].coef[a] = 1;
+        return res;
+    }
+    auto res  = std::vector<LowerMapReduce::Lin>();
+    for (u64 a = 0; a != r; ++a) {
+        auto e = r == 1 ? body : body->isa<Tuple>() ? body->op(a) : nullptr;
+        if (!e) return {};
+        auto l = linear(var, n, e);
+        if (!l) return {};
+        res.emplace_back(std::move(*l));
+    }
+    return res;
+}
+
+std::optional<std::vector<u64>> literals(const Def* s, u64 n) {
+    auto res = std::vector<u64>(n);
+    for (u64 i = 0; i != n; ++i)
+        if (auto l = Lit::isa<u64>(s->proj(n, i)))
+            res[i] = *l;
+        else
+            return {};
+    return res;
+}
+
+} // namespace
+
+void LowerMapReduce::start() {
+    // Uses of every def, charged through the tuples and packs that merely wrap arguments.
+    auto uses   = DefMap<u64>();
+    auto charge = [&](this auto&& charge, const Def* d) -> void {
+        ++uses[d];
+        if (d->isa<Tuple>() || d->isa<Pack>())
+            for (auto op : d->ops())
+                if (op) charge(op);
+    };
+    auto mrs = std::vector<const App*>();
+    auto wl  = fe::BFSWorklist<DefSet>();
+    wl.push(old_world().roots());
+    while (!wl.empty()) {
+        auto def = wl.pop();
+        if (auto mr = Axm::isa<btensor::map_reduce_post>(def)) mrs.emplace_back(mr);
+        auto transparent = def->isa<Tuple>() || def->isa<Pack>();
+        for (auto op : def->ops())
+            if (op) {
+                if (!transparent) charge(op);
+                wl.push(op);
+            }
+        if (def->type()) wl.push(def->type());
+    }
+
+    for (auto consumer : mrs) {
+        auto c = mr_op(consumer->callee()->as<App>());
+        if (!c) continue;
+        auto is = consumer->arg()->proj(3, 1);
+        for (u64 i = 0; i != c->nis; ++i) {
+            auto at = Axm::isa<btensor::compute_at>(is->proj(c->nis, i));
+            if (!at || uses[at] != 1) continue;
+            auto ex = at->arg()->isa<Extract>();
+            if (!ex || uses[ex] != 1 || Lit::isa<u64>(ex->index()) != 1) continue;
+            auto producer = Axm::isa<btensor::map_reduce_post>(ex->tuple());
+            if (!producer) continue;
+            auto p     = mr_op(producer->callee()->as<App>());
+            auto level = Lit::isa<u64>(at->callee()->as<App>()->arg());
+            if (!p || !level || *level > c->ro) continue;
+
+            auto n_c  = c->ro + c->rr;
+            auto sr_c = literals(c->Sr, n_c);
+            auto so_p = literals(p->So, p->ro);
+            auto lin  = linear_map(c->accs->proj(c->nis, i), n_c, p->ro);
+            auto out  = linear_map(p->acc_out, p->ro + p->rr, p->ro);
+            if (!sr_c || !so_p || !lin || !out) continue;
+
+            // The producer writes output axis a from its parallel loop perm[a]: a projection.
+            auto stage = Stage{producer, *level, *lin, std::vector<u64>(p->ro), std::vector<u64>(p->ro)};
+            bool ok    = true;
+            for (u64 a = 0; ok && a != p->ro; ++a) {
+                auto& o = (*out)[a];
+                auto it = std::ranges::find(o.coef, 1);
+                ok      = o.cst == 0 && std::ranges::count(o.coef, 0) == s64(o.coef.size()) - 1 && it != o.coef.end()
+                  && u64(it - o.coef.begin()) < p->ro;
+                if (ok) stage.perm[a] = it - o.coef.begin();
+                // The tile spans what the loops inside the leading `level` dims read of axis a.
+                u64 ext = 1;
+                for (u64 d = 0; ok && d != n_c; ++d) {
+                    ok &= stage.lin[a].coef[d] >= 0;
+                    if (d >= *level) ext += u64(stage.lin[a].coef[d]) * ((*sr_c)[d] - 1);
+                }
+                ok &= stage.lin[a].cst >= 0 && ext <= (*so_p)[a];
+                stage.ext[a] = ext;
+            }
+            if (!ok) continue;
+            stages_.emplace(at, std::move(stage));
+            consumers_.emplace(at, consumer);
+        }
+    }
+    // A staged producer is lowered as a plain nest in its consumer's stage, which does not stage operands itself.
+    for (auto& [at, stage] : stages_)
+        dropped_.insert(stage.producer);
+    for (auto it = stages_.begin(); it != stages_.end();)
+        if (dropped_.contains(consumers_[it->first]))
+            it = stages_.erase(it);
+        else
+            ++it;
+    dropped_.clear();
+    for (auto& [at, stage] : stages_) {
+        log().d("compute {} at level {} of {}", stage.producer, stage.level, consumers_[at]);
+        dropped_.insert(stage.producer);
+    }
+    RWPhase::start();
+}
+
+const Def* LowerMapReduce::build_nest(const MrOp& op,
+                                      const Def* Sr_loop,
+                                      const Def* U,
+                                      const DefVec& in_bufs,
+                                      const DefVec& in_maps,
+                                      const DefVec& in_shapes,
+                                      const Def* post_bufs,
+                                      const DefVec& shift,
+                                      const Tile* tile,
+                                      const Def* sl,
+                                      std::function<Lam*(const Def*)> make_stage) {
+    auto& w     = new_world();
+    auto nloops = op.ro + op.rr;
     auto n      = w.lit_nat(nloops);
+    auto i32    = w.type_i32();
 
     // Builds `affine.map @(m, n) @(sin, sout) f idxs mem`. The map is mem-threaded (its divisions consume mem),
     // and this phase threads real memory, so the caller passes the current mem and receives `(mem', coords)`.
@@ -147,35 +316,6 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         a      = w.app(a, w.lit_nat_0());
         return w.app(a, mem)->projs<2>();
     };
-
-    auto mem_ty = w.call<mem::M>(0);
-
-    // `[mem, is, post_is] → [mem, Buf]`, spliced via cps.cps2ds and applied to the op's (mem, is, post_is).
-    auto fun  = w.mut_fun(w.sigma({mem_ty, op_is->type(), op_post_is->type()}), result_ty)->set("mapRedAff");
-    auto call = w.app(cps::op_cps2ds_dep(fun), w.tuple({op_mem, op_is, op_post_is}));
-    auto [fun_mem, new_inputs, new_post_is] = fun->var(2, 0)->projs<3>();
-    auto cont                               = fun->var(2, 1);
-
-    // The op's SCHEDULE `sched` is a target-agnostic chooser over a loop-nest builder (canonically
-    // a `tensor.mk_sched` value, selected in the frontend). This is the tensor→btensor boundary,
-    // so bind it HERE to this target's algebra — `btensor.mr_nest` over the output buffer — then
-    // build only the decision-free pieces: the fold step `cell` (read one element per input, call
-    // the combiner) and the write-back `wb` (read the epilogue inputs, run `post`, store) — and
-    // APPLY the nest to them. Unrolling, interchange and the row accumulator are inside the
-    // builder: plain IR, not lowering behavior.
-    auto i32 = w.type_i32();
-
-    // Allocate the output buffer.
-    auto [obr, obs, obT]  = Axm::isa<buffer::Buf>(result_ty->proj(2, 1))->args<3>();
-    auto [a_mem, out_buf] = buffer::op_alloc(obr, obs, obT, fun_mem)->projs<2>();
-
-    auto nest_args = w.tuple({Ro, w.lit_nat(rr), Sr, To, result_ty->proj(2, 1)});
-    auto nest      = w.app(w.app(sched, w.app(w.annex<btensor::NestT>(), nest_args)),
-                           w.app(w.annex<btensor::mr_nest>(), nest_args));
-
-    // The bound nest dictates the exact `cell`/`wb` signatures (its [init, cell, wb] domain) —
-    // building them from the VALUE's own type sidesteps any Arr/Sigma normalization asymmetry.
-    auto sched_dom = nest->type()->as<Pi>()->dom();
 
     // A combiner/epilogue operand canonically has the axm's `Fn` shape `Cn [[args], Cn ret]`, but an earlier
     // Scalarize may have flattened an escaped lam to `Cn [args…, Cn ret]` — build the argument to match the
@@ -203,8 +343,29 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         return out;
     };
 
+    // Loop dim d of the domain `Sr_loop` at `iv`, shifted into the op's own domain `op.Sr`.
+    auto at_dim = [&](u64 d, const Def* iv) {
+        if (!shift.empty() && shift[d]) iv = w.call(core::wrap::add, core::Mode::nsuw, Defs{iv, shift[d]});
+        return w.call(core::conv::u, op.Sr->proj(nloops, d), iv);
+    };
+
+    // The op's SCHEDULE `sched` is a target-agnostic chooser over a loop-nest builder (canonically
+    // a `tensor.mk_sched` value, selected in the frontend). This is the tensor→btensor boundary,
+    // so bind it HERE to this target's algebra — `btensor.mr_nest` over the write-back target — then
+    // build only the decision-free pieces: the fold step `cell` (read one element per input, call
+    // the combiner) and the write-back `wb` (read the epilogue inputs, run `post`, store) — and
+    // APPLY the nest to them. Unrolling, interchange and the row accumulator are inside the
+    // builder: plain IR, not lowering behavior.
+    auto nest_args = w.tuple({op.Ro, w.lit_nat(op.rr), Sr_loop, op.To, U});
+    auto nest      = w.app(w.app(op.sched, w.app(w.annex<btensor::NestT>(), nest_args)),
+                           w.app(w.annex<btensor::mr_nest>(), nest_args));
+
+    // The bound nest dictates the exact `cell`/`wb` signatures (its [init, cell, wb, sl, stage] domain) —
+    // building them from the VALUE's own type sidesteps any Arr/Sigma normalization asymmetry.
+    auto sched_dom = nest->type()->as<Pi>()->dom();
+
     // cell: Cn [mem, To, «ro+rr; I32», Cn [mem, To]] — fold the elements at one loop vector.
-    auto cdom = sched_dom->proj(3, 1)->as<Pi>()->dom();
+    auto cdom = sched_dom->proj(5, 1)->as<Pi>()->dom();
     auto cn   = cdom->num_projs();
     auto cell = w.mut_con(cdom)->set("cell");
     {
@@ -212,31 +373,28 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         auto cacc = cell->var(cn, 1);
         auto ck   = cell->var(cn, cn - 1);
         auto civs = load_ivs(cell, cn, 2, nloops);
-        DefVec iters_v(nloops);
-        for (u64 d = 0; d < nloops; ++d)
-            iters_v[d] = w.call(core::conv::u, Sr->proj(nloops, d), civs[d]);
+        DefVec iters_v(nloops, [&](size_t d) { return at_dim(d, civs[d]); });
         auto iters = w.tuple(iters_v);
         auto cur   = cm;
-        DefVec input_elems(nis_nat);
-        for (u64 i = 0; i < nis_nat; ++i) {
-            auto in_buf = new_inputs->proj(nis_nat, i);
+        DefVec input_elems(op.nis);
+        for (u64 i = 0; i < op.nis; ++i) {
             auto [mc_mem, coords]
-                = affine_map(accs->proj(nis_nat, i), Ris->proj(nis_nat, i), n, Sr, Sis->proj(nis_nat, i), iters, cur);
+                = affine_map(in_maps[i], op.Ris->proj(op.nis, i), n, op.Sr, in_shapes[i], iters, cur);
             cur                   = mc_mem;
-            auto nis_folded       = *Shape(coords).fold(Sis->proj(nis_nat, i));
-            auto [ir, is_, iT]    = Axm::isa<buffer::Buf>(in_buf->type())->args<3>();
-            auto [rd_mem, rd_val] = buffer::op_read(ir, is_, iT, cur, in_buf, nis_folded)->projs<2>();
+            auto folded           = *Shape(coords).fold(in_shapes[i]);
+            auto [ir, is_, iT]    = Axm::isa<buffer::Buf>(in_bufs[i]->type())->args<3>();
+            auto [rd_mem, rd_val] = buffer::op_read(ir, is_, iT, cur, in_bufs[i], folded)->projs<2>();
             cur                   = rd_mem;
             input_elems[i]        = rd_val;
         }
-        apply_cps(cell, comb, {cur, cacc, w.tuple(input_elems)}, ck);
+        apply_cps(cell, op.comb, {cur, cacc, w.tuple(input_elems)}, ck);
     }
 
-    // wb: Cn [mem, Buf, To, «ro+rr; I32», Cn [mem, Buf]] — epilogue + store for one folded cell,
-    // threading the output buffer as the nest's write-back target. It receives the full loop
+    // wb: Cn [mem, U, To, «ro+rr; I32», Cn [mem, U]] — epilogue + store for one folded cell,
+    // threading the write-back target through the nest. It receives the full loop
     // vector; only the leading `ro` output coordinates are read (the trailing reduction slots are
     // exhausted loop values and are replaced by zeros for `acc_out`).
-    auto wdom = sched_dom->proj(3, 2)->as<Pi>()->dom();
+    auto wdom = sched_dom->proj(5, 2)->as<Pi>()->dom();
     auto wn   = wdom->num_projs();
     auto wb   = w.mut_con(wdom)->set("wb");
     {
@@ -246,36 +404,173 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         auto wk   = wb->var(wn, wn - 1);
         auto wovs = load_ivs(wb, wn, 3, nloops);
         DefVec wb_iters(nloops);
-        for (u64 i = 0; i < ro; ++i)
-            wb_iters[i] = w.call(core::conv::u, Sr->proj(nloops, i), wovs[i]);
-        for (u64 j = 0; j < rr; ++j)
-            wb_iters[ro + j] = w.call(core::conv::u, Sr->proj(nloops, ro + j), w.lit(i32, 0));
-        auto [wc_mem, write_coords] = affine_map(acc_out, Ro, n, Sr, So, w.tuple(wb_iters), wm);
+        for (u64 i = 0; i < op.ro; ++i)
+            wb_iters[i] = at_dim(i, wovs[i]);
+        for (u64 j = 0; j < op.rr; ++j)
+            wb_iters[op.ro + j] = w.call(core::conv::u, op.Sr->proj(nloops, op.ro + j), w.lit(i32, 0));
+        auto [wc_mem, write_coords] = affine_map(op.acc_out, op.Ro, n, op.Sr, op.So, w.tuple(wb_iters), wm);
 
         auto pcur = wc_mem;
-        DefVec post_elems(nps_nat);
-        for (u64 j = 0; j < nps_nat; ++j) {
-            auto sps_j = Sps->proj(nps_nat, j);
-            auto [pc_mem, pcoords]
-                = affine_map(post_accs->proj(nps_nat, j), Rps->proj(nps_nat, j), Ro, So, sps_j, write_coords, pcur);
-            pcur                  = pc_mem;
-            auto p_buf            = new_post_is->proj(nps_nat, j);
-            auto [pr, ps_, pT]    = Axm::isa<buffer::Buf>(p_buf->type())->args<3>();
+        DefVec post_elems(op.nps);
+        for (u64 j = 0; j < op.nps; ++j) {
+            auto sps_j             = op.Sps->proj(op.nps, j);
+            auto [pc_mem, pcoords] = affine_map(op.post_accs->proj(op.nps, j), op.Rps->proj(op.nps, j), op.Ro, op.So,
+                                                sps_j, write_coords, pcur);
+            pcur                   = pc_mem;
+            auto p_buf             = post_bufs->proj(op.nps, j);
+            auto [pr, ps_, pT]     = Axm::isa<buffer::Buf>(p_buf->type())->args<3>();
             auto [prd_mem, p_val] = buffer::op_read(pr, ps_, pT, pcur, p_buf, *Shape(pcoords).fold(sps_j))->projs<2>();
             pcur                  = prd_mem;
             post_elems[j]         = p_val;
         }
-        auto after_post            = mem::mut_con(Tp)->set("afterPost");
+        auto after_post            = mem::mut_con(op.Tp)->set("afterPost");
         auto [post_mem, elem_post] = after_post->vars<2>();
-        auto stored = buffer::op_write(obr, obs, obT, post_mem, wu, *Shape(write_coords).fold(So), elem_post);
+        auto [ur, us, uT]          = Axm::isa<buffer::Buf>(U)->args<3>();
+        auto target                = *Shape(write_coords).fold(op.So);
+        if (tile) {
+            // A tile is indexed by the unshifted loop values of the parallel dims that write each axis.
+            auto r = tile->perm.size();
+            DefVec tc(r, [&](size_t a) { return w.call(core::conv::u, tile->ext->proj(r, a), wovs[tile->perm[a]]); });
+            target = *Shape(w.tuple(tc)).fold(tile->ext);
+        }
+        auto stored = buffer::op_write(ur, us, uT, post_mem, wu, target, elem_post);
         after_post->app(true, wk, w.tuple({stored->proj(2, 0), stored->proj(2, 1)}));
-        apply_cps(wb, post, {pcur, wv, w.tuple(post_elems)}, after_post);
+        apply_cps(wb, op.post, {pcur, wv, w.tuple(post_elems)}, after_post);
     }
+
+    // stage: Cn [«ro+rr; I32», mem, Cn mem] — a staged operand's producer, or nothing.
+    auto sdom  = sched_dom->proj(5, 4)->as<Pi>()->dom();
+    Lam* stage = make_stage ? make_stage(sdom) : nullptr;
+    if (!stage) {
+        stage = w.mut_con(sdom)->set("noStage");
+        stage->app(true, stage->var(3, 2), stage->var(3, 1));
+    }
+    return w.app(nest, w.tuple({op.init, cell, wb, sl ? sl : w.lit_nat_0(), stage}));
+}
+
+const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
+    auto& w = new_world();
+    // A producer computed inside its consumer: its mem passes through, its buffer is never read.
+    if (dropped_.contains(app)) {
+        auto ty = rewrite(app->type());
+        return w.tuple({rewrite(app->arg()->proj(3, 0)), w.bot(ty->proj(2, 1))});
+    }
+
+    auto c  = rewrite(app->callee())->as<App>();
+    auto op = mr_op(c);
+    if (!op) {
+        log().w("rank counts (nis/nps/Ro/Rn) of {} are not known at lowering time", app);
+        return RWPhase::rewrite_imm_App(app);
+    }
+
+    // The final argument is `[mem, is, post_is]`; the result is `[mem, Buf]`.
+    auto [op_mem, op_is, op_post_is] = rewrite(app->arg())->projs<3>();
+    auto result_ty                   = rewrite(app->type()); // [mem.M 0, buffer.Buf (Ro, So, Tp)]
+    auto mem_ty                      = w.call<mem::M>(0);
+
+    // `[mem, is, post_is] → [mem, Buf]`, spliced via cps.cps2ds and applied to the op's (mem, is, post_is).
+    auto fun  = w.mut_fun(w.sigma({mem_ty, op_is->type(), op_post_is->type()}), result_ty)->set("mapRedAff");
+    auto call = w.app(cps::op_cps2ds_dep(fun), w.tuple({op_mem, op_is, op_post_is}));
+    auto [fun_mem, new_inputs, new_post_is] = fun->var(2, 0)->projs<3>();
+    auto cont                               = fun->var(2, 1);
+
+    // Allocate the output buffer.
+    auto out_ty           = result_ty->proj(2, 1);
+    auto [obr, obs, obT]  = Axm::isa<buffer::Buf>(out_ty)->args<3>();
+    auto [a_mem, out_buf] = buffer::op_alloc(obr, obs, obT, fun_mem)->projs<2>();
+
+    DefVec in_bufs(op->nis, [&](size_t i) { return new_inputs->proj(op->nis, i); });
+    DefVec in_maps(op->nis, [&](size_t i) { return op->accs->proj(op->nis, i); });
+    DefVec in_shapes(op->nis, [&](size_t i) { return op->Sis->proj(op->nis, i); });
+
+    // At most one staged (`compute_at`) operand: its producer runs in `stage` into a tile the operand then reads.
+    const Def* sl    = nullptr;
+    auto old_is      = app->arg()->proj(3, 1);
+    auto nloops      = op->ro + op->rr;
+    const Stage* stg = nullptr;
+    u64 slot         = 0;
+    for (u64 i = 0; i != op->nis && !stg; ++i)
+        if (auto it = stages_.find(old_is->proj(op->nis, i)); it != stages_.end()) stg = &it->second, slot = i;
+
+    const Def* mem = a_mem;
+    Tile tile;
+    const Def* tile_ty  = nullptr;
+    const Def* tile_buf = nullptr;
+    if (stg) {
+        auto pc = rewrite(stg->producer->callee())->as<App>();
+        auto p  = *mr_op(pc);
+        auto r  = p.ro;
+        DefVec ext(r, [&](size_t a) { return w.lit_nat(stg->ext[a]); });
+        auto ext_t    = w.tuple(ext);
+        tile          = Tile{stg->perm, ext_t};
+        tile_ty       = w.call<buffer::Buf>(Defs{p.Ro, ext_t, p.Tp});
+        auto alloc    = buffer::op_alloc(p.Ro, ext_t, p.Tp, mem)->projs<2>();
+        mem           = alloc[0];
+        tile_buf      = alloc[1];
+        in_bufs[slot] = tile_buf;
+        in_shapes[slot] = ext_t;
+
+        // The operand reads the tile at its coordinate minus the tile's origin: the part of each linear form over
+        // the loops inside the leading `level` dims.
+        auto vec_ty = op->accs->proj(op->nis, slot)->type()->as<Pi>()->dom();
+        auto rd     = w.mut_lam(vec_ty, w.arr(p.Ro, w.annex<affine::Index>()))->set("tile_map");
+        DefVec coords(r, [&](size_t a) {
+            const Def* e = w.call<affine::lit>(w.lit_nat_0());
+            for (u64 d = stg->level; d != nloops; ++d)
+                if (auto k = stg->lin[a].coef[d])
+                    e = w.call(affine::op::add,
+                               Defs{e, w.call(affine::semiop::mul, Defs{rd->var(nloops, d), w.lit_nat(u64(k))})});
+            return e;
+        });
+        rd->set(true, w.tuple(coords));
+        in_maps[slot] = rd;
+        sl            = w.lit_nat(stg->level);
+    }
+
+    // The producer's nest over the tile, shifted to the tile's origin, which the enclosing loop values determine.
+    auto make_stage = [&](const Def* sdom) -> Lam* {
+        auto stage = w.mut_con(sdom)->set("stage");
+        auto sn    = sdom->num_projs();
+        auto pc    = rewrite(stg->producer->callee())->as<App>();
+        auto p     = *mr_op(pc);
+        auto pa    = rewrite(stg->producer->arg());
+        auto p_is  = pa->proj(3, 1);
+        auto p_ps  = pa->proj(3, 2);
+        auto k     = stage->var(sn, sn - 1);
+        auto pm    = stage->var(sn, sn - 2);
+        // The loop vector: one «r; I32» value or flattened I32 scalars.
+        DefVec pref(nloops);
+        for (u64 d = 0; d != nloops; ++d)
+            pref[d] = sn == 3 ? stage->var(sn, 0)->proj(nloops, d) : stage->var(sn, d);
+
+        auto i32 = w.type_i32();
+        auto pn  = p.ro + p.rr;
+        DefVec shift(pn, nullptr);
+        DefVec sr_t(pn, [&](size_t d) { return p.Sr->proj(pn, d); });
+        for (u64 a = 0; a != p.ro; ++a) {
+            const Def* lo = w.lit(i32, u64(stg->lin[a].cst));
+            for (u64 d = 0; d != stg->level; ++d)
+                if (auto kk = stg->lin[a].coef[d])
+                    lo = w.call(core::wrap::add, core::Mode::nsuw,
+                                Defs{lo, w.call(core::wrap::mul, core::Mode::nsuw, Defs{pref[d], w.lit(i32, u64(kk))})});
+            shift[stg->perm[a]] = lo;
+            sr_t[stg->perm[a]]  = w.lit_nat(stg->ext[a]);
+        }
+        DefVec p_bufs(p.nis, [&](size_t i) { return p_is->proj(p.nis, i); });
+        DefVec p_maps(p.nis, [&](size_t i) { return p.accs->proj(p.nis, i); });
+        DefVec p_shapes(p.nis, [&](size_t i) { return p.Sis->proj(p.nis, i); });
+        auto p_nest = build_nest(p, w.tuple(sr_t), tile_ty, p_bufs, p_maps, p_shapes, p_ps, shift, &tile, nullptr, {});
+        auto done   = w.mut_con({mem_ty, tile_ty})->set("staged");
+        done->app(true, k, done->var(2, 0));
+        stage->app(true, p_nest, w.tuple({pm, tile_buf, done}));
+        return stage;
+    };
+    auto nest = build_nest(*op, op->Sr, out_ty, in_bufs, in_maps, in_shapes, new_post_is, {}, nullptr, sl,
+                           stg ? std::function<Lam*(const Def*)>(make_stage) : nullptr);
 
     // Apply the nest; the output buffer is threaded through as the nest's write-back target and
     // yielded straight to the op's continuation.
-    fun->app(true, w.app(nest, w.tuple({init, cell, wb})), w.tuple({a_mem, out_buf, cont}));
-
+    fun->app(true, nest, w.tuple({mem, out_buf, cont}));
     return call;
 }
 

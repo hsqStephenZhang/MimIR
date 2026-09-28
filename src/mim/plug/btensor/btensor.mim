@@ -246,6 +246,12 @@ anx lam product_2d (R: Ring) {m k l: Nat}
 /// For each output coordinate `o`, reads the source at `o` with axis `dim` replaced by `index[o]`.
 /// The index element type proves that selected coordinates are in bounds along `dim`.
 ///
+/// ### compute_at
+///
+/// `tensor.compute_at` on a buffer: `lower_map_reduce` computes the producer of the annotated operand inside the
+/// consuming nest, or drops the annotation.
+axm compute_at: {T: *} → [level: Nat] → T → T;
+///
 axm gather: {T: *, r: Nat}
           → [s_src s_idx: «r; Nat»]
           → [dim: Idx r]
@@ -375,12 +381,15 @@ lam range_peel (r: Nat, Sr: «r; Nat») (A: *) (loop: ForT A, lo hi: Nat)
 ///
 /// The type of scheduled loop nests for a `map_reduce` over the domain `Sr` (`ro` leading parallel
 /// dims, `rr` trailing reduction dims, fold element type `To`): given the fold seed `init`, the
-/// per-point fold step `cell` (fold the elements at one loop vector into the accumulator) and the
-/// per-cell write-back `wb` (consume one folded value at its output coordinates), run the nest.
+/// per-point fold step `cell` (fold the elements at one loop vector into the accumulator), the
+/// per-cell write-back `wb` (consume one folded value at its output coordinates) and a `stage` to run once per
+/// value of the leading `sl` parallel dims, before anything below them (a `compute_at` producer), run the nest.
 anx lam NestT (ro rr: Nat, Sr: «ro + rr; Nat», To U: *): * =
       [init: To,
-       cell: Cn [mem.M 0, To, «ro + rr; I32», Cn [mem.M 0, To]],
-       wb:   Cn [mem.M 0, U, To, «ro + rr; I32», Cn [mem.M 0, U]]]
+       cell:  Cn [mem.M 0, To, «ro + rr; I32», Cn [mem.M 0, To]],
+       wb:    Cn [mem.M 0, U, To, «ro + rr; I32», Cn [mem.M 0, U]],
+       sl:    Nat,
+       stage: Cn [«ro + rr; I32», mem.M 0, Cn [mem.M 0]]]
     → Cn [mem.M 0, U, Cn [mem.M 0, U]];
 
 /// ### mr_nest
@@ -408,9 +417,19 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
     let u_lo = r - unroll;
     let u_lo = (ro, u_lo)#(ro <= u_lo);
     lam nest (init: To,
-              cell: Cn [mem.M 0, To, «r; I32», Cn [mem.M 0, To]],
-              wb:   Cn [mem.M 0, U, To, «r; I32», Cn [mem.M 0, U]])
+              cell:  Cn [mem.M 0, To, «r; I32», Cn [mem.M 0, To]],
+              wb:    Cn [mem.M 0, U, To, «r; I32», Cn [mem.M 0, U]],
+              sl:    Nat,
+              stage: Cn [«r; I32», mem.M 0, Cn [mem.M 0]])
             : Cn [mem.M 0, U, Cn [mem.M 0, U]] =
+        // The outermost `[0, hi)` parallel loops with `stage` run inside the leading `sl` of them; a nest is only
+        // selected if `sl ≤ hi`.
+        lam staged (hi: Nat) (inner: Cn [«r; I32», mem.M 0, U, Cn [mem.M 0, U]])
+                 : Cn [«r; I32», mem.M 0, U, Cn [mem.M 0, U]] =
+            con at (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+                con go (m2: mem.M 0) = (range_nest (r, Sr) U (affine_for @U, sl, hi) inner) (pref, m2, u, k);
+                stage (pref, m, go);
+            range_nest (r, Sr) U (affine_for @U, 0, sl) at;
         con cell_at (pref: «r; I32», m: mem.M 0, acc: To, k: Cn [mem.M 0, To]) =
             cell (m, acc, pref, k);
         // The fully unrolled trailing window around the fold step, and the partial window of the peeled iteration.
@@ -433,7 +452,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                 con folded (mem2: mem.M 0, v: To) =
                     wb (mem2, u, v, pref, k);
                 (red To (affine_for @To) (win, win_t)) (pref, m, init, folded);
-            (range_nest (r, Sr) U (affine_for @U, 0, ro) at_cell) (‹r; 0I32›, mem0, u0, done);
+            (staged ro at_cell) (‹r; 0I32›, mem0, u0, done);
 
         // VECTORIZED: the vector dim as the innermost loop over a row of accumulators — refill the
         // row per output row, fold whole rows in lockstep, then write the row back cell by cell.
@@ -465,7 +484,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                         (pref, memA, uA, s2);
                 (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) fill) (pref, m, u, s1);
             con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Sv, To) (mf, row), uf);
-            (range_nest (r, Sr) U (affine_for @U, 0, vd) at_row) (‹r; 0I32›, mem1, u0, freed);
+            (staged vd at_row) (‹r; 0I32›, mem1, u0, freed);
 
         // BLOCKED (`vdim = ro − 2`): the two trailing parallel dims are sunk inside the reduction
         // loops — the last dim runs as the vector loop and the BLOCK dim before it (any extent Sp;
@@ -515,7 +534,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                 (range_nest (r, Sr) U (affine_for @U, pd_c, sd_c)
                     (range_nest (r, Sr) U (vec_for @U, sd_c, ro) fill)) (pref, m, u, s1);
             con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Np, To) (mf, panel), uf);
-            (range_nest (r, Sr) U (affine_for @U, 0, pd_c) at_block) (‹r; 0I32›, mem1, u0, freed);
+            (staged pd_c at_block) (‹r; 0I32›, mem1, u0, freed);
 
         // REGISTER-BLOCKED (`vdim = ro − 2` with at most 64 block cells and one unrolled dim): like BLOCKED, but the
         // block's accumulators are one SSA value «Sp, Sv; To» threaded through the reduction loops — registers, not a
@@ -559,7 +578,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                     (each_cell U step k) (m2, u);
                 (red «rb_pc, rb_vc; To» (affine_for @«rb_pc, rb_vc; To») (at_point win, at_point win_t))
                     (pref, m, ‹rb_pc; ‹rb_vc; init››, folded);
-            (range_nest (r, Sr) U (affine_for @U, 0, pd_c) at_block) (‹r; 0I32›, mem0, u0, done);
+            (staged pd_c at_block) (‹r; 0I32›, mem0, u0, done);
 
         // REDUCTION-VECTORIZED (`ro ≤ vdim < r`: the schedule names the innermost REDUCTION dim):
         // the contraction itself runs as the innermost (vector) loop. For a contraction whose
@@ -575,8 +594,8 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
         // output neurons, the weight row across batch rows), and each panel cell is an independent
         // reduction chain that gets its own vector accumulator. Clamps as above: the non-selected
         // branch is still elaborated, and the jam extents are additionally clamped to 1 (`Sr_rv`)
-        // so the elaborated unrolls stay cheap.
-        let rv_j      = (1, unroll)#(1 <= unroll);
+        // so the elaborated unrolls stay cheap. `unroll = 0` jams nothing: one reduction chain per cell.
+        let rv_j      = unroll;
         let rv_bd     = (0, ro - rv_j)#(rv_j <= ro);
         let rv_vd     = (0, vdim)#(vdim < r);
         let redvec_ok = core.bit2.and_ 2 (tail == 0, core.bit2.and_ 2 (ro <= vdim, core.bit2.and_ 2 (vdim + 1 == r, rv_j <= ro)));
@@ -618,7 +637,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                         (pref, memA, uA, s2);
                 (range_unroll (r, Sr_rv) U (rv_bd, ro) fill) (pref, m, u, s1);
             con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Sb, To) (mf, panel), uf);
-            (range_nest (r, Sr) U (affine_for @U, 0, rv_bd) at_block) (‹r; 0I32›, mem1, u0, freed);
+            (staged rv_bd at_block) (‹r; 0I32›, mem1, u0, freed);
 
         // TILED (`rout ≠ 0`): the cache-blocked, reduction-outer order. Per cell of the outer parallel dims
         // [0, pout), a panel of accumulators spans the inner parallel dims [pout, vd] — the vector dim last — and
@@ -665,7 +684,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                 (range_nest (r, Sr) U (affine_for @U, tl_p, vd)
                     (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) fill)) (pref, m, u, s1);
             con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Nt, To) (mf, panel), uf);
-            (range_nest (r, Sr) U (affine_for @U, 0, tl_p) at_block) (‹r; 0I32›, mem1, u0, freed);
+            (staged tl_p at_block) (‹r; 0I32›, mem1, u0, freed);
 
         // TILED REGISTER-BLOCKED (`rout ≠ 0` with a register block): TILED's reduction-outer order around
         // REGISTER-BLOCKED's micro-kernel. The panel spans all inner parallel dims [pout, ro); per hoisted block, every
@@ -719,12 +738,14 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                         (range_nest (r, Sr) U (affine_for @U, trb_p, pd_c) at_rb))
                         (pref, memA, uA, s2);
                 (range_nest (r, Sr) U (affine_for @U, trb_p, ro) fill) (pref, m, u, s1);
-            (range_nest (r, Sr) U (affine_for @U, 0, trb_p) at_block) (‹r; 0I32›, mem1, u0, done);
+            (staged trb_p at_block) (‹r; 0I32›, mem1, u0, done);
 
         con run (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
-            ((((((classic, vectorized)#vec_ok, (blocked, regblk)#rb_ok)#block_ok, redvec)#redvec_ok, tiled)#tl_ok,
-              tiled_rb)#trb_ok)
-                (mem0, u0, done);
+            ((((((classic, vectorized)#(core.bit2.and_ 2 (vec_ok, sl <= vd)),
+                  (blocked, regblk)#rb_ok)#(core.bit2.and_ 2 (block_ok, sl <= pd_c)),
+                 redvec)#(core.bit2.and_ 2 (redvec_ok, sl <= rv_bd)),
+                tiled)#(core.bit2.and_ 2 (tl_ok, sl <= tl_p)),
+               tiled_rb)#(core.bit2.and_ 2 (trb_ok, sl <= trb_p))) (mem0, u0, done);
         run;
     nest;
 ///
