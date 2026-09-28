@@ -956,6 +956,20 @@ lam conv_schedule (stride dilation: «2; Nat») (t: Tileable): Tileable =
 lam dot_tile (K: Nat): Nat =
     ((1, 3)#(K / 3 * 3 == K), 4)#(K / 4 * 4 == K);
 ///
+/// #### dot_k
+///
+/// The contraction part of `dot_schedule`: the innermost contraction register-blocked by `dot_tile`, else partitioned by
+/// 4, the tile unrolled.
+lam dot_k (t: Tileable): Tileable =
+    let r   = t#Ro + t#Rr;
+    let d   = r - 1;
+    let K   = t#Sr#(core.idx 0 r d);
+    let ts0 = dot_tile K;
+    let ts  = if_static (ts0, ts0, 1);
+    // A known `K ≥ 4` that no tile divides is partitioned by 4; a dividing tile partitions without a tail.
+    let ts  = (ts, 4)#(if_static (K, core.bit2.and_ 2 (4 <= K, ts0 == 1), ff));
+    unroll_trailing (partition_red (t, d, ts), 1);
+///
 /// #### dot_schedule
 ///
 /// The dot-product schedule for a contraction whose right operand stores the last output dim
@@ -970,15 +984,21 @@ lam dot_tile (K: Nat): Nat =
 ///   literal is decided, no matter which kind of extent decided it.
 /// - An undecided divisibility takes the neutral tile (`ts = 1`), so one selector serves static,
 ///   symbolic and runtime shapes.
-lam dot_schedule (r_out: Nat) (t: Tileable): Tileable =
-    let r   = t#Ro + t#Rr;
-    let d   = r - 1;
-    let K   = t#Sr#(core.idx 0 r d);
-    let ts0 = dot_tile K;
-    let ts  = if_static (ts0, ts0, 1);
-    // A known `K ≥ 4` that no tile divides is partitioned by 4; a dividing tile partitions without a tail.
-    let ts  = (ts, 4)#(if_static (K, core.bit2.and_ 2 (4 <= K, ts0 == 1), ff));
-    unroll_trailing (partition_red (vectorize (t, r_out - 1), d, ts), 1);
+lam dot_schedule (r_out: Nat) (t: Tileable): Tileable = dot_k (vectorize (t, r_out - 1));
+///
+/// #### dot_schedule_rb
+///
+/// `dot_schedule` with the last two output dims (M, N), 4 | M and 16 | N, register-blocked by 4 x 16: the block's
+/// accumulators stay in registers across the whole contraction (`btensor.mr_nest`'s register-blocked nest), each load
+/// of the right operand serving 4 rows.
+/// The blocks run in the order (N/16, M/4), so the right operand's k x 16 column stays in cache across all of M.
+lam dot_schedule_rb (r_out: Nat) (t: Tileable): Tileable =
+    let q    = r_out - 2;
+    let t1   = strip_mine_par (strip_mine_par (t, r_out - 1, 16), q, 4);
+    let r1   = t1#1_12 + t1#2_12;
+    let perm = ‹j: r1; let jj = core.bitcast Nat j;
+                       core.select (jj == q, q + 2, core.select (jj == q + 1, q, core.select (jj == q + 2, q + 1, jj)))›;
+    dot_k (vectorize (interchange (t1, perm), r_out));
 ///
 /// #### dot_nc
 ///
@@ -997,6 +1017,30 @@ lam dot_kb (kq w: Nat): Nat =
     lam pick (b acc: Nat): Nat = (acc, b)#(core.bit2.and_ 2 (kq / b * b == kq, core.bit2.and_ 2 (b <= bmax, b < kq)));
     vec.fold.r @(Nat, Nat) @64 pick (‹i: 64; 64 - core.bitcast Nat i›, kq);
 ///
+/// #### dot_nblk
+///
+/// The N block of `dot_schedule_nblk`, its loop moved outside the left free dims.
+lam dot_nblk (r_out nb na nc: Nat) (t: Tileable): Tileable =
+    let t1   = strip_mine_par (t, r_out - 1, nc);
+    let r1   = t1#1_12 + t1#2_12;
+    let perm = ‹j: r1; let jj = core.bitcast Nat j;
+                       core.select (jj < nb, jj,
+                       core.select (jj < r_out - na, jj + na,
+                       core.select (jj < r_out, jj + nb - (r_out - na), jj)))›;
+    interchange (t1, perm);
+///
+/// #### dot_kblk
+///
+/// The K block of `dot_schedule_nblk`: its reductions are (K/ts, ts) for a single contraction; block K/ts by kb.
+lam dot_kblk (r_out na nc: Nat) (t2: Tileable): Tileable =
+    let r2  = t2#Ro + t2#Rr;
+    let kq  = t2#Sr#(core.idx 0 r2 (r2 - 2));
+    let ts  = t2#Sr#(core.idx 0 r2 (r2 - 1));
+    let kb  = dot_kb (kq, ts * nc);
+    let blk = if_static (kq * ts, core.bit2.and_ 2 (t2#Rr == 2, core.bit2.and_ 2 (t2#tail == 0,
+              core.bit2.and_ 2 (65536 < kq * ts * nc, core.bit2.and_ 2 (4 <= kb, kb < kq)))), ff);
+    hoist_red (strip_mine_red (t2, r2 - 2, (kq, kb)#blk), r_out - na, (0, 1)#blk);
+///
 /// #### dot_schedule_nblk
 ///
 /// `dot_schedule` with the last output dim `N` cache-blocked by `nc`: its block loop runs outside the left operand's
@@ -1006,22 +1050,13 @@ lam dot_kb (kq w: Nat): Nat =
 /// A single contraction whose whole panel does not fit is cache-blocked as well (see `hoist_red`): its blocks run
 /// outside the left free dims, whose accumulators stay live across them — `(N/nc, K/kc, M, kc, nc)`.
 lam dot_schedule_nblk (r_out nb na nc: Nat) (t: Tileable): Tileable =
-    let t1   = strip_mine_par (t, r_out - 1, nc);
-    let r1   = t1#1_12 + t1#2_12;
-    let perm = ‹j: r1; let jj = core.bitcast Nat j;
-                       core.select (jj < nb, jj,
-                       core.select (jj < r_out - na, jj + na,
-                       core.select (jj < r_out, jj + nb - (r_out - na), jj)))›;
-    // The reductions are (K/ts, ts) for a single contraction; block K/ts by kb.
-    lam kblk (t2: Tileable): Tileable =
-        let r2  = t2#Ro + t2#Rr;
-        let kq  = t2#Sr#(core.idx 0 r2 (r2 - 2));
-        let ts  = t2#Sr#(core.idx 0 r2 (r2 - 1));
-        let kb  = dot_kb (kq, ts * nc);
-        let blk = if_static (kq * ts, core.bit2.and_ 2 (t2#Rr == 2, core.bit2.and_ 2 (t2#tail == 0,
-                  core.bit2.and_ 2 (65536 < kq * ts * nc, core.bit2.and_ 2 (4 <= kb, kb < kq)))), ff);
-        hoist_red (strip_mine_red (t2, r2 - 2, (kq, kb)#blk), r_out - na, (0, 1)#blk);
-    kblk (dot_schedule (r_out + 1) (interchange (t1, perm)));
+    dot_kblk (r_out, na, nc) (dot_schedule (r_out + 1) (dot_nblk (r_out, nb, na, nc) t));
+///
+/// #### dot_schedule_nblk_rb
+///
+/// `dot_schedule_nblk` register-blocked within the N block (see `dot_schedule_rb`).
+lam dot_schedule_nblk_rb (r_out nb na nc: Nat) (t: Tileable): Tileable =
+    dot_schedule_rb (r_out + 1) (dot_nblk (r_out, nb, na, nc) t);
 ///
 /// #### dot_schedule_kvec
 ///
@@ -1395,7 +1430,24 @@ priv anx lam dot_product_impl
       lam go_nblk (u: []): «s_out; R#T» =
           let sched = dot_schedule_nblk (r_out, nb, n_s1_res, nc) t;
           reshape (sched#3_12) s_out (materialize sched);
-      ((go_n, go_nblk)#(nc != 0), go_kvec)#kvec ();
+      // Register-block by 4 x 16 where the last two dims of the loop order are the left operand's last free dim and N
+      // (see `dot_schedule_rb`): within the N block, or without one for a right operand with N as its only free dim.
+      let m_rb = s_out#(core.idx 0 r_out ((0, nb + n_s1_res - 1)#(1 <= n_s1_res)));
+      let n_rb = s_out#(core.idx 0 r_out (r_out - 1));
+      lam rb_by (m n: Nat): Bool =
+          core.bit2.and_ 2 (1 <= n_s1_res, core.bit2.and_ 2 (m / 4 * 4 == m, core.bit2.and_ 2 (4 < m,
+          core.bit2.and_ 2 (n / 16 * 16 == n, 16 < n))));
+      let rb_n  = if_static (m_rb * n_rb, core.bit2.and_ 2 (nb + n_s1_res + 1 == r_out, rb_by (m_rb, n_rb)), ff);
+      // Without a K block the whole k x nc panel must fit: the block is sized by the whole contraction.
+      let nc_rb = if_static (nc, dot_nc (n_rb, k_all), 0);
+      let rb_nb = if_static (m_rb * nc_rb, rb_by (m_rb, nc_rb), ff);
+      lam go_n_rb (u: []): «s_out; R#T» =
+          let sched = dot_schedule_rb r_out t;
+          reshape (sched#3_12) s_out (materialize sched);
+      lam go_nblk_rb (u: []): «s_out; R#T» =
+          let sched = dot_schedule_nblk_rb (r_out, nb, n_s1_res, nc_rb) t;
+          reshape (sched#3_12) s_out (materialize sched);
+      (((go_n, go_n_rb)#rb_n, (go_nblk, go_nblk_rb)#rb_nb)#(nc != 0), go_kvec)#kvec ();
 ///
 /// ### bmm_impl
 ///
