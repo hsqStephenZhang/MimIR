@@ -94,6 +94,21 @@ inline const Def* isa_transpose_2d(const Def* def) {
     return nullptr;
 }
 
+/// Is `map` the row-major reshape read `tensor.reshape_map (s_in, s_out)`, e.g. the one that reads a PACKED producer
+/// (its output strip-mined to `s_in`) at the unpacked coordinates `s_out`?
+/// Decided by normalization: both `map` and the canonical reshape map are applied to the same probe
+/// variable; the reduced bodies are hash-consed, so pointer equality decides alpha-equivalence.
+inline bool
+is_reshape_read(World& w, const Def* map, const Def* r_in, const Def* s_in, const Def* r_out, const Def* s_out) {
+    auto pi = map->type()->isa<Pi>();
+    if (!pi) return false;
+    auto expected = w.app(w.app(w.annex<tensor::reshape_map>(), {r_in, r_out}), {s_in, s_out});
+    auto epi      = expected->type()->isa<Pi>();
+    if (!epi || epi->dom() != pi->dom() || epi->codom() != pi->codom()) return false;
+    auto probe = w.mut_lam(pi->dom(), pi->codom()); // scratch binder: its var stands in for the cell vector
+    return w.app(map, probe->var()) == w.app(expected, probe->var());
+}
+
 /// Counts the consumers of every def of @p world matched by @p pred.
 /// Tuples and packs are transparent argument wrappers, so a wrapped def is charged to the enclosing
 /// non-tuple consumer - a shared argument tuple charges each of its users, and a def used twice in one

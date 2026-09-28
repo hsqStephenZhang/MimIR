@@ -1,0 +1,28 @@
+// RUN: %mim %s -p opt -o %t
+// RUN: cat %t | %FileCheck %s
+
+// lower_to_mem turns a row-major reshape of an op's buffer into a view of that buffer: a core.bitcast of its pointer,
+// no second buffer and no copy loop.
+// A parameter's buffer is still copied, so the result never aliases the caller's argument.
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin math;
+
+let F32 = math.F32;
+
+lam neg (x: F32): F32 = math.arith.sub 0 (0:F32, x);
+
+// CHECK-LABEL: extern con copy
+// CHECK: mem.malloc («2, 12; {{.*}}»
+// CHECK-NOT: core.bitcast
+// CHECK-LABEL: extern con view
+extern fun copy (x: «4, 6; F32», _: F32): «2, 12; F32» =
+    return (tensor.reshape (4, 6) (2, 12) x);
+
+// CHECK-NOT: mem.malloc («2, 12;
+// CHECK: core.bitcast @ (mem.Ptr («4, 6; {{.*}}», 0)) (mem.Ptr («2, 12; {{.*}}», 0))
+extern fun view (x: «4, 6; F32», _: F32): «2, 12; F32» =
+    return (tensor.reshape (4, 6) (2, 12) (tensor.unary neg x));
