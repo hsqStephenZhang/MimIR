@@ -70,6 +70,41 @@ const Def* Lower::fastest_axis_2(const App* app, const Def* rank) {
     return w.app(w.app(annex<tensor::fastest_axis>(), b->type()), {rank, b});
 }
 
+void Lower::start() {
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(old_world().roots());
+    while (!wl.empty()) {
+        auto def = wl.pop();
+        // A staged operand's producer may be an elementwise map over a dot, which `fuse_tensor` folds into the dot's
+        // epilogue: the dot takes the plain schedule too.
+        if (auto at = Axm::isa<tensor::compute_at>(def)) {
+            auto todo = DefVec{at->arg()};
+            while (!todo.empty()) {
+                auto x = todo.back();
+                todo.pop_back();
+                staged_.insert(x);
+                auto app = x->isa<App>();
+                if (Axm::isa<tensor::unary>(x))
+                    todo.emplace_back(app->arg());
+                else if (Axm::isa<tensor::binary>(x) || Axm::isa<tensor::map>(x) || Axm::isa<tensor::select>(x))
+                    for (auto operand : app->arg()->projs())
+                        todo.emplace_back(operand);
+            }
+        }
+        for (auto op : def->ops())
+            if (op) wl.push(op);
+        if (def->type()) wl.push(def->type());
+    }
+    RWPhase::start();
+}
+
+const Def* Lower::plain(const App* app) {
+    auto staged = staged_.contains(app);
+    for (auto operand : app->arg()->projs(2))
+        staged |= static_cast<bool>(Axm::isa<tensor::compute_at>(operand));
+    return new_world().lit_bool(staged);
+}
+
 const Def* Lower::lower_via_impl(const App* app, const Def* impl_annex) {
     auto& w = new_world();
 
@@ -106,16 +141,20 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     // The dot family's `_impl`s take a leading `fastest_2` with no axiom counterpart — the
     // `tensor.fastest_axis` reflection of the right operand, pre-applied here at the staging
     // point where that operand is concrete (see tensor.dot_product_impl for the decision).
+    // They also take `plain`: the schedule for a `compute_at` producer or consumer (see tensor.dot_product_impl).
     if (Axm::isa<tensor::product_2d>(app))
-        return lower_via_impl(app, w.app(annex<tensor::product_2d_impl>(), fastest_axis_2(app, w.lit_nat(2))));
+        return lower_via_impl(
+            app, w.app(w.app(annex<tensor::product_2d_impl>(), fastest_axis_2(app, w.lit_nat(2))), plain(app)));
     if (Axm::isa<tensor::bmm>(app))
-        return lower_via_impl(app, w.app(annex<tensor::bmm_impl>(), fastest_axis_2(app, w.lit_nat(3))));
+        return lower_via_impl(app,
+                              w.app(w.app(annex<tensor::bmm_impl>(), fastest_axis_2(app, w.lit_nat(3))), plain(app)));
     if (Axm::isa<tensor::dot_product>(app)) {
         // The curry chain, outermost app first: [a, b] {s1 s2} [c1, c2, b1, b2] {nc nb} {r1 r2};
         // the right operand's rank is {r1 r2}#1.
         auto groups = app->callee()->as<App>()->callee()->as<App>()->callee()->as<App>();
         auto r2     = groups->callee()->as<App>()->arg()->proj(2, 1);
-        return lower_via_impl(app, w.app(annex<tensor::dot_product_impl>(), fastest_axis_2(app, rewrite(r2))));
+        return lower_via_impl(
+            app, w.app(w.app(annex<tensor::dot_product_impl>(), fastest_axis_2(app, rewrite(r2))), plain(app)));
     }
 
     return RWPhase::rewrite_imm_App(app);

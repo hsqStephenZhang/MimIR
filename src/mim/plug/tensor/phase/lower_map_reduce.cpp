@@ -486,6 +486,7 @@ const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     // its dynamic branch.
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
     if (Axm::isa<tensor::barrier>(app)) return rewrite(app->arg());
+    if (Axm::isa<tensor::compute_at>(app)) return rewrite(app->arg());
     if (auto bc = Axm::isa<tensor::broadcast>(app)) {
         if (auto res = lower_broadcast(bc)) return res;
     } else if (auto mr = Axm::isa<tensor::map_reduce_post>(app)) {

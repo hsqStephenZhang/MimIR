@@ -17,6 +17,7 @@ public:
         : RWPhase(world, annex) {}
 
 private:
+    void start() final;
     const Def* rewrite_imm_App(const App*) final;
     const Def* rewrite_imm_Extract(const Extract*) final;
 
@@ -31,6 +32,12 @@ private:
     /// operand is only concrete at this staging point. The schedule decision built on the answer
     /// stays in the `_impl`'s IR (see tensor.dot_product_impl).
     const Def* fastest_axis_2(const App*, const Def* rank);
+    /// Whether a dot family op produces or consumes a `tensor.compute_at` operand: it then takes the plain schedule,
+    /// which neither packs its output nor blocks the loops of a staged operand's free dims inward.
+    const Def* plain(const App*);
+
+    /// The old-world operands annotated with `tensor.compute_at`.
+    DefSet staged_;
 };
 
 } // namespace mim::plug::tensor::phase

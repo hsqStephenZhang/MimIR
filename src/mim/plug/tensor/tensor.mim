@@ -100,6 +100,18 @@ axm buf: {T: *} → T → T;
 /// `lower_to_mem` and `lower_map_reduce` drop it.
 axm barrier: {T: *} → T → T, normalize_barrier;
 ///
+/// ### compute_at
+///
+/// The identity on a map_reduce operand, except that its producer runs inside the consumer's loop nest (TVM's
+/// `compute_at`): once per value of the consumer's leading `level` parallel dims, over just the region the loops below
+/// them read, into a reused tile.
+/// `fuse_tensor` does not fuse across it.
+/// The tile needs the operand to be the sole use of a `map_reduce` whose output is not packed, read through an access
+/// map that is affine in the loop vector with non-negative coefficients; otherwise the producer is materialized as
+/// usual.
+/// Either way the result is the same.
+axm compute_at: {T: *} → [level: Nat] → T → T;
+///
 /// ## Accessors
 ///
 /// Element access is a plain `Extract` / `Insert`: `arr#(a, b, c)` ≡ `arr#a#b#c`.
@@ -1344,7 +1356,7 @@ pub lam dot_general_pick {n: Nat} {na nb nc: Nat} (a: «na; Idx n», b: «nb; Id
 ///   read-through in a fused graph.
 
 priv anx lam dot_product_impl
-  (fastest_2: Nat)
+  (fastest_2: Nat) (plain: Bool)
   (R: Ring) (r1 r2: Nat) {nc nb: Nat}
   (c1: «nc; Idx r1», c2: «nc; Idx r2», b1: «nb; Idx r1», b2: «nb; Idx r2»)
   {s1: «r1; Nat», s2: «r2; Nat»} (a: «s1; R#T», b: «s2; R#T»)
@@ -1387,21 +1399,26 @@ priv anx lam dot_product_impl
       lam go_kvec (u: []): «s_out; R#T» =
           let sched = dot_schedule_kvec r_out t;
           reshape (sched#3_12) s_out (materialize sched);
+      // Plain: the contraction as the vector loop, without the jam blocks, whose strip-mining packs the output.
+      lam go_kvec_plain (u: []): «s_out; R#T» =
+          let sched = vectorize (t, n_loops - 1);
+          reshape (sched#3_12) s_out (materialize sched);
       // Cache-block the last output dim if it is a free dim of the right operand (see `dot_schedule_nblk`).
       let k_all = vec.fold.r @(Nat, Nat) @nc (lm (x acc: Nat): Nat = x * acc) (s_red, 1);
       // Above 256, the contraction is cache-blocked itself (see `dot_schedule_nblk`).
       let nc_0  = dot_nc (s_out#(core.idx 0 r_out (r_out - 1)), (256, k_all)#(k_all < 256));
-      let nc    = if_static (nc_0, (0, nc_0)#(nb + n_s1_res < r_out), 0);
+      let nc    = (if_static (nc_0, (0, nc_0)#(nb + n_s1_res < r_out), 0), 0)#plain;
       lam go_nblk (u: []): «s_out; R#T» =
           let sched = dot_schedule_nblk (r_out, nb, n_s1_res, nc) t;
           reshape (sched#3_12) s_out (materialize sched);
-      ((go_n, go_nblk)#(nc != 0), go_kvec)#kvec ();
+      ((go_n, go_nblk)#(nc != 0), (go_kvec, go_kvec_plain)#plain)#kvec ();
 ///
 /// ### bmm_impl
 ///
 /// The `{r1 r2}`/`{s1 s2}` groups are explicit for the same reason as in `product_2d_impl`.
-priv anx lam bmm_impl (fastest_2: Nat) (R: Ring) {B M K N: Nat} (t1: «B, M, K; R#T», t2: «B, K, N; R#T»): «B, M, N; R#T»
-        = dot_product_impl fastest_2 R (3, 3) (2_3, 1_3, 0_3, 0_3) (t1, t2);
+priv anx lam bmm_impl (fastest_2: Nat) (plain: Bool) (R: Ring) {B M K N: Nat}
+                      (t1: «B, M, K; R#T», t2: «B, K, N; R#T»): «B, M, N; R#T»
+        = dot_product_impl fastest_2 plain R (3, 3) (2_3, 1_3, 0_3, 0_3) (t1, t2);
 ///
 /// ### product_2d_impl
 ///
@@ -1413,8 +1430,9 @@ priv anx lam bmm_impl (fastest_2: Nat) (R: Ring) {B M K N: Nat} (t1: «B, M, K; 
 /// are resolved: the result type-checks but carries the whole `vec.*` scaffolding inside its access
 /// maps (`lit/tensor/dot_product.mim` pins this down).
 /// Passing literals up front folds it away.
-priv anx lam product_2d_impl (fastest_2: Nat) (R: Ring) {m k l: Nat} (t1: «m, k; R#T», t2: «k, l; R#T»): «m, l; R#T»
-        = dot_product_impl fastest_2 R (2, 2) (1_2, 0_2, (), ()) (t1, t2);
+priv anx lam product_2d_impl (fastest_2: Nat) (plain: Bool) (R: Ring) {m k l: Nat}
+                             (t1: «m, k; R#T», t2: «k, l; R#T»): «m, l; R#T»
+        = dot_product_impl fastest_2 plain R (2, 2) (1_2, 0_2, (), ()) (t1, t2);
 ///
 /// ### scatter_step_impl
 ///
