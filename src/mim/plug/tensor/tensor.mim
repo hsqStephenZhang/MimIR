@@ -1059,6 +1059,14 @@ lam dot_schedule_nblk (r_out nb na nc: Nat) (t: Tileable): Tileable =
 lam dot_schedule_nblk_rb (r_out nb na nc: Nat) (t: Tileable): Tileable =
     dot_schedule_rb (r_out + 1) (dot_nblk (r_out, nb, na, nc) t);
 ///
+/// #### dot_schedule_nblk_rbk
+///
+/// `dot_schedule_nblk_rb` with the contraction cache-blocked too (see `dot_kblk`): the register blocks of the N block
+/// are loaded from and stored back to a panel around each block of the contraction (`btensor.mr_nest`'s tiled
+/// register-blocked nest).
+lam dot_schedule_nblk_rbk (r_out nb na nc: Nat) (t: Tileable): Tileable =
+    dot_kblk (r_out, na, nc) (dot_schedule_nblk_rb (r_out, nb, na, nc) t);
+///
 /// #### dot_schedule_kvec
 ///
 /// The dot-product schedule for a contraction whose right operand stores the **contraction**
@@ -1448,7 +1456,12 @@ priv anx lam dot_product_impl
       lam go_nblk_rb (u: []): «s_out; R#T» =
           let sched = dot_schedule_nblk_rb (r_out, nb, n_s1_res, nc_rb) t;
           reshape (sched#3_12) s_out (materialize sched);
-      (((go_n, go_n_rb)#rb_n, (go_nblk, go_nblk_rb)#rb_nb)#(nc != 0), go_kvec)#kvec ();
+      // Where only a block of the contraction fits, the register blocks run inside the K block.
+      let rb_k  = if_static (m_rb * nc, rb_by (m_rb, nc), ff);
+      lam go_nblk_rbk (u: []): «s_out; R#T» =
+          let sched = dot_schedule_nblk_rbk (r_out, nb, n_s1_res, nc) t;
+          reshape (sched#3_12) s_out (materialize sched);
+      (((go_n, go_n_rb)#rb_n, ((go_nblk, go_nblk_rbk)#rb_k, go_nblk_rb)#rb_nb)#(nc != 0), go_kvec)#kvec ();
 ///
 /// ### bmm_impl
 ///

@@ -525,34 +525,36 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
         let rb_pc = (1, rb_p)#rb_ok;
         let rb_vc = (1, rb_v)#rb_ok;
 
+        // The loop vector of block cell (i, j).
+        lam at_cell (pref: «r; I32», i j: Nat): «r; I32» =
+            ‹d: r; let dd = core.bitcast Nat d;
+                   core.select (dd == pd_c, core.bitcast I32 i, core.select (dd == sd_c, core.bitcast I32 j, pref#d))›;
+        lam cell_ix (i j: Nat): [Idx rb_pc, Idx rb_vc] = (core.idx 0 rb_pc i, core.idx 0 rb_vc j);
+        // `step (i, j)` chained over every cell of the block, threading an `A`.
+        lam each_cell (A: *) (step: [Nat, Nat, Cn [mem.M 0, A]] → Cn [mem.M 0, A]) (k: Cn [mem.M 0, A]): Cn [mem.M 0, A] =
+            lam row (i: Nat, ki: Cn [mem.M 0, A]): Cn [mem.M 0, A] =
+                lam col (j: Nat, kj: Cn [mem.M 0, A]): Cn [mem.M 0, A] = step (i, j, kj);
+                vec.fold.r @(Cn [mem.M 0, A], Nat) @rb_vc col (‹j: rb_vc; core.bitcast Nat j›, ki);
+            vec.fold.r @(Cn [mem.M 0, A], Nat) @rb_pc row (‹i: rb_pc; core.bitcast Nat i›, k);
+        // One reduction point for every cell of the block, through the (partial) window `w`.
+        lam at_point (w: Cn [«r; I32», mem.M 0, To, Cn [mem.M 0, To]])
+                    : Cn [«r; I32», mem.M 0, «rb_pc, rb_vc; To», Cn [mem.M 0, «rb_pc, rb_vc; To»]] =
+            con at (pref: «r; I32», m: mem.M 0, acc: «rb_pc, rb_vc; To», k: Cn [mem.M 0, «rb_pc, rb_vc; To»]) =
+                lam step (i j: Nat, kk: Cn [mem.M 0, «rb_pc, rb_vc; To»]): Cn [mem.M 0, «rb_pc, rb_vc; To»] =
+                    con st (m2: mem.M 0, a2: «rb_pc, rb_vc; To») =
+                        con put (m3: mem.M 0, v: To) = kk (m3, a2#(cell_ix (i, j)) ← v);
+                        w (at_cell (pref, i, j), m2, a2#(cell_ix (i, j)), put);
+                    st;
+                (each_cell «rb_pc, rb_vc; To» step k) (m, acc);
+            at;
+
         con regblk (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
-            // The loop vector of block cell (i, j).
-            lam at_cell (pref: «r; I32», i j: Nat): «r; I32» =
-                ‹d: r; let dd = core.bitcast Nat d;
-                       core.select (dd == pd_c, core.bitcast I32 i, core.select (dd == sd_c, core.bitcast I32 j, pref#d))›;
-            lam cell_ix (i j: Nat): [Idx rb_pc, Idx rb_vc] = (core.idx 0 rb_pc i, core.idx 0 rb_vc j);
-            // One reduction point for every cell of the block, through the (partial) window `w`.
-            lam at_point (w: Cn [«r; I32», mem.M 0, To, Cn [mem.M 0, To]])
-                        : Cn [«r; I32», mem.M 0, «rb_pc, rb_vc; To», Cn [mem.M 0, «rb_pc, rb_vc; To»]] =
-                con at (pref: «r; I32», m: mem.M 0, acc: «rb_pc, rb_vc; To», k: Cn [mem.M 0, «rb_pc, rb_vc; To»]) =
-                    lam row (i: Nat, ki: Cn [mem.M 0, «rb_pc, rb_vc; To»]): Cn [mem.M 0, «rb_pc, rb_vc; To»] =
-                        lam col (j: Nat, kj: Cn [mem.M 0, «rb_pc, rb_vc; To»]): Cn [mem.M 0, «rb_pc, rb_vc; To»] =
-                            con st (m2: mem.M 0, a2: «rb_pc, rb_vc; To») =
-                                con put (m3: mem.M 0, v: To) = kj (m3, a2#(cell_ix (i, j)) ← v);
-                                w (at_cell (pref, i, j), m2, a2#(cell_ix (i, j)), put);
-                            st;
-                        vec.fold.r @(Cn [mem.M 0, «rb_pc, rb_vc; To»], Nat) @rb_vc col (‹j: rb_vc; core.bitcast Nat j›, ki);
-                    (vec.fold.r @(Cn [mem.M 0, «rb_pc, rb_vc; To»], Nat) @rb_pc row (‹i: rb_pc; core.bitcast Nat i›, k))
-                        (m, acc);
-                at;
             con at_block (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
                 con folded (m2: mem.M 0, acc: «rb_pc, rb_vc; To») =
-                    lam row (i: Nat, ki: Cn [mem.M 0, U]): Cn [mem.M 0, U] =
-                        lam col (j: Nat, kj: Cn [mem.M 0, U]): Cn [mem.M 0, U] =
-                            con st (m3: mem.M 0, u3: U) = wb (m3, u3, acc#(cell_ix (i, j)), at_cell (pref, i, j), kj);
-                            st;
-                        vec.fold.r @(Cn [mem.M 0, U], Nat) @rb_vc col (‹j: rb_vc; core.bitcast Nat j›, ki);
-                    (vec.fold.r @(Cn [mem.M 0, U], Nat) @rb_pc row (‹i: rb_pc; core.bitcast Nat i›, k)) (m2, u);
+                    lam step (i j: Nat, kk: Cn [mem.M 0, U]): Cn [mem.M 0, U] =
+                        con st (m3: mem.M 0, u3: U) = wb (m3, u3, acc#(cell_ix (i, j)), at_cell (pref, i, j), kk);
+                        st;
+                    (each_cell U step k) (m2, u);
                 (red «rb_pc, rb_vc; To» (affine_for @«rb_pc, rb_vc; To») (at_point win, at_point win_t))
                     (pref, m, ‹rb_pc; ‹rb_vc; init››, folded);
             (range_nest (r, Sr) U (affine_for @U, 0, pd_c) at_block) (‹r; 0I32›, mem0, u0, done);
@@ -661,8 +663,63 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                     (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) fill)) (pref, m, u, s1);
             (range_nest (r, Sr) U (affine_for @U, 0, tl_p) at_block) (‹r; 0I32›, mem1, u0, done);
 
+        // TILED REGISTER-BLOCKED (`rout ≠ 0` with a register block): TILED's reduction-outer order around
+        // REGISTER-BLOCKED's micro-kernel. The panel spans all inner parallel dims [pout, ro); per hoisted block, every
+        // register block of it is loaded from the panel, folded over the remaining reductions and stored back.
+        // Clamps as above.
+        let trb_ok = core.bit2.and_ 2 (rout != 0, core.bit2.and_ 2 (rb_ok, core.bit2.and_ 2 (tail == 0,
+                     core.bit2.and_ 2 (pout <= pd_c, ro + rout <= u_lo))));
+        let trb_p  = (pd_c, pout)#(pout <= pd_c);
+        let trb_r  = (0, rout)#(ro + rout <= u_lo);
+        let trb_n  = ro - trb_p;
+        // Listed from the last parallel dim down: the right fold makes it the fastest-varying panel axis.
+        let trb_ds = ‹i: trb_n; (ro - 1) - core.bitcast Nat i›;
+        lam trb_mul (d: Nat, acc: Nat): Nat = acc * Sr#(core.idx 0 r d);
+        let Nq     = vec.fold.r @(Nat, Nat) @trb_n trb_mul (trb_ds, 1);
+
+        con tiled_rb (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
+            lam q_lin (pref: «r; I32») (d: Nat, acc: I32): I32 =
+                core.wrap.add 0 (core.wrap.mul 0 (acc, core.bitcast I32 (Sr#(core.idx 0 r d))), pref#(core.idx 0 r d));
+            let qi_of = lm (pref: «r; I32»): Idx Nq = core.conv.u Nq (vec.fold.r @(I32, Nat) @trb_n (q_lin pref) (trb_ds, 0I32));
+            let (mem1, panel) = buffer.alloc (1, Nq, To) mem0;
+            con at_block (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+                con fill (pref2: «r; I32», memf: mem.M 0, uf: U, kf: Cn [mem.M 0, U]) =
+                    let (memf2, panel2) = buffer.write (1, Nq, To) (memf, panel, qi_of pref2, init);
+                    kf (memf2, uf);
+                // One register block: loaded from the panel, folded over the inner reductions, stored back.
+                con at_rb (pref2: «r; I32», memr: mem.M 0, ur: U, kr: Cn [mem.M 0, U]) =
+                    lam load (i j: Nat, kk: Cn [mem.M 0, «rb_pc, rb_vc; To»]): Cn [mem.M 0, «rb_pc, rb_vc; To»] =
+                        con st (m2: mem.M 0, a2: «rb_pc, rb_vc; To») =
+                            let (m3, v) = buffer.read (1, Nq, To) (m2, panel, qi_of (at_cell (pref2, i, j)));
+                            kk (m3, a2#(cell_ix (i, j)) ← v);
+                        st;
+                    con loaded (m2: mem.M 0, acc: «rb_pc, rb_vc; To») =
+                        con folded (m3: mem.M 0, acc2: «rb_pc, rb_vc; To») =
+                            lam store (i j: Nat, kk: Cn [mem.M 0, U]): Cn [mem.M 0, U] =
+                                con st (m4: mem.M 0, u4: U) =
+                                    let (m5, panel5) = buffer.write (1, Nq, To) (m4, panel, qi_of (at_cell (pref2, i, j)),
+                                                                            acc2#(cell_ix (i, j)));
+                                    kk (m5, u4);
+                                st;
+                            (each_cell U store kr) (m3, ur);
+                        (range_nest (r, Sr) «rb_pc, rb_vc; To» (affine_for @«rb_pc, rb_vc; To», ro + trb_r, u_lo) (at_point win))
+                            (pref2, m2, acc, folded);
+                    (each_cell «rb_pc, rb_vc; To» load loaded) (memr, ‹rb_pc; ‹rb_vc; init››);
+                con wb_cell (pref2: «r; I32», memw: mem.M 0, uw: U, kw: Cn [mem.M 0, U]) =
+                    let (memw1, v) = buffer.read (1, Nq, To) (memw, panel, qi_of pref2);
+                    wb (memw1, uw, v, pref2, kw);
+                con s2 (memB: mem.M 0, uB: U) =
+                    (range_nest (r, Sr) U (affine_for @U, trb_p, ro) wb_cell) (pref, memB, uB, k);
+                con s1 (memA: mem.M 0, uA: U) =
+                    (range_nest (r, Sr) U (affine_for @U, ro, ro + trb_r)
+                        (range_nest (r, Sr) U (affine_for @U, trb_p, pd_c) at_rb))
+                        (pref, memA, uA, s2);
+                (range_nest (r, Sr) U (affine_for @U, trb_p, ro) fill) (pref, m, u, s1);
+            (range_nest (r, Sr) U (affine_for @U, 0, trb_p) at_block) (‹r; 0I32›, mem1, u0, done);
+
         con run (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
-            (((((classic, vectorized)#vec_ok, (blocked, regblk)#rb_ok)#block_ok, redvec)#redvec_ok, tiled)#tl_ok)
+            ((((((classic, vectorized)#vec_ok, (blocked, regblk)#rb_ok)#block_ok, redvec)#redvec_ok, tiled)#tl_ok,
+              tiled_rb)#trb_ok)
                 (mem0, u0, done);
         run;
     nest;
