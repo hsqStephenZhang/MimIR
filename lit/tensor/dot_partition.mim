@@ -4,7 +4,7 @@
 
 // Loop partitioning of the innermost contraction (tensor.partition_red): K = 65 is divisible by none of 4, 3, 2,
 // so it splits into ⌈65/4⌉ = 17 x 4 whose last outer iteration is peeled and folds only the remaining point.
-// The schedule carries that as (vdim, unroll, tail) = (1, 1, 1); it stays a single operation.
+// The schedule carries that as (vdim, unroll, tail, pout, rout) = (1, 1, 1, 0, 0); it stays a single operation.
 // A dividing tile partitions without a tail: K = 48 is blocked by 4, K = 147 by 3.
 
 plugin core;
@@ -15,8 +15,8 @@ plugin compile;
 
 let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
 
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* ‹3; 1›}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(1, 1, 0\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(1, 1, 1, 0, 0\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(1, 1, 0, 0, 0\)}}
 
 // CHECK-LABEL: extern fun exact
 // CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((5, 7), (5, 7, 12, 4),

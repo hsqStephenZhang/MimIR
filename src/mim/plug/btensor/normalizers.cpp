@@ -21,7 +21,7 @@ const Def* normalize_map_reduce(const Def*, const Def* c, const Def* arg) {
     auto [comb, init]                                             = comb_init->projs<2>();
     auto [mem, is]                                                = arg->projs<2>();
 
-    auto sched = w.app(w.annex<btensor::mk_sched>(), {Rn, w.lit_nat_0(), w.lit_nat_0()});
+    auto sched = w.app(w.annex<btensor::mk_sched>(), {Rn, w.lit_nat_0(), w.lit_nat_0(), w.lit_nat_0(), w.lit_nat_0()});
     auto post  = w.app(w.annex<btensor::id>(), To);
     auto unit  = w.tuple();
 
