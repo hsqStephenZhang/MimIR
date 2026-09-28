@@ -1447,6 +1447,7 @@ priv anx lam im2col_impl {T: *} {n c h w: Nat}
 ///
 /// `W · cols` per batch as a `dot_product` of the reshaped weight against the `im2col` columns, contracting `Cin·KH·KW`;
 /// its `«Cout, N, OH·OW»` result is transposed and reshaped back to NCHW.
+/// The columns sit behind a `barrier`, so the product reads a materialized, contiguous matrix.
 
 priv anx lam conv_im2col_impl (R: Ring) {n cin cout h w kh kw: Nat}
                              (stride dilation padding: «2; Nat»)
@@ -1454,7 +1455,7 @@ priv anx lam conv_im2col_impl (R: Ring) {n cin cout h w kh kw: Nat}
                            : «conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding); R#T» =
     let (_, _, oh, ow) = conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding);
     let k    = cin * kh * kw;
-    let cols = im2col ((kh, kw), stride, dilation, padding) (input, R#_0);
+    let cols = barrier (im2col ((kh, kw), stride, dilation, padding) (input, R#_0));
     let w2   = reshape (cout, cin, kh, kw) (cout, k) weight;
     let prod = dot_product R (1_2, 1_3, (), ()) (w2, cols);
     reshape (n, cout, oh * ow) (n, cout, oh, ow) (transpose (1_3, 0_3, 2_3) prod);

@@ -13,6 +13,15 @@ plugin compile;
 
 lam inc (x: Nat): Nat = core.nat.add (x, 1);
 lam dbl (x: Nat): Nat = core.nat.mul (x, 2);
+lam nat_ring (): tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
+
+// conv_im2col keeps its column matrix: the product reads the barrier, not the input.
+// CHECK-LABEL: extern fun conv
+// CHECK: [[COLS:[_a-z0-9]+]] = tensor.map_reduce_post {{.*}}(input, ())
+// CHECK: cols = tensor.barrier @ «2, 18, 9; Nat» [[COLS]]
+// CHECK: tensor.map_reduce_post {{.*}}((weight, cols), ())
+extern fun conv (input: «2, 2, 7, 7; Nat», weight: «3, 2, 3, 3; Nat»): «2, 3, 3, 3; Nat» =
+    return (tensor.conv_im2col (nat_ring ()) ((2, 2), (1, 1), (0, 0)) (input, weight));
 
 // CHECK-LABEL: extern fun fused
 // CHECK-COUNT-1: tensor.map_reduce_post
