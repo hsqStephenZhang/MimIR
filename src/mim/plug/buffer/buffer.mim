@@ -36,6 +36,12 @@ axm Buf: [r: Nat, s: «r; Nat», T: *] → *, normalize_Buf;
 ///
 axm alloc: [r: Nat, s: «r; Nat», T: *] as rsT → mem.M 0 → [mem.M 0, Buf rsT];
 ///
+/// ### free
+///
+/// Release a buffer that nothing reads any more.
+///
+axm free: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT] → mem.M 0;
+///
 /// ### read
 ///
 /// Read the element at `idx`.

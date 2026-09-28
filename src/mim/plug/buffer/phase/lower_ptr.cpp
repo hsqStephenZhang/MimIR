@@ -59,6 +59,9 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         T                = rewrite(T);
         auto [mem2, ptr] = mem::op_alloc(arr_ty_of(s, T), mem)->projs<2>();
         return w.tuple({mem2, ptr});
+    } else if (auto free_ax = Axm::isa<buffer::free>(app)) {
+        auto [mem, buf] = free_ax->args<2>();
+        return w.call<mem::free>(Defs{rewrite(mem), rewrite(buf)});
     } else if (auto read_ax = Axm::isa<buffer::read>(app)) {
         auto [mem, buf, idx] = read_ax->args<3>();
         mem                  = rewrite(mem);
