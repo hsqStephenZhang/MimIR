@@ -105,6 +105,11 @@ const Def* normalize_if_static(const Def*, const Def*, const Def* arg) {
     return nullptr;
 }
 
+const Def* normalize_barrier(const Def*, const Def*, const Def* arg) {
+    if (Axm::isa<tensor::barrier>(arg)) return arg;
+    return nullptr;
+}
+
 const Def* normalize_fastest_axis(const Def*, const Def*, const Def* arg) {
     // `tensor.fastest_axis (r, t)` reflects which axis of `t` is the fastest-varying (unit-stride)
     // axis of the tensor actually read once `fuse_tensor`'s read-through has absorbed a pure

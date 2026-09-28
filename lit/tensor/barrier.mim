@@ -1,0 +1,38 @@
+// RUN: %mim %s -p opt -o %t
+// RUN: cat %t | %FileCheck %s
+
+// tensor.barrier: fuse_tensor does not fuse across it.
+// Without it the inner map is fused into the outer one; behind it both stay, and the outer reads the barrier.
+// The externs are printed in name order.
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin compile;
+
+lam inc (x: Nat): Nat = core.nat.add (x, 1);
+lam dbl (x: Nat): Nat = core.nat.mul (x, 2);
+
+// CHECK-LABEL: extern fun fused
+// CHECK-COUNT-1: tensor.map_reduce_post
+// CHECK-NOT: tensor.map_reduce_post
+// CHECK: return
+extern fun fused (x: «4, 8; Nat», _: Nat): «4, 8; Nat» =
+    return (tensor.unary dbl (tensor.unary inc x));
+
+// CHECK-LABEL: extern fun kept
+// CHECK: [[INNER:[_a-z0-9]+]] = tensor.map_reduce_post
+// CHECK: [[B:[_a-z0-9]+]] = tensor.barrier {{.*}}[[INNER]]
+// CHECK: tensor.map_reduce_post {{.*}}([[B]], ())
+extern fun kept (x: «4, 8; Nat», _: Nat): «4, 8; Nat» =
+    return (tensor.unary dbl (tensor.barrier (tensor.unary inc x)));
+
+// Stops right after fuse_tensor: the checks are about what fusion leaves.
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        compile.cleanup,
+        tensor.lower_tensor,
+        tensor.fuse_tensor,
+        compile.cleanup,
+    );
