@@ -188,7 +188,8 @@ Lam* build_kernel(World& w,
                   Lam* global_post,
                   const Def* Tp,
                   const Def* out_dptr,
-                  const Grid& grid) {
+                  const Grid& grid,
+                  const Def* sched) {
     auto nis        = ins.n();
     auto nps        = post_ins.n();
     auto ro         = out_dims.size();
@@ -264,7 +265,7 @@ Lam* build_kernel(World& w,
     const Def* acc   = w.tuple({k_global, init});
     const Def* cont  = write_back;
     Lam* current_mut = body;
-    DefVec red_iters;
+    DefVec red_iters, raw_iters(ro, w.lit_i64(0));
     red_iters.reserve(rr);
     for (size_t j = 0; j != rr; ++j) {
         auto dim                    = Sr->proj(nloops_nat, ro + j);
@@ -273,6 +274,7 @@ Lam* build_kernel(World& w,
         auto [iter, new_acc, yield] = rbody->vars<3>();
         cont                        = yield;
         red_iters.push_back(w.call(core::conv::u, dim, iter));
+        raw_iters.push_back(iter);
         acc = new_acc;
         current_mut->set(true, for_call);
         current_mut = rbody;
@@ -295,7 +297,16 @@ Lam* build_kernel(World& w,
         input_elems[i] = rd_val;
     }
 
-    apply_cps(w, current_mut, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
+    // A partitioned domain overshoots the reduction: skip the points the schedule's tail excludes.
+    if (auto skip = btensor::tail_skip(sched, ro, Sr->projs(nloops_nat), raw_iters)) {
+        auto fold = w.mut_con(w.sigma())->set("fold");
+        auto keep = w.mut_con(w.sigma())->set("keep");
+        apply_cps(w, fold, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
+        keep->app(true, cont, w.tuple({cur, elem_acc}));
+        current_mut->branch(true, skip, keep, fold);
+    } else {
+        apply_cps(w, current_mut, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
+    }
 
     return kernel;
 }
@@ -427,7 +438,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto kernel = build_kernel(w, Ro, rr, out_dims, Sr, So, Mapped{in_desc.rs, in_desc.ss, inputs.dptrs, in_desc.accs},
                                To, acc_out, init, global_comb,
                                Mapped{post_desc.rs, post_desc.ss, post_inputs.dptrs, post_desc.accs}, global_post, Tp,
-                               out_dptr, grid);
+                               out_dptr, grid, sched);
 
     DefVec kernel_arg_tys(nis_n + nps_n + 1);
     for (nat_t i = 0; i != nis_n; ++i)
