@@ -10,6 +10,7 @@ extern "C" {
 // `«s; F32»` tensors lower to plain pointers at the C ABI (see hlo_aux.cpp).
 float* nblk(float* a, float* b);
 float* kblk(float* a, float* b);
+float* nblk_fma(float* a, float* b);
 float* conv(float* w, float* c);
 }
 
@@ -42,7 +43,8 @@ static int check(const char* name, float* (*f)(float*, float*), size_t M, size_t
 int main() {
     int bad = 0;
     bad += check("nblk", nblk, 8, 100, 1, 512);
-    bad += check("kblk", kblk, 8, 1152, 1, 512);
+    bad += check("kblk", kblk, 8, 2304, 1, 512);
+    bad += check("nblk_fma", nblk_fma, 8, 100, 1, 512);
     bad += check("conv", conv, 6, 96, 2, 640);
     return bad ? 1 : 0;
 }

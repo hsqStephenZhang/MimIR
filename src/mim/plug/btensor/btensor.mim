@@ -515,6 +515,48 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                     (range_nest (r, Sr) U (vec_for @U, sd_c, ro) fill)) (pref, m, u, s1);
             (range_nest (r, Sr) U (affine_for @U, 0, pd_c) at_block) (‹r; 0I32›, mem1, u0, done);
 
+        // REGISTER-BLOCKED (`vdim = ro − 2` with at most 64 block cells and one unrolled dim): like BLOCKED, but the
+        // block's accumulators are one SSA value «Sp, Sv; To» threaded through the reduction loops — registers, not a
+        // panel in memory — and every cell of the block is unrolled into the fold step (a GEMM micro-kernel).
+        // Two nested folds, each below the threshold up to which packs unfold into tuples. Clamps as above.
+        let rb_p  = Sr#(core.idx 0 r pd_c);
+        let rb_v  = Sr#(core.idx 0 r sd_c);
+        let rb_ok = core.bit2.and_ 2 (block_ok, core.bit2.and_ 2 (rb_p * rb_v <= 64, unroll <= 1));
+        let rb_pc = (1, rb_p)#rb_ok;
+        let rb_vc = (1, rb_v)#rb_ok;
+
+        con regblk (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
+            // The loop vector of block cell (i, j).
+            lam at_cell (pref: «r; I32», i j: Nat): «r; I32» =
+                ‹d: r; let dd = core.bitcast Nat d;
+                       core.select (dd == pd_c, core.bitcast I32 i, core.select (dd == sd_c, core.bitcast I32 j, pref#d))›;
+            lam cell_ix (i j: Nat): [Idx rb_pc, Idx rb_vc] = (core.idx 0 rb_pc i, core.idx 0 rb_vc j);
+            // One reduction point for every cell of the block, through the (partial) window `w`.
+            lam at_point (w: Cn [«r; I32», mem.M 0, To, Cn [mem.M 0, To]])
+                        : Cn [«r; I32», mem.M 0, «rb_pc, rb_vc; To», Cn [mem.M 0, «rb_pc, rb_vc; To»]] =
+                con at (pref: «r; I32», m: mem.M 0, acc: «rb_pc, rb_vc; To», k: Cn [mem.M 0, «rb_pc, rb_vc; To»]) =
+                    lam row (i: Nat, ki: Cn [mem.M 0, «rb_pc, rb_vc; To»]): Cn [mem.M 0, «rb_pc, rb_vc; To»] =
+                        lam col (j: Nat, kj: Cn [mem.M 0, «rb_pc, rb_vc; To»]): Cn [mem.M 0, «rb_pc, rb_vc; To»] =
+                            con st (m2: mem.M 0, a2: «rb_pc, rb_vc; To») =
+                                con put (m3: mem.M 0, v: To) = kj (m3, a2#(cell_ix (i, j)) ← v);
+                                w (at_cell (pref, i, j), m2, a2#(cell_ix (i, j)), put);
+                            st;
+                        vec.fold.r @(Cn [mem.M 0, «rb_pc, rb_vc; To»], Nat) @rb_vc col (‹j: rb_vc; core.bitcast Nat j›, ki);
+                    (vec.fold.r @(Cn [mem.M 0, «rb_pc, rb_vc; To»], Nat) @rb_pc row (‹i: rb_pc; core.bitcast Nat i›, k))
+                        (m, acc);
+                at;
+            con at_block (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+                con folded (m2: mem.M 0, acc: «rb_pc, rb_vc; To») =
+                    lam row (i: Nat, ki: Cn [mem.M 0, U]): Cn [mem.M 0, U] =
+                        lam col (j: Nat, kj: Cn [mem.M 0, U]): Cn [mem.M 0, U] =
+                            con st (m3: mem.M 0, u3: U) = wb (m3, u3, acc#(cell_ix (i, j)), at_cell (pref, i, j), kj);
+                            st;
+                        vec.fold.r @(Cn [mem.M 0, U], Nat) @rb_vc col (‹j: rb_vc; core.bitcast Nat j›, ki);
+                    (vec.fold.r @(Cn [mem.M 0, U], Nat) @rb_pc row (‹i: rb_pc; core.bitcast Nat i›, k)) (m2, u);
+                (red «rb_pc, rb_vc; To» (affine_for @«rb_pc, rb_vc; To») (at_point win, at_point win_t))
+                    (pref, m, ‹rb_pc; ‹rb_vc; init››, folded);
+            (range_nest (r, Sr) U (affine_for @U, 0, pd_c) at_block) (‹r; 0I32›, mem0, u0, done);
+
         // REDUCTION-VECTORIZED (`ro ≤ vdim < r`: the schedule names the innermost REDUCTION dim):
         // the contraction itself runs as the innermost (vector) loop. For a contraction whose
         // operands store the contracted axis unit-stride per output cell (x·Wᵀ — the fc/linear
@@ -620,7 +662,8 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
             (range_nest (r, Sr) U (affine_for @U, 0, tl_p) at_block) (‹r; 0I32›, mem1, u0, done);
 
         con run (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
-            (((((classic, vectorized)#vec_ok, blocked)#block_ok, redvec)#redvec_ok, tiled)#tl_ok) (mem0, u0, done);
+            (((((classic, vectorized)#vec_ok, (blocked, regblk)#rb_ok)#block_ok, redvec)#redvec_ok, tiled)#tl_ok)
+                (mem0, u0, done);
         run;
     nest;
 ///
