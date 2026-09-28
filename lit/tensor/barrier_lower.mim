@@ -1,0 +1,29 @@
+// RUN: %mim %s -p opt -o %t
+// RUN: cat %t | %FileCheck %s
+
+// tensor.lower_map_reduce drops tensor.barrier.
+// CHECK: extern fun kept
+// CHECK-NOT: tensor.
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin compile;
+
+lam inc (x: Nat): Nat = core.nat.add (x, 1);
+lam dbl (x: Nat): Nat = core.nat.mul (x, 2);
+
+extern fun kept (x: «4, 8; Nat», _: Nat): «4, 8; Nat» =
+    return (tensor.unary dbl (tensor.barrier (tensor.unary inc x)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        compile.cleanup,
+        tensor.lower_tensor,
+        tensor.fuse_tensor,
+        tensor.lower_map_reduce,
+        affine.lower_index,
+        affine.lower_for,
+        compile.cleanup,
+    );

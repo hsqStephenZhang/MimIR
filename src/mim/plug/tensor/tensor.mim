@@ -90,6 +90,16 @@ axm splat: {T: *, r: Nat}
 /// Losing one before that silently leaves a tensor with value semantics.
 axm buf: {T: *} → T → T;
 ///
+/// ### barrier
+///
+/// The identity, except that `fuse_tensor` does not fuse across it: the producer of its argument stays a
+/// materialized tensor, and its consumers read that tensor instead of recomputing it through their
+/// access maps.
+/// This keeps a layout transform - e.g. an operand packed for a contraction - which read-through fusion
+/// would otherwise absorb again.
+/// `lower_to_mem` and `lower_map_reduce` drop it.
+axm barrier: {T: *} → T → T, normalize_barrier;
+///
 /// ## Accessors
 ///
 /// Element access is a plain `Extract` / `Insert`: `arr#(a, b, c)` ≡ `arr#a#b#c`.
