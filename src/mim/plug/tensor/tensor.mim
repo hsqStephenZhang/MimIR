@@ -186,7 +186,8 @@ let SchedT = [N: *] → ([vdim unroll tail pout rout: Nat] → N) → N;
 ///   `btensor.mr_nest`), and `vdim ≥ Rn` means "none";
 /// - `unroll`, the number of trailing reduction dims to unroll into straight-line code;
 /// - `tail`, the loop partition of the innermost looped reduction dim: `0` for none, else its last iteration is peeled,
-///   and the first unrolled dim runs only its first `tail` points in it (see `partition_red`);
+///   and the first unrolled dim runs only its first `tail` points in it (see `partition_red`) — the domain `Sr` then
+///   overshoots, so a lowering that builds its own loops must skip those points (`btensor::tail_skip`);
 /// - `pout`/`rout`, the loop order: the leading `rout` reduction dims run between the leading `pout` parallel dims and
 ///   the others (see `hoist_red`).
 ///
