@@ -1,0 +1,17 @@
+// RUN: %mim %s -p opt -o %t
+// RUN: cat %t | %FileCheck %s
+
+// A scheduled loop nest frees the accumulators it allocates once it is done: here the row of the vectorized product.
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+// CHECK-LABEL: extern con mm
+// CHECK: [[ROW:[_a-z0-9]+]] = mem.malloc («16; {{.*}}»
+// CHECK: mem.free @ («16; {{.*}}», 0) ({{[_a-z0-9]+}}, [[ROW]]#tt)
+extern fun mm (a: «8, 16; F32», b: «16, 32; F32»): «8, 32; F32» = return (tensor.product_2d R (a, b));

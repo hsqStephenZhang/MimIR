@@ -464,7 +464,8 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                          range_nest (r, Sr) U (vec_for @U, vd, vd + 1) (at_point win_t)))
                         (pref, memA, uA, s2);
                 (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) fill) (pref, m, u, s1);
-            (range_nest (r, Sr) U (affine_for @U, 0, vd) at_row) (‹r; 0I32›, mem1, u0, done);
+            con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Sv, To) (mf, row), uf);
+            (range_nest (r, Sr) U (affine_for @U, 0, vd) at_row) (‹r; 0I32›, mem1, u0, freed);
 
         // BLOCKED (`vdim = ro − 2`): the two trailing parallel dims are sunk inside the reduction
         // loops — the last dim runs as the vector loop and the BLOCK dim before it (any extent Sp;
@@ -513,7 +514,8 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                         (pref, memA, uA, s2);
                 (range_nest (r, Sr) U (affine_for @U, pd_c, sd_c)
                     (range_nest (r, Sr) U (vec_for @U, sd_c, ro) fill)) (pref, m, u, s1);
-            (range_nest (r, Sr) U (affine_for @U, 0, pd_c) at_block) (‹r; 0I32›, mem1, u0, done);
+            con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Np, To) (mf, panel), uf);
+            (range_nest (r, Sr) U (affine_for @U, 0, pd_c) at_block) (‹r; 0I32›, mem1, u0, freed);
 
         // REDUCTION-VECTORIZED (`ro ≤ vdim < r`: the schedule names the innermost REDUCTION dim):
         // the contraction itself runs as the innermost (vector) loop. For a contraction whose
@@ -571,7 +573,8 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                             (range_unroll (r, Sr_rv) U (rv_bd, ro) at_point)))
                         (pref, memA, uA, s2);
                 (range_unroll (r, Sr_rv) U (rv_bd, ro) fill) (pref, m, u, s1);
-            (range_nest (r, Sr) U (affine_for @U, 0, rv_bd) at_block) (‹r; 0I32›, mem1, u0, done);
+            con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Sb, To) (mf, panel), uf);
+            (range_nest (r, Sr) U (affine_for @U, 0, rv_bd) at_block) (‹r; 0I32›, mem1, u0, freed);
 
         // TILED (`rout ≠ 0`): the cache-blocked, reduction-outer order. Per cell of the outer parallel dims
         // [0, pout), a panel of accumulators spans the inner parallel dims [pout, vd] — the vector dim last — and
@@ -617,7 +620,8 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                         (pref, memA, uA, s2);
                 (range_nest (r, Sr) U (affine_for @U, tl_p, vd)
                     (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) fill)) (pref, m, u, s1);
-            (range_nest (r, Sr) U (affine_for @U, 0, tl_p) at_block) (‹r; 0I32›, mem1, u0, done);
+            con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Nt, To) (mf, panel), uf);
+            (range_nest (r, Sr) U (affine_for @U, 0, tl_p) at_block) (‹r; 0I32›, mem1, u0, freed);
 
         con run (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
             (((((classic, vectorized)#vec_ok, blocked)#block_ok, redvec)#redvec_ok, tiled)#tl_ok) (mem0, u0, done);
