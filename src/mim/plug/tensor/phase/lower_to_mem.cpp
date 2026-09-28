@@ -616,6 +616,15 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
 
     auto mr = btensor::MapRedPost::of(c);
 
+    // A row-major reshape of an op's buffer is that very buffer: tensors are never written in place, so the alias is safe.
+    // A parameter's buffer is left to the copy, so a result never aliases the caller's argument.
+    if (auto pr = is_pure_read(app); pr && Axm::peel<tensor::buf>(pr->src)->isa<App>()) {
+        auto src = rewrite(pr->src);
+        if (Axm::isa<buffer::Buf>(src->type())
+            && is_reshape_read(w, rewrite(pr->map), rewrite(pr->R), rewrite(pr->S), mr.Ro, mr.So))
+            return w.call<core::bitcast>(buf_of(app->type()), src);
+    }
+
     // The generic rewrite rebuilds the argument tuple with its stale value-array type even when its
     // elements were converted to buffers, which would not be assignable to the op's
     // `«nis; buffer.Buf …»` domain - hence the re-tupling in `buffer_list`.

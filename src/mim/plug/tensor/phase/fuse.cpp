@@ -360,21 +360,6 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     return res;
 }
 
-/// Is `map` the row-major reshape read `tensor.reshape_map (s_in, s_out)` — the map that reads a
-/// PACKED producer (its output strip-mined to `s_in`) at the unpacked coordinates `s_out`?
-/// Decided by normalization: both `map` and the canonical unpack map are applied to the same probe
-/// variable; the reduced bodies are hash-consed, so pointer equality decides alpha-equivalence.
-static bool
-is_unpack_read(World& w, const Def* map, const Def* r_in, const Def* s_in, const Def* r_out, const Def* s_out) {
-    auto pi = map->type()->isa<Pi>();
-    if (!pi) return false;
-    auto expected = w.app(w.app(w.annex<tensor::reshape_map>(), {r_in, r_out}), {s_in, s_out});
-    auto epi      = expected->type()->isa<Pi>();
-    if (!epi || epi->dom() != pi->dom() || epi->codom() != pi->codom()) return false;
-    auto probe = w.mut_lam(pi->dom(), pi->codom()); // scratch binder: its var stands in for the cell vector
-    return w.app(map, probe->var()) == w.app(expected, probe->var());
-}
-
 // Is `d` (a new-world map_reduce) consumed by exactly one node? Resolved via the old-world app it
 // replaces; `new2old_` covers every map_reduce the phase has rewritten. Defs in `shared_` gained
 // consumers by a read-through of a shared read, which the old-world count cannot see.
@@ -446,7 +431,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
             k0        = k;
             inner_def = cand;
         } else if (mr.Sis->proj(nis_nat, k) != mr.So
-                   && is_unpack_read(w, m, mr.Ris->proj(nis_nat, k), mr.Sis->proj(nis_nat, k), mr.Ro, mr.So)) {
+                   && is_reshape_read(w, m, mr.Ris->proj(nis_nat, k), mr.Sis->proj(nis_nat, k), mr.Ro, mr.So)) {
             k0        = k;
             inner_def = cand;
             unpack    = true;
