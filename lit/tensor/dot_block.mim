@@ -18,7 +18,7 @@ plugin compile;
 let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
 
 // SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 2, 0\)}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(2, 1, 0, 1, 1\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 1, 1\)}}
 // SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 0, 0\)}}
 
 // A conv-like product, (Cout, K) x (N, K, P): the batch and the P blocks outside Cout, K = 96 fits whole.
@@ -28,9 +28,10 @@ extern fun conv (w: «6, 96; Nat», c: «2, 96, 640; Nat»): «6, 2, 640; Nat» 
     return (tensor.dot_product R (1_2, 1_3, (), ()) (w, c));
 
 // K = 2304: a whole k x nc panel wide enough to register-block does not fit, so N is blocked by nc = 256 and the
-// contraction in 9 blocks of 64 x 4 steps, hoisted outside M.
+// contraction in 9 blocks of 64 x 4 steps, hoisted outside M; the 4 x 16 register blocks of the N block run inside
+// each contraction block, loaded from and stored back to its panel (tensor.dot_schedule_nblk_rbk).
 // CHECK-LABEL: extern fun kblk
-// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((8, 2, {{[a-z0-9]+}}), (2, 8, {{[a-z0-9]+}}, 9, 64, 4),
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((2, 4, 2, 16, 16), (2, 16, 2, 4, 16, 9, 64, 4),
 extern fun kblk (a: «8, 2304; Nat», b: «2304, 512; Nat»): «8, 512; Nat» =
     return (tensor.product_2d R (a, b));
 
