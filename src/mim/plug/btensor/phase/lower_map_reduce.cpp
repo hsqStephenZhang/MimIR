@@ -260,12 +260,17 @@ void LowerMapReduce::start() {
                   && u64(it - o.coef.begin()) < p->ro;
                 if (ok) stage.perm[a] = it - o.coef.begin();
                 // The tile spans what the loops inside the leading `level` dims read of axis a.
-                u64 ext = 1;
+                u64 ext    = 1;
+                bool fixed = true;
                 for (u64 d = 0; ok && d != n_c; ++d) {
                     ok &= stage.lin[a].coef[d] >= 0;
                     if (d >= *level) ext += u64(stage.lin[a].coef[d]) * ((*sr_c)[d] - 1);
+                    else fixed &= stage.lin[a].coef[d] == 0;
                 }
-                ok &= stage.lin[a].cst >= 0 && ext <= (*so_p)[a];
+                ok &= stage.lin[a].cst >= 0 && u64(stage.lin[a].cst) < (*so_p)[a];
+                // The consumer only reads in bounds (a schedule's tail is skipped), so a tile at a fixed origin need not reach past the operand.
+                if (ok && fixed) ext = std::min(ext, (*so_p)[a] - u64(stage.lin[a].cst));
+                ok &= ext <= (*so_p)[a];
                 stage.ext[a] = ext;
             }
             if (!ok) continue;

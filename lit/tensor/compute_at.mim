@@ -5,6 +5,7 @@
 // given level read; the producer is never materialized. Checked on the allocations the lowered program makes:
 // * `att`:  the exp(q · kt) scores per query row, a 40-element tile instead of the 48 x 40 scores;
 // * `mlp`:  relu(a) per row of a, a 36-element tile instead of 20 x 36;
+// * `pack`: a product's packed right operand per 16-column panel, 130 x 16 although the contraction runs to 132;
 // * `pool`: relu(x) per output row of a 2x2/stride-2 pool, the 2 x 10 input rows its window reads;
 // * `twice`: a producer with a second consumer stays materialized.
 
@@ -36,6 +37,12 @@ extern fun att (q: «48, 16; F32», kt: «16, 40; F32», v: «40, 24; F32»): «
 // CHECK-NOT: mem.malloc («20, 36;
 extern fun mlp (a: «20, 36; F32», b: «36, 28; F32»): «20, 28; F32» =
     return (tensor.product_2d R (tensor.compute_at 1 (tensor.unary relu a), b));
+
+// CHECK-LABEL: extern con pack
+// CHECK-NOT: mem.malloc («32, 130, 16;
+// CHECK: mem.malloc («130, 16;
+// CHECK-NOT: mem.malloc («32, 130, 16;
+extern fun pack (a: «64, 130; F32», b: «130, 512; F32»): «64, 512; F32» = return (tensor.product_2d R (a, b));
 
 // CHECK-LABEL: extern con pool
 // CHECK-NOT: mem.malloc («2, 3, 8, 10;

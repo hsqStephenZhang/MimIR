@@ -12,6 +12,8 @@ float* nblk(float* a, float* b);
 float* kblk(float* a, float* b);
 float* nblk_fma(float* a, float* b);
 float* conv(float* w, float* c);
+float* pack(float* a, float* b);
+float* pack_conv(float* w, float* c);
 }
 
 // out[m, b, n] = sum_k a[m, k] * c[b, k, n] for B batches of the right operand (B = 1 for a plain product).
@@ -46,5 +48,7 @@ int main() {
     bad += check("kblk", kblk, 8, 2304, 1, 512);
     bad += check("nblk_fma", nblk_fma, 8, 100, 1, 512);
     bad += check("conv", conv, 6, 96, 2, 640);
+    bad += check("pack", pack, 64, 130, 1, 512);
+    bad += check("pack_conv", pack_conv, 64, 147, 2, 640);
     return bad ? 1 : 0;
 }

@@ -35,6 +35,15 @@ extern fun conv (w: «6, 96; Nat», c: «2, 96, 640; Nat»): «6, 2, 640; Nat» 
 extern fun kblk (a: «8, 2304; Nat», b: «2304, 512; Nat»): «8, 512; Nat» =
     return (tensor.product_2d R (a, b));
 
+// M = 64 and K = 130: the right operand is packed into 16-column panels «N/16, K, 16», computed at the panel loop of a
+// 4 x 16 register-blocked contraction (tensor.dot_product_impl); K runs as 33 x 4 with its tail skipped.
+// CHECK-LABEL: extern fun pack
+// CHECK: tensor.map_reduce_post @ (1, 0) {{.*}} ((32, 130, 16), (32, 130, 16),
+// CHECK: tensor.compute_at {{.*}} 1
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((16, 4, 32, 1, 16), (32, 1, 16, 4, 16, 1, 33, 4),
+extern fun pack (a: «64, 130; Nat», b: «130, 512; Nat»): «64, 512; Nat» =
+    return (tensor.product_2d R (a, b));
+
 // K = 100: N is blocked by 256 and register-blocked by 4 x 16 within the block (tensor.dot_schedule_rb), in the loop
 // order (N/256, 256/16, M/4 | 4, 16).
 // CHECK-LABEL: extern fun rblk
