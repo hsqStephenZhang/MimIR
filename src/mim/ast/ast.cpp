@@ -1,10 +1,29 @@
 #include "mim/ast/ast.h"
 
+#include <array>
+
 #include "mim/ast/parser.h"
 
 using namespace std::literals;
 
 namespace mim::ast {
+
+namespace {
+
+std::string python_identifier(Sym sym) {
+    static constexpr auto keywords = std::to_array<std::string_view>({
+        "False", "None", "True", "and", "as", "assert", "async", "await", "break", "case", "class",
+        "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if",
+        "import", "in", "is", "lambda", "match", "nonlocal", "not", "or", "pass", "raise", "return",
+        "try", "while", "with", "yield",
+    });
+
+    auto name = sym.str();
+    if (std::ranges::find(keywords, name) != keywords.end()) name += '_';
+    return name;
+}
+
+} // namespace
 
 // Node map: Parser::import holds the slot across the nested parses that may insert further entries.
 struct AST::Files : std::unordered_map<const fe::Src*, Ptr<File>> {};
@@ -152,7 +171,7 @@ void AST::bootstrap_py(Sym plugin, std::ostream& h) {
         flags_t ax_id = annex.base();
 
         if (auto& subs = annex.subs; subs.empty())
-            std::println(h, "{}{} = 0x{:x}", tab, sym.tag, ax_id);
+            std::println(h, "{}{} = 0x{:x}", tab, python_identifier(sym.tag), ax_id);
         else
             annexes_with_subs.push_back(annex);
     }

@@ -124,7 +124,7 @@ function(add_mim_plugin)
     cmake_parse_arguments(
         PARSE_ARGV 1        # skip first arg
         PARSED              # prefix of output variables
-        ""                  # options (none)
+        "INSTALL"           # options
         ""                  # one-value keywords (none)
         "SOURCES;PRIVATE"   # multi-value keywords
     )
@@ -213,10 +213,13 @@ function(add_mim_plugin)
             $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/include> # for autogen.h
     )
     if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/include")
-        target_include_directories(mim_${PLUGIN}
-            PRIVATE
-                "${CMAKE_CURRENT_LIST_DIR}/include"
-        )
+        list(APPEND MIM_PLUGIN_INCLUDE_DIRS "${CMAKE_CURRENT_LIST_DIR}/include")
+        list(REMOVE_DUPLICATES MIM_PLUGIN_INCLUDE_DIRS)
+        set(MIM_PLUGIN_INCLUDE_DIRS "${MIM_PLUGIN_INCLUDE_DIRS}" CACHE INTERNAL "MIM_PLUGIN_INCLUDE_DIRS" FORCE)
+    endif()
+    # A third-party plugin may include a sibling plugin's public headers.
+    if(MIM_PLUGIN_INCLUDE_DIRS)
+        target_include_directories(mim_${PLUGIN} PRIVATE ${MIM_PLUGIN_INCLUDE_DIRS})
     endif()
     target_link_libraries(mim_${PLUGIN}
         PRIVATE
