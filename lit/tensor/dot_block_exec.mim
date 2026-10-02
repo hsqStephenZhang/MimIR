@@ -5,8 +5,9 @@
 
 // Executable cache-blocked contractions (see dot_block.mim), driven by dot_block_aux.cpp against a scalar reference:
 // N and a 4 x 16 register block, N and the hoisted K blocked, and a conv-like product with a batch outside the blocks.
-// `pack` and `pack_conv` pack the right operand into 16-column panels; `part`, `pack` and `pack_conv` partition M into
-// 6-row register blocks whose last block is partial.
+// `pack` and `pack_conv` pack the right operand into 16-column panels, `pack_tail` and `pack_tails` with N padded to
+// whole panels; `part`, `pack`, `pack_conv` and `pack_tails` partition M into 6-row register blocks whose last block is
+// partial.
 plugin tensor;
 plugin refly;
 plugin core;
@@ -30,3 +31,5 @@ extern fun pack (a: «64, 130; F32», b: «130, 512; F32»): «64, 512; F32» = 
 extern fun pack_conv (w: «64, 147; F32», c: «2, 147, 640; F32»): «64, 2, 640; F32» =
     return (tensor.dot_product R_fma (1_2, 1_3, (), ()) (w, c));
 extern fun part (a: «20, 100; F32», b: «100, 512; F32»): «20, 512; F32» = return (tensor.product_2d R_fma (a, b));
+extern fun pack_tail (a: «64, 130; F32», b: «130, 500; F32»): «64, 500; F32» = return (tensor.product_2d R_fma (a, b));
+extern fun pack_tails (a: «50, 130; F32», b: «130, 500; F32»): «50, 500; F32» = return (tensor.product_2d R_fma (a, b));

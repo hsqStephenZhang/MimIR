@@ -1103,9 +1103,10 @@ lam dot_order (r_out nb na: Nat) (t: Tileable): Tileable =
 /// The N block a packed right operand is laid out in (see `dot_product_impl`), or `0` not to pack: the width of a
 /// register block, for at least `dot_pack_m` rows and `dot_pack_k` contraction steps to amortize the copy, and a last
 /// left free dim of `m_rb` rows that register blocks cover (see `dot_rb_rows`, with `tail_ok`).
+/// `N` need not be a multiple of the width: `dot_product_impl` pads the last panel.
 lam dot_pack_nc (m m_rb k n: Nat, tail_ok: Bool): Nat =
-    let ok = core.bit2.and_ 2 (n / 16 * 16 == n, core.bit2.and_ 2 (16 < n, core.bit2.and_ 2 (dot_pack_m <= m,
-             core.bit2.and_ 2 (dot_pack_k <= k, dot_rb_rows (m_rb, tail_ok) != 0))));
+    let ok = core.bit2.and_ 2 (16 < n, core.bit2.and_ 2 (dot_pack_m <= m,
+             core.bit2.and_ 2 (dot_pack_k <= k, dot_rb_rows (m_rb, tail_ok) != 0)));
     (0, 16)#ok;
 ///
 /// #### dot_kblk
@@ -1536,13 +1537,20 @@ lam dot_contract
       // Without a K block the whole k x nc panel must fit: the block is sized by the whole contraction.
       let nc_rb = if_static (nc, dot_nc (n_rb, k_all), 0);
       let rb_nb = if_static (m_rb * nc_rb, rb_by (rows, nc_rb), ff);
-      // The result of a register-blocked schedule, whose partitioned M (see `partition_par`) pads it to whole blocks.
+      // The result of a register-blocked schedule, whose partitioned M (see `partition_par`) pads it to whole blocks, as
+      // a packed right operand (see `dot_product_impl`) pads N to whole panels.
       // Its rows of the padded shape are a row-major prefix, read through the padded reshape.
       lam unpack (rows: Nat) {r_p: Nat} (so: «r_p; Nat») (x: «so; R#T»): «s_fin; R#T» =
+          lam size {r: Nat} (s: «r; Nat»): Nat = vec.fold.r @(Nat, Nat) @r (lm (p acc: Nat): Nat = p * acc) (s, 1);
           let m     = s_fin#(core.idx 0 r_fin a_m);
-          let s_pad = ‹j: r_fin; core.select (core.bitcast Nat j == a_m, (m + rows - 1) / rows * rows, s_fin#j)›;
+          let m_pad = (m + rows - 1) / rows * rows;
+          let n     = s_fin#(core.idx 0 r_fin (r_fin - 1));
+          let s_m   = ‹j: r_fin; core.select (core.bitcast Nat j == a_m, m_pad, s_fin#j)›;
+          // The padded N is what the result's size leaves to its last dim.
+          let n_pad = size so / (size s_m / n);
+          let s_pad = ‹j: r_fin; core.select (core.bitcast Nat j == r_fin - 1, n_pad, s_m#j)›;
           let prefix = map_reduce (s_fin, s_fin) (tensor_copy, ⊥: (R#T)) affine.id (reshape_map (so, s_pad),) x;
-          (reshape so s_fin x, prefix)#(m / rows * rows != m);
+          (reshape so s_fin x, prefix)#(core.bit2.or_ 2 (m_pad != m, n_pad != n));
       lam go_n_rb (u: []): «s_fin; R#T» =
           let sched = dot_schedule_rb (r_out, rows) t;
           unpack rows (sched#3_13) (materialize sched);
@@ -1575,10 +1583,12 @@ lam pack_map (r nc: Nat) (o: «r + 1; affine.Index»): «r; affine.Index» =
 /// ### dot_product_impl
 ///
 /// Packs the right operand of a register-blocked contraction of its second-to-last axis K into panels the width of a
-/// register block (see `dot_pack_nc`): «…, K, N» becomes «…, N/16, K, 16», so the rows of B a block reads are adjacent
+/// register block (see `dot_pack_nc`): «…, K, N» becomes «…, ⌈N/16⌉, K, 16», so the rows of B a block reads are adjacent
 /// cache lines instead of N elements apart (cf. BLAS's packed panels).
 /// The packing is `compute_at` the panel loop: one panel at a time, into a reused tile.
-/// The contraction then takes N/16 as a free dim of its own (`dot_contract` with `packed`), and its «…, N/16, 16»
+/// Where 16 does not divide N, the operand is zero-padded to whole panels first (`pad`) and the result's «…, N» prefix
+/// copied out (`dot_contract`'s `unpack`).
+/// The contraction then takes ⌈N/16⌉ as a free dim of its own (`dot_contract` with `packed`), and its «…, ⌈N/16⌉, 16»
 /// result is the row-major «…, N».
 priv anx lam dot_product_impl
   (fastest_2: Nat) (plain: Bool)
@@ -1601,17 +1611,23 @@ priv anx lam dot_product_impl
                      core.bit2.and_ 2 (core.bitcast Nat (c2#(core.idx 0 nc 0)) + 2 == r2,
                      core.bit2.and_ 2 (fastest_2 + 1 == r2, (tt, ff)#(option.is_some (vec.first `== (‹i: nb; core.bitcast Nat (b2#i)›, r2 - 1))))))));
       let pack  = (if_static (pc * r2, core.bit2.and_ 2 (shape_ok, pc != 0), ff), ff)#plain;
+      let n_blk = (n + pc - 1) / pc;
       let s_pk  = ‹j: r2 + 1; let jj = core.bitcast Nat j;
                               core.select (jj + 3 < r2 + 1, s2#(core.idx 0 r2 jj),
-                              core.select (jj + 3 == r2 + 1, n / pc,
+                              core.select (jj + 3 == r2 + 1, n_blk,
                               core.select (jj + 2 == r2 + 1, k, pc)))›;
+      // The identity pad where the panels cover N exactly.
+      let pad_lo = ‹i: r2; 0›;
+      let pad_hi = ‹i: r2; core.select (core.bitcast Nat i == r2 - 1, n_blk * pc - n, 0)›;
+      let b_pad  = pad s2 (0, pad_lo, pad_hi) (b, R#_0);
+      let s_bp   = pad_shape (pad_lo, s2, pad_hi);
       let c2_pk = ‹i: nc; core.idx 0 (r2 + 1) (r2 - 1)›;
       let b2_pk = ‹i: nb; core.idx 0 (r2 + 1) (core.bitcast Nat (b2#i))›;
       lam go_plain (u: []): «s_out; R#T» = dot_contract fastest_2 plain ff s_out R (r1, r2) (c1, c2, b1, b2) (a, b);
       // Packed per N block: the panel is computed in the contraction's nest, below its outer free dims of b.
       lam go_pack (u: []): «s_out; R#T» =
           let bp = compute_at (r_out - vec.len s1_res)
-                       (map_reduce @1 @(R#T, r2 + 1, r2 + 1) (s_pk, s_pk) (tensor_copy, ⊥: (R#T)) affine.id (pack_map (r2, pc),) b);
+                       (map_reduce @1 @(R#T, r2 + 1, r2 + 1) (s_pk, s_pk) @((R#T,), (r2,), (s_bp,)) (tensor_copy, ⊥: (R#T)) affine.id (pack_map (r2, pc),) b_pad);
           dot_contract r2 ff tt s_out R (r1, r2 + 1) (c1, c2_pk, b1, b2_pk) @(s1, s_pk) (a, bp);
       (go_plain, go_pack)#pack ();
 ///
