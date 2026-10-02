@@ -39,7 +39,7 @@ inline std::optional<std::array<u64, 6>> sched_fields(const Def* sched) {
 inline const Def* tail_skip(const Def* sched, u64 ro, Defs sr, Defs iv) {
     auto& w    = sched->world();
     auto flds  = sched_fields(sched);
-    auto r     = sr.size();
+    u64 r      = sr.size();
     if (!flds || (*flds)[2] == 0) return nullptr;
     auto [vdim, unroll, tail, pout, rout, ptail] = *flds;
     auto u_lo = std::max(ro, r - std::min(r, unroll));
