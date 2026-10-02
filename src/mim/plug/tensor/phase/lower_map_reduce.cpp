@@ -216,7 +216,18 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
 
         auto after_post = w.mut_con(Tp)->set("afterPost");
         after_post->app(true, cont, w.insert(wb_matrix, write_coords, after_post->var()));
-        write_back->app(true, post, {w.tuple({element_final, w.tuple(post_elements)}), after_post});
+        // A parallel partition overshoots the result: its excluded cells are neither folded nor written.
+        DefVec raw_cell(nloops, [&](size_t d) { return d < ro ? raw_out[d] : w.lit_i64(0); });
+        auto out_skip = btensor::ptail_skip(sched, ro, sr, raw_cell);
+        if (out_skip) {
+            auto put  = w.mut_con(w.sigma())->set("put");
+            auto keep = w.mut_con(w.sigma())->set("keep");
+            put->app(true, post, {w.tuple({element_final, w.tuple(post_elements)}), after_post});
+            keep->app(true, cont, wb_matrix);
+            write_back->branch(true, out_skip, keep, put);
+        } else {
+            write_back->app(true, post, {w.tuple({element_final, w.tuple(post_elements)}), after_post});
+        }
 
         // Inner (reduction) loops over the trailing `Rr` bounds of `Sr`, collecting the reduction iteration
         // indices.
@@ -242,7 +253,9 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         post->set("post");
         // A partitioned domain overshoots the reduction: skip the points its schedule's tail excludes.
         DefVec raw(nloops, [&](size_t d) { return d < ro ? raw_out[d] : raw_red[d - ro]; });
-        if (auto skip = btensor::tail_skip(sched, ro, sr, raw)) {
+        auto skip = btensor::tail_skip(sched, ro, sr, raw);
+        if (out_skip) skip = skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({skip, out_skip})) : out_skip;
+        if (skip) {
             auto fold = w.mut_con(w.sigma())->set("fold");
             auto keep = w.mut_con(w.sigma())->set("keep");
             fold->app(true, comb, {w.tuple({element_acc, w.tuple(input_elements)}), cont});

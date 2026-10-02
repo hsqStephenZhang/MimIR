@@ -4,10 +4,13 @@
 // gpu.lower_btensor_map_reduce builds its kernel's loops itself, so it must honor a schedule's tail like
 // tensor.lower_map_reduce (see lit/tensor/partition_value.mim): for K = 65 the partitioned domain is ⌈65/4⌉ x 4 with
 // tail 1, and a point of the last outer iteration past the first is not folded.
+// Likewise for a schedule's ptail (see lit/tensor/partition_value.mim): a cell outside the partition is neither folded nor
+// written back.
 
 plugin core;
 plugin tensor;
 plugin gpu;
+plugin affine;
 
 let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
 
@@ -17,3 +20,15 @@ let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
 // CHECK: [[SKIP:_[0-9]+]] = core.bit2.and_ 2 @ 2 ([[PAST]], [[LAST]]);
 // CHECK: (fold, keep)#[[SKIP]] ();
 extern fun split (a: «5, 65; Nat», b: «65, 7; Nat»): «5, 7; Nat» = return (tensor.product_2d R (a, b));
+
+// CHECK: con mapReduceKernel
+// CHECK-DAG: [[LAST:_[0-9]+]] = core.icmp.{{[a-zA-Z]+}} @ 0 (1I64, {{[_a-z0-9#]+}});
+// CHECK-DAG: [[PAST:_[0-9]+]] = core.icmp.{{[a-zA-Z]+}} @ 0 ({{[_a-z0-9#]+}}, 4I64);
+// CHECK: [[SKIP:_[0-9]+]] = core.bit2.and_ 2 @ 2 ([[PAST]], [[LAST]]);
+// CHECK: (put, {{keep[_0-9]*}})#[[SKIP]] ();
+fun add (x y: Nat)@tt = return (core.nat.add (x, y));
+lam mo (i j k: affine.Index): «2; affine.Index» = (i, j);
+lam mi (i j k: affine.Index): «2; affine.Index» = (affine.op.add (affine.semiop.mul (i, 6), j), k);
+extern fun tail_rows (x: «10, 3; Nat»): «2, 6; Nat» =
+    return (tensor.map_reduce_post ((2, 6), (2, 6, 3), tensor.mk_sched (1, 0, 0, 0, 0, 4))
+                                   (add, 0, tensor.id) mo (mi, ()) (x, ()));

@@ -1,11 +1,14 @@
 // RUN: %mim %s -p opt -o %t
 // RUN: cat %t | %FileCheck %s
 // RUN: cat %t | %FileCheck %s --check-prefix=ONE
+// RUN: cat %t | %FileCheck %s --check-prefix=ROWS
 
 // A lowering that builds its own loops instead of btensor.mr_nest must still honor a schedule's tail: a partitioned
 // domain overshoots the reduction. For K = 65 the domain is ⌈65/4⌉ x 4 with tail 1, so the value-semantics
 // tensor.lower_map_reduce folds a point only unless it is in the last outer iteration (k_o = 16) past the first point
 // (k_i ≥ 1); for K = 64 nothing is skipped.
+// Likewise for a schedule's ptail: `tail_rows` partitions 10 rows into 2 x 6 with ptail 4, so a cell of the last block (i = 1)
+// past its first 4 rows (j ≥ 4) is neither folded nor written back.
 
 plugin core;
 plugin tensor;
@@ -20,11 +23,23 @@ let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
 // CHECK: [[SKIP:_[0-9]+]] = core.bit2.and_ 2 @ 2 ([[PAST]], [[LAST]]);
 // CHECK: (fold, keep)#[[SKIP]] ();
 
-// Only one of the two products has a guard.
-// ONE-COUNT-1: con keep
-// ONE-NOT: con keep
+// Only one of the two products has a reduction guard; `tail_rows` has the other.
+// ONE-COUNT-2: {{\(fold(_[0-9]+)?,}}
+// ONE-NOT: {{\(fold(_[0-9]+)?,}}
 extern fun exact (a: «5, 64; Nat», b: «64, 7; Nat»): «5, 7; Nat» = return (tensor.product_2d R (a, b));
 extern fun split (a: «5, 65; Nat», b: «65, 7; Nat»): «5, 7; Nat» = return (tensor.product_2d R (a, b));
+
+// ROWS: [[LAST:_[0-9]+]] = core.icmp.{{[a-zA-Z]+}} @ 0 (1I64, {{[_a-z0-9]+}});
+// ROWS: [[PAST:_[0-9]+]] = core.icmp.{{[a-zA-Z]+}} @ 0 ({{[_a-z0-9]+}}, 4I64);
+// ROWS: [[SKIP:_[0-9]+]] = core.bit2.and_ 2 @ 2 ([[PAST]], [[LAST]]);
+// ROWS: (put, {{keep[_0-9]*}})#[[SKIP]] ();
+// ROWS: ({{fold[_0-9]*}}, {{keep[_0-9]*}})#[[SKIP]] ();
+fun add (x y: Nat)@tt = return (core.nat.add (x, y));
+lam mo (i j k: affine.Index): «2; affine.Index» = (i, j);
+lam mi (i j k: affine.Index): «2; affine.Index» = (affine.op.add (affine.semiop.mul (i, 6), j), k);
+extern fun tail_rows (x: «10, 3; Nat»): «2, 6; Nat» =
+    return (tensor.map_reduce_post ((2, 6), (2, 6, 3), tensor.mk_sched (1, 0, 0, 0, 0, 4))
+                                   (add, 0, tensor.id) mo (mi, ()) (x, ()));
 
 extern lam _compile (): compile.Phase =
     compile.phases ff (

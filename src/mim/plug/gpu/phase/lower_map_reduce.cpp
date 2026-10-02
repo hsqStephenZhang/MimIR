@@ -260,7 +260,22 @@ Lam* build_kernel(World& w,
     auto final_mem
         = w.call<mem::store>(Defs{post_mem, op_lea_tuple(k_out_dptr, *Shape(write_coords).fold(So)), elem_post});
     after_post->app(true, k_ret, Defs{final_mem, k_shared, k_const, k_local});
-    apply_cps(w, write_back, global_post, {pcur, acc_final, w.tuple(post_elems)}, after_post);
+    // The i64 loop counters of the output cell `coords`, the reductions at 0 (see `btensor::ptail_skip`).
+    auto raw_cell = [&](Defs coords) {
+        return DefVec(nloops_nat, [&](size_t d) {
+            return d < ro ? w.call(core::conv::u, w.lit_nat_0(), coords[d]) : w.lit_i64(0);
+        });
+    };
+    // A parallel partition overshoots the result: its excluded cells are neither folded nor written.
+    if (auto skip = btensor::ptail_skip(sched, ro, Sr->projs(nloops_nat), raw_cell(wb_coords))) {
+        auto put  = w.mut_con(w.sigma())->set("put");
+        auto keep = w.mut_con(w.sigma())->set("keep");
+        apply_cps(w, put, global_post, {pcur, acc_final, w.tuple(post_elems)}, after_post);
+        keep->app(true, k_ret, Defs{wb_mem2, k_shared, k_const, k_local});
+        write_back->branch(true, skip, keep, put);
+    } else {
+        apply_cps(w, write_back, global_post, {pcur, acc_final, w.tuple(post_elems)}, after_post);
+    }
 
     const Def* acc   = w.tuple({k_global, init});
     const Def* cont  = write_back;
@@ -298,7 +313,10 @@ Lam* build_kernel(World& w,
     }
 
     // A partitioned domain overshoots the reduction: skip the points the schedule's tail excludes.
-    if (auto skip = btensor::tail_skip(sched, ro, Sr->projs(nloops_nat), raw_iters)) {
+    auto skip     = btensor::tail_skip(sched, ro, Sr->projs(nloops_nat), raw_iters);
+    auto out_skip = btensor::ptail_skip(sched, ro, Sr->projs(nloops_nat), raw_cell(body_coords));
+    if (out_skip) skip = skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({skip, out_skip})) : out_skip;
+    if (skip) {
         auto fold = w.mut_con(w.sigma())->set("fold");
         auto keep = w.mut_con(w.sigma())->set("keep");
         apply_cps(w, fold, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);

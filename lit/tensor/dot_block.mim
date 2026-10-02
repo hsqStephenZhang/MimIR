@@ -5,8 +5,9 @@
 // Cache blocking of a contraction (tensor.dot_schedule_nblk). The last output dim N is blocked by nc and its block
 // loop runs outside the left operand's free dims, so the right operand's panel stays in cache for all of them.
 // A contraction whose whole panel does not fit is blocked too and hoisted outside the left free dims
-// (tensor.hoist_red), which the schedule carries as (vdim, unroll, tail, pout, rout) with rout = 1.
-// Where the whole panel fits, the block is register-blocked instead (vdim = ro - 2).
+// (tensor.hoist_red), which the schedule carries as (vdim, unroll, tail, pout, rout, ptail) with rout = 1.
+// Where the whole panel fits, the block is register-blocked instead (vdim = ro - 2); ptail is the rows of a partial
+// last register block.
 // The packed output is reshaped back; lower_to_mem makes that reshape a view of the buffer.
 
 plugin core;
@@ -17,9 +18,18 @@ plugin compile;
 
 let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
 
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 2, 0\)}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 1, 1\)}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 0, 0\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 2, 0, 0\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 1, 1, 0\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 0, 0, 0\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 2, 1, 0, 4\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 0, 0, 2\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(4, 1, 0, 0, 0, 0\)}}
+
+// A batched product's M is not the outermost dim of its result, whose padding would not be a prefix: M = 20 takes whole
+// 4 x 16 blocks.
+// CHECK-LABEL: extern fun bmm_rows
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((2, 5, 4, 2, 16, 16), (2, 2, 16, 5, 4, 16, 25, 4),
+extern fun bmm_rows (a: «2, 20, 100; Nat», b: «2, 100, 512; Nat»): «2, 20, 512; Nat» = return (tensor.bmm R (a, b));
 
 // A conv-like product, (Cout, K) x (N, K, P): the batch and the P blocks outside Cout, K = 96 fits whole.
 // CHECK-LABEL: extern fun conv
@@ -36,12 +46,21 @@ extern fun kblk (a: «8, 2304; Nat», b: «2304, 512; Nat»): «8, 512; Nat» =
     return (tensor.product_2d R (a, b));
 
 // M = 64 and K = 130: the right operand is packed into 16-column panels «N/16, K, 16», computed at the panel loop of a
-// 4 x 16 register-blocked contraction (tensor.dot_product_impl); K runs as 33 x 4 with its tail skipped.
+// 6 x 16 register-blocked contraction (tensor.dot_product_impl); M runs as 11 x 6 whose last block has 4 rows, and K as
+// 33 x 4 with its tail skipped. The result padded to 66 rows is copied back to 64.
 // CHECK-LABEL: extern fun pack
 // CHECK: tensor.map_reduce_post @ (1, 0) {{.*}} ((32, 130, 16), (32, 130, 16),
 // CHECK: tensor.compute_at {{.*}} 1
-// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((16, 4, 32, 1, 16), (32, 1, 16, 4, 16, 1, 33, 4),
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((11, 6, 32, 1, 16), (32, 1, 11, 6, 16, 1, 33, 4),
+// CHECK: tensor.map_reduce_post @ (1, 0) {{.*}} ((64, 512), (64, 512),
 extern fun pack (a: «64, 130; Nat», b: «130, 512; Nat»): «64, 512; Nat» =
+    return (tensor.product_2d R (a, b));
+
+// M = 20 and K = 100: N is blocked by 256 and register-blocked by 6 x 16 within the block, M as 4 x 6 whose last block
+// has the remaining 2 rows; the result is padded to 24 rows.
+// CHECK-LABEL: extern fun part
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((4, 6, 2, 16, 16), (2, 16, 4, 6, 16, 25, 4),
+extern fun part (a: «20, 100; Nat», b: «100, 512; Nat»): «20, 512; Nat» =
     return (tensor.product_2d R (a, b));
 
 // K = 100: N is blocked by 256 and register-blocked by 4 x 16 within the block (tensor.dot_schedule_rb), in the loop

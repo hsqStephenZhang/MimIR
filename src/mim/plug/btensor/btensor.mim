@@ -120,11 +120,13 @@ axm map_reduce_post: {nis nps: Nat}
 /// - `tail`, `0` for none, else the innermost looped reduction dim's last iteration is peeled, and the first unrolled
 ///   dim runs only its first `tail` points in it — the remainder of a loop partition;
 /// - `pout`/`rout`, the loop order: the leading `rout` reduction dims run between the leading `pout` parallel dims and
-///   the others — the reduction-outer order of a cache-blocked contraction; `rout = 0` keeps all reductions inside.
+///   the others — the reduction-outer order of a cache-blocked contraction; `rout = 0` keeps all reductions inside;
+/// - `ptail`, `0` for none, else the parallel dim `vdim` runs only its first `ptail` points in the last iteration of the
+///   parallel dim `vdim − 1` — the remainder of a parallel loop partition, e.g. a register block's rows.
 ///
 /// `tensor.mk_sched` is an alias for this lam: `btensor` owns it for the same reason it owns `Ring`.
-anx lam mk_sched (vdim unroll tail pout rout: Nat) (N: *) (mk: [vdim unroll tail pout rout: Nat] → N): N =
-    mk (vdim, unroll, tail, pout, rout);
+anx lam mk_sched (vdim unroll tail pout rout ptail: Nat) (N: *) (mk: [vdim unroll tail pout rout ptail: Nat] → N): N =
+    mk (vdim, unroll, tail, pout, rout, ptail);
 ///
 /// ### proj_map
 ///
@@ -408,9 +410,12 @@ anx lam NestT (ro rr: Nat, Sr: «ro + rr; Nat», To U: *): * =
 /// reduction-vectorized nest has no such loop and is only selected without one.
 /// A non-zero `rout` with a parallel vector dim and no `tail` selects the tiled nest (`tiled` below); the other nests
 /// ignore `pout`/`rout`, which only order the loops.
+/// A non-zero `ptail` (see `mk_sched`) runs the register-blocked nest's last block by a kernel of `ptail` rows; the other
+/// nests skip the points outside the partition, and the reduction-vectorized and tiled register-blocked ones are not
+/// selected.
 ///
 /// Per-cell fold order is untouched by any of these transforms.
-anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail pout rout: Nat)
+anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail pout rout ptail: Nat)
                    : NestT (ro, rr, Sr, To, U) =
     let r    = ro + rr;
     // The unroll window must stay within the reduction dims.
@@ -430,11 +435,36 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                 con go (m2: mem.M 0) = (range_nest (r, Sr) U (affine_for @U, sl, hi) inner) (pref, m2, u, k);
                 stage (pref, m, go);
             range_nest (r, Sr) U (affine_for @U, 0, sl) at;
-        con cell_at (pref: «r; I32», m: mem.M 0, acc: To, k: Cn [mem.M 0, To]) =
-            cell (m, acc, pref, k);
+        // A parallel partition (`ptail ≠ 0`): the points of the last iteration of `pt_o` at or past `ptail` in `pt_i`
+        // are outside the domain, so the nests but the register-blocked one skip them.
+        let pt_i  = (0, vdim)#(core.bit2.and_ 2 (1 <= vdim, vdim < ro));
+        let pt_o  = (0, pt_i - 1)#(1 <= pt_i);
+        lam out (pref: «r; I32»): Bool =
+            core.bit2.and_ 2 (core.bitcast Nat (pref#(core.idx 0 r pt_o)) + 1 == Sr#(core.idx 0 r pt_o),
+                              ptail <= core.bitcast Nat (pref#(core.idx 0 r pt_i)));
+        con cell_g (m: mem.M 0, acc: To, pref: «r; I32», k: Cn [mem.M 0, To]) =
+            con skip (m2: mem.M 0) = k (m2, acc);
+            con keep (m2: mem.M 0) = cell (m2, acc, pref, k);
+            (keep, skip)#(out pref) m;
+        con wb_g (m: mem.M 0, u: U, v: To, pref: «r; I32», k: Cn [mem.M 0, U]) =
+            con skip (m2: mem.M 0) = k (m2, u);
+            con keep (m2: mem.M 0) = wb (m2, u, v, pref, k);
+            (keep, skip)#(out pref) m;
+        let cell_p = (cell, cell_g)#(ptail != 0);
+        let wb_p   = (wb, wb_g)#(ptail != 0);
+        // The fold step at a loop vector, `guarded` against a parallel partition's excluded points.
+        lam cell_at (guarded: Bool): Cn [«r; I32», mem.M 0, To, Cn [mem.M 0, To]] =
+            con at (pref: «r; I32», m: mem.M 0, acc: To, k: Cn [mem.M 0, To]) =
+                ((cell, cell_p)#guarded) (m, acc, pref, k);
+            at;
         // The fully unrolled trailing window around the fold step, and the partial window of the peeled iteration.
-        let win   = range_unroll (r, Sr) To (u_lo, r) cell_at;
-        let win_t = range_unroll (r, ‹j: r; core.select (core.bitcast Nat j == u_lo, tail, Sr#j)›) To (u_lo, r) cell_at;
+        lam window (guarded: Bool): Cn [«r; I32», mem.M 0, To, Cn [mem.M 0, To]] =
+            range_unroll (r, Sr) To (u_lo, r) (cell_at guarded);
+        lam window_t (guarded: Bool): Cn [«r; I32», mem.M 0, To, Cn [mem.M 0, To]] =
+            let Sr_t = ‹j: r; core.select (core.bitcast Nat j == u_lo, tail, Sr#j)›;
+            range_unroll (r, Sr_t) To (u_lo, r) (cell_at guarded);
+        let win   = window tt;
+        let win_t = window_t tt;
         // The looped reduction dims around `body`, peeling `body_t` after the innermost one if `tail ≠ 0`.
         lam red (A: *) (loop: ForT A) (body body_t: Cn [«r; I32», mem.M 0, A, Cn [mem.M 0, A]])
               : Cn [«r; I32», mem.M 0, A, Cn [mem.M 0, A]] =
@@ -450,7 +480,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
         con classic (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
             con at_cell (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
                 con folded (mem2: mem.M 0, v: To) =
-                    wb (mem2, u, v, pref, k);
+                    wb_p (mem2, u, v, pref, k);
                 (red To (affine_for @To) (win, win_t)) (pref, m, init, folded);
             (staged ro at_cell) (‹r; 0I32›, mem0, u0, done);
 
@@ -474,7 +504,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                     at;
                 con wb_cell (pref2: «r; I32», memw: mem.M 0, uw: U, kw: Cn [mem.M 0, U]) =
                     let (memw1, v) = buffer.read (1, Sv, To) (memw, row, vi_of pref2);
-                    wb (memw1, uw, v, pref2, kw);
+                    wb_p (memw1, uw, v, pref2, kw);
                 con s2 (memB: mem.M 0, uB: U) =
                     (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) wb_cell) (pref, memB, uB, k);
                 con s1 (memA: mem.M 0, uA: U) =
@@ -522,7 +552,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                     at;
                 con wb_cell (pref2: «r; I32», memw: mem.M 0, uw: U, kw: Cn [mem.M 0, U]) =
                     let (memw1, v) = buffer.read (1, Np, To) (memw, panel, vi_of pref2);
-                    wb (memw1, uw, v, pref2, kw);
+                    wb_p (memw1, uw, v, pref2, kw);
                 con s2 (memB: mem.M 0, uB: U) =
                     (range_nest (r, Sr) U (affine_for @U, pd_c, sd_c)
                         (range_nest (r, Sr) U (vec_for @U, sd_c, ro) wb_cell)) (pref, memB, uB, k);
@@ -536,13 +566,13 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
             con freed (mf: mem.M 0, uf: U) = done (buffer.free (1, Np, To) (mf, panel), uf);
             (staged pd_c at_block) (‹r; 0I32›, mem1, u0, freed);
 
-        // REGISTER-BLOCKED (`vdim = ro − 2` with at most 64 block cells and one unrolled dim): like BLOCKED, but the
+        // REGISTER-BLOCKED (`vdim = ro − 2` with at most 128 block cells and one unrolled dim): like BLOCKED, but the
         // block's accumulators are one SSA value «Sp, Sv; To» threaded through the reduction loops — registers, not a
         // panel in memory — and every cell of the block is unrolled into the fold step (a GEMM micro-kernel).
         // Two nested folds, each below the threshold up to which packs unfold into tuples. Clamps as above.
         let rb_p  = Sr#(core.idx 0 r pd_c);
         let rb_v  = Sr#(core.idx 0 r sd_c);
-        let rb_ok = core.bit2.and_ 2 (block_ok, core.bit2.and_ 2 (rb_p * rb_v <= 64, unroll <= 1));
+        let rb_ok = core.bit2.and_ 2 (block_ok, core.bit2.and_ 2 (rb_p * rb_v <= 128, unroll <= 1));
         let rb_pc = (1, rb_p)#rb_ok;
         let rb_vc = (1, rb_v)#rb_ok;
 
@@ -550,35 +580,46 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
         lam at_cell (pref: «r; I32», i j: Nat): «r; I32» =
             ‹d: r; let dd = core.bitcast Nat d;
                    core.select (dd == pd_c, core.bitcast I32 i, core.select (dd == sd_c, core.bitcast I32 j, pref#d))›;
-        lam cell_ix (i j: Nat): [Idx rb_pc, Idx rb_vc] = (core.idx 0 rb_pc i, core.idx 0 rb_vc j);
-        // `step (i, j)` chained over every cell of the block, threading an `A`.
-        lam each_cell (A: *) (step: [Nat, Nat, Cn [mem.M 0, A]] → Cn [mem.M 0, A]) (k: Cn [mem.M 0, A]): Cn [mem.M 0, A] =
+        lam cell_ix (np: Nat) (i j: Nat): [Idx np, Idx rb_vc] = (core.idx 0 np i, core.idx 0 rb_vc j);
+        // `step (i, j)` chained over every cell of a block of `np` rows, threading an `A`.
+        lam each_cell (np: Nat) (A: *) (step: [Nat, Nat, Cn [mem.M 0, A]] → Cn [mem.M 0, A]) (k: Cn [mem.M 0, A])
+                     : Cn [mem.M 0, A] =
             lam row (i: Nat, ki: Cn [mem.M 0, A]): Cn [mem.M 0, A] =
                 lam col (j: Nat, kj: Cn [mem.M 0, A]): Cn [mem.M 0, A] = step (i, j, kj);
                 vec.fold.r @(Cn [mem.M 0, A], Nat) @rb_vc col (‹j: rb_vc; core.bitcast Nat j›, ki);
-            vec.fold.r @(Cn [mem.M 0, A], Nat) @rb_pc row (‹i: rb_pc; core.bitcast Nat i›, k);
-        // One reduction point for every cell of the block, through the (partial) window `w`.
-        lam at_point (w: Cn [«r; I32», mem.M 0, To, Cn [mem.M 0, To]])
-                    : Cn [«r; I32», mem.M 0, «rb_pc, rb_vc; To», Cn [mem.M 0, «rb_pc, rb_vc; To»]] =
-            con at (pref: «r; I32», m: mem.M 0, acc: «rb_pc, rb_vc; To», k: Cn [mem.M 0, «rb_pc, rb_vc; To»]) =
-                lam step (i j: Nat, kk: Cn [mem.M 0, «rb_pc, rb_vc; To»]): Cn [mem.M 0, «rb_pc, rb_vc; To»] =
-                    con st (m2: mem.M 0, a2: «rb_pc, rb_vc; To») =
-                        con put (m3: mem.M 0, v: To) = kk (m3, a2#(cell_ix (i, j)) ← v);
-                        w (at_cell (pref, i, j), m2, a2#(cell_ix (i, j)), put);
+            vec.fold.r @(Cn [mem.M 0, A], Nat) @np row (‹i: np; core.bitcast Nat i›, k);
+        // One reduction point for every cell of a block of `np` rows, through the (partial) window `w`.
+        lam at_point (np: Nat) (w: Cn [«r; I32», mem.M 0, To, Cn [mem.M 0, To]])
+                    : Cn [«r; I32», mem.M 0, «np, rb_vc; To», Cn [mem.M 0, «np, rb_vc; To»]] =
+            con at (pref: «r; I32», m: mem.M 0, acc: «np, rb_vc; To», k: Cn [mem.M 0, «np, rb_vc; To»]) =
+                lam step (i j: Nat, kk: Cn [mem.M 0, «np, rb_vc; To»]): Cn [mem.M 0, «np, rb_vc; To»] =
+                    con st (m2: mem.M 0, a2: «np, rb_vc; To») =
+                        con put (m3: mem.M 0, v: To) = kk (m3, a2#(cell_ix np (i, j)) ← v);
+                        w (at_cell (pref, i, j), m2, a2#(cell_ix np (i, j)), put);
                     st;
-                (each_cell «rb_pc, rb_vc; To» step k) (m, acc);
+                (each_cell np «np, rb_vc; To» step k) (m, acc);
             at;
 
-        con regblk (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
+        // A block of `np` rows: its cells folded in registers over the reductions, then written back.
+        // The unguarded fold step: a partitioned block dim runs its last block by a kernel of `ptail` rows instead.
+        lam rb_kernel (np: Nat): Cn [«r; I32», mem.M 0, U, Cn [mem.M 0, U]] =
             con at_block (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
-                con folded (m2: mem.M 0, acc: «rb_pc, rb_vc; To») =
+                con folded (m2: mem.M 0, acc: «np, rb_vc; To») =
                     lam step (i j: Nat, kk: Cn [mem.M 0, U]): Cn [mem.M 0, U] =
-                        con st (m3: mem.M 0, u3: U) = wb (m3, u3, acc#(cell_ix (i, j)), at_cell (pref, i, j), kk);
+                        con st (m3: mem.M 0, u3: U) = wb (m3, u3, acc#(cell_ix np (i, j)), at_cell (pref, i, j), kk);
                         st;
-                    (each_cell U step k) (m2, u);
-                (red «rb_pc, rb_vc; To» (affine_for @«rb_pc, rb_vc; To») (at_point win, at_point win_t))
-                    (pref, m, ‹rb_pc; ‹rb_vc; init››, folded);
-            (staged pd_c at_block) (‹r; 0I32›, mem0, u0, done);
+                    (each_cell np U step k) (m2, u);
+                (red «np, rb_vc; To» (affine_for @«np, rb_vc; To») (at_point np (window ff), at_point np (window_t ff)))
+                    (pref, m, ‹np; ‹rb_vc; init››, folded);
+            at_block;
+        let rb_t = (1, ptail)#(core.bit2.and_ 2 (rb_ok, ptail != 0));
+        con regblk (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
+            con peeled (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+                con go (m2: mem.M 0) =
+                    (range_peel (r, Sr) U (affine_for @U, sl, pd_c) (rb_kernel rb_pc, rb_kernel rb_t)) (pref, m2, u, k);
+                stage (pref, m, go);
+            ((staged pd_c (rb_kernel rb_pc), range_nest (r, Sr) U (affine_for @U, 0, sl) peeled)#(ptail != 0))
+                (‹r; 0I32›, mem0, u0, done);
 
         // REDUCTION-VECTORIZED (`ro ≤ vdim < r`: the schedule names the innermost REDUCTION dim):
         // the contraction itself runs as the innermost (vector) loop. For a contraction whose
@@ -598,7 +639,8 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
         let rv_j      = unroll;
         let rv_bd     = (0, ro - rv_j)#(rv_j <= ro);
         let rv_vd     = (0, vdim)#(vdim < r);
-        let redvec_ok = core.bit2.and_ 2 (tail == 0, core.bit2.and_ 2 (ro <= vdim, core.bit2.and_ 2 (vdim + 1 == r, rv_j <= ro)));
+        let redvec_ok = core.bit2.and_ 2 (tail + ptail == 0,
+                        core.bit2.and_ 2 (ro <= vdim, core.bit2.and_ 2 (vdim + 1 == r, rv_j <= ro)));
         let Sr_rv     = ‹j: r; let jj = core.bitcast Nat j;
                                (Sr#j, (1, Sr#j)#redvec_ok)#(core.bit2.and_ 2 (rv_bd <= jj, jj < ro))›;
         lam rv_mul (d: Nat, acc: Nat): Nat = acc * Sr_rv#(core.idx 0 r d);
@@ -671,7 +713,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                     win (pref2, memp1, acc0, after_win);
                 con wb_cell (pref2: «r; I32», memw: mem.M 0, uw: U, kw: Cn [mem.M 0, U]) =
                     let (memw1, v) = buffer.read (1, Nt, To) (memw, panel, ti_of pref2);
-                    wb (memw1, uw, v, pref2, kw);
+                    wb_p (memw1, uw, v, pref2, kw);
                 con s2 (memB: mem.M 0, uB: U) =
                     (range_nest (r, Sr) U (affine_for @U, tl_p, vd)
                         (range_nest (r, Sr) U (vec_for @U, vd, vd + 1) wb_cell)) (pref, memB, uB, k);
@@ -690,7 +732,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
         // REGISTER-BLOCKED's micro-kernel. The panel spans all inner parallel dims [pout, ro); per hoisted block, every
         // register block of it is loaded from the panel, folded over the remaining reductions and stored back.
         // Clamps as above.
-        let trb_ok = core.bit2.and_ 2 (rout != 0, core.bit2.and_ 2 (rb_ok, core.bit2.and_ 2 (tail == 0,
+        let trb_ok = core.bit2.and_ 2 (rout != 0, core.bit2.and_ 2 (rb_ok, core.bit2.and_ 2 (tail + ptail == 0,
                      core.bit2.and_ 2 (pout <= pd_c, ro + rout <= u_lo))));
         let trb_p  = (pd_c, pout)#(pout <= pd_c);
         let trb_r  = (0, rout)#(ro + rout <= u_lo);
@@ -714,20 +756,21 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                     lam load (i j: Nat, kk: Cn [mem.M 0, «rb_pc, rb_vc; To»]): Cn [mem.M 0, «rb_pc, rb_vc; To»] =
                         con st (m2: mem.M 0, a2: «rb_pc, rb_vc; To») =
                             let (m3, v) = buffer.read (1, Nq, To) (m2, panel, qi_of (at_cell (pref2, i, j)));
-                            kk (m3, a2#(cell_ix (i, j)) ← v);
+                            kk (m3, a2#(cell_ix rb_pc (i, j)) ← v);
                         st;
                     con loaded (m2: mem.M 0, acc: «rb_pc, rb_vc; To») =
                         con folded (m3: mem.M 0, acc2: «rb_pc, rb_vc; To») =
                             lam store (i j: Nat, kk: Cn [mem.M 0, U]): Cn [mem.M 0, U] =
                                 con st (m4: mem.M 0, u4: U) =
                                     let (m5, panel5) = buffer.write (1, Nq, To) (m4, panel, qi_of (at_cell (pref2, i, j)),
-                                                                            acc2#(cell_ix (i, j)));
+                                                                            acc2#(cell_ix rb_pc (i, j)));
                                     kk (m5, u4);
                                 st;
-                            (each_cell U store kr) (m3, ur);
-                        (range_nest (r, Sr) «rb_pc, rb_vc; To» (affine_for @«rb_pc, rb_vc; To», ro + trb_r, u_lo) (at_point win))
+                            (each_cell rb_pc U store kr) (m3, ur);
+                        (range_nest (r, Sr) «rb_pc, rb_vc; To» (affine_for @«rb_pc, rb_vc; To», ro + trb_r, u_lo)
+                            (at_point rb_pc win))
                             (pref2, m2, acc, folded);
-                    (each_cell «rb_pc, rb_vc; To» load loaded) (memr, ‹rb_pc; ‹rb_vc; init››);
+                    (each_cell rb_pc «rb_pc, rb_vc; To» load loaded) (memr, ‹rb_pc; ‹rb_vc; init››);
                 con wb_cell (pref2: «r; I32», memw: mem.M 0, uw: U, kw: Cn [mem.M 0, U]) =
                     let (memw1, v) = buffer.read (1, Nq, To) (memw, panel, qi_of pref2);
                     wb (memw1, uw, v, pref2, kw);
@@ -740,9 +783,11 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                 (range_nest (r, Sr) U (affine_for @U, trb_p, ro) fill) (pref, m, u, s1);
             (staged trb_p at_block) (‹r; 0I32›, mem1, u0, done);
 
+        // Peeling the last block needs its loop below the stage.
+        let rb_sel = core.bit2.and_ 2 (rb_ok, (sl < pd_c, tt)#(ptail == 0));
         con run (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
             ((((((classic, vectorized)#(core.bit2.and_ 2 (vec_ok, sl <= vd)),
-                  (blocked, regblk)#rb_ok)#(core.bit2.and_ 2 (block_ok, sl <= pd_c)),
+                  (blocked, regblk)#rb_sel)#(core.bit2.and_ 2 (block_ok, sl <= pd_c)),
                  redvec)#(core.bit2.and_ 2 (redvec_ok, sl <= rv_bd)),
                 tiled)#(core.bit2.and_ 2 (tl_ok, sl <= tl_p)),
                tiled_rb)#(core.bit2.and_ 2 (trb_ok, sl <= trb_p))) (mem0, u0, done);

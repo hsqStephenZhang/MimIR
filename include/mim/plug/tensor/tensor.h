@@ -109,6 +109,24 @@ is_reshape_read(World& w, const Def* map, const Def* r_in, const Def* s_in, cons
     return w.app(map, probe->var()) == w.app(expected, probe->var());
 }
 
+/// Is `map` the row-major read of the leading `s_out#0` rows of `s_in`'s elements, e.g. the slice that drops a
+/// register-blocked result's padding? Then the result is a prefix of the input buffer.
+inline bool
+is_prefix_read(World& w, const Def* map, const Def* r_in, const Def* s_in, const Def* r_out, const Def* s_out) {
+    auto ri = Lit::isa<u64>(r_in), ro = Lit::isa<u64>(r_out);
+    if (!ri || !ro || *ro == 0) return false;
+    auto in = lit_projs(s_in, *ri), out = lit_projs(s_out, *ro);
+    if (!in || !out) return false;
+    u64 n = 1, row = 1;
+    for (auto e : *in)
+        n *= e;
+    for (u64 d = 1; d != *ro; ++d)
+        row *= (*out)[d];
+    if (row == 0 || n % row != 0 || n / row < (*out)[0]) return false;
+    auto pad = DefVec(*ro, [&](u64 d) { return d == 0 ? w.lit_nat(n / row) : s_out->proj(*ro, d); });
+    return is_reshape_read(w, map, r_in, s_in, r_out, w.tuple(pad));
+}
+
 /// Counts the consumers of every def of @p world matched by @p pred.
 /// Tuples and packs are transparent argument wrappers, so a wrapped def is charged to the enclosing
 /// non-tuple consumer - a shared argument tuple charges each of its users, and a def used twice in one

@@ -187,7 +187,7 @@ axm map_reduce_post: {nis nps: Nat}
 /// The type of a **schedule** value: a chooser over the target's loop-nest builder — for whatever nest
 /// type `N` the lowering instantiates, it is handed the target's builder `mk` and returns the nest
 /// to run.
-let SchedT = [N: *] → ([vdim unroll tail pout rout: Nat] → N) → N;
+let SchedT = [N: *] → ([vdim unroll tail pout rout ptail: Nat] → N) → N;
 ///
 /// ### mk_sched
 ///
@@ -220,7 +220,7 @@ anx lam map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
                    (maps: «i: nis; ([«Rn; affine.Index»] → «Ris#i; affine.Index»)»)
                    (is: «i: nis; «Sis#i; Tis#i»»): «So; To» =
     map_reduce_post
-        (So, Sr, mk_sched (Rn, 0, 0, 0, 0))
+        (So, Sr, mk_sched (Rn, 0, 0, 0, 0, 0))
         (f, init, id @To) map_out (maps, ()) (is, ());
 ///
 /// ### proj_map
@@ -632,7 +632,7 @@ axm if_static: {T: *} → [k: Nat, s d: T] → T, normalize_if_static;
 ///   result shape `So` — MLIR's getIterationDomain + getLoopIteratorTypes.
 /// - `oax`: which output axis each parallel dim writes — the piece of the write map the domain
 ///   transforms need (`strip_mine_par` splits the output along `oax#d`).
-/// - the schedule `vdim`/`unroll`/`tail`/`pout`/`rout` (see `mk_sched`): the chooser `retile` packs into the op.
+/// - the schedule `vdim`/`unroll`/`tail`/`pout`/`rout`/`ptail` (see `mk_sched`): the chooser `retile` packs into the op.
 /// - `retile`: rebuild the computation over a *reindexed* domain, given the new domain and
 ///   schedule, `iota` (maps new loop vectors to old loop vectors) and `omega` (maps (old output
 ///   coordinates, new loop vector) to new output coordinates).
@@ -644,9 +644,9 @@ let Tileable = [
     So: «Ro; Nat»,
     oax: «Ro; Nat»,
     Sr: «Ro + Rr; Nat»,
-    vdim: Nat, unroll: Nat, tail: Nat, pout: Nat, rout: Nat,
+    vdim: Nat, unroll: Nat, tail: Nat, pout: Nat, rout: Nat, ptail: Nat,
     retile: [Ro_n Rr_n: Nat]
-          → [So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n: Nat]
+          → [So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n: Nat]
           → [iota:  «Ro_n + Rr_n; affine.Index» → «Ro + Rr; affine.Index»,
              omega: [«Ro; affine.Index», «Ro_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»]
           → Out (Ro_n, So_n),
@@ -681,12 +681,13 @@ anx lam interchange (t: Tileable, perm: «t#Ro + t#Rr; Nat»): Tileable =
     lam iota_p (o: «r; affine.Index»): «r; affine.Index» =
         ‹i: r; o#(option.unwrap_unsafe (vec.first `== (perm_ok, core.bitcast Nat i)))›;
     lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m: Nat)
                  (iota:  «ro_m + rr_m; affine.Index» → «r; affine.Index»,
                   omega: [«t#Ro; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
-        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m) (comp_map (iota_p, iota), omega);
-    (t#Out, t#Ro, t#Rr, t#So, oax_n, sr_n, vdim_n, t#unroll, t#tail, t#pout, t#rout, retile_n);
+        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m)
+                 (comp_map (iota_p, iota), omega);
+    (t#Out, t#Ro, t#Rr, t#So, oax_n, sr_n, vdim_n, t#unroll, t#tail, t#pout, t#rout, t#ptail, retile_n);
 ///
 /// #### materialize
 ///
@@ -694,7 +695,7 @@ anx lam interchange (t: Tileable, perm: «t#Ro + t#Rr; Nat»): Tileable =
 anx lam materialize (t: Tileable): t#Out (t#Ro, t#So) =
     lam id_i (o: «t#Ro + t#Rr; affine.Index»): «t#Ro + t#Rr; affine.Index» = o;
     lam id_o (oo: «t#Ro; affine.Index», o: «t#Ro + t#Rr; affine.Index»): «t#Ro; affine.Index» = oo;
-    t#retile (t#Ro, t#Rr) (t#So, t#Sr, t#vdim, t#unroll, t#tail, t#pout, t#rout) (id_i, id_o);
+    t#retile (t#Ro, t#Rr) (t#So, t#Sr, t#vdim, t#unroll, t#tail, t#pout, t#rout, t#ptail) (id_i, id_o);
 ///
 /// #### mr_tileable
 ///
@@ -722,26 +723,26 @@ anx lam mr_tileable
               : Tileable =
     lam out_t (ro: Nat, so: «ro; Nat»): * = «so; Tp»;
     lam retile (Ro_n Rr_n: Nat)
-               (So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n: Nat)
+               (So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n: Nat)
                (iota:  «Ro_n + Rr_n; affine.Index» → «Ro + Rr; affine.Index»,
                 omega: [«Ro; affine.Index», «Ro_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»)
              : «So_n; Tp» =
         lam map_out_n (o: «Ro_n + Rr_n; affine.Index»): «Ro_n; affine.Index» =
             omega (map_out (iota o), o);
         map_reduce_post @(nis, 0) @(To, Tp, Ro_n, Ro_n + Rr_n, SchedT)
-            (So_n, Sr_n, mk_sched (vdim_n, unroll_n, tail_n, pout_n, rout_n))
+            (So_n, Sr_n, mk_sched (vdim_n, unroll_n, tail_n, pout_n, rout_n, ptail_n))
             @(Tis, Ris, Sis, (), (), ()) (f, init, post)
             map_out_n
             (‹i: nis; comp_map (maps#i, iota)›, ())
             (is, ());
-    (out_t, Ro, Rr, So, oax, Sr, Ro + Rr, 0, 0, 0, 0, retile);
+    (out_t, Ro, Rr, So, oax, Sr, Ro + Rr, 0, 0, 0, 0, 0, retile);
 ///
 /// #### unroll_trailing
 ///
 /// Fully unroll the trailing `d` reduction dims into the loop body — e.g. a
 /// convolution's kh·kw window (`d = 2`). Their trip counts must be literals at lowering time.
 lam unroll_trailing (t: Tileable, d: Nat): Tileable =
-    (t#Out, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, d, t#tail, t#pout, t#rout, t#retile);
+    (t#Out, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, d, t#tail, t#pout, t#rout, t#ptail, t#retile);
 ///
 /// #### vectorize
 ///
@@ -749,7 +750,7 @@ lam unroll_trailing (t: Tileable, d: Nat): Tileable =
 /// unchanged). A parallel `d` runs inside the reduction loops over a row of accumulators; the
 /// innermost reduction dim as `d` selects `btensor.mr_nest`'s reduction-vectorized nest instead.
 lam vectorize (t: Tileable, d: Nat): Tileable =
-    (t#Out, t#Ro, t#Rr, t#So, t#oax, t#Sr, d, t#unroll, t#tail, t#pout, t#rout, t#retile);
+    (t#Out, t#Ro, t#Rr, t#So, t#oax, t#Sr, d, t#unroll, t#tail, t#pout, t#rout, t#ptail, t#retile);
 ///
 /// #### hoist_red
 ///
@@ -759,7 +760,7 @@ lam vectorize (t: Tileable, d: Nat): Tileable =
 /// Only the tiled nest of `btensor.mr_nest` honors it, which needs a parallel vector dim and no `tail`; the loop
 /// order does not change the result.
 lam hoist_red (t: Tileable, pout rout: Nat): Tileable =
-    (t#Out, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, t#unroll, t#tail, pout, rout, t#retile);
+    (t#Out, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, t#unroll, t#tail, pout, rout, t#ptail, t#retile);
 ///
 /// ### Strip-Mining
 ///
@@ -814,21 +815,16 @@ lam split_omega (m n a ts: Nat) (oc: «n; affine.Index»): «m; affine.Index» =
            core.select (jj == a + 1, affine.semiop.rem (oc#(core.idx 0 n a), ts),
            oc#(core.idx 0 n (jj - 1)))))›;
 ///
-/// #### strip_mine_par
+/// #### split_par
 ///
-/// Split parallel dim `d` (d < Ro) into two adjacent parallel dims. The result
+/// Split parallel dim `d` (d < Ro) into two adjacent parallel dims (nt, ts) with the schedule's `ptail`. The result
 /// shape splits along the output axis `d` writes (`oax#d`), so the materialized tensor is *packed*
-/// (`«…, N/ts, ts, …»` along that axis); a row-major `reshape` restores the original shape — and in a
-/// fused graph `fuse_tensor`'s read-through absorbs it into the consumers' access maps.
-anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
+/// (`«…, nt, ts, …»` along that axis).
+lam split_par (t: Tileable, d ts nt ptail: Nat): Tileable =
     let r    = t#Ro + t#Rr;
     let ro_n = t#Ro + 1;
     let r_n  = t#Ro + 1 + t#Rr;
     let a    = t#oax#(core.idx 0 (t#Ro) d);
-    let sd   = refly.check (t#So#(core.idx 0 (t#Ro) a) == t#Sr#(core.idx 0 r d),
-                             t#Sr#(core.idx 0 r d),
-                             "strip_mine_par: output extent (at oax#d) must match domain extent");
-    let nt   = check_div (sd, ts) / ts;
     // The split dim writes the split axis pair; all other dims write their old axis, renumbered
     // around the insertion at `a`. The unit-stride half is the inner one: a vdim at `d` moves to
     // `d + 1`.
@@ -839,7 +835,7 @@ anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
                           shift_ax (a, t#oax#(core.idx 0 (t#Ro) (jj - 1))))))›;
     let vdim_n = core.select (t#vdim < t#Ro, core.select (t#vdim < d, t#vdim, t#vdim + 1), r_n);
     lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m: Nat)
                  (iota:  «ro_m + rr_m; affine.Index» → «r_n; affine.Index»,
                   omega: [«ro_n; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
@@ -847,10 +843,37 @@ anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
             split_iota (r_n, r, d, ts) (iota o);
         lam omega_c (oo: «t#Ro; affine.Index», ov: «ro_m + rr_m; affine.Index»): «ro_m; affine.Index» =
             omega (split_omega (ro_n, t#Ro, a, ts) oo, ov);
-        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m) (iota_c, omega_c);
+        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m) (iota_c, omega_c);
     (t#Out, ro_n, t#Rr,
      split_bounds (ro_n, t#Ro, t#So, a, ts, nt), oax_n,
-     split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, t#unroll, t#tail, t#pout, t#rout, retile_n);
+     split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, t#unroll, t#tail, t#pout, t#rout, ptail, retile_n);
+///
+/// #### par_extent
+///
+/// The extent of parallel dim `d`, checked against the output axis it writes.
+lam par_extent (t: Tileable, d: Nat): Nat =
+    refly.check (t#So#(core.idx 0 (t#Ro) (t#oax#(core.idx 0 (t#Ro) d))) == t#Sr#(core.idx 0 (t#Ro + t#Rr) d),
+                 t#Sr#(core.idx 0 (t#Ro + t#Rr) d),
+                 "strip_mine_par: output extent (at oax#d) must match domain extent");
+///
+/// #### strip_mine_par
+///
+/// Split parallel dim `d` (d < Ro) into (N/ts, ts); `ts` must divide N. The materialized tensor is packed (see
+/// `split_par`); a row-major `reshape` restores the original shape — and in a fused graph `fuse_tensor`'s read-through
+/// absorbs it into the consumers' access maps.
+anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
+    split_par (t, d, ts, check_div (par_extent (t, d), ts) / ts, t#ptail);
+///
+/// #### partition_par
+///
+/// Loop partitioning of parallel dim `d` of any extent N into (⌈N/ts⌉, ts), whose last iteration of the outer half
+/// runs only the remaining `N mod ts` points of the inner one (the schedule's `ptail`).
+/// The schedule must make the halves `vdim − 1` and `vdim` (see `mk_sched`); the packed result is padded to whole
+/// tiles, so a row-major `reshape` restores the padded shape and a `slice` the original one.
+anx lam partition_par (t: Tileable, d ts: Nat): Tileable =
+    let n    = par_extent (t, d);
+    let tail = (n - n / ts * ts, 0)#(ts == 1);
+    split_par (t, d, ts, n / ts + (0, 1)#(tail != 0), tail);
 ///
 /// #### split_red
 ///
@@ -862,14 +885,14 @@ lam split_red (t: Tileable, d ts nt tail: Nat): Tileable =
     let vdim_n   = core.select (t#vdim < t#Ro, t#vdim, r_n);
     let unroll_n = core.select (d < r - t#unroll, t#unroll, t#unroll + 1);
     lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m: Nat)
                  (iota:  «ro_m + rr_m; affine.Index» → «r_n; affine.Index»,
                   omega: [«t#Ro; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
-        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m)
+        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m)
                  (comp_map (split_iota (r_n, r, d, ts), iota), omega);
     (t#Out, t#Ro, t#Rr + 1, t#So, t#oax,
-     split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, unroll_n, tail, t#pout, t#rout, retile_n);
+     split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, unroll_n, tail, t#pout, t#rout, t#ptail, retile_n);
 ///
 /// #### strip_mine_red
 ///
@@ -999,16 +1022,26 @@ lam dot_k (t: Tileable): Tileable =
 ///   symbolic and runtime shapes.
 lam dot_schedule (r_out: Nat) (t: Tileable): Tileable = dot_k (vectorize (t, r_out - 1));
 ///
+/// #### dot_rb_rows
+///
+/// The rows of a register block over `m` rows, or `0` for none: 6 x 16 blocks keep 12 of AVX2's 16 vector registers as
+/// accumulators.
+/// Where 6 does not divide `m`, the last block is partial (`partition_par`) if `tail_ok`, else the block is 4 x 16.
+lam dot_rb_rows (m: Nat, tail_ok: Bool): Nat =
+    let by4 = (0, 4)#(core.bit2.and_ 2 (m / 4 * 4 == m, 4 < m));
+    let rows = (by4, 6)#(core.bit2.and_ 2 (tail_ok, 12 <= m));
+    (rows, 6)#(core.bit2.and_ 2 (m / 6 * 6 == m, 6 < m));
+///
 /// #### dot_schedule_rb
 ///
-/// `dot_schedule` with the last two output dims (M, N), 4 | M and 16 | N, register-blocked by 4 x 16: the block's
-/// accumulators stay in registers across the whole contraction (`btensor.mr_nest`'s register-blocked nest), each load
-/// of the right operand serving 4 rows.
-/// The blocks run in the order (N/16, M/4), so the right operand's k x 16 column stays in cache across all of M.
-lam dot_schedule_rb (r_out: Nat) (t: Tileable): Tileable =
+/// `dot_schedule` with the last two output dims (M, N), 16 | N, register-blocked by `rows` x 16 (see `dot_rb_rows`): the
+/// block's accumulators stay in registers across the whole contraction (`btensor.mr_nest`'s register-blocked nest),
+/// each load of the right operand serving `rows` rows.
+/// The blocks run in the order (N/16, M/rows), so the right operand's k x 16 column stays in cache across all of M.
+lam dot_schedule_rb (r_out rows: Nat) (t: Tileable): Tileable =
     let q    = r_out - 2;
-    let t1   = strip_mine_par (strip_mine_par (t, r_out - 1, 16), q, 4);
-    let r1   = t1#1_12 + t1#2_12;
+    let t1   = partition_par (strip_mine_par (t, r_out - 1, 16), q, rows);
+    let r1   = t1#1_13 + t1#2_13;
     let perm = ‹j: r1; let jj = core.bitcast Nat j;
                        core.select (jj == q, q + 2, core.select (jj == q + 1, q, core.select (jj == q + 2, q + 1, jj)))›;
     dot_k (vectorize (interchange (t1, perm), r_out));
@@ -1016,7 +1049,7 @@ lam dot_schedule_rb (r_out: Nat) (t: Tileable): Tileable =
 /// #### dot_pack_m
 ///
 /// The fewest left-operand rows for which `dot_product_impl` packs the right operand.
-let dot_pack_m = 64;
+let dot_pack_m = 48;
 ///
 /// #### dot_pack_k
 ///
@@ -1045,7 +1078,7 @@ lam dot_kb (kq w: Nat): Nat =
 /// The N block of `dot_schedule_nblk`, its loop moved outside the left free dims.
 lam dot_nblk (r_out nb na nc: Nat) (t: Tileable): Tileable =
     let t1   = strip_mine_par (t, r_out - 1, nc);
-    let r1   = t1#1_12 + t1#2_12;
+    let r1   = t1#1_13 + t1#2_13;
     let perm = ‹j: r1; let jj = core.bitcast Nat j;
                        core.select (jj < nb, jj,
                        core.select (jj < r_out - na, jj + na,
@@ -1068,10 +1101,11 @@ lam dot_order (r_out nb na: Nat) (t: Tileable): Tileable =
 /// #### dot_pack_nc
 ///
 /// The N block a packed right operand is laid out in (see `dot_product_impl`), or `0` not to pack: the width of a
-/// register block, for at least `dot_pack_m` rows and `dot_pack_k` contraction steps to amortize the copy.
-lam dot_pack_nc (m k n: Nat): Nat =
+/// register block, for at least `dot_pack_m` rows and `dot_pack_k` contraction steps to amortize the copy, and a last
+/// left free dim of `m_rb` rows that register blocks cover (see `dot_rb_rows`, with `tail_ok`).
+lam dot_pack_nc (m m_rb k n: Nat, tail_ok: Bool): Nat =
     let ok = core.bit2.and_ 2 (n / 16 * 16 == n, core.bit2.and_ 2 (16 < n, core.bit2.and_ 2 (dot_pack_m <= m,
-             core.bit2.and_ 2 (dot_pack_k <= k, core.bit2.and_ 2 (m / 4 * 4 == m, 4 < m)))));
+             core.bit2.and_ 2 (dot_pack_k <= k, dot_rb_rows (m_rb, tail_ok) != 0))));
     (0, 16)#ok;
 ///
 /// #### dot_kblk
@@ -1100,16 +1134,16 @@ lam dot_schedule_nblk (r_out nb na nc: Nat) (t: Tileable): Tileable =
 /// #### dot_schedule_nblk_rb
 ///
 /// `dot_schedule_nblk` register-blocked within the N block (see `dot_schedule_rb`).
-lam dot_schedule_nblk_rb (r_out nb na nc: Nat) (t: Tileable): Tileable =
-    dot_schedule_rb (r_out + 1) (dot_nblk (r_out, nb, na, nc) t);
+lam dot_schedule_nblk_rb (r_out nb na nc rows: Nat) (t: Tileable): Tileable =
+    dot_schedule_rb (r_out + 1, rows) (dot_nblk (r_out, nb, na, nc) t);
 ///
 /// #### dot_schedule_nblk_rbk
 ///
 /// `dot_schedule_nblk_rb` with the contraction cache-blocked too (see `dot_kblk`): the register blocks of the N block
 /// are loaded from and stored back to a panel around each block of the contraction (`btensor.mr_nest`'s tiled
 /// register-blocked nest).
-lam dot_schedule_nblk_rbk (r_out nb na nc: Nat) (t: Tileable): Tileable =
-    dot_kblk (r_out, na, nc) (dot_schedule_nblk_rb (r_out, nb, na, nc) t);
+lam dot_schedule_nblk_rbk (r_out nb na nc rows: Nat) (t: Tileable): Tileable =
+    dot_kblk (r_out, na, nc) (dot_schedule_nblk_rb (r_out, nb, na, nc, rows) t);
 ///
 /// #### dot_schedule_kvec
 ///
@@ -1145,7 +1179,7 @@ lam dot_schedule_kvec (r_out: Nat) (t: Tileable): Tileable =
     // `bs` ((n/bs, 1, bs | red)). `r3` is spelled from t3's own (positional) fields so the pack's
     // length is definitionally the «t#Ro + t#Rr» the dependent `interchange` domain expects —
     // `core.nat.add` does not reassociate an equivalent spelling.
-    let r3   = t3#1_12 + t3#2_12;
+    let r3   = t3#1_13 + t3#2_13;
     let swap = 2 <= r_out;
     let pa   = r_out - 1;
     let pb   = r_out;
@@ -1390,8 +1424,8 @@ priv anx lam conv_impl (R: Ring) {n cin cout h w kh kw: Nat}
             (proj_map @(7, 4) (0, 1, 2, 3))
             (conv2d_in_map (stride, dilation), proj_map @(7, 4) (1, 4, 5, 6))
             (padded, weight));
-    // `sched#3_12` is the scheduled Tileable's (possibly packed) output shape `So`.
-    reshape (sched#3_12) s_out (materialize sched);
+    // `sched#3_13` is the scheduled Tileable's (possibly packed) output shape `So`.
+    reshape (sched#3_13) s_out (materialize sched);
 ///
 /// ### dot_general_fun
 ///
@@ -1465,19 +1499,19 @@ lam dot_contract
       // otherwise the last output dim is unit-stride in that operand (A·B) and runs as the vector
       // loop. Dispatched as an extract over thunks, each materializing its own concretely-scheduled
       // Tileable: behind a stuck extract the record's `Out` field would not reduce, so the
-      // reshape's input could not be checked. `sched#3_12` is the scheduled Tileable's (possibly
+      // reshape's input could not be checked. `sched#3_13` is the scheduled Tileable's (possibly
       // packed) output shape `So`.
       let kvec = option.is_some (vec.first `== (‹i: nc; core.bitcast Nat (c2#i)›, fastest_2));
       lam go_n    (u: []): «s_fin; R#T» =
           let sched = dot_schedule r_out t;
-          reshape (sched#3_12) s_fin (materialize sched);
+          reshape (sched#3_13) s_fin (materialize sched);
       lam go_kvec (u: []): «s_fin; R#T» =
           let sched = dot_schedule_kvec r_out t;
-          reshape (sched#3_12) s_fin (materialize sched);
+          reshape (sched#3_13) s_fin (materialize sched);
       // Plain: the contraction as the vector loop, without the jam blocks, whose strip-mining packs the output.
       lam go_kvec_plain (u: []): «s_fin; R#T» =
           let sched = vectorize (t, n_loops - 1);
-          reshape (sched#3_12) s_fin (materialize sched);
+          reshape (sched#3_13) s_fin (materialize sched);
       // Cache-block the last output dim if it is a free dim of the right operand (see `dot_schedule_nblk`).
       let k_all = vec.fold.r @(Nat, Nat) @nc (lm (x acc: Nat): Nat = x * acc) (s_red, 1);
       // Above 256, the contraction is cache-blocked itself (see `dot_schedule_nblk`).
@@ -1485,34 +1519,47 @@ lam dot_contract
       let nc    = (if_static (nc_0, (0, nc_0)#(nb + n_s1_res < r_out), 0), 0)#plain;
       lam go_nblk (u: []): «s_fin; R#T» =
           let sched = dot_schedule_nblk (r_out, nb, n_s1_res, nc) t;
-          reshape (sched#3_12) s_fin (materialize sched);
-      // Register-block by 4 x 16 where the last two dims of the loop order are the left operand's last free dim and N
-      // (see `dot_schedule_rb`): within the N block, or without one for a right operand with N as its only free dim.
-      let m_rb = s_out#(core.idx 0 r_out ((0, nb + n_s1_res - 1)#(1 <= n_s1_res)));
+          reshape (sched#3_13) s_fin (materialize sched);
+      // Register-block by rows x 16 where the last two dims of the loop order are the left operand's last free dim M and
+      // N (see `dot_schedule_rb`): within the N block, or without one for a right operand with N as its only free dim.
+      let a_m  = (0, nb + n_s1_res - 1)#(1 <= n_s1_res);
+      let m_rb = s_out#(core.idx 0 r_out a_m);
       let n_rb = s_out#(core.idx 0 r_out (r_out - 1));
-      lam rb_by (m n: Nat): Bool =
-          core.bit2.and_ 2 (1 <= n_s1_res, core.bit2.and_ 2 (m / 4 * 4 == m, core.bit2.and_ 2 (4 < m,
-          core.bit2.and_ 2 (n / 16 * 16 == n, 16 < n))));
-      let rb_n  = (if_static (m_rb * n_rb, core.bit2.and_ 2 (nb + n_s1_res + 1 == r_out, rb_by (m_rb, n_rb)), ff), ff)#plain;
+      // A K block's nest takes no partial register block (see `dot_rb_rows`), and the padded result of one is a prefix of
+      // its buffer only with M the outermost dim of the result.
+      let rows   = dot_rb_rows (m_rb, a_m == 0);
+      let rows_k = dot_rb_rows (m_rb, ff);
+      lam rb_by (rows n: Nat): Bool =
+          core.bit2.and_ 2 (1 <= n_s1_res, core.bit2.and_ 2 (rows != 0, core.bit2.and_ 2 (n / 16 * 16 == n, 16 < n)));
+      let rb_n  = (if_static (m_rb * n_rb, core.bit2.and_ 2 (nb + n_s1_res + 1 == r_out, rb_by (rows, n_rb)), ff),
+                   ff)#plain;
       // Without a K block the whole k x nc panel must fit: the block is sized by the whole contraction.
       let nc_rb = if_static (nc, dot_nc (n_rb, k_all), 0);
-      let rb_nb = if_static (m_rb * nc_rb, rb_by (m_rb, nc_rb), ff);
+      let rb_nb = if_static (m_rb * nc_rb, rb_by (rows, nc_rb), ff);
+      // The result of a register-blocked schedule, whose partitioned M (see `partition_par`) pads it to whole blocks.
+      // Its rows of the padded shape are a row-major prefix, read through the padded reshape.
+      lam unpack (rows: Nat) {r_p: Nat} (so: «r_p; Nat») (x: «so; R#T»): «s_fin; R#T» =
+          let m     = s_fin#(core.idx 0 r_fin a_m);
+          let s_pad = ‹j: r_fin; core.select (core.bitcast Nat j == a_m, (m + rows - 1) / rows * rows, s_fin#j)›;
+          let prefix = map_reduce (s_fin, s_fin) (tensor_copy, ⊥: (R#T)) affine.id (reshape_map (so, s_pad),) x;
+          (reshape so s_fin x, prefix)#(m / rows * rows != m);
       lam go_n_rb (u: []): «s_fin; R#T» =
-          let sched = dot_schedule_rb r_out t;
-          reshape (sched#3_12) s_fin (materialize sched);
+          let sched = dot_schedule_rb (r_out, rows) t;
+          unpack rows (sched#3_13) (materialize sched);
       lam go_nblk_rb (u: []): «s_fin; R#T» =
-          let sched = dot_schedule_nblk_rb (r_out, nb, n_s1_res, nc_rb) t;
-          reshape (sched#3_12) s_fin (materialize sched);
+          let sched = dot_schedule_nblk_rb (r_out, nb, n_s1_res, nc_rb, rows) t;
+          unpack rows (sched#3_13) (materialize sched);
       // Where only a block of the contraction fits, the register blocks run inside the K block.
-      let rb_k  = if_static (m_rb * nc, rb_by (m_rb, nc), ff);
+      let rb_k  = if_static (m_rb * nc, rb_by (rows_k, nc), ff);
       lam go_nblk_rbk (u: []): «s_fin; R#T» =
-          let sched = dot_schedule_nblk_rbk (r_out, nb, n_s1_res, nc) t;
-          reshape (sched#3_12) s_fin (materialize sched);
+          let sched = dot_schedule_nblk_rbk (r_out, nb, n_s1_res, nc, rows_k) t;
+          unpack rows_k (sched#3_13) (materialize sched);
       // A packed right operand (see `dot_product_impl`) has its N blocks as a free dim already: order the blocks
       // outside the left free dims and register-block within them.
       lam go_packed (u: []): «s_fin; R#T» =
-          let sched = dot_kblk (r_out - 1, n_s1_res, n_rb) (dot_schedule_rb r_out (dot_order (r_out, nb, n_s1_res) t));
-          reshape (sched#3_12) s_fin (materialize sched);
+          let sched = dot_kblk (r_out - 1, n_s1_res, n_rb)
+                          (dot_schedule_rb (r_out, rows) (dot_order (r_out, nb, n_s1_res) t));
+          unpack rows (sched#3_13) (materialize sched);
       ((((go_n, go_n_rb)#rb_n, ((go_nblk, go_nblk_rbk)#rb_k, go_nblk_rb)#rb_nb)#(nc != 0), (go_kvec, go_kvec_plain)#plain)#kvec, go_packed)#packed ();
 ///
 /// ### pack_map
@@ -1546,7 +1593,9 @@ priv anx lam dot_product_impl
       let n     = s2#(core.idx 0 r2 (r2 - 1));
       let s1_res = vec.diff (s1, vec.cat (b1, c1));
       let m      = vec.fold.r @(Nat, Nat) @(vec.len s1_res) (lm (x acc: Nat): Nat = x * acc) (s1_res, 1);
-      let pc    = dot_pack_nc (m, k, n);
+      let n_res  = vec.len s1_res;
+      let m_rb   = (0, s_out#(core.idx 0 r_out ((0, nb + n_res - 1)#(1 <= n_res))))#(1 <= n_res);
+      let pc    = dot_pack_nc (m, m_rb, k, n, core.bit2.and_ 2 (nb == 0, n_res == 1));
       // One contraction, of b's second-to-last axis; N a free axis of b and the last of the result.
       let shape_ok = core.bit2.and_ 2 (nc == 1, core.bit2.and_ 2 (2 <= r2, core.bit2.and_ 2 (2 <= r_out,
                      core.bit2.and_ 2 (core.bitcast Nat (c2#(core.idx 0 nc 0)) + 2 == r2,
