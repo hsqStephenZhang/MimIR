@@ -302,7 +302,8 @@ Lam* build_kernel(World& w,
         auto fold = w.mut_con(w.sigma())->set("fold");
         auto keep = w.mut_con(w.sigma())->set("keep");
         apply_cps(w, fold, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
-        keep->app(true, cont, w.tuple({cur, elem_acc}));
+        // The loads above are then only reachable from `fold`: skipped points read nothing.
+        keep->app(true, cont, w.tuple({body_mem, elem_acc}));
         current_mut->branch(true, skip, keep, fold);
     } else {
         apply_cps(w, current_mut, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
