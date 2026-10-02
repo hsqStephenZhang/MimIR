@@ -27,7 +27,7 @@ struct NvptxCompileArgs {
     bool embed_ptx   = true;
     bool embed_cubin = true;
     std::string compute_cap, libdevice_path;
-    std::string link_llvm_args, opt_args = R"(-passes="default<O2>,nvvm-reflect")", llc_args, ptxas_args,
+    std::string link_llvm_args, opt_args = R"(-passes="default<O2>")", llc_args, ptxas_args,
                                 fatbinary_args;
 };
 
@@ -119,7 +119,10 @@ void link_libdevice(const NvptxCompileArgs& c) {
 
 void optimize_bytecode(const NvptxCompileArgs& c) {
     auto opt = fe::sys::require_cmd("opt");
-    fe::sys::require_run(std::format("{} {} {} -o {}", opt, c.opt_args, c.dev_bc_raw_name, c.dev_bc_opt_name));
+    // A run of its own: `nvvm-reflect` is a function pass up to LLVM 20 and a module pass after, which only a pipeline
+    // of just this pass spells the same.
+    fe::sys::require_run(std::format("{} -passes=nvvm-reflect {} -o {}", opt, c.dev_bc_raw_name, c.dev_bc_opt_name));
+    fe::sys::require_run(std::format("{} {} {} -o {}", opt, c.opt_args, c.dev_bc_opt_name, c.dev_bc_opt_name));
 }
 
 void compile2ptx(const NvptxCompileArgs& c, bool uses_libdevice) {
@@ -244,7 +247,7 @@ static constexpr PluginArg known_args[] = {
     {"sm=<SM>",                         "When embedding: compiles the device binary for compute capability `sm_<SM>`."},
     {"libdevice=<path>",                "When embedding and linking libdevice: uses the NVVM library at `<path>` instead of locating it via the CUDA paths."},
     {"Xlink_llvm=<args>",               "When embedding and linking libdevice: passes `<args>` to `link_llvm` (default: none)."},
-    {"Xopt=<args>",                     "When embedding and linking libdevice: passes `<args>` to `opt` (default: `-passes=\"default<O2>,nvvm-reflect\"`)."},
+    {"Xopt=<args>",                     "When embedding and linking libdevice: passes `<args>` to `opt` after `nvvm-reflect` (default: `-passes=\"default<O2>\"`)."},
     {"Xllc=<args>",                     "When embedding: passes `<args>` to `llc` (default: none)."},
     {"Xptxas=<args>",                   "When embedding: passes `<args>` to `ptxas` (default: none); also passed to `fatbinary` via `--cmdline` when the PTX image is embedded."},
     {"Xfatbinary=<args>",               "When embedding: passes `<args>` to `fatbinary` (default: none)."},
