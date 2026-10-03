@@ -848,7 +848,6 @@ const Def* LowerToMem::lower_scan(const App* app) {
     auto [iro, iso, ioT] = in_buf->args<3>();
     auto [bro, bso, boT] = Axm::isa<buffer::Buf>(out_ty)->args<3>();
     auto mem_ty          = w.call<mem::M>(0);
-    auto unit            = w.tuple(Defs{});
 
     // The loop is spelled out rather than built from `affine.For`, whose body would be an axm argument -
     // `mem.add_mem` preserves those verbatim and would leave the step's own memory requests unresolved.
@@ -859,35 +858,39 @@ const Def* LowerToMem::lower_scan(const App* app) {
     auto [fun_mem, cont]  = fun->vars<2>();
     auto [alloc_mem, out] = buffer::op_alloc(bro, bso, boT, fun_mem)->projs<2>();
 
-    auto head               = w.mut_con({w.type_i64(), out_ty, init->type()})->set("scan_head");
-    auto body               = w.mut_con(unit->type())->set("scan_body");
-    auto exit               = w.mut_con(unit->type())->set("scan_exit");
-    auto [iter, buf, state] = head->vars<3>();
-    head->branch(false, w.call(core::icmp::ul, Defs{iter, w.call<core::bitcast>(w.type_i64(), n)}), body, exit, unit);
-    exit->app(false, cont, w.tuple({bot_mem(), buf, state}));
+    // The two successors take the loop state rather than closing over the header's vars, so neither is a
+    // bare lam in an unknown position for `compile.eta_conv` to expand.
+    auto loop_ty = w.sigma({w.type_i64(), out_ty, init->type()});
+    auto head    = w.mut_con(loop_ty)->set("scan_head");
+    auto body    = w.mut_con(loop_ty)->set("scan_body");
+    auto exit    = w.mut_con(loop_ty)->set("scan_exit");
+    auto cmp     = w.call(core::icmp::ul, Defs{head->var(3, 0), w.call<core::bitcast>(w.type_i64(), n)});
+    head->branch(false, cmp, body, exit, head->var());
+    exit->app(false, cont, w.tuple({bot_mem(), exit->var(3, 1), exit->var(3, 2)}));
     fun->set(false, w.app(head, w.tuple({w.lit_i64(0), out, init})));
 
+    auto [at, acc, carry]    = body->vars<3>();
     auto done                = w.mut_con(done_ty)->set("scan_step");
     auto [slice, next_state] = done->var()->projs<2>();
     const Def* written       = nullptr;
     if (auto slice_buf = Axm::isa<buffer::Buf>(slice->type())) {
         auto [sro, sso, soT] = slice_buf->args<3>();
-        written              = buffer::op_update_leading_slice(boT, n, bro, bso, sro, sso, bot_mem(), buf, iter, slice);
+        written              = buffer::op_update_leading_slice(boT, n, bro, bso, sro, sso, bot_mem(), acc, at, slice);
     } else {
         // Every axis of a position folded away, so the output is one-dimensional and a position is one element.
-        written = buffer::op_write(bro, bso, boT, bot_mem(), buf, w.call(core::conv::u, n, iter), slice);
+        written = buffer::op_write(bro, bso, boT, bot_mem(), acc, w.call(core::conv::u, n, at), slice);
     }
-    auto next = w.call(core::wrap::add, core::Mode::nsuw, Defs{iter, w.lit_i64(1)});
+    auto next = w.call(core::wrap::add, core::Mode::nsuw, Defs{at, w.lit_i64(1)});
     done->app(false, head, w.tuple({next, written->proj(2, 1), next_state}));
 
     const Def* element = nullptr;
     if (auto elem_buf = Axm::isa<buffer::Buf>(step_dom->proj(3, 0))) {
         auto [ero, eso, eoT] = elem_buf->args<3>();
-        element              = buffer::op_leading_slice(eoT, n, iro, iso, ero, eso, input, iter);
+        element              = buffer::op_leading_slice(eoT, n, iro, iso, ero, eso, input, at);
     } else {
-        element = buffer::op_read(iro, iso, ioT, bot_mem(), input, w.call(core::conv::u, n, iter))->proj(2, 1);
+        element = buffer::op_read(iro, iso, ioT, bot_mem(), input, w.call(core::conv::u, n, at))->proj(2, 1);
     }
-    body->app(false, step, w.tuple({element, state, done}));
+    body->app(false, step, w.tuple({element, carry, done}));
 
     auto [call_mem, call_out, call_state] = call->projs<3>();
     return w.tuple({call_out, call_state});
