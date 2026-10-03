@@ -57,10 +57,10 @@ extern fun kblk (a: «8, 2304; Nat», b: «2304, 512; Nat»): «8, 512; Nat» =
 extern fun pack (a: «64, 130; Nat», b: «130, 512; Nat»): «64, 512; Nat» =
     return (tensor.product_2d R (a, b));
 
-// N = 500: the right operand is zero-padded by 12 columns to 32 whole panels; the «64, 500» result is the prefix of the
-// padded «66, 512».
+// N = 500: the right operand is packed into 32 whole panels, the last one's 12 missing columns wrapping around; the
+// «64, 500» result is the prefix of the padded «66, 512».
 // CHECK-LABEL: extern fun pack_tail
-// CHECK: tensor.pad {{.*}} (130, 500) (0, ‹2; 0›, (0, 12))
+// CHECK-NOT: tensor.pad
 // CHECK: tensor.map_reduce_post @ (1, 0) {{.*}} ((32, 130, 16), (32, 130, 16),
 // CHECK: tensor.compute_at {{.*}} 1
 // CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((11, 6, 32, 1, 16), (32, 1, 11, 6, 16, 1, 33, 4),
