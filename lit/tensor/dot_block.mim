@@ -3,7 +3,7 @@
 // RUN: cat %t | %FileCheck %s --check-prefix=SCHED
 
 // The target is pinned to AVX2's register file, whose 12 accumulator registers hold 6 x 16 blocks (tensor.target).
-// Cache blocking of a contraction (tensor.dot_schedule_nblk). The last output dim N is blocked by nc and its block
+// Cache blocking of a contraction (tensor.dot_trace). The last output dim N is blocked by nc and its block
 // loop runs outside the left operand's free dims, so the right operand's panel stays in cache for all of them.
 // A contraction whose whole panel does not fit is blocked too and hoisted outside the left free dims
 // (tensor.hoist_red), which the schedule carries as (vdim, unroll, tail, pout, rout, ptail) with rout = 1.
@@ -40,7 +40,7 @@ extern fun conv (w: «6, 96; Nat», c: «2, 96, 640; Nat»): «6, 2, 640; Nat» 
 
 // K = 2304: a whole k x nc panel wide enough to register-block does not fit, so N is blocked by nc = 256 and the
 // contraction in 9 blocks of 64 x 4 steps, hoisted outside M; the 4 x 16 register blocks of the N block run inside
-// each contraction block, loaded from and stored back to its panel (tensor.dot_schedule_nblk_rbk).
+// each contraction block, loaded from and stored back to its panel (tensor.dot_trace with a K block).
 // CHECK-LABEL: extern fun kblk
 // CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((2, 4, 2, 16, 16), (2, 16, 2, 4, 16, 9, 64, 4),
 extern fun kblk (a: «8, 2304; Nat», b: «2304, 512; Nat»): «8, 512; Nat» =

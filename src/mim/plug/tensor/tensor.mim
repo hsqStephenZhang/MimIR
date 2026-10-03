@@ -1070,7 +1070,7 @@ let dot_pack_k = 128;
 ///
 /// #### dot_nc
 ///
-/// The cache block of the last output dim `n` for `dot_schedule_nblk`: the largest of 512, 256, …, 16 that divides
+/// The cache block of the last output dim `n` for `dot_trace`: the largest of 512, 256, …, 16 that divides
 /// `n`, stays below it and keeps the right operand's `k × Nc` panel within the target's `cache_elems`, else `0`.
 lam dot_nc (n k: Nat): Nat =
     lam ok (c: Nat): Bool = core.bit2.and_ 2 (n / c * c == n, core.bit2.and_ 2 (c < n, c * k <= target.cache_elems ()));
@@ -1087,7 +1087,7 @@ lam dot_kb (kq w: Nat): Nat =
 ///
 /// #### dot_nblk
 ///
-/// The N block of `dot_schedule_nblk`, its loop moved outside the left free dims.
+/// The N block of `dot_trace`, its loop moved outside the left free dims.
 lam dot_nblk (r_out nb na nc: Nat) (t: Tileable): Tileable =
     let t1   = strip_mine_par (t, r_out - 1, nc);
     let r1   = t1#1_13 + t1#2_13;
@@ -1123,7 +1123,7 @@ lam dot_pack_nc (m m_rb k n: Nat, tail_ok: Bool): Nat =
 ///
 /// #### dot_kblk
 ///
-/// The K block of `dot_schedule_nblk`: its reductions are (K/ts, ts) for a single contraction; block K/ts by kb.
+/// The K block of `dot_trace`: its reductions are (K/ts, ts) for a single contraction; block K/ts by kb.
 lam dot_kblk (r_out na nc: Nat) (t2: Tileable): Tileable =
     let r2  = t2#Ro + t2#Rr;
     let kq  = t2#Sr#(core.idx 0 r2 (r2 - 2));
@@ -1133,30 +1133,26 @@ lam dot_kblk (r_out na nc: Nat) (t2: Tileable): Tileable =
               core.bit2.and_ 2 (target.cache_elems () < kq * ts * nc, core.bit2.and_ 2 (4 <= kb, kb < kq)))), ff);
     hoist_red (strip_mine_red (t2, r2 - 2, (kq, kb)#blk), r_out - na, (0, 1)#blk);
 ///
-/// #### dot_schedule_nblk
+/// #### dot_trace
 ///
-/// `dot_schedule` with the last output dim `N` cache-blocked by `nc`: its block loop runs outside the left operand's
-/// `na` free dims, so the right operand's `k × nc` panel stays in cache for all of them.
-/// The loops run in the order batching dims, right free dims but `N`, block of `N`, left free dims, `N` within the
-/// block — for `(M, N)` the classic `(N/nc, M, nc)`.
-/// A single contraction whose whole panel does not fit is cache-blocked as well (see `hoist_red`): its blocks run
-/// outside the left free dims, whose accumulators stay live across them — `(N/nc, K/kc, M, kc, nc)`.
-lam dot_schedule_nblk (r_out nb na nc: Nat) (t: Tileable): Tileable =
-    dot_kblk (r_out, na, nc) (dot_schedule (r_out + 1) (dot_nblk (r_out, nb, na, nc) t));
+/// The one schedule of an A·B contraction, its tiles the parameters (`dot_params` picks them for a kernel):
 ///
-/// #### dot_schedule_nblk_rb
+/// - `nc`, the cache block of the last output dim N (`dot_nblk`), its block loop outside the left operand's free dims
+///   so the right operand's `k × nc` panel stays in cache for all of them; `0` for none;
+/// - `rows`, the register blocks of `rows` x 16 over M and N (`dot_schedule_rb`), whose accumulators stay in registers
+///   across the contraction; `0` for `dot_schedule`'s vector loop over N;
+/// - `kblk`, whether the contraction is cache-blocked too (`dot_kblk`), its blocks outside the left free dims;
+/// - `packed`, a right operand `cache_read` into panels: its N blocks are a free dim already, ordered outside the left
+///   free dims (`dot_order`) instead of split, the K block sized by the panel width.
 ///
-/// `dot_schedule_nblk` register-blocked within the N block (see `dot_schedule_rb`).
-lam dot_schedule_nblk_rb (r_out nb na nc rows: Nat) (t: Tileable): Tileable =
-    dot_schedule_rb (r_out + 1, rows) (dot_nblk (r_out, nb, na, nc) t);
-///
-/// #### dot_schedule_nblk_rbk
-///
-/// `dot_schedule_nblk_rb` with the contraction cache-blocked too (see `dot_kblk`): the register blocks of the N block
-/// are loaded from and stored back to a panel around each block of the contraction (`btensor.mr_nest`'s tiled
-/// register-blocked nest).
-lam dot_schedule_nblk_rbk (r_out nb na nc rows: Nat) (t: Tileable): Tileable =
-    dot_kblk (r_out, na, nc) (dot_schedule_nblk_rb (r_out, nb, na, nc, rows) t);
+/// Each step selects its transformation before applying it: the Tileables of the two choices differ in rank.
+lam dot_trace (nc rows: Nat, kblk packed: Bool) (r_out nb na: Nat) (t: Tileable): Tileable =
+    let blk  = core.bit2.and_ 2 (nc != 0, (tt, ff)#packed);
+    let t1   = ((sched_id, dot_nblk (r_out, nb, na, nc))#blk, dot_order (r_out, nb, na))#packed t;
+    let r1   = r_out + (0, 1)#blk;
+    let t2   = (dot_schedule r1, dot_schedule_rb (r1, rows))#(rows != 0) t1;
+    let nc_k = (nc, t#So#(core.idx 0 (t#Ro) (t#Ro - 1)))#packed;
+    (sched_id, dot_kblk ((r_out, r_out - 1)#packed, na, nc_k))#kblk t2;
 ///
 /// #### dot_schedule_kvec
 ///
@@ -1491,53 +1487,53 @@ lam kernel_k (t: Tileable): Nat =
 lam kernel_rb (k: Kernel, t: Tileable) (rows n: Nat): Bool =
     core.bit2.and_ 2 (1 <= kernel_ni (k, t), core.bit2.and_ 2 (rows != 0, core.bit2.and_ 2 (n / 16 * 16 == n, 16 < n)));
 /// The rows of a register block: a partial last block only where M is the outermost output dim (see `dot_rb_rows`).
-lam dot_rows (k: Kernel, t: Tileable): Nat =
-    dot_rb_rows (kernel_m (k, t), core.bit2.and_ 2 (kernel_ns (k, t) == 0, kernel_ni (k, t) == 1));
 /// The N cache block (see `dot_nc`): above K = 256 the contraction is cache-blocked itself.
-lam dot_ncb (k: Kernel, t: Tileable): Nat =
-    let kk   = kernel_k t;
-    let nc_0 = dot_nc (kernel_n t, (256, kk)#(kk < 256));
-    (if_static (nc_0, (0, nc_0)#(kernel_ns (k, t) + kernel_ni (k, t) < t#Ro), 0), 0)#(k#plain);
 ///
-/// A packed right operand (see `dot_product_impl`) has its N blocks as a free dim already: order the blocks outside
-/// the left free dims and register-block within them.
-lam dot_rule_packed (k: Kernel, t: Tileable): Tileable =
-    dot_kblk (t#Ro - 1, kernel_ni (k, t), kernel_n t)
-             (dot_schedule_rb (t#Ro, dot_rows (k, t)) (dot_order (t#Ro, kernel_ns (k, t), kernel_ni (k, t)) t));
-lam dot_rule_packed_ok (k: Kernel, t: Tileable): Bool = k#packed;
-lam dot_rows_none (k: Kernel, t: Tileable): Nat = 0;
-lam dot_rows_k (k: Kernel, t: Tileable): Nat = dot_rb_rows (kernel_m (k, t), ff);
 /// x·Wᵀ: the contraction as the vector loop; plain, without the jam blocks, whose strip-mining packs the output.
 lam dot_rule_kvec_plain (k: Kernel, t: Tileable): Tileable = vectorize (t, t#Ro + t#Rr - 1);
 lam dot_rule_kvec_plain_ok (k: Kernel, t: Tileable): Bool = core.bit2.and_ 2 (kernel_kvec (k, t), k#plain);
 lam dot_rule_kvec (k: Kernel, t: Tileable): Tileable = dot_schedule_kvec (t#Ro) t;
 lam dot_rule_kvec_ok (k: Kernel, t: Tileable): Bool = kernel_kvec (k, t);
-/// N cache-blocked, the register blocks within the block (see `dot_schedule_nblk_rb`); without a K block the whole
-/// k x nc panel must fit: the block is sized by the whole contraction.
+lam dot_rows_none (k: Kernel, t: Tileable): Nat = 0;
+/// The N block of `dot_nc` (above K = 256 the contraction is cache-blocked itself) and, where no K block will be, the
+/// one sized by the whole contraction, so the whole `k × nc` panel fits.
+lam dot_ncb (k: Kernel, t: Tileable): Nat =
+    let kk   = kernel_k t;
+    let nc_0 = dot_nc (kernel_n t, (256, kk)#(kk < 256));
+    (if_static (nc_0, (0, nc_0)#(kernel_ns (k, t) + kernel_ni (k, t) < t#Ro), 0), 0)#(k#plain);
 lam dot_nc_rb (k: Kernel, t: Tileable): Nat = if_static (dot_ncb (k, t), dot_nc (kernel_n t, kernel_k t), 0);
-lam dot_rule_nblk_rb (k: Kernel, t: Tileable): Tileable =
-    dot_schedule_nblk_rb (t#Ro, kernel_ns (k, t), kernel_ni (k, t), dot_nc_rb (k, t), dot_rows (k, t)) t;
-/// Cache and register blocks exist only for static extents: a rule's condition over them is `ff` for symbolic ones, so
-/// the pick is decided while the kernel is built, not residualized at lowering time.
+/// Cache and register blocks exist only for static extents: a case over them is `ff` for symbolic ones.
 lam dot_static (k: Kernel, t: Tileable) (c: Bool): Bool = if_static (kernel_m (k, t) * kernel_n t * kernel_k t, c, ff);
-lam dot_rule_nblk_rb_ok (k: Kernel, t: Tileable): Bool =
-    dot_static (k, t) (core.bit2.and_ 2 (dot_ncb (k, t) != 0, kernel_rb (k, t) (dot_rows (k, t), dot_nc_rb (k, t))));
-/// Where only a block of the contraction fits, the register blocks run inside the K block, without a partial one.
-lam dot_rule_nblk_rbk (k: Kernel, t: Tileable): Tileable =
-    dot_schedule_nblk_rbk (t#Ro, kernel_ns (k, t), kernel_ni (k, t), dot_ncb (k, t), dot_rows_k (k, t)) t;
-lam dot_rule_nblk_rbk_ok (k: Kernel, t: Tileable): Bool =
-    let ncb = dot_ncb (k, t);
-    dot_static (k, t) (core.bit2.and_ 2 (ncb != 0, kernel_rb (k, t) (dot_rows_k (k, t), ncb)));
-lam dot_rule_nblk (k: Kernel, t: Tileable): Tileable =
-    dot_schedule_nblk (t#Ro, kernel_ns (k, t), kernel_ni (k, t), dot_ncb (k, t)) t;
-lam dot_rule_nblk_ok (k: Kernel, t: Tileable): Bool = dot_static (k, t) (dot_ncb (k, t) != 0);
-/// Register blocks without an N block, for a right operand with N as its only free dim.
-lam dot_rule_rb (k: Kernel, t: Tileable): Tileable = dot_schedule_rb (t#Ro, dot_rows (k, t)) t;
-lam dot_rule_rb_ok (k: Kernel, t: Tileable): Bool =
-    (dot_static (k, t) (core.bit2.and_ 2 (kernel_ns (k, t) + kernel_ni (k, t) + 1 == t#Ro,
-                                          kernel_rb (k, t) (dot_rows (k, t), kernel_n t))), ff)#(k#plain);
-lam dot_rule_n (k: Kernel, t: Tileable): Tileable = dot_schedule (t#Ro) t;
+/// The rows of the register blocks: a partial last block only where M is the outermost output dim (see `dot_rb_rows`),
+/// none inside a K block.
+lam dot_rows (k: Kernel, t: Tileable): Nat =
+    dot_rb_rows (kernel_m (k, t), core.bit2.and_ 2 (kernel_ns (k, t) == 0, kernel_ni (k, t) == 1));
+lam dot_rows_k (k: Kernel, t: Tileable): Nat = dot_rb_rows (kernel_m (k, t), ff);
+///
+/// #### dot_params
+///
+/// The tiles `(nc, rows, kblk)` of `dot_trace` for a kernel, by the first case that applies: a packed right operand; an
+/// N block the register blocks fit in, sized by the whole contraction; an N block with the register blocks inside its
+/// K block; an N block alone; register blocks alone, for a right operand with N as its only free dim; none.
+/// A case still open once the kernel is built is decided by tensor::Lower (`pick_rule`).
+lam dot_params (k: Kernel, t: Tileable): [Nat, Nat, Bool] =
+    let ncb   = dot_ncb (k, t);
+    let ncrb  = dot_nc_rb (k, t);
+    let rows  = dot_rows (k, t);
+    let rowsk = dot_rows_k (k, t);
+    let rb    = kernel_rb (k, t);
+    let i     = core.idx 0 6 (pick_rule @5 (k#packed,
+                    dot_static (k, t) (core.bit2.and_ 2 (ncb != 0, rb (rows, ncrb))),
+                    dot_static (k, t) (core.bit2.and_ 2 (ncb != 0, rb (rowsk, ncb))),
+                    dot_static (k, t) (ncb != 0),
+                    (dot_static (k, t) (core.bit2.and_ 2 (kernel_ns (k, t) + kernel_ni (k, t) + 1 == t#Ro, rb (rows, kernel_n t))), ff)#(k#plain)));
+    ((0, ncrb, ncb, ncb, 0, 0)#i, (rows, rows, rowsk, 0, rows, 0)#i, (tt, ff, tt, tt, ff, ff)#i);
+lam dot_rule (k: Kernel, t: Tileable): Tileable =
+    let (nc, rows, kblk) = dot_params (k, t);
+    dot_trace (nc, rows, kblk, k#packed) (t#Ro, kernel_ns (k, t), kernel_ni (k, t)) t;
+lam dot_rule_rows (k: Kernel, t: Tileable): Nat = (dot_params (k, t))#1_3;
 lam dot_rule_any (k: Kernel, t: Tileable): Bool = tt;
+///
 /// #### Windowed kernels
 ///
 /// A kernel whose left operand's unit-stride axis is driven by several loop dims — the output's last dim and the last
@@ -1547,16 +1543,11 @@ lam conv_rule (k: Kernel, t: Tileable): Tileable =
     conv_schedule (k#unit (0, t#Ro - 1), k#unit (0, t#Ro + t#Rr - 1)) t;
 lam conv_rule_ok (k: Kernel, t: Tileable): Bool = kernel_windowed (k, t);
 ///
-/// The rules, in the order they are tried.
+/// The rules, in the order they are tried; every other kernel is an A·B contraction.
 let sched_rules = ((conv_rule_ok,           dot_rows_none, conv_rule),
-                 (dot_rule_packed_ok,     dot_rows,      dot_rule_packed),
-                 (dot_rule_kvec_plain_ok, dot_rows_none, dot_rule_kvec_plain),
-                 (dot_rule_kvec_ok,       dot_rows_none, dot_rule_kvec),
-                 (dot_rule_nblk_rb_ok,    dot_rows,      dot_rule_nblk_rb),
-                 (dot_rule_nblk_rbk_ok,   dot_rows_k,    dot_rule_nblk_rbk),
-                 (dot_rule_nblk_ok,       dot_rows_none, dot_rule_nblk),
-                 (dot_rule_rb_ok,         dot_rows,      dot_rule_rb));
-let dot_fallback = (dot_rule_any, dot_rows_none, dot_rule_n);
+                   (dot_rule_kvec_plain_ok, dot_rows_none, dot_rule_kvec_plain),
+                   (dot_rule_kvec_ok,       dot_rows_none, dot_rule_kvec));
+let dot_fallback = (dot_rule_any, dot_rule_rows, dot_rule);
 ///
 /// ### conv_impl
 
