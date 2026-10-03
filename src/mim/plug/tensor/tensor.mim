@@ -1583,24 +1583,53 @@ lam dot_contract
           unpack rows (sched#3_13) (materialize sched);
       ((((go_n, go_n_rb)#rb_n, ((go_nblk, go_nblk_rbk)#rb_k, go_nblk_rb)#rb_nb)#(nc != 0), (go_kvec, go_kvec_plain)#plain)#kvec, go_packed)#packed ();
 ///
-/// ### pack_map
+/// ### cache_read
 ///
-/// `o ↦ (o#0, …, o#(r−3), o#(r−1), o#(r−2) · nc + o#r)` over the loop vector of a packed operand «…, N/nc, K, nc»: the
-/// read of the unpacked «…, K, N».
-lam pack_map (r nc: Nat) (o: «r + 1; affine.Index»): «r; affine.Index» =
+/// TVM's `cache_read` with a packed layout for an operand of a projection-indexed op: axis `a` of `x`, split by `ts`,
+/// becomes the block axis `⌈s#a/ts⌉` at position `p` of the result and the lane axis `ts` its last — BLAS's packed
+/// panels, e.g. «K, N» into «N/16, K, 16» for `(a, ts, p) = (1, 16, 0)`.
+/// A consumer whose loops already split the axis reads the result as a projection (see `cache_read_axis`); the copy is
+/// `compute_at` its `level` leading parallel loops, one block at a time.
+/// `x` is `zero`-padded to whole blocks first — the identity pad where `ts` divides the axis.
+///
+/// #### cache_read_axis
+///
+/// The axis of the result that holds an axis `j ≠ a` of the operand; the block axis is `p`, the lane axis `r`.
+lam cache_read_axis (r a p: Nat) (j: Nat): Nat =
+    let j1 = (j, j - 1)#(a < j);
+    (j1, j1 + 1)#(p <= j1);
+///
+/// #### cache_read_shape
+lam cache_read_shape {r: Nat} (s: «r; Nat», a ts p: Nat): «r + 1; Nat» =
+    ‹j: r + 1; let jj = core.bitcast Nat j;
+               core.select (jj == p, (s#(core.idx 0 r a) + ts - 1) / ts,
+               core.select (jj == r, ts,
+               s#(core.idx 0 r (let jj1 = (jj, jj - 1)#(p < jj); (jj1, jj1 + 1)#(a <= jj1)))))›;
+///
+/// #### cache_read_map
+///
+/// The read of the operand at a coordinate of the result: axis `a` at `block · ts + lane`.
+lam cache_read_map (r a ts p: Nat) (o: «r + 1; affine.Index»): «r; affine.Index» =
     ‹j: r; let jj = core.bitcast Nat j;
-           core.select (jj + 2 < r, o#(core.idx 0 (r + 1) jj),
-           core.select (jj + 2 == r, o#(core.idx 0 (r + 1) (r - 1)),
-                         affine.op.add (affine.semiop.mul (o#(core.idx 0 (r + 1) (r - 2)), nc), o#(core.idx 0 (r + 1) r))))›;
+           core.select (jj == a, affine.op.add (affine.semiop.mul (o#(core.idx 0 (r + 1) p), ts), o#(core.idx 0 (r + 1) r)),
+                        o#(core.idx 0 (r + 1) (cache_read_axis (r, a, p) jj)))›;
+///
+/// #### cache_read
+lam cache_read {T: *, r: Nat} {s: «r; Nat»} (x: «s; T») (a ts p level: Nat) (zero: T): «cache_read_shape (s, a, ts, p); T» =
+    let n    = s#(core.idx 0 r a);
+    let s_pk = cache_read_shape (s, a, ts, p);
+    let lo   = ‹i: r; 0›;
+    let hi   = ‹i: r; core.select (core.bitcast Nat i == a, (n + ts - 1) / ts * ts - n, 0)›;
+    compute_at level
+        (map_reduce @1 @(T, r + 1, r + 1) (s_pk, s_pk) @((T,), (r,), (pad_shape (lo, s, hi),)) (tensor_copy, ⊥: T) affine.id
+                    (cache_read_map (r, a, ts, p),) (pad s (0, lo, hi) (x, zero)));
 ///
 /// ### dot_product_impl
 ///
 /// Packs the right operand of a register-blocked contraction of its second-to-last axis K into panels the width of a
-/// register block (see `dot_pack_nc`): «…, K, N» becomes «…, ⌈N/16⌉, K, 16», so the rows of B a block reads are adjacent
-/// cache lines instead of N elements apart (cf. BLAS's packed panels).
-/// The packing is `compute_at` the panel loop: one panel at a time, into a reused tile.
-/// Where 16 does not divide N, the operand is zero-padded to whole panels first (`pad`) and the result's «…, N» prefix
-/// copied out (`dot_contract`'s `unpack`).
+/// register block (see `dot_pack_nc`, `cache_read`): «…, K, N» becomes «…, ⌈N/16⌉, K, 16», so the rows of B a block
+/// reads are adjacent cache lines instead of N elements apart, `compute_at` the panel loop.
+/// Where 16 does not divide N, the padded result's «…, N» prefix is copied out (`dot_contract`'s `unpack`).
 /// The contraction then takes ⌈N/16⌉ as a free dim of its own (`dot_contract` with `packed`), and its «…, ⌈N/16⌉, 16»
 /// result is the row-major «…, N».
 priv anx lam dot_product_impl
@@ -1624,23 +1653,14 @@ priv anx lam dot_product_impl
                      core.bit2.and_ 2 (core.bitcast Nat (c2#(core.idx 0 nc 0)) + 2 == r2,
                      core.bit2.and_ 2 (fastest_2 + 1 == r2, (tt, ff)#(option.is_some (vec.first `== (‹i: nb; core.bitcast Nat (b2#i)›, r2 - 1))))))));
       let pack  = (if_static (pc * r2, core.bit2.and_ 2 (shape_ok, pc != 0), ff), ff)#plain;
-      let n_blk = (n + pc - 1) / pc;
-      let s_pk  = ‹j: r2 + 1; let jj = core.bitcast Nat j;
-                              core.select (jj + 3 < r2 + 1, s2#(core.idx 0 r2 jj),
-                              core.select (jj + 3 == r2 + 1, n_blk,
-                              core.select (jj + 2 == r2 + 1, k, pc)))›;
-      // The identity pad where the panels cover N exactly.
-      let pad_lo = ‹i: r2; 0›;
-      let pad_hi = ‹i: r2; core.select (core.bitcast Nat i == r2 - 1, n_blk * pc - n, 0)›;
-      let b_pad  = pad s2 (0, pad_lo, pad_hi) (b, R#_0);
-      let s_bp   = pad_shape (pad_lo, s2, pad_hi);
-      let c2_pk = ‹i: nc; core.idx 0 (r2 + 1) (r2 - 1)›;
-      let b2_pk = ‹i: nb; core.idx 0 (r2 + 1) (core.bitcast Nat (b2#i))›;
+      // The panels «…, ⌈N/16⌉, K, 16»: the block axis after b's batch dims, K and the lanes behind it.
+      let s_pk  = cache_read_shape (s2, r2 - 1, pc, r2 - 2);
+      let c2_pk = ‹i: nc; core.idx 0 (r2 + 1) (cache_read_axis (r2, r2 - 1, r2 - 2) (r2 - 2))›;
+      let b2_pk = ‹i: nb; core.idx 0 (r2 + 1) (cache_read_axis (r2, r2 - 1, r2 - 2) (core.bitcast Nat (b2#i)))›;
       lam go_plain (u: []): «s_out; R#T» = dot_contract fastest_2 plain ff s_out R (r1, r2) (c1, c2, b1, b2) (a, b);
       // Packed per N block: the panel is computed in the contraction's nest, below its outer free dims of b.
       lam go_pack (u: []): «s_out; R#T» =
-          let bp = compute_at (r_out - vec.len s1_res)
-                       (map_reduce @1 @(R#T, r2 + 1, r2 + 1) (s_pk, s_pk) @((R#T,), (r2,), (s_bp,)) (tensor_copy, ⊥: (R#T)) affine.id (pack_map (r2, pc),) b_pad);
+          let bp = cache_read b (r2 - 1, pc, r2 - 2, r_out - vec.len s1_res) R#_0;
           dot_contract r2 ff tt s_out R (r1, r2 + 1) (c1, c2_pk, b1, b2_pk) @(s1, s_pk) (a, bp);
       (go_plain, go_pack)#pack ();
 ///
