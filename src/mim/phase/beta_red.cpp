@@ -24,6 +24,11 @@ void BetaRed::visit(const Def* def, bool candidate) {
 
 const Def* BetaRed::rewrite_imm_App(const App* app) {
     if (auto old_lam = app->callee()->isa_mut<Lam>(); old_lam && old_lam->is_set() && is_candidate(old_lam)) {
+        // A loop header calls itself back, so its sole occurrence may well be that back edge - inlining it
+        // would never terminate.
+        auto [_, ins] = inlining_.emplace(old_lam);
+        if (!ins) return Rewriter::rewrite_imm_App(app);
+
         profile_count("β-reduction");
         log().d("β-reduction `{}`", old_lam);
         if (auto var = old_lam->has_var()) {
@@ -32,7 +37,9 @@ const Def* BetaRed::rewrite_imm_App(const App* app) {
             // if we want to reduce more than once, we need to push/pop
         }
         invalidate();
-        return rewrite(old_lam->body());
+        auto res = rewrite(old_lam->body());
+        inlining_.erase(old_lam);
+        return res;
     }
 
     return Rewriter::rewrite_imm_App(app);

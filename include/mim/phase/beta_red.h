@@ -25,6 +25,9 @@ private:
 
     DefSet analyzed_;
     LamMap<bool> candidates_;
+
+    /// The lams whose bodies are currently being inlined, to break a recursive one.
+    LamSet inlining_;
 };
 
 } // namespace mim
