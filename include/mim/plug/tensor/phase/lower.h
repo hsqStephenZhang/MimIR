@@ -1,5 +1,7 @@
 #pragma once
 
+#include <fe/restore.h>
+
 #include <mim/phase.h>
 
 namespace mim::plug::tensor::phase {
@@ -18,6 +20,8 @@ public:
 
 private:
     void start() final;
+    /// Schedule rules are decided only in the program: an annex is library code, instantiated later.
+    void rewrite_annex(flags_t, Sym, const Def*) final;
     const Def* rewrite_imm_App(const App*) final;
     const Def* rewrite_imm_Extract(const Extract*) final;
 
@@ -27,6 +31,13 @@ private:
     const Def* read_through(const Def* base, Defs index);
 
     const Def* lower_via_impl(const App*, const Def* impl_annex);
+    template<annex_without_subs Id>
+    const Def* impl() {
+        auto _ = fe::Restore(in_annex_, true);
+        return annex<Id>();
+    }
+
+    bool in_annex_ = false;
     /// `tensor.fastest_axis` applied to the dot family's right operand (of the given rank):
     /// the reflection the dot `_impl`s take as their leading argument, pre-applied here because the
     /// operand is only concrete at this staging point. The schedule decision built on the answer

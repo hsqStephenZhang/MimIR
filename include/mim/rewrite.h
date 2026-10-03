@@ -163,6 +163,46 @@ private:
     fe::Vector<Vars> vars_;
 };
 
+/// Extends Rewriter to substitute immutable subterms of an *open* term: each `key ↦ val` added is applied under the
+/// binders of the term, rebuilding only what contains a key or a Var of a mutable rebuilt on the way.
+/// The term's enclosing binders stay as they are, since a Var is a leaf here.
+/// @see @ref rewriter
+class SubstRewriter : public Rewriter {
+public:
+    SubstRewriter(World& world)
+        : Rewriter(world) {}
+
+    SubstRewriter& add(const Def* key, const Def* val) {
+        map(key, val);
+        keys_.emplace(key);
+        return *this;
+    }
+
+    /// @name push / pop
+    ///@{
+    void push() final { Rewriter::push(), vars_.emplace_back(Vars()); }
+    void pop() final { vars_.pop_back(), Rewriter::pop(); }
+    ///@}
+
+    /// @name rewrite
+    ///@{
+    const Def* rewrite(const Def*) final;
+    const Def* rewrite_mut(Def*) final;
+    ///@}
+
+private:
+    bool contains(const Def*);
+    bool has_intersection(const Def* old_def) {
+        for (const auto& vars : vars_ | std::views::reverse)
+            if (old_def->has_free_vars_in(vars)) return true;
+        return false;
+    }
+
+    DefSet keys_;
+    DefMap<bool> contains_;
+    fe::Vector<Vars> vars_{Vars()};
+};
+
 class Zonker : public Rewriter {
 public:
     /// @name C'tor

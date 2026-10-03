@@ -289,6 +289,45 @@ const Def* VarRewriter::rewrite(const Def* old_def) {
     return has_intersection(old_def) ? rewrite_imm(old_def)->set(old_def->dbg_key()) : old_def;
 }
 
+/*
+ * SubstRewriter
+ */
+
+bool SubstRewriter::contains(const Def* def) {
+    if (keys_.contains(def)) return true;
+    if (def->isa<Var>() || def->isa<Lit>()) return false;
+    if (auto mut = def->isa_mut(); mut && mut->is_closed()) return false; // a key is a subterm of an open term
+    if (auto i = contains_.find(def); i != contains_.end()) return i->second;
+    contains_[def] = false; // a cycle through a mutable does not contain more than its other paths
+    bool res       = def->type() && contains(def->type());
+    for (size_t i = 0, e = def->num_ops(); i != e && !res; ++i)
+        if (auto op = def->op(i)) res = contains(op);
+    return contains_[def] = res;
+}
+
+const Def* SubstRewriter::rewrite(const Def* old_def) {
+    if (auto new_def = lookup(old_def)) return new_def;
+
+    if (auto old_mut = old_def->isa_mut())
+        return contains(old_mut) || has_intersection(old_mut) ? rewrite_mut(old_mut)->set(old_mut->dbg_key()) : old_mut;
+
+    if (!contains(old_def) && !has_intersection(old_def)) return old_def;
+    return rewrite_imm(old_def)->set(old_def->dbg_key());
+}
+
+const Def* SubstRewriter::rewrite_mut(Def* mut) {
+    if (auto var = mut->has_var()) {
+        auto& vars = vars_.back();
+        vars       = world().vars().insert(vars, var);
+    }
+
+    return Rewriter::rewrite_mut(mut);
+}
+
+/*
+ * VarRewriter
+ */
+
 const Def* VarRewriter::rewrite_mut(Def* mut) {
     if (auto var = mut->has_var()) {
         auto& vars = vars_.back();

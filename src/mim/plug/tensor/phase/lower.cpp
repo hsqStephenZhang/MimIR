@@ -105,6 +105,35 @@ const Def* Lower::plain(const App* app) {
     return new_world().lit_bool(staged);
 }
 
+namespace {
+/// Decides the `tensor.pick_rule`s still open once the kernel is instantiated: an entry that is not a literal does not
+/// apply.
+/// A closed mutable is another kernel's generic body (an annex), whose picks are not this kernel's to decide.
+const Def* pick_rules(World& w, const Def* impl) {
+    auto rw   = SubstRewriter(w);
+    auto seen = DefSet();
+    auto todo = DefVec{impl};
+    while (!todo.empty()) {
+        auto def = todo.back();
+        todo.pop_back();
+        if (!seen.emplace(def).second || def->isa<Var>()) continue;
+        if (auto mut = def->isa_mut(); mut && mut->is_closed()) continue;
+        if (auto pick = Axm::isa<tensor::pick_rule>(def)) {
+            if (auto n = Lit::isa<u64>(pick->callee()->as<App>()->arg())) {
+                u64 i = 0;
+                while (i != *n && Lit::isa<u64>(pick->arg()->proj(*n, i)) != 1)
+                    ++i;
+                rw.add(def, w.lit_nat(i));
+                continue;
+            }
+        }
+        for (auto op : def->ops())
+            if (op) todo.emplace_back(op);
+    }
+    return rw.rewrite(impl);
+}
+} // namespace
+
 const Def* Lower::lower_via_impl(const App* app, const Def* impl_annex) {
     auto& w = new_world();
 
@@ -119,24 +148,29 @@ const Def* Lower::lower_via_impl(const App* app, const Def* impl_annex) {
     auto impl = impl_annex;
     for (auto a : args | std::views::reverse)
         impl = w.app(impl, a);
-    return impl;
+    return in_annex_ ? impl : pick_rules(w, impl);
+}
+
+void Lower::rewrite_annex(flags_t f, Sym sym, const Def* def) {
+    auto _ = fe::Restore(in_annex_, true);
+    RWPhase::rewrite_annex(f, sym, def);
 }
 
 const Def* Lower::rewrite_imm_App(const App* app) {
     auto& w = new_world();
 
-    if (Axm::isa<tensor::broadcast_in_dim>(app)) return lower_via_impl(app, annex<tensor::broadcast_in_dim_impl>());
-    if (Axm::isa<tensor::transpose>(app)) return lower_via_impl(app, annex<tensor::transpose_impl>());
-    if (Axm::isa<tensor::map>(app)) return lower_via_impl(app, annex<tensor::map_impl>());
-    if (Axm::isa<tensor::unary>(app)) return lower_via_impl(app, annex<tensor::unary_impl>());
-    if (Axm::isa<tensor::binary>(app)) return lower_via_impl(app, annex<tensor::binary_impl>());
-    if (Axm::isa<tensor::select>(app)) return lower_via_impl(app, annex<tensor::select_impl>());
-    if (Axm::isa<tensor::repeat>(app)) return lower_via_impl(app, annex<tensor::repeat_impl>());
-    if (Axm::isa<tensor::reshape>(app)) return lower_via_impl(app, annex<tensor::reshape_impl>());
-    if (Axm::isa<tensor::slice>(app)) return lower_via_impl(app, annex<tensor::slice_impl>());
-    if (Axm::isa<tensor::flip>(app)) return lower_via_impl(app, annex<tensor::flip_impl>());
-    if (Axm::isa<tensor::conv>(app)) return lower_via_impl(app, annex<tensor::conv_impl>());
-    if (Axm::isa<tensor::pool>(app)) return lower_via_impl(app, annex<tensor::pool_impl>());
+    if (Axm::isa<tensor::broadcast_in_dim>(app)) return lower_via_impl(app, impl<tensor::broadcast_in_dim_impl>());
+    if (Axm::isa<tensor::transpose>(app)) return lower_via_impl(app, impl<tensor::transpose_impl>());
+    if (Axm::isa<tensor::map>(app)) return lower_via_impl(app, impl<tensor::map_impl>());
+    if (Axm::isa<tensor::unary>(app)) return lower_via_impl(app, impl<tensor::unary_impl>());
+    if (Axm::isa<tensor::binary>(app)) return lower_via_impl(app, impl<tensor::binary_impl>());
+    if (Axm::isa<tensor::select>(app)) return lower_via_impl(app, impl<tensor::select_impl>());
+    if (Axm::isa<tensor::repeat>(app)) return lower_via_impl(app, impl<tensor::repeat_impl>());
+    if (Axm::isa<tensor::reshape>(app)) return lower_via_impl(app, impl<tensor::reshape_impl>());
+    if (Axm::isa<tensor::slice>(app)) return lower_via_impl(app, impl<tensor::slice_impl>());
+    if (Axm::isa<tensor::flip>(app)) return lower_via_impl(app, impl<tensor::flip_impl>());
+    if (Axm::isa<tensor::conv>(app)) return lower_via_impl(app, impl<tensor::conv_impl>());
+    if (Axm::isa<tensor::pool>(app)) return lower_via_impl(app, impl<tensor::pool_impl>());
 
     // The dot family's `_impl`s take a leading `fastest_2` with no axiom counterpart — the
     // `tensor.fastest_axis` reflection of the right operand, pre-applied here at the staging
@@ -144,17 +178,17 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     // They also take `plain`: the schedule for a `compute_at` producer or consumer (see tensor.dot_product_impl).
     if (Axm::isa<tensor::product_2d>(app))
         return lower_via_impl(
-            app, w.app(w.app(annex<tensor::product_2d_impl>(), fastest_axis_2(app, w.lit_nat(2))), plain(app)));
+            app, w.app(w.app(impl<tensor::product_2d_impl>(), fastest_axis_2(app, w.lit_nat(2))), plain(app)));
     if (Axm::isa<tensor::bmm>(app))
         return lower_via_impl(app,
-                              w.app(w.app(annex<tensor::bmm_impl>(), fastest_axis_2(app, w.lit_nat(3))), plain(app)));
+                              w.app(w.app(impl<tensor::bmm_impl>(), fastest_axis_2(app, w.lit_nat(3))), plain(app)));
     if (Axm::isa<tensor::dot_product>(app)) {
         // The curry chain, outermost app first: [a, b] {s1 s2} [c1, c2, b1, b2] {nc nb} {r1 r2};
         // the right operand's rank is {r1 r2}#1.
         auto groups = app->callee()->as<App>()->callee()->as<App>()->callee()->as<App>();
         auto r2     = groups->callee()->as<App>()->arg()->proj(2, 1);
         return lower_via_impl(
-            app, w.app(w.app(annex<tensor::dot_product_impl>(), fastest_axis_2(app, rewrite(r2))), plain(app)));
+            app, w.app(w.app(impl<tensor::dot_product_impl>(), fastest_axis_2(app, rewrite(r2))), plain(app)));
     }
 
     return RWPhase::rewrite_imm_App(app);

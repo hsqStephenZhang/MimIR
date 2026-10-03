@@ -140,6 +140,19 @@ const Def* normalize_target(const Def*, const Def*, const Def* arg) {
     return w.lit_nat(regs[2]);
 }
 
+/// `tensor.pick_rule bs` ↦ the index of the first `tt` in `bs`, `n` for none, once every entry is a literal.
+const Def* normalize_pick_rule(const Def*, const Def* c, const Def* arg) {
+    auto& w = arg->world();
+    auto n  = Lit::isa<u64>(c->as<App>()->arg());
+    if (!n) return nullptr;
+    for (u64 i = 0; i != *n; ++i) {
+        auto b = Lit::isa<u64>(arg->proj(*n, i));
+        if (!b) return nullptr;
+        if (*b) return w.lit_nat(i);
+    }
+    return w.lit_nat(*n);
+}
+
 const Def* normalize_barrier(const Def*, const Def*, const Def* arg) {
     if (Axm::isa<tensor::barrier>(arg)) return arg;
     return nullptr;
