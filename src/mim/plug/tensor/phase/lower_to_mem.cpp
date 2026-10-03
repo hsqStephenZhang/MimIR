@@ -185,10 +185,13 @@ void LowerToMem::collect_tensor_types() {
                 elem(meta->proj(5, 0));
                 add_tensor_ty(app->type()->proj(2, 0));
                 add_tensor_ty(app->arg()->proj(2, 0)->type());
-                auto dom = Pi::isa_cn(step->type())->dom();
-                add_tensor_ty(dom->proj(3, 0));
-                add_tensor_ty(dom->proj(3, 1));
-                add_tensor_ty(Pi::isa_cn(dom->proj(3, 2))->dom()->proj(2, 0));
+                auto dom        = Pi::isa_cn(step->type())->dom();
+                auto [sx_ty, S] = dom->projs<2>();
+                auto sy_ty      = Pi::isa_cn(dom->proj(3, 2))->dom()->proj(2, 0);
+                if (auto step_lam = step->isa_mut<Lam>()) scan_steps_[step_lam] = old_world().tuple({sx_ty, S, sy_ty});
+                add_tensor_ty(sx_ty);
+                add_tensor_ty(S);
+                add_tensor_ty(sy_ty);
             } else if (Axm::isa<tensor::gather>(app)) {
                 auto [Tr, shapes, dim] = app->callee()->as<App>()->uncurry_args<3>();
                 auto [T, r]            = Tr->projs<2>();
@@ -352,15 +355,6 @@ const Def* LowerToMem::rewrite(const Def* old_def) {
     return RWPhase::rewrite(old_def);
 }
 
-const Def* LowerToMem::tensor_group_row(const Def* t) const {
-    auto arr = t->isa_imm<Arr>();
-    if (!arr || tensor_ty_.contains(t)) return nullptr;
-    auto r = arr->shape().rank();
-    if (!r || *r < 2) return nullptr;
-    auto row = arr->world().arr(*arr->shape().drop(1), arr->body());
-    return tensor_ty_.contains(row) ? row : nullptr;
-}
-
 bool LowerToMem::mentions_tensor(const Def* t) const {
     if (tensor_ty_.contains(t)) return true;
     if (auto sig = t->isa<Sigma>()) {
@@ -369,7 +363,7 @@ bool LowerToMem::mentions_tensor(const Def* t) const {
     } else if (auto pi = t->isa<Pi>()) {
         return mentions_tensor(pi->dom()); // descend into continuation domains, but never into `Arr` elements
     }
-    return tensor_group_row(t) != nullptr;
+    return false;
 }
 
 bool LowerToMem::is_tensor_fn(Lam* lam) const {
@@ -378,8 +372,6 @@ bool LowerToMem::is_tensor_fn(Lam* lam) const {
 
 const Def* LowerToMem::conv_boundary(const Def* t) {
     if (tensor_ty_.contains(t)) return buf_of(t);
-    if (auto row = tensor_group_row(t))
-        return new_world().arr(rewrite(t->as_imm<Arr>()->shape().front()), conv_boundary(row));
     if (auto pi = Pi::isa_cn(t); pi && mentions_tensor(pi->dom())) return new_world().cn(conv_boundary(pi->dom()));
     if (auto sig = t->isa_imm<Sigma>(); sig && mentions_tensor(sig)) {
         auto n = sig->num_ops();
@@ -393,6 +385,10 @@ const Def* LowerToMem::conv_boundary(const Def* t) {
 
 const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     if (is_bootstrapping()) return RWPhase::rewrite_mut_Lam(lam);
+
+    // A direct-style lam - a `generate`'s element body, say - cannot carry a `mem.fresh` in front of its body,
+    // so an op lowered inside it stays with the enclosing continuation that builds it.
+    if (!Pi::isa_cn(lam->type())) return conv_mut_Lam(lam);
 
     // Scope the fresh-memory bookkeeping: ops lowered while this body is rewritten mint their receiving
     // continuations into pending_, which are chained in front of the finished body. Nested lams anchor
@@ -431,6 +427,16 @@ const Def* LowerToMem::conv_mut_Lam(Lam* lam) {
     // A local continuation carrying tensor types (a return continuation of a bufferized call, a join point,
     // an error continuation): convert its domain the same way. This is context-independent, so the order in
     // which references reach it does not matter.
+    // A scan's step: its `(output, state)` result group *is* an array one axis wider, so only the scan's own
+    // signature says which of the two a type denotes - and every consumer of the scan's result reaches the
+    // step through the op, so the element-level walk above would otherwise claim it.
+    if (auto i = scan_steps_.find(lam); i != scan_steps_.end()) {
+        auto& w                   = new_world();
+        auto [sx_ty, S_ty, sy_ty] = i->second->projs<3>();
+        auto x = conv_boundary(sx_ty), s = conv_boundary(S_ty), y = conv_boundary(sy_ty);
+        return rebuild(w.sigma({x, s, w.cn(w.sigma({y, s}))}));
+    }
+
     if (!lam->is_external() && lam->is_set() && !op_args_.contains(lam))
         if (auto pi = Pi::isa_cn(lam->type()); pi && mentions_tensor(pi->dom()))
             return rebuild(conv_boundary(pi->dom()));
@@ -846,10 +852,12 @@ const Def* LowerToMem::lower_scan(const App* app) {
 
     // The loop is spelled out rather than built from `affine.For`, whose body would be an axm argument -
     // `mem.add_mem` preserves those verbatim and would leave the step's own memory requests unresolved.
-    auto fun  = w.mut_fun(w.sigma({mem_ty, unit->type()}), w.sigma({mem_ty, out_ty, init->type()}))->set("tensor_scan");
-    auto call = w.app(cps::op_cps2ds_dep(fun), w.tuple({fresh_mem(), unit}));
-    auto [args, cont]     = fun->vars<2>();
-    auto [alloc_mem, out] = buffer::op_alloc(bro, bso, boT, args->proj(2, 0))->projs<2>();
+    // Memory alone is its parameter: `compile.scalarize` splits a grouped one, leaving `cps2ds_dep` without
+    // the `[T, Cn U]` domain it reads back.
+    auto fun              = w.mut_fun(mem_ty, w.sigma({mem_ty, out_ty, init->type()}))->set("tensor_scan");
+    auto call             = w.app(cps::op_cps2ds_dep(fun), fresh_mem());
+    auto [fun_mem, cont]  = fun->vars<2>();
+    auto [alloc_mem, out] = buffer::op_alloc(bro, bso, boT, fun_mem)->projs<2>();
 
     auto head               = w.mut_con({w.type_i64(), out_ty, init->type()})->set("scan_head");
     auto body               = w.mut_con(unit->type())->set("scan_body");
@@ -857,7 +865,7 @@ const Def* LowerToMem::lower_scan(const App* app) {
     auto [iter, buf, state] = head->vars<3>();
     head->branch(false, w.call(core::icmp::ul, Defs{iter, w.call<core::bitcast>(w.type_i64(), n)}), body, exit, unit);
     exit->app(false, cont, w.tuple({bot_mem(), buf, state}));
-    fun->set(true, w.app(head, w.tuple({w.lit_i64(0), out, init})));
+    fun->set(false, w.app(head, w.tuple({w.lit_i64(0), out, init})));
 
     auto done                = w.mut_con(done_ty)->set("scan_step");
     auto [slice, next_state] = done->var()->projs<2>();

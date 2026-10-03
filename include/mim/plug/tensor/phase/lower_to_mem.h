@@ -130,11 +130,6 @@ private:
     /// A function is bufferized iff it is external, set, and mentions a tensor type in its domain.
     bool is_tensor_fn(Lam*) const;
 
-    /// A homogeneous group of tensors *is* an array one axis wider, so an array type no tensor op ever
-    /// produced whose rows are tensors denotes a group - a step function's `(output, state)` result, say.
-    /// Yields that row type, or `nullptr` if @p t is not such a group.
-    const Def* tensor_group_row(const Def*) const;
-
     /// Whether a type is a tensor or (recursively, through sigmas and continuation domains) contains one.
     /// Never descends into `Arr` elements (so an index/shape array is not mistaken for a tensor).
     bool mentions_tensor(const Def*) const;
@@ -154,6 +149,9 @@ private:
     /// they receive element values, never buffers — even when a parameter type incidentally collides with a
     /// tensor type (pure type-based role tracking aliases, e.g. an `(x y: I32)` group *is* `«2; I32»`).
     LamSet op_args_;
+
+    /// Each `scan` step continuation and the `(«sx; T», S, «sy; T»)` its domain is rebuilt from.
+    LamMap<const Def*> scan_steps_;
 };
 
 } // namespace mim::plug::tensor::phase
