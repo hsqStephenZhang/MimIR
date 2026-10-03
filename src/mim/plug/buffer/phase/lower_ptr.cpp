@@ -84,6 +84,20 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         // Whole-buffer copy: load the entire array out of `src` and store it into `dst`.
         auto [mem2, val] = w.call<mem::load>(Defs{mem, src})->projs<2>();
         return w.call<mem::store>(Defs{mem2, dst, val});
+    } else if (auto slice_ax = Axm::isa<buffer::leading_slice>(app)) {
+        auto [buf, index] = slice_ax->args<2>([this](const Def* d) { return rewrite(d); });
+        auto n            = slice_ax->callee()->as<App>()->arg(6, 1);
+        // A literal unit leading axis folds out of `Buf`, so the slice is already the same pointer.
+        if (auto n_l = Lit::isa<u64>(n); n_l && *n_l == 1) return buf;
+        return mem::op_lea_unsafe(buf, index);
+    } else if (auto update_ax = Axm::isa<buffer::update_leading_slice>(app)) {
+        auto [mem, output, index, value] = update_ax->args<4>([this](const Def* d) { return rewrite(d); });
+        auto n                           = update_ax->callee()->as<App>()->arg(6, 1);
+        auto n_l                         = Lit::isa<u64>(n);
+        auto dst                         = n_l && *n_l == 1 ? output : mem::op_lea_unsafe(output, index);
+        auto [mem2, val]                 = w.call<mem::load>(Defs{mem, value})->projs<2>();
+        auto mem3                        = w.call<mem::store>(Defs{mem2, dst, val});
+        return w.tuple({mem3, output});
     } else if (auto init_ax = Axm::isa<buffer::init>(app)) {
         auto [mem, val]  = init_ax->args<2>();
         auto [r, s, T]   = init_ax->callee()->as<App>()->args<3>();

@@ -76,6 +76,24 @@ axm shape: [r: Nat, s: «r; Nat», T: *] as rsT → [Buf rsT, i: Idx r] → Nat,
 axm copy: [r: Nat, s: «r; Nat», T: *] as rsT
         → [mem.M 0, dst src: Buf rsT] → mem.M 0;
 ///
+/// ### leading_slice
+///
+/// A zero-copy view of the slice at `index` along the leading dimension.
+/// Buffers are contiguous, so this is one pointer offset.
+/// The caller establishes `ri = r + 1` and `si = (n,) ++ s` before size-1 folding; both shapes are spelled
+/// out because an already folded shape tuple does not unify with `vec.cat ((n,), s)`.
+///
+axm leading_slice: [T: *, n: Nat, ri: Nat, si: «ri; Nat», r: Nat, s: «r; Nat»]
+                 → [Buf (ri, si, T), index: I64] → Buf (r, s, T);
+///
+/// ### update_leading_slice
+///
+/// Copy `value` into the leading slice at `index` of `output` and return the updated buffer.
+///
+axm update_leading_slice: [T: *, n: Nat, ri: Nat, si: «ri; Nat», r: Nat, s: «r; Nat»]
+                        → [mem.M 0, output: Buf (ri, si, T), index: I64, value: Buf (r, s, T)]
+                        → [mem.M 0, Buf (ri, si, T)];
+///
 /// ## Phases
 ///
 /// ### lower_ptr

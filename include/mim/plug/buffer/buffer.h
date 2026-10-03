@@ -37,6 +37,35 @@ inline const Def* op_copy(const Def* r, const Def* s, const Def* T, const Def* m
     return w.app(w.app(w.annex<copy>(), {r, s, T}), {mem, dst, src});
 }
 
+/// `buffer.leading_slice (T, n, ri, si, r, s) (buf, index)` ↦ `buffer.Buf (r, s, T)`.
+inline const Def* op_leading_slice(const Def* T,
+                                   const Def* n,
+                                   const Def* ri,
+                                   const Def* si,
+                                   const Def* r,
+                                   const Def* s,
+                                   const Def* buf,
+                                   const Def* index) {
+    auto& w = buf->world();
+    return w.app(w.app(w.annex<leading_slice>(), {T, n, ri, si, r, s}), {buf, index});
+}
+
+/// `buffer.update_leading_slice (T, n, ri, si, r, s) (mem, output, index, value)` ↦ `[mem.M 0, buffer.Buf (ri, si,
+/// T)]`.
+inline const Def* op_update_leading_slice(const Def* T,
+                                          const Def* n,
+                                          const Def* ri,
+                                          const Def* si,
+                                          const Def* r,
+                                          const Def* s,
+                                          const Def* mem,
+                                          const Def* output,
+                                          const Def* index,
+                                          const Def* value) {
+    auto& w = output->world();
+    return w.app(w.app(w.annex<update_leading_slice>(), {T, n, ri, si, r, s}), {mem, output, index, value});
+}
+
 /// `buffer.init (r, s, T) (mem, val)` ↦ `[mem.M 0, buffer.Buf (r, s, T)]` (initialised with the array value `val`).
 inline const Def* op_init(const Def* r, const Def* s, const Def* T, const Def* mem, const Def* val) {
     auto& w = mem->world();
