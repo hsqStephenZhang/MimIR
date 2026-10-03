@@ -1,0 +1,33 @@
+// RUN: %mim %s -p opt -X tensor:vec_bytes=16 -X tensor:acc_regs=16 -o %t
+// RUN: cat %t | %FileCheck %s
+
+// The register block follows the target (tensor.target): 16 accumulator registers of 16 bytes hold 4 x 16 blocks,
+// where dot_block.mim's AVX2 target holds 6 x 16 (tensor.dot_rb_rows).
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin compile;
+
+let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
+
+// M = 64 runs as 16 x 4 whole blocks.
+// CHECK-LABEL: extern fun pack
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((16, 4, 32, 1, 16), (32, 1, 16, 4, 16, 1, 33, 4),
+extern fun pack (a: «64, 130; Nat», b: «130, 512; Nat»): «64, 512; Nat» =
+    return (tensor.product_2d R (a, b));
+
+// M = 50 runs as 13 x 4 whose last block has 2 rows.
+// CHECK-LABEL: extern fun part
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((13, 4, 32, 1, 16), (32, 1, 13, 4, 16, 1, 33, 4),
+extern fun part (a: «50, 130; Nat», b: «130, 512; Nat»): «50, 512; Nat» =
+    return (tensor.product_2d R (a, b));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        compile.cleanup,
+        tensor.lower_tensor,
+        tensor.fuse_tensor,
+        compile.cleanup,
+    );

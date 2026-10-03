@@ -1,7 +1,8 @@
-// RUN: %mim %s -p opt -o %t
+// RUN: %mim %s -p opt -X tensor:vec_bytes=32 -X tensor:acc_regs=12 -o %t
 // RUN: cat %t | %FileCheck %s
 // RUN: cat %t | %FileCheck %s --check-prefix=SCHED
 
+// The target is pinned to AVX2's register file, whose 12 accumulator registers hold 6 x 16 blocks (tensor.target).
 // Cache blocking of a contraction (tensor.dot_schedule_nblk). The last output dim N is blocked by nc and its block
 // loop runs outside the left operand's free dims, so the right operand's panel stays in cache for all of them.
 // A contraction whose whole panel does not fit is blocked too and hoisted outside the left free dims

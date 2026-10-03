@@ -1,4 +1,9 @@
+#include <charconv>
+
+#include <array>
+
 #include <mim/def.h>
+#include <mim/driver.h>
 #include <mim/plugin.h>
 #include <mim/tuple.h>
 #include <mim/world.h>
@@ -103,6 +108,36 @@ const Def* normalize_if_static(const Def*, const Def*, const Def* arg) {
     auto [k, s, d] = arg->projs<3>();
     if (Lit::isa(k)) return s;
     return nullptr;
+}
+
+/// `tensor.target.<p> ()` ↦ the host's `p` (see tensor.mim), `-X tensor:<p>=<n>` taking precedence.
+template<target id>
+const Def* normalize_target(const Def*, const Def*, const Def* arg) {
+    auto& w            = arg->world();
+    constexpr auto key = id == target::vec_bytes ? "vec_bytes"
+                       : id == target::vec_regs  ? "vec_regs"
+                       : id == target::acc_regs  ? "acc_regs"
+                                                 : "cache_elems";
+    if (auto val = arg_value(w.driver().args("tensor"), key)) {
+        u64 n = 0;
+        if (auto [p, ec] = std::from_chars(val->data(), val->data() + val->size(), n); ec == std::errc{})
+            return w.lit_nat(n);
+        w.log().w("ignoring `-X tensor:{}={}`: not a number", key, *val);
+    }
+    if constexpr (id == target::cache_elems) return w.lit_nat(65536);
+    // The vector registers of the host: width in bytes, count and the accumulator budget of a register block.
+    std::array<u64, 3> regs = {16, 16, 8};
+#if defined(__aarch64__) || defined(__ARM_NEON)
+    regs = {16, 32, 16};
+#elif defined(__x86_64__) || defined(__i386__)
+    if (__builtin_cpu_supports("avx512f"))
+        regs = {64, 32, 24};
+    else if (__builtin_cpu_supports("avx2"))
+        regs = {32, 16, 12};
+#endif
+    if constexpr (id == target::vec_bytes) return w.lit_nat(regs[0]);
+    if constexpr (id == target::vec_regs) return w.lit_nat(regs[1]);
+    return w.lit_nat(regs[2]);
 }
 
 const Def* normalize_barrier(const Def*, const Def*, const Def* arg) {

@@ -616,6 +616,18 @@ axm fastest_axis: {T: *} → [r: Nat, t: T] → Nat, normalize_fastest_axis;
 ///   runtime value.
 axm if_static: {T: *} → [k: Nat, s d: T] → T, normalize_if_static;
 ///
+/// ### target
+///
+/// The target's register and cache budget, which the schedule selectors derive their blocking from:
+///
+/// - `vec_bytes`, the width of a vector register, and `vec_regs`, how many there are;
+/// - `acc_regs`, how many of them a register block may fill with accumulators — about half on a load/store ISA, whose
+///   operands need registers of their own, more where an FMA takes a memory operand;
+/// - `cache_elems`, the elements of an operand panel that stay in cache across the loops reusing it.
+///
+/// Each defaults to the host; `-X tensor:<name>=<n>` overrides it, so one selector serves every target.
+axm target.(vec_bytes, vec_regs, acc_regs, cache_elems): [] → Nat, normalize_target;
+///
 /// ## Tiling
 ///
 /// Tiling, strip-mining and schedule selection are implemented entirely in the frontend IR, with
@@ -1024,13 +1036,14 @@ lam dot_schedule (r_out: Nat) (t: Tileable): Tileable = dot_k (vectorize (t, r_o
 ///
 /// #### dot_rb_rows
 ///
-/// The rows of a register block over `m` rows, or `0` for none: 6 x 16 blocks keep 12 of AVX2's 16 vector registers as
-/// accumulators.
-/// Where 6 does not divide `m`, the last block is partial (`partition_par`) if `tail_ok`, else the block is 4 x 16.
+/// The rows of a register block over `m` rows, or `0` for none: 6 or else 4, as many as the target's `acc_regs` hold
+/// the 16 32-bit accumulators of (6 x 16 blocks keep 12 of AVX2's 16 vector registers, 4 x 16 blocks 16 of NEON's 32).
+/// Where the rows do not divide `m`, the last block is partial (`partition_par`) if `tail_ok`.
 lam dot_rb_rows (m: Nat, tail_ok: Bool): Nat =
-    let by4 = (0, 4)#(core.bit2.and_ 2 (m / 4 * 4 == m, 4 < m));
-    let rows = (by4, 6)#(core.bit2.and_ 2 (tail_ok, 12 <= m));
-    (rows, 6)#(core.bit2.and_ 2 (m / 6 * 6 == m, 6 < m));
+    let cap = target.acc_regs () / ((64 + target.vec_bytes () - 1) / target.vec_bytes ());
+    lam fits (r: Nat): Bool = core.bit2.and_ 2 (r <= cap, core.bit2.or_ 2 (core.bit2.and_ 2 (m / r * r == m, r < m),
+                                                                           core.bit2.and_ 2 (tail_ok, 2 * r <= m)));
+    ((0, 4)#(fits 4), 6)#(fits 6);
 ///
 /// #### dot_schedule_rb
 ///
@@ -1059,17 +1072,17 @@ let dot_pack_k = 128;
 /// #### dot_nc
 ///
 /// The cache block of the last output dim `n` for `dot_schedule_nblk`: the largest of 512, 256, …, 16 that divides
-/// `n`, stays below it and keeps the right operand's `k × Nc` panel within 64Ki elements, else `0`.
+/// `n`, stays below it and keeps the right operand's `k × Nc` panel within the target's `cache_elems`, else `0`.
 lam dot_nc (n k: Nat): Nat =
-    lam ok (c: Nat): Bool = core.bit2.and_ 2 (n / c * c == n, core.bit2.and_ 2 (c < n, c * k <= 65536));
+    lam ok (c: Nat): Bool = core.bit2.and_ 2 (n / c * c == n, core.bit2.and_ 2 (c < n, c * k <= target.cache_elems ()));
     ((((((0, 16)#(ok 16), 32)#(ok 32), 64)#(ok 64), 128)#(ok 128), 256)#(ok 256), 512)#(ok 512);
 ///
 /// #### dot_kb
 ///
 /// The contraction steps per cached panel: the largest divisor of `kq` below it whose `w` elements per step stay
-/// within 64Ki elements, else `kq`.
+/// within the target's `cache_elems`, else `kq`.
 lam dot_kb (kq w: Nat): Nat =
-    let bmax = 65536 / w;
+    let bmax = target.cache_elems () / w;
     lam pick (b acc: Nat): Nat = (acc, b)#(core.bit2.and_ 2 (kq / b * b == kq, core.bit2.and_ 2 (b <= bmax, b < kq)));
     vec.fold.r @(Nat, Nat) @64 pick (‹i: 64; 64 - core.bitcast Nat i›, kq);
 ///
@@ -1118,7 +1131,7 @@ lam dot_kblk (r_out na nc: Nat) (t2: Tileable): Tileable =
     let ts  = t2#Sr#(core.idx 0 r2 (r2 - 1));
     let kb  = dot_kb (kq, ts * nc);
     let blk = if_static (kq * ts, core.bit2.and_ 2 (t2#Rr == 2, core.bit2.and_ 2 (t2#tail == 0,
-              core.bit2.and_ 2 (65536 < kq * ts * nc, core.bit2.and_ 2 (4 <= kb, kb < kq)))), ff);
+              core.bit2.and_ 2 (target.cache_elems () < kq * ts * nc, core.bit2.and_ 2 (4 <= kb, kb < kq)))), ff);
     hoist_red (strip_mine_red (t2, r2 - 2, (kq, kb)#blk), r_out - na, (0, 1)#blk);
 ///
 /// #### dot_schedule_nblk
