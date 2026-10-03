@@ -9,46 +9,48 @@
 
 namespace mim::plug::vec {
 
+/// How many elements @p vec holds, if that is statically known and small enough to unfold.
+/// A Pack only unfolds for a @p type of `Nat`: anything wider is tensor data that has to stay a loop.
+static std::optional<nat_t> isa_num_elems(const Def* vec, const Def* type) {
+    if (auto tuple = vec->isa<Tuple>()) return tuple->num_ops();
+
+    if (auto seq = vec->isa<Seq>()) {
+        if (!seq->shape().is_fused())
+            if (auto n = Lit::isa<u64>(seq->arity()); n && type->isa<Nat>()) return n;
+        return {};
+    }
+
+    if (vec->isa<Lit>()) return 1; // `«1; E»` is `E`
+
+    // A value that is neither a Tuple nor a Pack - a bufferized tensor, say - still unfolds into extracts,
+    // but only while it is small enough to scalarize.
+    auto n = std::optional<nat_t>();
+    if (auto arr = vec->type()->isa<Arr>())
+        n = arr->shape().is_fused() ? std::nullopt : Lit::isa<u64>(arr->arity());
+    else if (auto sigma = vec->type()->isa<Sigma>())
+        n = sigma->num_ops();
+
+    return n && *n <= vec->world().flags().scalarize_threshold ? n : std::nullopt;
+}
+
 template<fold id>
 const Def* normalize_fold(const Def* type, const Def* c, const Def* arg) {
-    auto& w     = c->world();
-    auto callee = c->as<App>();
-    auto f      = callee->arg();
-
+    auto& w         = c->world();
+    auto f          = c->as<App>()->arg();
     auto [acc, vec] = arg->projs<2>();
     if constexpr (id == fold::r) std::swap(acc, vec);
 
-    if (auto tuple = vec->isa<Tuple>()) {
-        if constexpr (id == fold::l)
-            for (auto op : tuple->ops())
-                acc = w.app(f, {acc, op});
-        else // fold::r
-            for (auto op : tuple->ops() | std::views::reverse)
-                acc = w.app(f, {op, acc});
-        return acc;
-    }
+    auto n = isa_num_elems(vec, type);
+    if (!n) return nullptr;
 
-    if (auto seq = vec->isa<Seq>(); seq && !seq->shape().is_fused()) {
-        if (auto n = Lit::isa<u64>(seq->arity()); n && type->isa<Nat>()) {
-            if constexpr (id == fold::l)
-                for (auto proj : seq->projs(*n))
-                    acc = w.app(f, {acc, proj});
-            else // fold::r
-                for (auto proj : seq->projs(*n) | std::views::reverse)
-                    acc = w.app(f, {proj, acc});
-            return acc;
-        }
-        w.log().w("Pack of non-literal arity not yet implemented: {}", seq);
-    }
+    if constexpr (id == fold::l)
+        for (nat_t i = 0; i != *n; ++i)
+            acc = w.app(f, {acc, vec->proj(*n, i)});
+    else // fold::r
+        for (nat_t i = *n; i-- != 0;)
+            acc = w.app(f, {vec->proj(*n, i), acc});
 
-    if (auto l = vec->isa<Lit>()) {
-        if constexpr (id == fold::l)
-            return w.app(f, {acc, l});
-        else
-            return w.app(f, {l, acc});
-    }
-
-    return nullptr;
+    return acc;
 }
 
 const Def* normalize_zip(const Def* type, const Def* c, const Def* arg) {
