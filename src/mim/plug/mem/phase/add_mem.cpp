@@ -23,9 +23,7 @@ bool AddMem::analyze() {
         // rewrite_imm_App below), so its body must be mem-threaded like any other continuation.
         if (auto app = def->isa<App>(); app && app->axm() && !Axm::isa<mem::fresh>(app))
             for (auto arg : app->arg()->projs())
-                // A lam that already threads memory was built as a CPS function, not as an element-level
-                // combiner; its body still wants the placeholders and fresh-memory requests resolved.
-                if (auto lam = arg->isa_mut<Lam>(); lam && !has_leading_mem(lam->type())) pinned.push(lam);
+                if (auto lam = arg->isa_mut<Lam>()) pinned.push(lam);
 
         for (auto d : def->deps())
             queue.push(d);
@@ -33,7 +31,13 @@ bool AddMem::analyze() {
 
     while (!pinned.empty()) {
         auto def = pinned.pop();
-        if (auto lam = def->isa_mut<Lam>()) preserved_.emplace(lam);
+        // A lam that already threads memory was built as a CPS function, not as an element-level combiner;
+        // neither it nor what it reaches is ABI - their placeholders and fresh-memory requests still want
+        // resolving.
+        if (auto lam = def->isa_mut<Lam>()) {
+            if (has_leading_mem(lam->type())) continue;
+            preserved_.emplace(lam);
+        }
         for (auto d : def->deps())
             pinned.push(d);
     }
@@ -106,13 +110,17 @@ const Def* AddMem::rewrite_imm_Pi(const Pi* pi) {
 }
 
 const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
-    if (is_bootstrapping() || preserving_) return Rewriter::rewrite_mut_Lam(old_lam);
+    if (is_bootstrapping()) return Rewriter::rewrite_mut_Lam(old_lam);
 
     // Pinned ABI (an axm-app argument and everything below it): rewrite verbatim - no memory threaded or added.
     if (preserved_.contains(old_lam)) {
         auto _ = fe::Restore(preserving_, true);
         return Rewriter::rewrite_mut_Lam(old_lam);
     }
+
+    // A preserved lam uses lams outside its own ABI - a `mem.fresh` continuation, say, whose var it reads.
+    // Those are rewritten as they stand anywhere else, so leave the mode behind.
+    auto p = fe::Restore(preserving_, false);
 
     auto new_lam = new_world().mut_lam(rewrite(old_lam->type())->as<Pi>())->set(old_lam->dbg_key());
     map(old_lam, new_lam);
