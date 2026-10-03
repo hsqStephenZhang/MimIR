@@ -67,12 +67,31 @@ const Def* Conv::convert(Lam* old_lam) {
     return wrapper;
 }
 
+/// The CPS function behind a direct-style callee - also behind a branch, as long as every arm is one.
+static const Def* isa_cps_callee(const Def* callee) {
+    if (auto wrapped = Axm::isa<cps2ds_dep>(callee)) return wrapped->arg();
+
+    if (auto extract = callee->isa<Extract>())
+        if (auto tuple = extract->tuple()->isa<Tuple>()) {
+            auto arms = DefVec(tuple->num_ops());
+            for (size_t i = 0, e = tuple->num_ops(); i != e; ++i) {
+                auto wrapped = Axm::isa<cps2ds_dep>(tuple->op(i));
+                if (!wrapped) return nullptr;
+                arms[i] = wrapped->arg();
+            }
+            auto& w = extract->world();
+            return w.extract(w.tuple(arms), extract->index());
+        }
+
+    return nullptr;
+}
+
 const Def* Conv::rewrite_imm_App(const App* old_app) {
     auto new_arg    = rewrite(old_app->arg());
     auto new_callee = rewrite(old_app->callee());
 
     if (liftable_)
-        if (auto wrapped = Axm::isa<cps2ds_dep>(new_callee)) return lift(wrapped->arg(), new_arg, old_app);
+        if (auto k = isa_cps_callee(new_callee)) return lift(k, new_arg, old_app);
 
     return new_world().app(new_callee, new_arg);
 }
@@ -90,13 +109,30 @@ const Def* Conv::lift(const Def* k, const Def* new_arg, const App* old_app) {
     return res;
 }
 
+/// `callee (arg, cont)`; a branch callee dispatches between basic blocks that each perform the call,
+/// because a backend can only branch to basic blocks.
+static const Def* call(const Def* callee, const Def* arg, const Def* cont) {
+    auto& w = callee->world();
+
+    if (auto extract = callee->isa<Extract>())
+        if (auto tuple = extract->tuple()->isa<Tuple>()) {
+            auto arms = DefVec(tuple->num_ops());
+            for (size_t i = 0, e = tuple->num_ops(); i != e; ++i) {
+                auto bb = w.mut_con(w.sigma())->set_filter(false);
+                arms[i] = bb->set_body(w.app(tuple->op(i), w.tuple({arg, cont})));
+            }
+            return w.app(w.extract(w.tuple(arms), extract->index()), w.tuple());
+        }
+
+    return w.app(callee, w.tuple({arg, cont}));
+}
+
 const Def* Conv::wire(size_t base, const Def* body) {
-    auto& w = new_world();
     while (pending_.size() > base) {
         auto [callee, arg, cont] = pending_.back();
         pending_.pop_back();
         cont->set_body(body);
-        body = w.app(callee, w.tuple({arg, cont}));
+        body = call(callee, arg, cont);
     }
     return body;
 }
