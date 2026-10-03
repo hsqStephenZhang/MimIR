@@ -15,6 +15,11 @@ namespace mim::plug::affine::phase {
 const Def* LowerIndex::rewrite(const Def* def) {
     // The opaque affine index type lowers to the wide `Idx 0` (i64) carrier.
     if (Axm::isa<affine::Index>(def)) return new_world().type_i64();
+    // A closed literal is hash-consed with the one an annex contains, which bootstrapping rebuilds verbatim -
+    // so the memo would hand that copy back here instead of the lowering below.
+    if (!is_bootstrapping())
+        if (auto lit = Axm::isa<affine::lit>(def))
+            return new_world().call<core::bitcast>(new_world().type_i64(), rewrite(lit->arg()));
     return RWPhase::rewrite(def);
 }
 
