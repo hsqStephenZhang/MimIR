@@ -23,7 +23,9 @@ bool AddMem::analyze() {
         // rewrite_imm_App below), so its body must be mem-threaded like any other continuation.
         if (auto app = def->isa<App>(); app && app->axm() && !Axm::isa<mem::fresh>(app))
             for (auto arg : app->arg()->projs())
-                if (auto lam = arg->isa_mut<Lam>()) pinned.push(lam);
+                // A lam that already threads memory was built as a CPS function, not as an element-level
+                // combiner; its body still wants the placeholders and fresh-memory requests resolved.
+                if (auto lam = arg->isa_mut<Lam>(); lam && !has_leading_mem(lam->type())) pinned.push(lam);
 
         for (auto d : def->deps())
             queue.push(d);
