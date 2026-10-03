@@ -103,7 +103,7 @@ private:
     const Def* bot_mem();
 
     /// A *fresh* `mem.M 0` for one emitted buffer/btensor operation: the var of a newly minted continuation
-    /// `con fresh_mem(mem: mem.M 0)` that receives its memory once LowerToMem::wrap_fresh_mem has chained it
+    /// `con fresh_mem(mem: mem.M 0)` that receives its memory once LowerToMem::wrap_pending has chained it
     /// in front of the enclosing lam's body.
     /// Required by every op that allocates a buffer it then writes into, for two independent reasons:
     /// 1. Immutable Def%s are hash-consed, so two `buffer.alloc`s agreeing on `(r, s, T)` and sharing one
@@ -115,14 +115,15 @@ private:
     /// distinguishing tag required.
     const Def* fresh_mem();
 
-    /// Chains the LowerToMem::pending_ continuations in front of @p new_lam's freshly rewritten body:
-    /// `new_lam ↦ mem.fresh (0, k₁)`, `k₁ ↦ mem.fresh (0, k₂)`, …, and the last one carries the body.
-    /// AddMem resolves each request by jumping to the continuation with the scheduler-placed current memory,
-    /// and the `tt` filter beta-reduces the continuations away again as soon as that happens.
-    void wrap_fresh_mem(Lam* new_lam);
+    /// Chains the LowerToMem::pending_ requests in front of @p new_lam's freshly rewritten body:
+    /// `new_lam ↦ request₁`, `k₁ ↦ request₂`, …, and the last continuation carries the body.
+    /// AddMem resolves a `mem.fresh` request by jumping to its continuation with the scheduler-placed current
+    /// memory, and the `tt` filter beta-reduces the continuation away again as soon as that happens.
+    void wrap_pending(Lam* new_lam);
 
-    /// The fresh-memory continuations minted while the current lam's body is being rewritten.
-    fe::Vector<Lam*> pending_;
+    /// The continuations minted while the current lam's body is being rewritten, each with the request that
+    /// jumps to it: `mem.fresh (0, k)`, or a call of an emitted CPS function such as a `scan`'s loop.
+    fe::Vector<std::pair<Lam*, const Def*>> pending_;
 
     /// Per-lam memo for the ops that consume a fresh memory (see LowerToMem::rewrite).
     DefMap<const Def*> fresh_memo_;

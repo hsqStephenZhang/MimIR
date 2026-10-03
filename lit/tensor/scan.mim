@@ -9,7 +9,8 @@
 // CHECK-DAG: buffer.leading_slice
 // CHECK-DAG: buffer.update_leading_slice
 // CHECK-LABEL: extern con prefix_sum
-// CHECK: cps.cps2ds_dep
+// CHECK: con scan_result
+// CHECK: tensor_scan
 
 plugin mem;
 plugin core;

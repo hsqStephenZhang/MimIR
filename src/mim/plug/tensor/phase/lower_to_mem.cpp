@@ -320,20 +320,20 @@ const Def* LowerToMem::bot_mem() {
 }
 
 const Def* LowerToMem::fresh_mem() {
-    auto k = mem::mut_con(new_world())->set("fresh_mem");
-    pending_.push_back(k);
+    auto& w = new_world();
+    auto k  = mem::mut_con(w)->set("fresh_mem");
+    pending_.emplace_back(k, w.app(w.annex<mem::fresh>(), w.tuple({w.lit_nat_0(), k})));
     return k->var();
 }
 
-void LowerToMem::wrap_fresh_mem(Lam* new_lam) {
-    auto& w     = new_world();
+void LowerToMem::wrap_pending(Lam* new_lam) {
     auto filter = new_lam->filter();
     auto body   = new_lam->body();
     new_lam->unset();
-    // The last-minted continuation carries the original body; the lam ends up requesting the first memory.
-    for (auto k : pending_ | std::views::reverse) {
-        k->set(true, body); // filter `tt`: k vanishes as soon as AddMem substitutes the real memory
-        body = w.app(w.annex<mem::fresh>(), w.tuple({w.lit_nat_0(), k}));
+    // The last-minted continuation carries the original body; the lam ends up issuing the first request.
+    for (auto [k, request] : pending_ | std::views::reverse) {
+        k->set(true, body); // filter `tt`: k vanishes as soon as its request is resolved
+        body = request;
     }
     new_lam->set(filter, body);
 }
@@ -396,7 +396,7 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     auto _       = fe::Restore(pending_, {});
     auto __      = fe::Restore(fresh_memo_, {});
     auto new_def = conv_mut_Lam(lam);
-    if (!pending_.empty()) wrap_fresh_mem(new_def->as_mut<Lam>());
+    if (!pending_.empty()) wrap_pending(new_def->as_mut<Lam>());
     return new_def;
 }
 
@@ -853,9 +853,13 @@ const Def* LowerToMem::lower_scan(const App* app) {
     // `mem.add_mem` preserves those verbatim and would leave the step's own memory requests unresolved.
     // Input and initial state are parameters rather than closed-over values: `mem.add_mem` anchors a buffer
     // operation where it first rewrites it, and one shared with another scan must not land inside this loop.
-    auto fun  = w.mut_fun(w.sigma({mem_ty, input->type(), init->type()}), w.sigma({mem_ty, out_ty, init->type()}))
-                    ->set("tensor_scan");
-    auto call = w.app(cps::op_cps2ds_dep(fun), w.tuple({fresh_mem(), input, init}));
+    auto res_ty = w.sigma({mem_ty, out_ty, init->type()});
+    auto fun    = w.mut_fun(w.sigma({mem_ty, input->type(), init->type()}), res_ty)->set("tensor_scan");
+    // The loop is called from the enclosing continuation rather than from wherever its result is first
+    // referenced - a `generate`'s element body, say, which would run the whole scan once per element.
+    auto result = w.mut_con(res_ty)->set("scan_result");
+    auto call   = w.tuple({fresh_mem(), input, init});
+    pending_.emplace_back(result, w.app(fun, w.tuple({call, result})));
     auto [args, cont]             = fun->vars<2>();
     auto [fun_mem, in_arg, state] = args->projs<3>();
     auto [alloc_mem, out]         = buffer::op_alloc(bro, bso, boT, fun_mem)->projs<2>();
@@ -894,8 +898,8 @@ const Def* LowerToMem::lower_scan(const App* app) {
     }
     body->app(false, step, w.tuple({element, carry, done}));
 
-    auto [call_mem, call_out, call_state] = call->projs<3>();
-    return w.tuple({call_out, call_state});
+    auto [res_mem, res_out, res_state] = result->var()->projs<3>();
+    return w.tuple({res_out, res_state});
 }
 
 const Def* LowerToMem::lower_gather(const App* app) {
