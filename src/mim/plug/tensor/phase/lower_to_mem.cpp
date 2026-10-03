@@ -851,12 +851,14 @@ const Def* LowerToMem::lower_scan(const App* app) {
 
     // The loop is spelled out rather than built from `affine.For`, whose body would be an axm argument -
     // `mem.add_mem` preserves those verbatim and would leave the step's own memory requests unresolved.
-    // Memory alone is its parameter: `compile.scalarize` splits a grouped one, leaving `cps2ds_dep` without
-    // the `[T, Cn U]` domain it reads back.
-    auto fun              = w.mut_fun(mem_ty, w.sigma({mem_ty, out_ty, init->type()}))->set("tensor_scan");
-    auto call             = w.app(cps::op_cps2ds_dep(fun), fresh_mem());
-    auto [fun_mem, cont]  = fun->vars<2>();
-    auto [alloc_mem, out] = buffer::op_alloc(bro, bso, boT, fun_mem)->projs<2>();
+    // Input and initial state are parameters rather than closed-over values: `mem.add_mem` anchors a buffer
+    // operation where it first rewrites it, and one shared with another scan must not land inside this loop.
+    auto fun  = w.mut_fun(w.sigma({mem_ty, input->type(), init->type()}), w.sigma({mem_ty, out_ty, init->type()}))
+                    ->set("tensor_scan");
+    auto call = w.app(cps::op_cps2ds_dep(fun), w.tuple({fresh_mem(), input, init}));
+    auto [args, cont]             = fun->vars<2>();
+    auto [fun_mem, in_arg, state] = args->projs<3>();
+    auto [alloc_mem, out]         = buffer::op_alloc(bro, bso, boT, fun_mem)->projs<2>();
 
     // The two successors take the loop state rather than closing over the header's vars, so neither is a
     // bare lam in an unknown position for `compile.eta_conv` to expand.
@@ -867,7 +869,7 @@ const Def* LowerToMem::lower_scan(const App* app) {
     auto cmp     = w.call(core::icmp::ul, Defs{head->var(3, 0), w.call<core::bitcast>(w.type_i64(), n)});
     head->branch(false, cmp, body, exit, head->var());
     exit->app(false, cont, w.tuple({bot_mem(), exit->var(3, 1), exit->var(3, 2)}));
-    fun->set(false, w.app(head, w.tuple({w.lit_i64(0), out, init})));
+    fun->set(false, w.app(head, w.tuple({w.lit_i64(0), out, state})));
 
     auto [at, acc, carry]    = body->vars<3>();
     auto done                = w.mut_con(done_ty)->set("scan_step");
@@ -886,9 +888,9 @@ const Def* LowerToMem::lower_scan(const App* app) {
     const Def* element = nullptr;
     if (auto elem_buf = Axm::isa<buffer::Buf>(step_dom->proj(3, 0))) {
         auto [ero, eso, eoT] = elem_buf->args<3>();
-        element              = buffer::op_leading_slice(eoT, n, iro, iso, ero, eso, input, at);
+        element              = buffer::op_leading_slice(eoT, n, iro, iso, ero, eso, in_arg, at);
     } else {
-        element = buffer::op_read(iro, iso, ioT, bot_mem(), input, w.call(core::conv::u, n, at))->proj(2, 1);
+        element = buffer::op_read(iro, iso, ioT, bot_mem(), in_arg, w.call(core::conv::u, n, at))->proj(2, 1);
     }
     body->app(false, step, w.tuple({element, carry, done}));
 

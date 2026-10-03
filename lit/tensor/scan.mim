@@ -3,11 +3,13 @@
 // The step reads a leading slice of the input buffer, carries its state as a buffer, and writes each
 // result slice into the loop-carried output buffer. The step keeps its own memory threading, so it is
 // called from the loop like any other continuation.
-// CHECK-LABEL: extern con prefix_sum
+// CHECK-LABEL: fun tensor_scan
+// CHECK-DAG: con scan_head
 // CHECK-DAG: buffer.alloc
 // CHECK-DAG: buffer.leading_slice
 // CHECK-DAG: buffer.update_leading_slice
-// CHECK-DAG: con scan_head
+// CHECK-LABEL: extern con prefix_sum
+// CHECK: cps.cps2ds_dep
 
 plugin mem;
 plugin core;
