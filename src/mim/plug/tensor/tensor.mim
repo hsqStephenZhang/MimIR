@@ -589,6 +589,29 @@ axm fastest_axis: {T: *} → [r: Nat, t: T] → Nat, normalize_fastest_axis;
 ///   runtime value.
 axm if_static: {T: *} → [k: Nat, s d: T] → T, normalize_if_static;
 ///
+/// ## Scan
+///
+/// ### scan
+///
+/// Applies `step` from left to right over the leading axis, carrying `S` from one position to the next and
+/// writing each yielded slice at the current position.
+/// This is the tensor-level primitive behind the recurrent operators; `lower_to_mem` turns it into one
+/// loop whose output buffer and state are loop-carried.
+///
+/// ```python
+/// output = empty(n)
+/// state = initial_state
+/// for i in range(n):
+///     output[i], state = step(input[i], state)
+/// return output, state
+/// ```
+///
+axm scan: {T S: *, n rx ry: Nat}
+        → [sx: «rx; Nat», sy: «ry; Nat»]
+        → [step: Cn [«sx; T», S, Cn [«sy; T», S]]]
+        → [input: «vec.cat ((n,), sx); T», initial_state: S]
+        → [«vec.cat ((n,), sy); T», S];
+///
 /// ## Tiling
 ///
 /// Tiling, strip-mining and schedule selection are implemented entirely in the frontend IR, with

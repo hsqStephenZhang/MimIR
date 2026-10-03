@@ -1,0 +1,15 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/scan_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// Executable `tensor.scan`: a running sum along the leading axis, checked against a scalar reference.
+plugin tensor;
+plugin core;
+
+con add_step (x: «3; I32», state: «3; I32», return: Cn [«3; I32», «3; I32»]) =
+    let next = tensor.binary @(I32, I32, I32) (core.wrap.add 0) @(1, 3) (x, state);
+    return (next, next);
+
+extern fun prefix_sum (input: «5, 3; I32»): «5, 3; I32» =
+    return ((tensor.scan @(I32, «3; I32», 5, 1, 1) (3, 3) add_step (tensor.buf input, ‹3; 0I32›))#ff);

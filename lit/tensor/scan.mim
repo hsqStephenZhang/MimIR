@@ -1,0 +1,31 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// The step reads a leading slice of the input buffer, carries its state as a buffer, and writes each
+// result slice into the loop-carried output buffer. The step keeps its own memory threading, so it is
+// called from the loop like any other continuation.
+// CHECK-LABEL: extern con prefix_sum
+// CHECK-DAG: buffer.alloc
+// CHECK-DAG: buffer.leading_slice
+// CHECK-DAG: buffer.update_leading_slice
+// CHECK-DAG: con scan_head
+
+plugin mem;
+plugin core;
+plugin tensor;
+plugin compile;
+
+con add_step (input: «2; I32», state: «2; I32», return: Cn [«2; I32», «2; I32»]) =
+    let next = tensor.binary @(I32, I32, I32) (core.wrap.add 0) @(1, 2) (input, state);
+    return (next, next);
+
+extern fun prefix_sum (input: «5, 2; I32»): [«5, 2; I32», «2; I32»] =
+    return (tensor.scan @(I32, «2; I32», 5, 1, 1) (2, 2) add_step (tensor.buf input, ‹2; 0I32›));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        tensor.lower_tensor,
+        tensor.fuse_tensor,
+        tensor.lower_to_mem,
+        mem.add_mem,
+        compile.cleanup,
+    );

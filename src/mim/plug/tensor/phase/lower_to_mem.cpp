@@ -51,7 +51,7 @@ std::pair<Lam*, const Def*> counting_for(const Def* bound, const Def* acc, const
 bool wants_fresh_mem(const App* app) {
     return Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app)
         || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app)
-        || Axm::isa<tensor::scatter>(app);
+        || Axm::isa<tensor::scatter>(app) || Axm::isa<tensor::scan>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -179,6 +179,16 @@ void LowerToMem::collect_tensor_types() {
             } else if (Axm::isa<tensor::if_static>(app)) {
                 // Value-level binding-time dispatch; this phase's rewrite residualizes it to its
                 // dynamic branch - not a tensor op.
+            } else if (Axm::isa<tensor::scan>(app)) {
+                // The full input/output plus the per-position slices and the carried state the step sees.
+                auto [meta, shapes, step] = app->callee()->as<App>()->uncurry_args<3>();
+                elem(meta->proj(5, 0));
+                add_tensor_ty(app->type()->proj(2, 0));
+                add_tensor_ty(app->arg()->proj(2, 0)->type());
+                auto dom = Pi::isa_cn(step->type())->dom();
+                add_tensor_ty(dom->proj(3, 0));
+                add_tensor_ty(dom->proj(3, 1));
+                add_tensor_ty(Pi::isa_cn(dom->proj(3, 2))->dom()->proj(2, 0));
             } else if (Axm::isa<tensor::gather>(app)) {
                 auto [Tr, shapes, dim] = app->callee()->as<App>()->uncurry_args<3>();
                 auto [T, r]            = Tr->projs<2>();
@@ -205,7 +215,8 @@ void LowerToMem::collect_tensor_types() {
             // nests) are element-level — TRANSITIVELY, including their local helper lams: e.g. the
             // loop-vector prefixes «r; I32» inside a schedule nest must not be mistaken for value
             // tensors of a recorded «r; I32» tensor type.
-            if (is_tensor_op(app)) {
+            // A scan's step is itself a tensor-level function, so it is excluded.
+            if (is_tensor_op(app) && !Axm::isa<tensor::scan>(app)) {
                 auto args = fe::BFSWorklist<DefSet>();
                 for (const App* a = app; a; a = a->callee()->isa<App>())
                     args.push(a->arg());
@@ -341,6 +352,15 @@ const Def* LowerToMem::rewrite(const Def* old_def) {
     return RWPhase::rewrite(old_def);
 }
 
+const Def* LowerToMem::tensor_group_row(const Def* t) const {
+    auto arr = t->isa_imm<Arr>();
+    if (!arr || tensor_ty_.contains(t)) return nullptr;
+    auto r = arr->shape().rank();
+    if (!r || *r < 2) return nullptr;
+    auto row = arr->world().arr(*arr->shape().drop(1), arr->body());
+    return tensor_ty_.contains(row) ? row : nullptr;
+}
+
 bool LowerToMem::mentions_tensor(const Def* t) const {
     if (tensor_ty_.contains(t)) return true;
     if (auto sig = t->isa<Sigma>()) {
@@ -349,7 +369,7 @@ bool LowerToMem::mentions_tensor(const Def* t) const {
     } else if (auto pi = t->isa<Pi>()) {
         return mentions_tensor(pi->dom()); // descend into continuation domains, but never into `Arr` elements
     }
-    return false;
+    return tensor_group_row(t) != nullptr;
 }
 
 bool LowerToMem::is_tensor_fn(Lam* lam) const {
@@ -358,6 +378,9 @@ bool LowerToMem::is_tensor_fn(Lam* lam) const {
 
 const Def* LowerToMem::conv_boundary(const Def* t) {
     if (tensor_ty_.contains(t)) return buf_of(t);
+    if (auto row = tensor_group_row(t))
+        return new_world().arr(rewrite(t->as_imm<Arr>()->shape().front()), conv_boundary(row));
+    if (auto pi = Pi::isa_cn(t); pi && mentions_tensor(pi->dom())) return new_world().cn(conv_boundary(pi->dom()));
     if (auto sig = t->isa_imm<Sigma>(); sig && mentions_tensor(sig)) {
         auto n = sig->num_ops();
         DefVec ops(n);
@@ -427,6 +450,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app);
     if (Axm::isa<tensor::pad>(app)) return lower_pad(app);
     if (Axm::isa<tensor::concat>(app)) return lower_concat(app);
+    if (Axm::isa<tensor::scan>(app)) return lower_scan(app);
     if (Axm::isa<tensor::gather>(app)) return lower_gather(app);
     if (Axm::isa<tensor::scatter>(app)) return lower_scatter(app);
 
@@ -795,6 +819,70 @@ const Def* LowerToMem::lower_concat(const App* app) {
     op            = w.app(op, s_out);
     auto [m, out] = w.app(op, w.tuple({fresh_mem(), inputs}))->projs<2>();
     return out;
+}
+
+const Def* LowerToMem::lower_scan(const App* app) {
+    auto& w                       = new_world();
+    auto [meta, shapes, step_arg] = app->callee()->as<App>()->uncurry_args<3>();
+    auto n                        = rewrite(meta->proj(5, 2));
+    auto old_out_ty               = app->type()->proj(2, 0);
+    auto old_input                = app->arg()->proj(2, 0);
+    // A scan over a single position is just one call of its step; nothing to loop over.
+    if (!old_out_ty->isa<Arr>()) return RWPhase::rewrite_imm_App(app);
+
+    auto input  = to_buffer(rewrite(old_input), old_input);
+    auto in_buf = Axm::isa<buffer::Buf>(input->type());
+    if (!in_buf) app->blame("cannot bufferize: scan input is not a tensor").bail();
+    auto step     = rewrite(step_arg);
+    auto step_dom = Pi::isa_cn(step->type())->dom();
+    auto init     = materialize(meta->proj(5, 1), app->arg()->proj(2, 1));
+    auto done_ty  = Pi::isa_cn(step_dom->proj(3, 2))->dom();
+    auto out_ty   = buf_of(old_out_ty);
+
+    auto [iro, iso, ioT] = in_buf->args<3>();
+    auto [bro, bso, boT] = Axm::isa<buffer::Buf>(out_ty)->args<3>();
+    auto mem_ty          = w.call<mem::M>(0);
+    auto unit            = w.tuple(Defs{});
+
+    // The loop is spelled out rather than built from `affine.For`, whose body would be an axm argument -
+    // `mem.add_mem` preserves those verbatim and would leave the step's own memory requests unresolved.
+    auto fun  = w.mut_fun(w.sigma({mem_ty, unit->type()}), w.sigma({mem_ty, out_ty, init->type()}))->set("tensor_scan");
+    auto call = w.app(cps::op_cps2ds_dep(fun), w.tuple({fresh_mem(), unit}));
+    auto [args, cont]     = fun->vars<2>();
+    auto [alloc_mem, out] = buffer::op_alloc(bro, bso, boT, args->proj(2, 0))->projs<2>();
+
+    auto head               = w.mut_con({w.type_i64(), out_ty, init->type()})->set("scan_head");
+    auto body               = w.mut_con(unit->type())->set("scan_body");
+    auto exit               = w.mut_con(unit->type())->set("scan_exit");
+    auto [iter, buf, state] = head->vars<3>();
+    head->branch(false, w.call(core::icmp::ul, Defs{iter, w.call<core::bitcast>(w.type_i64(), n)}), body, exit, unit);
+    exit->app(false, cont, w.tuple({bot_mem(), buf, state}));
+    fun->set(true, w.app(head, w.tuple({w.lit_i64(0), out, init})));
+
+    auto done                = w.mut_con(done_ty)->set("scan_step");
+    auto [slice, next_state] = done->var()->projs<2>();
+    const Def* written       = nullptr;
+    if (auto slice_buf = Axm::isa<buffer::Buf>(slice->type())) {
+        auto [sro, sso, soT] = slice_buf->args<3>();
+        written              = buffer::op_update_leading_slice(boT, n, bro, bso, sro, sso, bot_mem(), buf, iter, slice);
+    } else {
+        // Every axis of a position folded away, so the output is one-dimensional and a position is one element.
+        written = buffer::op_write(bro, bso, boT, bot_mem(), buf, w.call(core::conv::u, n, iter), slice);
+    }
+    auto next = w.call(core::wrap::add, core::Mode::nsuw, Defs{iter, w.lit_i64(1)});
+    done->app(false, head, w.tuple({next, written->proj(2, 1), next_state}));
+
+    const Def* element = nullptr;
+    if (auto elem_buf = Axm::isa<buffer::Buf>(step_dom->proj(3, 0))) {
+        auto [ero, eso, eoT] = elem_buf->args<3>();
+        element              = buffer::op_leading_slice(eoT, n, iro, iso, ero, eso, input, iter);
+    } else {
+        element = buffer::op_read(iro, iso, ioT, bot_mem(), input, w.call(core::conv::u, n, iter))->proj(2, 1);
+    }
+    body->app(false, step, w.tuple({element, state, done}));
+
+    auto [call_mem, call_out, call_state] = call->projs<3>();
+    return w.tuple({call_out, call_state});
 }
 
 const Def* LowerToMem::lower_gather(const App* app) {
