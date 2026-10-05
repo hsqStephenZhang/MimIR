@@ -1,0 +1,47 @@
+// RUN: %mim %s -p opt -o %t
+// RUN: cat %t | %FileCheck %s
+// RUN: cat %t | %FileCheck %s --check-prefix=SCHED
+
+// Loop partitioning of the innermost contraction (tensor.partition_red): 4 does not divide K = 65, so it splits into
+// ⌈65/4⌉ = 17 x 4 whose last outer iteration is peeled and folds only the remaining point.
+// The schedule carries that as (vdim, unroll, tail) = (1, 1, 1); it stays a single operation.
+// K = 147 leaves 3 points; a dividing tile partitions without a tail: K = 48 is blocked by 4.
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin compile;
+
+let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
+
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* ‹3; 1›}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(1, 1, 3\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(1, 1, 0\)}}
+
+// CHECK-LABEL: extern fun exact
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((5, 7), (5, 7, 12, 4),
+// CHECK-NOT: tensor.map_reduce_post
+// CHECK: return
+extern fun exact (a: «5, 48; Nat», b: «48, 7; Nat»): «5, 7; Nat» =
+    return (tensor.product_2d R (a, b));
+
+// CHECK-LABEL: extern fun split
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((5, 7), (5, 7, 17, 4),
+// CHECK-NOT: tensor.map_reduce_post
+// CHECK: return
+extern fun split (a: «5, 65; Nat», b: «65, 7; Nat»): «5, 7; Nat» =
+    return (tensor.product_2d R (a, b));
+
+// CHECK-LABEL: extern fun tail3
+// CHECK: tensor.map_reduce_post @ (2, 0) {{.*}} ((5, 7), (5, 7, 37, 4),
+extern fun tail3 (a: «5, 147; Nat», b: «147, 7; Nat»): «5, 7; Nat» =
+    return (tensor.product_2d R (a, b));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        compile.cleanup,
+        tensor.lower_tensor,
+        tensor.fuse_tensor,
+        compile.cleanup,
+    );

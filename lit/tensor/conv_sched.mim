@@ -58,9 +58,9 @@ extern lam _compile (): compile.Phase =
         compile.cleanup,
     );
 
-// CHECK-DAG: {{mk_[0-9]+ \(10, 4\)}}
-// CHECK-DAG: {{mk_[0-9]+ \(4, 2\)}}
-// CHECK-DAG: {{mk_[0-9]+ \(5, 2\)}}
-// CHECK-DAG: {{mk_[0-9]+ \(4, 3\)}}
+// CHECK-DAG: {{mk_[0-9]+ \(10, 4, 0\)}}
+// CHECK-DAG: {{mk_[0-9]+ \(4, 2, 0\)}}
+// CHECK-DAG: {{mk_[0-9]+ \(5, 2, 0\)}}
+// CHECK-DAG: {{mk_[0-9]+ \(4, 3, 0\)}}
 // The binding-time guards must all have resolved.
 // CHECK-NOT: if_static

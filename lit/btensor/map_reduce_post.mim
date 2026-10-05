@@ -25,7 +25,7 @@ fun heterogeneous (m: mem.M 0)@tt: [mem.M 0, Bool] =
     let (m, p) = buffer.init (2, (2, 1), I64) (m, (100I64, 200I64));
     let (m, dst) = buffer.alloc (2, (2, 1), I64) m;
     let (m, out) = btensor.map_reduce_post @(2, 1)
-        ((2, 1), (2, 1, 3), btensor.mk_sched (3, 0))
+        ((2, 1), (2, 1, 3), btensor.mk_sched (3, 0, 0))
         @((I32, I64), (3, 3), ((2, 1, 3), (2, 1, 3)), I64, 2, (2, 1))
         (mix, 0I32, bias) (btensor.proj_map @(3, 2) (0, 1))
         ((affine.id @3, affine.id @3), affine.id @2) (m, dst, (a, b), p);
@@ -48,7 +48,7 @@ extern con dynamic (n: Nat, m: mem.M 0, k: Cn [mem.M 0, Bool]) =
     lam scalar (_: «1; affine.Index»): [] = ();
     lam first (_: «1; affine.Index»): «1; affine.Index» = affine.lit 0;
     let (m, out) = btensor.map_reduce_post @(1, 0)
-        ((), n, btensor.mk_sched (1, 0)) (step, 0I32, btensor.id)
+        ((), n, btensor.mk_sched (1, 0, 0)) (step, 0I32, btensor.id)
         scalar (first, ()) (m, dst, src, ());
     let (m, value) = buffer.read (0, (), I32) (m, out, ());
     let (m, updates) = buffer.read (0, (), I32) (m, counter, ());
