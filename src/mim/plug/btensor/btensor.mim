@@ -123,7 +123,8 @@ axm map_reduce_post: {nis nps: Nat}
 ///   `mr_nest`), and `vdim ≥ Rn` means "none";
 /// - `unroll`, the number of trailing reduction dims to unroll into straight-line code;
 /// - `tail`, `0` for none, else the innermost looped reduction dim's last iteration is peeled, and the first unrolled
-///   dim runs only its first `tail` points in it — the remainder of a loop partition.
+///   dim runs only its first `tail` points in it — the remainder of a loop partition; the domain `Sr` then overshoots,
+///   so a lowering that builds its own loops must skip those points (`btensor::tail_skip`).
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
