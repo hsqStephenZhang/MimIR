@@ -8,6 +8,7 @@
 #include <mim/util/types.h>
 
 #include <mim/plug/affine/affine.h>
+#include <mim/plug/btensor/btensor.h>
 #include <mim/plug/core/core.h>
 #include <mim/plug/cps/cps.h>
 #include <mim/plug/mem/mem.h>
@@ -239,7 +240,17 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
 
         comb->set("comb");
         post->set("post");
-        current_mut->app(true, comb, {w.tuple({element_acc, w.tuple(input_elements)}), cont});
+        // A partitioned domain overshoots the reduction: skip the points its schedule's tail excludes.
+        DefVec raw(nloops, [&](size_t d) { return d < ro ? raw_out[d] : raw_red[d - ro]; });
+        if (auto skip = btensor::tail_skip(sched, ro, sr, raw)) {
+            auto fold = w.mut_con(w.sigma())->set("fold");
+            auto keep = w.mut_con(w.sigma())->set("keep");
+            fold->app(true, comb, {w.tuple({element_acc, w.tuple(input_elements)}), cont});
+            keep->app(true, cont, element_acc);
+            current_mut->branch(true, skip, keep, fold);
+        } else {
+            current_mut->app(true, comb, {w.tuple({element_acc, w.tuple(input_elements)}), cont});
+        }
         return call;
     } catch (const std::exception& e) { fe::throwf("failed to lower `tensor.map_reduce`: {}", e.what()); }
 }
