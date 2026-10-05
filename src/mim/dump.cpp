@@ -909,6 +909,7 @@ private:
             // The chain spells out its Pi%s, so only their components are referenced.
             for (auto* lam : chain) {
                 schedule_inline(lam->type()->dom(), mut, ctx_.header);
+                if (auto var = lam->has_var()) schedule_ptrn(var, num_binders(lam->type()->dom()), mut);
                 schedule_inline(lam->filter(), mut, ctx_.header);
                 if (lam == chain.back()) {
                     schedule_inline(lam->type()->codom(), mut, ctx_.header);
@@ -927,6 +928,15 @@ private:
         if (!inline_set.emplace(def).second) return;
         note_vars(def);
         printed_deps(def, typed_let_, [&](const Def* op) { schedule_inline(op, curr, inline_set); });
+    }
+
+    /// A pattern ascribes each component its own type, where a dependent one has the binder substituted.
+    void schedule_ptrn(const Def* def, nat_t n, Def* curr) {
+        for (nat_t i = 0; n > 1 && i != n; ++i)
+            if (auto proj = live_proj(&ctx_, def, n, i)) {
+                schedule_inline(proj->type(), curr, ctx_.header);
+                schedule_ptrn(proj, proj->num_tprojs(), curr);
+            }
     }
 
     /// A Lam's body is the tail of its block, so it is emitted there instead of as a `let` of its own.
