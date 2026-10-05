@@ -183,7 +183,7 @@ anx lam map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
                    (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
                    (is: «i: nis; «Sis#i; Tis#i»»): «So; To» =
     map_reduce_post
-        (So, Sr, mk_sched (Rn, 0))
+        (So, Sr, mk_sched (Rn, 0, 0))
         (f, init, id @To) map_out (maps, ()) (is, ());
 ///
 /// ### proj_map
@@ -719,7 +719,7 @@ anx lam mr_tileable
             map_out_n
             (‹i: nis; comp_map (maps#i, iota)›, ())
             (is, ());
-    (out_t, Ro, Rr, So, oax, Sr, (Ro + Rr, 0), retile);
+    (out_t, Ro, Rr, So, oax, Sr, (Ro + Rr, 0, 0), retile);
 ///
 /// #### unroll_trailing
 ///
@@ -827,15 +827,13 @@ anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
      split_bounds (ro_n, t#Ro, t#So, a, ts, nt), oax_n,
      split_bounds (r_n, r, t#Sr, d, ts, nt), (t#sched)#vdim ← vdim_n, retile_n);
 ///
-/// #### strip_mine_red
+/// #### split_red
 ///
-/// Split reduction dim `d` (Ro ≤ d < Ro + Rr) of extent N into two adjacent
-/// reduction dims (N/ts, ts). If the split lands inside the trailing unroll window, both halves
-/// unroll — the tap count is unchanged.
-anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
+/// Split reduction dim `d` (Ro ≤ d < Ro + Rr) into two adjacent reduction dims (nt, ts) with the schedule's `tail`.
+/// If the split lands inside the trailing unroll window, both halves unroll — the tap count is unchanged.
+lam split_red (t: Tileable, d ts nt tail_n: Nat): Tileable =
     let r   = t#Ro + t#Rr;
     let r_n = t#Ro + (t#Rr + 1);
-    let nt  = check_div (t#Sr#(core.idx 0 r d), ts) / ts;
     let vd       = t#sched#vdim;
     let un       = t#sched#unroll;
     let vdim_n   = core.select (vd < t#Ro, vd, r_n);
@@ -848,7 +846,27 @@ anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
         t#retile (ro_m, rr_m) (so_m, sr_m, sched_m)
                  (comp_map (split_iota (r_n, r, d, ts), iota), omega);
     (t#Out, t#Ro, t#Rr + 1, t#So, t#oax,
-     split_bounds (r_n, r, t#Sr, d, ts, nt), ((t#sched)#vdim ← vdim_n)#unroll ← unroll_n, retile_n);
+     split_bounds (r_n, r, t#Sr, d, ts, nt), (((t#sched)#vdim ← vdim_n)#unroll ← unroll_n)#tail ← tail_n, retile_n);
+///
+/// #### strip_mine_red
+///
+/// Split reduction dim `d` (Ro ≤ d < Ro + Rr) of extent N into two adjacent
+/// reduction dims (N/ts, ts); `ts` must divide N.
+anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
+    let r = t#Ro + t#Rr;
+    split_red (t, d, ts, check_div (t#Sr#(core.idx 0 r d), ts) / ts, t#sched#tail);
+///
+/// #### partition_red
+///
+/// Loop partitioning: split the innermost reduction dim `d = Ro + Rr − 1` of any extent N into (⌈N/ts⌉, ts), whose
+/// last, peeled iteration of the outer half folds only the remaining `N mod ts` points.
+/// The inner half must then be the first unrolled dim and the outer half stay a loop, i.e. unroll exactly the tile:
+/// `unroll_trailing (partition_red (t, d, ts), 1)`.
+anx lam partition_red (t: Tileable, d ts: Nat): Tileable =
+    let r = t#Ro + t#Rr;
+    let n = t#Sr#(core.idx 0 r d);
+    let tail = (n - n / ts * ts, 0)#(ts == 1);
+    split_red (t, d, ts, n / ts + (0, 1)#(tail != 0), tail);
 
 /// ### Schedules
 ///
@@ -965,12 +983,18 @@ lam conv_schedule (stride dilation: «2; Nat») (t: Tileable): Tileable =
     let un    = core.select (core.bit2.or 2 (cts != 1, 3 <= u), u + 1, u);
     unroll_trailing (vectorize (interchange (t_oh, perm), vd), un);
 ///
+/// #### dot_tile
+///
+/// The contraction tile `dot_schedule` register-blocks by: 4 if it divides `K`, else `1`, whereupon a known `K ≥ 4`
+/// is partitioned by 4 instead (see `partition_red`).
+lam dot_tile (K: Nat): Nat = (1, 4)#(K / 4 * 4 == K);
+///
 /// #### dot_schedule
 ///
 /// The dot-product schedule for a contraction whose right operand stores the last output dim
 /// unit-stride (\f$A \cdot B\f$): that dim is invariant in the left operand, so it runs innermost over a row of
 /// accumulators (GEMM-style vectorization) and the innermost contraction is register-blocked —
-/// strip-mined by 4, the tile unrolled.
+/// strip-mined by `dot_tile` or else partitioned by 4, the tile unrolled.
 ///
 /// - Blocking only needs the **divisibility** decided, which is weaker than a literal extent: a
 ///   factored extent (`«(n+3)/4*4, …»`, say a padded row) folds the guard to `tt` under a symbolic
@@ -983,9 +1007,11 @@ lam dot_schedule (r_out: Nat) (t: Tileable): Tileable =
     let r   = t#Ro + t#Rr;
     let d   = r - 1;
     let K   = t#Sr#(core.idx 0 r d);
-    let ts0 = (1, 4)#(K / 4 * 4 == K);
+    let ts0 = dot_tile K;
     let ts  = if_static (ts0, ts0, 1);
-    unroll_trailing (strip_mine_red (vectorize (t, r_out - 1), d, ts), 1);
+    // A known `K ≥ 4` that no tile divides is partitioned by 4; a dividing tile partitions without a tail.
+    let ts  = (ts, 4)#(if_static (K, core.bit2.and 2 (4 <= K, ts0 == 1), ff));
+    unroll_trailing (partition_red (vectorize (t, r_out - 1), d, ts), 1);
 ///
 /// #### dot_schedule_kvec
 ///
