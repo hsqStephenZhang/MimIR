@@ -1,0 +1,23 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/dot_partition_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// Executable partitioned contractions (see dot_partition.mim), driven by dot_partition_aux.cpp against a scalar
+// reference: K = 49, 65 and 245 are blocked by 4 with a peeled tail of 1, K = 147 with a tail of 3.
+plugin tensor;
+plugin refly;
+plugin core;
+plugin cps;
+plugin affine;
+plugin mem;
+plugin math;
+
+let F32 = math.F32;
+
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+extern fun mm49 (a: «6, 49; F32», b: «49, 24; F32»): «6, 24; F32» = return (tensor.product_2d R (a, b));
+extern fun mm65 (a: «6, 65; F32», b: «65, 24; F32»): «6, 24; F32» = return (tensor.product_2d R (a, b));
+extern fun mm147 (a: «6, 147; F32», b: «147, 24; F32»): «6, 24; F32» = return (tensor.product_2d R (a, b));
+extern fun mm245 (a: «6, 245; F32», b: «245, 24; F32»): «6, 24; F32» = return (tensor.product_2d R (a, b));
