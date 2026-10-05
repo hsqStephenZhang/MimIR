@@ -160,7 +160,8 @@ Lam* build_kernel(World& w,
                   Lam* global_post,
                   const Def* Tp,
                   const Def* out_dptr,
-                  const Grid& grid) {
+                  const Grid& grid,
+                  const Def* sched) {
     auto nis        = ins.n();
     auto nps        = post_ins.n();
     auto ro         = out_dims.size();
@@ -240,6 +241,9 @@ Lam* build_kernel(World& w,
     auto sr                  = Sr->projs(nloops_nat);
     auto raw                 = affine::counting_nest(current_mut, cont, acc, Defs(sr).subspan(ro, rr), "forRed");
     auto red_iters           = btensor::to_idxs(w, Defs(sr).subspan(ro, rr), raw);
+    // The tail guard takes the whole loop vector; its parallel slots do not matter.
+    DefVec raw_iters(ro, w.lit_i64(0));
+    raw_iters.insert(raw_iters.end(), raw.begin(), raw.end());
     auto [red_mem, elem_acc] = acc->projs<2>();
 
     auto [body_mem, body_coords] = unflatten_index(w, flat, out_dims, red_mem);
@@ -259,7 +263,17 @@ Lam* build_kernel(World& w,
         input_elems[i] = rd_val;
     }
 
-    btensor::app_cps(current_mut, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
+    // A partitioned domain overshoots the reduction: skip the points the schedule's tail excludes.
+    if (auto skip = btensor::tail_skip(sched, ro, sr, raw_iters)) {
+        auto fold = w.mut_con(w.sigma())->set("fold");
+        auto keep = w.mut_con(w.sigma())->set("keep");
+        btensor::app_cps(fold, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
+        // The loads above are then only reachable from `fold`: skipped points read nothing.
+        keep->app(true, cont, w.tuple({body_mem, elem_acc}));
+        current_mut->branch(true, skip, keep, fold);
+    } else {
+        btensor::app_cps(current_mut, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
+    }
 
     return kernel;
 }
@@ -373,7 +387,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto kernel = build_kernel(w, mr.Ro, rr, out_dims, Sr, mr.So,
                                Mapped{in_desc.rs, in_desc.ss, inputs.dptrs, in_desc.maps}, mr.To, mr.map_out, mr.init,
                                global_comb, Mapped{post_desc.rs, post_desc.ss, post_inputs.dptrs, post_desc.maps},
-                               global_post, mr.Tp, out_dptr, grid);
+                               global_post, mr.Tp, out_dptr, grid, mr.sched);
 
     DefVec kernel_args = inputs.dptrs;
     kernel_args.insert(kernel_args.end(), post_inputs.dptrs.begin(), post_inputs.dptrs.end());
