@@ -197,6 +197,38 @@ axm map_reduce_iter: {nis nps: Nat}
                       post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»»]
                    → [is: «i: nis; «Sis#i; Tis#i»», post_is: «j: nps; «Sps#j; Tps#j»»]
                    → «So; Tp»;
+/// A conjunction of upper-bound constraints over a loop vector. Bounds are tested before narrowing indices.
+lam IterPredicate (r: Nat): * = [n: Nat, bounds: «n; Nat», map: «r; affine.Index» → «n; affine.Index»];
+
+lam pred_true (r: Nat): IterPredicate r =
+    lam empty (_: «r; affine.Index»): «0; affine.Index» = ();
+    (0, (), empty);
+
+lam pred_join {r: Nat} (a: IterPredicate r) (b: IterPredicate r): IterPredicate r =
+    lam joined (o: «r; affine.Index»): «a#0_3 + b#0_3; affine.Index» = vec.cat (a#2_3 o, b#2_3 o);
+    (a#0_3 + b#0_3, vec.cat (a#1_3, b#1_3), joined);
+
+lam pred_one (r bound: Nat, map: «r; affine.Index» → affine.Index): IterPredicate r = (1, bound, map);
+
+lam pred_add {r: Nat} (p: IterPredicate r) (q: IterPredicate r) (enabled: Bool): IterPredicate r =
+    lam keep (_: []): IterPredicate r = p;
+    lam add (_: []): IterPredicate r = pred_join p q;
+    (keep, add)#enabled ();
+
+/// Composed rectangular-domain predicates for folds and write-back. Each partition adds its own
+/// constraint; every subsequent domain transform reindexes them together with the access maps.
+/// This keeps spatial write validity separate from reduction validity (including empty reductions).
+axm map_reduce_masked: {nis nps: Nat}
+                   → {To Tp: *, Ro Rp Rn: Nat, TSched: □}
+                   → [So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched, write_pred fold_pred: IterPredicate Rn]
+                   → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
+                      Tps: «nps; *», Rps: «j: nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+                   → [f: Fn [To, «i: nis; Tis#i»] → To, init: To, post: Fn [To, «j: nps; Tps#j»] → Tp]
+                   → [map_out: «Rn; affine.Index» → «Ro; affine.Index»]
+                   → [     maps: «i: nis; «Rn; affine.Index» → «Ris#i; affine.Index»»,
+                      post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»»]
+                   → [is: «i: nis; «Sis#i; Tis#i»», post_is: «j: nps; «Sps#j; Tps#j»»]
+                   → «So; Tp»;
 ///
 /// ### SchedT
 ///
@@ -674,9 +706,10 @@ let Tileable = [
     Sr: «Rp + Rr; Nat»,
     vdim: Nat, unroll: Nat, tail: Nat, pout: Nat, rout: Nat, ptail: Nat, par: Nat,
     retile: [Ro_n Rp_n Rr_n: Nat]
-          → [So_n: «Ro_n; Nat», Sr_n: «Rp_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n par_n: Nat]
+          → [So_n: «Ro_n; Nat», Sr_n: «Rp_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n par_n: Nat, masked_n: Bool]
           → [iota:  «Rp_n + Rr_n; affine.Index» → «Rp + Rr; affine.Index»,
-             omega: [«Ro; affine.Index», «Rp_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»]
+             omega: [«Ro; affine.Index», «Rp_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»,
+             write_pred fold_pred: IterPredicate (Rp_n + Rr_n)]
           → «So_n; Tp»,
 ];
 ///
@@ -712,12 +745,13 @@ anx lam interchange (t: Tileable, perm: «t#Rp + t#Rr; Nat»): Tileable =
     lam iota_p (o: «r; affine.Index»): «r; affine.Index» =
         ‹i: r; o#(option.unwrap_unsafe (vec.first `== (perm_ok, core.bitcast Nat i)))›;
     lam retile_n (ro_m rp_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat, masked_m: Bool)
                  (iota:  «rp_m + rr_m; affine.Index» → «r; affine.Index»,
-                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»,
+                  write_pred fold_pred: IterPredicate (rp_m + rr_m))
                : «so_m; t#Tp» =
-        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m)
-                 (comp_map (iota_p, iota), omega);
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m, masked_m)
+                 (comp_map (iota_p, iota), omega, write_pred, fold_pred);
     (t#Tp, t#Ro, t#Rp, t#Rr, t#So, oax_n, sr_n, vdim_n, t#unroll, t#tail, t#pout, t#rout, t#ptail, par_n, retile_n);
 ///
 /// #### fuse_iter
@@ -766,12 +800,13 @@ anx lam fuse_iter (t: Tileable, d: Nat): Tileable =
                core.select (jj == d + 1, affine.semiop.rem (o#(core.idx 0 r_n d), divisor),
                o#(core.idx 0 r_n (jj - 1)))))›;
     lam retile_n (ro_m rp_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat, masked_m: Bool)
                  (iota: «rp_m + rr_m; affine.Index» → «r_n; affine.Index»,
-                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»,
+                  write_pred fold_pred: IterPredicate (rp_m + rr_m))
                : «so_m; t#Tp» =
-        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m)
-                 (comp_map (iota_f, iota), omega);
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m, masked_m)
+                 (comp_map (iota_f, iota), omega, write_pred, fold_pred);
     let vdim_n = t#vdim - (0, 1)#(d < t#vdim);
     let par_n = t#par - (0, 1)#(d < t#par);
     let unroll_n = t#unroll - (0, 1)#(core.bit2.and_ 2 ((tt, ff)#is_par, u_lo <= d));
@@ -791,7 +826,7 @@ anx lam fuse_par (t: Tileable, d: Nat): Tileable =
 anx lam materialize (t: Tileable): «t#So; t#Tp» =
     lam id_i (o: «t#Rp + t#Rr; affine.Index»): «t#Rp + t#Rr; affine.Index» = o;
     lam id_o (oo: «t#Ro; affine.Index», o: «t#Rp + t#Rr; affine.Index»): «t#Ro; affine.Index» = oo;
-    t#retile (t#Ro, t#Rp, t#Rr) (t#So, t#Sr, t#vdim, t#unroll, t#tail, t#pout, t#rout, t#ptail, t#par) (id_i, id_o);
+    t#retile (t#Ro, t#Rp, t#Rr) (t#So, t#Sr, t#vdim, t#unroll, t#tail, t#pout, t#rout, t#ptail, t#par, ff) (id_i, id_o, pred_true (t#Rp + t#Rr), pred_true (t#Rp + t#Rr));
 ///
 /// #### mr_iter_tileable
 ///
@@ -818,9 +853,10 @@ anx lam mr_iter_tileable
                 (is: «i: nis; «Sis#i; Tis#i»»)
               : Tileable =
     lam retile (Ro_n Rp_n Rr_n: Nat)
-               (So_n: «Ro_n; Nat», Sr_n: «Rp_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n par_n: Nat)
+               (So_n: «Ro_n; Nat», Sr_n: «Rp_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n par_n: Nat, masked_n: Bool)
                (iota:  «Rp_n + Rr_n; affine.Index» → «Rp + Rr; affine.Index»,
-                omega: [«Ro; affine.Index», «Rp_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»)
+                omega: [«Ro; affine.Index», «Rp_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»,
+                write_pred fold_pred: IterPredicate (Rp_n + Rr_n))
              : «So_n; Tp» =
         lam map_out_n (o: «Rp_n + Rr_n; affine.Index»): «Ro_n; affine.Index» =
             omega (map_out (iota o), o);
@@ -834,7 +870,13 @@ anx lam mr_iter_tileable
             map_reduce_iter @(nis, 0) @(To, Tp, Ro_n, Rp_n, Rp_n + Rr_n, SchedT)
                 (So_n, Sr_n, sched) @(Tis, Ris, Sis, (), (), ()) (f, init, post)
                 map_out_n (maps_n, ()) (is, ());
-        (explicit, legacy)#(Ro_n == Rp_n) ();
+        lam guarded (u: []): «So_n; Tp» =
+            map_reduce_masked @(nis, 0) @(To, Tp, Ro_n, Rp_n, Rp_n + Rr_n, SchedT)
+                (So_n, Sr_n, sched, write_pred, fold_pred)
+                @(Tis, Ris, Sis, (), (), ()) (f, init, post)
+                map_out_n (maps_n, ()) (is, ());
+        lam exact (u: []): «So_n; Tp» = (explicit, legacy)#(Ro_n == Rp_n) ();
+        (exact, guarded)#masked_n ();
     (Tp, Ro, Rp, Rr, So, oax, Sr, Rp + Rr, 0, 0, 0, 0, 0, Rp + Rr, retile);
 ///
 /// #### mr_tileable
@@ -959,15 +1001,16 @@ lam split_par (t: Tileable, d ts nt ptail: Nat): Tileable =
                           shift_ax (a, t#oax#(core.idx 0 (t#Rp) (jj - 1))))))›;
     let vdim_n = core.select (t#vdim < r, core.select (t#vdim < d, t#vdim, t#vdim + 1), r_n);
     lam retile_n (ro_m rp_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat, masked_m: Bool)
                  (iota:  «rp_m + rr_m; affine.Index» → «r_n; affine.Index»,
-                  omega: [«ro_n; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+                  omega: [«ro_n; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»,
+                  write_pred fold_pred: IterPredicate (rp_m + rr_m))
                : «so_m; t#Tp» =
         lam iota_c  (o: «rp_m + rr_m; affine.Index»): «r; affine.Index» =
             split_iota (r_n, r, d, ts) (iota o);
         lam omega_c (oo: «t#Ro; affine.Index», ov: «rp_m + rr_m; affine.Index»): «ro_m; affine.Index» =
             omega (split_omega (ro_n, t#Ro, a, ts) oo, ov);
-        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m) (iota_c, omega_c);
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m, masked_m) (iota_c, omega_c, write_pred, fold_pred);
     (t#Tp, ro_n, rp_n, t#Rr,
      split_bounds (ro_n, t#Ro, t#So, a, ts, nt), oax_n,
      split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, t#unroll, t#tail, t#pout + (0, 1)#(d < t#pout), t#rout, ptail, par_n, retile_n);
@@ -976,7 +1019,7 @@ lam split_par (t: Tileable, d ts nt ptail: Nat): Tileable =
 ///
 /// Split a parallel iteration dim without splitting its output axis. In contrast to split_par, neither new dim
 /// writes a whole output axis, so both oax entries are the sentinel Ro. Further iteration splits remain legal.
-lam split_iter_par (t: Tileable, d ts: Nat): Tileable =
+lam split_iter_par_bounds (t: Tileable, d ts nt: Nat, masked: Bool): Tileable =
     let r = t#Rp + t#Rr;
     let rp_n = t#Rp + 1;
     let r_n = rp_n + t#Rr;
@@ -985,21 +1028,31 @@ lam split_iter_par (t: Tileable, d ts: Nat): Tileable =
     let d = refly.check (core.bit2.or_ 2 (t#ptail == 0,
                          core.bit2.and_ 2 (t#vdim != d, t#vdim != d + 1)), d,
                          "split_iter: cannot split a partitioned parallel dim");
-    let nt = check_div (t#Sr#(core.idx 0 r d), ts) / ts;
     let oax_n = ‹j: rp_n; let jj = core.bitcast Nat j;
                           core.select (core.bit2.or_ 2 (jj == d, jj == d + 1), t#Ro,
                           t#oax#(core.idx 0 (t#Rp) (jj - (0, 1)#(d < jj))))›;
     let vdim_n = t#vdim + (0, 1)#(d <= t#vdim);
     let par_n = t#par + (0, 1)#(d < t#par);
     lam retile_n (ro_m rp_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat, masked_m: Bool)
                  (iota: «rp_m + rr_m; affine.Index» → «r_n; affine.Index»,
-                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»,
+                  write_pred fold_pred: IterPredicate (rp_m + rr_m))
                : «so_m; t#Tp» =
-        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m)
-                 (comp_map (split_iota (r_n, r, d, ts), iota), omega);
+        lam coordinate (o: «rp_m + rr_m; affine.Index»): affine.Index =
+            (split_iota (r_n, r, d, ts) (iota o))#(core.idx 0 r d);
+        let check = pred_one (rp_m + rr_m, t#Sr#(core.idx 0 r d), coordinate);
+        let wp = pred_add write_pred check masked;
+        let fp = pred_add fold_pred check masked;
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m, core.bit2.or_ 2 (masked_m, masked))
+                 (comp_map (split_iota (r_n, r, d, ts), iota), omega, wp, fp);
     (t#Tp, t#Ro, rp_n, t#Rr, t#So, oax_n, split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n,
      t#unroll, t#tail, t#pout + (0, 1)#(d < t#pout), t#rout, t#ptail, par_n, retile_n);
+///
+lam split_iter_par (t: Tileable, d ts: Nat): Tileable =
+    let ts = refly.check (0 < ts, ts, "split_iter: tile size must be positive");
+    let nt = check_div (t#Sr#(core.idx 0 (t#Rp + t#Rr) d), ts) / ts;
+    split_iter_par_bounds (t, d, ts, nt, ff);
 ///
 /// #### par_extent
 ///
@@ -1034,21 +1087,29 @@ anx lam partition_par (t: Tileable, d ts: Nat): Tileable =
 ///
 /// Split reduction dim `d` (Rp ≤ d < Rp + Rr) into two adjacent reduction dims (nt, ts) with the schedule's `tail`.
 /// If the split lands inside the trailing unroll window, both halves unroll — the tap count is unchanged.
-lam split_red (t: Tileable, d ts nt tail: Nat): Tileable =
+lam split_red_bounds (t: Tileable, d ts nt tail: Nat, masked: Bool): Tileable =
     let r   = t#Rp + t#Rr;
     let r_n = t#Rp + (t#Rr + 1);
     let vdim_n   = core.select (t#vdim < r, core.select (t#vdim < d, t#vdim, t#vdim + 1), r_n);
     let par_n    = core.select (t#par < t#Rp, t#par, r_n);
     let unroll_n = core.select (d < r - t#unroll, t#unroll, t#unroll + 1);
     lam retile_n (ro_m rp_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat, masked_m: Bool)
                  (iota:  «rp_m + rr_m; affine.Index» → «r_n; affine.Index»,
-                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»,
+                  write_pred fold_pred: IterPredicate (rp_m + rr_m))
                : «so_m; t#Tp» =
-        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m)
-                 (comp_map (split_iota (r_n, r, d, ts), iota), omega);
+        lam coordinate (o: «rp_m + rr_m; affine.Index»): affine.Index =
+            (split_iota (r_n, r, d, ts) (iota o))#(core.idx 0 r d);
+        let check = pred_one (rp_m + rr_m, t#Sr#(core.idx 0 r d), coordinate);
+        let fp = pred_add fold_pred check masked;
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m, core.bit2.or_ 2 (masked_m, masked))
+                 (comp_map (split_iota (r_n, r, d, ts), iota), omega, write_pred, fp);
     (t#Tp, t#Ro, t#Rp, t#Rr + 1, t#So, t#oax,
      split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, unroll_n, tail, t#pout, t#rout, t#ptail, par_n, retile_n);
+///
+lam split_red (t: Tileable, d ts nt tail: Nat): Tileable =
+    split_red_bounds (t, d, ts, nt, tail, ff);
 ///
 /// #### strip_mine_red
 ///
@@ -1084,6 +1145,22 @@ anx lam split_iter (t: Tileable, d ts: Nat): Tileable =
                              core.bit2.or_ 2 (d + 1 < u_lo, u_lo < d)), d,
                              "split_iter: cannot split a partitioned reduction dim");
         strip_mine_red (t, d, ts);
+    (reduction, spatial)#(d < t#Rp) ();
+
+/// ### partition_iter
+///
+/// Ceil-divide an iteration dimension without padding the output. The composed partition constraints
+/// survive subsequent split/fuse/reorder independently of vector/unroll positions; tail/ptail stay neutral.
+anx lam partition_iter (t: Tileable, d ts: Nat): Tileable =
+    let ts = refly.check (0 < ts, ts, "partition_iter: tile size must be positive");
+    let r = t#Rp + t#Rr;
+    let d = refly.check (d < r, d, "partition_iter: dimension out of range");
+    let n = t#Sr#(core.idx 0 r d);
+    let nt = n / ts + (0, 1)#(n % ts != 0);
+    // Exact reindexing preserves the old domain; only padding introduces a new validity constraint.
+    let padded = n % ts != 0;
+    lam spatial (u: []): Tileable = split_iter_par_bounds (t, d, ts, nt, padded);
+    lam reduction (u: []): Tileable = split_red_bounds (t, d, ts, nt, 0, padded);
     (reduction, spatial)#(d < t#Rp) ();
 
 /// ### Schedules
@@ -1726,13 +1803,13 @@ lam dot_par (k: Kernel, t0: Tileable, nc rows: Nat, packed kblk: Bool) (t: Tilea
     parallelize (t, (t#par, 0)#(if_static (n0, ok, ff)));
 /// Two-dimensional parallel GEMM uses disjoint output tiles and the register-blocked nest's local SSA
 /// accumulators. Packed operands are materialized before the parallel call; reduction-outer scratch panels are
-/// unused. Keep tails on the existing schedule until their partitioned iteration domains can be fused too.
+/// unused. K tails use composed predicates and keep their output layout. Spatial tails remain explicit
+/// schedules until the fully guarded micro-kernel is competitive with the existing serial strategy.
 lam dot_parallel_ok (m n k: Nat): Bool =
     if_static (m * n * k, core.bit2.and_ 2 (1 < target.threads (),
         core.bit2.and_ 2 (1048576 <= m * n * k,
         core.bit2.and_ 2 (8 <= m, core.bit2.and_ 2 (32 <= n,
-        core.bit2.and_ 2 (m % 4 == 0, core.bit2.and_ 2 (n % 16 == 0,
-        core.bit2.or_ 2 (k % 4 == 0, k % 3 == 0))))))), ff);
+        core.bit2.and_ 2 (m % 4 == 0, n % 16 == 0))))), ff);
 lam dot_parallel_kernel (k: Kernel, t: Tileable): Bool =
     let n = (kernel_n t,
              t#So#(core.idx 0 (t#Ro) (t#Ro - 2)) * kernel_n t)#(k#packed);
@@ -1744,7 +1821,7 @@ lam dot_parallel_kernel (k: Kernel, t: Tileable): Bool =
 lam dot_parallel_tile (n cap: Nat): Nat =
     lam fits (v: Nat): Bool = core.bit2.and_ 2 (v <= cap, n % v == 0);
     ((((1, 2)#(fits 2), 4)#(fits 4), 8)#(fits 8), 16)#(fits 16);
-lam dot_parallel (t: Tileable, packed: Bool): Tileable =
+lam dot_parallel_exact (t: Tileable, packed: Bool): Tileable =
     lam plain_rb (u: []): Tileable = dot_schedule_rb (2, 4) t;
     lam packed_rb (u: []): Tileable =
         let rb = strip_mine_par (t, 0, 4);
@@ -1765,13 +1842,53 @@ lam dot_parallel (t: Tileable, packed: Bool): Tileable =
     let perm = ‹j: r; let jj = core.bitcast Nat j;
                      core.select (jj == 1, 2, core.select (jj == 2, 1, jj))›;
     parallelize (fuse_par (interchange (mb, perm), 0), 0);
+
+lam dot_parallel_aligned (t: Tileable, packed: Bool): Bool =
+    let m = t#So#(core.idx 0 (t#Ro) 0);
+    let n = t#So#(core.idx 0 (t#Ro) (t#Ro - 1));
+    let k = kernel_k t;
+    core.bit2.and_ 2 (m % 4 == 0, core.bit2.and_ 2 ((n % 16 == 0, tt)#packed,
+        core.bit2.or_ 2 (k % 4 == 0, k % 3 == 0)));
+
+// This terminal schedule keeps the predicate and also exposes its K boundary to the CPU peeled nest.
+lam dot_parallel_peel (t: Tileable, tail: Nat): Tileable =
+    (t#Tp, t#Ro, t#Rp, t#Rr, t#So, t#oax, t#Sr, t#vdim, t#unroll, tail, t#pout, t#rout, t#ptail, t#par, t#retile);
+
+lam dot_parallel_masked (t: Tileable, packed: Bool): Tileable =
+    lam plain_rb (_: []): Tileable = partition_iter (partition_iter (t, 1, 16), 0, 4);
+    lam packed_rb (_: []): Tileable = partition_iter (t, 0, 4);
+    let rb = (plain_rb, packed_rb)#packed ();
+    let r = rb#2_15 + rb#3_15;
+    let perm = ‹j: r; let jj = core.bitcast Nat j;
+        core.select (jj == 0, 2, core.select (jj == 1, 0, core.select (jj == 2, 1, jj)))›;
+    let rb = interchange (rb, perm);
+    let n = rb#6_15#(core.idx 0 r 0);
+    let m = rb#6_15#(core.idx 0 r 1);
+    let nt0 = dot_parallel_tile (n, 8);
+    let mt0 = dot_parallel_tile (m, 16);
+    let nt = dot_parallel_tile (n, (8, 2)#(n / nt0 * (m / mt0) < target.threads ()));
+    let mt = dot_parallel_tile (m, (16, 4)#(n / nt * (m / mt0) < target.threads ()));
+    let rb = split_iter (split_iter (rb, 0, nt), 2, mt);
+    let r = rb#2_15 + rb#3_15;
+    let perm = ‹j: r; let jj = core.bitcast Nat j;
+        core.select (jj == 1, 2, core.select (jj == 2, 1, jj))›;
+    let rb = fuse_iter (interchange (rb, perm), 0);
+    let rb = partition_iter (rb, rb#2_15, 4);
+    let rb = dot_parallel_peel (unroll_trailing (rb, 1), kernel_k t % 4);
+    parallelize (vectorize (rb, rb#2_15 - 2), 0);
+
+lam dot_parallel (t: Tileable, packed: Bool): Tileable =
+    lam exact (_: []): Tileable = dot_parallel_exact (t, packed);
+    lam masked (_: []): Tileable = dot_parallel_masked (t, packed);
+    (masked, exact)#(dot_parallel_aligned (t, packed)) ();
 lam dot_rule (k: Kernel, t: Tileable): Tileable =
     let (nc, rows, kblk) = dot_params (k, t);
     lam serial (u: []): Tileable =
         dot_par (k, t, nc, rows, k#packed, kblk) (dot_trace (nc, rows, kblk, k#packed) (t#Ro, kernel_ns (k, t), kernel_ni (k, t)) t);
     lam parallel (u: []): Tileable = dot_parallel (t, k#packed);
     (serial, parallel)#(dot_parallel_kernel (k, t)) ();
-lam dot_rule_rows (k: Kernel, t: Tileable): Nat = ((dot_params (k, t))#1_3, 4)#(dot_parallel_kernel (k, t));
+lam dot_rule_rows (k: Kernel, t: Tileable): Nat =
+    ((dot_params (k, t))#1_3, (0, 4)#(dot_parallel_aligned (t, k#packed)))#(dot_parallel_kernel (k, t));
 lam dot_rule_any (k: Kernel, t: Tileable): Bool = tt;
 ///
 /// #### Windowed kernels
@@ -1975,6 +2092,8 @@ priv anx lam dot_product_impl
       let par = core.bit2.and_ 2 (r1 == 2, core.bit2.and_ 2 (r2 == 2,
                   core.bit2.and_ 2 (shape_ok, core.bit2.and_ 2 (nb == 0, dot_parallel_ok (m, n, k)))));
       let pack  = (if_static (pc * r2, core.bit2.and_ 2 (shape_ok, pc != 0), ff), ff)#plain;
+      // Until the packed layout carries N's valid extent, parallel N tails read the original operand.
+      let pack = (pack, core.bit2.and_ 2 (pack, n % 16 == 0))#par;
       // The panels «…, ⌈N/16⌉, K, 16»: the block axis after b's batch dims, K and the lanes behind it.
       let s_pk  = cache_read_shape (s2, r2 - 1, pc, r2 - 2);
       let c2_pk = ‹i: nc; core.idx 0 (r2 + 1) (cache_read_axis (r2, r2 - 1, r2 - 2) (r2 - 2))›;

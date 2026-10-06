@@ -1,0 +1,38 @@
+// RUN: %mim %s -p opt -o %t
+// RUN: %FileCheck %s --implicit-check-not=btensor.map_reduce < %t
+
+// GPU grid follows Rp, while output allocation and the write map retain Ro.
+plugin core;
+plugin tensor;
+plugin gpu;
+plugin affine;
+plugin compile;
+
+use core.ops.u.w;
+use tensor;
+
+fun add (x y: I32)@tt: I32 = return (x + y);
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam mi (o: «3; affine.Index»): «3; affine.Index» = o;
+extern fun fused (input: «6, 10, 7; I32»): «6, 10; I32» =
+    let t = mr_tileable @1 @(2, 1) ((6, 10), (0, 1), (6, 10, 7)) (add, 0I32, id) mo mi (buf input);
+    return (materialize (partition_iter (fuse_iter (partition_iter (t, 0, 4), 0), 2, 3)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        compile.cleanup,
+        tensor.lower_to_mem,
+        compile.named "mem.add_mem",
+        gpu.lower_btensor_map_reduce,
+        affine.lower_index,
+        compile.cleanup,
+    );
+
+// CHECK-DAG: con mapReduceKernel
+// CHECK-DAG: Idx 80
+// CHECK-DAG: «6, 10; I32»
+// CHECK-DAG: gpu.launch
+
+// CHECK-DAG: con keep
+// CHECK-DAG: core.icmp.xYGlE @ 0 ({{.*}}, 7I64)
+// CHECK-DAG: core.icmp.xYGlE @ 0 ({{.*}}, 6I64)

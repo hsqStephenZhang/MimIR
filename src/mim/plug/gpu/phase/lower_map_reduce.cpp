@@ -189,7 +189,8 @@ Lam* build_kernel(World& w,
                   const Def* Tp,
                   const Def* out_dptr,
                   const Grid& grid,
-                  const Def* sched) {
+                  const Def* sched,
+                  const Def* shapes) {
     auto nis        = ins.n();
     auto nps        = post_ins.n();
     auto rp         = out_dims.size();
@@ -240,7 +241,8 @@ Lam* build_kernel(World& w,
     DefVec wb_idx             = wb_coords;
     for (size_t j = 0; j != rr; ++j)
         wb_idx.push_back(w.call(core::conv::u, Sr->proj(nloops_nat, rp + j), w.lit_i64(0)));
-    auto [wc_mem, write_coords] = affine_map(acc_out, Ro, n, Sr, So, w.tuple(wb_idx), wb_mem2);
+    auto [write_mem, write_skip] = btensor::predicate_skip(shapes, Sr, w.tuple(wb_idx), wb_mem2, true);
+    auto [wc_mem, write_coords]  = affine_map(acc_out, Ro, n, Sr, So, w.tuple(wb_idx), write_mem);
 
     auto pcur = wc_mem;
     DefVec post_elems(nps);
@@ -267,11 +269,14 @@ Lam* build_kernel(World& w,
         });
     };
     // A parallel partition overshoots the result: its excluded cells are neither folded nor written.
-    if (auto skip = btensor::ptail_skip(sched, rp, Sr->projs(nloops_nat), raw_cell(wb_coords))) {
+    auto wb_skip = btensor::ptail_skip(sched, rp, Sr->projs(nloops_nat), raw_cell(wb_coords));
+    if (write_skip)
+        wb_skip = wb_skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({wb_skip, write_skip})) : write_skip;
+    if (auto skip = wb_skip) {
         auto put  = w.mut_con(w.sigma())->set("put");
         auto keep = w.mut_con(w.sigma())->set("keep");
         apply_cps(w, put, global_post, {pcur, acc_final, w.tuple(post_elems)}, after_post);
-        keep->app(true, k_ret, Defs{wb_mem2, k_shared, k_const, k_local});
+        keep->app(true, k_ret, Defs{write_mem, k_shared, k_const, k_local});
         write_back->branch(true, skip, keep, put);
     } else {
         apply_cps(w, write_back, global_post, {pcur, acc_final, w.tuple(post_elems)}, after_post);
@@ -301,7 +306,8 @@ Lam* build_kernel(World& w,
     iters_v.insert(iters_v.end(), red_iters.begin(), red_iters.end());
     auto iters = w.tuple(iters_v);
 
-    auto cur = body_mem;
+    auto [fold_mem, fold_skip] = btensor::predicate_skip(shapes, Sr, iters, body_mem, false);
+    auto cur                   = fold_mem;
     DefVec input_elems(nis);
     for (size_t i = 0; i != nis; ++i) {
         auto [mc_mem, coords] = affine_map(ins.accs[i], ins.rs[i], n, Sr, ins.ss[i], iters, cur);
@@ -315,13 +321,14 @@ Lam* build_kernel(World& w,
     // A partitioned domain overshoots the reduction: skip the points the schedule's tail excludes.
     auto skip     = btensor::tail_skip(sched, rp, Sr->projs(nloops_nat), raw_iters);
     auto out_skip = btensor::ptail_skip(sched, rp, Sr->projs(nloops_nat), raw_cell(body_coords));
+    if (fold_skip) skip = skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({skip, fold_skip})) : fold_skip;
     if (out_skip) skip = skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({skip, out_skip})) : out_skip;
     if (skip) {
         auto fold = w.mut_con(w.sigma())->set("fold");
         auto keep = w.mut_con(w.sigma())->set("keep");
         apply_cps(w, fold, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
         // The loads above are then only reachable from `fold`: skipped points read nothing.
-        keep->app(true, cont, w.tuple({body_mem, elem_acc}));
+        keep->app(true, cont, w.tuple({fold_mem, elem_acc}));
         current_mut->branch(true, skip, keep, fold);
     } else {
         apply_cps(w, current_mut, global_comb, {cur, elem_acc, w.tuple(input_elems)}, cont);
@@ -389,7 +396,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto [nis_nps, meta, shapes, in_tys, comb_init, acc_out, accs_all] = c->uncurry_args<7>();
     auto [nis, nps]                     = nis_nps->projs<2>([](auto d) { return Lit::isa(d); });
     auto [To, Tp, Ro, Rp, Rn, sched_ty] = btensor::mr_meta(meta);
-    auto [So, Sr, sched]                = shapes->projs<3>();
+    auto [So, Sr, sched]                = btensor::mr_shapes(shapes);
     auto [Tis, Ris, Sis, Tps, Rps, Sps] = in_tys->projs<6>();
     auto [comb, init, post]             = comb_init->projs<3>();
     auto [accs, post_accs]              = accs_all->projs<2>();
@@ -459,7 +466,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto kernel = build_kernel(w, Ro, rr, out_dims, Sr, So, Mapped{in_desc.rs, in_desc.ss, inputs.dptrs, in_desc.accs},
                                To, acc_out, init, global_comb,
                                Mapped{post_desc.rs, post_desc.ss, post_inputs.dptrs, post_desc.accs}, global_post, Tp,
-                               out_dptr, grid, sched);
+                               out_dptr, grid, sched, shapes);
 
     DefVec kernel_arg_tys(nis_n + nps_n + 1);
     for (nat_t i = 0; i != nis_n; ++i)

@@ -695,7 +695,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
         auto src         = rewrite(pr->src);
         auto Ro          = meta->proj(meta->num_projs(), 2);
         auto [map, R, S] = std::array{rewrite(pr->map), rewrite(pr->R), rewrite(pr->S)};
-        auto So          = shapes->proj(3, 0);
+        auto So          = shapes->proj(shapes->num_projs(), 0);
         if (Axm::isa<buffer::Buf>(src->type())
             && (is_reshape_read(w, map, R, S, Ro, So) || is_prefix_read(w, map, R, S, Ro, So)))
             return w.call<core::bitcast>(buf_of(app->type()), src);
@@ -736,7 +736,9 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     // NB: no `w.call` here — the meta groups are *forwarded* from the tensor op on purpose. Leaving them to
     // inference would re-derive `{Tis, Ris, Sis}` from the `buffer.Buf` operands, whose literal size-1 axes are
     // already folded away, so they would no longer agree with the logical shapes the loop generation iterates.
-    auto op       = meta->num_projs() == 6 ? w.annex<btensor::map_reduce_iter>() : w.annex<btensor::map_reduce_post>();
+    auto op       = shapes->num_projs() == 5 ? w.annex<btensor::map_reduce_masked>()
+                  : meta->num_projs() == 6   ? w.annex<btensor::map_reduce_iter>()
+                                             : w.annex<btensor::map_reduce_post>();
     op            = w.app(op, nis_nps);
     op            = w.app(op, meta);
     op            = w.app(op, shapes);

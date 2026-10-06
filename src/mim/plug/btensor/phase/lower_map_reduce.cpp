@@ -130,7 +130,7 @@ std::optional<MrOp> mr_op(const App* c) {
     auto [nis_nps, meta, shapes, in_tys, comb_init, acc_out, accs_all] = c->uncurry_args<7>();
     auto [nis, nps]                                                    = nis_nps->projs<2>();
     auto [To, Tp, Ro, Rp, Rn, TSched]                                  = btensor::mr_meta(meta);
-    auto [So, Sr, sched]                                               = shapes->projs<3>();
+    auto [So, Sr, sched]                                               = btensor::mr_shapes(shapes);
     auto [Tis, Ris, Sis, Tps, Rps, Sps]                                = in_tys->projs<6>();
     auto [comb, init, post]                                            = comb_init->projs<3>();
     auto [accs, post_accs]                                             = accs_all->projs<2>();
@@ -251,7 +251,7 @@ void LowerMapReduce::start() {
             if (!producer) continue;
             auto p     = mr_op(producer->callee()->as<App>());
             auto level = Lit::isa<u64>(at->callee()->as<App>()->arg());
-            if (!p || p->rp != p->ro || !level || *level > c->rp) continue;
+            if (!p || p->rp != p->ro || p->shapes->num_projs() == 5 || !level || *level > c->rp) continue;
 
             auto n_c  = c->rp + c->rr;
             auto sr_c = literals(c->Sr, n_c);
@@ -396,8 +396,10 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
         auto ck   = cell->var(cn, cn - 1);
         auto civs = load_ivs(cell, cn, 2, nloops);
         DefVec iters_v(nloops, [&](size_t d) { return at_dim(d, civs[d]); });
-        auto iters = w.tuple(iters_v);
-        auto cur   = cm;
+        auto iters            = w.tuple(iters_v);
+        auto [pred_mem, skip] = btensor::predicate_skip(op.shapes, op.Sr, iters, cm, false, op.rp);
+        auto fold             = skip ? w.mut_con(cm->type())->set("foldValid") : cell;
+        auto cur              = skip ? fold->var() : pred_mem;
         DefVec input_elems(op.nis);
         for (u64 i = 0; i < op.nis; ++i) {
             auto [mc_mem, coords] = affine_map(in_maps[i], op.Ris->proj(op.nis, i), n, op.Sr, in_shapes[i], iters, cur);
@@ -408,7 +410,13 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
             cur                   = rd_mem;
             input_elems[i]        = rd_val;
         }
-        apply_cps(cell, op.comb, {cur, cacc, w.tuple(input_elems)}, ck);
+        if (skip) {
+            auto keep = w.mut_con(cm->type())->set("skipInvalid");
+            apply_cps(fold, op.comb, {cur, cacc, w.tuple(input_elems)}, ck);
+            keep->app(true, ck, {keep->var(), cacc});
+            cell->branch(true, skip, keep, fold, pred_mem);
+        } else
+            apply_cps(cell, op.comb, {cur, cacc, w.tuple(input_elems)}, ck);
     }
 
     // wb: Cn [mem, U, To, «ro+rr; I32», Cn [mem, U]] — epilogue + store for one folded cell,
@@ -429,7 +437,10 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
             wb_iters[i] = at_dim(i, wovs[i]);
         for (u64 j = 0; j < op.rr; ++j)
             wb_iters[op.rp + j] = w.call(core::conv::u, op.Sr->proj(nloops, op.rp + j), w.lit(i32, 0));
-        auto [wc_mem, write_coords] = affine_map(op.acc_out, op.Ro, n, op.Sr, op.So, w.tuple(wb_iters), wm);
+        auto [pred_mem, skip] = btensor::predicate_skip(op.shapes, op.Sr, w.tuple(wb_iters), wm, true);
+        auto put              = skip ? w.mut_con(wm->type())->set("writeValid") : wb;
+        auto [wc_mem, write_coords]
+            = affine_map(op.acc_out, op.Ro, n, op.Sr, op.So, w.tuple(wb_iters), skip ? put->var() : pred_mem);
 
         auto pcur = wc_mem;
         DefVec post_elems(op.nps);
@@ -456,7 +467,13 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
         }
         auto stored = buffer::op_write(ur, us, uT, post_mem, wu, target, elem_post);
         after_post->app(true, wk, w.tuple({stored->proj(2, 0), stored->proj(2, 1)}));
-        apply_cps(wb, op.post, {pcur, wv, w.tuple(post_elems)}, after_post);
+        if (skip) {
+            auto keep = w.mut_con(wm->type())->set("skipInvalidWrite");
+            apply_cps(put, op.post, {pcur, wv, w.tuple(post_elems)}, after_post);
+            keep->app(true, wk, {keep->var(), wu});
+            wb->branch(true, skip, keep, put, pred_mem);
+        } else
+            apply_cps(wb, op.post, {pcur, wv, w.tuple(post_elems)}, after_post);
     }
 
     // stage: Cn [«ro+rr; I32», mem, Cn mem] — a staged operand's producer, or nothing.

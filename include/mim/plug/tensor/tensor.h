@@ -16,11 +16,13 @@ namespace mim::plug::tensor {
 
 inline const App* map_reduce_app(const Def* d) {
     if (auto mr = Axm::isa<tensor::map_reduce_post>(d)) return mr;
-    return Axm::isa<tensor::map_reduce_iter>(d);
+    if (auto mr = Axm::isa<tensor::map_reduce_iter>(d)) return mr;
+    return Axm::isa<tensor::map_reduce_masked>(d);
 }
 
 /// Preserve the source op's metadata shape when rebuilding it during fusion.
-inline const Def* map_reduce_axm(World& w, const Def* meta) {
+inline const Def* map_reduce_axm(World& w, const Def* meta, const Def* shapes) {
+    if (shapes->num_projs() == 5) return w.annex<tensor::map_reduce_masked>();
     return meta->num_projs() == 6 ? w.annex<tensor::map_reduce_iter>() : w.annex<tensor::map_reduce_post>();
 }
 
@@ -61,7 +63,8 @@ inline std::optional<PureRead> is_pure_read(const Def* value) {
     // No reduction loops: the total loop count Rn equals the output rank Ro.
     auto [To, Tp, Ro, Rp, Rn, TSched] = btensor::mr_meta(meta);
     if (Lit::isa(nis) != 1 || Lit::isa(nps) != 0 || Ro != Rp || Rp != Rn) return {};
-    auto [So, Sr, sched] = shapes->projs<3>();
+    if (shapes->num_projs() == 5) return {}; // A masked copy does not write every point.
+    auto [So, Sr, sched] = btensor::mr_shapes(shapes);
     if (Sr != So) return {};
     auto id_lam = map_out->isa_mut<Lam>();
     if (!id_lam || !id_lam->is_set() || id_lam->body() != id_lam->var()) return {};

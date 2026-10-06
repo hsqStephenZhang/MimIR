@@ -126,6 +126,25 @@ axm map_reduce_iter: {nis nps: Nat}
                    → [mem.M 0, is: «i: nis; buffer.Buf (Ris#i, Sis#i, Tis#i)»,
                       post_is: «j: nps; buffer.Buf (Rps#j, Sps#j, Tps#j)»]
                    → [mem.M 0, buffer.Buf (Ro, So, Tp)];
+/// A conjunction of upper-bound constraints over a loop vector. Bounds are tested before narrowing indices.
+lam IterPredicate (r: Nat): * = [n: Nat, bounds: «n; Nat», map: «r; affine.Index» → «n; affine.Index»];
+
+/// Composed rectangular-domain predicates for folds and write-back. Each partition adds its own
+/// constraint; every subsequent domain transform reindexes them together with the access maps.
+/// This keeps spatial write validity separate from reduction validity (including empty reductions).
+axm map_reduce_masked: {nis nps: Nat}
+                   → {To Tp: *, Ro Rp Rn: Nat, TSched: □}
+                   → [So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched, write_pred fold_pred: IterPredicate Rn]
+                   → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
+                      Tps: «nps; *», Rps: «j: nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+                   → [f: Fn [mem.M 0, To, «i: nis; Tis#i»] → [mem.M 0, To], init: To,
+                      post: Fn [mem.M 0, To, «j: nps; Tps#j»] → [mem.M 0, Tp]]
+                   → [map_out: [«Rn; affine.Index»] → «Ro; affine.Index»]
+                   → [maps: «i: nis; ([«Rn; affine.Index»] → «Ris#i; affine.Index»)»,
+                      post_maps: «j: nps; ([«Ro; affine.Index»] → «Rps#j; affine.Index»)»]
+                   → [mem.M 0, is: «i: nis; buffer.Buf (Ris#i, Sis#i, Tis#i)»,
+                      post_is: «j: nps; buffer.Buf (Rps#j, Sps#j, Tps#j)»]
+                   → [mem.M 0, buffer.Buf (Ro, So, Tp)];
 ///
 /// ### mk_sched
 ///

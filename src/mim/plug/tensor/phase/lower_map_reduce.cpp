@@ -143,7 +143,7 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
     auto [nis_nps, meta, shapes, in_tys, comb_init, acc_out, accs_all] = c->uncurry_args<7>();
     auto [nis, nps]                                                    = nis_nps->projs<2>();
     auto [To, Tp, Ro, Rp, Rn, TSched]                                  = btensor::mr_meta(meta);
-    auto [So, Sr, sched]                                               = shapes->projs<3>();
+    auto [So, Sr, sched]                                               = btensor::mr_shapes(shapes);
     auto [Tis, Ris, Sis, Tps, Rps, Sps]                                = in_tys->projs<6>();
     auto [comb, init, post]                                            = comb_init->projs<3>();
     auto [accs, post_accs]                                             = accs_all->projs<2>();
@@ -218,7 +218,10 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         after_post->app(true, cont, w.insert(wb_matrix, write_coords, after_post->var()));
         // A parallel partition overshoots the result: its excluded cells are neither folded nor written.
         DefVec raw_cell(nloops, [&](size_t d) { return d < rp ? raw_out[d] : w.lit_i64(0); });
-        auto out_skip = btensor::ptail_skip(sched, rp, sr, raw_cell);
+        auto out_skip   = btensor::ptail_skip(sched, rp, sr, raw_cell);
+        auto write_skip = btensor::predicate_skip(shapes, Sr, w.tuple(wb_iters), w.bot(mem0), true).second;
+        if (write_skip)
+            out_skip = out_skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({out_skip, write_skip})) : write_skip;
         if (out_skip) {
             auto put  = w.mut_con(w.sigma())->set("put");
             auto keep = w.mut_con(w.sigma())->set("keep");
@@ -253,7 +256,9 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         post->set("post");
         // A partitioned domain overshoots the reduction: skip the points its schedule's tail excludes.
         DefVec raw(nloops, [&](size_t d) { return d < rp ? raw_out[d] : raw_red[d - rp]; });
-        auto skip = btensor::tail_skip(sched, rp, sr, raw);
+        auto skip      = btensor::tail_skip(sched, rp, sr, raw);
+        auto fold_skip = btensor::predicate_skip(shapes, Sr, iters, w.bot(mem0), false).second;
+        if (fold_skip) skip = skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({skip, fold_skip})) : fold_skip;
         if (out_skip) skip = skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({skip, out_skip})) : out_skip;
         if (skip) {
             auto fold = w.mut_con(w.sigma())->set("fold");

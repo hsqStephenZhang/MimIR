@@ -1,0 +1,44 @@
+// RUN: %mim %s -p opt -o %t
+// RUN: %FileCheck %s --implicit-check-not=tensor.map_reduce < %t
+// CHECK: fun mapRed
+// CHECK-SAME: «2, 3; I32»
+// CHECK-DAG: core.icmp.{{[a-zA-Z]+}} @ 0 ({{_[0-9]+}}, 3I64)
+// CHECK-DAG: core.icmp.{{[a-zA-Z]+}} @ 0 ({{_[0-9]+}}, 3I64)
+// CHECK-DAG: core.icmp.xYGlE @ 0 ({{.*}}, 6I64)
+// CHECK: extern fun value_fused
+// CHECK-NOT: tensor.map_reduce
+
+// Value-semantics lowering must use the iteration rank for loops and the output rank for write maps.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+
+use core.ops.u.w;
+use tensor;
+
+fun add (x y: I32)@tt: I32 = return (x + y);
+lam mo (i j _ _: affine.Index): «2; affine.Index» = (i, j);
+lam mi (o: «4; affine.Index»): «4; affine.Index» = o;
+
+extern fun value_fused (x: I32): I32 =
+    let input: «2, 3, 2, 3; I32» = ‹i: 2; ‹j: 3; ‹k: 2; ‹l: 3;
+        x + core.conv.u 4294967296 i * 100I32 + core.conv.u 4294967296 j * 10I32 +
+            core.conv.u 4294967296 k * 3I32 + core.conv.u 4294967296 l››››;
+    let t = mr_tileable @1 @(2, 2) ((2, 3), (0, 1), (2, 3, 2, 3)) (add, 0I32, id) mo mi input;
+    let t = partition_iter (t, 0, 3);
+    let t = fuse_iter (fuse_iter (t, 0), 2);
+    let out = materialize (partition_iter (t, 2, 4));
+    return (out#1_2#2_3);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        compile.cleanup,
+        tensor.lower_tensor,
+        tensor.fuse_tensor,
+        tensor.lower_map_reduce,
+        affine.lower_index,
+        affine.lower_for,
+        compile.cleanup,
+    );

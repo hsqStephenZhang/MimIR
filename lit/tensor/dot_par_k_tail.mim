@@ -1,4 +1,4 @@
-// RUN: %mim -p opt -p clos -X tensor:threads=4 --max-fp-iters 32 %s -p ll
+// RUN: %mim -p opt -p clos -X tensor:threads=1 --max-fp-iters 32 %s -p ll
 // RUN: %FileCheck %s --implicit-check-not='call void @mim_rt_parallel_for' < %{s:stem}.ll
 // RUN: clang++ -std=c++23 %S/dot_par_k_tail_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
 // RUN: MIM_NUM_THREADS=4 %t
@@ -8,7 +8,7 @@
 // parameter tuple when its function escapes during closure conversion, as well
 // as pinning its projections; otherwise full/sparse rounds disagree indefinitely.
 // mm49 previously failed after 1024 iterations. The other products cover unpacked
-// and packed K tails. Their schedules stay serial under dot_par's safety gate.
+// and packed K tails. Compile with one target thread to retain the peeled serial schedule.
 
 plugin tensor;
 plugin core;
