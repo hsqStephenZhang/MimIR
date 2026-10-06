@@ -58,6 +58,17 @@ add_mim_test(mim-regex-test
         automaton
 )
 
+# Test the C runtime independently of the compiler's closure lowering.
+find_package(Threads REQUIRED)
+add_executable(mim-par-pool-test par_pool.c ${PROJECT_SOURCE_DIR}/src/mim/plug/ll/rt/mim_rt.c)
+target_compile_features(mim-par-pool-test PRIVATE c_std_11)
+target_link_libraries(mim-par-pool-test PRIVATE Threads::Threads)
+add_dependencies(mim_all mim-par-pool-test)
+foreach(THREADS 1 4)
+    add_test(NAME par-pool-${THREADS} COMMAND mim-par-pool-test)
+    set_tests_properties(par-pool-${THREADS} PROPERTIES ENVIRONMENT "MIM_NUM_THREADS=${THREADS}" TIMEOUT 30)
+endforeach()
+
 mim_extra_plugins(test MIM_EXTRA_PLUGINS)
 foreach(PLUGIN IN LISTS MIM_EXTRA_PLUGINS)
     set(DIR "${PROJECT_SOURCE_DIR}/extra/${PLUGIN}")
