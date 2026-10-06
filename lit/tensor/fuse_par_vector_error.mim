@@ -1,0 +1,18 @@
+// RUN: not %mim -p opt %s 2>&1 | %FileCheck %s
+// CHECK: fuse_iter: cannot fuse the vector dim
+
+plugin core;
+plugin tensor;
+plugin affine;
+
+use core.ops.u.w;
+use tensor;
+
+fun add (x y: I32)@tt: I32 = return (x + y);
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam mi (o: «3; affine.Index»): «3; affine.Index» = o;
+extern fun invalid (input: «6, 10, 7; I32»): «6, 10; I32» =
+    let t = mr_tileable @1 @(2, 1) ((6, 10), (0, 1), (6, 10, 7)) (add, 0I32, id) mo mi (buf input);
+    // vdim = 1: fusion would absorb the vector loop into the task id.
+    let t = t#7_15 ← 1;
+    return (materialize (fuse_par (t, 0)));

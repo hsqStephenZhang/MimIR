@@ -192,8 +192,8 @@ Lam* build_kernel(World& w,
                   const Def* sched) {
     auto nis        = ins.n();
     auto nps        = post_ins.n();
-    auto ro         = out_dims.size();
-    auto nloops_nat = ro + rr;
+    auto rp         = out_dims.size();
+    auto nloops_nat = rp + rr;
     auto n          = w.lit_nat(nloops_nat);
 
     auto global_ty = w.annex<gpu::GlobalM>();
@@ -239,7 +239,7 @@ Lam* build_kernel(World& w,
     auto [wb_mem2, wb_coords] = unflatten_index(w, flat, out_dims, wb_mem);
     DefVec wb_idx             = wb_coords;
     for (size_t j = 0; j != rr; ++j)
-        wb_idx.push_back(w.call(core::conv::u, Sr->proj(nloops_nat, ro + j), w.lit_i64(0)));
+        wb_idx.push_back(w.call(core::conv::u, Sr->proj(nloops_nat, rp + j), w.lit_i64(0)));
     auto [wc_mem, write_coords] = affine_map(acc_out, Ro, n, Sr, So, w.tuple(wb_idx), wb_mem2);
 
     auto pcur = wc_mem;
@@ -263,11 +263,11 @@ Lam* build_kernel(World& w,
     // The i64 loop counters of the output cell `coords`, the reductions at 0 (see `btensor::ptail_skip`).
     auto raw_cell = [&](Defs coords) {
         return DefVec(nloops_nat, [&](size_t d) {
-            return d < ro ? w.call(core::conv::u, w.lit_nat_0(), coords[d]) : w.lit_i64(0);
+            return d < rp ? w.call(core::conv::u, w.lit_nat_0(), coords[d]) : w.lit_i64(0);
         });
     };
     // A parallel partition overshoots the result: its excluded cells are neither folded nor written.
-    if (auto skip = btensor::ptail_skip(sched, ro, Sr->projs(nloops_nat), raw_cell(wb_coords))) {
+    if (auto skip = btensor::ptail_skip(sched, rp, Sr->projs(nloops_nat), raw_cell(wb_coords))) {
         auto put  = w.mut_con(w.sigma())->set("put");
         auto keep = w.mut_con(w.sigma())->set("keep");
         apply_cps(w, put, global_post, {pcur, acc_final, w.tuple(post_elems)}, after_post);
@@ -280,10 +280,10 @@ Lam* build_kernel(World& w,
     const Def* acc   = w.tuple({k_global, init});
     const Def* cont  = write_back;
     Lam* current_mut = body;
-    DefVec red_iters, raw_iters(ro, w.lit_i64(0));
+    DefVec red_iters, raw_iters(rp, w.lit_i64(0));
     red_iters.reserve(rr);
     for (size_t j = 0; j != rr; ++j) {
-        auto dim                    = Sr->proj(nloops_nat, ro + j);
+        auto dim                    = Sr->proj(nloops_nat, rp + j);
         auto bound                  = w.call<core::bitcast>(w.type_i64(), dim);
         auto [rbody, for_call]      = counting_for(bound, acc, cont, w.sym("forRed_" + std::to_string(j)));
         auto [iter, new_acc, yield] = rbody->vars<3>();
@@ -313,8 +313,8 @@ Lam* build_kernel(World& w,
     }
 
     // A partitioned domain overshoots the reduction: skip the points the schedule's tail excludes.
-    auto skip     = btensor::tail_skip(sched, ro, Sr->projs(nloops_nat), raw_iters);
-    auto out_skip = btensor::ptail_skip(sched, ro, Sr->projs(nloops_nat), raw_cell(body_coords));
+    auto skip     = btensor::tail_skip(sched, rp, Sr->projs(nloops_nat), raw_iters);
+    auto out_skip = btensor::ptail_skip(sched, rp, Sr->projs(nloops_nat), raw_cell(body_coords));
     if (out_skip) skip = skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({skip, out_skip})) : out_skip;
     if (skip) {
         auto fold = w.mut_con(w.sigma())->set("fold");
@@ -376,7 +376,7 @@ void LowerMapReduce::start() {
 }
 
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
-    if (Axm::isa<btensor::map_reduce_post>(app)) return lower_map_reduce_post(app);
+    if (btensor::map_reduce_app(app)) return lower_map_reduce_post(app);
     return Super::rewrite_imm_App(app);
 }
 
@@ -388,7 +388,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
 
     auto [nis_nps, meta, shapes, in_tys, comb_init, acc_out, accs_all] = c->uncurry_args<7>();
     auto [nis, nps]                     = nis_nps->projs<2>([](auto d) { return Lit::isa(d); });
-    auto [To, Tp, Ro, Rn, sched_ty]     = meta->projs<5>();
+    auto [To, Tp, Ro, Rp, Rn, sched_ty] = btensor::mr_meta(meta);
     auto [So, Sr, sched]                = shapes->projs<3>();
     auto [Tis, Ris, Sis, Tps, Rps, Sps] = in_tys->projs<6>();
     auto [comb, init, post]             = comb_init->projs<3>();
@@ -396,20 +396,22 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto result_ty                      = rewrite(app->type());
 
     auto ro_l = Lit::isa<nat_t>(Ro);
+    auto rp_l = Lit::isa<nat_t>(Rp);
     auto rn_l = Lit::isa<nat_t>(Rn);
-    if (!nis || !nps || !ro_l || !rn_l || *rn_l < *ro_l) {
-        log().w("{} doesn't have lowering-time known rank counts (nis/nps/Ro/Rn)", app);
+    if (!nis || !nps || !ro_l || !rp_l || !rn_l || *rn_l < *rp_l) {
+        log().w("{} doesn't have lowering-time known rank counts (nis/nps/Ro/Rp/Rn)", app);
         return Super::rewrite_imm_App(app);
     }
     auto nis_n = *nis;
     auto nps_n = *nps;
     auto ro    = *ro_l;
-    auto rr    = *rn_l - *ro_l;
+    auto rp    = *rp_l;
+    auto rr    = *rn_l - *rp_l;
 
-    Vector<nat_t> out_dims(ro);
+    Vector<nat_t> out_dims(rp);
     nat_t out_total = 1;
-    for (nat_t d = 0; d != ro; ++d) {
-        auto l = Lit::isa<nat_t>(Sr->proj(ro + rr, d));
+    for (nat_t d = 0; d != rp; ++d) {
+        auto l = Lit::isa<nat_t>(Sr->proj(rp + rr, d));
         if (!l) {
             log().w("{} doesn't have a lowering-time known output (grid) shape", app);
             return Super::rewrite_imm_App(app);
@@ -432,9 +434,9 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto mem_ty                                    = w.call<mem::M>(0);
     auto rewritten_arg                             = rewrite(app->arg());
     auto [_, rewritten_inputs, rewritten_post_ins] = rewritten_arg->projs<3>();
-    auto fun = w.mut_fun(w.sigma({mem_ty, rewritten_inputs->type(), rewritten_post_ins->type()}), result_ty)
-                   ->set("mapReduceAffGpu");
-    auto call                                = w.app(cps::op_cps2ds_dep(fun), rewritten_arg);
+    auto fun  = w.mut_fun(w.sigma({mem_ty, rewritten_inputs->type(), rewritten_post_ins->type()}), result_ty)
+                    ->set("mapReduceAffGpu");
+    auto call = w.app(cps::op_cps2ds_dep(fun), rewritten_arg);
     auto [fun_mem, new_inputs, new_post_ins] = fun->var(2, 0)->projs<3>();
     auto cont                                = fun->var(2, 1);
 
@@ -468,7 +470,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
 
     auto launch = w.app(w.annex<gpu::launch>(), Defs{w.lit_nat(nis_n + nps_n + 1), w.tuple(kernel_arg_tys)});
     launch      = w.app(launch, Defs{w.lit_nat(grid.n_groups), w.lit_nat(grid.n_items), w.annex<gpu::default_stream>(),
-                                w.lit_ff(), w.tuple()});
+                                     w.lit_ff(), w.tuple()});
     launch      = w.app(launch, kernel);
 
     DefVec kernel_args = inputs.dptrs;

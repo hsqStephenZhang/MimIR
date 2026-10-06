@@ -176,7 +176,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all] = outer_callee->uncurry_args<7>();
 
     auto [nis, nps]                     = nis_nps->projs<2>();
-    auto [To, Tp, Ro, Rn, TSched]       = meta->projs<5>();
+    auto [To, Tp, Ro, Rp, Rn, TSched]   = btensor::mr_meta(meta);
     auto [comb, init, post]             = comb_init->projs<3>();
     auto [Tis, Ris, Sis, Tps, Rps, Sps] = in_tys->projs<6>();
     auto [maps, post_maps]              = maps_all->projs<2>();
@@ -207,14 +207,13 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     fe::Vector<std::optional<InnerInfo>> infos(nis_nat);
 
     for (u64 k = 0; k < nis_nat; ++k) {
-        auto inner = Axm::isa<tensor::map_reduce_post>(is->proj(nis_nat, k));
+        auto inner = tensor::map_reduce_app(is->proj(nis_nat, k));
         if (!inner) continue;
 
         auto [inner_nis_nps, inner_meta, inner_shapes, inner_in_tys, inner_comb_init, inner_map_out, inner_maps_all,
-              inner_is_all]
-            = inner->uncurry_args<8>();
+              inner_is_all]                                                     = inner->uncurry_args<8>();
         auto [inner_nis, inner_nps]                                             = inner_nis_nps->projs<2>();
-        auto [inner_To, inner_Tp, inner_Ro, inner_Rn, inner_TSched]             = inner_meta->projs<5>();
+        auto [inner_To, inner_Tp, inner_Ro, inner_Rp, inner_Rn, inner_TSched]   = btensor::mr_meta(inner_meta);
         auto [inner_So, inner_Sr, inner_sched]                                  = inner_shapes->projs<3>();
         auto [inner_comb, inner_init, inner_post]                               = inner_comb_init->projs<3>();
         auto [inner_Tis, inner_Ris, inner_Sis, inner_Tps, inner_Rps, inner_Sps] = inner_in_tys->projs<6>();
@@ -236,7 +235,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
         // since the rewrite into this phase's world rebuilds mutables and breaks pointer equality.
         auto inner_ro = Lit::isa<u64>(inner_Ro);
         auto inner_rn = Lit::isa<u64>(inner_Rn);
-        if (!inner_ro || !inner_rn || *inner_ro != *inner_rn) continue;
+        if (!inner_ro || !inner_rn || inner_Rp != inner_Ro || *inner_ro != *inner_rn) continue;
         if (inner_Sr != inner_So) continue;
         auto id_lam = inner_map_out->isa_mut<Lam>();
         if (!id_lam || !id_lam->is_set() || id_lam->body() != id_lam->var()) continue;
@@ -364,7 +363,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
     // Construct the fused map_reduce; the loop domain, output map, init and epilogue (including the
     // epilogue inputs) are the outer's.
-    auto mr = w.annex<tensor::map_reduce_post>();
+    auto mr = map_reduce_axm(w, meta);
     mr      = w.app(mr, {new_nis_def, nps});
     mr      = w.app(mr, meta);
     mr      = w.app(mr, shapes);
@@ -414,7 +413,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all] = callee->uncurry_args<7>();
 
     auto [nis, nps]                     = nis_nps->projs<2>();
-    auto [To, Tp, Ro, Rn, TSched]       = meta->projs<5>();
+    auto [To, Tp, Ro, Rp, Rn, TSched]   = btensor::mr_meta(meta);
     auto [So, Sr, sched]                = shapes->projs<3>();
     auto [comb, init, post]             = comb_init->projs<3>();
     auto [Tis, Ris, Sis, Tps, Rps, Sps] = in_tys->projs<6>();
@@ -426,7 +425,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     auto nps_lit = Lit::isa<u64>(nps);
     auto ro_lit  = Lit::isa<u64>(Ro);
     auto rn_lit  = Lit::isa<u64>(Rn);
-    if (!nis_lit || !nps_lit || !ro_lit || !rn_lit || *ro_lit != *rn_lit) return nullptr;
+    if (!nis_lit || !nps_lit || !ro_lit || !rn_lit || Ro != Rp || *ro_lit != *rn_lit) return nullptr;
     auto nis_nat = *nis_lit;
     auto nps_nat = *nps_lit;
     if (nis_nat == 0) return nullptr;
@@ -449,7 +448,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     bool unpack          = false;
     for (u64 k = 0; k < nis_nat && !inner_def; ++k) {
         auto cand = is->proj(nis_nat, k);
-        if (!Axm::isa<tensor::map_reduce_post>(cand)) continue;
+        if (!tensor::map_reduce_app(cand)) continue;
         if (!sole_consumer(cand)) continue;
 
         auto m     = maps->proj(nis_nat, k);
@@ -474,12 +473,12 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     if (unpack)
         to_cells
             = w.app(w.app(w.annex<tensor::reshape_map>(), {Ro, Ris->proj(nis_nat, k0)}), {So, Sis->proj(nis_nat, k0)});
-    auto inner = Axm::isa<tensor::map_reduce_post>(inner_def);
+    auto inner = tensor::map_reduce_app(inner_def);
 
     auto [i_nis_nps, i_meta, i_shapes, i_in_tys, i_comb_init, i_map_out, i_maps_all, i_is_all]
         = inner->uncurry_args<8>();
     auto [i_nis, i_nps]                             = i_nis_nps->projs<2>();
-    auto [i_To, i_Tp, i_Ro, i_Rn, i_TSched]         = i_meta->projs<5>();
+    auto [i_To, i_Tp, i_Ro, i_Rp, i_Rn, i_TSched]   = btensor::mr_meta(i_meta);
     auto [i_Tis, i_Ris, i_Sis, i_Tps, i_Rps, i_Sps] = i_in_tys->projs<6>();
     auto [i_comb, i_init, i_post]                   = i_comb_init->projs<3>();
     auto [i_maps, i_post_maps]                      = i_maps_all->projs<2>();
@@ -529,15 +528,17 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
 
     // The producer, keeping its loop nest untouched; only the epilogue (inputs) and the out-element
     // type change.
-    auto mr = w.annex<tensor::map_reduce_post>();
-    mr      = w.app(mr, {i_nis, w.lit_nat(new_nps)});
-    mr      = w.app(mr, {i_To, Tp, i_Ro, i_Rn, i_TSched});
-    mr      = w.app(mr, i_shapes);
-    mr      = w.app(mr, {i_Tis, i_Ris, i_Sis, w.tuple(eps.T), w.tuple(eps.R), w.tuple(eps.S)});
-    mr      = w.app(mr, {i_comb, i_init, fused_post});
-    mr      = w.app(mr, i_map_out);
-    mr      = w.app(mr, {i_maps, w.tuple(eps.maps)});
-    mr      = w.app(mr, {i_is, w.tuple(eps.is)});
+    auto mr       = map_reduce_axm(w, i_meta);
+    mr            = w.app(mr, {i_nis, w.lit_nat(new_nps)});
+    auto new_meta = i_meta->num_projs() == 6 ? w.tuple({i_To, Tp, i_Ro, i_Rp, i_Rn, i_TSched})
+                                             : w.tuple({i_To, Tp, i_Ro, i_Rn, i_TSched});
+    mr            = w.app(mr, new_meta);
+    mr            = w.app(mr, i_shapes);
+    mr            = w.app(mr, {i_Tis, i_Ris, i_Sis, w.tuple(eps.T), w.tuple(eps.R), w.tuple(eps.S)});
+    mr            = w.app(mr, {i_comb, i_init, fused_post});
+    mr            = w.app(mr, i_map_out);
+    mr            = w.app(mr, {i_maps, w.tuple(eps.maps)});
+    mr            = w.app(mr, {i_is, w.tuple(eps.is)});
 
     if (unpack) {
         // The fused op still materializes PACKED; re-wrap it in the unpacking reshape — expanded
@@ -600,7 +601,7 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
     auto eps = rewire(nps_nat, Tps, Rps, Sps, post_maps, ps);
     if (!changed) return nullptr;
 
-    auto mr = w.annex<tensor::map_reduce_post>();
+    auto mr = map_reduce_axm(w, meta);
     mr      = w.app(mr, nis_nps);
     mr      = w.app(mr, meta);
     mr      = w.app(mr, shapes);
@@ -615,7 +616,7 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
 
 namespace {
 
-bool is_mr(const Def* d) { return static_cast<bool>(Axm::isa<tensor::map_reduce_post>(d)); }
+bool is_mr(const Def* d) { return static_cast<bool>(tensor::map_reduce_app(d)); }
 
 } // namespace
 
@@ -626,7 +627,7 @@ void Fuse::start() {
 }
 
 const Def* Fuse::rewrite_imm_App(const App* app) {
-    if (Axm::isa<tensor::map_reduce_post>(app)) {
+    if (tensor::map_reduce_app(app)) {
         const App* cur = nullptr;
         if (auto res = fuse_map_reduce(app)) {
             log().d("fused map_reduce {} → {}", app, res);

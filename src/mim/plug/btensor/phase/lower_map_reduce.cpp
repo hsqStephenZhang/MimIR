@@ -1,5 +1,9 @@
 #include "mim/plug/btensor/phase/lower_map_reduce.h"
 
+#include <algorithm>
+
+#include <fe/worklist.h>
+
 #include <mim/axm.h>
 #include <mim/def.h>
 #include <mim/lam.h>
@@ -9,10 +13,6 @@
 #include <mim/plug/core/core.h>
 #include <mim/plug/cps/cps.h>
 #include <mim/plug/mem/mem.h>
-
-#include <algorithm>
-
-#include <fe/worklist.h>
 
 #include "mim/plug/btensor/btensor.h"
 
@@ -83,7 +83,7 @@ const Def* build_pointwise(World& w,
 
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (is_bootstrapping()) return RWPhase::rewrite_imm_App(app);
-    if (Axm::isa<btensor::map_reduce_post>(app)) return lower_map_reduce_post(app);
+    if (btensor::map_reduce_app(app)) return lower_map_reduce_post(app);
     if (Axm::isa<btensor::compute_at>(app)) return rewrite(app->arg());
     if (Axm::isa<btensor::broadcast>(app)) return lower_broadcast(app);
     if (Axm::isa<btensor::pad>(app)) return lower_pad(app);
@@ -114,8 +114,9 @@ const Def* LowerMapReduce::lower_buffer_lit(const App* app) {
 
 /// The pieces of a (new-world) `btensor.map_reduce_post` callee.
 struct MrOp {
-    u64 nis, nps, ro, rr;
-    const Def *To, *Tp, *Ro, *Sr, *So, *sched, *Ris, *Sis, *Rps, *Sps, *comb, *init, *post, *accs, *post_accs, *acc_out;
+    u64 nis, nps, ro, rp, rr;
+    const Def *To, *Tp, *Ro, *Rp, *Sr, *So, *sched, *Ris, *Sis, *Rps, *Sps, *comb, *init, *post, *accs, *post_accs,
+        *acc_out;
 };
 
 namespace {
@@ -123,15 +124,16 @@ namespace {
 std::optional<MrOp> mr_op(const App* c) {
     auto [nis_nps, meta, shapes, in_tys, comb_init, acc_out, accs_all] = c->uncurry_args<7>();
     auto [nis, nps]                                                    = nis_nps->projs<2>();
-    auto [To, Tp, Ro, Rn, TSched]                                      = meta->projs<5>();
+    auto [To, Tp, Ro, Rp, Rn, TSched]                                  = btensor::mr_meta(meta);
     auto [So, Sr, sched]                                               = shapes->projs<3>();
     auto [Tis, Ris, Sis, Tps, Rps, Sps]                                = in_tys->projs<6>();
     auto [comb, init, post]                                            = comb_init->projs<3>();
     auto [accs, post_accs]                                             = accs_all->projs<2>();
-    auto nis_l = Lit::isa<u64>(nis), nps_l = Lit::isa<u64>(nps), ro_l = Lit::isa<u64>(Ro), rn_l = Lit::isa<u64>(Rn);
-    if (!nis_l || !nps_l || !ro_l || !rn_l || *rn_l < *ro_l) return {};
-    return MrOp{*nis_l, *nps_l, *ro_l, *rn_l - *ro_l, To, Tp, Ro, Sr, So, sched, Ris, Sis, Rps, Sps,
-                comb, init, post, accs, post_accs, acc_out};
+    auto nis_l = Lit::isa<u64>(nis), nps_l = Lit::isa<u64>(nps), ro_l = Lit::isa<u64>(Ro);
+    auto rp_l = Lit::isa<u64>(Rp), rn_l = Lit::isa<u64>(Rn);
+    if (!nis_l || !nps_l || !ro_l || !rp_l || !rn_l || *rn_l < *rp_l) return {};
+    return MrOp{*nis_l, *nps_l, *ro_l, *rp_l, *rn_l - *rp_l, To,   Tp,   Ro,   Rp,   Sr,        So,
+                sched,  Ris,    Sis,   Rps,   Sps,           comb, init, post, accs, post_accs, acc_out};
 }
 
 /// The coordinate `e` of an access map over the loop vector `var` of `n` dims as `cst + Σ coef[d] · var#d`.
@@ -181,7 +183,7 @@ std::optional<std::vector<LowerMapReduce::Lin>> linear_map(const Def* map, u64 n
             res[a].coef[a] = 1;
         return res;
     }
-    auto res  = std::vector<LowerMapReduce::Lin>();
+    auto res = std::vector<LowerMapReduce::Lin>();
     for (u64 a = 0; a != r; ++a) {
         auto e = r == 1 ? body : body->isa<Tuple>() ? body->op(a) : nullptr;
         if (!e) return {};
@@ -218,7 +220,7 @@ void LowerMapReduce::start() {
     wl.push(old_world().roots());
     while (!wl.empty()) {
         auto def = wl.pop();
-        if (auto mr = Axm::isa<btensor::map_reduce_post>(def)) mrs.emplace_back(mr);
+        if (auto mr = btensor::map_reduce_app(def)) mrs.emplace_back(mr);
         auto transparent = def->isa<Tuple>() || def->isa<Pack>();
         for (auto op : def->ops())
             if (op) {
@@ -237,41 +239,48 @@ void LowerMapReduce::start() {
             if (!at || uses[at] != 1) continue;
             auto ex = at->arg()->isa<Extract>();
             if (!ex || uses[ex] != 1 || Lit::isa<u64>(ex->index()) != 1) continue;
-            auto producer = Axm::isa<btensor::map_reduce_post>(ex->tuple());
+            auto producer = btensor::map_reduce_app(ex->tuple());
             if (!producer) continue;
             auto p     = mr_op(producer->callee()->as<App>());
             auto level = Lit::isa<u64>(at->callee()->as<App>()->arg());
-            if (!p || !level || *level > c->ro) continue;
+            if (!p || p->rp != p->ro || !level || *level > c->rp) continue;
 
-            auto n_c  = c->ro + c->rr;
+            auto n_c  = c->rp + c->rr;
             auto sr_c = literals(c->Sr, n_c);
             auto so_p = literals(p->So, p->ro);
             auto lin  = linear_map(c->accs->proj(c->nis, i), n_c, p->ro);
-            auto out  = linear_map(p->acc_out, p->ro + p->rr, p->ro);
-            if (!sr_c || !so_p || !lin || !out) continue;
+            auto out  = linear_map(p->acc_out, p->rp + p->rr, p->ro);
+            // Fusion delinearizes a task id with division/remainder. At level zero the producer can still run
+            // once over its complete output before the consumer's parallel loop, without a linear read map.
+            bool full = *level == 0 && !lin;
+            if (!sr_c || !so_p || (!lin && !full) || !out) continue;
+            if (full) lin = std::vector<Lin>(p->ro, Lin{std::vector<s64>(n_c, 0), 0});
 
             // The producer writes output axis a from its parallel loop perm[a]: a projection.
-            auto stage = Stage{producer, *level, *lin, std::vector<u64>(p->ro), std::vector<u64>(p->ro)};
+            auto stage = Stage{producer, *level, *lin, std::vector<u64>(p->ro), std::vector<u64>(p->ro), full};
             bool ok    = true;
             for (u64 a = 0; ok && a != p->ro; ++a) {
                 auto& o = (*out)[a];
                 auto it = std::ranges::find(o.coef, 1);
                 ok      = o.cst == 0 && std::ranges::count(o.coef, 0) == s64(o.coef.size()) - 1 && it != o.coef.end()
-                  && u64(it - o.coef.begin()) < p->ro;
+                       && u64(it - o.coef.begin()) < p->ro;
                 if (ok) stage.perm[a] = it - o.coef.begin();
                 // The tile spans what the loops inside the leading `level` dims read of axis a.
                 u64 ext    = 1;
                 bool fixed = true;
                 for (u64 d = 0; ok && d != n_c; ++d) {
                     ok &= stage.lin[a].coef[d] >= 0;
-                    if (d >= *level) ext += u64(stage.lin[a].coef[d]) * ((*sr_c)[d] - 1);
-                    else fixed &= stage.lin[a].coef[d] == 0;
+                    if (d >= *level)
+                        ext += u64(stage.lin[a].coef[d]) * ((*sr_c)[d] - 1);
+                    else
+                        fixed &= stage.lin[a].coef[d] == 0;
                 }
                 ok &= stage.lin[a].cst >= 0 && u64(stage.lin[a].cst) < (*so_p)[a];
-                // The consumer only reads in bounds (a schedule's tail is skipped), so a tile at a fixed origin need not reach past the operand.
+                // The consumer only reads in bounds (a schedule's tail is skipped), so a tile at a fixed origin need
+                // not reach past the operand.
                 if (ok && fixed) ext = std::min(ext, (*so_p)[a] - u64(stage.lin[a].cst));
                 ok &= ext <= (*so_p)[a];
-                stage.ext[a] = ext;
+                stage.ext[a] = full ? (*so_p)[a] : ext;
             }
             if (!ok) continue;
             stages_.emplace(at, std::move(stage));
@@ -306,7 +315,7 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
                                       const Def* sl,
                                       std::function<Lam*(const Def*)> make_stage) {
     auto& w     = new_world();
-    auto nloops = op.ro + op.rr;
+    auto nloops = op.rp + op.rr;
     auto n      = w.lit_nat(nloops);
     auto i32    = w.type_i32();
 
@@ -361,7 +370,7 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
     // the combiner) and the write-back `wb` (read the epilogue inputs, run `post`, store) — and
     // APPLY the nest to them. Unrolling, interchange and the row accumulator are inside the
     // builder: plain IR, not lowering behavior.
-    auto nest_args = w.tuple({op.Ro, w.lit_nat(op.rr), Sr_loop, op.To, U});
+    auto nest_args = w.tuple({op.Rp, w.lit_nat(op.rr), Sr_loop, op.To, U});
     auto nest      = w.app(w.app(op.sched, w.app(w.annex<btensor::NestT>(), nest_args)),
                            w.app(w.annex<btensor::mr_nest>(), nest_args));
 
@@ -383,8 +392,7 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
         auto cur   = cm;
         DefVec input_elems(op.nis);
         for (u64 i = 0; i < op.nis; ++i) {
-            auto [mc_mem, coords]
-                = affine_map(in_maps[i], op.Ris->proj(op.nis, i), n, op.Sr, in_shapes[i], iters, cur);
+            auto [mc_mem, coords] = affine_map(in_maps[i], op.Ris->proj(op.nis, i), n, op.Sr, in_shapes[i], iters, cur);
             cur                   = mc_mem;
             auto folded           = *Shape(coords).fold(in_shapes[i]);
             auto [ir, is_, iT]    = Axm::isa<buffer::Buf>(in_bufs[i]->type())->args<3>();
@@ -409,10 +417,10 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
         auto wk   = wb->var(wn, wn - 1);
         auto wovs = load_ivs(wb, wn, 3, nloops);
         DefVec wb_iters(nloops);
-        for (u64 i = 0; i < op.ro; ++i)
+        for (u64 i = 0; i < op.rp; ++i)
             wb_iters[i] = at_dim(i, wovs[i]);
         for (u64 j = 0; j < op.rr; ++j)
-            wb_iters[op.ro + j] = w.call(core::conv::u, op.Sr->proj(nloops, op.ro + j), w.lit(i32, 0));
+            wb_iters[op.rp + j] = w.call(core::conv::u, op.Sr->proj(nloops, op.rp + j), w.lit(i32, 0));
         auto [wc_mem, write_coords] = affine_map(op.acc_out, op.Ro, n, op.Sr, op.So, w.tuple(wb_iters), wm);
 
         auto pcur = wc_mem;
@@ -424,9 +432,9 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
             pcur                   = pc_mem;
             auto p_buf             = post_bufs->proj(op.nps, j);
             auto [pr, ps_, pT]     = Axm::isa<buffer::Buf>(p_buf->type())->args<3>();
-            auto [prd_mem, p_val] = buffer::op_read(pr, ps_, pT, pcur, p_buf, *Shape(pcoords).fold(sps_j))->projs<2>();
-            pcur                  = prd_mem;
-            post_elems[j]         = p_val;
+            auto [prd_mem, p_val]  = buffer::op_read(pr, ps_, pT, pcur, p_buf, *Shape(pcoords).fold(sps_j))->projs<2>();
+            pcur                   = prd_mem;
+            post_elems[j]          = p_val;
         }
         auto after_post            = mem::mut_con(op.Tp)->set("afterPost");
         auto [post_mem, elem_post] = after_post->vars<2>();
@@ -464,7 +472,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto c  = rewrite(app->callee())->as<App>();
     auto op = mr_op(c);
     if (!op) {
-        log().w("rank counts (nis/nps/Ro/Rn) of {} are not known at lowering time", app);
+        log().w("rank counts (nis/nps/Ro/Rp/Rn) of {} are not known at lowering time", app);
         return RWPhase::rewrite_imm_App(app);
     }
 
@@ -491,7 +499,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     // At most one staged (`compute_at`) operand: its producer runs in `stage` into a tile the operand then reads.
     const Def* sl    = nullptr;
     auto old_is      = app->arg()->proj(3, 1);
-    auto nloops      = op->ro + op->rr;
+    auto nloops      = op->rp + op->rr;
     const Stage* stg = nullptr;
     u64 slot         = 0;
     for (u64 i = 0; i != op->nis && !stg; ++i)
@@ -506,13 +514,13 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         auto p  = *mr_op(pc);
         auto r  = p.ro;
         DefVec ext(r, [&](size_t a) { return w.lit_nat(stg->ext[a]); });
-        auto ext_t    = w.tuple(ext);
-        tile          = Tile{stg->perm, ext_t};
-        tile_ty       = w.call<buffer::Buf>(Defs{p.Ro, ext_t, p.Tp});
-        auto alloc    = buffer::op_alloc(p.Ro, ext_t, p.Tp, mem)->projs<2>();
-        mem           = alloc[0];
-        tile_buf      = alloc[1];
-        in_bufs[slot] = tile_buf;
+        auto ext_t      = w.tuple(ext);
+        tile            = Tile{stg->perm, ext_t};
+        tile_ty         = w.call<buffer::Buf>(Defs{p.Ro, ext_t, p.Tp});
+        auto alloc      = buffer::op_alloc(p.Ro, ext_t, p.Tp, mem)->projs<2>();
+        mem             = alloc[0];
+        tile_buf        = alloc[1];
+        in_bufs[slot]   = tile_buf;
         in_shapes[slot] = ext_t;
 
         // The operand reads the tile at its coordinate minus the tile's origin: the part of each linear form over
@@ -528,8 +536,8 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
             return e;
         });
         rd->set(true, w.tuple(coords));
-        in_maps[slot] = rd;
-        sl            = w.lit_nat(stg->level);
+        if (!stg->full) in_maps[slot] = rd;
+        sl = w.lit_nat(stg->level);
     }
 
     // The producer's nest over the tile, shifted to the tile's origin, which the enclosing loop values determine.
@@ -549,15 +557,16 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
             pref[d] = sn == 3 ? stage->var(sn, 0)->proj(nloops, d) : stage->var(sn, d);
 
         auto i32 = w.type_i32();
-        auto pn  = p.ro + p.rr;
+        auto pn  = p.rp + p.rr;
         DefVec shift(pn, nullptr);
         DefVec sr_t(pn, [&](size_t d) { return p.Sr->proj(pn, d); });
         for (u64 a = 0; a != p.ro; ++a) {
             const Def* lo = w.lit(i32, u64(stg->lin[a].cst));
             for (u64 d = 0; d != stg->level; ++d)
                 if (auto kk = stg->lin[a].coef[d])
-                    lo = w.call(core::wrap::add, core::Mode::nsuw,
-                                Defs{lo, w.call(core::wrap::mul, core::Mode::nsuw, Defs{pref[d], w.lit(i32, u64(kk))})});
+                    lo = w.call(
+                        core::wrap::add, core::Mode::nsuw,
+                        Defs{lo, w.call(core::wrap::mul, core::Mode::nsuw, Defs{pref[d], w.lit(i32, u64(kk))})});
             shift[stg->perm[a]] = lo;
             sr_t[stg->perm[a]]  = w.lit_nat(stg->ext[a]);
         }
@@ -575,7 +584,15 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
 
     // Apply the nest; the output buffer is threaded through as the nest's write-back target and
     // yielded straight to the op's continuation.
-    fun->app(true, nest, w.tuple({mem, out_buf, cont}));
+    const Def* done = cont;
+    if (stg) {
+        auto freed                    = w.mut_con({mem_ty, out_ty})->set("freeTile");
+        auto [tile_r, tile_s, tile_T] = Axm::isa<buffer::Buf>(tile_ty)->args<3>();
+        auto fm = w.call<buffer::free>(Defs{tile_r, tile_s, tile_T}, Defs{freed->var(2, 0), tile_buf});
+        freed->app(true, cont, w.tuple({fm, freed->var(2, 1)}));
+        done = freed;
+    }
+    fun->app(true, nest, w.tuple({mem, out_buf, done}));
     return call;
 }
 

@@ -49,7 +49,7 @@ std::pair<Lam*, const Def*> counting_for(const Def* bound, const Def* acc, const
 
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
-    return Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app)
+    return Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || tensor::map_reduce_app(app)
         || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app)
         || Axm::isa<tensor::scatter>(app);
 }
@@ -122,13 +122,13 @@ void LowerToMem::collect_tensor_types() {
                 elem(T);
                 if (!Lit::isa<u64>(r)) gate("non-literal rank of `tensor.generate`", app);
                 add_tensor_ty(app->type());
-            } else if (Axm::isa<tensor::map_reduce_post>(app)) {
+            } else if (tensor::map_reduce_app(app)) {
                 // result and each of the `nis` inputs / `nps` epilogue inputs are tensors.
                 add_tensor_ty(app->type());
                 auto [nis_nps, meta, shapes, in_tys, comb_init, acc_out, accs]
                     = app->callee()->as<App>()->uncurry_args<7>();
                 auto [nis, nps]                     = nis_nps->projs<2>();
-                auto [To, Tp, Ro, Rn, TSched]       = meta->projs<5>();
+                auto [To, Tp, Ro, Rp, Rn, TSched]   = btensor::mr_meta(meta);
                 auto [Tis, Ris, Sis, Tps, Rps, Sps] = in_tys->projs<6>();
                 auto [is, post_is]                  = app->arg()->projs<2>();
                 elem(To), elem(Tp);
@@ -434,7 +434,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::splat>(app)) return lower_splat(app);
     if (Axm::isa<tensor::generate>(app)) return lower_generate(app);
     if (Axm::isa<tensor::broadcast>(app)) return lower_broadcast(app);
-    if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app);
+    if (tensor::map_reduce_app(app)) return lower_map_reduce(app);
     if (Axm::isa<tensor::pad>(app)) return lower_pad(app);
     if (Axm::isa<tensor::concat>(app)) return lower_concat(app);
     if (Axm::isa<tensor::gather>(app)) return lower_gather(app);
@@ -692,10 +692,10 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     // place, so the alias is safe.
     // A parameter's buffer is left to the copy, so a result never aliases the caller's argument.
     if (auto pr = is_pure_read(app); pr && Axm::peel<tensor::buf>(pr->src)->isa<App>()) {
-        auto src           = rewrite(pr->src);
-        auto Ro            = meta->proj(5, 2);
-        auto [map, R, S]   = std::array{rewrite(pr->map), rewrite(pr->R), rewrite(pr->S)};
-        auto So            = shapes->proj(3, 0);
+        auto src         = rewrite(pr->src);
+        auto Ro          = meta->proj(meta->num_projs(), 2);
+        auto [map, R, S] = std::array{rewrite(pr->map), rewrite(pr->R), rewrite(pr->S)};
+        auto So          = shapes->proj(3, 0);
         if (Axm::isa<buffer::Buf>(src->type())
             && (is_reshape_read(w, map, R, S, Ro, So) || is_prefix_read(w, map, R, S, Ro, So)))
             return w.call<core::bitcast>(buf_of(app->type()), src);
@@ -723,7 +723,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
 
     // Likewise wrap the pure epilogue `Fn [To, «nps; Tps»] → Tp` into
     // `Fn [mem.M 0, To, «nps; Tps»] → [mem.M 0, Tp]`.
-    auto pTp               = meta->proj(5, 1);
+    auto pTp               = meta->proj(meta->num_projs(), 1);
     auto pin               = post->type()->as<Pi>()->dom()->proj(2, 0); // [To, «nps; Tps»]
     auto [pTo, pexts_ty]   = pin->projs<2>();
     auto mempost           = w.mut_fun(w.sigma({mem_ty, pTo, pexts_ty}), w.sigma({mem_ty, pTp}))->set("memPost");
@@ -736,7 +736,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     // NB: no `w.call` here — the meta groups are *forwarded* from the tensor op on purpose. Leaving them to
     // inference would re-derive `{Tis, Ris, Sis}` from the `buffer.Buf` operands, whose literal size-1 axes are
     // already folded away, so they would no longer agree with the logical shapes the loop generation iterates.
-    auto op       = w.annex<btensor::map_reduce_post>();
+    auto op       = meta->num_projs() == 6 ? w.annex<btensor::map_reduce_iter>() : w.annex<btensor::map_reduce_post>();
     op            = w.app(op, nis_nps);
     op            = w.app(op, meta);
     op            = w.app(op, shapes);

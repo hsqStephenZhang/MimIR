@@ -40,6 +40,7 @@ private:
         std::vector<Lin> lin;
         std::vector<u64> ext;
         std::vector<u64> perm;
+        bool full = false; // level-zero producer over its whole output, including non-linear consumer maps
     };
     /// Where a staged producer writes: the tile of (unfolded) shape `ext`, axis a from parallel loop `perm[a]`.
     struct Tile {

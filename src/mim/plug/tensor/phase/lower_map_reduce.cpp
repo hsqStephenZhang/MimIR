@@ -121,17 +121,17 @@ const Def* clamp(World& w, const Def* x, const Def* bound) {
 const Def* LowerMapReduce::lower_map_reduce(const App* app) {
     // meta arguments:
     // * nis = in-count, nps = epilogue-input count (nat)
-    // * To = accumulator type, Tp = out-element type (post: Fn [To, «nps; Tps»] → Tp), Ro = #output loops =
-    //   result rank, Rn = #loops in total
+    // * To = accumulator type, Tp = out-element type (post: Fn [To, «nps; Tps»] → Tp),
+    //   Ro = result rank, Rp = #parallel loops, Rn = #loops in total
     // * So = result shape (Ro*nat)
-    // * Sr = the full loop bounds Rn*nat: the leading Ro are the output-loop bounds, the trailing Rn - Ro the
+    // * Sr = the full loop bounds Rn*nat: the leading Rp are the parallel-loop bounds, the trailing Rn - Rp the
     // reductions
     // * Tis/Ris/Sis, Tps/Rps/Sps = (epilogue) input types/ranks/shapes
     // arguments:
     // * f = combination function (CPS), init = accumulator init, post = per-output-cell epilogue (CPS),
     //   applied to the folded accumulator and the epilogue elements right before the write-back
     // * acc_out = affine map from the Rn loop vector to the Ro write coordinates in the result «So» (the reduction
-    //             part is not in scope at write-back, so acc_out must depend only on the leading Ro output indices)
+    //             part is not in scope at write-back, so acc_out must depend only on the leading Rp parallel indices)
     // * accs = per-input affine map from the Rn loop vector to the input's read coordinates
     // * post_accs = per-epilogue-input affine map from the Ro output-cell (write) coordinates to its read coordinates
     // * is, post_is = input tensors
@@ -142,7 +142,7 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
 
     auto [nis_nps, meta, shapes, in_tys, comb_init, acc_out, accs_all] = c->uncurry_args<7>();
     auto [nis, nps]                                                    = nis_nps->projs<2>();
-    auto [To, Tp, Ro, Rn, TSched]                                      = meta->projs<5>();
+    auto [To, Tp, Ro, Rp, Rn, TSched]                                  = btensor::mr_meta(meta);
     auto [So, Sr, sched]                                               = shapes->projs<3>();
     auto [Tis, Ris, Sis, Tps, Rps, Sps]                                = in_tys->projs<6>();
     auto [comb, init, post]                                            = comb_init->projs<3>();
@@ -150,14 +150,14 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
 
     auto nis_l = Lit::isa<u64>(nis);
     auto nps_l = Lit::isa<u64>(nps);
-    auto ro_l = Lit::isa<u64>(Ro), rn_l = Lit::isa<u64>(Rn);
-    if (!nis_l || !nps_l || !ro_l || !rn_l || *rn_l < *ro_l) {
-        log().w("rank counts (nis/nps/Ro/Rn) of {} are not known at lowering time", app);
+    auto ro_l = Lit::isa<u64>(Ro), rp_l = Lit::isa<u64>(Rp), rn_l = Lit::isa<u64>(Rn);
+    if (!nis_l || !nps_l || !ro_l || !rp_l || !rn_l || *rn_l < *rp_l) {
+        log().w("rank counts (nis/nps/Ro/Rp/Rn) of {} are not known at lowering time", app);
         return nullptr;
     }
     auto nis_nat = *nis_l;
     auto nps_nat = *nps_l;
-    auto ro = *ro_l, rr = *rn_l - *ro_l;
+    auto rp = *rp_l, rr = *rn_l - *rp_l;
     auto nloops = *rn_l;             // length of the full loop vector (= length of Sr)
     auto n      = w.lit_nat(nloops); // passed as the affine maps' domain length
 
@@ -189,22 +189,22 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         auto [new_is, new_post_is] = new_inputs->set("is")->projs<2>();
         auto sr                    = Sr->projs(nloops);
 
-        // Outer (parallel) loops over the leading Ro bounds of `Sr`, collecting the output iteration indices.
+        // Outer (parallel) loops over the leading Rp bounds of `Sr`, collecting the output iteration indices.
         const Def* acc   = w.bot(cont->type()->as<Pi>()->dom());
         auto current_mut = fun;
-        auto raw_out     = build_loops(w, current_mut, cont, acc, Defs(sr).subspan(0, ro), "forOut");
-        DefVec out_iters(ro, [&](size_t i) { return w.call(core::conv::u, sr[i], raw_out[i]); });
+        auto raw_out     = build_loops(w, current_mut, cont, acc, Defs(sr).subspan(0, rp), "forOut");
+        DefVec out_iters(rp, [&](size_t i) { return w.call(core::conv::u, sr[i], raw_out[i]); });
         auto wb_matrix = acc;
 
         // Write-back: run the `post` epilogue on the accumulated element, then narrow the result into the
         // output at the affine write coordinates `acc_out`.
-        // acc_out takes the full (Ro+Rr) loop vector, but the reduction loops have already been folded away here, so we
-        // pass 0 for those slots; acc_out must depend only on the leading Ro output indices.
+        // acc_out takes the full (Rp+Rr) loop vector, but the reduction loops have already been folded away here, so we
+        // pass 0 for those slots; acc_out must depend only on the leading Rp parallel indices.
         auto write_back    = w.mut_con(To)->set("writeBack");
         auto element_final = write_back->var();
         DefVec wb_iters    = out_iters;
         for (u64 j = 0; j < rr; ++j)
-            wb_iters.emplace_back(w.call(core::conv::u, sr[ro + j], w.lit_i64(0)));
+            wb_iters.emplace_back(w.call(core::conv::u, sr[rp + j], w.lit_i64(0)));
         auto write_coords = affine_map(acc_out, Ro, n, Sr, So, w.tuple(wb_iters)); // «Ro; Idx (So#k)»
 
         // Read one element from each epilogue input at its post_accs-mapped output-cell coordinates.
@@ -217,8 +217,8 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         auto after_post = w.mut_con(Tp)->set("afterPost");
         after_post->app(true, cont, w.insert(wb_matrix, write_coords, after_post->var()));
         // A parallel partition overshoots the result: its excluded cells are neither folded nor written.
-        DefVec raw_cell(nloops, [&](size_t d) { return d < ro ? raw_out[d] : w.lit_i64(0); });
-        auto out_skip = btensor::ptail_skip(sched, ro, sr, raw_cell);
+        DefVec raw_cell(nloops, [&](size_t d) { return d < rp ? raw_out[d] : w.lit_i64(0); });
+        auto out_skip = btensor::ptail_skip(sched, rp, sr, raw_cell);
         if (out_skip) {
             auto put  = w.mut_con(w.sigma())->set("put");
             auto keep = w.mut_con(w.sigma())->set("keep");
@@ -233,13 +233,13 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         // indices.
         acc              = init;
         cont             = write_back;
-        auto raw_red     = build_loops(w, current_mut, cont, acc, Defs(sr).subspan(ro, rr), "forIn");
+        auto raw_red     = build_loops(w, current_mut, cont, acc, Defs(sr).subspan(rp, rr), "forIn");
         auto element_acc = acc;
 
         // The full loop iteration vector `(o…, r…)`; its moduli are exactly `Sr`.
         DefVec iters_v = out_iters;
         for (u64 j = 0; j != rr; ++j)
-            iters_v.emplace_back(w.call(core::conv::u, sr[ro + j], raw_red[j]));
+            iters_v.emplace_back(w.call(core::conv::u, sr[rp + j], raw_red[j]));
         auto iters = w.tuple(iters_v);
 
         // Read one element from each input at its affine read coordinates.
@@ -252,8 +252,8 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         comb->set("comb");
         post->set("post");
         // A partitioned domain overshoots the reduction: skip the points its schedule's tail excludes.
-        DefVec raw(nloops, [&](size_t d) { return d < ro ? raw_out[d] : raw_red[d - ro]; });
-        auto skip = btensor::tail_skip(sched, ro, sr, raw);
+        DefVec raw(nloops, [&](size_t d) { return d < rp ? raw_out[d] : raw_red[d - rp]; });
+        auto skip = btensor::tail_skip(sched, rp, sr, raw);
         if (out_skip) skip = skip ? w.call(core::bit2::or_, w.lit_nat(2), w.tuple({skip, out_skip})) : out_skip;
         if (skip) {
             auto fold = w.mut_con(w.sigma())->set("fold");
@@ -513,7 +513,7 @@ const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::compute_at>(app)) return rewrite(app->arg());
     if (auto bc = Axm::isa<tensor::broadcast>(app)) {
         if (auto res = lower_broadcast(bc)) return res;
-    } else if (auto mr = Axm::isa<tensor::map_reduce_post>(app)) {
+    } else if (auto mr = tensor::map_reduce_app(app)) {
         if (auto res = lower_map_reduce(mr)) return res;
     } else if (auto generate = Axm::isa<tensor::generate>(app)) {
         if (auto res = lower_generate(generate)) return res;

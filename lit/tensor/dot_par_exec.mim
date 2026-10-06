@@ -4,9 +4,8 @@
 // RUN: MIM_NUM_THREADS=4 %t
 // RUN: MIM_NUM_THREADS=1 %t
 
-// Both kernels are packed (see dot_par.mim), so dot_par never names their outermost loop `par`; this is a
-// regression guard that a packed contraction stays correct (and serial) under either thread count, driven by
-// dot_par_aux.cpp against a scalar reference: a packed product and one with N not a multiple of 16.
+// The aligned product uses fused parallel tiles and a read-only packed operand. The N-tail product
+// retains the existing serial schedule. Both are checked against a scalar reference.
 plugin tensor;
 plugin refly;
 plugin core;

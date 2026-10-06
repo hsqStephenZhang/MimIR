@@ -1,0 +1,35 @@
+// RUN: %mim -p opt -p clos -X tensor:threads=4 %s -p ll -X ll:o=%t.ll
+// RUN: %FileCheck %s < %t.ll
+// RUN: clang++ -std=c++23 %S/dot_par_fused_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: MIM_NUM_THREADS=4 %t
+// RUN: MIM_NUM_THREADS=2 %t
+// RUN: MIM_NUM_THREADS=1 %t
+// RUN: %mim -p opt -p clos -X tensor:threads=4 -X tensor:vec_bytes=32 -X tensor:acc_regs=24 %s -p ll -X ll:o=%t.cap.ll
+// RUN: clang++ -std=c++23 %S/dot_par_fused_aux.cpp %t.cap.ll -o %t.cap -Wno-override-module
+// RUN: MIM_NUM_THREADS=4 %t.cap
+
+plugin core;
+plugin tensor;
+plugin math;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+// Full packed B is produced before the parallel call, shared read-only, and freed after the synchronous join.
+// The two tile coordinates are fused into eight tasks, with local SSA accumulator blocks.
+// CHECK-LABEL: define {{.*}} @packed(
+// CHECK: call void @mim_rt_parallel_for(i64 8,
+// CHECK: call void @free(
+extern fun packed (a: «256, 256; F32», b: «256, 256; F32»): «256, 256; F32» =
+    return (tensor.product_2d R (a, b));
+// Both task-grid dimensions have non-power-of-two extents (3 x 6).
+// CHECK-LABEL: define {{.*}} @rectangular(
+// CHECK: call void @mim_rt_parallel_for(i64 18,
+// CHECK: call void @free(
+extern fun rectangular (a: «384, 256; F32», b: «256, 384; F32»): «384, 384; F32» =
+    return (tensor.product_2d R (a, b));
+// M below the packing threshold: the same fused schedule reads the original right operand.
+// CHECK-LABEL: define {{.*}} @unpacked(
+// CHECK: call void @mim_rt_parallel_for(i64 4,
+extern fun unpacked (a: «32, 256; F32», b: «256, 512; F32»): «32, 512; F32» =
+    return (tensor.product_2d R (a, b));

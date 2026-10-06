@@ -8,9 +8,21 @@
 #include <mim/tuple.h>
 #include <mim/world.h>
 
+#include <mim/plug/btensor/btensor.h>
+
 #include "mim/plug/tensor/autogen.h"
 
 namespace mim::plug::tensor {
+
+inline const App* map_reduce_app(const Def* d) {
+    if (auto mr = Axm::isa<tensor::map_reduce_post>(d)) return mr;
+    return Axm::isa<tensor::map_reduce_iter>(d);
+}
+
+/// Preserve the source op's metadata shape when rebuilding it during fusion.
+inline const Def* map_reduce_axm(World& w, const Def* meta) {
+    return meta->num_projs() == 6 ? w.annex<tensor::map_reduce_iter>() : w.annex<tensor::map_reduce_post>();
+}
 
 /// Recognizes the (rebuilt) `tensor_copy` combiner `(acc, ys) ↦ ys#0`: the result is exactly the
 /// single input element, so a map_reduce built on it is a pure re-indexed read of that input.
@@ -41,13 +53,14 @@ struct PureRead {
 /// lower to these) — returns its single access map and source.
 /// `fuse_tensor`'s read-through absorbs exactly these into the consuming op's access maps.
 inline std::optional<PureRead> is_pure_read(const Def* value) {
-    auto mr = Axm::isa<tensor::map_reduce_post>(value);
+    auto mr = map_reduce_app(value);
     if (!mr) return {};
     auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, is_all] = mr->uncurry_args<8>();
 
     auto [nis, nps] = nis_nps->projs<2>();
     // No reduction loops: the total loop count Rn equals the output rank Ro.
-    if (Lit::isa(nis) != 1 || Lit::isa(nps) != 0 || meta->proj(5, 2) != meta->proj(5, 3)) return {};
+    auto [To, Tp, Ro, Rp, Rn, TSched] = btensor::mr_meta(meta);
+    if (Lit::isa(nis) != 1 || Lit::isa(nps) != 0 || Ro != Rp || Rp != Rn) return {};
     auto [So, Sr, sched] = shapes->projs<3>();
     if (Sr != So) return {};
     auto id_lam = map_out->isa_mut<Lam>();

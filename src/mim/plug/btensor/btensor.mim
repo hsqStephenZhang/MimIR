@@ -109,6 +109,24 @@ axm map_reduce_post: {nis nps: Nat}
                       post_is: «j: nps; buffer.Buf (Rps#j, Sps#j, Tps#j)»]
                    → [mem.M 0, buffer.Buf (Ro, So, Tp)];
 ///
+/// ### map_reduce_iter
+///
+/// Explicit iteration-domain variant: Ro is the output rank, Rp counts leading parallel iteration dims,
+/// and Rn - Rp counts reductions. Legacy map_reduce_post keeps Rp = Ro and its original signature.
+axm map_reduce_iter: {nis nps: Nat}
+                   → {To Tp: *, Ro Rp Rn: Nat, TSched: □}
+                   → [So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched]
+                   → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
+                      Tps: «nps; *», Rps: «j: nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+                   → [f: Fn [mem.M 0, To, «i: nis; Tis#i»] → [mem.M 0, To], init: To,
+                      post: Fn [mem.M 0, To, «j: nps; Tps#j»] → [mem.M 0, Tp]]
+                   → [map_out: [«Rn; affine.Index»] → «Ro; affine.Index»]
+                   → [maps: «i: nis; ([«Rn; affine.Index»] → «Ris#i; affine.Index»)»,
+                      post_maps: «j: nps; ([«Ro; affine.Index»] → «Rps#j; affine.Index»)»]
+                   → [mem.M 0, is: «i: nis; buffer.Buf (Ris#i, Sis#i, Tis#i)»,
+                      post_is: «j: nps; buffer.Buf (Rps#j, Sps#j, Tps#j)»]
+                   → [mem.M 0, buffer.Buf (Ro, So, Tp)];
+///
 /// ### mk_sched
 ///
 /// The canonical **schedule** value: a chooser over the target's loop-nest builder, picking
