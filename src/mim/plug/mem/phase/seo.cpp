@@ -438,6 +438,11 @@ void SEO::Analysis::analyze(const Def* def) {
         unknowns_.emplace(lam);
         for (auto v : var->tprojs())
             pin(v);
+        // apply_known also records the whole parameter tuple. Pinning its projections alone
+        // leaves that cached tuple propagating stale arguments into an escaping function.
+        // Sparse rounds replay the tuple, whereas full rounds rebuild the projections: the
+        // disagreement can oscillate forever, or leave out-of-scope values after rewriting.
+        pin(var);
     }
 
     for (auto d : def->deps())

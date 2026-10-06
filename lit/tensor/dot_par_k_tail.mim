@@ -1,0 +1,25 @@
+// RUN: %mim -p opt -p clos -X tensor:threads=4 --max-fp-iters 32 %s -p ll
+// RUN: %FileCheck %s --implicit-check-not='call void @mim_rt_parallel_for' < %{s:stem}.ll
+// RUN: clang++ -std=c++23 %S/dot_par_k_tail_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: MIM_NUM_THREADS=4 %t
+// RUN: MIM_NUM_THREADS=1 %t
+
+// A peeled K tile produces first-class continuations. SEO must discard a known
+// parameter tuple when its function escapes during closure conversion, as well
+// as pinning its projections; otherwise full/sparse rounds disagree indefinitely.
+// mm49 previously failed after 1024 iterations. The other products cover unpacked
+// and packed K tails. Their schedules stay serial under dot_par's safety gate.
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+// CHECK-DAG: define {{.*}}@mm49(
+// CHECK-DAG: define {{.*}}@mm65(
+// CHECK-DAG: define {{.*}}@mm130(
+extern fun mm49 (a: «64, 49; F32», b: «49, 1024; F32»): «64, 1024; F32» = return (tensor.product_2d R (a, b));
+extern fun mm65 (a: «32, 65; F32», b: «65, 512; F32»): «32, 512; F32» = return (tensor.product_2d R (a, b));
+extern fun mm130 (a: «64, 130; F32», b: «130, 512; F32»): «64, 512; F32» = return (tensor.product_2d R (a, b));
