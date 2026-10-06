@@ -5,6 +5,7 @@
 
 #include <mim/def.h>
 #include <mim/phase.h>
+#include <mim/plugin.h>
 
 #include <mim/util/types.h>
 
@@ -49,6 +50,13 @@ private:
     };
 
     void start() override;
+    void report_nest(const MrOp&,
+                     const Def* bounds,
+                     const Def* kind,
+                     const Def* parallel_hi,
+                     const Def* stage_level,
+                     bool staged);
+    Out report_;
     const Def* rewrite_imm_App(const App*) override;
     const Def* build_nest(const MrOp&,
                           const Def* Sr_loop,

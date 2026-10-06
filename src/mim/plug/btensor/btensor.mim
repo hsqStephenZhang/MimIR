@@ -449,6 +449,9 @@ anx lam NestT (ro rr: Nat, Sr: «ro + rr; Nat», To U: *): * =
 /// selected.
 ///
 /// Per-cell fold order is untouched by any of these transforms.
+/// The selected implementation and its tag; CPU lowering records the tag and erases this identity.
+axm nest_tag: {T: *} → [kind parallel_hi: Nat, value: T] → T;
+
 anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail pout rout ptail par: Nat)
                    : NestT (ro, rr, Sr, To, U) =
     let r    = ro + rr;
@@ -827,13 +830,16 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
 
         // Peeling the last block needs its loop below the stage.
         let rb_sel = core.bit2.and_ 2 (rb_ok, (sl < pd_c, tt)#(ptail == 0));
+        // Pair the implementation with its report tag in the same selection, so the report cannot
+        // claim a register/tiled nest when its guard selected a fallback.
+        let chosen = ((((((0, ro, classic), (1, vd, vectorized))#(core.bit2.and_ 2 (vec_ok, sl <= vd)),
+                          ((2, pd_c, blocked), (3, (pd_c, sl)#(ptail != 0), regblk))#rb_sel)#(core.bit2.and_ 2 (block_ok, sl <= pd_c)),
+                         (4, rv_bd, redvec))#(core.bit2.and_ 2 (redvec_ok, sl <= rv_bd)),
+                        (5, tl_p, tiled))#(core.bit2.and_ 2 (tl_ok, sl <= tl_p)),
+                       (6, trb_p, tiled_rb))#(core.bit2.and_ 2 (trb_ok, sl <= trb_p));
         con run (mem0: mem.M 0, u0: U, done: Cn [mem.M 0, U])@tt =
-            ((((((classic, vectorized)#(core.bit2.and_ 2 (vec_ok, sl <= vd)),
-                  (blocked, regblk)#rb_sel)#(core.bit2.and_ 2 (block_ok, sl <= pd_c)),
-                 redvec)#(core.bit2.and_ 2 (redvec_ok, sl <= rv_bd)),
-                tiled)#(core.bit2.and_ 2 (tl_ok, sl <= tl_p)),
-               tiled_rb)#(core.bit2.and_ 2 (trb_ok, sl <= trb_p))) (mem0, u0, done);
-        run;
+            chosen#2_3 (mem0, u0, done);
+        nest_tag (chosen#0_3, chosen#1_3, run);
     nest;
 ///
 /// ## Phases

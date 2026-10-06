@@ -1,11 +1,14 @@
 #include "mim/plug/btensor/phase/lower_map_reduce.h"
 
+#include <charconv>
+
 #include <algorithm>
 
 #include <fe/worklist.h>
 
 #include <mim/axm.h>
 #include <mim/def.h>
+#include <mim/driver.h>
 #include <mim/lam.h>
 
 #include <mim/plug/affine/affine.h>
@@ -83,6 +86,7 @@ const Def* build_pointwise(World& w,
 
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (is_bootstrapping()) return RWPhase::rewrite_imm_App(app);
+    if (auto tag = Axm::isa<btensor::nest_tag>(app)) return rewrite(tag->arg()->proj(3, 2));
     if (btensor::map_reduce_app(app)) return lower_map_reduce_post(app);
     if (Axm::isa<btensor::compute_at>(app)) return rewrite(app->arg());
     if (Axm::isa<btensor::broadcast>(app)) return lower_broadcast(app);
@@ -114,7 +118,8 @@ const Def* LowerMapReduce::lower_buffer_lit(const App* app) {
 
 /// The pieces of a (new-world) `btensor.map_reduce_post` callee.
 struct MrOp {
-    u64 nis, nps, ro, rp, rr;
+    u64 nis, nps, ro, rp, rr, id;
+    const Def* shapes;
     const Def *To, *Tp, *Ro, *Rp, *Sr, *So, *sched, *Ris, *Sis, *Rps, *Sps, *comb, *init, *post, *accs, *post_accs,
         *acc_out;
 };
@@ -132,8 +137,8 @@ std::optional<MrOp> mr_op(const App* c) {
     auto nis_l = Lit::isa<u64>(nis), nps_l = Lit::isa<u64>(nps), ro_l = Lit::isa<u64>(Ro);
     auto rp_l = Lit::isa<u64>(Rp), rn_l = Lit::isa<u64>(Rn);
     if (!nis_l || !nps_l || !ro_l || !rp_l || !rn_l || *rn_l < *rp_l) return {};
-    return MrOp{*nis_l, *nps_l, *ro_l, *rp_l, *rn_l - *rp_l, To,   Tp,   Ro,   Rp,   Sr,        So,
-                sched,  Ris,    Sis,   Rps,   Sps,           comb, init, post, accs, post_accs, acc_out};
+    return MrOp{*nis_l, *nps_l, *ro_l, *rp_l, *rn_l - *rp_l, c->gid(), shapes, To,   Tp,   Ro,   Rp,        Sr,
+                So,     sched,  Ris,   Sis,   Rps,           Sps,      comb,   init, post, accs, post_accs, acc_out};
 }
 
 /// The coordinate `e` of an access map over the loop vector `var` of `n` dims as `cst + Σ coef[d] · var#d`.
@@ -207,6 +212,9 @@ std::optional<std::vector<u64>> literals(const Def* s, u64 n) {
 } // namespace
 
 void LowerMapReduce::start() {
+    auto path = arg_value(driver().args("tensor"), "schedule_report");
+    if (!path) path = arg_value(args(), "schedule_report");
+    if (path) report_.name() = *path;
     // Uses of every def, charged through the tuples and packs that merely wrap arguments.
     auto uses   = DefMap<u64>();
     auto charge = [&](this auto&& charge, const Def* d) -> void {
@@ -458,7 +466,92 @@ const Def* LowerMapReduce::build_nest(const MrOp& op,
         stage = w.mut_con(sdom)->set("noStage");
         stage->app(true, stage->var(3, 2), stage->var(3, 1));
     }
-    return w.app(nest, w.tuple({op.init, cell, wb, sl ? sl : w.lit_nat_0(), stage}));
+    auto level  = sl ? sl : w.lit_nat_0();
+    auto result = w.app(nest, w.tuple({op.init, cell, wb, level, stage}));
+    if (auto tag = Axm::isa<btensor::nest_tag>(result)) {
+        report_nest(op, Sr_loop, tag->arg()->proj(3, 0), tag->arg()->proj(3, 1), level, tile != nullptr);
+        return tag->arg()->proj(3, 2);
+    }
+    return result;
+}
+
+void LowerMapReduce::report_nest(const MrOp& op,
+                                 const Def* bounds,
+                                 const Def* kind,
+                                 const Def* parallel_hi,
+                                 const Def* stage_level,
+                                 bool staged) {
+    if (report_.name().empty()) return;
+    static constexpr std::array names = {"classic",
+                                         "vectorized",
+                                         "blocked",
+                                         "register_blocked",
+                                         "reduction_vectorized",
+                                         "tiled",
+                                         "tiled_register_blocked"};
+    auto os                           = report_.os();
+    auto number                       = [&](const Def* d) {
+        if (auto v = Lit::isa<u64>(d))
+            std::print(*os, "{}", *v);
+        else
+            *os << "null";
+    };
+    auto shape = [&](const Def* s, u64 n) {
+        *os << '[';
+        for (u64 i = 0; i != n; ++i) {
+            if (i) *os << ',';
+            number(s->proj(n, i));
+        }
+        *os << ']';
+    };
+    auto k = Lit::isa<u64>(kind);
+    std::print(*os, "{{\"schema\":1,\"backend\":\"cpu\",\"op_id\":{},\"Ro\":{},\"Rp\":{},\"Rr\":{},\"So\":", op.id,
+               op.ro, op.rp, op.rr);
+    shape(op.So, op.ro);
+    *os << ",\"Sr\":";
+    shape(bounds, op.rp + op.rr);
+    std::print(*os, ",\"nest\":\"{}\",\"staged_producer\":{},\"stage_level\":",
+               k && *k < names.size() ? names[*k] : "unknown", staged);
+    number(stage_level);
+    *os << ",\"schedule\":";
+    if (auto fields = btensor::sched_fields(op.sched)) {
+        static constexpr std::array labels = {"vdim", "unroll", "tail", "pout", "rout", "ptail", "par"};
+        *os << '{';
+        for (u64 i = 0; i != labels.size(); ++i) {
+            if (i) *os << ',';
+            std::print(*os, "\"{}\":{}", labels[i], (*fields)[i]);
+        }
+        *os << '}';
+    } else
+        *os << "null";
+    *os << ",\"register_block\":";
+    if (auto fields = btensor::sched_fields(op.sched); fields && k && (*k == 3 || *k == 6)) {
+        auto vd = (*fields)[0];
+        *os << '[';
+        number(bounds->proj(op.rp + op.rr, vd));
+        *os << ',';
+        number(bounds->proj(op.rp + op.rr, vd + 1));
+        *os << ']';
+    } else
+        *os << "null";
+    u64 target_threads = 1;
+    if (auto val = arg_value(driver().args("tensor"), "threads")) {
+        u64 n = 0;
+        if (std::from_chars(val->data(), val->data() + val->size(), n).ec == std::errc{}) target_threads = n;
+    }
+    *os << ",\"parallel_tasks\":";
+    auto hi = Lit::isa<u64>(parallel_hi), sl = Lit::isa<u64>(stage_level);
+    if (auto fields = btensor::sched_fields(op.sched); fields && hi && sl) {
+        auto par    = (*fields)[6];
+        bool active = (par == 0 && *sl > 0) || (par == *sl && *sl < *hi);
+        if (active)
+            number(bounds->proj(op.rp + op.rr, par));
+        else
+            *os << "0";
+    } else
+        *os << "null";
+    std::print(*os, ",\"predicate\":{},\"target_threads\":{},\"runtime_threads\":null}}\n", op.shapes->num_projs() == 5,
+               target_threads);
 }
 
 const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
@@ -475,6 +568,8 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         log().w("rank counts (nis/nps/Ro/Rp/Rn) of {} are not known at lowering time", app);
         return RWPhase::rewrite_imm_App(app);
     }
+
+    op->id = app->gid();
 
     // The final argument is `[mem, is, post_is]`; the result is `[mem, Buf]`.
     auto [op_mem, op_is, op_post_is] = rewrite(app->arg())->projs<3>();
