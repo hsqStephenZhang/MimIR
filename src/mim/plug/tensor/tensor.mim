@@ -187,7 +187,7 @@ axm map_reduce_post: {nis nps: Nat}
 /// The type of a **schedule** value: a chooser over the target's loop-nest builder — for whatever nest
 /// type `N` the lowering instantiates, it is handed the target's builder `mk` and returns the nest
 /// to run.
-let SchedT = [N: *] → ([vdim unroll tail pout rout ptail: Nat] → N) → N;
+let SchedT = [N: *] → ([vdim unroll tail pout rout ptail par: Nat] → N) → N;
 ///
 /// ### mk_sched
 ///
@@ -220,7 +220,7 @@ anx lam map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
                    (maps: «i: nis; ([«Rn; affine.Index»] → «Ris#i; affine.Index»)»)
                    (is: «i: nis; «Sis#i; Tis#i»»): «So; To» =
     map_reduce_post
-        (So, Sr, mk_sched (Rn, 0, 0, 0, 0, 0))
+        (So, Sr, mk_sched (Rn, 0, 0, 0, 0, 0, Rn))
         (f, init, id @To) map_out (maps, ()) (is, ());
 ///
 /// ### proj_map
@@ -626,7 +626,7 @@ axm if_static: {T: *} → [k: Nat, s d: T] → T, normalize_if_static;
 /// - `cache_elems`, the elements of an operand panel that stay in cache across the loops reusing it.
 ///
 /// Each defaults to the host; `-X tensor:<name>=<n>` overrides it, so one selector serves every target.
-axm target.(vec_bytes, vec_regs, acc_regs, cache_elems): [] → Nat, normalize_target;
+axm target.(vec_bytes, vec_regs, acc_regs, cache_elems, threads): [] → Nat, normalize_target;
 ///
 /// ## Tiling
 ///
@@ -643,7 +643,7 @@ axm target.(vec_bytes, vec_regs, acc_regs, cache_elems): [] → Nat, normalize_t
 ///   result shape `So` — MLIR's getIterationDomain + getLoopIteratorTypes.
 /// - `oax`: which output axis each parallel dim writes — the piece of the write map the domain
 ///   transforms need (`strip_mine_par` splits the output along `oax#d`).
-/// - the schedule `vdim`/`unroll`/`tail`/`pout`/`rout`/`ptail` (see `mk_sched`): the chooser `retile` packs into the op.
+/// - the schedule `vdim`/`unroll`/`tail`/`pout`/`rout`/`ptail`/`par` (see `mk_sched`): the chooser `retile` packs into the op.
 /// - `retile`: rebuild the computation over a *reindexed* domain, given the new domain and
 ///   schedule, `iota` (maps new loop vectors to old loop vectors) and `omega` (maps (old output
 ///   coordinates, new loop vector) to new output coordinates).
@@ -655,9 +655,9 @@ let Tileable = [
     So: «Ro; Nat»,
     oax: «Ro; Nat»,
     Sr: «Ro + Rr; Nat»,
-    vdim: Nat, unroll: Nat, tail: Nat, pout: Nat, rout: Nat, ptail: Nat,
+    vdim: Nat, unroll: Nat, tail: Nat, pout: Nat, rout: Nat, ptail: Nat, par: Nat,
     retile: [Ro_n Rr_n: Nat]
-          → [So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n: Nat]
+          → [So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n par_n: Nat]
           → [iota:  «Ro_n + Rr_n; affine.Index» → «Ro + Rr; affine.Index»,
              omega: [«Ro; affine.Index», «Ro_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»]
           → «So_n; Tp»,
@@ -685,6 +685,9 @@ anx lam interchange (t: Tileable, perm: «t#Ro + t#Rr; Nat»): Tileable =
     let vdim_n = match vec.first `== (perm_ok, t#vdim) with
                      | j: Idx r => core.bitcast Nat j
                      | _: []    => t#vdim;
+    let par_n  = match vec.first `== (perm_ok, t#par) with
+                     | j: Idx r => core.bitcast Nat j
+                     | _: []    => t#par;
     // The parallel dims permute among themselves (checked above), so the new dim j writes the
     // output axis its old dim perm#j wrote.
     let oax_n = ‹j: t#Ro; t#oax#(core.idx 0 (t#Ro) (perm_ok#(core.idx 0 r (core.bitcast Nat j))))›;
@@ -692,13 +695,13 @@ anx lam interchange (t: Tileable, perm: «t#Ro + t#Rr; Nat»): Tileable =
     lam iota_p (o: «r; affine.Index»): «r; affine.Index» =
         ‹i: r; o#(option.unwrap_unsafe (vec.first `== (perm_ok, core.bitcast Nat i)))›;
     lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat)
                  (iota:  «ro_m + rr_m; affine.Index» → «r; affine.Index»,
                   omega: [«t#Ro; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : «so_m; t#Tp» =
-        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m)
+        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m)
                  (comp_map (iota_p, iota), omega);
-    (t#Tp, t#Ro, t#Rr, t#So, oax_n, sr_n, vdim_n, t#unroll, t#tail, t#pout, t#rout, t#ptail, retile_n);
+    (t#Tp, t#Ro, t#Rr, t#So, oax_n, sr_n, vdim_n, t#unroll, t#tail, t#pout, t#rout, t#ptail, par_n, retile_n);
 ///
 /// #### materialize
 ///
@@ -706,7 +709,7 @@ anx lam interchange (t: Tileable, perm: «t#Ro + t#Rr; Nat»): Tileable =
 anx lam materialize (t: Tileable): «t#So; t#Tp» =
     lam id_i (o: «t#Ro + t#Rr; affine.Index»): «t#Ro + t#Rr; affine.Index» = o;
     lam id_o (oo: «t#Ro; affine.Index», o: «t#Ro + t#Rr; affine.Index»): «t#Ro; affine.Index» = oo;
-    t#retile (t#Ro, t#Rr) (t#So, t#Sr, t#vdim, t#unroll, t#tail, t#pout, t#rout, t#ptail) (id_i, id_o);
+    t#retile (t#Ro, t#Rr) (t#So, t#Sr, t#vdim, t#unroll, t#tail, t#pout, t#rout, t#ptail, t#par) (id_i, id_o);
 ///
 /// #### mr_tileable
 ///
@@ -733,26 +736,26 @@ anx lam mr_tileable
                 (is: «i: nis; «Sis#i; Tis#i»»)
               : Tileable =
     lam retile (Ro_n Rr_n: Nat)
-               (So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n: Nat)
+               (So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», vdim_n unroll_n tail_n pout_n rout_n ptail_n par_n: Nat)
                (iota:  «Ro_n + Rr_n; affine.Index» → «Ro + Rr; affine.Index»,
                 omega: [«Ro; affine.Index», «Ro_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»)
              : «So_n; Tp» =
         lam map_out_n (o: «Ro_n + Rr_n; affine.Index»): «Ro_n; affine.Index» =
             omega (map_out (iota o), o);
         map_reduce_post @(nis, 0) @(To, Tp, Ro_n, Ro_n + Rr_n, SchedT)
-            (So_n, Sr_n, mk_sched (vdim_n, unroll_n, tail_n, pout_n, rout_n, ptail_n))
+            (So_n, Sr_n, mk_sched (vdim_n, unroll_n, tail_n, pout_n, rout_n, ptail_n, par_n))
             @(Tis, Ris, Sis, (), (), ()) (f, init, post)
             map_out_n
             (‹i: nis; comp_map (maps#i, iota)›, ())
             (is, ());
-    (Tp, Ro, Rr, So, oax, Sr, Ro + Rr, 0, 0, 0, 0, 0, retile);
+    (Tp, Ro, Rr, So, oax, Sr, Ro + Rr, 0, 0, 0, 0, 0, Ro + Rr, retile);
 ///
 /// #### unroll_trailing
 ///
 /// Fully unroll the trailing `d` reduction dims into the loop body — e.g. a
 /// convolution's kh·kw window (`d = 2`). Their trip counts must be literals at lowering time.
 lam unroll_trailing (t: Tileable, d: Nat): Tileable =
-    (t#Tp, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, d, t#tail, t#pout, t#rout, t#ptail, t#retile);
+    (t#Tp, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, d, t#tail, t#pout, t#rout, t#ptail, t#par, t#retile);
 ///
 /// #### vectorize
 ///
@@ -760,7 +763,7 @@ lam unroll_trailing (t: Tileable, d: Nat): Tileable =
 /// unchanged). A parallel `d` runs inside the reduction loops over a row of accumulators; the
 /// innermost reduction dim as `d` selects `btensor.mr_nest`'s reduction-vectorized nest instead.
 lam vectorize (t: Tileable, d: Nat): Tileable =
-    (t#Tp, t#Ro, t#Rr, t#So, t#oax, t#Sr, d, t#unroll, t#tail, t#pout, t#rout, t#ptail, t#retile);
+    (t#Tp, t#Ro, t#Rr, t#So, t#oax, t#Sr, d, t#unroll, t#tail, t#pout, t#rout, t#ptail, t#par, t#retile);
 ///
 /// #### hoist_red
 ///
@@ -770,7 +773,13 @@ lam vectorize (t: Tileable, d: Nat): Tileable =
 /// Only the tiled nest of `btensor.mr_nest` honors it, which needs a parallel vector dim and no `tail`; the loop
 /// order does not change the result.
 lam hoist_red (t: Tileable, pout rout: Nat): Tileable =
-    (t#Tp, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, t#unroll, t#tail, pout, rout, t#ptail, t#retile);
+    (t#Tp, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, t#unroll, t#tail, pout, rout, t#ptail, t#par, t#retile);
+///
+/// #### parallelize
+///
+/// Run parallel dim `d` on the runtime's threads (see `btensor.par_for`); it must be the outermost loop.
+lam parallelize (t: Tileable, d: Nat): Tileable =
+    (t#Tp, t#Ro, t#Rr, t#So, t#oax, t#Sr, t#vdim, t#unroll, t#tail, t#pout, t#rout, t#ptail, d, t#retile);
 ///
 /// ### Strip-Mining
 ///
@@ -835,6 +844,7 @@ lam split_par (t: Tileable, d ts nt ptail: Nat): Tileable =
     let ro_n = t#Ro + 1;
     let r_n  = t#Ro + 1 + t#Rr;
     let a    = t#oax#(core.idx 0 (t#Ro) d);
+    let par_n = core.select (t#par < t#Ro, core.select (t#par <= d, t#par, t#par + 1), r_n);
     // The split dim writes the split axis pair; all other dims write their old axis, renumbered
     // around the insertion at `a`. The unit-stride half is the inner one: a vdim at `d` moves to
     // `d + 1`.
@@ -845,7 +855,7 @@ lam split_par (t: Tileable, d ts nt ptail: Nat): Tileable =
                           shift_ax (a, t#oax#(core.idx 0 (t#Ro) (jj - 1))))))›;
     let vdim_n = core.select (t#vdim < t#Ro, core.select (t#vdim < d, t#vdim, t#vdim + 1), r_n);
     lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat)
                  (iota:  «ro_m + rr_m; affine.Index» → «r_n; affine.Index»,
                   omega: [«ro_n; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : «so_m; t#Tp» =
@@ -853,10 +863,10 @@ lam split_par (t: Tileable, d ts nt ptail: Nat): Tileable =
             split_iota (r_n, r, d, ts) (iota o);
         lam omega_c (oo: «t#Ro; affine.Index», ov: «ro_m + rr_m; affine.Index»): «ro_m; affine.Index» =
             omega (split_omega (ro_n, t#Ro, a, ts) oo, ov);
-        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m) (iota_c, omega_c);
+        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m) (iota_c, omega_c);
     (t#Tp, ro_n, t#Rr,
      split_bounds (ro_n, t#Ro, t#So, a, ts, nt), oax_n,
-     split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, t#unroll, t#tail, t#pout, t#rout, ptail, retile_n);
+     split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, t#unroll, t#tail, t#pout, t#rout, ptail, par_n, retile_n);
 ///
 /// #### par_extent
 ///
@@ -893,16 +903,17 @@ lam split_red (t: Tileable, d ts nt tail: Nat): Tileable =
     let r   = t#Ro + t#Rr;
     let r_n = t#Ro + (t#Rr + 1);
     let vdim_n   = core.select (t#vdim < t#Ro, t#vdim, r_n);
+    let par_n    = core.select (t#par < t#Ro, t#par, r_n);
     let unroll_n = core.select (d < r - t#unroll, t#unroll, t#unroll + 1);
     lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», vdim_m unroll_m tail_m pout_m rout_m ptail_m par_m: Nat)
                  (iota:  «ro_m + rr_m; affine.Index» → «r_n; affine.Index»,
                   omega: [«t#Ro; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : «so_m; t#Tp» =
-        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m)
+        t#retile (ro_m, rr_m) (so_m, sr_m, vdim_m, unroll_m, tail_m, pout_m, rout_m, ptail_m, par_m)
                  (comp_map (split_iota (r_n, r, d, ts), iota), omega);
     (t#Tp, t#Ro, t#Rr + 1, t#So, t#oax,
-     split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, unroll_n, tail, t#pout, t#rout, t#ptail, retile_n);
+     split_bounds (r_n, r, t#Sr, d, ts, nt), vdim_n, unroll_n, tail, t#pout, t#rout, t#ptail, par_n, retile_n);
 ///
 /// #### strip_mine_red
 ///
@@ -1053,7 +1064,7 @@ lam dot_rb_rows (m: Nat, tail_ok: Bool): Nat =
 lam dot_schedule_rb (r_out rows: Nat) (t: Tileable): Tileable =
     let q    = r_out - 2;
     let t1   = partition_par (strip_mine_par (t, r_out - 1, 16), q, rows);
-    let r1   = t1#1_13 + t1#2_13;
+    let r1   = t1#1_14 + t1#2_14;
     let perm = ‹j: r1; let jj = core.bitcast Nat j;
                        core.select (jj == q, q + 2, core.select (jj == q + 1, q, core.select (jj == q + 2, q + 1, jj)))›;
     dot_k (vectorize (interchange (t1, perm), r_out));
@@ -1090,7 +1101,7 @@ lam dot_kb (kq w: Nat): Nat =
 /// The N block of `dot_trace`, its loop moved outside the left free dims.
 lam dot_nblk (r_out nb na nc: Nat) (t: Tileable): Tileable =
     let t1   = strip_mine_par (t, r_out - 1, nc);
-    let r1   = t1#1_13 + t1#2_13;
+    let r1   = t1#1_14 + t1#2_14;
     let perm = ‹j: r1; let jj = core.bitcast Nat j;
                        core.select (jj < nb, jj,
                        core.select (jj < r_out - na, jj + na,
@@ -1188,7 +1199,7 @@ lam dot_schedule_kvec (r_out: Nat) (t: Tileable): Tileable =
     // `bs` ((n/bs, 1, bs | red)). `r3` is spelled from t3's own (positional) fields so the pack's
     // length is definitionally the «t#Ro + t#Rr» the dependent `interchange` domain expects —
     // `core.nat.add` does not reassociate an equivalent spelling.
-    let r3   = t3#1_13 + t3#2_13;
+    let r3   = t3#1_14 + t3#2_14;
     let swap = 2 <= r_out;
     let pa   = r_out - 1;
     let pb   = r_out;
@@ -1472,7 +1483,7 @@ lam schedule_kernel {T: *} {n: Nat} (rules: «n; SchedRule», fallback: SchedRul
         let same = (reshape so s_fin x, core.bitcast «s_fin; T» x)#(r_p == r_fin);
         (same, prefix)#(if_static (size so * size s_fin, core.bit2.or_ 2 (m_pad != m, n_pad != n), ff));
     // The rule is generic over the kernel, so the checker cannot see its schedule's element type is `T`.
-    unpack (sr#rows (k, t)) (sched#3_13) (core.bitcast «sched#3_13; T» (materialize sched));
+    unpack (sr#rows (k, t)) (sched#3_14) (core.bitcast «sched#3_14; T» (materialize sched));
 ///
 /// #### Contraction kernels
 ///
@@ -1528,9 +1539,18 @@ lam dot_params (k: Kernel, t: Tileable): [Nat, Nat, Bool] =
                     dot_static (k, t) (ncb != 0),
                     (dot_static (k, t) (core.bit2.and_ 2 (kernel_ns (k, t) + kernel_ni (k, t) + 1 == t#Ro, rb (rows, kernel_n t))), ff)#(k#plain)));
     ((0, ncrb, ncb, ncb, 0, 0)#i, (rows, rows, rowsk, 0, rows, 0)#i, (tt, ff, tt, tt, ff, ff)#i);
+/// The outermost loop goes to the runtime's threads when `target.threads` has several and it has at least two
+/// iterations per thread. A packed kernel's `cache_read` panel is a single buffer staged (`compute_at`) inside that
+/// loop and reused across its iterations, so parallelizing it would race; only an unpacked kernel's outermost loop
+/// has no such shared buffer.
+lam dot_par (packed: Bool) (t: Tileable): Tileable =
+    let th = target.threads ();
+    let n0 = t#Sr#(core.idx 0 (t#Ro + t#Rr) 0);
+    let ok = core.bit2.and_ 2 ((tt, ff)#packed, core.bit2.and_ 2 (1 < th, 2 * th <= n0));
+    parallelize (t, (t#par, 0)#(if_static (n0, ok, ff)));
 lam dot_rule (k: Kernel, t: Tileable): Tileable =
     let (nc, rows, kblk) = dot_params (k, t);
-    dot_trace (nc, rows, kblk, k#packed) (t#Ro, kernel_ns (k, t), kernel_ni (k, t)) t;
+    dot_par k#packed (dot_trace (nc, rows, kblk, k#packed) (t#Ro, kernel_ns (k, t), kernel_ni (k, t)) t);
 lam dot_rule_rows (k: Kernel, t: Tileable): Nat = (dot_params (k, t))#1_3;
 lam dot_rule_any (k: Kernel, t: Tileable): Bool = tt;
 ///

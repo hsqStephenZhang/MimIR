@@ -25,7 +25,7 @@ lam mi (i j k: affine.Index): «3; affine.Index» = (i, j, k);
 // builder (no vector dim, unroll the trailing 1 dim), applied — not interpreted — by the lowering.
 extern fun sum_all (input: «2, 37, 3; I32»): «2; I32» =
     return (tensor.map_reduce_post
-                (2, (2, 37, 3), tensor.mk_sched (3, 1, 0, 0, 0, 0))
+                (2, (2, 37, 3), tensor.mk_sched (3, 1, 0, 0, 0, 0, 3))
                 (add, 0I32, tensor.id) mo (mi, ()) (input, ()));
 
 extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr (mem.Ptr (I8, 0), 0), return: Cn [mem.M 0, I32]) =

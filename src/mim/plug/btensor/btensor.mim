@@ -122,11 +122,13 @@ axm map_reduce_post: {nis nps: Nat}
 /// - `pout`/`rout`, the loop order: the leading `rout` reduction dims run between the leading `pout` parallel dims and
 ///   the others — the reduction-outer order of a cache-blocked contraction; `rout = 0` keeps all reductions inside;
 /// - `ptail`, `0` for none, else the parallel dim `vdim` runs only its first `ptail` points in the last iteration of the
-///   parallel dim `vdim − 1` — the remainder of a parallel loop partition, e.g. a register block's rows.
+///   parallel dim `vdim − 1` — the remainder of a parallel loop partition, e.g. a register block's rows;
+/// - `par`, the parallel dim whose iterations run on the runtime's threads (see `par_for`), `par ≥ Rn` for none; it must
+///   be the outermost loop.
 ///
 /// `tensor.mk_sched` is an alias for this lam: `btensor` owns it for the same reason it owns `Ring`.
-anx lam mk_sched (vdim unroll tail pout rout ptail: Nat) (N: *) (mk: [vdim unroll tail pout rout ptail: Nat] → N): N =
-    mk (vdim, unroll, tail, pout, rout, ptail);
+anx lam mk_sched (vdim unroll tail pout rout ptail par: Nat) (N: *) (mk: [vdim unroll tail pout rout ptail par: Nat] → N): N =
+    mk (vdim, unroll, tail, pout, rout, ptail, par);
 ///
 /// ### proj_map
 ///
@@ -313,6 +315,20 @@ con vec_for {A: *} (body: Cn [I32, [mem.M 0, A], Cn [mem.M 0, A]])
             (exit: Cn [mem.M 0, A])
             (begin stop step: I32, init: [mem.M 0, A])@tt =
     affine.For (ll.vec body) exit (begin, stop, step, init);
+///
+/// #### par_for
+///
+/// The loop implementation of a schedule's `par` dim: `mem.par_for` runs the loop over the runtime's threads, each
+/// worker an `affine.For` over its sub-range with its own memory token.
+/// The accumulator is the write-back target, a buffer the workers write disjointly, so each starts from the one passed
+/// in and the exit receives it unchanged. Needs `begin = 0` and `step = 1`, as `range_nest` issues.
+con par_for {A: *} (body: Cn [I32, [mem.M 0, A], Cn [mem.M 0, A]])
+            (exit: Cn [mem.M 0, A])
+            (begin stop step: I32, init: [mem.M 0, A])@tt =
+    con worker (m: mem.M 0, lo hi: I64, k: Cn [mem.M 0]) =
+        con wexit (ma: [mem.M 0, A]) = k (ma#0_2);
+        affine.For body wexit (core.conv.u 4294967296 lo, core.conv.u 4294967296 hi, step, (m, init#1_2));
+    exit (mem.par_for (init#0_2, core.conv.u 0 stop, worker), init#1_2);
 
 /// ### range_nest
 ///
@@ -415,7 +431,7 @@ anx lam NestT (ro rr: Nat, Sr: «ro + rr; Nat», To U: *): * =
 /// selected.
 ///
 /// Per-cell fold order is untouched by any of these transforms.
-anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail pout rout ptail: Nat)
+anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail pout rout ptail par: Nat)
                    : NestT (ro, rr, Sr, To, U) =
     let r    = ro + rr;
     // The unroll window must stay within the reduction dims.
@@ -427,14 +443,22 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
               sl:    Nat,
               stage: Cn [«r; I32», mem.M 0, Cn [mem.M 0]])
             : Cn [mem.M 0, U, Cn [mem.M 0, U]] =
+        // `range_nest` over `[lo, hi)` whose first dim runs on the runtime's threads if it is `par`: everything below it,
+        // the stage included, becomes the worker's body. The non-selected branch is still elaborated, hence the clamp.
+        lam par_nest (lo hi: Nat) (inner: Cn [«r; I32», mem.M 0, U, Cn [mem.M 0, U]])
+                   : Cn [«r; I32», mem.M 0, U, Cn [mem.M 0, U]] =
+            let hi_c = (lo + 1, hi)#(lo + 1 <= hi);
+            (range_nest (r, Sr) U (affine_for @U, lo, hi) inner,
+             range_nest (r, Sr) U (par_for @U, lo, lo + 1) (range_nest (r, Sr) U (affine_for @U, lo + 1, hi_c) inner))
+                #(core.bit2.and_ 2 (par == lo, lo < hi));
         // The outermost `[0, hi)` parallel loops with `stage` run inside the leading `sl` of them; a nest is only
         // selected if `sl ≤ hi`.
         lam staged (hi: Nat) (inner: Cn [«r; I32», mem.M 0, U, Cn [mem.M 0, U]])
                  : Cn [«r; I32», mem.M 0, U, Cn [mem.M 0, U]] =
             con at (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
-                con go (m2: mem.M 0) = (range_nest (r, Sr) U (affine_for @U, sl, hi) inner) (pref, m2, u, k);
+                con go (m2: mem.M 0) = (par_nest (sl, hi) inner) (pref, m2, u, k);
                 stage (pref, m, go);
-            range_nest (r, Sr) U (affine_for @U, 0, sl) at;
+            par_nest (0, sl) at;
         // A parallel partition (`ptail ≠ 0`): the points of the last iteration of `pt_o` at or past `ptail` in `pt_i`
         // are outside the domain, so the nests but the register-blocked one skip them.
         let pt_i  = (0, vdim)#(core.bit2.and_ 2 (1 <= vdim, vdim < ro));
@@ -618,7 +642,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (vdim unroll tail po
                 con go (m2: mem.M 0) =
                     (range_peel (r, Sr) U (affine_for @U, sl, pd_c) (rb_kernel rb_pc, rb_kernel rb_t)) (pref, m2, u, k);
                 stage (pref, m, go);
-            ((staged pd_c (rb_kernel rb_pc), range_nest (r, Sr) U (affine_for @U, 0, sl) peeled)#(ptail != 0))
+            ((staged pd_c (rb_kernel rb_pc), par_nest (0, sl) peeled)#(ptail != 0))
                 (‹r; 0I32›, mem0, u0, done);
 
         // REDUCTION-VECTORIZED (`ro ≤ vdim < r`: the schedule names the innermost REDUCTION dim):

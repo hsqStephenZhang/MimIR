@@ -19,12 +19,12 @@ plugin compile;
 
 let R: tensor.Ring = (Nat, 0, core.nat.add, core.nat.mul);
 
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 2, 0, 0\)}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 1, 1, 0\)}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 0, 0, 0\)}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 2, 1, 0, 4\)}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 0, 0, 2\)}}
-// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(4, 1, 0, 0, 0, 0\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 2, 0, 0, [0-9]+\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 1, 1, 0, [0-9]+\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 0, 0, 0, [0-9]+\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 2, 1, 0, 4, [0-9]+\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(3, 1, 0, 0, 0, 2, [0-9]+\)}}
+// SCHED-DAG: {{mk[_a-zA-Z0-9]* \(4, 1, 0, 0, 0, 0, [0-9]+\)}}
 
 // A batched product's M is not the outermost dim of its result, whose padding would not be a prefix: M = 20 takes whole
 // 4 x 16 blocks.

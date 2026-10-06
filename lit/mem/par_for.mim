@@ -1,0 +1,40 @@
+// RUN: rm -f %{s:stem}.ll %t
+// RUN: %mim -p opt -p clos %s -p ll
+// RUN: %FileCheck %s < %{s:stem}.ll
+// RUN: clang %{s:stem}.ll -o %t -Wno-override-module
+// RUN: MIM_NUM_THREADS=4 %t
+// RUN: MIM_NUM_THREADS=1 %t
+
+// mem.par_for: the workers fill disjoint ranges of a buffer with 2·i; the sum over 0..1000 must be 999000.
+// CHECK: call void @mim_rt_parallel_for(i64 1000, i8* {{.*}}, i8* {{.*}})
+
+plugin core;
+plugin mem;
+plugin clos;
+
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr (mem.Ptr (I8, 0), 0), return: Cn [mem.M 0, I32]) =
+    let (m, buf) = mem.malloc («1000; I64», 0) (m, 8000);
+    con worker (m: mem.M 0, lo hi: I64, k: Cn [mem.M 0]) =
+        fill (m, lo)
+        where
+            con fill (m: mem.M 0, i: I64) =
+                (done, body)#(core.icmp.ul (i, hi)) m
+                where
+                    con body (m: mem.M 0) =
+                        let p = mem.lea @(1000, ‹1000; I64›, 0) (buf, core.conv.u 1000 i);
+                        fill (mem.store (m, p, core.wrap.mul 0 (2I64, i)), core.wrap.add 0 (1I64, i));
+                    con done (m: mem.M 0) = k m;
+                end
+        end;
+    let m = mem.par_for (m, 1000I64, worker);
+    sum (m, 0I64, 0I64)
+    where
+        con sum (m: mem.M 0, i: I64, acc: I64) =
+            (exit, next)#(core.icmp.ul (i, 1000I64)) m
+            where
+                con next (m: mem.M 0) =
+                    let (m, v) = mem.load (m, mem.lea @(1000, ‹1000; I64›, 0) (buf, core.conv.u 1000 i));
+                    sum (m, core.wrap.add 0 (1I64, i), core.wrap.add 0 (acc, v));
+                con exit (m: mem.M 0) = return (m, core.select (core.icmp.e (acc, 999000I64), 0I32, 1I32));
+            end
+    end

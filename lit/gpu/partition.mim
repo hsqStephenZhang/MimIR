@@ -30,5 +30,5 @@ fun add (x y: Nat)@tt = return (core.nat.add (x, y));
 lam mo (i j k: affine.Index): «2; affine.Index» = (i, j);
 lam mi (i j k: affine.Index): «2; affine.Index» = (affine.op.add (affine.semiop.mul (i, 6), j), k);
 extern fun tail_rows (x: «10, 3; Nat»): «2, 6; Nat» =
-    return (tensor.map_reduce_post ((2, 6), (2, 6, 3), tensor.mk_sched (1, 0, 0, 0, 0, 4))
+    return (tensor.map_reduce_post ((2, 6), (2, 6, 3), tensor.mk_sched (1, 0, 0, 0, 0, 4, 3))
                                    (add, 0, tensor.id) mo (mi, ()) (x, ()));

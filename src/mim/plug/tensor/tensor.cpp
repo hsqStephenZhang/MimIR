@@ -24,7 +24,7 @@ static void reg_phases(Flags2Phases& phases) {
 // clang-format off
 static constexpr PluginArg known_args[] = {
     {"reassoc-max=<n>", "Longest matrix chain whose `Catalan(n − 1)` bracketings `tensor.reassoc` enumerates and, failing one that provably wins for every extent, dispatches over at run time (default `4`; below `3` switches the dispatch off)."},
-    {"vec_bytes=<n>, vec_regs=<n>, acc_regs=<n>, cache_elems=<n>", "Overrides the host's `tensor.target` budget the contraction schedules block for: the vector register width in bytes, their count, how many may hold a register block's accumulators, and the elements of an operand panel kept in cache."},
+    {"vec_bytes=<n>, vec_regs=<n>, acc_regs=<n>, cache_elems=<n>, threads=<n>", "Overrides the host's `tensor.target` budget the contraction schedules block for: the vector register width in bytes, their count, how many may hold a register block's accumulators, the elements of an operand panel kept in cache, and the threads a contraction's outermost loop is split over (default 1; needs `-p clos`)."},
     {"reassoc-vec=<n>", "Vector lanes `tensor.reassoc` pads a product's vector loop to, so that a bracketing whose intermediates are too narrow to fill a vector is charged for the lanes it leaves idle (`1` … `1024`, default `8`; `1` counts plain scalar multiplications)."},
 };
 // clang-format on

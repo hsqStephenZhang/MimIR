@@ -69,6 +69,14 @@ axm malloc: [*, a: Nat] as Ta → [M a, Nat] → [M a, Ptr Ta];
 /// Frees memory of type `T` in address space `a`.
 axm free: {*, a: Nat} as Ta → [M a, Ptr Ta] → M a;
 ///
+/// ### par_for
+///
+/// Runs `body: Cn [M 0, lo hi: I64, Cn [M 0]]` over `[0, n)` split across the runtime's threads: each call covers a
+/// disjoint sub-range `[lo, hi)` with its own memory token, so the workers' effects must touch disjoint memory.
+/// Needs closure conversion (`clos`) before the `ll` backend, which lowers it to the C runtime's
+/// `mim_rt_parallel_for`; the body's type is left open so that `clos` can turn it into a closure.
+axm par_for: {B: *} → [M 0, n: I64, body: B] → M 0;
+///
 /// ### mslot
 ///
 /// Reserves a stack slot for type `T` in address space `a`.

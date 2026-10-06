@@ -1,0 +1,29 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt -p clos %s -p ll
+// RUN: clang++ -std=c++23 %S/par_sched_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: MIM_NUM_THREADS=4 %t
+// RUN: MIM_NUM_THREADS=1 %t
+
+// An explicit schedule naming the sole parallel dim `par` (bypassing dot_rule's heuristic, see dot_par.mim):
+// btensor.mr_nest's CLASSIC nest runs it via mem.par_for. Each thread folds a disjoint row into its own
+// accumulator and writes it back once, so unlike a packed contraction's cache_read panel there is no buffer
+// shared across iterations — this is the case dot_par's threshold is meant to allow once it names the right loop.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin mem;
+plugin cps;
+
+use core.ops.u.w;
+
+fun add (x y: I32)@tt = return (x + y);
+lam mo (p k: affine.Index): affine.Index = p;
+lam mi (p k: affine.Index): «2; affine.Index» = (p, k);
+
+// out[p] = sum_k input[p][k], scheduled with `sched`.
+lam sum_rows (sched: [N: *] → ([vdim unroll tail pout rout ptail par: Nat] → N) → N) (input: «32, 16; I32»): «32; I32» =
+    tensor.map_reduce_post (32, (32, 16), sched) (add, 0I32, tensor.id) mo (mi, ()) (input, ());
+
+// par = 0: the sole parallel dim (p) runs on the runtime's threads.
+extern fun sum_par (input: «32, 16; I32»): «32; I32» =
+    return (sum_rows (tensor.mk_sched (2, 0, 0, 0, 0, 0, 0)) input);

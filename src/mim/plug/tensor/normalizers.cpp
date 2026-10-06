@@ -114,10 +114,11 @@ const Def* normalize_if_static(const Def*, const Def*, const Def* arg) {
 template<target id>
 const Def* normalize_target(const Def*, const Def*, const Def* arg) {
     auto& w            = arg->world();
-    constexpr auto key = id == target::vec_bytes ? "vec_bytes"
-                       : id == target::vec_regs  ? "vec_regs"
-                       : id == target::acc_regs  ? "acc_regs"
-                                                 : "cache_elems";
+    constexpr auto key = id == target::vec_bytes   ? "vec_bytes"
+                       : id == target::vec_regs    ? "vec_regs"
+                       : id == target::acc_regs    ? "acc_regs"
+                       : id == target::cache_elems ? "cache_elems"
+                                                   : "threads";
     if (auto val = arg_value(w.driver().args("tensor"), key)) {
         u64 n = 0;
         if (auto [p, ec] = std::from_chars(val->data(), val->data() + val->size(), n); ec == std::errc{})
@@ -125,6 +126,8 @@ const Def* normalize_target(const Def*, const Def*, const Def* arg) {
         w.log().w("ignoring `-X tensor:{}={}`: not a number", key, *val);
     }
     if constexpr (id == target::cache_elems) return w.lit_nat(65536);
+    // Threads are opt-in: a parallel schedule needs the `clos` plugin in the pipeline.
+    if constexpr (id == target::threads) return w.lit_nat(1);
     // The vector registers of the host: width in bytes, count and the accumulator budget of a register block.
     std::array<u64, 3> regs = {16, 16, 8};
 #if defined(__aarch64__) || defined(__ARM_NEON)

@@ -1,0 +1,23 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt -p clos -X tensor:threads=4 %s -p ll
+// RUN: clang++ -std=c++23 %S/dot_par_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: MIM_NUM_THREADS=4 %t
+// RUN: MIM_NUM_THREADS=1 %t
+
+// Both kernels are packed (see dot_par.mim), so dot_par never names their outermost loop `par`; this is a
+// regression guard that a packed contraction stays correct (and serial) under either thread count, driven by
+// dot_par_aux.cpp against a scalar reference: a packed product and one with N not a multiple of 16.
+plugin tensor;
+plugin refly;
+plugin core;
+plugin cps;
+plugin affine;
+plugin mem;
+plugin math;
+
+let F32 = math.F32;
+
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+extern fun mm (a: «64, 256; F32», b: «256, 512; F32»): «64, 512; F32» = return (tensor.product_2d R (a, b));
+extern fun mm_tail (a: «50, 128; F32», b: «128, 200; F32»): «50, 200; F32» = return (tensor.product_2d R (a, b));

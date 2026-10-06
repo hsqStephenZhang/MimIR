@@ -811,6 +811,24 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
             i8ptr   = bb.assign(name + "i8conv", "addrspacecast i8* {} to {}", i8ptr, i8ptr_t);
         }
         return bb.assign(name, "bitcast {} {} to {}", i8ptr_t, i8ptr, ptr_t);
+    } else if (auto par = Axm::isa<mem::par_for>(def)) {
+        declare_rt("void @mim_rt_parallel_for(i64, i8*, i8*)");
+        auto [m, n, body] = par->args<3>();
+        emit_unsafe(m);
+        // After `clos`, the body is the pair of a code pointer and its environment pointer.
+        auto sigma = body->type()->isa<Sigma>();
+        if (!sigma || sigma->num_ops() != 2)
+            body->blame(MIM_LL_BE "`mem.par_for` needs a closure-converted body: load the `clos` plugin").bail();
+        size_t fn_i  = sigma->op(0)->isa<Pi>() ? 0 : 1;
+        auto v_n     = emit(n);
+        auto v_body  = emit(body);
+        auto t_body  = convert(body->type());
+        auto v_fn    = bb.assign(name + ".fn", "extractvalue {} {}, {}", t_body, v_body, fn_i);
+        auto v_env   = bb.assign(name + ".env", "extractvalue {} {}, {}", t_body, v_body, 1 - fn_i);
+        auto p_fn    = bb.assign(name + ".fnp", "bitcast {} {} to i8*", convert(sigma->op(fn_i)), v_fn);
+        auto p_env   = bb.assign(name + ".envp", "bitcast {} {} to i8*", convert(sigma->op(1 - fn_i)), v_env);
+        std::print(bb.body().emplace_back(), "call void @mim_rt_parallel_for(i64 {}, i8* {}, i8* {})", v_n, p_fn, p_env);
+        return std::string();
     } else if (auto free = Axm::isa<mem::free>(def)) {
         auto address_space = free->decurry()->arg(2, 1);
         declare("void @free(i8*)");

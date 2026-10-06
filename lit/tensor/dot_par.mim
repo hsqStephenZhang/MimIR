@@ -1,0 +1,22 @@
+// RUN: %mim %s -p opt -X tensor:threads=4 -o - | %FileCheck %s
+// RUN: %mim %s -p opt -o - | %FileCheck %s --check-prefix=SERIAL
+
+// dot_rule's dot_par names the outermost loop `par` for mem.par_for to run on the runtime's threads, but a packed
+// kernel's cache_read panel (dot_product_impl) is a single buffer staged once per outer iteration and reused across
+// them: parallelizing that loop would have every thread race to refill and read it. dot_par gates on the kernel's
+// `packed` flag, so neither of these (both pack: M, K large enough, N a multiple of 16) ever does, regardless of
+// `target.threads` — a regression guard for that race, not a demonstration of real parallelism (see
+// tensor/par_sched_exec.mim for btensor.mr_nest's par lowering exercised directly, and dot_par's own doc comment for
+// the open question of parallelizing a packed contraction safely).
+// CHECK-NOT: mem.par_for
+// SERIAL-NOT: mem.par_for
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+extern fun mm (a: «64, 256; F32», b: «256, 512; F32»): «64, 512; F32» = return (tensor.product_2d R (a, b));
+extern fun small (a: «64, 256; F32», b: «256, 32; F32»): «64, 32; F32» = return (tensor.product_2d R (a, b));
