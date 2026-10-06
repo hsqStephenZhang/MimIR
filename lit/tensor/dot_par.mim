@@ -6,8 +6,8 @@
 // them: parallelizing that loop would have every thread race to refill and read it. dot_par gates on the kernel's
 // `packed` flag, so neither of these (both pack: M, K large enough, N a multiple of 16) ever does, regardless of
 // `target.threads` — a regression guard for that race, not a demonstration of real parallelism (see
-// tensor/par_sched_exec.mim for btensor.mr_nest's par lowering exercised directly, and dot_par's own doc comment for
-// the open question of parallelizing a packed contraction safely).
+// tensor/dot_par_small.mim for an unpacked kernel that does name `par`, and tensor/par_sched_exec.mim for
+// btensor.mr_nest's par lowering exercised directly with an explicit schedule).
 // CHECK-NOT: mem.par_for
 // SERIAL-NOT: mem.par_for
 

@@ -1,0 +1,23 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt -p clos -X tensor:threads=4 %s -p ll
+// RUN: clang++ -std=c++23 %S/dot_par_small_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: MIM_NUM_THREADS=4 %t
+// RUN: MIM_NUM_THREADS=1 %t
+
+// mm's M is below dot_pack_m, so dot_product_impl does not pack its right operand (see dot_par.mim):
+// dot_rule's dot_par now does name its outermost loop `par`, since the threshold it reads off `dot_params`'s own
+// picks (nc, rows), not the traced schedule's domain, folds here even though the traced domain itself does not
+// (see dot_par's doc comment). Driven by dot_par_small_aux.cpp against a scalar reference.
+plugin tensor;
+plugin refly;
+plugin core;
+plugin cps;
+plugin affine;
+plugin mem;
+plugin math;
+
+let F32 = math.F32;
+
+let R: tensor.Ring = (F32, 0:F32, math.arith.add 0, math.arith.mul 0);
+
+extern fun mm (a: «32, 256; F32», b: «256, 512; F32»): «32, 512; F32» = return (tensor.product_2d R (a, b));

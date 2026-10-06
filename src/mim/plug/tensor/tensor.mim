@@ -1540,17 +1540,41 @@ lam dot_params (k: Kernel, t: Tileable): [Nat, Nat, Bool] =
                     (dot_static (k, t) (core.bit2.and_ 2 (kernel_ns (k, t) + kernel_ni (k, t) + 1 == t#Ro, rb (rows, kernel_n t))), ff)#(k#plain)));
     ((0, ncrb, ncb, ncb, 0, 0)#i, (rows, rows, rowsk, 0, rows, 0)#i, (tt, ff, tt, tt, ff, ff)#i);
 /// The outermost loop goes to the runtime's threads when `target.threads` has several and it has at least two
-/// iterations per thread. A packed kernel's `cache_read` panel is a single buffer staged (`compute_at`) inside that
-/// loop and reused across its iterations, so parallelizing it would race; only an unpacked kernel's outermost loop
-/// has no such shared buffer.
-lam dot_par (packed: Bool) (t: Tileable): Tileable =
-    let th = target.threads ();
-    let n0 = t#Sr#(core.idx 0 (t#Ro + t#Rr) 0);
-    let ok = core.bit2.and_ 2 ((tt, ff)#packed, core.bit2.and_ 2 (1 < th, 2 * th <= n0));
+/// iterations per thread, and the schedule is the plain register-blocked one with no peeled remainder anywhere:
+/// measured against an executable, scalar-reference-checked test under real threads, every one of the other shapes
+/// `dot_trace` picks races or miscompiles instead of just costing an opportunity, so this stays deliberately narrow
+/// rather than risk a false positive — a case excluded here that is in fact safe is a missed speedup, nothing worse.
+/// Excluded: a packed kernel's `cache_read` panel (`dot_product_impl`) is a single buffer staged (`compute_at`) once
+/// per outer iteration and reused across the rest; `dot_kblk`'s own precondition for `hoist_red` to hoist an
+/// accumulator live across the same outer iterations for the same reason (mirrored here from `kq`/`ts`/`nc`, since
+/// `dot_kblk` itself runs on the traced schedule, where that no longer folds — see below); an indivisible K forces
+/// `dot_k`'s own tile into a peeled tail (`partition_red`) whose closure-converted body does not compile (`clos`'s
+/// `mem.seo` does not reach a fixed point) under `mem.par_for`; an indivisible N similarly needs `ptail`
+/// (`partition_par`) to skip the excluded points of the outer loop's own last block, which miscomputes under
+/// threads; and `rows == 0` falls back to `dot_schedule`'s plain vector loop, whose outermost dim is `M`, not the
+/// `N / 16` this reads.
+/// All of this is read off the *untraced* kernel and tile (`kernel_k`, `kernel_n`, `nc`, `rows`) instead of the
+/// traced schedule's own domain: by the time `dot_trace` has strip-mined and interchanged dim 0 into place, its
+/// extent no longer folds to a literal here (dot_params's own picks, read before any of that, do).
+lam dot_par (k: Kernel, t0: Tileable, nc rows: Nat, packed kblk: Bool) (t: Tileable): Tileable =
+    let th      = target.threads ();
+    let n0      = kernel_n t0 / 16;
+    let K       = kernel_k t0;
+    let k_tail  = core.bit2.and_ 2 (4 <= K, core.bit2.and_ 2 (K % 4 != 0, K % 3 != 0));
+    let n_tail  = kernel_n t0 % 16 != 0;
+    // dot_tile/dot_kblk's own tile and cache-block check, replayed on the untraced K.
+    let ts_tile = ((1, 3)#(K % 3 == 0), 4)#(K % 4 == 0);
+    let kq      = K / ts_tile;
+    let kblk_hz = core.bit2.and_ 2 (kblk, target.cache_elems () < kq * ts_tile * nc);
+    let safe    = core.bit2.and_ 2 ((tt, ff)#packed,
+                  core.bit2.and_ 2 ((tt, ff)#kblk_hz,
+                  core.bit2.and_ 2 ((tt, ff)#k_tail,
+                  core.bit2.and_ 2 ((tt, ff)#n_tail, (ff, tt)#(rows != 0)))));
+    let ok      = core.bit2.and_ 2 (safe, core.bit2.and_ 2 (1 < th, 2 * th <= n0));
     parallelize (t, (t#par, 0)#(if_static (n0, ok, ff)));
 lam dot_rule (k: Kernel, t: Tileable): Tileable =
     let (nc, rows, kblk) = dot_params (k, t);
-    dot_par k#packed (dot_trace (nc, rows, kblk, k#packed) (t#Ro, kernel_ns (k, t), kernel_ni (k, t)) t);
+    dot_par (k, t, nc, rows, k#packed, kblk) (dot_trace (nc, rows, kblk, k#packed) (t#Ro, kernel_ns (k, t), kernel_ni (k, t)) t);
 lam dot_rule_rows (k: Kernel, t: Tileable): Nat = (dot_params (k, t))#1_3;
 lam dot_rule_any (k: Kernel, t: Tileable): Bool = tt;
 ///
