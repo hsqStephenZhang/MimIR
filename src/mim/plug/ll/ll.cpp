@@ -211,14 +211,25 @@ void Emitter::emit_epilogue_impl(Lam* lam) {
                     auto val_t        = convert(elem);
 
                     type = std::format("<{} x {}>", size, val_t);
-                    for (auto val : values) {
-                        if (prev.empty())
-                            prev = "<";
-                        else
-                            prev += ", ";
-                        prev += std::format("{} {}", val_t, val);
+                    bool all_const =
+                        std::ranges::all_of(values, [](const std::string& v) { return !v.starts_with('%'); });
+                    if (all_const) {
+                        for (auto val : values) {
+                            if (prev.empty())
+                                prev = "<";
+                            else
+                                prev += ", ";
+                            prev += std::format("{} {}", val_t, val);
+                        }
+                        prev += ">";
+                    } else {
+                        prev = "undef";
+                        for (size_t i = 0, n = values.size(); i != n; ++i) {
+                            auto namei = "%ret_val." + std::to_string(i);
+                            bb.tail("{} = insertelement {} {}, {} {}, i32 {}", namei, type, prev, val_t, values[i], i);
+                            prev = namei;
+                        }
                     }
-                    prev += ">";
                 } else {
                     prev = "undef";
                     type = convert(world().sigma(types));
