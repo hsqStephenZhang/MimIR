@@ -298,11 +298,11 @@ void Emitter::emit_epilogue_impl(Lam* lam) {
         auto [Ta, rest]            = mslot->uncurry_args<2>();
         auto [pointee, addr_space] = Ta->projs<2>();
         auto [msize, ret]          = rest->projs<2>();
-        emit_unsafe(msize->proj(2, 0)); // mem
-        // TODO array with size
+        auto [mem, size]           = msize->projs<2>();
+        emit_unsafe(mem);
         auto ret_lam = ret->expect_mut<Lam>("a mem.slot continuation");
         auto ptr     = ret_lam->var(2, 1);
-        auto v_ptr   = emit_slot(bb, app, pointee, addr_space);
+        auto v_ptr   = emit_slot(bb, app, pointee, addr_space, size);
         emit_phi(ret_lam, ptr, v_ptr, lam);
         return bb.tail("br label {}", id(ret_lam));
     } else if (Pi::isa_returning(app->callee_type())) { // function call

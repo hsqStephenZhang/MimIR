@@ -86,7 +86,10 @@ private:
     }
 
     /// Device slots live in a module-scope global in their requested address space, not on the stack.
-    std::string emit_slot(ll::BB&, const App* app, const Def* pointee, const Def* addr_space) override {
+    std::string
+    emit_slot(ll::BB&, const App* app, const Def* pointee, const Def* addr_space, const Def* size) override {
+        if (!is_typed_slot(pointee, size))
+            app->blame(MIM_LL_NVPTX_BE "a device slot must have the static size of its type, not `{}`", size).bail();
         auto v_ptr = "@" + app->unique_name() + ".slot";
         std::println(vars_decls_, "{} = internal addrspace({}) global {} undef", v_ptr, addr_space, convert(pointee));
         return v_ptr;

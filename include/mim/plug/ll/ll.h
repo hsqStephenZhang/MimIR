@@ -241,13 +241,31 @@ protected:
             }
     }
 
-    /// Emits the storage backing a `mem.slot` of type @p pointee and yields the pointer value.
+    /// Whether a slot of @p size bytes is exactly the static LLVM type of @p pointee.
+    /// A residual `core.trait.size` (e.g. of `Nat`) still denotes a static LLVM type.
+    bool is_typed_slot(const Def* pointee, const Def* size) {
+        return size == world().call(core::trait::size, pointee)
+            && (Lit::isa(size) || Axm::isa(core::trait::size, size));
+    }
+
+    /// Emits the storage backing a `mem.mslot` of type @p pointee and @p size bytes and yields the pointer value.
     /// The generic backend allocates on the stack; targets may override (e.g. a global in a specific address space).
     /// Kept inline on purpose so `Emitter` retains no vtable key function (else its vtable would live in a single
     /// module and break derived backends loaded from a separate plugin).
-    virtual std::string emit_slot(BB& bb, const App* app, const Def* pointee, const Def* /*addr_space*/) {
+    virtual std::string
+    emit_slot(BB& bb, const App* app, const Def* pointee, const Def* /*addr_space*/, const Def* size) {
         auto v_ptr = "%" + app->unique_name() + ".slot";
-        std::print(bb.body().emplace_back(), "{} = alloca {}", v_ptr, convert(pointee, false));
+        auto t     = convert(pointee, false);
+        if (is_typed_slot(pointee, size)) {
+            std::print(bb.body().emplace_back(), "{} = alloca {}", v_ptr, t);
+            return v_ptr;
+        }
+
+        // An `alloca i8` is only byte-aligned, but accesses through the slot assume the alignment of @p pointee.
+        auto align  = Lit::expect(world().call(core::trait::align, pointee), "a statically known slot alignment");
+        auto v_size = emit(size);
+        std::print(bb.body().emplace_back(), "{}.raw = alloca i8, i64 {}, align {}", v_ptr, v_size, align);
+        std::print(bb.body().emplace_back(), "{} = bitcast i8* {}.raw to {}*", v_ptr, v_ptr, t);
         return v_ptr;
     }
 
