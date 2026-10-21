@@ -1,0 +1,41 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/tile_at_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// `tile_at` computes one box of a matrix product C = A · B («6, 4» · «4, 8») at a run-time origin,
+// driven by tile_at_aux.cpp over every aligned origin against a scalar reference:
+// * `mm_tile`:   the «2, 4» box of C.
+// * `mmt_tile`:  the «4, 3» box of Cᵀ, written through a transposing write map (`oax = (1, 0)`).
+// * `mm_tile2`:  the «2, 4» box as a tile of the «2, 8» row tile, whose origins compose.
+// * `mm_sched`:  the «2, 4» box, strip-mined along the contraction and with its parallel dims
+//                interchanged: a tile is an ordinary Tileable that further transforms compose with.
+plugin core;
+plugin tensor;
+plugin affine;
+
+use core.ops.u.w;
+
+fun mac (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+
+lam mo  (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam mot (i j _: affine.Index): «2; affine.Index» = (j, i);
+lam ma  (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb  (_ j k: affine.Index): «2; affine.Index» = (k, j);
+
+extern fun mm_tile (a: «6, 4; I32», b: «4, 8; I32», i0 j0: Nat): «2, 4; I32» =
+    let t = tensor.mr_tileable @2 @(2, 1) ((6, 8), (0, 1), (6, 8, 4)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
+    return (tensor.tile_at (t, (i0, j0), (2, 4)));
+
+extern fun mmt_tile (a: «6, 4; I32», b: «4, 8; I32», j0 i0: Nat): «4, 3; I32» =
+    let t = tensor.mr_tileable @2 @(2, 1) ((8, 6), (1, 0), (6, 8, 4)) (mac, 0I32, tensor.id) mot (ma, mb) (tensor.buf a, tensor.buf b);
+    return (tensor.tile_at (t, (j0, i0), (4, 3)));
+
+extern fun mm_tile2 (a: «6, 4; I32», b: «4, 8; I32», i0 j0: Nat): «2, 4; I32» =
+    let t = tensor.mr_tileable @2 @(2, 1) ((6, 8), (0, 1), (6, 8, 4)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
+    return (tensor.tile_at (tensor.tile (t, (i0, 0), (2, 8)), (0, j0), (2, 4)));
+
+extern fun mm_sched (a: «6, 4; I32», b: «4, 8; I32», i0 j0: Nat): «2, 4; I32» =
+    let t = tensor.mr_tileable @2 @(2, 1) ((6, 8), (0, 1), (6, 8, 4)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
+    let t = tensor.strip_mine_red (tensor.tile (t, (i0, j0), (2, 4)), 2, 2);
+    return (tensor.materialize (tensor.interchange (t, (1, 0, 2, 3))));

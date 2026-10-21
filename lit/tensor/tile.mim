@@ -1,0 +1,32 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+// Tiling as a pure domain transform on the Tileable interface: the box of a row sum over
+// «4, 6, 8» at origin (2, 3) with extents (2, 3) is an ordinary tensor.map_reduce_post over the
+// domain (2, 3, 8), whose read map shifts the parallel dims by the origin; nothing else changes.
+
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+use core.ops.n;
+use tensor;
+
+fun add (x y: Nat)@tt: Nat = return (x + y);
+lam mo (a b _: affine.Index): «2; affine.Index» = (a, b);
+lam mi (o: «3; affine.Index»): «3; affine.Index» = o;
+
+extern fun sum_box (input: «4, 6, 8; Nat»): «2, 3; Nat» =
+    let input = buf input;
+    return (tile_at (
+        mr_tileable @1 @(2, 1) ((4, 6), (0, 1), (4, 6, 8))
+            (add, 0, id)
+            mo mi input,
+        (2, 3), (2, 3)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup,);
+
+// CHECK-DAG: tensor.map_reduce_post {{.*}} ((2, 3), (2, 3, 8),
+// CHECK-DAG: affine.op.add ({{.*}}, affine.lit 2)
+// CHECK-DAG: affine.op.add ({{.*}}, affine.lit 3)

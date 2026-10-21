@@ -849,6 +849,55 @@ anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
                  (comp_map (split_iota (r_n, r, d, ts), iota), omega);
     (t#Out, t#Ro, t#Rr + 1, t#So, t#oax,
      split_bounds (r_n, r, t#Sr, d, ts, nt), ((t#sched)#vdim ← vdim_n)#unroll ← unroll_n, retile_n);
+///
+/// ### Tiles
+///
+/// A tile is the computation of one box of a result, cf. TilingInterface's getTiledImplementation with
+/// offsets and sizes.
+/// Like strip-mining it is a pure domain transform that `retile` absorbs: `iota` shifts every parallel
+/// dim by the box's `origin`, and `omega` shifts the write coordinates back.
+///
+/// #### tile
+///
+/// Restrict `t` to the box of its result at `origin` with extents `ext`, both indexed by output axis:
+/// parallel dim `d` iterates the `ext#(oax#d)` cells from `origin#(oax#d)` on, the reduction dims stay
+/// whole, and the result is the box itself, `«ext»`.
+/// The schedule is kept, so the tile can be scheduled further, and tiled again.
+///
+/// - `origin` may be a run-time value, e.g. the loop vector of an enclosing nest.
+/// - Every parallel dim must cover its output axis (`Sr#d = So#(oax#d)`), as for `strip_mine_par`.
+/// - The box must lie within `So`; this is checked where it is decidable.
+anx lam tile (t: Tileable, origin ext: «t#Ro; Nat»): Tileable =
+    let r = t#Ro + t#Rr;
+    lam ax (d: Nat): Idx (t#Ro) = core.idx 0 (t#Ro) (t#oax#(core.idx 0 (t#Ro) d));
+    // A run-time `origin` must not reach `refly.check`: a stuck check would leave the extents open.
+    let ext_ok = ‹a: t#Ro; let hi = origin#a + ext#a;
+                           if_static (hi, refly.check (hi <= t#So#a, ext#a, "tile: the box must lie within the result"),
+                                          refly.check (ext#a <= t#So#a, ext#a, "tile: the box must lie within the result"))›;
+    let ext_d  = ‹d: t#Ro; let dd = core.idx2nat d;
+                           refly.check (t#So#(ax dd) == t#Sr#(core.idx 0 r dd), ext_ok#(ax dd),
+                                        "tile: output extent (at oax#d) must match domain extent")›;
+    let sr_n   = ‹i: r; let ii = core.idx2nat i;
+                        core.select (ii < t#Ro, ext_d#(core.idx 0 (t#Ro) ii), t#Sr#i)›;
+    lam shift (o: «r; affine.Index»): «r; affine.Index» =
+        ‹i: r; let ii = core.idx2nat i;
+               core.select (ii < t#Ro, affine.op.add (o#i, affine.lit (origin#(ax ii))), o#i)›;
+    lam unshift (oo: «t#Ro; affine.Index»): «t#Ro; affine.Index» =
+        ‹a: t#Ro; affine.op.sub (oo#a, affine.lit (origin#a))›;
+    lam retile_n (ro_m rr_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», sched_m: Sched)
+                 (iota:  «ro_m + rr_m; affine.Index» → «r; affine.Index»,
+                  omega: [«t#Ro; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+               : t#Out (ro_m, so_m) =
+        lam omega_c (oo: «t#Ro; affine.Index», ov: «ro_m + rr_m; affine.Index»): «ro_m; affine.Index» =
+            omega (unshift oo, ov);
+        t#retile (ro_m, rr_m) (so_m, sr_m, sched_m) (comp_map (shift, iota), omega_c);
+    (t#Out, t#Ro, t#Rr, ext, t#oax, sr_n, t#sched, retile_n);
+///
+/// #### tile_at
+///
+/// Materialize the box of `t`'s result at `origin` with extents `ext`: only that box is computed.
+anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = materialize (tile (t, origin, ext));
 
 /// ### Schedules
 ///

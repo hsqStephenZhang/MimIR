@@ -1,0 +1,16 @@
+// RUN: %mim -p opt %s -o - 2>&1 | %FileCheck %s
+
+// A box reaching past the result, rows 3 and 4 of a «4, 6» result: `refly.check` reports it.
+plugin core;
+plugin affine;
+plugin tensor;
+
+use tensor;
+
+fun add (x y: Nat)@tt: Nat = return (core.nat.add (x, y));
+lam mo (a b _: affine.Index): «2; affine.Index» = (a, b);
+lam mi (o: «3; affine.Index»): «3; affine.Index» = o;
+
+// CHECK: tile: the box must lie within the result
+extern fun invalid (input: «4, 6, 8; Nat»): «2, 3; Nat» =
+    return (tile_at (mr_tileable @1 @(2, 1) ((4, 6), (0, 1), (4, 6, 8)) (add, 0, id) mo mi (buf input), (3, 0), (2, 3)));
