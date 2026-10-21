@@ -160,14 +160,15 @@ axm map_reduce_post: {nis nps: Nat}
                    → [is: «i: nis; «Sis#i; Tis#i»», post_is: «j: nps; «Sps#j; Tps#j»»]
                    → «So; Tp»;
 ///
-/// ### Sched, SchedT, mk_sched
+/// ### Sched, SchedT, mk_sched, sched_of
 ///
-/// The schedule record (`vdim`, `unroll`), the type of a schedule **chooser** over the target's loop-nest
-/// builder, and the canonical chooser.
+/// The schedule record (see `btensor.Sched`), the type of a schedule **chooser** over the target's loop-nest
+/// builder, the canonical chooser, and the record that only sets the vector dim and unrolling.
 /// Aliases for the `btensor` definitions, which `btensor` owns for the same reason it owns `btensor.Ring`.
 anx Sched    = btensor.Sched;
 anx SchedT   = btensor.SchedT;
 anx mk_sched = btensor.mk_sched;
+anx sched_of = btensor.sched_of;
 ///
 /// ### map_reduce
 ///
@@ -183,7 +184,7 @@ anx lam map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
                    (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
                    (is: «i: nis; «Sis#i; Tis#i»»): «So; To» =
     map_reduce_post
-        (So, Sr, mk_sched (Rn, 0))
+        (So, Sr, mk_sched (btensor.sched_of (Rn, 0)))
         (f, init, id @To) map_out (maps, ()) (is, ());
 ///
 /// ### proj_map
@@ -719,7 +720,7 @@ anx lam mr_tileable
             map_out_n
             (‹i: nis; comp_map (maps#i, iota)›, ())
             (is, ());
-    (out_t, Ro, Rr, So, oax, Sr, (Ro + Rr, 0), retile);
+    (out_t, Ro, Rr, So, oax, Sr, btensor.sched_of (Ro + Rr, 0), retile);
 ///
 /// #### unroll_trailing
 ///
@@ -898,6 +899,25 @@ anx lam tile (t: Tileable, origin ext: «t#Ro; Nat»): Tileable =
 ///
 /// Materialize the box of `t`'s result at `origin` with extents `ext`: only that box is computed.
 anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = materialize (tile (t, origin, ext));
+
+/// ### Fusion
+///
+/// #### compute_at
+///
+/// Compute input `i` one tile at a time inside the loop of dim `d` (cf. TVM's `compute_at`, MLIR's
+/// tile-and-fuse): before the nest inside that loop runs, the box of the input its iterations read is
+/// computed into a buffer of the box's static size (see `affine.image`), from which the input is then read.
+///
+/// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post` without epilogue inputs whose write
+///   map is a projection, and the box has a literal size; it computes that input with the input's own
+///   schedule and logs a warning wherever it cannot.
+/// - `d` must be a parallel dim, and the loops around it those of the dims before it, as in the classic nest.
+/// - The boxes must lie within the input: neither boundary tiles nor padding are handled yet.
+/// - Apply it after the domain transforms, which do not renumber `d`.
+anx lam compute_at (t: Tileable, i d: Nat): Tileable =
+    let t = t#sched#at ← tt;
+    let t = t#sched#at_slot ← i;
+    t#sched#at_dim ← d;
 
 /// ### Schedules
 ///

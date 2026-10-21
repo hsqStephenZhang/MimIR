@@ -4,6 +4,8 @@
 #include <mim/lam.h>
 #include <mim/phase.h>
 
+#include <mim/plug/btensor/btensor.h>
+
 namespace mim::plug::tensor::phase {
 
 /// Bufferizes the low-level tensor axioms onto the shared `buffer` layer.
@@ -49,6 +51,11 @@ private:
     const Def* lower_generate(const App*);
     const Def* lower_broadcast(const App*);
     const Def* lower_map_reduce(const App*);
+    /// Realizes a `tensor.compute_at` in the schedule of the map_reduce_post @p app, if it can; `nullptr` otherwise.
+    const Def* lower_compute_at(const App*);
+    /// The `btensor.map_reduce_post` of @p mr, with mem-threaded combiner and epilogue, over @p shapes, @p in_tys and
+    /// @p maps_all, awaiting its memory and buffers.
+    const Def* btensor_op(const btensor::MapRedPost& mr, const Def* shapes, const Def* in_tys, const Def* maps_all);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
     const Def* lower_gather(const App*);

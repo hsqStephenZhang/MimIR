@@ -27,6 +27,7 @@ plugin affine;
 plugin buffer;
 plugin vec; // for vec.fold
 plugin mem;
+plugin refly;
 import ll;  // for the ll.vec loop annotation (declarations only — no module load, no emit phase)
 import compile;
 
@@ -114,6 +115,43 @@ axm map_reduce_post: {nis nps: Nat}
                       post_is: «j: nps; buffer.Buf (Rps#j, Sps#j, Tps#j)»]
                    → [mem.M 0, buffer.Buf (Ro, So, Tp)];
 ///
+/// ### Body, Stage, Hook
+///
+/// A nest is a composition of **stages**, i.e. transformers of the nest body below them:
+///
+/// - `Body (r, A)` runs a nest at the shared `«r; I32»` loop-vector prefix, threading an accumulator `A`.
+/// - `Stage (r, A, B)` brackets an inner `Body (r, A)` into a `Body (r, B)`: work before the inner nest, the
+///   inner nest, and work after it.
+///   Loops (`range_nest`, `range_unroll`) and the fold accumulator (`acc_reg`, `acc_tile`, `acc_cell`) are
+///   stages, so `mr_nest_with` merely composes them.
+/// - `Hook (r, A)` is a reserved stage slot: every loop level wraps the nest inside it in its hook, applied to
+///   a `Loop` describing its loop, and so does the root.
+///   `hook_none` leaves the slot empty, and partial evaluation removes it.
+pub lam Body (r: Nat, A: *): * = Cn [«r; I32», mem.M 0, A, Cn [mem.M 0, A]];
+pub lam Stage (r: Nat, A B: *): * = Body (r, A) → Body (r, B);
+///
+/// #### Loop
+///
+/// What a hook learns about its position:
+///
+/// - `dim`: the dim its loop iterates, `r` at the root;
+/// - `red`: whether that dim is a reduction dim;
+/// - `impl`: how the loop runs: `impl_for`, `impl_novec`, `impl_vec`, `impl_unroll`, or `impl_root` at the root;
+/// - `depth`: the number of loops around the hook, in the nest's actual loop order;
+/// - `outer d`: whether `d` is the dim of one of those loops, i.e. whether the loop-vector prefix has fixed it
+///   at the hook.
+pub let Loop = [dim: Nat, red: Bool, impl: Nat, depth: Nat, outer: Nat → Bool];
+pub let impl_root   = 0;
+pub let impl_for    = 1;
+pub let impl_novec  = 2;
+pub let impl_vec    = 3;
+pub let impl_unroll = 4;
+pub lam Hook (r: Nat, A: *): * = Loop → Stage (r, A, A);
+///
+/// #### hook_none
+///
+pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
+///
 /// ### Sched
 ///
 /// The **schedule** record a nest builder is handed:
@@ -121,11 +159,25 @@ axm map_reduce_post: {nis nps: Nat}
 /// - `vdim`, the dim to run innermost as the unit-stride vector loop — a parallel dim runs over a row
 ///   of accumulators, the innermost **reduction** dim selects the reduction-vectorized nest (see
 ///   `mr_nest`), and `vdim ≥ Rn` means "none";
-/// - `unroll`, the number of trailing reduction dims to unroll into straight-line code.
+/// - `unroll`, the number of trailing reduction dims to unroll into straight-line code;
+/// - `at`, `at_slot`, `at_dim`: whether to compute input `at_slot` one tile at a time inside the loop of dim
+///   `at_dim` (see `tensor.compute_at`) — an intent that `tensor.lower_to_mem` realizes as an action;
+/// - `acts`, `act_dim`, `act`: whether to run `act` inside the loop of dim `act_dim` before the nest inside it
+///   (see `at_stage`).
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
-anx let Sched = [vdim unroll: Nat];
+anx let Sched = [vdim unroll: Nat, at: Bool, at_slot at_dim: Nat, acts: Bool, act_dim: Nat,
+                 act: Fn [mem.M 0, Nat → I32] → mem.M 0];
+///
+/// #### act_none
+///
+anx fun act_none (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 = return m;
+///
+/// #### sched_of
+///
+/// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
+anx lam sched_of (vdim unroll: Nat): Sched = (vdim, unroll, ff, 0, 0, ff, 0, act_none);
 ///
 /// ### SchedT
 ///
@@ -272,43 +324,6 @@ con novec_for {A: *} (body: Cn [I32, [mem.M 0, A], Cn [mem.M 0, A]])
               (begin stop step: I32, init: [mem.M 0, A])@tt =
     affine.For (ll.novec body) exit (begin, stop, step, init);
 
-/// ### Body, Stage, Hook
-///
-/// A nest is a composition of **stages**, i.e. transformers of the nest body below them:
-///
-/// - `Body (r, A)` runs a nest at the shared `«r; I32»` loop-vector prefix, threading an accumulator `A`.
-/// - `Stage (r, A, B)` brackets an inner `Body (r, A)` into a `Body (r, B)`: work before the inner nest, the
-///   inner nest, and work after it.
-///   Loops (`range_nest`, `range_unroll`) and the fold accumulator (`acc_reg`, `acc_tile`, `acc_cell`) are
-///   stages, so `mr_nest_with` merely composes them.
-/// - `Hook (r, A)` is a reserved stage slot: every loop level wraps the nest inside it in its hook, applied to
-///   a `Loop` describing its loop, and so does the root.
-///   `hook_none` leaves the slot empty, and partial evaluation removes it.
-pub lam Body (r: Nat, A: *): * = Cn [«r; I32», mem.M 0, A, Cn [mem.M 0, A]];
-pub lam Stage (r: Nat, A B: *): * = Body (r, A) → Body (r, B);
-///
-/// #### Loop
-///
-/// What a hook learns about its position:
-///
-/// - `dim`: the dim its loop iterates, `r` at the root;
-/// - `red`: whether that dim is a reduction dim;
-/// - `impl`: how the loop runs: `impl_for`, `impl_novec`, `impl_vec`, `impl_unroll`, or `impl_root` at the root;
-/// - `depth`: the number of loops around the hook, in the nest's actual loop order;
-/// - `outer d`: whether `d` is the dim of one of those loops, i.e. whether the loop-vector prefix has fixed it
-///   at the hook.
-pub let Loop = [dim: Nat, red: Bool, impl: Nat, depth: Nat, outer: Nat → Bool];
-pub let impl_root   = 0;
-pub let impl_for    = 1;
-pub let impl_novec  = 2;
-pub let impl_vec    = 3;
-pub let impl_unroll = 4;
-pub lam Hook (r: Nat, A: *): * = Loop → Stage (r, A, A);
-///
-/// #### hook_none
-///
-pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
-///
 /// #### Ctx
 ///
 /// The loops around a segment of a nest — the number of parallel dims `ro`, `depth` and `outer` as for
@@ -321,6 +336,24 @@ lam loop_at (c: Ctx, impl lo d: Nat): Loop =
     let c = ctx_in (c, lo, d + 1);
     (d, c#ro <= d, impl, c#depth, c#outer);
 lam loop_root (r: Nat) (c: Ctx): Loop = (r, ff, impl_root, c#depth, c#outer);
+///
+/// ### at_stage
+///
+/// The stage of a tile computed one iteration at a time (see `tensor.compute_at`): inside the loop of dim
+/// `d`, `run` gets the loop-vector prefix (by dim) before the nest inside the loop runs.
+/// The loops around that point must be those of dims `0, …, d`, the box `run` computes is based on, which
+/// is checked.
+anx lam at_stage (d: Nat, run: Fn [mem.M 0, Nat → I32] → mem.M 0) (r: Nat, U: *) (l: Loop) (b: Body (r, U))
+               : Body (r, U) =
+    con at (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+        con go (m: mem.M 0) = b (pref, m, u, k);
+        run ((m, lm (e: Nat): I32 = pref#(core.idx 0 r e)), go);
+    // `d ≥ r` is no loop: the root's `dim` is `r`, and an unselected `at_stage` is still elaborated.
+    let here  = core.bit2.and 2 (l#dim == d, d < r);
+    let fixed = vec.fold.r @(Bool, Nat) @(d + 1) (lm (e: Nat, acc: Bool): Bool = core.bit2.and 2 (l#outer e, acc))
+                    (‹i: d + 1; core.idx2nat i›, tt);
+    let ok    = core.bit2.or 2 ((tt, ff)#here, core.bit2.and 2 (l#depth == d + 1, fixed));
+    (b, refly.check (ok, at, "compute_at: the loops around the tile must be those of the dims before it"))#here;
 
 /// ### range_nest
 ///
@@ -611,9 +644,12 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
 ///
 /// ### mr_nest
 ///
-/// `mr_nest_with` with every slot empty: the nest `lower_map_reduce` binds a schedule to.
+/// `mr_nest_with` with the schedule's action (see `at_stage`) in the slots of the loops threading the write-back
+/// target, and every other slot empty: the nest `lower_map_reduce` binds a schedule to.
 anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched): NestT (ro, rr, Sr, To, U) =
-    mr_nest_with (ro, rr, Sr, To, U) (hook_none (ro + rr, U), hook_none (ro + rr, To)) s;
+    let r  = ro + rr;
+    let hu = (hook_none (r, U), at_stage (s#act_dim, s#act) (r, U))#(s#acts);
+    mr_nest_with (ro, rr, Sr, To, U) (hu, hook_none (r, To)) s;
 ///
 /// ### Write-Back Stages
 ///

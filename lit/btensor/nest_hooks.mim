@@ -77,11 +77,11 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
     con done (m: mem.M 0, _: U) =
         con fin (m: mem.M 0) = return (m, 0I32);
         print_int_matrix (m, 5, W, log, fin);
-    let redvec     = run log (4I32, (2, 1), done);
-    let blocked    = run log (3I32, (0, 0), redvec);
-    let vectorized = run log (2I32, (1, 0), blocked);
-    let window     = run log (1I32, (3, 1), vectorized);
-    let classic    = run log (0I32, (3, 0), window);
+    let redvec     = run log (4I32, btensor.sched_of (2, 1), done);
+    let blocked    = run log (3I32, btensor.sched_of (0, 0), redvec);
+    let vectorized = run log (2I32, btensor.sched_of (1, 0), blocked);
+    let window     = run log (1I32, btensor.sched_of (3, 1), vectorized);
+    let classic    = run log (0I32, btensor.sched_of (3, 0), window);
     classic (m, (0I32, 0I32));
 
 // CHECK: 13000, 0, 10000, 1104, 11000, 2106, 33000, 24, 21000, 11010, 2106, 33010, 24, 21010, 20000, 10100, 1104, 11100, 2106, 33100, 24, 21100, 11110, 2106, 33110, 24, 21110, 20100, 23000, 0,

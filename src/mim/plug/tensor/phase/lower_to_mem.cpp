@@ -606,23 +606,9 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     return out;
 }
 
-const Def* LowerToMem::lower_map_reduce(const App* app) {
-    // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
-    // reusing the (rewritten) meta. The loop generation lives in the btensor plugin (`btensor.lower_map_reduce`).
-    auto& w            = new_world();
-    auto c             = rewrite(app->callee())->as<App>();
-    auto args          = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
-    auto [is, post_is] = args->projs<2>();
-
-    auto mr = btensor::MapRedPost::of(c);
-
-    // The generic rewrite rebuilds the argument tuple with its stale value-array type even when its
-    // elements were converted to buffers, which would not be assignable to the op's
-    // `«nis; buffer.Buf …»` domain - hence the re-tupling in `buffer_list`.
-    auto [old_is, old_post_is] = app->arg()->projs<2>();
-    is                         = buffer_list(is, old_is, mr.nis);
-    post_is                    = buffer_list(post_is, old_post_is, mr.nps);
-    if (!is || !post_is) return RWPhase::rewrite_imm_App(app); // leave it alone
+const Def*
+LowerToMem::btensor_op(const btensor::MapRedPost& mr, const Def* shapes, const Def* in_tys, const Def* maps_all) {
+    auto& w = new_world();
 
     // Wrap the pure tensor combiner `Fn [To, «nis; Tis»] → To` into the mem-threaded combiner
     // `Fn [mem.M 0, To, «nis; Tis»] → [mem.M 0, To]` that `btensor.map_reduce_post` expects.
@@ -651,16 +637,189 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     // NB: no `w.call` here — the meta groups are *forwarded* from the tensor op on purpose. Leaving them to
     // inference would re-derive `{Tis, Ris, Sis}` from the `buffer.Buf` operands, whose literal size-1 axes are
     // already folded away, so they would no longer agree with the logical shapes the loop generation iterates.
-    auto op        = w.annex<btensor::map_reduce_post>();
-    op             = w.app(op, mr.nis_nps);
-    op             = w.app(op, mr.meta);
-    op             = w.app(op, mr.shapes);
-    op             = w.app(op, mr.in_tys);
-    op             = w.app(op, w.tuple({memcomb, mr.init, mempost}));
-    op             = w.app(op, mr.map_out);
-    op             = w.app(op, mr.maps_all);
+    auto op = w.annex<btensor::map_reduce_post>();
+    op      = w.app(op, mr.nis_nps);
+    op      = w.app(op, mr.meta);
+    op      = w.app(op, shapes);
+    op      = w.app(op, in_tys);
+    op      = w.app(op, w.tuple({memcomb, mr.init, mempost}));
+    op      = w.app(op, mr.map_out);
+    return w.app(op, maps_all);
+}
+
+const Def* LowerToMem::lower_map_reduce(const App* app) {
+    // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
+    // reusing the (rewritten) meta. The loop generation lives in the btensor plugin (`btensor.lower_map_reduce`).
+    if (auto res = lower_compute_at(app)) return res;
+
+    auto& w            = new_world();
+    auto c             = rewrite(app->callee())->as<App>();
+    auto args          = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
+    auto [is, post_is] = args->projs<2>();
+
+    auto mr = btensor::MapRedPost::of(c);
+
+    // The generic rewrite rebuilds the argument tuple with its stale value-array type even when its
+    // elements were converted to buffers, which would not be assignable to the op's
+    // `«nis; buffer.Buf …»` domain - hence the re-tupling in `buffer_list`.
+    auto [old_is, old_post_is] = app->arg()->projs<2>();
+    is                         = buffer_list(is, old_is, mr.nis);
+    post_is                    = buffer_list(post_is, old_post_is, mr.nps);
+    if (!is || !post_is) return RWPhase::rewrite_imm_App(app); // leave it alone
+
+    auto op        = btensor_op(mr, mr.shapes, mr.in_tys, mr.maps_all);
     auto [am, dst] = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, fresh_mem())->projs<2>();
     auto [m, out]  = w.app(op, w.tuple({am, dst, is, post_is}))->projs<2>();
+    return scalar_result(app, m, out);
+}
+
+namespace {
+
+/// The body of @p f at a scratch binder's var: `{var, body}`.
+std::pair<const Def*, const Def*> probe(const Def* f) {
+    auto& w  = f->world();
+    auto pi  = f->type()->as<Pi>();
+    auto var = w.mut_lam(pi->dom(), pi->codom())->var();
+    return {var, w.app(f, var)};
+}
+
+} // namespace
+
+const Def* LowerToMem::lower_compute_at(const App* app) {
+    auto& w  = new_world();
+    auto mr  = btensor::MapRedPost::of(rewrite(app->callee())->as<App>());
+    auto rks = mr.ranks();
+    if (!rks) return nullptr;
+    auto rn = rks->nloops();
+
+    // The schedule record, read off the chooser by handing it the identity builder.
+    auto sched_ty = w.annex<btensor::Sched>();
+    auto id       = w.mut_lam(sched_ty, sched_ty)->set("sched");
+    id->set(true, id->var());
+    auto rec = w.app(w.app(mr.sched, sched_ty), id);
+    if (rec->proj(8, 2) != w.lit_tt()) return nullptr;
+    auto slot = Lit::isa<u64>(rec->proj(8, 3));
+    auto dim  = Lit::isa<u64>(rec->proj(8, 4));
+    if (!dim) return nullptr;
+
+    auto give_up = [&](const char* why) -> const Def* {
+        log().w("compute_at of input {} inside dim {} of {} not realized: {}", slot ? *slot : 0, *dim, app, why);
+        return nullptr;
+    };
+    if (!slot || *slot >= rks->nis) return give_up("no such input");
+    if (*dim >= rks->ro) return give_up("not a parallel dim");
+
+    // The producer: a map_reduce_post without epilogue inputs that writes through a projection.
+    auto [old_is, old_post_is] = app->arg()->projs<2>();
+    auto old_p                 = Axm::isa<tensor::map_reduce_post>(old_is->proj(rks->nis, *slot));
+    if (!old_p) return give_up("the input is not a map_reduce_post");
+    auto mp  = btensor::MapRedPost::of(rewrite(old_p->callee())->as<App>());
+    auto prk = mp.ranks();
+    if (!prk || prk->nps != 0) return give_up("the input has epilogue inputs");
+    auto prn = prk->nloops();
+
+    auto [ovar, obody] = probe(mp.map_out);
+    auto axis_of       = std::vector<std::optional<u64>>(prn);
+    for (u64 a = 0; a != prk->ro; ++a) {
+        auto e  = obody->proj(prk->ro, a);
+        auto dd = std::optional<u64>();
+        if (e == ovar) dd = 0;
+        if (auto ex = e->isa<Extract>(); ex && ex->tuple() == ovar) dd = Lit::isa<u64>(ex->index());
+        if (!dd || *dd >= prn || axis_of[*dd] || mp.Sr->proj(prn, *dd) != mp.So->proj(prk->ro, a))
+            return give_up("the input's write map is not a projection");
+        axis_of[*dd] = a;
+    }
+
+    // The box one iteration of the loop of `dim` reads: the dims up to `dim` are fixed, the rest whole.
+    auto map   = mr.maps->proj(rks->nis, *slot);
+    auto pro   = Lit::isa<u64>(mr.Ris->proj(rks->nis, *slot));
+    auto zero  = w.tuple(DefVec(rn, [&](size_t) -> const Def* { return w.lit_nat_0(); }));
+    auto ext   = w.tuple(DefVec(rn, [&](size_t d) { return d <= *dim ? w.lit_nat_1() : mr.Sr->proj(rn, d); }));
+    auto image = w.app(w.app(w.app(w.annex<affine::image>(), {mr.Rn, mr.Ris->proj(rks->nis, *slot)}), map),
+                       {zero, ext, mp.So});
+    if (!pro || *pro != prk->ro) return give_up("the read rank does not match the input");
+    auto caps = DefVec(prk->ro, [&](size_t a) { return image->proj(4, 2)->proj(prk->ro, a); });
+    if (!std::ranges::all_of(caps, [](const Def* cap) { return Lit::isa(cap).has_value(); }))
+        return give_up("the box has no literal size");
+    auto So_t = w.tuple(caps);
+
+    auto old_p_is = old_p->arg()->proj(2, 0);
+    auto p_is     = buffer_list(rewrite(old_p_is), old_p_is, mp.nis);
+    if (!p_is) return give_up("the input's inputs are not buffers");
+    auto ins = DefVec(rks->nis);
+    for (u64 j = 0; j != rks->nis; ++j) {
+        if (j == *slot) continue;
+        auto old = old_is->proj(rks->nis, j);
+        ins[j]   = to_buffer(rewrite(old), old);
+        if (!Axm::isa<buffer::Buf>(ins[j]->type())) return give_up("an input is not a buffer");
+    }
+    auto post_is = buffer_list(rewrite(old_post_is), old_post_is, mr.nps);
+    if (!post_is) return give_up("an epilogue input is not a buffer");
+
+    log().d("compute_at: input {} of {} one tile {} at a time inside dim {}", *slot, app, So_t, *dim);
+
+    // The tile buffer, reused by every iteration.
+    auto [am, tile] = buffer::op_alloc(mp.Ro, So_t, mp.Tp, fresh_mem())->projs<2>();
+    ins[*slot]      = tile;
+
+    auto lit = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
+    auto sub = [&](const Def* a, const Def* b) { return w.call(affine::op::sub, Defs{a, b}); };
+    auto add = [&](const Def* a, const Def* b) { return w.call(affine::op::add, Defs{a, b}); };
+
+    // The consumer reads the tile at its coordinates less those of the tile's origin, the read of the box's
+    // corner — which only depends on the dims up to `dim`, so the map stays a map of the loop vector.
+    auto read_pi = map->type()->as<Pi>();
+    auto read    = w.mut_lam(read_pi->dom(), read_pi->codom())->set("tile_read");
+    {
+        auto o      = read->var();
+        auto corner = w.tuple(DefVec(rn, [&](size_t d) { return d <= *dim ? o->proj(rn, d) : lit(w.lit_nat_0()); }));
+        auto at = w.app(map, o), base = w.app(map, corner);
+        read->set(true, w.tuple(DefVec(*pro, [&](size_t a) { return sub(at->proj(*pro, a), base->proj(*pro, a)); })));
+    }
+
+    // The producer, run per iteration on the tile at the origin the loop-vector prefix `get` fixes: its parallel
+    // dims are shifted to the origin of the axis they write and span the tile; its reduction dims stay whole.
+    auto mem_ty      = w.call<mem::M>(0);
+    auto run         = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("tile_run");
+    auto [rdata, rk] = run->vars<2>();
+    auto [rm, get]   = rdata->projs<2>();
+    {
+        auto origin = w.tuple(DefVec(rn, [&](size_t d) {
+            return d <= *dim ? lit(w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d)))) : lit(w.lit_nat_0());
+        }));
+        auto base   = w.app(map, origin);
+        auto pmaps  = DefVec(prk->nis, [&](size_t j) -> const Def* {
+            auto pmap = mp.maps->proj(prk->nis, j);
+            auto pi   = pmap->type()->as<Pi>();
+            auto lam  = w.mut_lam(pi->dom(), pi->codom())->set("tile_map");
+            auto o    = lam->var();
+            auto at   = w.tuple(DefVec(prn, [&](size_t dd) {
+                return axis_of[dd] ? add(o->proj(prn, dd), base->proj(prk->ro, *axis_of[dd])) : o->proj(prn, dd);
+            }));
+            lam->set(true, w.app(pmap, at));
+            return lam;
+        });
+        auto Sr_t
+            = w.tuple(DefVec(prn, [&](size_t dd) { return axis_of[dd] ? caps[*axis_of[dd]] : mp.Sr->proj(prn, dd); }));
+        auto shapes = w.tuple({So_t, Sr_t, mp.sched});
+        auto op     = btensor_op(mp, shapes, mp.in_tys, w.tuple({w.tuple(pmaps), mp.post_maps}));
+        auto res    = w.app(op, w.tuple({rm, tile, p_is, w.tuple()}));
+        run->app(true, rk, res->proj(2, 0));
+    }
+
+    // The consumer, its schedule's intent now the action running the producer.
+    auto rec_n = w.tuple({rec->proj(8, 0), rec->proj(8, 1), w.lit_ff(), rec->proj(8, 3), rec->proj(8, 4), w.lit_tt(),
+                          w.lit_nat(*dim), run});
+    auto sched = w.app(w.annex<btensor::mk_sched>(), rec_n);
+
+    auto Sis = DefVec(rks->nis, [&](size_t j) { return j == *slot ? So_t : mr.Sis->proj(rks->nis, j); });
+    auto maps
+        = DefVec(rks->nis, [&](size_t j) -> const Def* { return j == *slot ? read : mr.maps->proj(rks->nis, j); });
+    auto in_tys = w.tuple({mr.Tis, mr.Ris, w.tuple(Sis), mr.Tps, mr.Rps, mr.Sps});
+    auto op     = btensor_op(mr, w.tuple({mr.So, mr.Sr, sched}), in_tys, w.tuple({w.tuple(maps), mr.post_maps}));
+
+    auto [dm, dst] = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, am)->projs<2>();
+    auto [m, out]  = w.app(op, w.tuple({dm, dst, w.tuple(ins), post_is}))->projs<2>();
     return scalar_result(app, m, out);
 }
 

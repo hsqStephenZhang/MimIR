@@ -35,8 +35,8 @@ extern lam _compile (): compile.Phase =
     );
 
 // The selected schedules: (vdim, unroll) = (1, 1) at rank 2 and (2, 1) at rank 3.
-// CHECK-DAG: {{mk[_a-zA-Z0-9]* ‹2; 1›}}
-// CHECK-DAG: {{mk[_a-zA-Z0-9]* \(2, 1\)}}
+// CHECK-DAG: {{mk[_a-zA-Z0-9]* \(1, 1, }}
+// CHECK-DAG: {{mk[_a-zA-Z0-9]* \(2, 1, }}
 
 // The recombined contraction subscript `ko * 1 + ki`, folded down to plain affine arithmetic.
 // CHECK-DAG: affine.semiop.mul ({{[_a-zA-Z0-9]+}}, 1)
