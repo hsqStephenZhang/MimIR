@@ -568,6 +568,29 @@ lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro + rr,
 anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched): NestT (ro, rr, Sr, To, U) =
     mr_nest_with (ro, rr, Sr, To, U) (hook_none (ro + rr, U), hook_none (ro + rr, To)) s;
 ///
+/// ### Write-Back Stages
+///
+/// The per-cell write-back is itself a composition of stages over `CellWb`, which consumes one value of
+/// type `T` at the output coordinates `C`: `post_stage` is the epilogue in front of the final write.
+///
+/// #### CellWb
+///
+lam CellWb (C U T: *): * = Cn [mem.M 0, U, T, C, Cn [mem.M 0, U]];
+///
+/// #### post_stage
+///
+/// Reads the epilogue inputs at the cell's coordinates and hands `post` of the folded value to `inner`.
+lam post_stage (C U To Tp: *) (nps: Nat, Tps: «nps; *»)
+               (read_post: Fn [mem.M 0, C] → [mem.M 0, «j: nps; Tps#j»],
+                post: Fn [mem.M 0, To, «j: nps; Tps#j»] → [mem.M 0, Tp])
+               (inner: CellWb (C, U, Tp))
+             : CellWb (C, U, To) =
+    con at (m: mem.M 0, u: U, acc: To, coords: C, k: Cn [mem.M 0, U])@tt =
+        con write (m: mem.M 0, value: Tp)@tt = inner (m, u, value, coords, k);
+        con epilogue (m: mem.M 0, values: «j: nps; Tps#j»)@tt = post ((m, acc, values), write);
+        read_post ((m, coords), epilogue);
+    at;
+///
 /// ### map_reduce_post_impl
 ///
 /// Destination-passing map-reduce: apply the selected nest to ordinary fold and write-back functions.
@@ -591,14 +614,15 @@ priv anx lam map_reduce_post_impl {nis nps: Nat}
             let indices = ‹d: Rn; core.conv.u (Sr#d) (ivs#d)›;
             con combine (m: mem.M 0, values: «i: nis; Tis#i»)@tt = f ((m, acc, values), k);
             read_inputs ((m, indices), combine);
+        let Coords = «d: Ro; Idx (So#d)»;
+        con write (m: mem.M 0, output: Output, value: Tp, coords: Coords, k: Cn [mem.M 0, Output])@tt =
+            con written (m: mem.M 0)@tt = k (m, output);
+            write_output ((m, output, coords, value), written);
+        let cell_wb = post_stage (Coords, Output, To, Tp) (nps, Tps) (read_post, post) write;
         con wb (m: mem.M 0, output: Output, acc: To, ivs: «Rn; I32», k: Cn [mem.M 0, Output])@tt =
             let indices = ‹d: Rn; core.conv.u (Sr#d) (ivs#d, 0I32)#(Ro <= core.bitcast Nat d)›;
             let (m, coords) = affine.map @(Ro, Rn) @(Sr, So) map_out indices @0 m;
-            con write (m: mem.M 0, value: Tp)@tt =
-                con written (m: mem.M 0)@tt = k (m, output);
-                write_output ((m, output, coords, value), written);
-            con epilogue (m: mem.M 0, values: «j: nps; Tps#j»)@tt = post ((m, acc, values), write);
-            read_post ((m, coords), epilogue);
+            cell_wb (m, output, acc, coords, k);
         let nest = sched (NestT (Ro, Rr, Sr, To, Output)) (mr_nest (Ro, Rr, Sr, To, Output));
         nest (init, cell, wb) (m, dst, return);
     cps.cps2ds run (m, dst);
