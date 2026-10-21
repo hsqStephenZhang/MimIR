@@ -5,8 +5,10 @@
 
 // Non-empty slots of `btensor.mr_nest_with` over the domain (2, 2 | 2), one log row per nest:
 // classic, classic with an unrolled window, vectorized, blocked, and reduction-vectorized.
-// A `U` hook logs `1dxyz` on entry and `2dxyz` on exit, where `d` is the dim of its loop (3 = root) and
-// `xyz` the loop-vector prefix; the write-back logs `33xyz` followed by the folded value.
+// A `U` hook logs `1dxyz` and its loop's `tiro` on entry and `2dxyz` on exit, where `d` is the dim of its loop
+// (3 = root), `xyz` the loop-vector prefix, `t` the depth, `i` the impl (0 root, 1 for, 2 novec, 3 vec, 4 unroll),
+// `r` whether `d` is a reduction dim, and `o` the dims fixed by the loops around it (4·[0] + 2·[1] + [2]);
+// the write-back logs `33xyz` followed by the folded value.
 // A `To` hook adds 1 to the fold value on entry and 10 on exit, so the folded value shows which levels
 // thread the accumulator through it: the two reduction steps add 1 each, every wrapped level 11 more.
 plugin core;
@@ -14,7 +16,9 @@ plugin mem;
 plugin buffer;
 plugin btensor;
 
-let W   = 40;
+use core.ops.n;
+
+let W   = 72;
 let Sr  = (2, 2, 2);
 let Log = buffer.Buf (2, (5, W), I32);
 let U   = «2; I32»;
@@ -32,16 +36,23 @@ lam put (log: Log) (m: mem.M 0, (row col: I32), x: I32): [mem.M 0, U] =
     let (m, _) = buffer.write (2, (5, W), I32) (m, log, (core.conv.u 5 row, core.conv.u W col), x);
     (m, (row, add (col, 1I32)));
 
-lam hu (log: Log) (d: Nat) (b: btensor.Body (3, U)): btensor.Body (3, U) =
+lam bit (x: Bool): Nat = (0, 1)#x;
+
+lam meta (l: btensor.Loop): I32 =
+    let o = 4 * bit (l#outer 0) + 2 * bit (l#outer 1) + bit (l#outer 2);
+    core.bitcast I32 (1000 * l#depth + 100 * l#impl + 10 * bit l#red + o);
+
+lam hu (log: Log) (l: btensor.Loop) (b: btensor.Body (3, U)): btensor.Body (3, U) =
     con at (pref: «3; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
         con leave (m: mem.M 0, u: U) =
-            let (m, u) = put log (m, u, enc (2I32, d, pref));
+            let (m, u) = put log (m, u, enc (2I32, l#dim, pref));
             k (m, u);
-        let (m, u) = put log (m, u, enc (1I32, d, pref));
+        let (m, u) = put log (m, u, enc (1I32, l#dim, pref));
+        let (m, u) = put log (m, u, meta l);
         b (pref, m, u, leave);
     at;
 
-lam ht (d: Nat) (b: btensor.Body (3, I32)): btensor.Body (3, I32) =
+lam ht (_: btensor.Loop) (b: btensor.Body (3, I32)): btensor.Body (3, I32) =
     con at (pref: «3; I32», m: mem.M 0, acc: I32, k: Cn [mem.M 0, I32]) =
         con leave (m: mem.M 0, acc: I32) = k (m, add (acc, 10I32));
         b (pref, m, add (acc, 1I32), leave);
@@ -73,8 +84,8 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
     let classic    = run log (0I32, (3, 0), window);
     classic (m, (0I32, 0I32));
 
-// CHECK: 13000, 10000, 11000, 33000, 24, 21000, 11010, 33010, 24, 21010, 20000, 10100, 11100, 33100, 24, 21100, 11110, 33110, 24, 21110, 20100, 23000, 0,
-// CHECK-NEXT: 13000, 10000, 11000, 33000, 24, 21000, 11010, 33010, 24, 21010, 20000, 10100, 11100, 33100, 24, 21100, 11110, 33110, 24, 21110, 20100, 23000, 0,
-// CHECK-NEXT: 13000, 10000, 12000, 11000, 21000, 11010, 21010, 22000, 12001, 11001, 21001, 11011, 21011, 22001, 33000, 2, 33010, 2, 20000, 10100, 12100, 11100, 21100, 11110, 21110, 22100, 12101, 11101, 21101, 11111, 21111, 22101, 33100, 2, 33110, 2, 20100, 23000, 0,
-// CHECK-NEXT: 13000, 12000, 11000, 10000, 20000, 10100, 20100, 21000, 11010, 10010, 20010, 10110, 20110, 21010, 22000, 12001, 11001, 10001, 20001, 10101, 20101, 21001, 11011, 10011, 20011, 10111, 20111, 21011, 22001, 33000, 2, 33010, 2, 33100, 2, 33110, 2, 23000, 0,
-// CHECK-NEXT: 13000, 10000, 12000, 11000, 21000, 11010, 21010, 22000, 12001, 11001, 21001, 11011, 21011, 22001, 33000, 2, 33010, 2, 20000, 10100, 12100, 11100, 21100, 11110, 21110, 22100, 12101, 11101, 21101, 11111, 21111, 22101, 33100, 2, 33110, 2, 20100, 23000, 0,
+// CHECK: 13000, 0, 10000, 1104, 11000, 2106, 33000, 24, 21000, 11010, 2106, 33010, 24, 21010, 20000, 10100, 1104, 11100, 2106, 33100, 24, 21100, 11110, 2106, 33110, 24, 21110, 20100, 23000, 0,
+// CHECK-NEXT: 13000, 0, 10000, 1104, 11000, 2106, 33000, 24, 21000, 11010, 2106, 33010, 24, 21010, 20000, 10100, 1104, 11100, 2106, 33100, 24, 21100, 11110, 2106, 33110, 24, 21110, 20100, 23000, 0,
+// CHECK-NEXT: 13000, 0, 10000, 1204, 12000, 2215, 11000, 3307, 21000, 11010, 3307, 21010, 22000, 12001, 2215, 11001, 3307, 21001, 11011, 3307, 21011, 22001, 33000, 2, 33010, 2, 20000, 10100, 1204, 12100, 2215, 11100, 3307, 21100, 11110, 3307, 21110, 22100, 12101, 2215, 11101, 3307, 21101, 11111, 3307, 21111, 22101, 33100, 2, 33110, 2, 20100, 23000, 0,
+// CHECK-NEXT: 13000, 0, 12000, 1211, 11000, 2303, 10000, 3407, 20000, 10100, 3407, 20100, 21000, 11010, 2303, 10010, 3407, 20010, 10110, 3407, 20110, 21010, 22000, 12001, 1211, 11001, 2303, 10001, 3407, 20001, 10101, 3407, 20101, 21001, 11011, 2303, 10011, 3407, 20011, 10111, 3407, 20111, 21011, 22001, 33000, 2, 33010, 2, 33100, 2, 33110, 2, 23000, 0,
+// CHECK-NEXT: 13000, 0, 10000, 1204, 12000, 2315, 11000, 3407, 21000, 11010, 3407, 21010, 22000, 12001, 2315, 11001, 3407, 21001, 11011, 3407, 21011, 22001, 33000, 2, 33010, 2, 20000, 10100, 1204, 12100, 2315, 11100, 3407, 21100, 11110, 3407, 21110, 22100, 12101, 2315, 11101, 3407, 21101, 11111, 3407, 21111, 22101, 33100, 2, 33110, 2, 20100, 23000, 0,
