@@ -73,11 +73,26 @@ const Nest::Node* Scheduler::late(Def* curr_mut, const Def* def) {
     return late_[def] = result;
 }
 
+// Like `late`, but bounded by where the uses are actually placed: a use hoisted by `smart` must still see its operands.
+const Nest::Node* Scheduler::smart_late(Def* curr_mut, const Def* def) {
+    if (def->is_closed() || !nest().contains(def)) return nest().root();
+    if (auto mut = def->isa_mut()) return nest()[mut];
+    if (auto var = def->isa<Var>()) return nest()[var->binder()];
+
+    const Nest::Node* result = nullptr;
+    for (auto use : uses(def)) {
+        auto node = use->isa_mut() ? nest()[use->isa_mut()] : smart(curr_mut, use);
+        result    = result ? Nest::lca(result, node) : node;
+    }
+
+    return result ? result : nest()[curr_mut];
+}
+
 const Nest::Node* Scheduler::smart(Def* curr_mut, const Def* def) {
     if (auto n = fe::lookup(smart_, def)) return n;
 
     auto e = early(def);
-    auto l = late(curr_mut, def);
+    auto l = smart_late(curr_mut, def);
     auto s = l;
 
     int depth = l->loop_depth();

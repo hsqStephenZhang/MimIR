@@ -89,6 +89,8 @@ public:
     }
 
 private:
+    const Nest::Node* smart_late(Def* curr, const Def*);
+
     const Nest* nest_ = nullptr;
     Uses empty_;
     DefMap<const Nest::Node*> early_, late_, smart_;
