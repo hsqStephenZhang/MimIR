@@ -38,8 +38,15 @@ extern fun c_win (): B2 = return (affine.image win ((1, 0), (3, 3), (16, 16)));
 // A broadcast reads index 0 only.
 extern fun c_bcast (): B2 = return (affine.image bcast ((2, 1), (3, 4), (8, 1)));
 
-// i ∈ [5, 12): floordiv 4 ∈ [1, 2], ceildiv 4 ∈ [2, 3].
+// i ∈ [5, 12): floordiv 4 ∈ [1, 2], ceildiv 4 ∈ [2, 3]; at a run-time origin they may take 3 values.
 extern fun c_div (): B2 = return (affine.image fdiv (5, 7, (8, 8)));
+extern fun c_div_sym (i0: Nat): B2 = return (affine.image fdiv (i0, 7, (8, 8)));
+
+// A strip-mined dim 8·i + j, j ∈ [0, 8), stays in one block of 16 at any i, and spans two blocks of 12 at most.
+lam fsplit (i j: affine.Index): «2; affine.Index» =
+    let x = affine.op.add (affine.semiop.mul (i, 8), j);
+    (affine.semiop.floordiv (x, 16), affine.semiop.floordiv (x, 12));
+extern fun c_align (i0: Nat): B2 = return (affine.image fsplit ((i0, 0), (1, 8), (64, 64)));
 
 // rem 8 of i ∈ [9, 13) stays in one block; of j ∈ [6, 11) it wraps, so it is all of [0, 8).
 extern fun c_rem (): B2 = return (affine.image rem8 ((9, 6), (4, 5), (8, 8)));
@@ -106,12 +113,16 @@ extern fun chain (i0: Nat): Nat =
 
 extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 
+// CHECK-LABEL: extern fun c_align
+// CHECK:       return ({{.*}}, {{.*}}, (1, 2), ‹2; tt›);
 // CHECK-LABEL: extern fun c_bcast
 // CHECK-NEXT:  return ((2, 0), (3, 1), (3, 1), ‹2; tt›);
 // CHECK-LABEL: extern fun c_clamp
 // CHECK-NEXT:  return ((5, 0), (1, 3), (2, 3), ‹2; tt›);
 // CHECK-LABEL: extern fun c_div
-// CHECK-NEXT:  return ((1, 2), ‹2; 2›, ‹2; 3›, ‹2; tt›);
+// CHECK-NEXT:  return ((1, 2), ‹2; 2›, ‹2; 2›, ‹2; tt›);
+// CHECK-LABEL: extern fun c_div_sym
+// CHECK:       return ({{.*}}, {{.*}}, ‹2; 3›, ‹2; tt›);
 // CHECK-LABEL: extern fun c_gap
 // CHECK:       return ({{.*}}, {{.*}}, 10, ff);
 // CHECK-LABEL: extern fun c_mixed

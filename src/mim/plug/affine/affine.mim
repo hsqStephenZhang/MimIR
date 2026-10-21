@@ -121,8 +121,9 @@ axm delinearize: {m: Nat} → [lin: Index, s: «m; Nat»] → «m; Index»;
 /// For the domain box at `lo` with extents `ext`, coordinate `j` of `f`'s result only takes values in
 /// `[lo'#j, lo'#j + ext'#j)`, clamped to the shape `[0, s#j)`:
 ///
-/// - `cap#j` bounds `ext'#j` independently of `lo`, so it is a literal for literal `ext` — the size of a
-///   buffer holding the box at any origin.
+/// - `cap#j` bounds `ext'#j` for every value of the non-literal entries of `lo`, so it is a literal for literal
+///   `ext` — the size of a buffer holding the box at any origin these entries may give.
+///   The literal entries of `lo` are kept, e.g. a `floordiv` of a box that starts aligned takes fewer values.
 /// - `exact#j` states that every value of the box is taken.
 /// - Shifts, sums of indices (a convolution window), strides, `floordiv`, `ceildiv`, `rem`, `linearize` and
 ///   `delinearize` are bounded; a stride and a `rem` that may wrap are not exact.

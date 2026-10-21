@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <vector>
@@ -100,9 +101,9 @@ public:
                     return Itv{mul(x->lo, c), mul(x->hi, c), width, exact, x->dims, lin_mul(x->lin, c)};
                 }
                 case semiop::floordiv:
-                    return Itv{div(x->lo, c), div(x->hi, c), div_width(x->width, c), x->exact, x->dims, {}};
+                    return Itv{div(x->lo, c), div(x->hi, c), div_width(*x, c, 0), x->exact, x->dims, {}};
                 case semiop::ceildiv:
-                    return Itv{cdiv(x->lo, c), cdiv(x->hi, c), div_width(x->width, c), x->exact, x->dims, {}};
+                    return Itv{cdiv(x->lo, c), cdiv(x->hi, c), div_width(*x, c, -1), x->exact, x->dims, {}};
                 case semiop::rem: return rem(*x, c);
             }
         }
@@ -145,8 +146,25 @@ private:
 
     const Def* cdiv(const Def* a, const Def* b) { return div(sub(add(a, b), one()), b); }
 
-    /// `w` consecutive values meet at most `(w − 1)/c + 2` multiples of `c`, and never more than `w`.
-    const Def* div_width(const Def* w, const Def* c) { return min(add(div(sub(w, one()), c), w_.lit_nat(2)), w); }
+    /// `w` consecutive values from `v` take `(v rem c + w − 1)/c + 1` quotients by `c`, and never more than `w`.
+    /// `v rem c` is bounded by the residues `v` admits, as a non-literal origin may be any value.
+    const Def* div_width(const Itv& x, const Def* c, int64_t shift) {
+        auto loose = min(add(div(sub(x.width, one()), c), w_.lit_nat(2)), x.width);
+        auto n     = Lit::isa(c);
+        if (!n || *n == 0 || !x.lin) return loose;
+        auto g = *n;
+        auto k = x.lin->k + shift;
+        if (x.lin->sym) g = 1;
+        for (u64 i = 0; i != n_; ++i) {
+            if (x.lin->c[i] == 0) continue;
+            if (auto lo = Lit::isa(lo_->proj(n_, i)))
+                k += x.lin->c[i] * int64_t(*lo);
+            else
+                g = std::gcd(g, u64(x.lin->c[i]));
+        }
+        auto rho = *n - g + u64((k % int64_t(g) + int64_t(g)) % int64_t(g));
+        return min(add(div(add(w_.lit_nat(rho), sub(x.width, one())), c), one()), loose);
+    }
 
     /// Without a carry across the box, `rem` is the shifted range; otherwise it is the whole `[0, c)`.
     /// Whether it carries depends on the origin, so only a single value is bounded by less than `c`.
@@ -194,7 +212,7 @@ private:
         const Def* stride = one();
         for (u64 j = k + 1; j < *r; ++j)
             stride = mul(stride, s->proj(*r, j));
-        auto q = Itv{div(x->lo, stride), div(x->hi, stride), div_width(x->width, stride), x->exact, x->dims, {}};
+        auto q = Itv{div(x->lo, stride), div(x->hi, stride), div_width(*x, stride, 0), x->exact, x->dims, {}};
         return rem(q, s->proj(*r, k));
     }
 

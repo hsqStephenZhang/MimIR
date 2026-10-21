@@ -912,9 +912,12 @@ anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = ma
 ///   map is a projection, and the box has a literal size; it computes that input with the input's own
 ///   schedule and logs a warning wherever it cannot.
 /// - `d` must be a parallel dim, and the loops around it those of the dims before it, as in the classic nest.
+/// - The read of each iteration's corner must be where its box starts, which a reversed read is not.
 /// - The boxes must lie within the input: neither boundary tiles nor padding are handled yet.
 /// - Apply it after the domain transforms, which do not renumber `d`.
+/// - Only one input of an op can be computed at a loop yet.
 anx lam compute_at (t: Tileable, i d: Nat): Tileable =
+    let i = refly.check (core.icmp.e @2 (t#sched#at, ff), i, "compute_at: only one input of an op can be computed at a loop yet");
     let t = t#sched#at ← tt;
     let t = t#sched#at_slot ← i;
     t#sched#at_dim ← d;
