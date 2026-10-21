@@ -107,6 +107,27 @@ axm linearize: {n: Nat} → [idxs: «n; Index», s: «n; Nat»] → Index;
 ///
 axm delinearize: {m: Nat} → [lin: Index, s: «m; Nat»] → «m; Index»;
 ///
+/// ## Region Inference
+///
+/// ### image
+///
+/// The box an affine map reaches from a box of its domain — the region a tile of a loop nest reads
+/// (cf. MLIR's slice computation for tiling, TVM's bound inference).
+/// For the domain box starting at `lo` with extents `ext`, coordinate `j` of `f`'s result only takes values in
+/// `[lo'#j, lo'#j + ext'#j)`, clamped to the shape `[0, s#j)`, and `exact#j` states that it takes every one.
+///
+/// - The bounds are `Nat` expressions, so a symbolic `lo` (a tile's run-time origin) yields symbolic bounds.
+/// - Shifts, sums of indices (a convolution window), strides, `floordiv`, `ceildiv`, `rem`, `linearize` and
+///   `delinearize` are bounded; a stride and a `rem` that may wrap are not exact.
+/// - A coordinate it cannot bound is the whole `[0, s#j)`, not exact.
+/// - Every `ext#i` must be positive.
+///
+/// It normalizes once `f` β-reduces to a body over its argument and `n`, `m` are literals.
+axm image: {n m: Nat}
+         → [f: «n; Index» → «m; Index»]
+         → [lo ext: «n; Nat», s: «m; Nat»]
+         → [lo: «m; Nat», ext: «m; Nat», exact: «m; Bool»], normalize_image;
+///
 /// ## Phases
 ///
 /// ### lower_for

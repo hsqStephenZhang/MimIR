@@ -1,0 +1,35 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/image_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// Soundness of `affine.image` at run-time origins, checked by image_aux.cpp against brute force: every value
+// a map takes over the box lies within the inferred box, and an exact coordinate takes all of them.
+// The origins are run-time `Nat`s, so the bounds stay symbolic until the program runs.
+plugin core;
+plugin mem;
+plugin affine;
+
+let R = [«2; Nat», «2; Nat», «2; Bool»];
+
+lam win  (oh kh: affine.Index): «2; affine.Index» = (affine.op.add (oh, kh), affine.op.add (affine.semiop.mul (oh, 2), kh));
+lam resh (o: «2; affine.Index»): «2; affine.Index» = affine.delinearize (affine.linearize (o, (4, 6)), (3, 8));
+lam rdiv (i j: affine.Index): «2; affine.Index» = (affine.semiop.rem (i, 8), affine.semiop.floordiv (j, 3));
+lam trs  (i j: affine.Index): «2; affine.Index» = (affine.op.add (j, affine.lit 2), affine.op.sub (i, affine.lit 1));
+
+lam put (m: mem.M 0, out: mem.Ptr0 «6; I64», (lo ext: «2; Nat», ex: «2; Bool»)): mem.M 0 =
+    lam n (x: Nat): I64 = core.bitcast I64 x;
+    lam b (x: Bool): I64 = (0I64, 1I64)#x;
+    mem.store (m, out, (n lo#0_2, n lo#1_2, n ext#0_2, n ext#1_2, b ex#0_2, b ex#1_2));
+
+extern fun img_win (m: mem.M 0, out: mem.Ptr0 «6; I64», a0 a1: Nat): mem.M 0 =
+    return (put (m, out, affine.image win ((a0, a1), (3, 3), (64, 64))));
+
+extern fun img_resh (m: mem.M 0, out: mem.Ptr0 «6; I64», a0 a1: Nat): mem.M 0 =
+    return (put (m, out, affine.image resh ((a0, a1), (1, 4), (3, 8))));
+
+extern fun img_rdiv (m: mem.M 0, out: mem.Ptr0 «6; I64», a0 a1: Nat): mem.M 0 =
+    return (put (m, out, affine.image rdiv ((a0, a1), (5, 4), (8, 64))));
+
+extern fun img_trs (m: mem.M 0, out: mem.Ptr0 «6; I64», a0 a1: Nat): mem.M 0 =
+    return (put (m, out, affine.image trs ((a0, a1), (2, 3), (16, 16))));

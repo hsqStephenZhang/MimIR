@@ -1,0 +1,90 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// Region inference: `affine.image` bounds the box each access map reads from a box of its domain.
+// Each function returns (lo, ext, exact) per result coordinate.
+
+plugin core;
+plugin affine;
+plugin compile;
+
+let B2 = [«2; Nat», «2; Nat», «2; Bool»];
+
+lam proj  (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam tr    (i j: affine.Index): «2; affine.Index» = (j, i);
+lam shift (i j: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.lit 1), affine.op.sub (j, affine.lit 1));
+lam win   (oh kh: affine.Index): «2; affine.Index» =
+    (affine.op.add (oh, kh), affine.op.add (affine.semiop.mul (oh, 2), kh));
+lam bcast (i j: affine.Index): «2; affine.Index» = (i, affine.semiop.mul (j, 0));
+lam fdiv  (i: affine.Index): «2; affine.Index» = (affine.semiop.floordiv (i, 4), affine.semiop.ceildiv (i, 4));
+lam rem8  (i j: affine.Index): «2; affine.Index» = (affine.semiop.rem (i, 8), affine.semiop.rem (j, 8));
+lam twice (i j: affine.Index): «2; affine.Index» = (affine.op.add (i, i), affine.op.add (i, j));
+lam neg   (i j: affine.Index): «2; affine.Index» = (affine.op.neg i, j);
+lam resh  (o: «2; affine.Index»): «2; affine.Index» = affine.delinearize (affine.linearize (o, (4, 6)), (3, 8));
+
+// (i, k) of the box i ∈ [2, 4), j ∈ [4, 8), k ∈ [0, 4): exact.
+extern fun c_proj (): B2 = return (affine.image proj ((2, 4, 0), (2, 4, 4), (6, 4)));
+
+// The transpose of i ∈ [1, 3), j ∈ [0, 5).
+extern fun c_tr (): B2 = return (affine.image tr ((1, 0), (2, 5), (8, 6)));
+
+// i + 1 and j − 1 of i ∈ [0, 2), j ∈ [1, 4).
+extern fun c_shift (): B2 = return (affine.image shift ((0, 1), (2, 3), (8, 8)));
+
+// A window: oh + kh is exact; 2·oh + kh is bounded but strided, so not exact.
+extern fun c_win (): B2 = return (affine.image win ((1, 0), (3, 3), (16, 16)));
+
+// A broadcast reads index 0 only.
+extern fun c_bcast (): B2 = return (affine.image bcast ((2, 1), (3, 4), (8, 1)));
+
+// i ∈ [5, 12): floordiv 4 ∈ [1, 2], ceildiv 4 ∈ [2, 3].
+extern fun c_div (): B2 = return (affine.image fdiv (5, 7, (8, 8)));
+
+// rem 8 of i ∈ [9, 13) stays in one block; of j ∈ [6, 11) it wraps, so it is all of [0, 8).
+extern fun c_rem (): B2 = return (affine.image rem8 ((9, 6), (4, 5), (8, 8)));
+
+// i + i skips the odd values; i + j of independent ranges does not.
+extern fun c_twice (): B2 = return (affine.image twice ((1, 1), (3, 3), (16, 16)));
+
+// A coordinate it cannot bound is the whole shape.
+extern fun c_neg (): B2 = return (affine.image neg ((1, 1), (2, 2), (7, 8)));
+
+// Clamped to the shape: i + 1 of i ∈ [4, 6) in a dim of 6 reaches only 5.
+extern fun c_clamp (): B2 = return (affine.image shift ((4, 1), (2, 3), (6, 8)));
+
+// Row 1 of a «4, 6» reshaped to «3, 8»: flat [6, 12) is row 0 or 1, and columns that wrap.
+extern fun c_resh (): B2 = return (affine.image resh ((1, 0), (1, 6), (3, 8)));
+
+// A run-time origin yields bounds in terms of it.
+extern fun c_sym (i0: Nat): B2 = return (affine.image tr ((0, i0), (2, 3), (8, 6)));
+
+// An unknown map stays an `affine.image`.
+extern fun c_open (f: «2; affine.Index» → «2; affine.Index»): B2 = return (affine.image f ((0, 0), (2, 2), (8, 8)));
+
+extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
+
+// CHECK-LABEL: extern fun c_bcast
+// CHECK-NEXT:  return ((2, 0), (3, 1), ‹2; tt›);
+// CHECK-LABEL: extern fun c_clamp
+// CHECK-NEXT:  return ((5, 0), (1, 3), ‹2; tt›);
+// CHECK-LABEL: extern fun c_div
+// CHECK-NEXT:  return ((1, 2), ‹2; 2›, ‹2; tt›);
+// CHECK-LABEL: extern fun c_neg
+// CHECK-NEXT:  return ((0, 1), (7, 2), (ff, tt));
+// CHECK-LABEL: extern fun c_open
+// CHECK-NEXT:  affine.image
+// CHECK-LABEL: extern fun c_proj
+// CHECK-NEXT:  return ((2, 0), (2, 4), ‹2; tt›);
+// CHECK-LABEL: extern fun c_rem
+// CHECK-NEXT:  return ((1, 0), (4, 8), (tt, ff));
+// CHECK-LABEL: extern fun c_resh
+// CHECK-NEXT:  return (‹2; 0›, (2, 8), (tt, ff));
+// CHECK-LABEL: extern fun c_shift
+// CHECK-NEXT:  return ((1, 0), (2, 3), ‹2; tt›);
+// CHECK-LABEL: extern fun c_sym
+// CHECK:       return ((i0, 0), ({{.*}}, 2), ‹2; tt›);
+// CHECK-LABEL: extern fun c_tr
+// CHECK-NEXT:  return ((0, 1), (5, 2), ‹2; tt›);
+// CHECK-LABEL: extern fun c_twice
+// CHECK-NEXT:  return (‹2; 2›, ‹2; 5›, (ff, tt));
+// CHECK-LABEL: extern fun c_win
+// CHECK-NEXT:  return ((1, 2), (5, 7), (tt, ff));
