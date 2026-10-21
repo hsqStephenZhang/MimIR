@@ -284,13 +284,13 @@ con novec_for {A: *} (body: Cn [I32, [mem.M 0, A], Cn [mem.M 0, A]])
 /// - `Hook (r, A)` is a reserved stage slot: every loop level wraps the nest inside it in its hook, keyed by
 ///   the dim the loop iterates (`r` for the root).
 ///   `hook_none` leaves the slot empty, and partial evaluation removes it.
-lam Body (r: Nat, A: *): * = Cn [«r; I32», mem.M 0, A, Cn [mem.M 0, A]];
-lam Stage (r: Nat, A B: *): * = Body (r, A) → Body (r, B);
-lam Hook (r: Nat, A: *): * = Nat → Stage (r, A, A);
+pub lam Body (r: Nat, A: *): * = Cn [«r; I32», mem.M 0, A, Cn [mem.M 0, A]];
+pub lam Stage (r: Nat, A B: *): * = Body (r, A) → Body (r, B);
+pub lam Hook (r: Nat, A: *): * = Nat → Stage (r, A, A);
 ///
 /// #### hook_none
 ///
-lam hook_none (r: Nat, A: *) (d: Nat) (b: Body (r, A)): Body (r, A) = b;
+pub lam hook_none (r: Nat, A: *) (d: Nat) (b: Body (r, A)): Body (r, A) = b;
 
 /// ### range_nest
 ///
@@ -427,7 +427,7 @@ lam acc_cell (r: Nat, To U: *) (N: Nat, buf: buffer.Buf (1, N, To), ix: «r; I32
 /// `hu` and `ht` fill the reserved slots (see `Hook`) of the loops threading the write-back target `U` and
 /// of those threading the fold value `To`; the loops iterating an accumulator tile have none.
 /// Per-cell fold order is untouched by any of these transforms.
-lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro + rr, U), ht: Hook (ro + rr, To))
+pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro + rr, U), ht: Hook (ro + rr, To))
                  (s: Sched)
                : NestT (ro, rr, Sr, To, U) =
     let vdim   = s#vdim;
