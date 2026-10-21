@@ -1,4 +1,8 @@
+#include <algorithm>
+#include <array>
 #include <optional>
+#include <ranges>
+#include <vector>
 
 #include <mim/def.h>
 #include <mim/lam.h>
@@ -13,18 +17,33 @@ namespace mim::plug::affine {
 
 namespace {
 
-/// The values `[lo, hi]` an affine expression takes over a box, whether it takes `exact`ly all of them, and the
-/// domain dims it depends on.
+/// `Σ c#i · x#i + sym + k`, with literal coefficients; `sym` is a non-literal constant or `nullptr`.
+struct Lin {
+    std::vector<int64_t> c;
+    const Def* sym = nullptr;
+    int64_t k      = 0;
+
+    bool constant() const {
+        return std::ranges::all_of(c, [](int64_t ci) { return ci == 0; });
+    }
+    bool same_slope(const Lin& other) const { return c == other.c && sym == other.sym; }
+};
+
+/// The values `[lo, hi]` an affine expression takes over a box, a bound on their number that does not depend
+/// on the box's origin, whether it takes `exact`ly all of them, the domain dims it depends on, and its linear
+/// form if it has one.
 struct Itv {
     const Def* lo;
     const Def* hi;
+    const Def* width;
     const Def* exact;
     u64 dims;
+    std::optional<Lin> lin;
 };
 
-class Image {
+class Region {
 public:
-    Image(World& w, const Def* var, u64 n, const Def* lo, const Def* ext)
+    Region(World& w, const Def* var, u64 n, const Def* lo, const Def* ext)
         : w_(w)
         , var_(var)
         , n_(n)
@@ -38,7 +57,14 @@ public:
             return {};
         }
 
-        if (auto lit = Axm::isa<affine::lit>(e)) return Itv{lit->arg(), lit->arg(), w_.lit_tt(), 0};
+        if (auto lit = Axm::isa<affine::lit>(e)) {
+            auto l = Lin{std::vector<int64_t>(n_)};
+            if (auto v = Lit::isa(lit->arg()))
+                l.k = int64_t(*v);
+            else
+                l.sym = lit->arg();
+            return Itv{lit->arg(), lit->arg(), one(), w_.lit_tt(), 0, l};
+        }
 
         if (auto o = Axm::isa<affine::op>(e)) {
             if (o.id() == op::neg) return {};
@@ -47,13 +73,16 @@ public:
             if (!x || !y) return {};
             // A sum of two ranges is a range unless both depend on one dim (`i + i` skips the odd values).
             auto disjoint = (x->dims & y->dims) == 0 ? w_.lit_tt() : w_.lit_ff();
+            auto width    = sub(add(x->width, y->width), one());
+            auto dims     = x->dims | y->dims;
             switch (o.id()) {
-                case op::add:
-                    return Itv{add(x->lo, y->lo), add(x->hi, y->hi), all(x->exact, y->exact, disjoint),
-                               x->dims | y->dims};
+                case op::add: {
+                    auto exact = all(x->exact, y->exact, disjoint);
+                    return Itv{add(x->lo, y->lo), add(x->hi, y->hi), width, exact, dims, lin_add(x->lin, y->lin)};
+                }
                 case op::sub: {
-                    auto point = y->dims == 0 ? y->exact : w_.lit_ff();
-                    return Itv{sub(x->lo, y->hi), sub(x->hi, y->lo), all(x->exact, point, disjoint), x->dims | y->dims};
+                    auto exact = all(x->exact, y->dims == 0 ? y->exact : w_.lit_ff(), disjoint);
+                    return Itv{sub(x->lo, y->hi), sub(x->hi, y->lo), width, exact, dims, lin_sub(x->lin, y->lin)};
                 }
                 default: return {};
             }
@@ -67,10 +96,13 @@ public:
                 case semiop::mul: {
                     auto unit  = Lit::isa(c) == 1 || x->dims == 0 ? x->exact : w_.lit_ff();
                     auto exact = Lit::isa(c) == 0 ? w_.lit_tt() : unit;
-                    return Itv{mul(x->lo, c), mul(x->hi, c), exact, x->dims};
+                    auto width = add(mul(sub(x->width, one()), c), one());
+                    return Itv{mul(x->lo, c), mul(x->hi, c), width, exact, x->dims, lin_mul(x->lin, c)};
                 }
-                case semiop::floordiv: return Itv{div(x->lo, c), div(x->hi, c), x->exact, x->dims};
-                case semiop::ceildiv: return Itv{cdiv(x->lo, c), cdiv(x->hi, c), x->exact, x->dims};
+                case semiop::floordiv:
+                    return Itv{div(x->lo, c), div(x->hi, c), div_width(x->width, c), x->exact, x->dims, {}};
+                case semiop::ceildiv:
+                    return Itv{cdiv(x->lo, c), cdiv(x->hi, c), div_width(x->width, c), x->exact, x->dims, {}};
                 case semiop::rem: return rem(*x, c);
             }
         }
@@ -87,20 +119,43 @@ public:
         return {};
     }
 
+    const Def* add(const Def* a, const Def* b) { return w_.call(core::nat::add, Defs{a, b}); }
+    const Def* sub(const Def* a, const Def* b) { return w_.call(core::nat::sub, Defs{a, b}); }
+    const Def* mul(const Def* a, const Def* b) { return w_.call(core::nat::mul, Defs{a, b}); }
+    const Def* div(const Def* a, const Def* b) { return w_.call(core::nat::div, Defs{a, b}); }
+    const Def* lt(const Def* a, const Def* b) { return w_.call(core::ncmp::l, Defs{a, b}); }
+    const Def* select(const Def* c, const Def* t, const Def* f) { return w_.extract(w_.tuple({f, t}), c); }
+    const Def* min(const Def* a, const Def* b) { return select(lt(a, b), a, b); }
+    const Def* max(const Def* a, const Def* b) { return select(lt(a, b), b, a); }
+    const Def* one() { return w_.lit_nat_1(); }
+    const Def* all(const Def* a, const Def* b, const Def* c) {
+        auto ab = w_.call(core::bit2::and_, w_.lit_nat(2), Defs{a, b});
+        return w_.call(core::bit2::and_, w_.lit_nat(2), Defs{ab, c});
+    }
+
 private:
     /// A dim of extent 1 is a single value, which any number of uses may share.
     Itv dim(u64 i) {
-        auto lo  = lo_->proj(n_, i);
-        auto ext = ext_->proj(n_, i);
-        return Itv{lo, sub(add(lo, ext), w_.lit_nat_1()), w_.lit_tt(), Lit::isa(ext) == 1 ? 0 : u64(1) << i};
+        auto lo = lo_->proj(n_, i);
+        auto ex = ext_->proj(n_, i);
+        auto l  = Lin{std::vector<int64_t>(n_)};
+        l.c[i]  = 1;
+        return Itv{lo, sub(add(lo, ex), one()), ex, w_.lit_tt(), Lit::isa(ex) == 1 ? 0 : u64(1) << i, l};
     }
 
+    const Def* cdiv(const Def* a, const Def* b) { return div(sub(add(a, b), one()), b); }
+
+    /// `w` consecutive values meet at most `(w − 1)/c + 2` multiples of `c`, and never more than `w`.
+    const Def* div_width(const Def* w, const Def* c) { return min(add(div(sub(w, one()), c), w_.lit_nat(2)), w); }
+
     /// Without a carry across the box, `rem` is the shifted range; otherwise it is the whole `[0, c)`.
+    /// Whether it carries depends on the origin, so only a single value is bounded by less than `c`.
     Itv rem(const Itv& x, const Def* c) {
-        auto same = w_.call(core::ncmp::e, Defs{div(x.lo, c), div(x.hi, c)});
-        auto lo   = select(same, w_.call(core::nat::rem, Defs{x.lo, c}), w_.lit_nat_0());
-        auto hi   = select(same, w_.call(core::nat::rem, Defs{x.hi, c}), sub(c, w_.lit_nat_1()));
-        return Itv{lo, hi, all(x.exact, same, w_.lit_tt()), x.dims};
+        auto same  = w_.call(core::ncmp::e, Defs{div(x.lo, c), div(x.hi, c)});
+        auto lo    = select(same, w_.call(core::nat::rem, Defs{x.lo, c}), w_.lit_nat_0());
+        auto hi    = select(same, w_.call(core::nat::rem, Defs{x.hi, c}), sub(c, one()));
+        auto width = select(w_.call(core::ncmp::e, Defs{x.width, one()}), one(), c);
+        return Itv{lo, hi, width, all(x.exact, same, w_.lit_tt()), x.dims, {}};
     }
 
     /// Row-major strides `∏_{j>k} s#j`; exact only while every index but the innermost is a single value.
@@ -110,19 +165,23 @@ private:
         if (!r) return {};
         const Def* lo     = w_.lit_nat_0();
         const Def* hi     = w_.lit_nat_0();
-        const Def* stride = w_.lit_nat_1();
+        const Def* width  = one();
+        const Def* stride = one();
         const Def* exact  = w_.lit_tt();
         u64 dims          = 0;
+        auto lin          = std::optional<Lin>(Lin{std::vector<int64_t>(n_)});
         for (u64 k = *r; k-- > 0;) {
             auto x = eval(idxs->proj(*r, k));
             if (!x) return {};
             lo    = add(lo, mul(x->lo, stride));
             hi    = add(hi, mul(x->hi, stride));
+            width = add(width, mul(sub(x->width, one()), stride));
             exact = all(exact, x->exact, k + 1 == *r || x->dims == 0 ? w_.lit_tt() : w_.lit_ff());
             dims |= x->dims;
+            lin    = lin_add(lin, lin_mul(x->lin, stride));
             stride = mul(stride, s->proj(*r, k));
         }
-        return Itv{lo, hi, exact, dims};
+        return Itv{lo, hi, width, exact, dims, lin};
     }
 
     /// Coordinate `k` of `delinearize (lin, s)` is `(lin floordiv ∏_{j>k} s#j) rem s#k`.
@@ -132,22 +191,40 @@ private:
         if (!r || k >= *r) return {};
         auto x = eval(lin);
         if (!x) return {};
-        const Def* stride = w_.lit_nat_1();
+        const Def* stride = one();
         for (u64 j = k + 1; j < *r; ++j)
             stride = mul(stride, s->proj(*r, j));
-        auto q = Itv{div(x->lo, stride), div(x->hi, stride), x->exact, x->dims};
+        auto q = Itv{div(x->lo, stride), div(x->hi, stride), div_width(x->width, stride), x->exact, x->dims, {}};
         return rem(q, s->proj(*r, k));
     }
 
-    const Def* add(const Def* a, const Def* b) { return w_.call(core::nat::add, Defs{a, b}); }
-    const Def* sub(const Def* a, const Def* b) { return w_.call(core::nat::sub, Defs{a, b}); }
-    const Def* mul(const Def* a, const Def* b) { return w_.call(core::nat::mul, Defs{a, b}); }
-    const Def* div(const Def* a, const Def* b) { return w_.call(core::nat::div, Defs{a, b}); }
-    const Def* cdiv(const Def* a, const Def* b) { return div(sub(add(a, b), w_.lit_nat_1()), b); }
-    const Def* select(const Def* c, const Def* t, const Def* f) { return w_.extract(w_.tuple({f, t}), c); }
-    const Def* all(const Def* a, const Def* b, const Def* c) {
-        auto ab = w_.call(core::bit2::and_, w_.lit_nat(2), Defs{a, b});
-        return w_.call(core::bit2::and_, w_.lit_nat(2), Defs{ab, c});
+    std::optional<Lin> lin_add(const std::optional<Lin>& a, const std::optional<Lin>& b) {
+        if (!a || !b || (a->sym && b->sym)) return {};
+        auto l = *a;
+        for (u64 i = 0; i != n_; ++i)
+            l.c[i] += b->c[i];
+        l.sym = a->sym ? a->sym : b->sym;
+        l.k += b->k;
+        return l;
+    }
+
+    /// Only a constant is subtracted, so the coefficients stay non-negative.
+    std::optional<Lin> lin_sub(const std::optional<Lin>& a, const std::optional<Lin>& b) {
+        if (!a || !b || !b->constant() || (b->sym && b->sym != a->sym)) return {};
+        auto l = *a;
+        if (b->sym) l.sym = nullptr;
+        l.k -= b->k;
+        return l;
+    }
+
+    std::optional<Lin> lin_mul(const std::optional<Lin>& a, const Def* c) {
+        auto v = Lit::isa(c);
+        if (!a || !v || (a->sym && *v != 1)) return {};
+        auto l = *a;
+        for (auto& ci : l.c)
+            ci *= int64_t(*v);
+        l.k *= int64_t(*v);
+        return l;
     }
 
     World& w_;
@@ -157,39 +234,161 @@ private:
     const Def* ext_;
 };
 
+/// The body of `f` at a scratch binder's var, as `tensor`'s `is_unpack_read` probes a map; `nullptr` while `f`
+/// does not β-reduce.
+std::pair<const Def*, const Def*> probe(const Def* f) {
+    auto& w = f->world();
+    auto pi = f->type()->isa<Pi>();
+    if (!pi) return {};
+    auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
+    auto body = w.app(f, var);
+    if (auto app = body->isa<App>(); app && app->callee() == f) return {};
+    return {var, body};
+}
+
+/// The hull of the coordinate `j` of all `maps` over the box, clamped to `[0, s)`: `(lo, ext, cap, exact)`.
+std::array<const Def*, 4> hull(Region& r, const DefVec& bodies, u64 m, u64 j, const Def* s) {
+    auto& w   = s->world();
+    auto last = r.sub(s, r.one());
+
+    auto itvs = std::vector<Itv>();
+    for (auto body : bodies)
+        if (auto itv = r.eval(body->proj(m, j)))
+            itvs.emplace_back(*itv);
+        else
+            return {w.lit_nat_0(), s, s, w.lit_ff()};
+
+    const Def *lo, *hi, *width, *exact;
+    auto offsets = [&]() {
+        for (auto& itv : itvs)
+            if (!itv.lin || !itv.lin->same_slope(*itvs.front().lin) || !Lit::isa(itv.width)) return false;
+        return true;
+    };
+
+    if (itvs.size() == 1) {
+        lo = itvs[0].lo, hi = itvs[0].hi, width = itvs[0].width, exact = itvs[0].exact;
+    } else if (offsets()) {
+        // The maps are one map shifted by the literal offsets `k`, so the hull is too.
+        auto first = std::ranges::min_element(itvs, {}, [](const Itv& itv) { return itv.lin->k; });
+        auto reach = std::ranges::max(
+            itvs | std::views::transform([](const Itv& itv) { return itv.lin->k + int64_t(*Lit::isa(itv.width)); }));
+        auto size = u64(reach - first->lin->k);
+        // The union of ranges is a range if, in order of their starts, each one starts within its predecessors.
+        std::ranges::sort(itvs, {}, [](const Itv& itv) { return itv.lin->k; });
+        exact = w.lit_tt();
+        for (int64_t end = itvs.front().lin->k; auto& itv : itvs) {
+            exact = r.all(exact, itv.exact, itv.lin->k <= end ? w.lit_tt() : w.lit_ff());
+            end   = std::max(end, itv.lin->k + int64_t(*Lit::isa(itv.width)));
+        }
+        lo    = itvs.front().lo;
+        width = w.lit_nat(size);
+        hi    = r.sub(r.add(lo, width), r.one());
+    } else {
+        lo = itvs[0].lo, hi = itvs[0].hi;
+        for (auto& itv : itvs)
+            lo = r.min(lo, itv.lo), hi = r.max(hi, itv.hi);
+        width = s, exact = w.lit_ff();
+    }
+
+    auto top = r.min(hi, last);
+    return {lo, r.sub(r.add(top, r.one()), lo), r.min(width, s), exact};
+}
+
+const Def* boxes(const Def* fs, u64 k, u64 n, u64 m, const Def* box) {
+    auto& w = fs->world();
+
+    const Def* var = nullptr;
+    auto bodies    = DefVec(k);
+    for (u64 i = 0; i != k; ++i) {
+        auto f         = fs->proj(k, i);
+        auto [v, body] = probe(f);
+        if (!body) return nullptr;
+        // Every map gets its own scratch binder; rename them all to the first one's var.
+        if (var)
+            body = w.app(f, var);
+        else
+            var = v;
+        bodies[i] = body;
+    }
+
+    auto [lo, ext, s] = box->projs<3>();
+    auto region       = Region(w, var, n, lo, ext);
+    auto res          = std::array<DefVec, 4>{DefVec(m), DefVec(m), DefVec(m), DefVec(m)};
+    for (u64 j = 0; j != m; ++j) {
+        auto h = hull(region, bodies, m, j, s->proj(m, j));
+        for (size_t x = 0; x != 4; ++x)
+            res[x][j] = h[x];
+    }
+    return w.tuple({w.tuple(res[0]), w.tuple(res[1]), w.tuple(res[2]), w.tuple(res[3])});
+}
+
 } // namespace
 
 const Def* normalize_image(const Def*, const Def* c, const Def* arg) {
+    auto [nm, f] = c->as<App>()->uncurry_args<2>();
+    auto [n, m]  = nm->projs<2>();
+    auto ln = Lit::isa(n), lm = Lit::isa(m);
+    if (!ln || !lm || *ln > 64) return nullptr;
+    return boxes(f, 1, *ln, *lm, arg);
+}
+
+const Def* normalize_cover(const Def*, const Def* c, const Def* arg) {
+    auto [knm, fs] = c->as<App>()->uncurry_args<2>();
+    auto [k, n, m] = knm->projs<3>();
+    auto lk = Lit::isa(k), ln = Lit::isa(n), lm = Lit::isa(m);
+    if (!lk || !ln || !lm || *ln > 64) return nullptr;
+    return boxes(fs, *lk, *ln, *lm, arg);
+}
+
+const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
     auto& w      = c->world();
     auto [nm, f] = c->as<App>()->uncurry_args<2>();
     auto [n, m]  = nm->projs<2>();
     auto ln = Lit::isa(n), lm = Lit::isa(m);
     if (!ln || !lm || *ln > 64) return nullptr;
 
-    auto pi = f->type()->isa<Pi>();
-    if (!pi) return nullptr;
-    // Scratch binder: its var stands in for the domain point, as in `tensor`'s `is_unpack_read`.
-    auto probe = w.mut_lam(pi->dom(), pi->codom());
-    auto body  = w.app(f, probe->var());
-    if (auto app = body->isa<App>(); app && app->callee() == f) return nullptr;
+    auto [var, body] = probe(f);
+    if (!body) return nullptr;
 
-    auto [lo, ext, s] = arg->projs<3>();
-    auto image        = Image(w, probe->var(), *ln, lo, ext);
+    auto [lo, ext, S] = arg->projs<3>();
+    auto dom_lo       = w.tuple(DefVec(*ln, [&](size_t) -> const Def* { return w.lit_nat_0(); }));
+    auto region       = Region(w, var, *ln, dom_lo, S);
 
-    DefVec los(*lm), exts(*lm), exacts(*lm);
+    auto los   = DefVec(*ln, [&](size_t) -> const Def* { return w.lit_nat_0(); });
+    auto exts  = DefVec(*ln, [&](size_t i) { return S->proj(*ln, i); });
+    auto caps  = exts;
+    auto seen  = std::vector<bool>(*ln);
+    bool exact = true;
     for (u64 j = 0; j != *lm; ++j) {
-        auto sj   = s->proj(*lm, j);
-        auto last = w.call(core::nat::sub, Defs{sj, w.lit_nat_1()});
-        auto itv  = image.eval(body->proj(*lm, j));
-        if (!itv) itv = Itv{w.lit_nat_0(), last, w.lit_ff(), 0};
-        auto in   = w.call(core::ncmp::l, Defs{itv->hi, sj});
-        auto hi   = w.extract(w.tuple({last, itv->hi}), in);
-        los[j]    = itv->lo;
-        exts[j]   = w.call(core::nat::sub, Defs{w.call(core::nat::add, Defs{hi, w.lit_nat_1()}), itv->lo});
-        exacts[j] = itv->exact;
+        auto itv = region.eval(body->proj(*lm, j));
+        auto one = [](const Lin& l) {
+            auto nz = std::ranges::count_if(l.c, [](int64_t ci) { return ci != 0; });
+            return nz == 1 && std::ranges::count(l.c, 1) == 1;
+        };
+        if (!itv || !itv->lin || !one(*itv->lin)) {
+            exact = false;
+            continue;
+        }
+        auto& l = *itv->lin;
+        auto i  = u64(std::ranges::find(l.c, 1) - l.c.begin());
+        if (seen[i]) {
+            exact = false;
+            continue;
+        }
+        seen[i] = true;
+        // x#i = y#j − (sym + k); shifting both ends keeps the box exact where the lower one saturates at 0.
+        auto shift = [&](const Def* y) {
+            if (l.sym) y = region.sub(y, l.sym);
+            return l.k >= 0 ? region.sub(y, w.lit_nat(u64(l.k))) : region.add(y, w.lit_nat(u64(-l.k)));
+        };
+        auto y_lo = lo->proj(*lm, j);
+        auto hi   = region.min(shift(region.add(y_lo, ext->proj(*lm, j))), S->proj(*ln, i));
+        los[i]    = shift(y_lo);
+        exts[i]   = region.sub(hi, los[i]);
+        caps[i]   = region.min(ext->proj(*lm, j), S->proj(*ln, i));
     }
 
-    return w.tuple({w.tuple(los), w.tuple(exts), w.tuple(exacts)});
+    return w.tuple({w.tuple(los), w.tuple(exts), w.tuple(caps), exact ? w.lit_tt() : w.lit_ff()});
 }
 
 MIM_affine_NORMALIZER_IMPL

@@ -109,24 +109,54 @@ axm delinearize: {m: Nat} → [lin: Index, s: «m; Nat»] → «m; Index»;
 ///
 /// ## Region Inference
 ///
+/// The boxes a tile of a loop nest reads and writes (cf. MLIR's slice computation for tiling and its value
+/// bounds, TVM's bound inference).
+/// A box is given per dim by its start `lo` and extent `ext`; every `ext` must be positive.
+/// The bounds are `Nat` expressions, so a symbolic `lo` (a tile's run-time origin) yields symbolic bounds.
+/// They normalize once the maps β-reduce to bodies over their argument and the ranks are literals.
+///
 /// ### image
 ///
-/// The box an affine map reaches from a box of its domain — the region a tile of a loop nest reads
-/// (cf. MLIR's slice computation for tiling, TVM's bound inference).
-/// For the domain box starting at `lo` with extents `ext`, coordinate `j` of `f`'s result only takes values in
-/// `[lo'#j, lo'#j + ext'#j)`, clamped to the shape `[0, s#j)`, and `exact#j` states that it takes every one.
+/// The box an affine map reaches from a box of its domain.
+/// For the domain box at `lo` with extents `ext`, coordinate `j` of `f`'s result only takes values in
+/// `[lo'#j, lo'#j + ext'#j)`, clamped to the shape `[0, s#j)`:
 ///
-/// - The bounds are `Nat` expressions, so a symbolic `lo` (a tile's run-time origin) yields symbolic bounds.
+/// - `cap#j` bounds `ext'#j` independently of `lo`, so it is a literal for literal `ext` — the size of a
+///   buffer holding the box at any origin.
+/// - `exact#j` states that every value of the box is taken.
 /// - Shifts, sums of indices (a convolution window), strides, `floordiv`, `ceildiv`, `rem`, `linearize` and
 ///   `delinearize` are bounded; a stride and a `rem` that may wrap are not exact.
 /// - A coordinate it cannot bound is the whole `[0, s#j)`, not exact.
-/// - Every `ext#i` must be positive.
-///
-/// It normalizes once `f` β-reduces to a body over its argument and `n`, `m` are literals.
 axm image: {n m: Nat}
          → [f: «n; Index» → «m; Index»]
          → [lo ext: «n; Nat», s: «m; Nat»]
-         → [lo: «m; Nat», ext: «m; Nat», exact: «m; Bool»], normalize_image;
+         → [lo: «m; Nat», ext: «m; Nat», cap: «m; Nat», exact: «m; Bool»], normalize_image;
+///
+/// ### cover
+///
+/// The hull of the `image`s of the `k` maps `fs` over the same domain box: the box a tile reads from a
+/// tensor it reads at several coordinates, e.g. a stencil's `a[i - 1]` and `a[i + 1]`.
+/// Where the maps differ only by constant offsets, the hull's `cap` is a literal again; otherwise it is the
+/// shape and the hull is not exact.
+axm cover: {k n m: Nat}
+         → [fs: «k; «n; Index» → «m; Index»»]
+         → [lo ext: «n; Nat», s: «m; Nat»]
+         → [lo: «m; Nat», ext: «m; Nat», cap: «m; Nat», exact: «m; Bool»], normalize_cover;
+///
+/// ### preimage
+///
+/// The box of the domain whose points `f` maps into the box at `lo` with extents `ext` of its result — the
+/// part of a loop nest that writes a tile, given the nest's write map.
+/// A result coordinate that is a domain dim plus a constant (a projection, a permutation, a shifted tile)
+/// restricts that dim; a dim no coordinate restricts (a reduction) is the whole `[0, S#i)`.
+/// `cap` bounds `ext` independently of `lo`, so a box at `lo` with extents `cap` covers it at any origin and
+/// can be handed on to `image` to keep its `cap`s literal.
+/// `exact` states that the box is exactly the points mapped into the box; it is not where a coordinate is
+/// anything else or restricts a dim twice.
+axm preimage: {n m: Nat}
+            → [f: «n; Index» → «m; Index»]
+            → [lo ext: «m; Nat», S: «n; Nat»]
+            → [lo: «n; Nat», ext: «n; Nat», cap: «n; Nat», exact: Bool], normalize_preimage;
 ///
 /// ## Phases
 ///

@@ -1,13 +1,15 @@
 // RUN: %mim %s -o - | %FileCheck %s
 
 // Region inference: `affine.image` bounds the box each access map reads from a box of its domain.
-// Each function returns (lo, ext, exact) per result coordinate.
+// Each `image` and `cover` returns (lo, ext, cap, exact) per result coordinate, each `preimage` (lo, ext, cap) per
+// domain dim and whether that box is exact.
 
 plugin core;
 plugin affine;
 plugin compile;
 
-let B2 = [«2; Nat», «2; Nat», «2; Bool»];
+let B2 = [«2; Nat», «2; Nat», «2; Nat», «2; Bool»];
+let P3 = [«3; Nat», «3; Nat», «3; Nat», Bool];
 
 lam proj  (i _ k: affine.Index): «2; affine.Index» = (i, k);
 lam tr    (i j: affine.Index): «2; affine.Index» = (j, i);
@@ -54,37 +56,95 @@ extern fun c_clamp (): B2 = return (affine.image shift ((4, 1), (2, 3), (6, 8)))
 // Row 1 of a «4, 6» reshaped to «3, 8»: flat [6, 12) is row 0 or 1, and columns that wrap.
 extern fun c_resh (): B2 = return (affine.image resh ((1, 0), (1, 6), (3, 8)));
 
-// A run-time origin yields bounds in terms of it.
+// A run-time origin yields bounds in terms of it, and still a literal cap.
 extern fun c_sym (i0: Nat): B2 = return (affine.image tr ((0, i0), (2, 3), (8, 6)));
 
 // An unknown map stays an `affine.image`.
 extern fun c_open (f: «2; affine.Index» → «2; affine.Index»): B2 = return (affine.image f ((0, 0), (2, 2), (8, 8)));
 
+lam left  (i: affine.Index): affine.Index = affine.op.sub (i, affine.lit 1);
+lam right (i: affine.Index): affine.Index = affine.op.add (i, affine.lit 1);
+lam far   (i: affine.Index): affine.Index = affine.op.add (i, affine.lit 5);
+lam twox  (i: affine.Index): affine.Index = affine.semiop.mul (i, 2);
+let C1 = [Nat, Nat, Nat, Bool];
+
+// The stencil reads a[i − 1] and a[i + 1] of i ∈ [i0, i0 + 4): one box of 6 at any origin.
+extern fun c_stencil (i0: Nat): C1 = return (affine.cover (left, right) (i0, 4, 64));
+
+// Reads 6 apart leave a gap: the hull is a literal 10 but not exact.
+extern fun c_gap (i0: Nat): C1 = return (affine.cover (left, far) (i0, 4, 64));
+
+// Maps that differ by more than an offset have only the shape as a static bound.
+extern fun c_mixed (i0: Nat): C1 = return (affine.cover (right, twox) (i0, 4, 64));
+
+lam wr (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam wt (i j _: affine.Index): «2; affine.Index» = (j, i);
+lam ws (i j _: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.lit 2), affine.op.sub (j, affine.lit 1));
+lam wd (i j _: affine.Index): «2; affine.Index» = (i, affine.semiop.floordiv (j, 2));
+
+// The points of an (i, j | k) nest writing the box (2..4, 4..8): the reduction dim k stays whole.
+extern fun p_proj (): P3 = return (affine.preimage wr ((2, 4), (2, 4), (6, 8, 5)));
+
+// Through a transposing write map.
+extern fun p_tr (): P3 = return (affine.preimage wt ((4, 2), (4, 2), (6, 8, 5)));
+
+// A tile's shifted write map at a run-time origin.
+extern fun p_shift (a0: Nat): P3 = return (affine.preimage ws ((a0, 3), (2, 4), (6, 8, 5)));
+
+// A coordinate that is not a shifted dim does not restrict anything and is not exact.
+extern fun p_div (): P3 = return (affine.preimage wd ((1, 1), (2, 2), (6, 8, 5)));
+
+// A chain, as for softmax: the «2, 16» tile of y at row i0 reads e at (i, j), e writes through (i, j), so its
+// points are that box, and they read mx at i: the caps stay literal along the chain.
+lam rd_e  (i j: affine.Index): «2; affine.Index» = (i, j);
+lam rd_mx (i _: affine.Index): affine.Index = i;
+extern fun chain (i0: Nat): Nat =
+    let (lo, _, cap, _)   = affine.image rd_e ((i0, 0), (2, 16), (8, 16));
+    let (plo, _, pcap, _) = affine.preimage rd_e (lo, cap, (8, 16));
+    let (_, _, mcap, _)   = affine.image rd_mx (plo, pcap, 8);
+    return mcap;
+
 extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 
 // CHECK-LABEL: extern fun c_bcast
-// CHECK-NEXT:  return ((2, 0), (3, 1), ‹2; tt›);
+// CHECK-NEXT:  return ((2, 0), (3, 1), (3, 1), ‹2; tt›);
 // CHECK-LABEL: extern fun c_clamp
-// CHECK-NEXT:  return ((5, 0), (1, 3), ‹2; tt›);
+// CHECK-NEXT:  return ((5, 0), (1, 3), (2, 3), ‹2; tt›);
 // CHECK-LABEL: extern fun c_div
-// CHECK-NEXT:  return ((1, 2), ‹2; 2›, ‹2; tt›);
+// CHECK-NEXT:  return ((1, 2), ‹2; 2›, ‹2; 3›, ‹2; tt›);
+// CHECK-LABEL: extern fun c_gap
+// CHECK:       return ({{.*}}, {{.*}}, 10, ff);
+// CHECK-LABEL: extern fun c_mixed
+// CHECK:       return ({{.*}}, {{.*}}, 64, ff);
 // CHECK-LABEL: extern fun c_neg
-// CHECK-NEXT:  return ((0, 1), (7, 2), (ff, tt));
+// CHECK-NEXT:  return ((0, 1), (7, 2), (7, 2), (ff, tt));
 // CHECK-LABEL: extern fun c_open
 // CHECK-NEXT:  affine.image
 // CHECK-LABEL: extern fun c_proj
-// CHECK-NEXT:  return ((2, 0), (2, 4), ‹2; tt›);
+// CHECK-NEXT:  return ((2, 0), (2, 4), (2, 4), ‹2; tt›);
 // CHECK-LABEL: extern fun c_rem
-// CHECK-NEXT:  return ((1, 0), (4, 8), (tt, ff));
+// CHECK-NEXT:  return ((1, 0), (4, 8), ‹2; 8›, (tt, ff));
 // CHECK-LABEL: extern fun c_resh
-// CHECK-NEXT:  return (‹2; 0›, (2, 8), (tt, ff));
+// CHECK-NEXT:  return (‹2; 0›, (2, 8), (3, 8), (tt, ff));
 // CHECK-LABEL: extern fun c_shift
-// CHECK-NEXT:  return ((1, 0), (2, 3), ‹2; tt›);
+// CHECK-NEXT:  return ((1, 0), (2, 3), (2, 3), ‹2; tt›);
+// CHECK-LABEL: extern fun c_stencil
+// CHECK:       return ({{.*}}, {{.*}}, 6, tt);
 // CHECK-LABEL: extern fun c_sym
-// CHECK:       return ((i0, 0), ({{.*}}, 2), ‹2; tt›);
+// CHECK:       return ((i0{{.*}}, 0), ({{.*}}, 2), (3, 2), ‹2; tt›);
 // CHECK-LABEL: extern fun c_tr
-// CHECK-NEXT:  return ((0, 1), (5, 2), ‹2; tt›);
+// CHECK-NEXT:  return ((0, 1), (5, 2), (5, 2), ‹2; tt›);
 // CHECK-LABEL: extern fun c_twice
-// CHECK-NEXT:  return (‹2; 2›, ‹2; 5›, (ff, tt));
+// CHECK-NEXT:  return (‹2; 2›, ‹2; 5›, ‹2; 5›, (ff, tt));
 // CHECK-LABEL: extern fun c_win
-// CHECK-NEXT:  return ((1, 2), (5, 7), (tt, ff));
+// CHECK-NEXT:  return ((1, 2), (5, 7), (5, 7), (tt, ff));
+// CHECK-LABEL: extern fun chain
+// CHECK-NEXT:  return 2;
+// CHECK-LABEL: extern fun p_div
+// CHECK-NEXT:  return ((1, 0, 0), (2, 8, 5), (2, 8, 5), ff);
+// CHECK-LABEL: extern fun p_proj
+// CHECK-NEXT:  return ((2, 4, 0), (2, 4, 5), (2, 4, 5), tt);
+// CHECK-LABEL: extern fun p_shift
+// CHECK:       return (({{.*}}, 4, 0), ({{.*}}, 4, 5), (2, 4, 5), tt);
+// CHECK-LABEL: extern fun p_tr
+// CHECK-NEXT:  return ((2, 4, 0), (2, 4, 5), (2, 4, 5), tt);
