@@ -9,7 +9,9 @@
 /// It writes the host LLVM IR to `<world>.ll` and the device LLVM IR (with PTX intrinsics) to `<world>_dev.ll`, and — on Linux by default — compiles and embeds the device binary into the host LLVM IR.
 /// The output paths and the embedding behavior can be overridden via [`-X nvptx:<arg>`](@ref xarg_nvptx).
 /// Its `rt` argument selects how the host module reaches the C [runtime wrappers](@ref plugin_runtime), just like [ll](@ref ll)'s.
-/// Embedding needs `libdevice`, which it looks for in the CUDA paths and, failing that, under [`$CUDA_HOME`](@ref env_nvptx).
+/// Embedding always optimizes the device LLVM IR before compiling it to PTX; [`-X nvptx:Xopt=<args>`](@ref xarg_nvptx) overrides the optimizer arguments.
+/// Kernels using library math operations additionally need `libdevice`, which it looks for in the CUDA paths and, failing that, under [`$CUDA_HOME`](@ref env_nvptx).
+/// With `no-embed`, only the unoptimized host/device LLVM IR is emitted; no device toolchain commands are run.
 ///
 /// [TOC]
 ///

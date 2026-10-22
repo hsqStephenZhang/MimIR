@@ -1,0 +1,39 @@
+// REQUIRES: system-linux
+// RUN: python3 %S/llvm_opt_check.py %S/../gpu/simple_kernel.mim -- %mim
+// RUN: python3 %S/llvm_opt_check.py --libdevice %s -- %mim
+// RUN: %if cuda %{ %mim %s -p nvptx -Xnvptx:embed %}
+// RUN: %if cuda %{ clang %{s:stem}.ll -o %t -lcuda -Wno-override-module %}
+// RUN: %if cuda %{ %t %}
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            group_id: Idx 1, item_id: Idx 2, (), data: gpu.GlobalPtr math.F32,
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    (skip, compute)#(core.icmp.e (item_id, 0_2)) m1
+    where
+        con skip (m1: gpu.GlobalM) = return (m1, m3, m4, m5);
+        con compute (m1: gpu.GlobalM) =
+            let (m1, value) = mem.load (m1, data);
+            let value = math.tri.ahff 0 value;
+            let m1 = mem.store (m1, data, value);
+            return (m1, m3, m4, m5);
+    end;
+
+extern fun main (m0: mem.M 0, argc: I32, argv: mem.Ptr0 «core.idx2nat argc; mem.Ptr0 mem.Char»)
+             : [mem.M 0, I32] =
+    let (m0, host) = mem.alloc (math.F32, 0) m0;
+    let m0 = mem.store (m0, host, 0.5:math.F32);
+    let (m0, m1, m4) = gpu.init m0;
+    let (m0, m1, ptr) = gpu.alloc_copy.block (m0, m1, host);
+    ret (m0, m1, m4) = gpu.launch (1, 2, gpu.default_stream, ff, ()) kernel ptr $ (m0, m1, m4);
+    let (m0, m1) = gpu.copy_to_host.block (m0, m1, ptr, host);
+    let m1 = gpu.free.block (m1, ptr);
+    let m0 = gpu.deinit (m0, m1, m4);
+    let (m0, value) = mem.load (m0, host);
+    let m0 = mem.free (m0, host);
+    let close = core.bit2.and 2 (math.cmp.ge 0 (value, 0.47942:math.F32), math.cmp.le 0 (value, 0.47943:math.F32));
+    return (m0, (1I32, 0I32)#close);
