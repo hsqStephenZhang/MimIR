@@ -166,21 +166,27 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 /// - `fuse`, `budget`: whether to compute every input that allows it, and recursively theirs, as long as each
 ///   is recomputed at most `budget` times over (see `tensor.tile_and_fuse`);
 /// - `acts`, `act_dim`, `act`: whether to run `act` inside the loop of dim `act_dim` before the nest inside it
-///   (see `at_stage`).
+///   (see `at_stage`);
+/// - `lim`: for the loop of dim `d`, given the loop-vector prefix (by dim), whether it stops before its extent and
+///   where — the tail of a split that does not divide (see `tensor.split_par`).
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
 anx let Sched = [vdim unroll: Nat, at: Bool, at_slots at_dim: Nat, fuse: Bool, budget: Nat, acts: Bool,
-                 act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0];
+                 act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32]];
 ///
 /// #### act_none
 ///
 anx fun act_none (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 = return m;
 ///
+/// #### lim_none
+///
+anx lam lim_none (_: Nat → I32, _: Nat): [Bool, I32] = (ff, 0I32);
+///
 /// #### sched_of
 ///
 /// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
-anx lam sched_of (vdim unroll: Nat): Sched = (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none);
+anx lam sched_of (vdim unroll: Nat): Sched = (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none);
 ///
 /// ### SchedT
 ///
@@ -330,11 +336,13 @@ con novec_for {A: *} (body: Cn [I32, [mem.M 0, A], Cn [mem.M 0, A]])
 /// #### Ctx
 ///
 /// The loops around a segment of a nest — the number of parallel dims `ro`, `depth` and `outer` as for
-/// `Loop` — which `mr_nest_with` threads through its loop stages: `ctx_in` enters the dims `[lo, hi)`.
-let Ctx = [ro: Nat, depth: Nat, outer: Nat → Bool];
-lam ctx_root (ro: Nat): Ctx = (ro, 0, lm (_: Nat): Bool = ff);
+/// `Loop` — and the schedule's `lim`, which `mr_nest_with` threads through its loop stages: `ctx_in` enters the
+/// dims `[lo, hi)`.
+let Ctx = [ro: Nat, depth: Nat, outer: Nat → Bool, lim: [Nat → I32, Nat] → [Bool, I32]];
+lam ctx_root (ro: Nat, lim: [Nat → I32, Nat] → [Bool, I32]): Ctx = (ro, 0, lm (_: Nat): Bool = ff, lim);
 lam ctx_in (c: Ctx, lo hi: Nat): Ctx =
-    (c#ro, c#depth + (hi - lo), lm (d: Nat): Bool = core.bit2.or 2 (c#outer d, core.bit2.and 2 (lo <= d, d < hi)));
+    (c#ro, c#depth + (hi - lo), lm (d: Nat): Bool = core.bit2.or 2 (c#outer d, core.bit2.and 2 (lo <= d, d < hi)),
+     c#lim);
 lam loop_at (c: Ctx, impl lo d: Nat): Loop =
     let c = ctx_in (c, lo, d + 1);
     (d, c#ro <= d, impl, c#depth, c#outer);
@@ -371,7 +379,10 @@ lam range_nest (r: Nat, Sr: «r; Nat») (A: *) (hook: Hook (r, A), ctx: Ctx) (lo
     lam wrap (d: Nat, w: Body (r, A)): Body (r, A) =
         let w = hook (loop_at (ctx, impl, lo, d)) w;
         con level (pref: «r; I32», m: mem.M 0, acc: A, k: Cn [mem.M 0, A]) =
-            loop lbody lexit (0I32, core.bitcast I32 (Sr#(core.idx 0 r d)), 1I32, (m, acc))
+            let n         = core.bitcast I32 (Sr#(core.idx 0 r d));
+            let (cut, at) = ctx#lim (lm (e: Nat): I32 = pref#(core.idx 0 r e), d);
+            let stop      = (n, core.select (core.icmp.ul (at, n), at, n))#cut;
+            loop lbody lexit (0I32, stop, 1I32, (m, acc))
             where
                 con lbody (iv: I32, (m: mem.M 0, acc: A), yield: Cn [mem.M 0, A]) =
                     let pref = ‹j: r; core.select (core.idx2nat j == d, iv, pref#j)›;
@@ -395,11 +406,13 @@ lam range_unroll (r: Nat, Sr: «r; Nat») (A: *) (hook: Hook (r, A), ctx: Ctx) (
     lam wrap (d: Nat, w: Body (r, A)): Body (r, A) =
         let w = hook (loop_at (ctx, impl_unroll, lo, d)) w;
         con level (pref: «r; I32», m: mem.M 0, acc: A, k: Cn [mem.M 0, A]) =
+            let (cut, stop) = ctx#lim (lm (e: Nat): I32 = pref#(core.idx 0 r e), d);
             lam step (i: Nat, kk: Cn [mem.M 0, A]): Cn [mem.M 0, A] =
                 con at (m: mem.M 0, acc: A) =
                     let pref = ‹j: r; core.select (core.idx2nat j == d, core.bitcast I32 i, pref#j)›;
                     w (pref, m, acc, kk);
-                at;
+                // An unrolled point past the loop's `lim` is skipped.
+                (kk, at)#(core.bit2.or 2 ((tt, ff)#cut, core.icmp.ul (core.bitcast I32 i, stop)));
             let t = Sr#(core.idx 0 r d);
             (vec.fold.r @(Cn [mem.M 0, A], Nat) @t step (‹i: t; core.idx2nat i›, k)) (m, acc);
         level;
@@ -505,8 +518,8 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
     // The unroll window must stay within the reduction dims.
     let u_lo = r - unroll;
     let u_lo = (ro, u_lo)#(ro <= u_lo);
-    let none = (hook_none (r, U), ctx_root ro);
-    let c0   = ctx_root ro;
+    let none = (hook_none (r, U), ctx_root (ro, s#lim));
+    let c0   = ctx_root (ro, s#lim);
     lam nest (init: To,
               cell: Cn [mem.M 0, To, «r; I32», Cn [mem.M 0, To]],
               wb:   WbT (r, To, U))

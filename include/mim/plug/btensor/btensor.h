@@ -53,7 +53,7 @@ struct MapRedPost {
     }
 
     /// The fields of a `btensor.Sched` record, in order.
-    enum Field : size_t { VDim, Unroll, At, AtSlots, AtDim, Fuse, Budget, Acts, ActDim, Act, Num_Fields };
+    enum Field : size_t { VDim, Unroll, At, AtSlots, AtDim, Fuse, Budget, Acts, ActDim, Act, Lim, Num_Fields };
 
     /// The `btensor.Sched` record of the schedule, read off its chooser by handing it the identity builder.
     const Def* sched_record() const {

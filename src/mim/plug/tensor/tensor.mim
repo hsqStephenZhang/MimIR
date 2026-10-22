@@ -669,13 +669,16 @@ anx lam interchange (t: Tileable, perm: «t#Rp + t#Rr; Nat»): Tileable =
     // iota: old dim i is found at the new position j with perm#j = i.
     lam iota_p (o: «r; affine.Index»): «r; affine.Index» =
         ‹i: r; o#(option.unwrap_unsafe (vec.first `== (perm_ok, core.idx2nat i)))›;
+    lam lim_p (get: Nat → I32, j: Nat): [Bool, I32] =
+        lam get_old (e: Nat): I32 = get (core.idx2nat (option.unwrap_unsafe (vec.first `== (perm_ok, e))));
+        t#sched#lim (get_old, perm_ok#(core.idx 0 r j));
     lam retile_n (ro_m rp_m rr_m: Nat)
                  (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», sched_m: Sched)
                  (iota:  «rp_m + rr_m; affine.Index» → «r; affine.Index»,
                   omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (comp_map (iota_p, iota), omega);
-    (t#Out, t#Ro, t#Rp, t#Rr, t#So, oax_n, sr_n, (t#sched)#vdim ← vdim_n, retile_n);
+    (t#Out, t#Ro, t#Rp, t#Rr, t#So, oax_n, sr_n, ((t#sched)#vdim ← vdim_n)#lim ← lim_p, retile_n);
 ///
 /// #### materialize
 ///
@@ -791,6 +794,16 @@ lam split_omega (m n a ts: Nat) (oc: «n; affine.Index»): «m; affine.Index» =
            core.select (jj == a + 1, affine.semiop.rem (oc#(core.idx 0 n a), ts),
            oc#(core.idx 0 n (jj - 1)))))›;
 ///
+/// #### lim_split
+///
+/// The schedule's `lim` (see `btensor.Sched`) once dim `d` is split by `ts` into dims `d` and `d + 1`: the old
+/// dims read their loops off the new prefix, and the two halves of `d` run whole.
+lam lim_split (d ts: Nat, lim: [Nat → I32, Nat] → [Bool, I32]) (get: Nat → I32, j: Nat): [Bool, I32] =
+    lam get_old (e: Nat): I32 =
+        core.select (e < d, get e,
+        core.select (e == d, core.wrap.add 0 (core.wrap.mul 0 (get d, core.bitcast I32 ts), get (d + 1)), get (e + 1)));
+    (lim (get_old, core.select (j < d, j, j - 1)), (ff, 0I32))#(core.bit2.or 2 (j == d, j == d + 1));
+///
 /// #### strip_mine_par
 ///
 /// Split parallel dim `d` (d < Ro) into two adjacent parallel dims. The result
@@ -828,19 +841,26 @@ anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
         lam omega_c (oo: «t#Ro; affine.Index», ov: «rp_m + rr_m; affine.Index»): «ro_m; affine.Index» =
             omega (split_omega (ro_n, t#Ro, a, ts) oo, ov);
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (iota_c, omega_c);
+    let sched_n = ((t#sched)#vdim ← vdim_n)#lim ← lim_split (d, ts, t#sched#lim);
     (t#Out, ro_n, rp_n, t#Rr,
      split_bounds (ro_n, t#Ro, t#So, a, ts, nt), oax_n,
-     split_bounds (r_n, r, t#Sr, d, ts, nt), (t#sched)#vdim ← vdim_n, retile_n);
+     split_bounds (r_n, r, t#Sr, d, ts, nt), sched_n, retile_n);
 ///
 /// #### split_par
 ///
-/// Split parallel dim `d` (d < Rp) of extent N into two adjacent parallel dims (N/ts, ts) that both write the
+/// Split parallel dim `d` (d < Rp) of extent N into two adjacent parallel dims (⌈N/ts⌉, ts) that both write the
 /// axis `d` wrote: unlike `strip_mine_par`, the result keeps its shape, and only the loops change.
+/// Where `ts` does not divide N, the last tile is cut short: the loop of dim `d + 1` stops after the
+/// `N − ts·i₀` points left (see `btensor.Sched`'s `lim`).
 anx lam split_par (t: Tileable, d ts: Nat): Tileable =
     let r    = t#Rp + t#Rr;
     let rp_n = t#Rp + 1;
     let r_n  = t#Rp + 1 + t#Rr;
-    let nt   = check_div (t#Sr#(core.idx 0 r d), ts) / ts;
+    let n    = t#Sr#(core.idx 0 r d);
+    let nt   = (n + ts - 1) / ts;
+    lam lim_n (get: Nat → I32, j: Nat): [Bool, I32] =
+        let rest = core.wrap.sub 0 (core.bitcast I32 n, core.wrap.mul 0 (core.bitcast I32 ts, get d));
+        (lim_split (d, ts, t#sched#lim) (get, j), (tt, rest))#(core.bit2.and 2 (n % ts != 0, j == d + 1));
     let oax_n = ‹j: rp_n; let jj = core.idx2nat j; t#oax#(core.idx 0 (t#Rp) (core.select (jj <= d, jj, jj - 1)))›;
     let vd     = t#sched#vdim;
     let vdim_n = core.select (vd < t#Rp, core.select (vd < d, vd, vd + 1), r_n);
@@ -850,8 +870,8 @@ anx lam split_par (t: Tileable, d ts: Nat): Tileable =
                   omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (comp_map (split_iota (r_n, r, d, ts), iota), omega);
-    (t#Out, t#Ro, rp_n, t#Rr, t#So, oax_n, split_bounds (r_n, r, t#Sr, d, ts, nt), (t#sched)#vdim ← vdim_n,
-     retile_n);
+    (t#Out, t#Ro, rp_n, t#Rr, t#So, oax_n, split_bounds (r_n, r, t#Sr, d, ts, nt),
+     ((t#sched)#vdim ← vdim_n)#lim ← lim_n, retile_n);
 /// #### strip_mine_red
 ///
 /// Split reduction dim `d` (Ro ≤ d < Ro + Rr) of extent N into two adjacent
@@ -872,8 +892,8 @@ anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
                : t#Out (ro_m, so_m) =
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m)
                  (comp_map (split_iota (r_n, r, d, ts), iota), omega);
-    (t#Out, t#Ro, t#Rp, t#Rr + 1, t#So, t#oax,
-     split_bounds (r_n, r, t#Sr, d, ts, nt), ((t#sched)#vdim ← vdim_n)#unroll ← unroll_n, retile_n);
+    let sched_n = (((t#sched)#vdim ← vdim_n)#unroll ← unroll_n)#lim ← lim_split (d, ts, t#sched#lim);
+    (t#Out, t#Ro, t#Rp, t#Rr + 1, t#So, t#oax, split_bounds (r_n, r, t#Sr, d, ts, nt), sched_n, retile_n);
 ///
 /// ### Tiles
 ///

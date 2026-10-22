@@ -13,7 +13,7 @@ int32_t* conv_at(int32_t* x, int32_t* w);
 int32_t* red_at(int32_t* a, int32_t* b);
 int32_t* rep_at(int32_t* x);
 int32_t* grp_at(int32_t* x, int32_t* g);
-int32_t* edge_at(int32_t* x, int32_t* g);
+int64_t* edge_at(int64_t* x, int64_t* g);
 int32_t* rev_at(int32_t* a, int32_t* b);
 int32_t* chain_at(int32_t* a, int32_t* b, int32_t* e);
 int32_t* back_at(int32_t* a, int32_t* b);
@@ -28,6 +28,10 @@ int32_t* fuse_lim(int32_t* a, int32_t* b, int32_t* e);
 int32_t* fuse_tile(int32_t* a, int32_t* b, int32_t* e);
 int32_t* split_mm(int32_t* a, int32_t* b);
 int32_t* split_at(int32_t* a, int32_t* b);
+int32_t* tail_mm(int32_t* a, int32_t* b);
+int32_t* tail_at(int32_t* a, int32_t* b);
+int32_t* tail_perm(int32_t* a, int32_t* b);
+int32_t* fuse_tail(int32_t* a, int32_t* b, int32_t* e);
 }
 
 // q[i] = a[i, 0] + a[i, 1] over the n pairs of a.
@@ -116,11 +120,11 @@ int main() {
         rp[i] = x4[i / 16] + 2;
     for (int c = 0; c < 48; ++c)
         gp[c] = x48[c] + g3[c / 16] + 1;
-    int32_t g5[5], ed[24];
+    int64_t x24[24], g5[5], ed[24];
     for (int i = 0; i < 5; ++i)
         g5[i] = 4 * i - 9;
     for (int c = 0; c < 24; ++c)
-        ed[c] = x48[c] + g5[c / 5] + 1;
+        x24[c] = x48[c], ed[c] = x48[c] + g5[c / 5] + 1;
 
     // P[i, j] = a3[i, j, 0] + a3[i, j, 1], read reversed by rev_at.
     int32_t a3[3 * 6 * 2], p[3 * 6], rv[3 * 5];
@@ -160,6 +164,16 @@ int main() {
     for (int i = 0; i < 8 * 7; ++i)
         sp[i] = sa[i] + 1;
     matmul(sp, sb, sc, 8, 7, 5);
+
+    // tail_mm, tail_at and tail_perm: (ka + 1) · kb over 7 rows; fuse_tail: the chain over 7 rows.
+    int32_t ka[7 * 9], kb[9 * 3], kp[7 * 9], kc[7 * 3];
+    fill(ka, 7 * 9, 4), fill(kb, 9 * 3, 5);
+    for (int i = 0; i < 7 * 9; ++i)
+        kp[i] = ka[i] + 1;
+    matmul(kp, kb, kc, 7, 9, 3);
+    int32_t va[7 * 12 * 2], vb[12 * 9], ve[9 * 2], vq[7 * 12], vp[7 * 9], vc[7 * 2];
+    fill(va, 7 * 12 * 2, 7), fill(vb, 12 * 9, 4), fill(ve, 9 * 2, 5);
+    pair_sum(va, vq, 7 * 12), matmul(vq, vb, vp, 7, 12, 9), matmul(vp, ve, vc, 7, 9, 2);
 
     int32_t la[2 * 5 * 2], lb[5 * 7], le[7 * 3], lq[2 * 5], lp[2 * 7], lc[2 * 3];
     fill(la, 2 * 5 * 2, 4), fill(lb, 5 * 7, 5), fill(le, 7 * 3, 7);
@@ -210,7 +224,12 @@ int main() {
     bad += compare("red_at", red_at(a, b2), rd, 4 * 5);
     bad += compare("rep_at", rep_at(x4), rp, 64);
     bad += compare("grp_at", grp_at(x48, g3), gp, 48);
-    bad += compare("edge_at", edge_at(x48, g5), ed, 24);
+    {
+        auto got = edge_at(x24, g5);
+        for (int c = 0; c < 24; ++c)
+            if (got[c] != ed[c] && ++bad <= 5)
+                std::printf("edge_at[%d]: got %lld want %lld\n", c, (long long)got[c], (long long)ed[c]);
+    }
     bad += compare("rev_at", rev_at(a3, b), rv, 3 * 5);
     bad += compare("chain_at", chain_at(ca, cb, ce), ch, 3 * 3);
     bad += compare("two_at", two_at(ta, tb), tw, 3 * 4);
@@ -219,6 +238,10 @@ int main() {
     bad += compare("fuse_tile", fuse_tile(ua, fb, fe), uc, 4 * 2);
     bad += compare("split_mm", split_mm(sa, sb), sc, 8 * 5);
     bad += compare("split_at", split_at(sa, sb), sc, 8 * 5);
+    bad += compare("tail_mm", tail_mm(ka, kb), kc, 7 * 3);
+    bad += compare("tail_at", tail_at(ka, kb), kc, 7 * 3);
+    bad += compare("tail_perm", tail_perm(ka, kb), kc, 7 * 3);
+    bad += compare("fuse_tail", fuse_tail(va, vb, ve), vc, 7 * 2);
     bad += compare("back_at", back_at(a4, b), bk, 4 * 5);
     bad += compare("fused_at", fused_at(x7, y7, a7), fu, 4 * 5);
     bad += compare("fold_at", fold_at(x15), fold_plain(x15), 5);

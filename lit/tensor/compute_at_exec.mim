@@ -13,7 +13,8 @@
 // * `red_at`:  s[i] · b[i, j] with the row sum s[i] = Σ_k a[i, k] computed per row: a reduction producer.
 // * `rep_at`:  y[i] = (x + 1)[i floordiv 16] with i split 64 = 8 × 8, per outer i: an aligned box «1».
 // * `grp_at`:  y[c] = x[c] + (g + 1)[c floordiv 16] with c split 48 = 2 × 24, per outer c: boxes of 2 that overlap.
-// * `edge_at`: y[c] = x[c] + (g + 1)[c floordiv 5] with c split 24 = 3 × 8: the last box of 3 would leave g, so warned.
+// * `edge_at`: y[c] = x[c] + (g + 1)[c floordiv 5] with c split 24 = 3 × 8: the last box of 3 would leave g, so it is
+//   computed up to g's end.
 // * `rev_at`:  P read reversed, P[i, 5 − k]: the box does not start at the corner's read, so warned and whole.
 // * `chain_at`: Q at i of P, P at i of C: Q is computed one row «11» at a time inside each of P's tiles.
 // * `two_at`:   C = P · Q with both producers inside the loop of j: a row «7» of P and a column «7» of Q.
@@ -29,6 +30,12 @@
 // * `inl_at`: R[i] = Σ_j P[i, j] over P = Q + B with Q at i of P: fusing P into R would drop P's schedule.
 // * `split_mm`: (a + 1) · b with i split 8 = 4 × 2 by split_par: the result keeps its shape «8, 5».
 // * `split_at`: the same with a + 1 inside the loop of the outer i: a tile «2, 7» of it per pair of rows.
+// * `tail_mm`: (a + 1) · b with i split 7 = 3 × 3 by split_par: the last tile has a single row.
+// * `tail_at`: the same with a + 1 inside the loop of the outer i: a tile «3, 9» per tile of rows, the last cut to
+//   the one row left.
+// * `tail_perm`: the split interchanged to (j, i₀, i₁, k): the tail moves with its dims.
+// * `fuse_tail`: tile_and_fuse into the tiles of 3 rows of 7 over Q → P = Q · B → C = P · E: tiles «3, 9» of P and
+//   «3, 12» of Q, the last ones cut short.
 // * `plain`:   an input that no map_reduce_post computes cannot be computed at a loop: warned, and read as is.
 plugin core;
 plugin tensor;
@@ -92,9 +99,12 @@ extern fun grp_at (x: «48; I32», g: «3; I32»): «2, 24; I32» =
 
 lam d5 (i: affine.Index): affine.Index = affine.semiop.floordiv (i, 5);
 
-extern fun edge_at (x: «24; I32», g: «5; I32»): «3, 8; I32» =
-    let p = tensor.unary add1 (tensor.buf g);
-    let t = tensor.mr_tileable @2 @(1, 0) (24, 0, 24) (add, 0I32, tensor.id) m1 (m1, d5) (tensor.buf x, p);
+fun add64 (_: I64, (x y: I64))@tt: I64 = return (x + y);
+lam inc64 (x: I64): I64 = x + 1I64;
+
+extern fun edge_at (x: «24; I64», g: «5; I64»): «3, 8; I64» =
+    let p = tensor.unary inc64 (tensor.buf g);
+    let t = tensor.mr_tileable @2 @(1, 0) (24, 0, 24) (add64, 0I64, tensor.id) m1 (m1, d5) (tensor.buf x, p);
     return (tensor.materialize (tensor.compute_at (tensor.strip_mine_par (t, 0, 8), 1, 0)));
 
 lam qo (i j _: affine.Index): «2; affine.Index» = (i, j);
@@ -183,12 +193,32 @@ extern fun split_at (a: «8, 7; I32», b: «7, 5; I32»): «8, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((8, 5), (0, 1), (8, 5, 7)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (tensor.split_par (t, 0, 2), 0, 0)));
 
+extern fun tail_mm (a: «7, 9; I32», b: «9, 3; I32»): «7, 3; I32» =
+    let p = tensor.unary add1 (tensor.buf a);
+    let t = tensor.mr_tileable @2 @(2, 1) ((7, 3), (0, 1), (7, 3, 9)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf b);
+    return (tensor.materialize (tensor.split_par (t, 0, 3)));
+
+extern fun tail_at (a: «7, 9; I32», b: «9, 3; I32»): «7, 3; I32» =
+    let p = tensor.unary add1 (tensor.buf a);
+    let t = tensor.mr_tileable @2 @(2, 1) ((7, 3), (0, 1), (7, 3, 9)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf b);
+    return (tensor.materialize (tensor.compute_at (tensor.split_par (t, 0, 3), 0, 0)));
+
+extern fun tail_perm (a: «7, 9; I32», b: «9, 3; I32»): «7, 3; I32» =
+    let p = tensor.unary add1 (tensor.buf a);
+    let t = tensor.mr_tileable @2 @(2, 1) ((7, 3), (0, 1), (7, 3, 9)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf b);
+    return (tensor.materialize (tensor.interchange (tensor.split_par (t, 0, 3), (2, 0, 1, 3))));
+
+extern fun fuse_tail (a: «7, 12, 2; I32», b: «12, 9; I32», e: «9, 2; I32»): «7, 2; I32» =
+    let q = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((7, 12), (0, 1), (7, 12, 2)) (sum, 0I32, tensor.id) qo pa (tensor.buf a));
+    let p = tensor.materialize (tensor.mr_tileable @2 @(2, 1) ((7, 9), (0, 1), (7, 9, 12)) (mac, 0I32, tensor.id) mo (ma, mb) (q, tensor.buf b));
+    let t = tensor.mr_tileable @2 @(2, 1) ((7, 2), (0, 1), (7, 2, 9)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf e);
+    return (tensor.materialize (tensor.tile_and_fuse (tensor.split_par (t, 0, 3), 0, 2)));
+
 extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
 
 // WARN-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the box does not start at the read of the corner
-// WARN-DAG: compute_at of input 1 inside dim 0 of {{.*}} not realized: a box may leave the input
 // WARN-DAG: compute_at of input 1 inside dim 0 of {{.*}} not realized: the input is not a map_reduce_post
 // WARN-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the input's shape is not the producer's
 
@@ -207,6 +237,9 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // CHECK-DAG: mem.mslot («2, 10; I32», 0)
 // CHECK-DAG: mem.mslot («2, 13; I32», 0)
 // CHECK-DAG: mem.mslot («2, 7; I32», 0)
+// CHECK-DAG: mem.{{m?slot|malloc}} («3; I64», 0)
+// CHECK-DAG: mem.{{m?slot|malloc}} («3, 9; I32», 0)
+// CHECK-DAG: mem.{{m?slot|malloc}} («3, 12; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («2, 7; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («2, 5; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («3, 6; I32», 0)
@@ -223,3 +256,5 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 13; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 10; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 2, 5; I32»
+// FULL-NOT: mem.{{m?slot|malloc}} («5; I64»
+// FULL-NOT: mem.{{m?slot|malloc}} («7, 12; I32»

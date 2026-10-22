@@ -698,12 +698,56 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
 
     // Lowering an input whole may lower another op with a compute_at.
     auto outer = std::exchange(alloc_mem_, fresh_mem());
-    auto res
-        = lower_staged({mr, mr, std::vector<bool>(rks->nloops()), old_is, post_is, app, false, 0, 1}, nullptr, nullptr);
+    auto res   = lower_staged(
+        {mr, mr, std::vector<bool>(rks->nloops()), std::vector<bool>(rks->nloops()), old_is, post_is, app, false, 0, 1},
+        nullptr, nullptr);
     alloc_mem_ = outer;
     if (!res) return nullptr;
     auto [m, out] = res->projs<2>();
     return scalar_result(app, m, out);
+}
+
+const Def* LowerToMem::clip_lim(const btensor::MapRedPost& mp,
+                                const std::vector<std::optional<u64>>& axis_of,
+                                const Def* base,
+                                const std::vector<bool>& clip) {
+    using F     = btensor::MapRedPost;
+    auto& w     = new_world();
+    auto rec    = mp.sched_record();
+    auto own    = rec->proj(F::Num_Fields, F::Lim);
+    auto ro     = clip.size();
+    auto prn    = axis_of.size();
+    auto i32    = w.type_i32();
+    auto get_ty = w.pi(w.type_nat(), i32);
+    auto i32_of = [&](const Def* n) { return w.call<core::bitcast>(i32, n); };
+    auto select = [&](const Def* c, const Def* t, const Def* f) { return w.extract(w.tuple({f, t}), c); };
+    auto is     = [&](const Def* n, u64 d) { return w.call(core::ncmp::e, Defs{n, w.lit_nat(d)}); };
+
+    auto lim       = w.mut_lam(w.pi(w.sigma({get_ty, w.type_nat()}), w.sigma({w.type_bool(), i32})))->set("tile_lim");
+    auto [get, jj] = lim->vars<2>();
+    // The producer's own `lim` reads the loops of the whole producer, where a shifted dim starts at the box.
+    auto whole = w.mut_lam(get_ty)->set("tile_get");
+    auto e     = whole->var();
+    auto at    = w.app(get, e);
+    for (u64 dd = 0; dd != prn; ++dd)
+        if (auto a = axis_of[dd])
+            at = select(is(e, dd),
+                        w.call(core::wrap::add, core::Mode::none, Defs{w.app(get, e), i32_of(base->proj(ro, *a))}), at);
+    whole->set(true, at);
+
+    const Def* body = w.app(own, w.tuple({whole, jj}));
+    for (u64 dd = 0; dd != prn; ++dd)
+        if (auto a = axis_of[dd]; a && clip[*a]) {
+            auto mine = w.app(own, w.tuple({whole, w.lit_nat(dd)}));
+            auto end  = select(mine->proj(2, 0), mine->proj(2, 1), i32_of(mp.So->proj(ro, *a)));
+            auto stop = w.call(core::wrap::sub, core::Mode::none, Defs{end, i32_of(base->proj(ro, *a))});
+            body      = select(is(jj, dd), w.tuple({w.lit_tt(), stop}), body);
+        }
+    lim->set(true, body);
+
+    auto fields    = DefVec(F::Num_Fields, [&](size_t f) { return rec->proj(F::Num_Fields, f); });
+    fields[F::Lim] = lim;
+    return w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
 }
 
 const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* dst) {
@@ -809,16 +853,20 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto reach = image(g, g.maps->proj(rks->nis, j), zero, [&](size_t d) -> const Def* {
             if (fixed(d)) return g.Sr->proj(gn, d);
             if (!s.shifted[d]) return w.lit_nat_1();
+            if (s.clipped[d]) return g.Sr->proj(gn, d);
             return w.call(core::nat::add,
                           Defs{w.call(core::nat::sub, Defs{g.Sr->proj(gn, d), mr.Sr->proj(rn, d)}), w.lit_nat_1()});
         });
+        // A box that may leave the input is computed only up to the input's end.
         u64 tile = 1, whole = 1;
+        auto clip = std::vector<bool>(prk->ro);
         for (u64 a = 0; a != prk->ro; ++a) {
+            auto cap = *nat(caps[a]);
+            auto so  = nat(mp.So->proj(prk->ro, a));
+            if (!so || cap > *so) return give_up(j, "the box is larger than the input");
             auto lo = nat(reach->proj(4, 0)->proj(prk->ro, a)), ext = nat(reach->proj(4, 1)->proj(prk->ro, a));
-            auto so = nat(mp.So->proj(prk->ro, a));
-            if (!lo || !ext || !so || *lo + *ext - 1 + *nat(caps[a]) > *so)
-                return give_up(j, "a box may leave the input: boundary tiles are not handled yet");
-            tile *= *nat(caps[a]), whole *= *so;
+            clip[a] = !lo || !ext || *lo + *ext - 1 + cap > *so;
+            tile *= cap, whole *= *so;
         }
 
         auto runs = s.runs;
@@ -850,18 +898,19 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto Sr_t
             = w.tuple(DefVec(prn, [&](size_t dd) { return axis_of[dd] ? caps[*axis_of[dd]] : mp.Sr->proj(prn, dd); }));
 
-        auto mt      = mp;
-        mt.So        = So_t;
-        mt.Sr        = Sr_t;
-        mt.maps      = w.tuple(pmaps);
-        mt.maps_all  = w.tuple({mt.maps, mp.post_maps});
-        mt.shapes    = w.tuple({So_t, Sr_t, mp.sched});
-        auto shifted = std::vector<bool>(prn);
+        auto mt     = mp;
+        mt.So       = So_t;
+        mt.Sr       = Sr_t;
+        mt.maps     = w.tuple(pmaps);
+        mt.maps_all = w.tuple({mt.maps, mp.post_maps});
+        if (std::ranges::any_of(clip, [](bool c) { return c; })) mt.sched = clip_lim(mp, axis_of, base, clip);
+        mt.shapes    = w.tuple({So_t, Sr_t, mt.sched});
+        auto shifted = std::vector<bool>(prn), clipped = std::vector<bool>(prn);
         for (u64 dd = 0; dd != prn; ++dd)
-            shifted[dd] = axis_of[dd].has_value();
+            shifted[dd] = axis_of[dd].has_value(), clipped[dd] = shifted[dd] && clip[*axis_of[dd]];
         auto& chain = dim ? acts : pre;
-        auto res    = lower_staged({mt, mp, shifted, old_p->arg()->proj(2, 0), w.tuple(), old_p, fuse, budget, runs},
-                                   chain, tile_b);
+        auto res    = lower_staged(
+            {mt, mp, shifted, clipped, old_p->arg()->proj(2, 0), w.tuple(), old_p, fuse, budget, runs}, chain, tile_b);
         if (!res) return give_up(j, "the input's inputs are not buffers");
         chain = res->proj(2, 0);
 

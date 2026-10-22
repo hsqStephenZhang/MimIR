@@ -59,6 +59,7 @@ private:
         btensor::MapRedPost mr;     ///< The op, or a tile of `global` whose loops `shifted` start at a run-time origin.
         btensor::MapRedPost global; ///< The op over its whole domain.
         std::vector<bool> shifted;
+        std::vector<bool> clipped; ///< The shifted loops whose tiles may start past the last whole tile.
         const Def* old_is;  ///< The old inputs.
         const Def* post_is; ///< The epilogue input buffers.
         const Def* who;     ///< The old op, for the log.
@@ -71,6 +72,12 @@ private:
     /// tile_and_fuse names computed one tile at a time; a null @p mem and @p dst stand for a destination allocated on
     /// #alloc_mem_ once every tile is.
     const Def* lower_staged(const Staged& s, const Def* mem, const Def* dst);
+    /// The schedule of the producer @p mp on a tile at @p base that cuts the loops of the axes @p clip short at the
+    /// producer's end; `axis_of` tells which axis each loop writes.
+    const Def* clip_lim(const btensor::MapRedPost& mp,
+                        const std::vector<std::optional<u64>>& axis_of,
+                        const Def* base,
+                        const std::vector<bool>& clip);
     /// The `btensor.map_reduce_post` of @p mr, with mem-threaded combiner and epilogue, over @p shapes, @p in_tys and
     /// @p maps_all, awaiting its memory and buffers.
     const Def* btensor_op(const btensor::MapRedPost& mr, const Def* shapes, const Def* in_tys, const Def* maps_all);
