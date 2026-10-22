@@ -42,6 +42,8 @@
 // * `rev_rowsum`: C[i] = Σ_j (A · B)[i, j] with C inside the loop of i of the product: a row of C per row of it.
 // * `rev_ew`:   C = P + 1 inside the loop of i of the reduction P.
 // * `rev_halo`: C[i, j] = Σ_k P[i + k, j] reads three rows of P: no part of C reads one row only, so warned.
+// * `tfb`: tile_and_fuse_by C = (Q · B) · E of 7 × 5 by tiles (3, 2), neither dividing: per tile a tile «3, 17» of P
+//   and ahead of it «3, 15» of Q, the last tiles cut short.
 // * `plain`:   an input that no map_reduce_post computes cannot be computed at a loop: warned, and read as is.
 plugin core;
 plugin tensor;
@@ -247,6 +249,12 @@ extern fun rev_halo (a: «6, 8, 2; I32»): «4, 8; I32» =
     let t = tensor.mr_tileable @1 @(2, 1) ((4, 8), (0, 1), (4, 8, 3)) (sum, 0I32, tensor.id) mo rvh p;
     return (tensor.materialize (tensor.reverse_compute_at (t, 0, 0)));
 
+extern fun tfb (a: «7, 15, 2; I32», b: «15, 17; I32», e: «17, 5; I32»): «7, 5; I32» =
+    let q = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((7, 15), (0, 1), (7, 15, 2)) (sum, 0I32, tensor.id) qo pa (tensor.buf a));
+    let p = tensor.materialize (tensor.mr_tileable @2 @(2, 1) ((7, 17), (0, 1), (7, 17, 15)) (mac, 0I32, tensor.id) mo (ma, mb) (q, tensor.buf b));
+    let t = tensor.mr_tileable @2 @(2, 1) ((7, 5), (0, 1), (7, 5, 17)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf e);
+    return (tensor.materialize (tensor.tile_and_fuse_by (t, (3, 2), 4)));
+
 extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
@@ -274,6 +282,8 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // CHECK-DAG: mem.{{m?slot|malloc}} («3; I64», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («3, 9; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («3, 12; I32», 0)
+// CHECK-DAG: mem.{{m?slot|malloc}} («3, 17; I32», 0)
+// CHECK-DAG: mem.{{m?slot|malloc}} («3, 15; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («2, 7; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («2, 5; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («3, 6; I32», 0)
@@ -292,6 +302,8 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 2, 5; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («5; I64»
 // FULL-NOT: mem.{{m?slot|malloc}} («7, 12; I32»
+// FULL-NOT: mem.{{m?slot|malloc}} («7, 17; I32»
+// FULL-NOT: mem.{{m?slot|malloc}} («7, 15; I32»
 // SHARED-COUNT-1: mem.{{m?slot|malloc}} («5, 14; I32»
 // SHARED-NOT:     mem.{{m?slot|malloc}} («5, 14; I32»
 // SHARED-NOT:     mem.{{m?slot|malloc}} («14; I32»

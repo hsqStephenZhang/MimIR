@@ -36,6 +36,7 @@ int32_t* shared_at(int32_t* a, int32_t* b, int32_t* e);
 int32_t* rev_rowsum(int32_t* a, int32_t* b);
 int32_t* rev_ew(int32_t* a);
 int32_t* rev_halo(int32_t* a);
+int32_t* tfb(int32_t* a, int32_t* b, int32_t* e);
 }
 
 // q[i] = a[i, 0] + a[i, 1] over the n pairs of a.
@@ -207,6 +208,11 @@ int main() {
         for (int j = 0; j < 8; ++j)
             wh[i * 8 + j] = zp[i * 8 + j] + zp[(i + 1) * 8 + j] + zp[(i + 2) * 8 + j];
 
+    // tfb: the chain over 7 rows and 5 columns.
+    int32_t ta2[7 * 15 * 2], tb2[15 * 17], te2[17 * 5], tq2[7 * 15], tp2[7 * 17], tc2[7 * 5];
+    fill(ta2, 7 * 15 * 2, 5), fill(tb2, 15 * 17, 4), fill(te2, 17 * 5, 7);
+    pair_sum(ta2, tq2, 7 * 15), matmul(tq2, tb2, tp2, 7, 15, 17), matmul(tp2, te2, tc2, 7, 17, 5);
+
     int32_t la[2 * 5 * 2], lb[5 * 7], le[7 * 3], lq[2 * 5], lp[2 * 7], lc[2 * 3];
     fill(la, 2 * 5 * 2, 4), fill(lb, 5 * 7, 5), fill(le, 7 * 3, 7);
     pair_sum(la, lq, 2 * 5), matmul(lq, lb, lp, 2, 5, 7), matmul(lp, le, lc, 2, 7, 3);
@@ -278,6 +284,7 @@ int main() {
     bad += compare("rev_rowsum", rev_rowsum(ra, rb), rs, 6);
     bad += compare("rev_ew", rev_ew(wa), we, 6 * 7);
     bad += compare("rev_halo", rev_halo(za), wh, 4 * 8);
+    bad += compare("tfb", tfb(ta2, tb2, te2), tc2, 7 * 5);
     bad += compare("back_at", back_at(a4, b), bk, 4 * 5);
     bad += compare("fused_at", fused_at(x7, y7, a7), fu, 4 * 5);
     bad += compare("fold_at", fold_at(x15), fold_plain(x15), 5);
