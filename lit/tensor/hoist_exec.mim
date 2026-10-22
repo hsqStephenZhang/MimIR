@@ -2,6 +2,8 @@
 // RUN: %mim -p opt -p clos -p ll %s
 // RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
 
 // A matrix product of «6, 8» · «8, 5» with its K blocks hoisted out of the M and N loops, against the plain nest:
 // * `h1`:    K split by 4, loops (i, ko, j, ki).
@@ -12,6 +14,12 @@
 // * `hvec`:   j vectorized over a row loaded from the accumulator; `hvec_u` with ki unrolled too.
 // * `hblk`:   i split by 2 and blocked: a 2 × 8 register panel, ii jammed into the vector loop.
 // * `hblk_tail`: the same over 7 rows, the last block of one row.
+// With a copy of an input computed at a loop of the hoisted nest, i.e. packed:
+// * `pb1`:  B per K block, inside i: a «4, 5» block of it; `pb0` with ko outermost.
+// * `pa0`:  A per row, inside ko: a «1, 4» block of it.
+// * `pvec`, `pblk`: B per K block «4, 8» around `hvec`'s and `hblk_tail`'s micro-kernels.
+// * `ptail`: A per K block inside `htail`'s tiles of rows: «4, 4», the last cut to the 2 rows left.
+// * `pin`:  at ki, which is not hoisted: warned, and B read whole.
 // The exit code counts the cells that differ.
 plugin core;
 plugin tensor;
@@ -26,7 +34,15 @@ fun twice1 (x: I32, _: [])@tt: I32 = return (2I32 * x + 1I32);
 lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
 lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
 lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+lam po (i j: affine.Index): «2; affine.Index» = (i, j);
 lam add (x y: I32): I32 = x + y;
+fun cp1 (_: I32, x: I32)@tt: I32 = return x;
+fun cp2 (_: I32, x: I32)@tt: I32 = return x;
+fun cp3 (_: I32, x: I32)@tt: I32 = return x;
+fun cp4 (_: I32, x: I32)@tt: I32 = return x;
+fun cp5 (_: I32, x: I32)@tt: I32 = return x;
+fun cp6 (_: I32, x: I32)@tt: I32 = return x;
+fun cp7 (_: I32, x: I32)@tt: I32 = return x;
 
 let a = generate (6, 8) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.sub 0 (core.wrap.mul 0 (3I64, i#0_2), i#1_2)));
 let b = generate (8, 5) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (i#0_2, core.wrap.mul 0 (2I64, i#1_2))));
@@ -37,6 +53,9 @@ let a7 = generate (7, 8) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.w
 let b8 = generate (8, 8) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (core.wrap.mul 0 (3I64, i#0_2), i#1_2)));
 let mm8 = mr_tileable @2 @(2, 1) ((6, 8), (0, 1), (6, 8, 8)) (mac, 0I32, id) mo (ma, mb) (a, b8);
 let mm7 = mr_tileable @2 @(2, 1) ((7, 8), (0, 1), (7, 8, 8)) (mac, 0I32, id) mo (ma, mb) (a7, b8);
+lam pack {m n: Nat} (f: Fn [I32, I32] → I32) (x: «m, n; I32»): «m, n; I32» =
+    materialize (mr_tileable @1 @(2, 0) ((m, n), (0, 1), (m, n)) (f, 0I32, id) po po x);
+lam mmf {m n: Nat} (x: «m, 8; I32», y: «8, n; I32») = mr_tileable @2 @(2, 1) ((m, n), (0, 1), (m, n, 8)) (mac, 0I32, id) mo (ma, mb) (x, y);
 lam diff8 {m: Nat} (x y: «m, 8; I32»): I32 =
     reduce (add, 0I32) 0₁ (reduce (add, 0I32) 1₂ (binary (λ (u v: I32): I32 = core.select (core.icmp.e (u, v), 0I32, 1I32)) (x, y)));
 lam diff (x y: «6, 5; I32»): I32 =
@@ -53,6 +72,20 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
     let hvecu = materialize (hoist_red (unroll_trailing (vectorize (strip_mine_red (mm8, 2, 4), 1), 1), 1, 1));
     let hblk  = materialize (hoist_red (vectorize (strip_mine_red (split_par (mm8, 0, 2), 3, 4), 1), 1, 1));
     let hblkt = materialize (hoist_red (vectorize (strip_mine_red (split_par (mm7, 0, 2), 3, 4), 1), 1, 1));
+    let pb1   = materialize (compute_at (hoist_red (strip_mine_red (mmf (a, pack cp1 b), 2, 4), 1, 1), 1, 2));
+    let pb0   = materialize (compute_at (hoist_red (strip_mine_red (mmf (a, pack cp2 b), 2, 4), 0, 1), 1, 2));
+    let pa0   = materialize (compute_at (hoist_red (strip_mine_red (mmf (pack cp3 a, b), 2, 4), 0, 1), 0, 0));
+    let pvec  = materialize (compute_at (hoist_red (vectorize (strip_mine_red (mmf (a, pack cp4 b8), 2, 4), 1), 1, 1), 1, 2));
+    let pblk  = materialize (compute_at (hoist_red (vectorize (strip_mine_red (split_par (mmf (a7, pack cp5 b8), 0, 2), 3, 4), 1), 1, 1), 1, 3));
+    let ptail = materialize (compute_at (hoist_red (strip_mine_red (tile_par (mmf (pack cp6 a, b), (4, 0)), 4, 4), 2, 1), 0, 4));
+    let pin   = materialize (compute_at (hoist_red (strip_mine_red (mmf (a, pack cp7 b), 2, 4), 1, 1), 1, 3));
     let bad   = diff (h1, plain) + diff (h0, plain) + diff (hpost, materialize (mm twice1)) + diff (htail, plain)
-              + diff8 (hvec, p8) + diff8 (hvecu, p8) + diff8 (hblk, p8) + diff8 (hblkt, materialize mm7);
+              + diff8 (hvec, p8) + diff8 (hvecu, p8) + diff8 (hblk, p8) + diff8 (hblkt, materialize mm7)
+              + diff (pb1, plain) + diff (pb0, plain) + diff (pa0, plain) + diff8 (pvec, p8) + diff8 (pblk, materialize mm7)
+              + diff (ptail, plain) + diff (pin, plain);
     return (m, bad);
+
+// CHECK-DAG: («4, 5; I32», 0)
+// CHECK-DAG: («4, 8; I32», 0)
+// CHECK-DAG: («4, 4; I32», 0)
+// WARN: compute_at of input 1 inside dim 3 of {{.*}} not realized: not a parallel or a hoisted reduction dim

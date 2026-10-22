@@ -960,7 +960,9 @@ lam slot_bit (i: Nat): Nat = core.bitcast Nat (core.wrap.shl 0 (1I64, core.bitca
 /// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post` without epilogue inputs whose write
 ///   map is a projection, and the box has a literal size; it computes that input with the input's own
 ///   schedule and logs a warning wherever it cannot.
-/// - `d` must be a parallel dim, and the loops around it those of the dims before it, as in the classic nest.
+/// - `d` must be a parallel dim or a reduction dim `hoist_red` hoists, and the loops around it those of the dims
+///   before it in the order of the nest.
+/// - A copy computed at a hoisted reduction dim packs a block of its source, as a GEMM packs B per K block.
 /// - The read of each iteration's corner must be where its box starts, which a reversed read is not.
 /// - The boxes must lie within the input: neither boundary tiles nor padding are handled yet.
 /// - Apply it after the domain transforms, which do not renumber `d`.

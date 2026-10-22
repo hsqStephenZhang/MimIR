@@ -183,6 +183,16 @@ static std::optional<PureRead> read_through(World& w, const Def* value, const De
 // new combination function `f_new` invokes every inner combiner in post-order — each starting from
 // its own init — and finally invokes `f_o`, threading inner results into the corresponding outer
 // input slots.
+/// The input slots @p mr's schedule computes at a loop, which keep their producers.
+static u64 at_slots(const btensor::MapRedPost& mr) {
+    using F  = btensor::MapRedPost;
+    auto rec = mr.sched_record();
+    if (rec->proj(F::Num_Fields, F::At) != mr.sched->world().lit_tt()) return 0;
+    return Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0);
+}
+
+static bool is_at(u64 slots, u64 k) { return k < 64 && (slots >> k) & 1; }
+
 const Def* Fuse::fuse_map_reduce(const App* app) {
     auto mr            = btensor::MapRedPost::of(rewrite(app->callee())->as<App>());
     auto [is, post_is] = rewrite(app->arg())->projs<2>();
@@ -196,13 +206,10 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     if (!nis_lit) return nullptr;
     auto nis_nat = *nis_lit;
 
-    // The inputs the schedule computes at a loop keep their producers, which follow them to their new positions.
-    using F       = btensor::MapRedPost;
-    auto rec      = mr.sched_record();
-    auto at_slots = rec->proj(F::Num_Fields, F::At) == w.lit_tt()
-                      ? Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0)
-                      : u64(0);
-    auto at       = [&](u64 k) { return k < 64 && (at_slots >> k) & 1; };
+    // The producers of the inputs computed at a loop follow them to their new positions.
+    using F  = btensor::MapRedPost;
+    auto ats = at_slots(mr);
+    auto at  = [&](u64 k) { return is_at(ats, k); };
 
     struct InnerInfo {
         const Def* comb;
@@ -358,10 +365,11 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     // Construct the fused map_reduce; the loop domain, output map, init and epilogue (including the
     // epilogue inputs) are the outer's.
     auto shapes = mr.shapes;
-    if (at_slots != 0) {
+    if (ats != 0) {
         u64 moved = 0;
         for (u64 k = 0; k != nis_nat; ++k)
             if (at(k)) moved |= u64(1) << new_pos[k];
+        auto rec           = mr.sched_record();
         auto fields        = DefVec(F::Num_Fields, [&](size_t i) { return rec->proj(F::Num_Fields, i); });
         fields[F::AtSlots] = w.lit_nat(moved);
         shapes             = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
@@ -580,12 +588,12 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
     auto [is, ps] = arg->projs<2>();
 
     bool changed = false;
-    auto rewire  = [&](u64 n, const Def* Ts, const Def* Rs, const Def* Ss, const Def* ms, const Def* vs) {
+    auto rewire  = [&](u64 n, const Def* Ts, const Def* Rs, const Def* Ss, const Def* ms, const Def* vs, u64 keep) {
         auto slots = Slots();
         for (u64 i = 0; i < n; ++i) {
             auto T = Ts->proj(n, i), R = Rs->proj(n, i), S = Ss->proj(n, i);
             auto m = ms->proj(n, i), v = vs->proj(n, i);
-            if (auto rt = read_through(w, v, m, S)) {
+            if (auto rt = is_at(keep, i) ? std::nullopt : read_through(w, v, m, S)) {
                 log().d("read input {} of {} through {}", i, callee, v);
                 // The bypassed read forwards its consumers to the source: a shared (or uncounted,
                 // e.g. broadcast) read leaves the source multiply-consumed for the epilogue guard.
@@ -598,8 +606,8 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
         return slots;
     };
 
-    auto ins = rewire(nis_nat, mr.Tis, mr.Ris, mr.Sis, mr.maps, is);
-    auto eps = rewire(nps_nat, mr.Tps, mr.Rps, mr.Sps, mr.post_maps, ps);
+    auto ins = rewire(nis_nat, mr.Tis, mr.Ris, mr.Sis, mr.maps, is, at_slots(mr));
+    auto eps = rewire(nps_nat, mr.Tps, mr.Rps, mr.Sps, mr.post_maps, ps, 0);
     if (!changed) return nullptr;
 
     auto res = w.annex<tensor::map_reduce_post>();

@@ -904,6 +904,14 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     auto pre  = mem;
     auto acts = run_mem;
 
+    // The dims of the loop of `dim` and of the loops around it, which a hoisted nest reorders.
+    auto hoist = Lit::isa<u64>(field(F::Hoist)).value_or(0);
+    auto fixed = std::vector<bool>(rn);
+    if (dim)
+        for (u64 e = 0; e != rn; ++e)
+            fixed[e]
+                = w.app(w.app(w.annex<btensor::at_outer>(), {rec, mr.Rp, w.lit_nat(*dim)}), w.lit_nat(e)) == w.lit_tt();
+
     auto lit = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
     auto sub = [&](const Def* a, const Def* b) { return w.call(affine::op::sub, Defs{a, b}); };
     auto add = [&](const Def* a, const Def* b) { return w.call(affine::op::add, Defs{a, b}); };
@@ -911,11 +919,11 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
 
     auto ins         = DefVec(rks->nis);
     auto write_backs = std::vector<std::pair<const App*, const Def*>>();
-    auto Sis  = DefVec(rks->nis, [&](size_t j) { return mr.Sis->proj(rks->nis, j); });
-    auto maps = DefVec(rks->nis, [&](size_t j) { return mr.maps->proj(rks->nis, j); });
+    auto Sis         = DefVec(rks->nis, [&](size_t j) { return mr.Sis->proj(rks->nis, j); });
+    auto maps        = DefVec(rks->nis, [&](size_t j) { return mr.maps->proj(rks->nis, j); });
 
     auto stage = [&](u64 j) -> bool {
-        if (dim && *dim >= rks->rp) return give_up(j, "not a parallel dim");
+        if (dim && *dim >= rks->rp + hoist) return give_up(j, "not a parallel or a hoisted reduction dim");
 
         // The producer: a map_reduce_post without epilogue inputs that writes through a projection.
         auto old_p = Axm::isa<tensor::map_reduce_post>(s.old_is->proj(rks->nis, j));
@@ -943,19 +951,18 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         // Unit axes fold «1, 4» and «4, 1» to one type, so only the shapes tell whether the read and the write agree.
         if (mp.So != Sis[j]) return give_up(j, "the input's shape is not the producer's");
 
-        // The box one run of the tile reads: the dims up to `dim` fixed at a run-time origin, the rest whole from 0.
+        // The box one run of the tile reads: the fixed dims at a run-time origin, the rest whole from 0.
         auto image = [&](const F& op, const Def* f, auto lo, auto ext) {
             auto n   = op.ranks()->nloops();
             auto box = w.tuple({w.tuple(DefVec(n, lo)), w.tuple(DefVec(n, ext)), mp.So});
             return w.app(w.app(w.app(w.annex<affine::image>(), {op.Rn, op.Ris->proj(rks->nis, j)}), f), box);
         };
-        auto fixed  = [&](size_t d) { return dim && d <= *dim; };
         auto origin = [&](size_t d) -> const Def* {
-            return fixed(d) ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
+            return fixed[d] ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
         };
         auto zero = [&](size_t) -> const Def* { return w.lit_nat_0(); };
         auto one  = [&](size_t) -> const Def* { return w.lit_nat_1(); };
-        auto box  = image(mr, map, origin, [&](size_t d) { return fixed(d) ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
+        auto box  = image(mr, map, origin, [&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
 
         auto caps = DefVec(prk->ro, [&](size_t a) { return box->proj(4, 2)->proj(prk->ro, a); });
         if (!std::ranges::all_of(caps, [&](const Def* cap) { return nat(cap).has_value(); }))
@@ -968,7 +975,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto& g    = s.global;
         auto gn    = g.ranks()->nloops();
         auto reach = image(g, g.maps->proj(rks->nis, j), zero, [&](size_t d) -> const Def* {
-            if (fixed(d)) return g.Sr->proj(gn, d);
+            if (fixed[d]) return g.Sr->proj(gn, d);
             if (!s.shifted[d]) return w.lit_nat_1();
             if (s.clipped[d]) return g.Sr->proj(gn, d);
             return w.call(core::nat::add,
@@ -987,11 +994,12 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         }
 
         auto runs = s.runs;
-        for (u64 d = 0; dim && d <= *dim; ++d)
-            if (auto n = nat(mr.Sr->proj(rn, d)))
+        for (u64 d = 0; d != rn; ++d)
+            if (fixed[d]) {
+                auto n = nat(mr.Sr->proj(rn, d));
+                if (!n) return give_up(j, "the loops around the tile have no literal extent");
                 runs *= *n;
-            else
-                return give_up(j, "the loops around the tile have no literal extent");
+            }
         if (fuse && tile * runs > budget * whole) return give_up(j, "the tiles would recompute it beyond the budget");
 
         // A producer another op reads too is computed into its whole buffer, which that op then reads after this one.
@@ -1020,9 +1028,9 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto Sr_t
             = w.tuple(DefVec(prn, [&](size_t dd) { return axis_of[dd] ? caps[*axis_of[dd]] : mp.Sr->proj(prn, dd); }));
 
-        auto mt     = mp;
-        mt.So       = shared ? mp.So : So_t;
-        mt.Sr       = Sr_t;
+        auto mt = mp;
+        mt.So   = shared ? mp.So : So_t;
+        mt.Sr   = Sr_t;
         if (shared) mt.map_out = shift(mp.map_out, "tile_out");
         mt.maps     = w.tuple(pmaps);
         mt.maps_all = w.tuple({mt.maps, mp.post_maps});
@@ -1046,16 +1054,15 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         chain = res->proj(2, 0);
 
         // The op reads the tile at its coordinates less those of the box's start: inside the loop of `dim` the read
-        // of the corner, which only depends on the dims up to `dim`; ahead of the op the start itself.
+        // of the corner, which only depends on the fixed dims; ahead of the op the start itself.
         auto read_pi = map->type()->as<Pi>();
         auto read    = w.mut_lam(read_pi->dom(), read_pi->codom())->set("tile_read");
         auto o       = read->var();
         auto at      = w.app(map, o);
         auto corner
-            = dim
-                ? w.app(map,
-                        w.tuple(DefVec(rn, [&](size_t d) { return d <= *dim ? o->proj(rn, d) : lit(w.lit_nat_0()); })))
-                : nullptr;
+            = dim ? w.app(map,
+                          w.tuple(DefVec(rn, [&](size_t d) { return fixed[d] ? o->proj(rn, d) : lit(w.lit_nat_0()); })))
+                  : nullptr;
         read->set(true, w.tuple(DefVec(*pro, [&](size_t a) {
             return sub(at->proj(*pro, a), dim ? corner->proj(*pro, a) : lit(base->proj(*pro, a)));
         })));
