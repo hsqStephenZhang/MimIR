@@ -53,6 +53,24 @@ private:
     const Def* lower_map_reduce(const App*);
     /// Realizes a `tensor.compute_at` in the schedule of the map_reduce_post @p app, if it can; `nullptr` otherwise.
     const Def* lower_compute_at(const App*);
+
+    /// A map_reduce_post being lowered with inputs computed one tile at a time.
+    struct Staged {
+        btensor::MapRedPost mr;     ///< The op, or a tile of `global` whose loops `shifted` start at a run-time origin.
+        btensor::MapRedPost global; ///< The op over its whole domain.
+        std::vector<bool> shifted;
+        const Def* old_is;  ///< The old inputs.
+        const Def* post_is; ///< The epilogue input buffers.
+        const Def* who;     ///< The old op, for the log.
+        bool fuse;          ///< Whether an enclosing tile_and_fuse computes the op's inputs ahead of the op.
+        u64 budget;         ///< That tile_and_fuse's recompute budget.
+        u64 runs;           ///< How often the op runs.
+    };
+
+    /// The op of @p s applied to @p mem and @p dst, `[mem, dst]`, with the inputs its schedule or an enclosing
+    /// tile_and_fuse names computed one tile at a time; a null @p mem and @p dst stand for a destination allocated on
+    /// #alloc_mem_ once every tile is.
+    const Def* lower_staged(const Staged& s, const Def* mem, const Def* dst);
     /// The `btensor.map_reduce_post` of @p mr, with mem-threaded combiner and epilogue, over @p shapes, @p in_tys and
     /// @p maps_all, awaiting its memory and buffers.
     const Def* btensor_op(const btensor::MapRedPost& mr, const Def* shapes, const Def* in_tys, const Def* maps_all);
@@ -130,6 +148,9 @@ private:
 
     /// Per-lam memo for the ops that consume a fresh memory (see LowerToMem::rewrite).
     DefMap<const Def*> fresh_memo_;
+
+    /// The memory the tile buffers of the op being lowered by lower_compute_at are allocated on, once each.
+    const Def* alloc_mem_ = nullptr;
 
     /// A function is bufferized iff it is external, set, and mentions a tensor type in its domain.
     bool is_tensor_fn(Lam*) const;

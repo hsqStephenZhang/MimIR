@@ -22,6 +22,32 @@ int32_t* fold_at(int32_t* x);
 int32_t* fold_plain(int32_t* x);
 int32_t* epi_at(int32_t* a, int32_t* b);
 int32_t* inl_at(int32_t* a, int32_t* b);
+int32_t* two_at(int32_t* a, int32_t* b);
+int32_t* fuse_at(int32_t* a, int32_t* b, int32_t* e);
+int32_t* fuse_lim(int32_t* a, int32_t* b, int32_t* e);
+int32_t* fuse_tile(int32_t* a, int32_t* b, int32_t* e);
+}
+
+// q[i] = a[i, 0] + a[i, 1] over the n pairs of a.
+static void pair_sum(const int32_t* a, int32_t* q, int n) {
+    for (int i = 0; i < n; ++i)
+        q[i] = a[2 * i] + a[2 * i + 1];
+}
+
+// c = x · y for x «m, k» and y «k, n».
+static void matmul(const int32_t* x, const int32_t* y, int32_t* c, int m, int k, int n) {
+    for (int i = 0; i < m; ++i)
+        for (int j = 0; j < n; ++j) {
+            int32_t s = 0;
+            for (int l = 0; l < k; ++l)
+                s += x[i * k + l] * y[l * n + j];
+            c[i * n + j] = s;
+        }
+}
+
+static void fill(int32_t* p, int n, int s) {
+    for (int i = 0; i < n; ++i)
+        p[i] = (i * s) % 9 - 4;
 }
 
 static int compare(const char* name, const int32_t* got, const int32_t* want, int n) {
@@ -94,31 +120,41 @@ int main() {
     for (int c = 0; c < 24; ++c)
         ed[c] = x48[c] + g5[c / 5] + 1;
 
-    // P[i, j] = a3[i, j, 0] + a3[i, j, 1], read reversed by rev_at and in order by chain_at.
-    int32_t a3[3 * 6 * 2], p[3 * 6], rv[3 * 5], pq[3 * 5], ch[3 * 3], e[5 * 3];
+    // P[i, j] = a3[i, j, 0] + a3[i, j, 1], read reversed by rev_at.
+    int32_t a3[3 * 6 * 2], p[3 * 6], rv[3 * 5];
     for (int i = 0; i < 3 * 6 * 2; ++i)
         a3[i] = (i * 7) % 10 - 4;
     for (int i = 0; i < 3 * 6; ++i)
         p[i] = a3[2 * i] + a3[2 * i + 1];
-    for (int i = 0; i < 5 * 3; ++i)
-        e[i] = (i * 4) % 9 - 4;
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 5; ++j) {
-            int32_t r = 0, q = 0;
-            for (int k = 0; k < 6; ++k) {
+            int32_t r = 0;
+            for (int k = 0; k < 6; ++k)
                 r += p[i * 6 + 5 - k] * b[k * 5 + j];
-                q += p[i * 6 + k] * b[k * 5 + j];
-            }
             rv[i * 5 + j] = r;
-            pq[i * 5 + j] = q;
         }
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j) {
-            int32_t s = 0;
-            for (int k = 0; k < 5; ++k)
-                s += pq[i * 5 + k] * e[k * 3 + j];
-            ch[i * 3 + j] = s;
-        }
+
+    // The chains of chain_at, two_at, fuse_at and fuse_lim: pair sums Q, then products.
+    int32_t ca[3 * 11 * 2], cb[11 * 5], ce[5 * 3], cq[3 * 11], cp[3 * 5], ch[3 * 3];
+    fill(ca, 3 * 11 * 2, 7), fill(cb, 11 * 5, 5), fill(ce, 5 * 3, 4);
+    pair_sum(ca, cq, 3 * 11), matmul(cq, cb, cp, 3, 11, 5), matmul(cp, ce, ch, 3, 5, 3);
+
+    int32_t ta[3 * 7 * 2], tb[7 * 4 * 2], tp[3 * 7], tq[7 * 4], tw[3 * 4];
+    fill(ta, 3 * 7 * 2, 5), fill(tb, 7 * 4 * 2, 7);
+    pair_sum(ta, tp, 3 * 7), pair_sum(tb, tq, 7 * 4), matmul(tp, tq, tw, 3, 7, 4);
+
+    int32_t fa[3 * 13 * 2], fb[13 * 10], fe[10 * 2], fq[3 * 13], fp[3 * 10], fc[3 * 2];
+    fill(fa, 3 * 13 * 2, 5), fill(fb, 13 * 10, 7), fill(fe, 10 * 2, 4);
+    pair_sum(fa, fq, 3 * 13), matmul(fq, fb, fp, 3, 13, 10), matmul(fp, fe, fc, 3, 10, 2);
+
+    // fuse_tile writes C «4, 2» strip-mined to «2, 2, 2», which keeps its row-major order.
+    int32_t ua[4 * 13 * 2], uq[4 * 13], up[4 * 10], uc[4 * 2];
+    fill(ua, 4 * 13 * 2, 7);
+    pair_sum(ua, uq, 4 * 13), matmul(uq, fb, up, 4, 13, 10), matmul(up, fe, uc, 4, 10, 2);
+
+    int32_t la[2 * 5 * 2], lb[5 * 7], le[7 * 3], lq[2 * 5], lp[2 * 7], lc[2 * 3];
+    fill(la, 2 * 5 * 2, 4), fill(lb, 5 * 7, 5), fill(le, 7 * 3, 7);
+    pair_sum(la, lq, 2 * 5), matmul(lq, lb, lp, 2, 5, 7), matmul(lp, le, lc, 2, 7, 3);
 
     // back_at: P = Σ over the last axis of a4 «4, 6, 2», times b; fused_at: Σ_k (x + y)[i, j, k] · P7[i, k].
     int32_t a4[4 * 6 * 2], bk[4 * 5], x7[4 * 5 * 7], y7[4 * 5 * 7], a7[4 * 7 * 2], fu[4 * 5];
@@ -167,7 +203,11 @@ int main() {
     bad += compare("grp_at", grp_at(x48, g3), gp, 48);
     bad += compare("edge_at", edge_at(x48, g5), ed, 24);
     bad += compare("rev_at", rev_at(a3, b), rv, 3 * 5);
-    bad += compare("chain_at", chain_at(a3, b, e), ch, 3 * 3);
+    bad += compare("chain_at", chain_at(ca, cb, ce), ch, 3 * 3);
+    bad += compare("two_at", two_at(ta, tb), tw, 3 * 4);
+    bad += compare("fuse_at", fuse_at(fa, fb, fe), fc, 3 * 2);
+    bad += compare("fuse_lim", fuse_lim(la, lb, le), lc, 2 * 3);
+    bad += compare("fuse_tile", fuse_tile(ua, fb, fe), uc, 4 * 2);
     bad += compare("back_at", back_at(a4, b), bk, 4 * 5);
     bad += compare("fused_at", fused_at(x7, y7, a7), fu, 4 * 5);
     bad += compare("fold_at", fold_at(x15), fold_plain(x15), 5);

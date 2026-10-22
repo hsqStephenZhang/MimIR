@@ -1,6 +1,6 @@
 // RUN: %mim -p opt %s -o - 2>&1 | %FileCheck %s
 
-// Two inputs of one op computed at a loop: `refly.check` reports it, as a schedule holds a single one yet.
+// Two inputs of one op computed at different loops: `refly.check` reports it, as a schedule holds one loop.
 plugin core;
 plugin affine;
 plugin tensor;
@@ -14,7 +14,7 @@ lam pa (i j k: affine.Index): «3; affine.Index» = (i, j, k);
 lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
 lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
 
-// CHECK: compute_at: only one input of an op can be computed at a loop yet
+// CHECK: compute_at: the inputs of an op must be computed at one loop
 extern fun two (a: «4, 6, 2; I32», b: «6, 5, 2; I32»): «4, 5; I32» =
     let p = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((4, 6), (0, 1), (4, 6, 2)) (sum, 0I32, tensor.id) po pa (tensor.buf a));
     let q = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((6, 5), (0, 1), (6, 5, 2)) (sum, 0I32, tensor.id) po pa (tensor.buf b));

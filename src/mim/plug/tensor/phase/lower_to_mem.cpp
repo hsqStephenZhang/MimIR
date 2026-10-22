@@ -686,128 +686,158 @@ std::pair<const Def*, const Def*> probe(const Def* f) {
 } // namespace
 
 const Def* LowerToMem::lower_compute_at(const App* app) {
+    using F  = btensor::MapRedPost;
     auto& w  = new_world();
-    auto mr  = btensor::MapRedPost::of(rewrite(app->callee())->as<App>());
+    auto mr  = F::of(rewrite(app->callee())->as<App>());
+    auto rks = mr.ranks();
+    if (!rks || mr.sched_field(F::At) != w.lit_tt()) return nullptr;
+
+    auto [old_is, old_post_is] = app->arg()->projs<2>();
+    auto post_is               = buffer_list(rewrite(old_post_is), old_post_is, mr.nps);
+    if (!post_is) return nullptr;
+
+    // Lowering an input whole may lower another op with a compute_at.
+    auto outer = std::exchange(alloc_mem_, fresh_mem());
+    auto res
+        = lower_staged({mr, mr, std::vector<bool>(rks->nloops()), old_is, post_is, app, false, 0, 1}, nullptr, nullptr);
+    alloc_mem_ = outer;
+    if (!res) return nullptr;
+    auto [m, out] = res->projs<2>();
+    return scalar_result(app, m, out);
+}
+
+const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* dst) {
+    using F  = btensor::MapRedPost;
+    auto& w  = new_world();
+    auto& mr = s.mr;
     auto rks = mr.ranks();
     if (!rks) return nullptr;
     auto rn = rks->nloops();
 
-    auto rec = mr.sched_record();
-    if (rec->proj(8, 2) != w.lit_tt()) return nullptr;
-    auto slot = Lit::isa<u64>(rec->proj(8, 3));
-    auto dim  = Lit::isa<u64>(rec->proj(8, 4));
-    if (!dim) return nullptr;
+    // An op's own intent computes its inputs inside the loop of `dim`, an enclosing tile_and_fuse ahead of the op.
+    auto rec    = mr.sched_record();
+    auto field  = [&](F::Field f) { return rec->proj(F::Num_Fields, f); };
+    auto own    = field(F::At) == w.lit_tt();
+    auto fuse   = own ? field(F::Fuse) == w.lit_tt() : s.fuse;
+    auto budget = own ? Lit::isa<u64>(field(F::Budget)).value_or(0) : s.budget;
+    auto slots  = Lit::isa<u64>(field(F::AtSlots)).value_or(0);
+    auto dim    = own ? Lit::isa<u64>(field(F::AtDim)) : std::nullopt;
+    if (own && !dim) return nullptr;
 
-    auto give_up = [&](const char* why) -> const Def* {
-        log().w("compute_at of input {} inside dim {} of {} not realized: {}", slot ? *slot : 0, *dim, app, why);
-        return nullptr;
+    auto give_up = [&](u64 j, const char* why) {
+        if (fuse)
+            log().d("tile_and_fuse: input {} of {} is computed whole: {}", j, s.who, why);
+        else
+            log().w("compute_at of input {} inside dim {} of {} not realized: {}", j, *dim, s.who, why);
+        return false;
     };
-    if (!slot || *slot >= rks->nis) return give_up("no such input");
-    if (*dim >= rks->ro) return give_up("not a parallel dim");
 
-    // The producer: a map_reduce_post without epilogue inputs that writes through a projection.
-    auto [old_is, old_post_is] = app->arg()->projs<2>();
-    auto old_p                 = Axm::isa<tensor::map_reduce_post>(old_is->proj(rks->nis, *slot));
-    if (!old_p) return give_up("the input is not a map_reduce_post, e.g. fuse_tensor inlined it");
-    auto mp  = btensor::MapRedPost::of(rewrite(old_p->callee())->as<App>());
-    auto prk = mp.ranks();
-    if (!prk || prk->nps != 0) return give_up("the input has epilogue inputs");
-    auto prn = prk->nloops();
-
-    auto [ovar, obody] = probe(mp.map_out);
-    auto axis_of       = std::vector<std::optional<u64>>(prn);
-    for (u64 a = 0; a != prk->ro; ++a) {
-        auto e  = obody->proj(prk->ro, a);
-        auto dd = std::optional<u64>();
-        if (e == ovar) dd = 0;
-        if (auto ex = e->isa<Extract>(); ex && ex->tuple() == ovar) dd = Lit::isa<u64>(ex->index());
-        if (!dd || *dd >= prn || axis_of[*dd] || mp.Sr->proj(prn, *dd) != mp.So->proj(prk->ro, a))
-            return give_up("the input's write map is not a projection");
-        axis_of[*dd] = a;
+    // The action computing the tiles inside the loop of `dim`; it gets the loop-vector prefix.
+    auto mem_ty    = w.call<mem::M>(0);
+    Lam* run       = nullptr;
+    const Def *get = nullptr, *run_mem = nullptr;
+    if (dim) {
+        run              = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("tile_run");
+        auto [rdata, rk] = run->vars<2>();
+        std::tie(run_mem, get) = rdata->projs<2>();
     }
-
-    // The producer, run per iteration at the origin the loop-vector prefix `get` fixes.
-    auto mem_ty      = w.call<mem::M>(0);
-    auto run         = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("tile_run");
-    auto [rdata, rk] = run->vars<2>();
-    auto [rm, get]   = rdata->projs<2>();
-
-    // The box one iteration of the loop of `dim` reads: the dims up to `dim` are fixed at a run-time origin, the
-    // rest whole from 0.
-    auto map = mr.maps->proj(rks->nis, *slot);
-    auto pro = Lit::isa<u64>(mr.Ris->proj(rks->nis, *slot));
-    if (!pro || *pro != prk->ro) return give_up("the read rank does not match the input");
-    // Unit axes fold «1, 4» and «4, 1» to one type, so only the shapes tell whether the read and the write agree.
-    if (mp.So != mr.Sis->proj(rks->nis, *slot)) return give_up("the input's shape is not the producer's");
-    auto image = [&](auto lo, auto ext) {
-        auto box = w.tuple({w.tuple(DefVec(rn, lo)), w.tuple(DefVec(rn, ext)), mp.So});
-        return w.app(w.app(w.app(w.annex<affine::image>(), {mr.Rn, mr.Ris->proj(rks->nis, *slot)}), map), box);
-    };
-    auto origin = [&](size_t d) -> const Def* {
-        return d <= *dim ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
-    };
-    auto zero   = [&](size_t) -> const Def* { return w.lit_nat_0(); };
-    auto one    = [&](size_t) -> const Def* { return w.lit_nat_1(); };
-    auto box    = image(origin, [&](size_t d) { return d <= *dim ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
-    auto corner = image(origin, one);
-    auto reach  = image(zero, [&](size_t d) { return d <= *dim ? mr.Sr->proj(rn, d) : w.lit_nat_1(); });
-
-    auto caps = DefVec(prk->ro, [&](size_t a) { return box->proj(4, 2)->proj(prk->ro, a); });
-    if (!std::ranges::all_of(caps, [](const Def* cap) { return Lit::isa(cap).has_value(); }))
-        return give_up("the box has no literal size");
-    // The consumer reads the tile relative to its read of the corner of the loop's iteration.
-    if (box->proj(4, 0) != corner->proj(4, 0)) return give_up("the box does not start at the read of the corner");
-    for (u64 a = 0; a != prk->ro; ++a) {
-        auto lo = Lit::isa(reach->proj(4, 0)->proj(prk->ro, a)), ext = Lit::isa(reach->proj(4, 1)->proj(prk->ro, a));
-        auto s = Lit::isa(mp.So->proj(prk->ro, a));
-        if (!lo || !ext || !s || *lo + *ext - 1 + *Lit::isa(caps[a]) > *s)
-            return give_up("a box may leave the input: boundary tiles are not handled yet");
-    }
-    auto So_t = w.tuple(caps);
-
-    if (mp.sched_record()->proj(8, 2) == w.lit_tt())
-        log().w("compute_at inside input {} of {} not realized: the input is computed one tile at a time", *slot, app);
-
-    auto old_p_is = old_p->arg()->proj(2, 0);
-    auto p_is     = buffer_list(rewrite(old_p_is), old_p_is, mp.nis);
-    if (!p_is) return give_up("the input's inputs are not buffers");
-    auto ins = DefVec(rks->nis);
-    for (u64 j = 0; j != rks->nis; ++j) {
-        if (j == *slot) continue;
-        auto old = old_is->proj(rks->nis, j);
-        ins[j]   = to_buffer(rewrite(old), old);
-        if (!Axm::isa<buffer::Buf>(ins[j]->type())) return give_up("an input is not a buffer");
-    }
-    auto post_is = buffer_list(rewrite(old_post_is), old_post_is, mr.nps);
-    if (!post_is) return give_up("an epilogue input is not a buffer");
-
-    log().d("compute_at: input {} of {} one tile {} at a time inside dim {}", *slot, app, So_t, *dim);
-
-    // The tile buffer, reused by every iteration.
-    auto [am, tile] = buffer::op_alloc(mp.Ro, So_t, mp.Tp, fresh_mem())->projs<2>();
-    ins[*slot]      = tile;
+    auto pre  = mem;
+    auto acts = run_mem;
 
     auto lit = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
     auto sub = [&](const Def* a, const Def* b) { return w.call(affine::op::sub, Defs{a, b}); };
     auto add = [&](const Def* a, const Def* b) { return w.call(affine::op::add, Defs{a, b}); };
+    auto nat = [&](const Def* d) { return Lit::isa<u64>(d); };
 
-    // The consumer reads the tile at its coordinates less those of the tile's origin, the read of the box's
-    // corner — which only depends on the dims up to `dim`, so the map stays a map of the loop vector.
-    auto read_pi = map->type()->as<Pi>();
-    auto read    = w.mut_lam(read_pi->dom(), read_pi->codom())->set("tile_read");
-    {
-        auto o      = read->var();
-        auto corner = w.tuple(DefVec(rn, [&](size_t d) { return d <= *dim ? o->proj(rn, d) : lit(w.lit_nat_0()); }));
-        auto at = w.app(map, o), base = w.app(map, corner);
-        read->set(true, w.tuple(DefVec(*pro, [&](size_t a) { return sub(at->proj(*pro, a), base->proj(*pro, a)); })));
-    }
+    auto ins  = DefVec(rks->nis);
+    auto Sis  = DefVec(rks->nis, [&](size_t j) { return mr.Sis->proj(rks->nis, j); });
+    auto maps = DefVec(rks->nis, [&](size_t j) { return mr.maps->proj(rks->nis, j); });
 
-    // The producer on the tile: its parallel dims are shifted to the box's start on the axis they write and span the
-    // tile; its reduction dims stay whole.
-    {
+    auto stage = [&](u64 j) -> bool {
+        if (dim && *dim >= rks->ro) return give_up(j, "not a parallel dim");
+
+        // The producer: a map_reduce_post without epilogue inputs that writes through a projection.
+        auto old_p = Axm::isa<tensor::map_reduce_post>(s.old_is->proj(rks->nis, j));
+        if (!old_p) return give_up(j, "the input is not a map_reduce_post, e.g. fuse_tensor inlined it");
+        auto mp  = F::of(rewrite(old_p->callee())->as<App>());
+        auto prk = mp.ranks();
+        if (!prk || prk->nps != 0) return give_up(j, "the input has epilogue inputs");
+        auto prn = prk->nloops();
+
+        auto [ovar, obody] = probe(mp.map_out);
+        auto axis_of       = std::vector<std::optional<u64>>(prn);
+        for (u64 a = 0; a != prk->ro; ++a) {
+            auto e  = obody->proj(prk->ro, a);
+            auto dd = std::optional<u64>();
+            if (e == ovar) dd = 0;
+            if (auto ex = e->isa<Extract>(); ex && ex->tuple() == ovar) dd = Lit::isa<u64>(ex->index());
+            if (!dd || *dd >= prn || axis_of[*dd] || mp.Sr->proj(prn, *dd) != mp.So->proj(prk->ro, a))
+                return give_up(j, "the input's write map is not a projection");
+            axis_of[*dd] = a;
+        }
+
+        auto map = maps[j];
+        auto pro = Lit::isa<u64>(mr.Ris->proj(rks->nis, j));
+        if (!pro || *pro != prk->ro) return give_up(j, "the read rank does not match the input");
+        // Unit axes fold «1, 4» and «4, 1» to one type, so only the shapes tell whether the read and the write agree.
+        if (mp.So != Sis[j]) return give_up(j, "the input's shape is not the producer's");
+
+        // The box one run of the tile reads: the dims up to `dim` fixed at a run-time origin, the rest whole from 0.
+        auto image = [&](const F& op, const Def* f, auto lo, auto ext) {
+            auto n   = op.ranks()->nloops();
+            auto box = w.tuple({w.tuple(DefVec(n, lo)), w.tuple(DefVec(n, ext)), mp.So});
+            return w.app(w.app(w.app(w.annex<affine::image>(), {op.Rn, op.Ris->proj(rks->nis, j)}), f), box);
+        };
+        auto fixed  = [&](size_t d) { return dim && d <= *dim; };
+        auto origin = [&](size_t d) -> const Def* {
+            return fixed(d) ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
+        };
+        auto zero = [&](size_t) -> const Def* { return w.lit_nat_0(); };
+        auto one  = [&](size_t) -> const Def* { return w.lit_nat_1(); };
+        auto box  = image(mr, map, origin, [&](size_t d) { return fixed(d) ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
+
+        auto caps = DefVec(prk->ro, [&](size_t a) { return box->proj(4, 2)->proj(prk->ro, a); });
+        if (!std::ranges::all_of(caps, [&](const Def* cap) { return nat(cap).has_value(); }))
+            return give_up(j, "the box has no literal size");
+        // Inside the loop of `dim`, the read can only refer to the box by its read of the iteration's corner.
+        if (dim && box->proj(4, 0) != image(mr, map, origin, one)->proj(4, 0))
+            return give_up(j, "the box does not start at the read of the corner");
+        // A box starts at most at the read of its corner, which the whole op reaches with the fixed dims spanning their
+        // range and each shifted one the starts of the tiles, which fit the whole op.
+        auto& g    = s.global;
+        auto gn    = g.ranks()->nloops();
+        auto reach = image(g, g.maps->proj(rks->nis, j), zero, [&](size_t d) -> const Def* {
+            if (fixed(d)) return g.Sr->proj(gn, d);
+            if (!s.shifted[d]) return w.lit_nat_1();
+            return w.call(core::nat::add,
+                          Defs{w.call(core::nat::sub, Defs{g.Sr->proj(gn, d), mr.Sr->proj(rn, d)}), w.lit_nat_1()});
+        });
+        u64 tile = 1, whole = 1;
+        for (u64 a = 0; a != prk->ro; ++a) {
+            auto lo = nat(reach->proj(4, 0)->proj(prk->ro, a)), ext = nat(reach->proj(4, 1)->proj(prk->ro, a));
+            auto so = nat(mp.So->proj(prk->ro, a));
+            if (!lo || !ext || !so || *lo + *ext - 1 + *nat(caps[a]) > *so)
+                return give_up(j, "a box may leave the input: boundary tiles are not handled yet");
+            tile *= *nat(caps[a]), whole *= *so;
+        }
+
+        auto runs = s.runs;
+        for (u64 d = 0; dim && d <= *dim; ++d)
+            if (auto n = nat(mr.Sr->proj(rn, d)))
+                runs *= *n;
+            else
+                return give_up(j, "the loops around the tile have no literal extent");
+        if (fuse && tile * runs > budget * whole) return give_up(j, "the tiles would recompute it beyond the budget");
+
+        auto So_t         = w.tuple(caps);
+        auto [am, tile_b] = buffer::op_alloc(mp.Ro, So_t, mp.Tp, alloc_mem_)->projs<2>();
+        alloc_mem_        = am;
+
+        // The producer on the tile: its parallel dims are shifted to the box's start on the axis they write and
+        // span the tile; its reduction dims stay whole.
         auto base  = box->proj(4, 0);
-        auto pmaps = DefVec(prk->nis, [&](size_t j) -> const Def* {
-            auto pmap = mp.maps->proj(prk->nis, j);
+        auto pmaps = DefVec(prk->nis, [&](size_t i) -> const Def* {
+            auto pmap = mp.maps->proj(prk->nis, i);
             auto pi   = pmap->type()->as<Pi>();
             auto lam  = w.mut_lam(pi->dom(), pi->codom())->set("tile_map");
             auto o    = lam->var();
@@ -819,26 +849,70 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
         });
         auto Sr_t
             = w.tuple(DefVec(prn, [&](size_t dd) { return axis_of[dd] ? caps[*axis_of[dd]] : mp.Sr->proj(prn, dd); }));
-        auto shapes = w.tuple({So_t, Sr_t, mp.sched});
-        auto op     = btensor_op(mp, shapes, mp.in_tys, w.tuple({w.tuple(pmaps), mp.post_maps}));
-        auto res    = w.app(op, w.tuple({rm, tile, p_is, w.tuple()}));
-        run->app(true, rk, res->proj(2, 0));
+
+        auto mt      = mp;
+        mt.So        = So_t;
+        mt.Sr        = Sr_t;
+        mt.maps      = w.tuple(pmaps);
+        mt.maps_all  = w.tuple({mt.maps, mp.post_maps});
+        mt.shapes    = w.tuple({So_t, Sr_t, mp.sched});
+        auto shifted = std::vector<bool>(prn);
+        for (u64 dd = 0; dd != prn; ++dd)
+            shifted[dd] = axis_of[dd].has_value();
+        auto& chain = dim ? acts : pre;
+        auto res    = lower_staged({mt, mp, shifted, old_p->arg()->proj(2, 0), w.tuple(), old_p, fuse, budget, runs},
+                                   chain, tile_b);
+        if (!res) return give_up(j, "the input's inputs are not buffers");
+        chain = res->proj(2, 0);
+
+        // The op reads the tile at its coordinates less those of the box's start: inside the loop of `dim` the read
+        // of the corner, which only depends on the dims up to `dim`; ahead of the op the start itself.
+        auto read_pi = map->type()->as<Pi>();
+        auto read    = w.mut_lam(read_pi->dom(), read_pi->codom())->set("tile_read");
+        auto o       = read->var();
+        auto at      = w.app(map, o);
+        auto corner
+            = dim
+                ? w.app(map,
+                        w.tuple(DefVec(rn, [&](size_t d) { return d <= *dim ? o->proj(rn, d) : lit(w.lit_nat_0()); })))
+                : nullptr;
+        read->set(true, w.tuple(DefVec(*pro, [&](size_t a) {
+            return sub(at->proj(*pro, a), dim ? corner->proj(*pro, a) : lit(base->proj(*pro, a)));
+        })));
+
+        log().d("compute input {} of {} one tile {} at a time{}", j, s.who, So_t, dim ? " inside its loop" : " ahead");
+        ins[j]  = tile_b;
+        Sis[j]  = So_t;
+        maps[j] = read;
+        return true;
+    };
+
+    bool acting = false;
+    for (u64 j = 0; j != rks->nis; ++j) {
+        if ((fuse || (own && j < 64 && (slots >> j) & 1)) && stage(j)) {
+            acting |= dim.has_value();
+            continue;
+        }
+        auto old = s.old_is->proj(rks->nis, j);
+        ins[j]   = to_buffer(rewrite(old), old);
+        if (!Axm::isa<buffer::Buf>(ins[j]->type())) return nullptr;
     }
 
-    // The consumer, its schedule's intent now the action running the producer.
-    auto rec_n = w.tuple({rec->proj(8, 0), rec->proj(8, 1), w.lit_ff(), rec->proj(8, 3), rec->proj(8, 4), w.lit_tt(),
-                          w.lit_nat(*dim), run});
-    auto sched = w.app(w.annex<btensor::mk_sched>(), rec_n);
-
-    auto Sis = DefVec(rks->nis, [&](size_t j) { return j == *slot ? So_t : mr.Sis->proj(rks->nis, j); });
-    auto maps
-        = DefVec(rks->nis, [&](size_t j) -> const Def* { return j == *slot ? read : mr.maps->proj(rks->nis, j); });
+    // The schedule, its intent now done: the action runs the tiles inside the loop of `dim`.
+    auto fields     = DefVec(F::Num_Fields, [&](size_t f) { return field(F::Field(f)); });
+    fields[F::At]   = w.lit_ff();
+    fields[F::Fuse] = w.lit_ff();
+    if (acting) {
+        run->app(true, run->var(2, 1), acts);
+        fields[F::Acts]   = w.lit_tt();
+        fields[F::ActDim] = w.lit_nat(*dim);
+        fields[F::Act]    = run;
+    }
+    auto sched  = w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
     auto in_tys = w.tuple({mr.Tis, mr.Ris, w.tuple(Sis), mr.Tps, mr.Rps, mr.Sps});
     auto op     = btensor_op(mr, w.tuple({mr.So, mr.Sr, sched}), in_tys, w.tuple({w.tuple(maps), mr.post_maps}));
-
-    auto [dm, dst] = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, am)->projs<2>();
-    auto [m, out]  = w.app(op, w.tuple({dm, dst, w.tuple(ins), post_is}))->projs<2>();
-    return scalar_result(app, m, out);
+    if (!mem) std::tie(pre, dst) = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, alloc_mem_)->projs<2>();
+    return w.app(op, w.tuple({pre, dst, w.tuple(ins), s.post_is}));
 }
 
 const Def* LowerToMem::lower_pad(const App* app) {

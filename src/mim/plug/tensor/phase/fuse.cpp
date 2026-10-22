@@ -196,9 +196,13 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     if (!nis_lit) return nullptr;
     auto nis_nat = *nis_lit;
 
-    // The input the schedule computes at a loop keeps its producer, which follows it to its new position.
-    auto rec = mr.sched_record();
-    auto at  = rec->proj(8, 2) == w.lit_tt() ? Lit::isa<u64>(rec->proj(8, 3)) : std::nullopt;
+    // The inputs the schedule computes at a loop keep their producers, which follow them to their new positions.
+    using F       = btensor::MapRedPost;
+    auto rec      = mr.sched_record();
+    auto at_slots = rec->proj(F::Num_Fields, F::At) == w.lit_tt()
+                      ? Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0)
+                      : u64(0);
+    auto at       = [&](u64 k) { return k < 64 && (at_slots >> k) & 1; };
 
     struct InnerInfo {
         const Def* comb;
@@ -216,12 +220,12 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
     for (u64 k = 0; k < nis_nat; ++k) {
         auto inner = Axm::isa<tensor::map_reduce_post>(is->proj(nis_nat, k));
-        if (!inner || at == k) continue;
+        if (!inner || at(k)) continue;
 
         auto im       = btensor::MapRedPost::of(inner->callee()->as<App>());
         auto inner_is = inner->arg()->proj(2, 0);
         // The fused op takes this op's schedule, which would drop the inner's compute_at.
-        if (im.sched_record()->proj(8, 2) == w.lit_tt()) continue;
+        if (im.sched_field(F::At) == w.lit_tt()) continue;
 
         auto inner_nis_nat = Lit::isa<u64>(im.nis);
         if (!inner_nis_nat || im.So != mr.Sis->proj(nis_nat, k)) continue; // see reads_as_produced
@@ -354,10 +358,13 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     // Construct the fused map_reduce; the loop domain, output map, init and epilogue (including the
     // epilogue inputs) are the outer's.
     auto shapes = mr.shapes;
-    if (at && *at < nis_nat) {
-        auto fields = DefVec(8, [&](size_t i) { return rec->proj(8, i); });
-        fields[3]   = w.lit_nat(new_pos[*at]);
-        shapes      = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
+    if (at_slots != 0) {
+        u64 moved = 0;
+        for (u64 k = 0; k != nis_nat; ++k)
+            if (at(k)) moved |= u64(1) << new_pos[k];
+        auto fields        = DefVec(F::Num_Fields, [&](size_t i) { return rec->proj(F::Num_Fields, i); });
+        fields[F::AtSlots] = w.lit_nat(moved);
+        shapes             = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
     }
 
     auto res = w.annex<tensor::map_reduce_post>();
@@ -436,7 +443,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     if (nis_nat == 0) return nullptr;
     if (mr.Sr != mr.So) return nullptr;
     // The fused op takes the producer's schedule, which would drop this one's compute_at.
-    if (mr.sched_record()->proj(8, 2) == w.lit_tt()) return nullptr;
+    if (mr.sched_field(btensor::MapRedPost::At) == w.lit_tt()) return nullptr;
 
     if (!is_identity_map(mr.map_out)) return nullptr;
 

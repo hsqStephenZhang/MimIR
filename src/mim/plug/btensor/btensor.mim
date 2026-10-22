@@ -160,15 +160,18 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 ///   of accumulators, the innermost **reduction** dim selects the reduction-vectorized nest (see
 ///   `mr_nest`), and `vdim ≥ Rn` means "none";
 /// - `unroll`, the number of trailing reduction dims to unroll into straight-line code;
-/// - `at`, `at_slot`, `at_dim`: whether to compute input `at_slot` one tile at a time inside the loop of dim
-///   `at_dim` (see `tensor.compute_at`) — an intent that `tensor.lower_to_mem` realizes as an action;
+/// - `at`, `at_slots`, `at_dim`: whether to compute the inputs whose bits `at_slots` sets one tile at a time
+///   inside the loop of dim `at_dim` (see `tensor.compute_at`) — an intent that `tensor.lower_to_mem`
+///   realizes as an action;
+/// - `fuse`, `budget`: whether to compute every input that allows it, and recursively theirs, as long as each
+///   is recomputed at most `budget` times over (see `tensor.tile_and_fuse`);
 /// - `acts`, `act_dim`, `act`: whether to run `act` inside the loop of dim `act_dim` before the nest inside it
 ///   (see `at_stage`).
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
-anx let Sched = [vdim unroll: Nat, at: Bool, at_slot at_dim: Nat, acts: Bool, act_dim: Nat,
-                 act: Fn [mem.M 0, Nat → I32] → mem.M 0];
+anx let Sched = [vdim unroll: Nat, at: Bool, at_slots at_dim: Nat, fuse: Bool, budget: Nat, acts: Bool,
+                 act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0];
 ///
 /// #### act_none
 ///
@@ -177,7 +180,7 @@ anx fun act_none (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 = return m;
 /// #### sched_of
 ///
 /// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
-anx lam sched_of (vdim unroll: Nat): Sched = (vdim, unroll, ff, 0, 0, ff, 0, act_none);
+anx lam sched_of (vdim unroll: Nat): Sched = (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none);
 ///
 /// ### SchedT
 ///

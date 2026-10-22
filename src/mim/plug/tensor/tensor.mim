@@ -902,6 +902,11 @@ anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = ma
 
 /// ### Fusion
 ///
+/// #### slot_bit
+///
+/// The bit of input slot `i` in a schedule's `at_slots`.
+lam slot_bit (i: Nat): Nat = core.bitcast Nat (core.wrap.shl 0 (1I64, core.bitcast I64 i));
+///
 /// #### compute_at
 ///
 /// Compute input `i` one tile at a time inside the loop of dim `d` (cf. TVM's `compute_at`, MLIR's
@@ -915,11 +920,30 @@ anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = ma
 /// - The read of each iteration's corner must be where its box starts, which a reversed read is not.
 /// - The boxes must lie within the input: neither boundary tiles nor padding are handled yet.
 /// - Apply it after the domain transforms, which do not renumber `d`.
-/// - Only one input of an op can be computed at a loop yet.
+/// - Several inputs of an op can be computed at one loop, in the order of their slots.
+/// - A producer's own `compute_at` is realized inside each of its tiles.
 anx lam compute_at (t: Tileable, i d: Nat): Tileable =
-    let i = refly.check (core.icmp.e @2 (t#sched#at, ff), i, "compute_at: only one input of an op can be computed at a loop yet");
+    let s   = t#sched;
+    let bit = slot_bit i;
+    let d   = refly.check (core.bit2.or 2 (core.icmp.e @2 (s#at, ff), d == s#at_dim), d,
+                           "compute_at: the inputs of an op must be computed at one loop");
+    let t   = t#sched#at ← tt;
+    let t   = t#sched#at_slots ← s#at_slots + bit * (1 - s#at_slots / bit % 2);
+    t#sched#at_dim ← d;
+///
+/// #### tile_and_fuse
+///
+/// Compute every input of `t` one tile at a time inside the loop of dim `d`, and the inputs of each of those
+/// producers in turn ahead of each of its tiles (cf. MLIR's `tileConsumerAndFuseProducersUsingSCF`).
+/// An input is fused where `compute_at` could realize it and its producer is recomputed at most `budget`
+/// times over across all tiles; every other input is computed whole, without a warning.
+anx lam tile_and_fuse (t: Tileable, d budget: Nat): Tileable =
+    let s = t#sched;
+    let d = refly.check (core.bit2.or 2 (core.icmp.e @2 (s#at, ff), d == s#at_dim), d,
+                         "tile_and_fuse: the inputs of an op must be computed at one loop");
     let t = t#sched#at ← tt;
-    let t = t#sched#at_slot ← i;
+    let t = t#sched#fuse ← tt;
+    let t = t#sched#budget ← budget;
     t#sched#at_dim ← d;
 
 /// ### Schedules
