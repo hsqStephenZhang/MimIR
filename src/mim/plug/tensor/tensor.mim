@@ -937,15 +937,15 @@ anx lam compute_at (t: Tileable, i d: Nat): Tileable =
 ///
 /// Compute every input of `t` one tile at a time inside the loop of dim `d`, and the inputs of each of those
 /// producers in turn ahead of each of its tiles (cf. MLIR's `tileConsumerAndFuseProducersUsingSCF`).
-/// An input is fused where `compute_at` could realize it and its producer is recomputed at most `budget`
+/// An input is fused where `compute_at` could realize it and its producer is recomputed at most `recompute`
 /// times over across all tiles; every other input is computed whole, without a warning.
-anx lam tile_and_fuse (t: Tileable, d budget: Nat): Tileable =
+anx lam tile_and_fuse (t: Tileable, d recompute: Nat): Tileable =
     let s = t#sched;
     let d = refly.check (core.bit2.or 2 (core.icmp.e @2 (s#at, ff), d == s#at_dim), d,
                          "tile_and_fuse: the inputs of an op must be computed at one loop");
     let t = t#sched#at ← tt;
     let t = t#sched#fuse ← tt;
-    let t = t#sched#budget ← budget;
+    let t = t#sched#budget ← recompute;
     t#sched#at_dim ← d;
 
 /// ### Schedules
