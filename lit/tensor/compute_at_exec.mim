@@ -27,6 +27,8 @@
 // * `fold_at`: a producer of «1, 5» read as «5, 1», one type as unit axes fold: warned, and read as `fold_plain` reads it.
 // * `epi_at`: C = R + P with R a reduction and P at i: epilogue fusion would sink C into R, dropping the schedule.
 // * `inl_at`: R[i] = Σ_j P[i, j] over P = Q + B with Q at i of P: fusing P into R would drop P's schedule.
+// * `split_mm`: (a + 1) · b with i split 8 = 4 × 2 by split_par: the result keeps its shape «8, 5».
+// * `split_at`: the same with a + 1 inside the loop of the outer i: a tile «2, 7» of it per pair of rows.
 // * `plain`:   an input that no map_reduce_post computes cannot be computed at a loop: warned, and read as is.
 plugin core;
 plugin tensor;
@@ -171,6 +173,16 @@ extern fun inl_at (a: «5, 8, 2; I32», b: «5, 8; I32»): «5; I32» =
     let p = tensor.materialize (tensor.compute_at (tensor.mr_tileable @2 @(2, 0) ((5, 8), (0, 1), (5, 8)) (add, 0I32, tensor.id) po (po, po) (q, tensor.buf b), 0, 0));
     return (tensor.materialize (tensor.mr_tileable @1 @(1, 1) (5, 0, (5, 8)) (sum, 0I32, tensor.id) ro rj2 p));
 
+extern fun split_mm (a: «8, 7; I32», b: «7, 5; I32»): «8, 5; I32» =
+    let p = tensor.unary add1 (tensor.buf a);
+    let t = tensor.mr_tileable @2 @(2, 1) ((8, 5), (0, 1), (8, 5, 7)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf b);
+    return (tensor.materialize (tensor.split_par (t, 0, 2)));
+
+extern fun split_at (a: «8, 7; I32», b: «7, 5; I32»): «8, 5; I32» =
+    let p = tensor.unary add1 (tensor.buf a);
+    let t = tensor.mr_tileable @2 @(2, 1) ((8, 5), (0, 1), (8, 5, 7)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf b);
+    return (tensor.materialize (tensor.compute_at (tensor.split_par (t, 0, 2), 0, 0)));
+
 extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
@@ -194,6 +206,7 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // CHECK-DAG: mem.mslot («13; I32», 0)
 // CHECK-DAG: mem.mslot («2, 10; I32», 0)
 // CHECK-DAG: mem.mslot («2, 13; I32», 0)
+// CHECK-DAG: mem.mslot («2, 7; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («2, 7; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («2, 5; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («3, 6; I32», 0)
@@ -209,3 +222,4 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // FULL-NOT: mem.{{m?slot|malloc}} («3, 10; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 13; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 10; I32»
+// FULL-NOT: mem.{{m?slot|malloc}} («4, 2, 5; I32»

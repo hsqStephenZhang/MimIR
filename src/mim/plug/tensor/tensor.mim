@@ -614,29 +614,30 @@ axm vec_width: [d: Nat] → Nat, normalize_vec_width;
 /// A `Tileable` existentially packages a computation over an affinely-indexed iteration domain
 /// together with its **schedule** (cf. MLIR's TilingInterface):
 ///
-/// - `Out`: the result *type constructor* — what materializing over a domain with `ro` parallel
-///   dims of extents `so` yields.
-/// - the iteration domain `Sr` (leading `Ro` parallel dims, trailing `Rr` reduction dims) and the
-///   result shape `So` — MLIR's getIterationDomain + getLoopIteratorTypes.
+/// - `Out`: the result *type constructor* — what materializing into a result of rank `ro` and shape `so`
+///   yields.
+/// - the iteration domain `Sr` (leading `Rp` parallel dims, trailing `Rr` reduction dims) and the
+///   rank-`Ro` result shape `So` — MLIR's getIterationDomain + getLoopIteratorTypes.
 /// - `oax`: which output axis each parallel dim writes — the piece of the write map the domain
-///   transforms need (`strip_mine_par` splits the output along `oax#d`).
+///   transforms need (`strip_mine_par` splits the output along `oax#d`); after `split_par` two dims
+///   write one axis.
 /// - the schedule `sched` (see `Sched`): the record `retile` packs into the op's chooser.
-/// - `retile`: rebuild the computation over a *reindexed* domain, given the new domain and
-///   schedule, `iota` (maps new loop vectors to old loop vectors) and `omega` (maps (old output
-///   coordinates, new loop vector) to new output coordinates).
+/// - `retile`: rebuild the computation over a *reindexed* domain, given the new result rank, parallel and
+///   reduction ranks, domain and schedule, `iota` (maps new loop vectors to old loop vectors) and `omega`
+///   (maps (old output coordinates, new loop vector) to new output coordinates).
 ///
 /// The op's internals (combiner, init, epilogue, inputs, access maps) stay hidden in the closure.
 let Tileable = [
     Out: [ro: Nat, so: «ro; Nat»] → *,
-    Ro: Nat, Rr: Nat,
+    Ro: Nat, Rp: Nat, Rr: Nat,
     So: «Ro; Nat»,
-    oax: «Ro; Nat»,
-    Sr: «Ro + Rr; Nat»,
+    oax: «Rp; Nat»,
+    Sr: «Rp + Rr; Nat»,
     sched: Sched,
-    retile: [Ro_n Rr_n: Nat]
-          → [So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», sched_n: Sched]
-          → [iota:  «Ro_n + Rr_n; affine.Index» → «Ro + Rr; affine.Index»,
-             omega: [«Ro; affine.Index», «Ro_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»]
+    retile: [Ro_n Rp_n Rr_n: Nat]
+          → [So_n: «Ro_n; Nat», Sr_n: «Rp_n + Rr_n; Nat», sched_n: Sched]
+          → [iota:  «Rp_n + Rr_n; affine.Index» → «Rp + Rr; affine.Index»,
+             omega: [«Ro; affine.Index», «Rp_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»]
           → Out (Ro_n, So_n),
 ];
 ///
@@ -650,12 +651,12 @@ lam comp_map {A B C: *} (m: B → C, g: A → B) (o: A): C = m (g o);
 ///
 /// Permute the loop dims — new loop `j` iterates old dim `perm#j`. Loop order and write
 /// position are decoupled by the write map, so So is untouched. The permutation must keep parallel
-/// dims parallel (`perm#j < Ro` iff `j < Ro`), enforced at compile time; the schedule's `vdim` moves to
+/// dims parallel (`perm#j < Rp` iff `j < Rp`), enforced at compile time; the schedule's `vdim` moves to
 /// its new position.
-anx lam interchange (t: Tileable, perm: «t#Ro + t#Rr; Nat»): Tileable =
-    let r = t#Ro + t#Rr;
+anx lam interchange (t: Tileable, perm: «t#Rp + t#Rr; Nat»): Tileable =
+    let r = t#Rp + t#Rr;
     let perm_ok = ‹j: r; let jj = core.idx2nat j;
-                         refly.check (core.icmp.e @2 (jj < t#Ro, perm#j < t#Ro),
+                         refly.check (core.icmp.e @2 (jj < t#Rp, perm#j < t#Rp),
                                        perm#j,
                                        "interchange: permutation must not mix parallel and reduction dims")›;
     let sr_n   = ‹i: r; t#Sr#(core.idx 0 r (perm_ok#i))›;
@@ -664,25 +665,25 @@ anx lam interchange (t: Tileable, perm: «t#Ro + t#Rr; Nat»): Tileable =
                      | None   => t#sched#vdim;
     // The parallel dims permute among themselves (checked above), so the new dim j writes the
     // output axis its old dim perm#j wrote.
-    let oax_n = ‹j: t#Ro; t#oax#(core.idx 0 (t#Ro) (perm_ok#(core.idx 0 r (core.idx2nat j))))›;
+    let oax_n = ‹j: t#Rp; t#oax#(core.idx 0 (t#Rp) (perm_ok#(core.idx 0 r (core.idx2nat j))))›;
     // iota: old dim i is found at the new position j with perm#j = i.
     lam iota_p (o: «r; affine.Index»): «r; affine.Index» =
         ‹i: r; o#(option.unwrap_unsafe (vec.first `== (perm_ok, core.idx2nat i)))›;
-    lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», sched_m: Sched)
-                 (iota:  «ro_m + rr_m; affine.Index» → «r; affine.Index»,
-                  omega: [«t#Ro; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+    lam retile_n (ro_m rp_m rr_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», sched_m: Sched)
+                 (iota:  «rp_m + rr_m; affine.Index» → «r; affine.Index»,
+                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
-        t#retile (ro_m, rr_m) (so_m, sr_m, sched_m) (comp_map (iota_p, iota), omega);
-    (t#Out, t#Ro, t#Rr, t#So, oax_n, sr_n, (t#sched)#vdim ← vdim_n, retile_n);
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (comp_map (iota_p, iota), omega);
+    (t#Out, t#Ro, t#Rp, t#Rr, t#So, oax_n, sr_n, (t#sched)#vdim ← vdim_n, retile_n);
 ///
 /// #### materialize
 ///
 /// Materialize a `Tileable` over its current domain and schedule (identity reindexing).
 anx lam materialize (t: Tileable): t#Out (t#Ro, t#So) =
-    lam id_i (o: «t#Ro + t#Rr; affine.Index»): «t#Ro + t#Rr; affine.Index» = o;
-    lam id_o (oo: «t#Ro; affine.Index», o: «t#Ro + t#Rr; affine.Index»): «t#Ro; affine.Index» = oo;
-    t#retile (t#Ro, t#Rr) (t#So, t#Sr, t#sched) (id_i, id_o);
+    lam id_i (o: «t#Rp + t#Rr; affine.Index»): «t#Rp + t#Rr; affine.Index» = o;
+    lam id_o (oo: «t#Ro; affine.Index», o: «t#Rp + t#Rr; affine.Index»): «t#Ro; affine.Index» = oo;
+    t#retile (t#Ro, t#Rp, t#Rr) (t#So, t#Sr, t#sched) (id_i, id_o);
 ///
 /// #### mr_tileable
 ///
@@ -709,20 +710,20 @@ anx lam mr_tileable
                 (is: «i: nis; «Sis#i; Tis#i»»)
               : Tileable =
     lam out_t (ro: Nat, so: «ro; Nat»): * = «so; Tp»;
-    lam retile (Ro_n Rr_n: Nat)
-               (So_n: «Ro_n; Nat», Sr_n: «Ro_n + Rr_n; Nat», sched_n: Sched)
-               (iota:  «Ro_n + Rr_n; affine.Index» → «Ro + Rr; affine.Index»,
-                omega: [«Ro; affine.Index», «Ro_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»)
+    lam retile (Ro_n Rp_n Rr_n: Nat)
+               (So_n: «Ro_n; Nat», Sr_n: «Rp_n + Rr_n; Nat», sched_n: Sched)
+               (iota:  «Rp_n + Rr_n; affine.Index» → «Ro + Rr; affine.Index»,
+                omega: [«Ro; affine.Index», «Rp_n + Rr_n; affine.Index»] → «Ro_n; affine.Index»)
              : «So_n; Tp» =
-        lam map_out_n (o: «Ro_n + Rr_n; affine.Index»): «Ro_n; affine.Index» =
+        lam map_out_n (o: «Rp_n + Rr_n; affine.Index»): «Ro_n; affine.Index» =
             omega (map_out (iota o), o);
-        map_reduce_post @(nis, 0) @(To, Tp, Ro_n, Ro_n, Ro_n + Rr_n, SchedT)
+        map_reduce_post @(nis, 0) @(To, Tp, Ro_n, Rp_n, Rp_n + Rr_n, SchedT)
             (So_n, Sr_n, mk_sched sched_n)
             @(Tis, Ris, Sis, (), (), ()) (f, init, post)
             map_out_n
             (‹i: nis; comp_map (maps#i, iota)›, ())
             (is, ());
-    (out_t, Ro, Rr, So, oax, Sr, btensor.sched_of (Ro + Rr, 0), retile);
+    (out_t, Ro, Ro, Rr, So, oax, Sr, btensor.sched_of (Ro + Rr, 0), retile);
 ///
 /// #### unroll_trailing
 ///
@@ -797,10 +798,11 @@ lam split_omega (m n a ts: Nat) (oc: «n; affine.Index»): «m; affine.Index» =
 /// (`«…, N/ts, ts, …»` along that axis); a row-major `reshape` restores the original shape — and in a
 /// fused graph `fuse_tensor`'s read-through absorbs it into the consumers' access maps.
 anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
-    let r    = t#Ro + t#Rr;
+    let r    = t#Rp + t#Rr;
     let ro_n = t#Ro + 1;
-    let r_n  = t#Ro + 1 + t#Rr;
-    let a    = t#oax#(core.idx 0 (t#Ro) d);
+    let rp_n = t#Rp + 1;
+    let r_n  = t#Rp + 1 + t#Rr;
+    let a    = t#oax#(core.idx 0 (t#Rp) d);
     let sd   = refly.check (t#So#(core.idx 0 (t#Ro) a) == t#Sr#(core.idx 0 r d),
                              t#Sr#(core.idx 0 r d),
                              "strip_mine_par: output extent (at oax#d) must match domain extent");
@@ -808,49 +810,69 @@ anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
     // The split dim writes the split axis pair; all other dims write their old axis, renumbered
     // around the insertion at `a`. The unit-stride half is the inner one: a vdim at `d` moves to
     // `d + 1`.
-    let oax_n = ‹j: ro_n; let jj = core.idx2nat j;
-                          core.select (jj < d, shift_ax (a, t#oax#(core.idx 0 (t#Ro) jj)),
+    let oax_n = ‹j: rp_n; let jj = core.idx2nat j;
+                          core.select (jj < d, shift_ax (a, t#oax#(core.idx 0 (t#Rp) jj)),
                           core.select (jj == d, a,
                           core.select (jj == d + 1, a + 1,
-                          shift_ax (a, t#oax#(core.idx 0 (t#Ro) (jj - 1))))))›;
+                          shift_ax (a, t#oax#(core.idx 0 (t#Rp) (jj - 1))))))›;
     // FIXME: a reduction vdim is reset to none here instead of moving to `vdim + 1`.
     let vd     = t#sched#vdim;
-    let vdim_n = core.select (vd < t#Ro, core.select (vd < d, vd, vd + 1), r_n);
-    lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», sched_m: Sched)
-                 (iota:  «ro_m + rr_m; affine.Index» → «r_n; affine.Index»,
-                  omega: [«ro_n; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+    let vdim_n = core.select (vd < t#Rp, core.select (vd < d, vd, vd + 1), r_n);
+    lam retile_n (ro_m rp_m rr_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», sched_m: Sched)
+                 (iota:  «rp_m + rr_m; affine.Index» → «r_n; affine.Index»,
+                  omega: [«ro_n; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
-        lam iota_c  (o: «ro_m + rr_m; affine.Index»): «r; affine.Index» =
+        lam iota_c  (o: «rp_m + rr_m; affine.Index»): «r; affine.Index» =
             split_iota (r_n, r, d, ts) (iota o);
-        lam omega_c (oo: «t#Ro; affine.Index», ov: «ro_m + rr_m; affine.Index»): «ro_m; affine.Index» =
+        lam omega_c (oo: «t#Ro; affine.Index», ov: «rp_m + rr_m; affine.Index»): «ro_m; affine.Index» =
             omega (split_omega (ro_n, t#Ro, a, ts) oo, ov);
-        t#retile (ro_m, rr_m) (so_m, sr_m, sched_m) (iota_c, omega_c);
-    (t#Out, ro_n, t#Rr,
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (iota_c, omega_c);
+    (t#Out, ro_n, rp_n, t#Rr,
      split_bounds (ro_n, t#Ro, t#So, a, ts, nt), oax_n,
      split_bounds (r_n, r, t#Sr, d, ts, nt), (t#sched)#vdim ← vdim_n, retile_n);
 ///
+/// #### split_par
+///
+/// Split parallel dim `d` (d < Rp) of extent N into two adjacent parallel dims (N/ts, ts) that both write the
+/// axis `d` wrote: unlike `strip_mine_par`, the result keeps its shape, and only the loops change.
+anx lam split_par (t: Tileable, d ts: Nat): Tileable =
+    let r    = t#Rp + t#Rr;
+    let rp_n = t#Rp + 1;
+    let r_n  = t#Rp + 1 + t#Rr;
+    let nt   = check_div (t#Sr#(core.idx 0 r d), ts) / ts;
+    let oax_n = ‹j: rp_n; let jj = core.idx2nat j; t#oax#(core.idx 0 (t#Rp) (core.select (jj <= d, jj, jj - 1)))›;
+    let vd     = t#sched#vdim;
+    let vdim_n = core.select (vd < t#Rp, core.select (vd < d, vd, vd + 1), r_n);
+    lam retile_n (ro_m rp_m rr_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», sched_m: Sched)
+                 (iota:  «rp_m + rr_m; affine.Index» → «r_n; affine.Index»,
+                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+               : t#Out (ro_m, so_m) =
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (comp_map (split_iota (r_n, r, d, ts), iota), omega);
+    (t#Out, t#Ro, rp_n, t#Rr, t#So, oax_n, split_bounds (r_n, r, t#Sr, d, ts, nt), (t#sched)#vdim ← vdim_n,
+     retile_n);
 /// #### strip_mine_red
 ///
 /// Split reduction dim `d` (Ro ≤ d < Ro + Rr) of extent N into two adjacent
 /// reduction dims (N/ts, ts). If the split lands inside the trailing unroll window, both halves
 /// unroll — the tap count is unchanged.
 anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
-    let r   = t#Ro + t#Rr;
-    let r_n = t#Ro + (t#Rr + 1);
+    let r   = t#Rp + t#Rr;
+    let r_n = t#Rp + (t#Rr + 1);
     let nt  = check_div (t#Sr#(core.idx 0 r d), ts) / ts;
     let vd       = t#sched#vdim;
     let un       = t#sched#unroll;
-    let vdim_n   = core.select (vd < t#Ro, vd, r_n);
+    let vdim_n   = core.select (vd < t#Rp, vd, r_n);
     let unroll_n = core.select (d < r - un, un, un + 1);
-    lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», sched_m: Sched)
-                 (iota:  «ro_m + rr_m; affine.Index» → «r_n; affine.Index»,
-                  omega: [«t#Ro; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+    lam retile_n (ro_m rp_m rr_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», sched_m: Sched)
+                 (iota:  «rp_m + rr_m; affine.Index» → «r_n; affine.Index»,
+                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
-        t#retile (ro_m, rr_m) (so_m, sr_m, sched_m)
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m)
                  (comp_map (split_iota (r_n, r, d, ts), iota), omega);
-    (t#Out, t#Ro, t#Rr + 1, t#So, t#oax,
+    (t#Out, t#Ro, t#Rp, t#Rr + 1, t#So, t#oax,
      split_bounds (r_n, r, t#Sr, d, ts, nt), ((t#sched)#vdim ← vdim_n)#unroll ← unroll_n, retile_n);
 ///
 /// ### Tiles
@@ -871,31 +893,31 @@ anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
 /// - Every parallel dim must cover its output axis (`Sr#d = So#(oax#d)`), as for `strip_mine_par`.
 /// - The box must lie within `So`; this is checked where it is decidable.
 anx lam tile (t: Tileable, origin ext: «t#Ro; Nat»): Tileable =
-    let r = t#Ro + t#Rr;
-    lam ax (d: Nat): Idx (t#Ro) = core.idx 0 (t#Ro) (t#oax#(core.idx 0 (t#Ro) d));
+    let r = t#Rp + t#Rr;
+    lam ax (d: Nat): Idx (t#Ro) = core.idx 0 (t#Ro) (t#oax#(core.idx 0 (t#Rp) d));
     // A run-time `origin` must not reach `refly.check`: a stuck check would leave the extents open.
     let ext_ok = ‹a: t#Ro; let hi = origin#a + ext#a;
                            if_static (hi, refly.check (hi <= t#So#a, ext#a, "tile: the box must lie within the result"),
                                           refly.check (ext#a <= t#So#a, ext#a, "tile: the box must lie within the result"))›;
-    let ext_d  = ‹d: t#Ro; let dd = core.idx2nat d;
+    let ext_d  = ‹d: t#Rp; let dd = core.idx2nat d;
                            refly.check (t#So#(ax dd) == t#Sr#(core.idx 0 r dd), ext_ok#(ax dd),
                                         "tile: output extent (at oax#d) must match domain extent")›;
     let sr_n   = ‹i: r; let ii = core.idx2nat i;
-                        core.select (ii < t#Ro, ext_d#(core.idx 0 (t#Ro) ii), t#Sr#i)›;
+                        core.select (ii < t#Rp, ext_d#(core.idx 0 (t#Rp) ii), t#Sr#i)›;
     lam shift (o: «r; affine.Index»): «r; affine.Index» =
         ‹i: r; let ii = core.idx2nat i;
-               core.select (ii < t#Ro, affine.op.add (o#i, affine.lit (origin#(ax ii))), o#i)›;
+               core.select (ii < t#Rp, affine.op.add (o#i, affine.lit (origin#(ax ii))), o#i)›;
     lam unshift (oo: «t#Ro; affine.Index»): «t#Ro; affine.Index» =
         ‹a: t#Ro; affine.op.sub (oo#a, affine.lit (origin#a))›;
-    lam retile_n (ro_m rr_m: Nat)
-                 (so_m: «ro_m; Nat», sr_m: «ro_m + rr_m; Nat», sched_m: Sched)
-                 (iota:  «ro_m + rr_m; affine.Index» → «r; affine.Index»,
-                  omega: [«t#Ro; affine.Index», «ro_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
+    lam retile_n (ro_m rp_m rr_m: Nat)
+                 (so_m: «ro_m; Nat», sr_m: «rp_m + rr_m; Nat», sched_m: Sched)
+                 (iota:  «rp_m + rr_m; affine.Index» → «r; affine.Index»,
+                  omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
-        lam omega_c (oo: «t#Ro; affine.Index», ov: «ro_m + rr_m; affine.Index»): «ro_m; affine.Index» =
+        lam omega_c (oo: «t#Ro; affine.Index», ov: «rp_m + rr_m; affine.Index»): «ro_m; affine.Index» =
             omega (unshift oo, ov);
-        t#retile (ro_m, rr_m) (so_m, sr_m, sched_m) (comp_map (shift, iota), omega_c);
-    (t#Out, t#Ro, t#Rr, ext, t#oax, sr_n, t#sched, retile_n);
+        t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (comp_map (shift, iota), omega_c);
+    (t#Out, t#Ro, t#Rp, t#Rr, ext, t#oax, sr_n, t#sched, retile_n);
 ///
 /// #### tile_at
 ///
@@ -972,18 +994,18 @@ lam sched_id (t: Tileable): Tileable = t;
 /// reduction dims with state (count, taps, alive); a dim whose extent is still open at lowering
 /// time stops the scan (`if_static` residualizes its step to "over budget").
 lam unroll_budget (t: Tileable, budget: Nat): Nat =
-    let r = t#Ro + t#Rr;
+    let r = t#Rp + t#Rr;
     lam step (d: Nat, (cnt taps alive: Nat)): «3; Nat» =
         let taps_n  = taps * t#Sr#(core.idx 0 r d);
         let alive_n = alive * if_static (taps_n, (0, 1)#(taps_n <= budget), 0);
         (cnt + alive_n, core.select (alive_n == 1, taps_n, taps), alive_n);
-    (vec.fold.r @(«3; Nat», Nat) @(t#Rr) step (‹i: t#Rr; t#Ro + core.idx2nat i›, (0, 1, 1)))#0_3;
+    (vec.fold.r @(«3; Nat», Nat) @(t#Rr) step (‹i: t#Rr; t#Rp + core.idx2nat i›, (0, 1, 1)))#0_3;
 ///
 /// #### vectorize_if
 ///
 /// Vectorize the parallel dim `d` only when `cond` holds; otherwise the sentinel "no vector dim".
 lam vectorize_if (t: Tileable, cond: Bool, d: Nat): Tileable =
-    vectorize (t, (t#Ro + t#Rr, d)#cond);
+    vectorize (t, (t#Rp + t#Rr, d)#cond);
 ///
 /// #### conv_schedule
 ///
@@ -1009,7 +1031,7 @@ lam conv_schedule (stride dilation: «2; Nat») (t: Tileable): Tileable =
     let s_ow  = (0, 1)#(stride#1_2 == 1) + 1;
     // FIXME: with the whole reduction unrolled the doc says `ow` has nothing to beat, but `s_red = s_ow` keeps it scalar.
     let s_red = core.select (u == 0, (0, 1)#(dilation#1_2 == 1) + 1, core.select (u < t#Rr, 0, s_ow));
-    let r     = t#Ro + t#Rr;
+    let r     = t#Rp + t#Rr;
     let ow    = t#Sr#(core.idx 0 r 3);
     let vec   = if_static (stride#1_2 * dilation#1_2 * ow, s_red < s_ow, ff);
     lam fits (k b: Nat): Bool = core.bit2.and 2 (k / b * b == k, b < k);
@@ -1049,8 +1071,8 @@ lam conv_schedule (stride dilation: «2; Nat») (t: Tileable): Tileable =
     let t_co  = strip_mine_par (t_ci, 1, cb);
     let t_oh  = strip_mine_par (t_co, 3, (1, bs)#block);
     // Spelled from t_oh's positional fields so the pack's length is definitionally the
-    // «t#Ro + t#Rr» the dependent `interchange` domain expects.
-    let r_n   = t_oh#1_8 + t_oh#2_8;
+    // «t#Rp + t#Rr» the dependent `interchange` domain expects.
+    let r_n   = t_oh#2_9 + t_oh#3_9;
     // Dims are (n, co/cb, cb, oh/bs, bs, ow | …); rotate `cb` down next to `ow` so the jam dim and
     // the vector dim are the trailing parallel pair. Identity when the block is not taken.
     let perm  = ‹j: r_n; let jj = core.idx2nat j;
@@ -1078,7 +1100,7 @@ lam conv_schedule (stride dilation: «2; Nat») (t: Tileable): Tileable =
 /// - An undecided divisibility takes the neutral tile (`ts = 1`), so one selector serves static,
 ///   symbolic and runtime shapes.
 lam dot_schedule (r_out: Nat) (t: Tileable): Tileable =
-    let r   = t#Ro + t#Rr;
+    let r   = t#Rp + t#Rr;
     let d   = r - 1;
     let K   = t#Sr#(core.idx 0 r d);
     let ts0 = (1, 4)#(K / 4 * 4 == K);
@@ -1121,9 +1143,9 @@ lam dot_schedule_kvec (r_out: Nat) (t: Tileable): Tileable =
     // Dims now (…, m/ms, ms, n/bs, bs | red): swap ms ↔ n/bs so both jam dims are the trailing
     // parallel pair. Identity for a rank-1 output, where the neutral split already sits next to
     // `bs` ((n/bs, 1, bs | red)). `r3` is spelled from t3's own (positional) fields so the pack's
-    // length is definitionally the «t#Ro + t#Rr» the dependent `interchange` domain expects —
+    // length is definitionally the «t#Rp + t#Rr» the dependent `interchange` domain expects —
     // `core.nat.add` does not reassociate an equivalent spelling.
-    let r3   = t3#1_8 + t3#2_8;
+    let r3   = t3#2_9 + t3#3_9;
     let swap = 2 <= r_out;
     let pa   = r_out - 1;
     let pb   = r_out;
@@ -1141,7 +1163,7 @@ lam pool_schedule (stride dilation: «2; Nat») (t: Tileable): Tileable =
     let u     = unroll_budget (t, 32);
     let s_ow  = (0, 1)#(stride#1_2 == 1);
     let s_red = core.select (u == 0, (0, 1)#(dilation#1_2 == 1), core.select (u < t#Rr, 0, s_ow));
-    let ow    = t#Sr#(core.idx 0 (t#Ro + t#Rr) 3);
+    let ow    = t#Sr#(core.idx 0 (t#Rp + t#Rr) 3);
     let vec   = if_static (stride#1_2 * dilation#1_2 * ow, s_red < s_ow, ff);
     unroll_trailing (vectorize_if (t, vec, 3), u);
 ///
@@ -1369,8 +1391,8 @@ priv anx lam conv_impl (R: Ring) {n cin cout h w kh kw: Nat}
             (proj_map @(7, 4) (0, 1, 2, 3))
             (conv2d_in_map (stride, dilation), proj_map @(7, 4) (1, 4, 5, 6))
             (padded, weight));
-    // `sched#3_8` is the scheduled Tileable's (possibly packed) output shape `So`.
-    reshape (sched#3_8) s_out (materialize sched);
+    // `sched#4_9` is the scheduled Tileable's (possibly packed) output shape `So`.
+    reshape (sched#4_9) s_out (materialize sched);
 ///
 /// ### conv_grouped_in_map
 ///
@@ -1415,7 +1437,7 @@ priv anx lam conv_grouped_impl (R: Ring) {n cin cout h w ci kh kw: Nat}
             (proj_map @(7, 4) (0, 1, 2, 3))
             (conv_grouped_in_map (groups, ci_g, stride, dilation), conv_grouped_w_map (groups, co))
             (padded, weight));
-    reshape (sched#3_8) s_out (materialize sched);
+    reshape (sched#4_9) s_out (materialize sched);
 ///
 /// ### dot_general_fun
 ///
@@ -1490,15 +1512,15 @@ priv anx lam dot_product_impl
       // otherwise the last output dim is unit-stride in that operand (A·B) and runs as the vector
       // loop. Dispatched as an extract over thunks, each materializing its own concretely-scheduled
       // Tileable: behind a stuck extract the record's `Out` field would not reduce, so the
-      // reshape's input could not be checked. `sched#3_8` is the scheduled Tileable's (possibly
+      // reshape's input could not be checked. `sched#4_9` is the scheduled Tileable's (possibly
       // packed) output shape `So`.
       let kvec = option.is_some (vec.first `== (‹i: nc; core.idx2nat (c2#i)›, fastest_2));
       lam go_n    (u: []): «s_out; R#T» =
           let sched = dot_schedule r_out t;
-          reshape (sched#3_8) s_out (materialize sched);
+          reshape (sched#4_9) s_out (materialize sched);
       lam go_kvec (u: []): «s_out; R#T» =
           let sched = dot_schedule_kvec r_out t;
-          reshape (sched#3_8) s_out (materialize sched);
+          reshape (sched#4_9) s_out (materialize sched);
       (go_n, go_kvec)#kvec ();
 ///
 /// ### bmm_impl

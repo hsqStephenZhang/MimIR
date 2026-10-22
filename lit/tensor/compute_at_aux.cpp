@@ -26,6 +26,8 @@ int32_t* two_at(int32_t* a, int32_t* b);
 int32_t* fuse_at(int32_t* a, int32_t* b, int32_t* e);
 int32_t* fuse_lim(int32_t* a, int32_t* b, int32_t* e);
 int32_t* fuse_tile(int32_t* a, int32_t* b, int32_t* e);
+int32_t* split_mm(int32_t* a, int32_t* b);
+int32_t* split_at(int32_t* a, int32_t* b);
 }
 
 // q[i] = a[i, 0] + a[i, 1] over the n pairs of a.
@@ -152,6 +154,13 @@ int main() {
     fill(ua, 4 * 13 * 2, 7);
     pair_sum(ua, uq, 4 * 13), matmul(uq, fb, up, 4, 13, 10), matmul(up, fe, uc, 4, 10, 2);
 
+    // split_mm and split_at: (sa + 1) · sb.
+    int32_t sa[8 * 7], sb[7 * 5], sp[8 * 7], sc[8 * 5];
+    fill(sa, 8 * 7, 5), fill(sb, 7 * 5, 7);
+    for (int i = 0; i < 8 * 7; ++i)
+        sp[i] = sa[i] + 1;
+    matmul(sp, sb, sc, 8, 7, 5);
+
     int32_t la[2 * 5 * 2], lb[5 * 7], le[7 * 3], lq[2 * 5], lp[2 * 7], lc[2 * 3];
     fill(la, 2 * 5 * 2, 4), fill(lb, 5 * 7, 5), fill(le, 7 * 3, 7);
     pair_sum(la, lq, 2 * 5), matmul(lq, lb, lp, 2, 5, 7), matmul(lp, le, lc, 2, 7, 3);
@@ -208,6 +217,8 @@ int main() {
     bad += compare("fuse_at", fuse_at(fa, fb, fe), fc, 3 * 2);
     bad += compare("fuse_lim", fuse_lim(la, lb, le), lc, 2 * 3);
     bad += compare("fuse_tile", fuse_tile(ua, fb, fe), uc, 4 * 2);
+    bad += compare("split_mm", split_mm(sa, sb), sc, 8 * 5);
+    bad += compare("split_at", split_at(sa, sb), sc, 8 * 5);
     bad += compare("back_at", back_at(a4, b), bk, 4 * 5);
     bad += compare("fused_at", fused_at(x7, y7, a7), fu, 4 * 5);
     bad += compare("fold_at", fold_at(x15), fold_plain(x15), 5);
