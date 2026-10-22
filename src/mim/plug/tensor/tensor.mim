@@ -993,6 +993,19 @@ anx lam reverse_compute_at (t: Tileable, i d: Nat): Tileable =
     let t = t#sched#at_slots ← slot_bit i;
     t#sched#at_dim ← d;
 ///
+/// #### hoist_red
+///
+/// Run the first `h` reduction dims of `t` outside its parallel dims from `s` on, as the K blocks of a GEMM run
+/// outside its M and N loops: the fold of a cell spans their iterations, accumulating in a buffer over the cells
+/// inside them, which the epilogue reads once they have all run.
+/// The vector dim and the unroll window then only apply to the dims inside the hoisted ones; apply it after the
+/// domain transforms, which do not renumber `s`.
+anx lam hoist_red (t: Tileable, s h: Nat): Tileable =
+    let s = refly.check (s <= t#Rp, s, "hoist_red: the position must lie within the parallel dims");
+    let h = refly.check (h <= t#Rr, h, "hoist_red: there are not that many reduction dims");
+    let t = t#sched#hoist ← h;
+    t#sched#hoist_at ← s;
+///
 /// #### tile_and_fuse
 ///
 /// Compute every input of `t` one tile at a time inside the loop of dim `d`, and the inputs of each of those

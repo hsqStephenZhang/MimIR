@@ -69,6 +69,8 @@ struct MapRedPost {
         Posts,
         PostDim,
         Post,
+        Hoist,
+        HoistAt,
         Num_Fields
     };
 

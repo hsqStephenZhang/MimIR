@@ -172,13 +172,15 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 /// - `rev`: whether `at` asks instead to compute this op inside the loop of dim `at_dim` of the producer of the
 ///   input `at_slots` names (see `tensor.reverse_compute_at`);
 /// - `posts`, `post_dim`, `post`: whether to run `post` inside the loop of dim `post_dim` after the nest inside it
-///   (see `after_stage`).
+///   (see `after_stage`);
+/// - `hoist`, `hoist_at`: the number of leading reduction dims to run outside the parallel dims from `hoist_at` on
+///   (see `mr_nest_with`'s hoisted nest).
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
 anx let Sched = [vdim unroll: Nat, at: Bool, at_slots at_dim: Nat, fuse: Bool, budget: Nat, acts: Bool,
                  act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32],
-                 rev posts: Bool, post_dim: Nat, post: Fn [mem.M 0, Nat → I32] → mem.M 0];
+                 rev posts: Bool, post_dim: Nat, post: Fn [mem.M 0, Nat → I32] → mem.M 0, hoist hoist_at: Nat];
 ///
 /// #### act_none
 ///
@@ -191,7 +193,8 @@ anx lam lim_none (_: Nat → I32, _: Nat): [Bool, I32] = (ff, 0I32);
 /// #### sched_of
 ///
 /// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
-anx lam sched_of (vdim unroll: Nat): Sched = (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none, ff, ff, 0, act_none);
+anx lam sched_of (vdim unroll: Nat): Sched =
+    (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none, ff, ff, 0, act_none, 0, 0);
 ///
 /// ### SchedT
 ///
@@ -524,6 +527,8 @@ lam acc_cell (r: Nat, To U: *) (N: Nat, buf: buffer.Buf (1, N, To), ix: «r; I32
 /// - a `vdim` naming the innermost **reduction** dim selects the reduction-vectorized nest (`redvec`
 ///   below): the contraction runs as the vector loop with the last parallel dim unroll-and-jammed
 ///   into its body.
+/// - a non-zero `hoist` selects the hoisted nest, whichever `vdim`: the leading `hoist` reduction dims run
+///   outside the parallel dims from `hoist_at` on.
 ///
 /// `hu` and `ht` fill the reserved slots (see `Hook`) of the loops threading the write-back target `U` and
 /// of those threading the fold value `To`, and `hu` the root's; the loops iterating an accumulator tile have
@@ -675,8 +680,45 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
                                            (acc_cell (r, To, U) (Sb, panel, bi_of) cell_at)))));
             (hu (loop_root r c0) body) (‹r; 0I32›, m, u, done_panel);
 
+        // HOISTED (`hoist = h > 0`): the first `h` reduction dims run outside the parallel dims from `hoist_at = hs`
+        // on — the K blocks of a GEMM outside its M and N loops — so the fold of a cell spans their iterations. The
+        // cells inside them accumulate in a buffer `acc` that `init` fills before them and that `wb` (the epilogue
+        // included) writes back after them; inside, each cell folds the remaining reduction dims in a register.
+        // Clamps as above: the non-selected branch is still elaborated.
+        let hh       = s#hoist;
+        let hs       = (s#hoist_at, ro)#(ro < s#hoist_at);
+        let h_hi     = ro + hh;
+        let hoist_ok = core.bit2.and 2 (0 < hh, h_hi <= r);
+        let u_h      = (h_hi, u_lo)#(h_hi <= u_lo);
+        lam cells (d: Nat, acc: Nat): Nat = acc * Sr#(core.idx 0 r d);
+        let h_ds = ‹i: ro - hs; hs + core.idx2nat i›;
+        let Nc   = vec.fold.r @(Nat, Nat) @(ro - hs) cells (h_ds, 1);
+
+        con hoisted (m: mem.M 0, u: U, done: Cn [mem.M 0, U])@tt =
+            lam h_lin (pref: «r; I32») (d: Nat, acc: I32): I32 =
+                core.wrap.add 0 (core.wrap.mul 0 (acc, core.bitcast I32 (Sr#(core.idx 0 r d))), pref#(core.idx 0 r d));
+            let ci_of = lm (pref: «r; I32»): Idx Nc =
+                core.conv.u Nc (vec.fold.r @(I32, Nat) @(ro - hs) (h_lin pref) (h_ds, 0I32));
+            let (m, acc) = buffer.alloc (1, Nc, To) m;
+            con done_acc (m: mem.M 0, u: U) =
+                let m = buffer.free (1, Nc, To) (m, acc);
+                done (m, u);
+            let tile = range_nest (r, Sr) U none (affine_for @U, impl_for, hs, ro);
+            let c1   = ctx_in (c0, 0, hs);
+            let c2   = ctx_in (c1, ro, h_hi);
+            let c3   = ctx_in (c2, hs, ro);
+            let c4   = ctx_in (c3, h_hi, u_h);
+            let body = range_nest (r, Sr) U (hu, c0) (affine_for @U, impl_for, 0, hs)
+                           (acc_tile (r, To, U) (Nc, acc, ci_of, tile) (init, wb)
+                               (range_nest (r, Sr) U (hu, c1) (affine_for @U, impl_for, ro, h_hi)
+                                   (range_nest (r, Sr) U (hu, c2) (affine_for @U, impl_for, hs, ro)
+                                       (acc_cell (r, To, U) (Nc, acc, ci_of)
+                                           (range_nest (r, Sr) To (ht, c3) (affine_for @To, impl_for, h_hi, u_h)
+                                               (range_unroll (r, Sr) To (ht, c4) (u_h, r) cell_at))))));
+            (hu (loop_root r c0) body) (‹r; 0I32›, m, u, done_acc);
+
         con run (m: mem.M 0, u: U, done: Cn [mem.M 0, U])@tt =
-            ((((classic, vectorized)#vec_ok, blocked)#block_ok, redvec)#redvec_ok) (m, u, done);
+            (((((classic, vectorized)#vec_ok, blocked)#block_ok, redvec)#redvec_ok, hoisted)#hoist_ok) (m, u, done);
         run;
     nest;
 ///
