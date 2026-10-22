@@ -174,13 +174,17 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 /// - `posts`, `post_dim`, `post`: whether to run `post` inside the loop of dim `post_dim` after the nest inside it
 ///   (see `after_stage`);
 /// - `hoist`, `hoist_at`: the number of leading reduction dims to run outside the parallel dims from `hoist_at` on
-///   (see `mr_nest_with`'s hoisted nest).
+///   (see `mr_nest_with`'s hoisted nest);
+/// - `cache`, `scope`: the inputs whose bits `cache` sets are read from a copy of the box the nest reads, made inside
+///   the loop of `at_dim` where `at_slots` sets their bits too and ahead of the nest otherwise (see
+///   `tensor.cache_read`), in the address space `scope i` of input `i`, which only a GPU lowering tells apart.
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
 anx let Sched = [vdim unroll: Nat, at: Bool, at_slots at_dim: Nat, fuse: Bool, budget: Nat, acts: Bool,
                  act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32],
-                 rev posts: Bool, post_dim: Nat, post: Fn [mem.M 0, Nat → I32] → mem.M 0, hoist hoist_at: Nat];
+                 rev posts: Bool, post_dim: Nat, post: Fn [mem.M 0, Nat → I32] → mem.M 0, hoist hoist_at: Nat,
+                 cache: Nat, scope: Nat → Nat];
 ///
 /// #### act_none
 ///
@@ -190,11 +194,22 @@ anx fun act_none (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 = return m;
 ///
 anx lam lim_none (_: Nat → I32, _: Nat): [Bool, I32] = (ff, 0I32);
 ///
+/// #### scope_none
+///
+anx lam scope_none (_: Nat): Nat = 0;
+///
+/// #### act_seq
+///
+/// The action that runs `a`, then `b`.
+anx fun act_seq (a b: Fn [mem.M 0, Nat → I32] → mem.M 0) (m: mem.M 0, get: Nat → I32)@tt: mem.M 0 =
+    con then (m: mem.M 0) = b ((m, get), return);
+    a ((m, get), then);
+///
 /// #### sched_of
 ///
 /// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
 anx lam sched_of (vdim unroll: Nat): Sched =
-    (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none, ff, ff, 0, act_none, 0, 0);
+    (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none, ff, ff, 0, act_none, 0, 0, 0, scope_none);
 ///
 /// ### SchedT
 ///

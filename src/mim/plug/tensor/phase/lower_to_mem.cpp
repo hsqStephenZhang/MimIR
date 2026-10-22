@@ -906,11 +906,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
 
     // The dims of the loop of `dim` and of the loops around it, which a hoisted nest reorders.
     auto hoist = Lit::isa<u64>(field(F::Hoist)).value_or(0);
-    auto fixed = std::vector<bool>(rn);
-    if (dim)
-        for (u64 e = 0; e != rn; ++e)
-            fixed[e]
-                = w.app(w.app(w.annex<btensor::at_outer>(), {rec, mr.Rp, w.lit_nat(*dim)}), w.lit_nat(e)) == w.lit_tt();
+    auto fixed = dim ? mr.outer(*dim, rn) : std::vector<bool>(rn);
 
     auto lit = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
     auto sub = [&](const Def* a, const Def* b) { return w.call(affine::op::sub, Defs{a, b}); };
@@ -1078,9 +1074,11 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         return true;
     };
 
+    // A cached input is copied by `btensor.lower_map_reduce` instead.
+    auto cache  = Lit::isa<u64>(field(F::Cache)).value_or(0);
     bool acting = false;
     for (u64 j = 0; j != rks->nis; ++j) {
-        if ((fuse || (own && j < 64 && (slots >> j) & 1)) && stage(j)) {
+        if (!(j < 64 && (cache >> j) & 1) && (fuse || (own && j < 64 && (slots >> j) & 1)) && stage(j)) {
             acting |= dim.has_value();
             continue;
         }

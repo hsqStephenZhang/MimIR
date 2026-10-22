@@ -330,6 +330,10 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         log().w("{} runs a schedule action, e.g. a compute_at, which only the CPU lowering realizes", app);
         return Super::rewrite_imm_App(app);
     }
+    if (mr.sched_field(btensor::MapRedPost::Cache) != w.lit_nat_0()) {
+        log().w("{} caches an input, which only the CPU lowering realizes yet", app);
+        return Super::rewrite_imm_App(app);
+    }
     if (rp != ro) {
         log().w("{} splits an output axis over several parallel loops, which only the CPU lowering realizes", app);
         return Super::rewrite_imm_App(app);

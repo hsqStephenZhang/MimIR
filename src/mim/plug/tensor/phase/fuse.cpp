@@ -183,12 +183,13 @@ static std::optional<PureRead> read_through(World& w, const Def* value, const De
 // new combination function `f_new` invokes every inner combiner in post-order — each starting from
 // its own init — and finally invokes `f_o`, threading inner results into the corresponding outer
 // input slots.
-/// The input slots @p mr's schedule computes at a loop, which keep their producers.
+/// The input slots @p mr's schedule computes at a loop or caches, which keep their producers.
 static u64 at_slots(const btensor::MapRedPost& mr) {
-    using F  = btensor::MapRedPost;
-    auto rec = mr.sched_record();
-    if (rec->proj(F::Num_Fields, F::At) != mr.sched->world().lit_tt()) return 0;
-    return Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0);
+    using F    = btensor::MapRedPost;
+    auto rec   = mr.sched_record();
+    auto cache = Lit::isa<u64>(rec->proj(F::Num_Fields, F::Cache)).value_or(0);
+    if (rec->proj(F::Num_Fields, F::At) != mr.sched->world().lit_tt()) return cache;
+    return cache | Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0);
 }
 
 static bool is_at(u64 slots, u64 k) { return k < 64 && (slots >> k) & 1; }
@@ -366,13 +367,27 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     // epilogue inputs) are the outer's.
     auto shapes = mr.shapes;
     if (ats != 0) {
-        u64 moved = 0;
+        auto rec    = mr.sched_record();
+        auto fields = DefVec(F::Num_Fields, [&](size_t i) { return rec->proj(F::Num_Fields, i); });
+        auto move   = [&](const Def* mask) {
+            auto old  = Lit::isa<u64>(mask).value_or(0);
+            u64 moved = 0;
+            for (u64 k = 0; k != nis_nat; ++k)
+                if (is_at(old, k)) moved |= u64(1) << new_pos[k];
+            return w.lit_nat(moved);
+        };
+        fields[F::AtSlots] = move(fields[F::AtSlots]);
+        fields[F::Cache]   = move(fields[F::Cache]);
+
+        auto scope       = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("scope");
+        const Def* where = w.lit_nat_0();
         for (u64 k = 0; k != nis_nat; ++k)
-            if (at(k)) moved |= u64(1) << new_pos[k];
-        auto rec           = mr.sched_record();
-        auto fields        = DefVec(F::Num_Fields, [&](size_t i) { return rec->proj(F::Num_Fields, i); });
-        fields[F::AtSlots] = w.lit_nat(moved);
-        shapes             = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
+            if (at(k)) {
+                auto here = w.call(core::ncmp::e, Defs{scope->var(), w.lit_nat(new_pos[k])});
+                where     = w.extract(w.tuple({where, w.app(fields[F::Scope], w.lit_nat(k))}), here);
+            }
+        fields[F::Scope] = scope->set(true, where);
+        shapes           = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
     }
 
     auto res = w.annex<tensor::map_reduce_post>();
@@ -452,8 +467,8 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     auto nps_nat = *nps_lit;
     if (nis_nat == 0) return nullptr;
     if (mr.Sr != mr.So) return nullptr;
-    // The fused op takes the producer's schedule, which would drop this one's compute_at.
-    if (mr.sched_field(btensor::MapRedPost::At) == w.lit_tt()) return nullptr;
+    // The fused op takes the producer's schedule, which would drop this one's compute_at or cache_read.
+    if (mr.sched_field(btensor::MapRedPost::At) == w.lit_tt() || at_slots(mr) != 0) return nullptr;
 
     if (!is_identity_map(mr.map_out)) return nullptr;
 

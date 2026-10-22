@@ -977,6 +977,22 @@ anx lam compute_at (t: Tileable, i d: Nat): Tileable =
     let t   = t#sched#at_slots ← s#at_slots + bit * (1 - s#at_slots / bit % 2);
     t#sched#at_dim ← d;
 ///
+/// #### cache_read
+///
+/// Read input `i` of `t` from a copy of the box of it the nest reads, in the address space `space` (cf. TVM's
+/// `cache_read`): ahead of the nest, or inside the loop of dim `d` after `compute_at (t, i, d)`, which then copies
+/// the input instead of computing it.
+///
+/// - `btensor.lower_map_reduce` realizes it on any input buffer whose box has a literal size and whose read of the
+///   corner of each iteration is where its box starts, and logs a warning wherever it cannot.
+/// - A box that leaves the input at a tail is copied up to the input's end.
+/// - `space` is e.g. `gpu.addr_space_shared`; only a GPU lowering tells the address spaces apart.
+anx lam cache_read (t: Tileable, i space: Nat): Tileable =
+    let s   = t#sched;
+    let bit = slot_bit i;
+    let t   = t#sched#cache ← s#cache + bit * (1 - s#cache / bit % 2);
+    t#sched#scope ← lm (j: Nat): Nat = (s#scope j, space)#(j == i);
+///
 /// #### reverse_compute_at
 ///
 /// Compute `t` inside the loop of dim `d` of the producer of its input `i`, one tile at a time (cf. TVM's

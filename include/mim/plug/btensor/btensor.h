@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <vector>
 
 #include <mim/lam.h>
 #include <mim/tuple.h>
@@ -30,9 +31,9 @@ struct MapRedPost {
         auto [Tis, Ris, Sis, Tps, Rps, Sps]                                = in_tys->projs<6>();
         auto [comb, init, post]                                            = comb_init->projs<3>();
         auto [maps, post_maps]                                             = maps_all->projs<2>();
-        return {nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, nis,  nps,  To,   Tp,
-                Ro,      Rp,   Rn,     TSched, So,        Sr,      sched,    Tis,  Ris,  Sis,  Tps,
-                Rps,     Sps,  comb,   init,   post,      maps,    post_maps};
+        return {nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, nis,   nps,      To,
+                Tp,      Ro,   Rp,     Rn,     TSched,    So,      Sr,       sched, Tis,      Ris,
+                Sis,     Tps,  Rps,    Sps,    comb,      init,    post,     maps,  post_maps};
     }
 
     /// The output rank `ro`, and the `rp` parallel and `rr` reduction loops.
@@ -71,6 +72,8 @@ struct MapRedPost {
         Post,
         Hoist,
         HoistAt,
+        Cache,
+        Scope,
         Num_Fields
     };
 
@@ -84,6 +87,16 @@ struct MapRedPost {
     }
 
     const Def* sched_field(Field f) const { return sched_record()->proj(Num_Fields, f); }
+
+    /// Which of the @p n dims the loop of @p dim and the loops around it iterate (see `btensor.at_outer`).
+    std::vector<bool> outer(u64 dim, u64 n) const {
+        auto& w = sched->world();
+        auto at = w.app(w.annex<btensor::at_outer>(), {sched_record(), Rp, w.lit_nat(dim)});
+        auto v  = std::vector<bool>(n);
+        for (u64 e = 0; e != n; ++e)
+            v[e] = w.app(at, w.lit_nat(e)) == w.lit_tt();
+        return v;
+    }
 };
 
 /// `affine.map @(m, n) @(s_in, s_out) f idxs as mem` with the address space `as` of @p mem ↦ `[mem', coords]`.

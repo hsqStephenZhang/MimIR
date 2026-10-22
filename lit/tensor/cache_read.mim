@@ -1,0 +1,57 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt -p clos -p ll %s
+// RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+
+// `tensor.cache_read` on a matrix product of «6, 8» · «8, 5» with K split by 4, against the plain product:
+// * `ck`:    B copied per K block «4, 5», with ko outermost.
+// * `whole`: A copied whole, ahead of the nest.
+// * `cvec`:  B «8, 8» copied per K block «4, 8» around a vectorized micro-kernel.
+// * `ctail`: A copied per K block inside tiles of 4 rows: «4, 4», the last tile reading the 2 rows left.
+// * `mixed`: A + 1 computed and B copied per K block, both inside the loop of ko.
+// * `inner`: at ki, which is not hoisted: warned, and B read as is.
+// The exit code counts the cells that differ.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+
+use core.ops.u.w;
+use tensor;
+
+fun mac (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun inc1 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun inc2 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+lam po (i j: affine.Index): «2; affine.Index» = (i, j);
+lam add (x y: I32): I32 = x + y;
+
+let a  = generate (6, 8) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.sub 0 (core.wrap.mul 0 (3I64, i#0_2), i#1_2)));
+let b  = generate (8, 5) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (i#0_2, core.wrap.mul 0 (2I64, i#1_2))));
+let b8 = generate (8, 8) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (core.wrap.mul 0 (3I64, i#0_2), i#1_2)));
+lam inc (f: Fn [I32, I32] → I32) = materialize (mr_tileable @1 @(2, 0) ((6, 8), (0, 1), (6, 8)) (f, 0I32, id) po po a);
+lam mmf {m n: Nat} (x: «m, 8; I32», y: «8, n; I32») = mr_tileable @2 @(2, 1) ((m, n), (0, 1), (m, n, 8)) (mac, 0I32, id) mo (ma, mb) (x, y);
+lam hoisted {m n: Nat} (x: «m, 8; I32», y: «8, n; I32», s: Nat) = hoist_red (strip_mine_red (mmf (x, y), 2, 4), s, 1);
+lam diff {m n: Nat} (x y: «m, n; I32»): I32 =
+    reduce (add, 0I32) 0₁ (reduce (add, 0I32) 1₂ (binary (λ (u v: I32): I32 = core.select (core.icmp.e (u, v), 0I32, 1I32)) (x, y)));
+
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
+    let plain = materialize (mmf (a, b));
+    let ck    = materialize (compute_at (cache_read (hoisted (a, b, 0), 1, 3), 1, 2));
+    let whole = materialize (cache_read (mmf (a, b), 0, 0));
+    let cvec  = materialize (compute_at (cache_read (vectorize (hoisted (a, b8, 1), 1), 1, 3), 1, 2));
+    let ctail = materialize (compute_at (cache_read (hoist_red (strip_mine_red (tile_par (mmf (a, b), (4, 0)), 4, 4), 2, 1), 0, 3), 0, 4));
+    let mixed = materialize (compute_at (compute_at (cache_read (hoisted (inc inc1, b, 0), 1, 3), 1, 2), 0, 2));
+    let inner = materialize (compute_at (cache_read (hoisted (a, b, 1), 1, 3), 1, 3));
+    let bad   = diff (ck, plain) + diff (whole, plain) + diff (cvec, materialize (mmf (a, b8))) + diff (ctail, plain)
+              + diff (mixed, materialize (mmf (inc inc2, b))) + diff (inner, plain);
+    return (m, bad);
+
+// CHECK-DAG: («4, 5; I32», 0)
+// CHECK-DAG: («4, 8; I32», 0)
+// CHECK-DAG: («4, 4; I32», 0)
+// WARN: cache_read of input 1 of {{.*}} not realized: not a parallel or a hoisted reduction dim

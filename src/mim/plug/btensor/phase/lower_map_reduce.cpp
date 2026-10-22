@@ -1,5 +1,7 @@
 #include "mim/plug/btensor/phase/lower_map_reduce.h"
 
+#include <algorithm>
+
 #include <mim/axm.h>
 #include <mim/def.h>
 #include <mim/lam.h>
@@ -44,6 +46,131 @@ const Def* LowerMapReduce::lower_buffer_lit(const App* app) {
         [](const DefVec&, const Def* ins, const Def* m) -> std::pair<const Def*, const Def*> { return {m, ins}; });
 }
 
+/// Reads each input the schedule caches from a copy of its box in a buffer allocated on @p mem, put into @p caches.
+/// The copy runs as the schedule's action inside the loop of `at_dim` or ahead of the nest.
+/// @returns the memory after the allocations and the copies ahead of the nest.
+const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& inputs, DefVec& caches) {
+    using F    = MapRedPost;
+    auto& w    = new_world();
+    auto rks   = *mr.ranks();
+    auto rn    = rks.nloops();
+    auto rec   = mr.sched_record();
+    auto field = [&](F::Field f) { return rec->proj(F::Num_Fields, f); };
+    auto bit   = [](u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; };
+    auto cache = Lit::isa<u64>(field(F::Cache)).value_or(0);
+    auto slots = Lit::isa<u64>(field(F::AtSlots)).value_or(0);
+    auto dim   = Lit::isa<u64>(field(F::AtDim));
+    if (cache == 0) return mem;
+
+    auto fields = DefVec(F::Num_Fields, [&](size_t f) { return field(F::Field(f)); });
+    auto Sis    = DefVec(rks.nis, [&](size_t i) { return mr.Sis->proj(rks.nis, i); });
+    auto maps   = DefVec(rks.nis, [&](size_t i) { return mr.maps->proj(rks.nis, i); });
+    auto mem_ty = w.call<mem::M>(0);
+    auto i64    = w.type_i64();
+    auto lit    = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
+
+    for (u64 i = 0; i != rks.nis; ++i) {
+        if (!bit(cache, i)) continue;
+        auto at = bit(slots, i);
+        auto give_up
+            = [&](const char* why) { log().w("cache_read of input {} of {} not realized: {}", i, mr.map_out, why); };
+        if (at && (!dim || *dim >= rks.rp + Lit::isa<u64>(field(F::Hoist)).value_or(0))) {
+            give_up("not a parallel or a hoisted reduction dim");
+            continue;
+        }
+        if (at && fields[F::Acts] == w.lit_tt() && fields[F::ActDim] != w.lit_nat(*dim)) {
+            give_up("the schedule runs an action inside another loop");
+            continue;
+        }
+        auto fixed = at ? mr.outer(*dim, rn) : std::vector<bool>(rn);
+        auto R     = mr.Ris->proj(rks.nis, i);
+        auto T     = mr.Tis->proj(rks.nis, i);
+        auto r     = Lit::isa<u64>(R);
+        if (!r) {
+            give_up("the input has no literal rank");
+            continue;
+        }
+
+        // The copy of the box the loops inside the attach point read, given the loop-vector prefix.
+        auto fill          = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("cache_fill");
+        auto [fdata, fret] = fill->vars<2>();
+        auto [fmem, get]   = fdata->projs<2>();
+        auto image         = [&](auto ext) {
+            auto lo  = DefVec(rn, [&](size_t d) -> const Def* {
+                return fixed[d] ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
+            });
+            auto box = w.tuple({w.tuple(lo), w.tuple(DefVec(rn, ext)), Sis[i]});
+            return w.app(w.app(w.app(w.annex<affine::image>(), {mr.Rn, R}), maps[i]), box);
+        };
+        auto box = image([&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
+        if (box->proj(4, 0) != image([&](size_t) { return w.lit_nat_1(); })->proj(4, 0)) {
+            give_up("the box does not start at the read of the corner");
+            continue;
+        }
+        auto lo   = box->proj(4, 0);
+        auto caps = DefVec(*r, [&](size_t a) { return box->proj(4, 2)->proj(*r, a); });
+        if (!std::ranges::all_of(caps, [](const Def* c) { return Lit::isa(c).has_value(); })) {
+            give_up("the box has no literal size");
+            continue;
+        }
+
+        auto shape       = w.tuple(caps);
+        auto [amem, buf] = buffer::op_alloc(R, shape, T, mem)->projs<2>();
+        mem              = amem;
+        auto buf_ty      = w.sigma({mem_ty, buf->type()});
+        // A box that leaves the input at a tail copies its last cell there, which no iteration reads.
+        auto copy
+            = build_pointwise(buf_ty, fmem, buf, inputs[i], shape, *r, "cache_copy",
+                              [&](const DefVec& iters, const Def* in, const Def* m) {
+                                  auto coords      = DefVec(*r, [&](size_t a) {
+                                      auto x = w.call(core::wrap::add, core::Mode::none,
+                                                      Defs{w.call<core::bitcast>(i64, lo->proj(*r, a)), iters[a]});
+                                      auto hi
+                                          = w.call(core::wrap::sub, core::Mode::none,
+                                                   Defs{w.call<core::bitcast>(i64, Sis[i]->proj(*r, a)), w.lit_i64(1)});
+                                      return clamp(x, hi);
+                                  });
+                                  auto [rm, value] = buffer::op_read(m, in, folded_idx(Sis[i], coords))->projs<2>();
+                                  return std::pair<const Def*, const Def*>{rm, value};
+                              });
+        fill->app(true, fret, copy->proj(2, 0));
+
+        if (at) {
+            fields[F::Act]
+                = fields[F::Acts] == w.lit_tt() ? w.app(w.annex<btensor::act_seq>(), {fields[F::Act], fill}) : fill;
+            fields[F::Acts]   = w.lit_tt();
+            fields[F::ActDim] = w.lit_nat(*dim);
+        } else {
+            auto none = w.mut_lam(w.pi(w.type_nat(), w.type_i32()))->set("cache_get");
+            none->set(true, w.lit_i32(0));
+            mem = w.app(cps::op_cps2ds_dep(fill), w.tuple({mem, none}));
+        }
+
+        // The op reads the copy at its coordinates less those of the read of the corner.
+        auto pi     = maps[i]->type()->as<Pi>();
+        auto read   = w.mut_lam(pi->dom(), pi->codom())->set("cache_read");
+        auto o      = read->var();
+        auto whole  = w.app(maps[i], o);
+        auto corner = w.app(
+            maps[i], w.tuple(DefVec(rn, [&](size_t d) { return fixed[d] ? o->proj(rn, d) : lit(w.lit_nat_0()); })));
+        read->set(true, w.tuple(DefVec(*r, [&](size_t a) {
+            return w.call(affine::op::sub, Defs{whole->proj(*r, a), corner->proj(*r, a)});
+        })));
+        log().d("read input {} of {} from a copy {}", i, mr.map_out, shape);
+        Sis[i]    = shape;
+        maps[i]   = read;
+        inputs[i] = buf;
+        caches.push_back(buf);
+    }
+
+    fields[F::Cache] = w.lit_nat_0();
+    mr.sched         = w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
+    mr.shapes        = w.tuple({mr.So, mr.Sr, mr.sched});
+    mr.Sis           = w.tuple(Sis);
+    mr.maps          = w.tuple(maps);
+    return mem;
+}
+
 const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto& w    = new_world();
     auto mr    = MapRedPost::of(rewrite(app->callee())->as<App>());
@@ -53,6 +180,11 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         return RWPhase::rewrite_imm_App(app);
     }
 
+    auto [mem, dst, old_inputs, post_inputs] = rewrite(app->arg())->projs<4>();
+    auto inputs = DefVec(ranks->nis, [&](size_t i) { return old_inputs->proj(ranks->nis, i); });
+    auto caches = DefVec();
+    mem         = cache_inputs(mr, mem, inputs, caches);
+
     auto impl = rewrite(old_world().annex<btensor::map_reduce_post_impl>());
     impl      = w.app(impl, mr.nis_nps);
     impl      = w.app(impl, {mr.To, mr.Tp, mr.Ro, mr.Rp, w.lit_nat(ranks->rr)});
@@ -61,7 +193,6 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     impl      = w.app(impl, {mr.comb, mr.init, mr.post});
     impl      = w.app(impl, mr.map_out);
 
-    auto [mem, dst, inputs, post_inputs]                 = rewrite(app->arg())->projs<4>();
     auto [read_inputs_ty, read_post_ty, write_output_ty] = impl->type()->as<Pi>()->dom()->projs<3>();
 
     // A `buffer.Buf` has its literal size-1 axes folded away, so the indices fold alike.
@@ -82,7 +213,8 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         fun->app(true, ret, {m, w.tuple(values)});
         return fun;
     };
-    auto read_inputs = reader(read_inputs_ty, "readInputs", ranks->nis, mr.Rn, mr.Sr, mr.Ris, mr.Sis, mr.maps, inputs);
+    auto read_inputs
+        = reader(read_inputs_ty, "readInputs", ranks->nis, mr.Rn, mr.Sr, mr.Ris, mr.Sis, mr.maps, w.tuple(inputs));
     auto read_post
         = reader(read_post_ty, "readPost", ranks->nps, mr.Ro, mr.So, mr.Rps, mr.Sps, mr.post_maps, post_inputs);
 
@@ -94,8 +226,15 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         write_output->app(true, ret, stored->proj(2, 0));
     }
 
-    impl = w.app(impl, {read_inputs, read_post, write_output});
-    return w.app(impl, {mem, dst});
+    impl     = w.app(impl, {read_inputs, read_post, write_output});
+    auto res = w.app(impl, {mem, dst});
+    if (caches.empty()) return res;
+    auto [m, out] = res->projs<2>();
+    for (auto buf : caches) {
+        auto [r, s, T] = Axm::isa<buffer::Buf>(buf->type())->args<3>();
+        m              = buffer::op_free(r, s, T, m, buf);
+    }
+    return w.tuple({m, out});
 }
 
 const Def* LowerMapReduce::lower_broadcast(const App* app) {

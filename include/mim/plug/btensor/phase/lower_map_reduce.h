@@ -3,6 +3,8 @@
 #include <mim/def.h>
 #include <mim/phase.h>
 
+#include "mim/plug/btensor/btensor.h"
+
 namespace mim::plug::btensor::phase {
 
 /// Lowers the buffer-world operations (`btensor.map_reduce_post`, `btensor.broadcast`, `btensor.pad`,
@@ -19,6 +21,7 @@ public:
 private:
     const Def* rewrite_imm_App(const App*) override;
     const Def* lower_map_reduce_post(const App*);
+    const Def* cache_inputs(MapRedPost&, const Def* mem, DefVec& inputs, DefVec& caches);
     const Def* lower_broadcast(const App*);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
