@@ -460,19 +460,25 @@ lam range_unroll (r: Nat, Sr: «r; Nat») (A: *) (hook: Hook (r, A), ctx: Ctx) (
         let w = hook (loop_at (ctx, impl_unroll, lo, d)) w;
         con level (pref: «r; I32», m: mem.M 0, acc: A, k: Cn [mem.M 0, A]) =
             let (cut, stop) = ctx#lim (lm (e: Nat): I32 = pref#(core.idx 0 r e), d);
+            let t           = Sr#(core.idx 0 r d);
             lam step (i: Nat, kk: Cn [mem.M 0, A]): Cn [mem.M 0, A] =
-                // An unrolled point past the loop's `lim` is skipped.
-                // The branch takes the memory alone, so that `point` does not eta-reduce to a selected closure, which
-                // closure conversion cannot chain.
+                con at (m: mem.M 0, acc: A) =
+                    let pref = ‹j: r; core.select (core.idx2nat j == d, core.bitcast I32 i, pref#j)›;
+                    w (pref, m, acc, kk);
+                at;
+            // An unrolled point past the loop's `lim` is skipped.
+            // The branch takes the memory alone, so that `point` does not eta-reduce to a selected closure, which
+            // closure conversion cannot chain.
+            lam step_cut (i: Nat, kk: Cn [mem.M 0, A]): Cn [mem.M 0, A] =
                 con point (m: mem.M 0, acc: A) =
-                    con at (m: mem.M 0) =
-                        let pref = ‹j: r; core.select (core.idx2nat j == d, core.bitcast I32 i, pref#j)›;
-                        w (pref, m, acc, kk);
                     con skip (m: mem.M 0) = kk (m, acc);
-                    (skip, at)#(core.bit2.or 2 ((tt, ff)#cut, core.icmp.ul (core.bitcast I32 i, stop))) m;
+                    con go (m: mem.M 0) = step (i, kk) (m, acc);
+                    (skip, go)#(core.icmp.ul (core.bitcast I32 i, stop)) m;
                 point;
-            let t = Sr#(core.idx 0 r d);
-            (vec.fold.r @(Cn [mem.M 0, A], Nat) @t step (‹i: t; core.idx2nat i›, k)) (m, acc);
+            // A whole run takes the unguarded points, so that only a cut one branches per point.
+            let whole = core.bit2.or 2 ((tt, ff)#cut, core.icmp.uge (stop, core.bitcast I32 t));
+            ((vec.fold.r @(Cn [mem.M 0, A], Nat) @t step_cut (‹i: t; core.idx2nat i›, k),
+              vec.fold.r @(Cn [mem.M 0, A], Nat) @t step (‹i: t; core.idx2nat i›, k))#whole) (m, acc);
         level;
     let m = hi - lo;
     vec.fold.r @(Body (r, A), Nat) @m
