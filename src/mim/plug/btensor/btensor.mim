@@ -436,8 +436,9 @@ lam range_unroll (r: Nat, Sr: «r; Nat») (A: *) (hook: Hook (r, A), ctx: Ctx) (
                 con at (m: mem.M 0, acc: A) =
                     let pref = ‹j: r; core.select (core.idx2nat j == d, core.bitcast I32 i, pref#j)›;
                     w (pref, m, acc, kk);
+                con skip (m: mem.M 0, acc: A) = kk (m, acc);
                 // An unrolled point past the loop's `lim` is skipped.
-                (kk, at)#(core.bit2.or 2 ((tt, ff)#cut, core.icmp.ul (core.bitcast I32 i, stop)));
+                (skip, at)#(core.bit2.or 2 ((tt, ff)#cut, core.icmp.ul (core.bitcast I32 i, stop)));
             let t = Sr#(core.idx 0 r d);
             (vec.fold.r @(Cn [mem.M 0, A], Nat) @t step (‹i: t; core.idx2nat i›, k)) (m, acc);
         level;
