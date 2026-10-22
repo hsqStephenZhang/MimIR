@@ -54,8 +54,9 @@ inline std::optional<PureRead> is_pure_read(const Def* value) {
     auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, is_all] = mr->uncurry_args<8>();
 
     auto [nis, nps] = nis_nps->projs<2>();
-    // No reduction loops: the total loop count Rn equals the output rank Ro.
-    if (Lit::isa(nis) != 1 || Lit::isa(nps) != 0 || meta->proj(5, 2) != meta->proj(5, 3)) return {};
+    // No reduction loops, and one parallel loop per output axis: Ro = Rp = Rn.
+    auto [_, __, Ro, Rp, Rn, ___] = meta->projs<6>();
+    if (Lit::isa(nis) != 1 || Lit::isa(nps) != 0 || Ro != Rp || Rp != Rn) return {};
     auto [So, Sr, sched] = shapes->projs<3>();
     if (Sr != So) return {};
     if (!is_identity_map(map_out)) return {};

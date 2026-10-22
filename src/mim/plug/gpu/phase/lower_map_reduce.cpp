@@ -325,9 +325,13 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         log().w("{} doesn't have lowering-time known rank counts (nis/nps/Ro/Rn)", app);
         return Super::rewrite_imm_App(app);
     }
-    auto [nis_n, nps_n, ro, rr] = *ranks;
+    auto [nis_n, nps_n, ro, rp, rr] = *ranks;
     if (mr.sched_field(btensor::MapRedPost::Acts) == w.lit_tt()) {
         log().w("{} runs a schedule action, e.g. a compute_at, which only the CPU lowering realizes", app);
+        return Super::rewrite_imm_App(app);
+    }
+    if (rp != ro) {
+        log().w("{} splits an output axis over several parallel loops, which only the CPU lowering realizes", app);
         return Super::rewrite_imm_App(app);
     }
 

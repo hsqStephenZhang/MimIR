@@ -240,7 +240,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
         // position is just a single call of `inner_comb` at that position.
         // The identity map (`affine.id`) is recognized structurally (a lam returning its own var),
         // since the rewrite into this phase's world rebuilds mutables and breaks pointer equality.
-        auto inner_ro = Lit::isa<u64>(im.Ro);
+        auto inner_ro = Lit::isa<u64>(im.Rp);
         auto inner_rn = Lit::isa<u64>(im.Rn);
         if (!inner_ro || !inner_rn || *inner_ro != *inner_rn) continue;
         if (im.Sr != im.So) continue;
@@ -436,8 +436,10 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     auto nis_lit = Lit::isa<u64>(mr.nis);
     auto nps_lit = Lit::isa<u64>(mr.nps);
     auto ro_lit  = Lit::isa<u64>(mr.Ro);
+    auto rp_lit  = Lit::isa<u64>(mr.Rp);
     auto rn_lit  = Lit::isa<u64>(mr.Rn);
-    if (!nis_lit || !nps_lit || !ro_lit || !rn_lit || *ro_lit != *rn_lit) return nullptr;
+    if (!nis_lit || !nps_lit || !ro_lit || !rp_lit || !rn_lit || *ro_lit != *rp_lit || *rp_lit != *rn_lit)
+        return nullptr;
     auto nis_nat = *nis_lit;
     auto nps_nat = *nps_lit;
     if (nis_nat == 0) return nullptr;
@@ -535,7 +537,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     // type change.
     auto res = w.annex<tensor::map_reduce_post>();
     res      = w.app(res, {im.nis, w.lit_nat(new_nps)});
-    res      = w.app(res, {im.To, mr.Tp, im.Ro, im.Rn, im.TSched});
+    res      = w.app(res, {im.To, mr.Tp, im.Ro, im.Rp, im.Rn, im.TSched});
     res      = w.app(res, im.shapes);
     res      = w.app(res, {im.Tis, im.Ris, im.Sis, w.tuple(eps.T), w.tuple(eps.R), w.tuple(eps.S)});
     res      = w.app(res, {im.comb, im.init, fused_post});

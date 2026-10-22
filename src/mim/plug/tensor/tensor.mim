@@ -141,15 +141,17 @@ anx fun id {T: *} (x: T, _: [])@tt: T = return x;
 ///   The lowering only binds it and **applies** the result to the op's decision-free fold step and
 ///   write-back, so unrolling, interchange and vectorization are plain IR, not lowering behavior.
 ///
-/// The total loop count `Rn` is stated instead of the reduction count `Rr = Rn - Ro`: a
-/// `core.nat.add (Ro, Rr)` in the domain cannot be inverted by type inference and every call site
-/// would have to pass the whole meta group explicitly with `@`, whereas `Sr` pins `Rn` structurally.
+/// The leading `Rp` of the `Rn` loops are parallel and the others reduce; the write map sends each point of the
+/// parallel loops to its own cell of the rank-`Ro` result, which several parallel loops may share an axis of.
+/// The total loop count `Rn` is stated instead of the reduction count `Rr = Rn - Rp`: a
+/// `core.nat.add (Rp, Rr)` in the domain cannot be inverted by type inference, whereas `Sr` pins `Rn` structurally.
+/// No type pins `Rp`, so a call site passes the meta group explicitly with `@`.
 ///
-/// `nis`, `nps`, `Ro`, `Rn`, `Ris` and `Rps` must be literals before the `tensor::Lower` phase; the
+/// `nis`, `nps`, `Ro`, `Rp`, `Rn`, `Ris` and `Rps` must be literals before the `tensor::Lower` phase; the
 /// bounds `So` and `Sr` may stay symbolic.
 ///
 axm map_reduce_post: {nis nps: Nat}
-                   → {To Tp: *, Ro Rn: Nat, TSched: □}
+                   → {To Tp: *, Ro Rp Rn: Nat, TSched: □}
                    → [So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched]
                    → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
                       Tps: «nps; *», Rps: «j: nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
@@ -183,7 +185,7 @@ anx lam map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
                    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
                    (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
                    (is: «i: nis; «Sis#i; Tis#i»»): «So; To» =
-    map_reduce_post
+    map_reduce_post @(nis, 0) @(To, To, Ro, Ro, Rn, SchedT)
         (So, Sr, mk_sched (btensor.sched_of (Rn, 0)))
         (f, init, id @To) map_out (maps, ()) (is, ());
 ///
@@ -714,7 +716,7 @@ anx lam mr_tileable
              : «So_n; Tp» =
         lam map_out_n (o: «Ro_n + Rr_n; affine.Index»): «Ro_n; affine.Index» =
             omega (map_out (iota o), o);
-        map_reduce_post @(nis, 0) @(To, Tp, Ro_n, Ro_n + Rr_n, SchedT)
+        map_reduce_post @(nis, 0) @(To, Tp, Ro_n, Ro_n, Ro_n + Rr_n, SchedT)
             (So_n, Sr_n, mk_sched sched_n)
             @(Tis, Ris, Sis, (), (), ()) (f, init, post)
             map_out_n

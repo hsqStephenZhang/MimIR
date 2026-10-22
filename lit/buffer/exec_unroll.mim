@@ -24,7 +24,7 @@ lam mi (i j k: affine.Index): «3; affine.Index» = (i, j, k);
 // out[i] = sum_{a, b} input[i][a][b]; the schedule operand is a chooser over the target's nest
 // builder (no vector dim, unroll the trailing 1 dim), applied — not interpreted — by the lowering.
 extern fun sum_all (input: «2, 37, 3; I32»): «2; I32» =
-    return (tensor.map_reduce_post
+    return (tensor.map_reduce_post @(1, 0) @(I32, I32, 1, 1, 3, tensor.SchedT)
                 (2, (2, 37, 3), tensor.mk_sched (tensor.sched_of (3, 1)))
                 (add, 0I32, tensor.id) mo (mi, ()) (input, ()));
 

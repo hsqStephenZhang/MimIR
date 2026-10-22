@@ -101,7 +101,7 @@ axm map_reduce: {nis: Nat}
 /// - `So`/`Sr` are the *logical* output shape and loop bounds, while the `buffer.Buf` handles may have
 ///   size-1 axes folded away.
 axm map_reduce_post: {nis nps: Nat}
-                   → {To Tp: *, Ro Rn: Nat, TSched: □}
+                   → {To Tp: *, Ro Rp Rn: Nat, TSched: □}
                    → [So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched]
                    → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
                       Tps: «nps; *», Rps: «j: nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
@@ -681,18 +681,18 @@ lam post_stage (C U To Tp: *) (nps: Nat, Tps: «nps; *»)
 ///
 /// Destination-passing map-reduce: apply the selected nest to ordinary fold and write-back functions.
 priv anx lam map_reduce_post_impl {nis nps: Nat}
-    {To Tp: *, Ro Rr: Nat}
-    (So: «Ro; Nat», Sr: «Ro + Rr; Nat», sched: SchedT)
+    {To Tp: *, Ro Rp Rr: Nat}
+    (So: «Ro; Nat», Sr: «Rp + Rr; Nat», sched: SchedT)
     {Tis: «nis; *», Tps: «nps; *»}
     (f: Fn [mem.M 0, To, «i: nis; Tis#i»] → [mem.M 0, To], init: To,
      post: Fn [mem.M 0, To, «j: nps; Tps#j»] → [mem.M 0, Tp])
-    (map_out: «Ro + Rr; affine.Index» → «Ro; affine.Index»)
-    (read_inputs: Fn [mem.M 0, «d: Ro + Rr; Idx (Sr#d)»] → [mem.M 0, «i: nis; Tis#i»],
+    (map_out: «Rp + Rr; affine.Index» → «Ro; affine.Index»)
+    (read_inputs: Fn [mem.M 0, «d: Rp + Rr; Idx (Sr#d)»] → [mem.M 0, «i: nis; Tis#i»],
      read_post: Fn [mem.M 0, «d: Ro; Idx (So#d)»] → [mem.M 0, «j: nps; Tps#j»],
      write_output: Fn [mem.M 0, buffer.Buf (Ro, So, Tp), «d: Ro; Idx (So#d)», Tp]
          → mem.M 0)
     (m: mem.M 0, dst: buffer.Buf (Ro, So, Tp)): [mem.M 0, buffer.Buf (Ro, So, Tp)] =
-    let Rn = Ro + Rr;
+    let Rn = Rp + Rr;
     let Output = buffer.Buf (Ro, So, Tp);
     // Explicit runtime parameters keep upstream memory expressions outside the loop builders.
     fun run (m: mem.M 0, dst: Output)@tt: [mem.M 0, Output] =
@@ -706,10 +706,10 @@ priv anx lam map_reduce_post_impl {nis nps: Nat}
             write_output ((m, output, coords, value), written);
         let cell_wb = post_stage (Coords, Output, To, Tp) (nps, Tps) (read_post, post) write;
         con wb (m: mem.M 0, output: Output, acc: To, ivs: «Rn; I32», k: Cn [mem.M 0, Output])@tt =
-            let indices = ‹d: Rn; core.conv.u (Sr#d) (ivs#d, 0I32)#(Ro <= core.bitcast Nat d)›;
+            let indices = ‹d: Rn; core.conv.u (Sr#d) (ivs#d, 0I32)#(Rp <= core.bitcast Nat d)›;
             let (m, coords) = affine.map @(Ro, Rn) @(Sr, So) map_out indices @0 m;
             cell_wb (m, output, acc, coords, k);
-        let nest = sched (NestT (Ro, Rr, Sr, To, Output)) (mr_nest (Ro, Rr, Sr, To, Output));
+        let nest = sched (NestT (Rp, Rr, Sr, To, Output)) (mr_nest (Rp, Rr, Sr, To, Output));
         nest (init, cell, wb) (m, dst, return);
     cps.cps2ds run (m, dst);
 ///

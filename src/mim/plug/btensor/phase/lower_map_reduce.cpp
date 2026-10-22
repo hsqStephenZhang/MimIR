@@ -55,7 +55,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
 
     auto impl = rewrite(old_world().annex<btensor::map_reduce_post_impl>());
     impl      = w.app(impl, mr.nis_nps);
-    impl      = w.app(impl, {mr.To, mr.Tp, mr.Ro, w.lit_nat(ranks->rr)});
+    impl      = w.app(impl, {mr.To, mr.Tp, mr.Ro, mr.Rp, w.lit_nat(ranks->rr)});
     impl      = w.app(impl, mr.shapes);
     impl      = w.app(impl, {mr.Tis, mr.Tps});
     impl      = w.app(impl, {mr.comb, mr.init, mr.post});

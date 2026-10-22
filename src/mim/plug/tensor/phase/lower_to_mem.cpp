@@ -754,7 +754,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     auto maps = DefVec(rks->nis, [&](size_t j) { return mr.maps->proj(rks->nis, j); });
 
     auto stage = [&](u64 j) -> bool {
-        if (dim && *dim >= rks->ro) return give_up(j, "not a parallel dim");
+        if (dim && *dim >= rks->rp) return give_up(j, "not a parallel dim");
 
         // The producer: a map_reduce_post without epilogue inputs that writes through a projection.
         auto old_p = Axm::isa<tensor::map_reduce_post>(s.old_is->proj(rks->nis, j));

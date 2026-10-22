@@ -27,7 +27,7 @@ lam mi (i j k a: affine.Index): «4; affine.Index» = (i, j, k, a);
 // out[i,j,k] = sum_a input[i,j,k,a], scheduled with `sched`.
 lam sum_last (sched: tensor.SchedT)
              (input: «2, 3, 4, 5; I32»): «2, 3, 4; I32» =
-    tensor.map_reduce_post
+    tensor.map_reduce_post @(1, 0) @(I32, I32, 3, 3, 4, tensor.SchedT)
         ((2, 3, 4), (2, 3, 4, 5), sched)
         (add, 0I32, tensor.id) mo (mi, ()) (input, ());
 

@@ -27,7 +27,7 @@ const Def* normalize_map_reduce(const Def*, const Def* c, const Def* arg) {
 
     auto op = w.annex<btensor::map_reduce_post>();
     op      = w.app(op, {nis, w.lit_nat_0()});
-    op      = w.app(op, {To, To, Ro, Rn, sched->type()});
+    op      = w.app(op, {To, To, Ro, Ro, Rn, sched->type()});
     op      = w.app(op, {So, Sr, sched});
     op      = w.app(op, {Tis, Ris, Sis, unit, unit, unit});
     op      = w.app(op, {comb, init, post});

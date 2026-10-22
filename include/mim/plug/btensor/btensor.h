@@ -19,35 +19,37 @@ namespace mim::plug::btensor {
 /// The curried meta arguments of a `tensor.map_reduce_post` or `btensor.map_reduce_post` callee (same layout).
 struct MapRedPost {
     const Def *nis_nps, *meta, *shapes, *in_tys, *comb_init, *map_out, *maps_all;
-    const Def *nis, *nps, *To, *Tp, *Ro, *Rn, *TSched, *So, *Sr, *sched;
+    const Def *nis, *nps, *To, *Tp, *Ro, *Rp, *Rn, *TSched, *So, *Sr, *sched;
     const Def *Tis, *Ris, *Sis, *Tps, *Rps, *Sps, *comb, *init, *post, *maps, *post_maps;
 
     static MapRedPost of(const App* callee) {
         auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all] = callee->uncurry_args<7>();
         auto [nis, nps]                                                    = nis_nps->projs<2>();
-        auto [To, Tp, Ro, Rn, TSched]                                      = meta->projs<5>();
+        auto [To, Tp, Ro, Rp, Rn, TSched]                                  = meta->projs<6>();
         auto [So, Sr, sched]                                               = shapes->projs<3>();
         auto [Tis, Ris, Sis, Tps, Rps, Sps]                                = in_tys->projs<6>();
         auto [comb, init, post]                                            = comb_init->projs<3>();
         auto [maps, post_maps]                                             = maps_all->projs<2>();
-        return {nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, nis,      nps, To,
-                Tp,      Ro,   Rn,     TSched, So,        Sr,      sched,    Tis,      Ris, Sis,
-                Tps,     Rps,  Sps,    comb,   init,      post,    maps,     post_maps};
+        return {nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, nis,  nps,  To,   Tp,
+                Ro,      Rp,   Rn,     TSched, So,        Sr,      sched,    Tis,  Ris,  Sis,  Tps,
+                Rps,     Sps,  comb,   init,   post,      maps,    post_maps};
     }
 
+    /// The output rank `ro`, and the `rp` parallel and `rr` reduction loops.
     struct Ranks {
-        u64 nis, nps, ro, rr;
-        u64 nloops() const { return ro + rr; }
+        u64 nis, nps, ro, rp, rr;
+        u64 nloops() const { return rp + rr; }
     };
 
-    /// The literal input counts and loop ranks; `std::nullopt` unless all are literal and `Rn >= Ro`.
+    /// The literal input counts and ranks; `std::nullopt` unless all are literal and `Rn >= Rp`.
     std::optional<Ranks> ranks() const {
         auto nis_l = Lit::isa<u64>(nis);
         auto nps_l = Lit::isa<u64>(nps);
         auto ro_l  = Lit::isa<u64>(Ro);
+        auto rp_l  = Lit::isa<u64>(Rp);
         auto rn_l  = Lit::isa<u64>(Rn);
-        if (!nis_l || !nps_l || !ro_l || !rn_l || *rn_l < *ro_l) return {};
-        return Ranks{*nis_l, *nps_l, *ro_l, *rn_l - *ro_l};
+        if (!nis_l || !nps_l || !ro_l || !rp_l || !rn_l || *rn_l < *rp_l) return {};
+        return Ranks{*nis_l, *nps_l, *ro_l, *rp_l, *rn_l - *rp_l};
     }
 
     /// The fields of a `btensor.Sched` record, in order.
