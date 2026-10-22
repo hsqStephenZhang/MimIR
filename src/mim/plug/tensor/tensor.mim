@@ -732,14 +732,14 @@ anx lam mr_tileable
 ///
 /// Fully unroll the trailing `d` reduction dims into the loop body — e.g. a
 /// convolution's kh·kw window (`d = 2`). Their trip counts must be literals at lowering time.
-lam unroll_trailing (t: Tileable, d: Nat): Tileable = t#sched#unroll ← d;
+anx lam unroll_trailing (t: Tileable, d: Nat): Tileable = t#sched#unroll ← d;
 ///
 /// #### vectorize
 ///
 /// Run dim `d` as the innermost, unit-stride vector loop (per-cell fold order is
 /// unchanged). A parallel `d` runs inside the reduction loops over a row of accumulators; the
 /// innermost reduction dim as `d` selects `btensor.mr_nest`'s reduction-vectorized nest instead.
-lam vectorize (t: Tileable, d: Nat): Tileable = t#sched#vdim ← d;
+anx lam vectorize (t: Tileable, d: Nat): Tileable = t#sched#vdim ← d;
 ///
 /// ### Strip-Mining
 ///

@@ -8,6 +8,10 @@
 // * `h0`:    the same with ko outermost, accumulating all of the cells.
 // * `hpost`: with the epilogue 2x + 1, which must run once, after the last K block.
 // * `htail`: the GEMM order (io, jo, ko, ii, ji, ki) with i in tiles of 4, the last one cut short.
+// With N = 8 for a vector dim, inside the hoisted K blocks:
+// * `hvec`:   j vectorized over a row loaded from the accumulator; `hvec_u` with ki unrolled too.
+// * `hblk`:   i split by 2 and blocked: a 2 × 8 register panel, ii jammed into the vector loop.
+// * `hblk_tail`: the same over 7 rows, the last block of one row.
 // The exit code counts the cells that differ.
 plugin core;
 plugin tensor;
@@ -28,6 +32,13 @@ let a = generate (6, 8) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wr
 let b = generate (8, 5) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (i#0_2, core.wrap.mul 0 (2I64, i#1_2))));
 
 lam mm (post: Fn [I32, []] → I32) = mr_tileable @2 @(2, 1) ((6, 5), (0, 1), (6, 5, 8)) (mac, 0I32, post) mo (ma, mb) (a, b);
+
+let a7 = generate (7, 8) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.sub 0 (i#1_2, core.wrap.mul 0 (2I64, i#0_2))));
+let b8 = generate (8, 8) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (core.wrap.mul 0 (3I64, i#0_2), i#1_2)));
+let mm8 = mr_tileable @2 @(2, 1) ((6, 8), (0, 1), (6, 8, 8)) (mac, 0I32, id) mo (ma, mb) (a, b8);
+let mm7 = mr_tileable @2 @(2, 1) ((7, 8), (0, 1), (7, 8, 8)) (mac, 0I32, id) mo (ma, mb) (a7, b8);
+lam diff8 {m: Nat} (x y: «m, 8; I32»): I32 =
+    reduce (add, 0I32) 0₁ (reduce (add, 0I32) 1₂ (binary (λ (u v: I32): I32 = core.select (core.icmp.e (u, v), 0I32, 1I32)) (x, y)));
 lam diff (x y: «6, 5; I32»): I32 =
     reduce (add, 0I32) 0₁ (reduce (add, 0I32) 1₂ (binary (λ (u v: I32): I32 = core.select (core.icmp.e (u, v), 0I32, 1I32)) (x, y)));
 
@@ -37,5 +48,11 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
     let h0    = materialize (hoist_red (strip_mine_red (mm id, 2, 4), 0, 1));
     let hpost = materialize (hoist_red (strip_mine_red (mm twice1, 2, 4), 1, 1));
     let htail = materialize (hoist_red (strip_mine_red (tile_par (mm id, (4, 0)), 4, 4), 2, 1));
-    let bad   = diff (h1, plain) + diff (h0, plain) + diff (hpost, materialize (mm twice1)) + diff (htail, plain);
+    let p8    = materialize mm8;
+    let hvec  = materialize (hoist_red (vectorize (strip_mine_red (mm8, 2, 4), 1), 1, 1));
+    let hvecu = materialize (hoist_red (unroll_trailing (vectorize (strip_mine_red (mm8, 2, 4), 1), 1), 1, 1));
+    let hblk  = materialize (hoist_red (vectorize (strip_mine_red (split_par (mm8, 0, 2), 3, 4), 1), 1, 1));
+    let hblkt = materialize (hoist_red (vectorize (strip_mine_red (split_par (mm7, 0, 2), 3, 4), 1), 1, 1));
+    let bad   = diff (h1, plain) + diff (h0, plain) + diff (hpost, materialize (mm twice1)) + diff (htail, plain)
+              + diff8 (hvec, p8) + diff8 (hvecu, p8) + diff8 (hblk, p8) + diff8 (hblkt, materialize mm7);
     return (m, bad);

@@ -513,6 +513,29 @@ lam acc_cell (r: Nat, To U: *) (N: Nat, buf: buffer.Buf (1, N, To), ix: «r; I32
             k (m, u);
         inner (pref, m, acc, after);
     at;
+///
+/// #### acc_swap
+///
+/// `acc_tile` over the partial folds in `src` instead of `init` and `wb`: it loads the tile from `src` (indexed by `jx`)
+/// before the inner nest and stores it back after.
+lam acc_swap (r: Nat, To U: *)
+             (N: Nat, buf: buffer.Buf (1, N, To), ix: «r; I32» → Idx N, tile: Stage (r, U, U))
+             (M: Nat, src: buffer.Buf (1, M, To), jx: «r; I32» → Idx M)
+             (inner: Body (r, U))
+           : Body (r, U) =
+    con load (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+        let (m, v) = buffer.read (1, M, To) (m, src, jx pref);
+        let (m, _) = buffer.write (1, N, To) (m, buf, ix pref, v);
+        k (m, u);
+    con store (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+        let (m, v) = buffer.read (1, N, To) (m, buf, ix pref);
+        let (m, _) = buffer.write (1, M, To) (m, src, jx pref, v);
+        k (m, u);
+    con at (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+        con s2 (m: mem.M 0, u: U) = (tile store) (pref, m, u, k);
+        con s1 (m: mem.M 0, u: U) = inner (pref, m, u, s2);
+        (tile load) (pref, m, u, s1);
+    at;
 
 /// ### mr_nest_with
 ///
@@ -684,15 +707,19 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
         // HOISTED (`hoist = h > 0`): the first `h` reduction dims run outside the parallel dims from `hoist_at = hs`
         // on — the K blocks of a GEMM outside its M and N loops — so the fold of a cell spans their iterations. The
         // cells inside them accumulate in a buffer `acc` that `init` fills before them and that `wb` (the epilogue
-        // included) writes back after them; inside, each cell folds the remaining reduction dims in a register.
+        // included) writes back after them. Inside them runs the classic, vectorized or blocked nest over the
+        // remaining dims, the latter two loading their row or panel from `acc` and storing it back: a micro-kernel.
         // Clamps as above: the non-selected branch is still elaborated.
         let hh       = s#hoist;
         let hs       = (s#hoist_at, ro)#(ro < s#hoist_at);
         let h_hi     = ro + hh;
         let hoist_ok = core.bit2.and 2 (0 < hh, h_hi <= r);
         let u_h      = (h_hi, u_lo)#(h_hi <= u_lo);
+        let vec_h    = core.bit2.and 2 (vec_ok, hs <= vd);
+        let block_h  = core.bit2.and 2 (block_ok, hs <= pd_c);
         lam cells (d: Nat, acc: Nat): Nat = acc * Sr#(core.idx 0 r d);
-        let h_ds = ‹i: ro - hs; hs + core.idx2nat i›;
+        // Row-major, so that the vector dim is unit-stride in `acc` too.
+        let h_ds = ‹i: ro - hs; ro - 1 - core.idx2nat i›;
         let Nc   = vec.fold.r @(Nat, Nat) @(ro - hs) cells (h_ds, 1);
 
         con hoisted (m: mem.M 0, u: U, done: Cn [mem.M 0, U])@tt =
@@ -700,22 +727,60 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
                 core.wrap.add 0 (core.wrap.mul 0 (acc, core.bitcast I32 (Sr#(core.idx 0 r d))), pref#(core.idx 0 r d));
             let ci_of = lm (pref: «r; I32»): Idx Nc =
                 core.conv.u Nc (vec.fold.r @(I32, Nat) @(ro - hs) (h_lin pref) (h_ds, 0I32));
-            let (m, acc) = buffer.alloc (1, Nc, To) m;
+            let Sv    = (1, Sr#(core.idx 0 r vd))#vec_h;
+            let vi_of = lm (pref: «r; I32»): Idx Sv = core.conv.u Sv (pref#(core.idx 0 r vd));
+            let Sp    = Sr#(core.idx 0 r pd_c);
+            let Sb    = Sr#(core.idx 0 r sd_c);
+            let Np    = (1, Sp * Sb)#block_h;
+            let bi_of = lm (pref: «r; I32»): Idx Np =
+                core.conv.u Np (core.wrap.add 0 (core.wrap.mul 0 (pref#(core.idx 0 r pd_c), core.bitcast I32 Sb),
+                                                  pref#(core.idx 0 r sd_c)));
+            let (m, acc)   = buffer.alloc (1, Nc, To) m;
+            let (m, row)   = buffer.alloc (1, Sv, To) m;
+            let (m, panel) = buffer.alloc (1, Np, To) m;
             con done_acc (m: mem.M 0, u: U) =
+                let m = buffer.free (1, Np, To) (m, panel);
+                let m = buffer.free (1, Sv, To) (m, row);
                 let m = buffer.free (1, Nc, To) (m, acc);
                 done (m, u);
-            let tile = range_nest (r, Sr) U none (affine_for @U, impl_for, hs, ro);
-            let c1   = ctx_in (c0, 0, hs);
-            let c2   = ctx_in (c1, ro, h_hi);
-            let c3   = ctx_in (c2, hs, ro);
-            let c4   = ctx_in (c3, h_hi, u_h);
-            let body = range_nest (r, Sr) U (hu, c0) (affine_for @U, impl_for, 0, hs)
-                           (acc_tile (r, To, U) (Nc, acc, ci_of, tile) (init, wb)
-                               (range_nest (r, Sr) U (hu, c1) (affine_for @U, impl_for, ro, h_hi)
-                                   (range_nest (r, Sr) U (hu, c2) (affine_for @U, impl_for, hs, ro)
-                                       (acc_cell (r, To, U) (Nc, acc, ci_of)
-                                           (range_nest (r, Sr) To (ht, c3) (affine_for @To, impl_for, h_hi, u_h)
-                                               (range_unroll (r, Sr) To (ht, c4) (u_h, r) cell_at))))));
+            lam win_h (c: Ctx): Body (r, To) = range_unroll (r, Sr) To (ht, c) (u_h, r) cell_at;
+            let c1 = ctx_in (c0, 0, hs);
+            let c2 = ctx_in (c1, ro, h_hi);
+            // Each cell folds the remaining dims in a register.
+            let c3 = ctx_in (c2, hs, ro);
+            let classic_in = range_nest (r, Sr) U (hu, c2) (affine_for @U, impl_for, hs, ro)
+                                 (acc_cell (r, To, U) (Nc, acc, ci_of)
+                                     (range_nest (r, Sr) To (ht, c3) (affine_for @To, impl_for, h_hi, u_h)
+                                         (win_h (ctx_in (c3, h_hi, u_h)))));
+            // The vector dim innermost, over a row loaded from `acc`.
+            let v1 = ctx_in (c2, hs, vd);
+            let v2 = ctx_in (v1, h_hi, u_h);
+            let v3 = ctx_in (v2, vd, vd + 1);
+            let vec_in = range_nest (r, Sr) U (hu, c2) (novec_for @U, impl_novec, hs, vd)
+                             (acc_swap (r, To, U) (Sv, row, vi_of, range_nest (r, Sr) U none (vec_for @U, impl_vec, vd, vd + 1))
+                                                  (Nc, acc, ci_of)
+                                 (range_nest (r, Sr) U (hu, v1) (novec_for @U, impl_novec, h_hi, u_h)
+                                     (range_nest (r, Sr) U (hu, v2) (vec_for @U, impl_vec, vd, vd + 1)
+                                         (acc_cell (r, To, U) (Sv, row, vi_of) (win_h v3)))));
+            // The vector dim innermost with the block dim jammed into its body, over a panel loaded from `acc`.
+            let b1 = ctx_in (c2, hs, pd_c);
+            let b2 = ctx_in (b1, h_hi, u_h);
+            let b3 = ctx_in (b2, sd_c, sd_c + 1);
+            let b4 = ctx_in (b3, pd_c, pd_c + 1);
+            let panel_tile = lm (b: Body (r, U)): Body (r, U) =
+                range_nest (r, Sr) U none (novec_for @U, impl_novec, pd_c, sd_c)
+                    (range_nest (r, Sr) U none (vec_for @U, impl_vec, sd_c, ro) b);
+            let block_in = range_nest (r, Sr) U (hu, c2) (novec_for @U, impl_novec, hs, pd_c)
+                               (acc_swap (r, To, U) (Np, panel, bi_of, panel_tile) (Nc, acc, ci_of)
+                                   (range_nest (r, Sr) U (hu, b1) (novec_for @U, impl_novec, h_hi, u_h)
+                                       (range_nest (r, Sr) U (hu, b2) (vec_for @U, impl_vec, sd_c, sd_c + 1)
+                                           (range_unroll (r, Sr) U (hu, b3) (pd_c, pd_c + 1)
+                                               (acc_cell (r, To, U) (Np, panel, bi_of) (win_h b4))))));
+            let inner = ((classic_in, vec_in)#vec_h, block_in)#block_h;
+            let tile  = range_nest (r, Sr) U none (affine_for @U, impl_for, hs, ro);
+            let body  = range_nest (r, Sr) U (hu, c0) (affine_for @U, impl_for, 0, hs)
+                            (acc_tile (r, To, U) (Nc, acc, ci_of, tile) (init, wb)
+                                (range_nest (r, Sr) U (hu, c1) (affine_for @U, impl_for, ro, h_hi) inner));
             (hu (loop_root r c0) body) (‹r; 0I32›, m, u, done_acc);
 
         con run (m: mem.M 0, u: U, done: Cn [mem.M 0, U])@tt =
