@@ -737,6 +737,8 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     auto map = mr.maps->proj(rks->nis, *slot);
     auto pro = Lit::isa<u64>(mr.Ris->proj(rks->nis, *slot));
     if (!pro || *pro != prk->ro) return give_up("the read rank does not match the input");
+    // Unit axes fold «1, 4» and «4, 1» to one type, so only the shapes tell whether the read and the write agree.
+    if (mp.So != mr.Sis->proj(rks->nis, *slot)) return give_up("the input's shape is not the producer's");
     auto image = [&](auto lo, auto ext) {
         auto box = w.tuple({w.tuple(DefVec(rn, lo)), w.tuple(DefVec(rn, ext)), mp.So});
         return w.app(w.app(w.app(w.annex<affine::image>(), {mr.Rn, mr.Ris->proj(rks->nis, *slot)}), map), box);

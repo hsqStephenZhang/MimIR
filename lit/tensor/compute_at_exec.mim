@@ -18,6 +18,8 @@
 // * `chain_at`: Q at i of P, P at i of C: P is realized, Q inside P's tile is warned and whole.
 // * `back_at`: P read at row (i − 5) + 5, whose Nat bounds must not saturate at the intermediate i − 5.
 // * `fused_at`: C = Σ_k (x + y)[i, j, k] · P[i, k], P at i: fuse_tensor splices x + y into two inputs, so P moves to slot 2.
+// * `fold_at`: a producer of «1, 5» read as «5, 1», one type as unit axes fold: warned, and read as `fold_plain` reads it.
+// * `epi_at`: C = R + P with R a reduction and P at i: epilogue fusion would sink C into R, dropping the schedule.
 // * `plain`:   an input that no map_reduce_post computes cannot be computed at a loop: warned, and read as is.
 plugin core;
 plugin tensor;
@@ -116,6 +118,21 @@ extern fun fused_at (x y: «4, 5, 7; I32», a: «4, 7, 2; I32»): «4, 5; I32» 
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 7)) (mac, 0I32, tensor.id) mo (m3, ma) (s, p);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
 
+extern fun fold_at (x: «1, 5; I32»): «5; I32» =
+    let p: «5, 1; I32» = tensor.materialize (tensor.mr_tileable @1 @(2, 0) ((1, 5), (0, 1), (1, 5)) (inc, 0I32, tensor.id) po po (tensor.buf x));
+    let t = tensor.mr_tileable @1 @(1, 1) (5, 0, (5, 1)) (sum, 0I32, tensor.id) ro ri p;
+    return (tensor.materialize (tensor.compute_at (t, 0, 0)));
+
+extern fun fold_plain (x: «1, 5; I32»): «5; I32» =
+    let p: «5, 1; I32» = tensor.materialize (tensor.mr_tileable @1 @(2, 0) ((1, 5), (0, 1), (1, 5)) (inc, 0I32, tensor.id) po po (tensor.buf x));
+    return (tensor.materialize (tensor.mr_tileable @1 @(1, 1) (5, 0, (5, 1)) (sum, 0I32, tensor.id) ro ri p));
+
+extern fun epi_at (a: «2, 9, 2; I32», b: «2, 9; I32»): «2, 9; I32» =
+    let r = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((2, 9), (0, 1), (2, 9, 2)) (sum, 0I32, tensor.id) qo pa (tensor.buf a));
+    let p = tensor.unary add1 (tensor.buf b);
+    let t = tensor.mr_tileable @2 @(2, 0) ((2, 9), (0, 1), (2, 9)) (add, 0I32, tensor.id) po (po, po) (r, p);
+    return (tensor.materialize (tensor.compute_at (t, 1, 0)));
+
 extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
@@ -124,6 +141,7 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // WARN-DAG: compute_at of input 1 inside dim 0 of {{.*}} not realized: a box may leave the input
 // WARN-DAG: compute_at inside input 0 of {{.*}} not realized: the input is computed one tile at a time
 // WARN-DAG: compute_at of input 1 inside dim 0 of {{.*}} not realized: the input is not a map_reduce_post
+// WARN-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the input's shape is not the producer's
 
 // Every producer runs inside its consumer's nest on a tile buffer of the box's static size — a row «1, 6»
 // (folded to «6»), three input rows «1, 2, 3, 6» of the convolution (folded to «2, 3, 6») — which lands on
@@ -132,6 +150,7 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // CHECK-DAG: mem.mslot («2, 3, 6; I32», 0)
 // CHECK-DAG: mem.mslot («2; I32», 0)
 // CHECK-DAG: mem.mslot («7; I32», 0)
+// CHECK-DAG: mem.mslot («9; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («3, 6; I32», 0)
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 6; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («2, 2, 6, 6; I32»

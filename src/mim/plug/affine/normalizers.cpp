@@ -363,8 +363,14 @@ std::array<const Def*, 4> hull(Region& r, const DefVec& bodies, u64 m, u64 j, co
     return {lo, r.sub(r.add(top, r.one()), lo), r.min(width, s), exact};
 }
 
+const Def* empty_region(World& w, u64 m) {
+    auto zeros = w.tuple(DefVec(m, [&](size_t) -> const Def* { return w.lit_nat_0(); }));
+    return w.tuple({zeros, zeros, zeros, w.tuple(DefVec(m, [&](size_t) -> const Def* { return w.lit_tt(); }))});
+}
+
 const Def* boxes(const Def* fs, u64 k, u64 n, u64 m, const Def* box) {
     auto& w = fs->world();
+    if (k == 0) return empty_region(w, m);
 
     const Def* var = nullptr;
     auto bodies    = DefVec(k);
@@ -382,11 +388,18 @@ const Def* boxes(const Def* fs, u64 k, u64 n, u64 m, const Def* box) {
 
     auto [lo, ext, s] = box->projs<3>();
     auto region       = Region(w, var, n, lo, ext);
-    auto res          = std::array<DefVec, 4>{DefVec(m), DefVec(m), DefVec(m), DefVec(m)};
+    // An empty domain reaches nothing, while the closed bounds `lo + ext − 1` would saturate to a value.
+    const Def* empty = w.lit_ff();
+    for (u64 i = 0; i != n; ++i)
+        empty = w.call(core::bit2::or_, w.lit_nat(2),
+                       Defs{empty, w.call(core::ncmp::e, Defs{ext->proj(n, i), w.lit_nat_0()})});
+    if (empty == w.lit_tt()) return empty_region(w, m);
+
+    auto res = std::array<DefVec, 4>{DefVec(m), DefVec(m), DefVec(m), DefVec(m)};
     for (u64 j = 0; j != m; ++j) {
         auto h = hull(region, bodies, m, j, s->proj(m, j));
         for (size_t x = 0; x != 4; ++x)
-            res[x][j] = h[x];
+            res[x][j] = x == 2 ? h[x] : region.select(empty, x == 3 ? w.lit_tt() : w.lit_nat_0(), h[x]);
     }
     return w.tuple({w.tuple(res[0]), w.tuple(res[1]), w.tuple(res[2]), w.tuple(res[3])});
 }
@@ -406,11 +419,6 @@ const Def* normalize_cover(const Def*, const Def* c, const Def* arg) {
     auto [k, n, m] = knm->projs<3>();
     auto lk = Lit::isa(k), ln = Lit::isa(n), lm = Lit::isa(m);
     if (!lk || !ln || !lm || *ln > 64) return nullptr;
-    if (*lk == 0) {
-        auto& w    = c->world();
-        auto zeros = w.tuple(DefVec(*lm, [&](size_t) -> const Def* { return w.lit_nat_0(); }));
-        return w.tuple({zeros, zeros, zeros, w.tuple(DefVec(*lm, [&](size_t) -> const Def* { return w.lit_tt(); }))});
-    }
     return boxes(fs, *lk, *ln, *lm, arg);
 }
 

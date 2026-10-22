@@ -68,6 +68,10 @@ lam back (i: affine.Index): «2; affine.Index» =
     (affine.op.add (affine.op.sub (i, affine.lit 5), affine.lit 5), affine.semiop.floordiv (affine.op.sub (i, affine.lit 1), 2));
 extern fun c_back (): B2 = return (affine.image back (0, 8, (8, 8)));
 
+// An empty domain reaches nothing, though `lo + ext − 1` of its closed bounds would saturate to 0.
+lam id1 (i: affine.Index): affine.Index = i;
+extern fun c_empty (): [Nat, Nat, Nat, Bool] = return (affine.image id1 (0, 0, 8));
+
 // The hull of no maps is empty.
 extern fun c_none (): [Nat, Nat, Nat, Bool] = return (affine.cover @(0, 1, 1) () (0, 1, 8));
 
@@ -133,6 +137,8 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK-NEXT:  return ((1, 2), ‹2; 2›, ‹2; 2›, ‹2; tt›);
 // CHECK-LABEL: extern fun c_div_sym
 // CHECK:       return ({{.*}}, {{.*}}, ‹2; 3›, ‹2; tt›);
+// CHECK-LABEL: extern fun c_empty
+// CHECK-NEXT:  return (0, 0, 0, tt);
 // CHECK-LABEL: extern fun c_gap
 // CHECK:       return ({{.*}}, {{.*}}, 10, ff);
 // CHECK-LABEL: extern fun c_mixed

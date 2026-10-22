@@ -1,0 +1,26 @@
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+// The GPU lowering does not run schedule actions, so it leaves a compute_at to the CPU lowering, which computes
+// (a + 1) one row «1, 6» at a time; a kernel would read the tile without ever filling it, and never read `a`.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin gpu;
+
+use core.ops.u.w;
+
+fun mac (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+lam add1 (x: I32): I32 = x + 1I32;
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+
+extern fun mm_at (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
+    let p = tensor.unary add1 (tensor.buf a);
+    let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf b);
+    return (tensor.materialize (tensor.compute_at (t, 0, 0)));
+
+// WARN: runs a schedule action, e.g. a compute_at, which only the CPU lowering realizes
+// CHECK: extern con mm_at ({{.*}}, a: core.Ptr («4, 6; I32», 0)
+// CHECK: gpu.copy_to_device.block @ «4, 6; I32» ({{.*}}, a,

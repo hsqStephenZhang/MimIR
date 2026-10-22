@@ -433,6 +433,8 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     auto nps_nat = *nps_lit;
     if (nis_nat == 0) return nullptr;
     if (mr.Sr != mr.So) return nullptr;
+    // The fused op takes the producer's schedule, which would drop this one's compute_at.
+    if (mr.sched_record()->proj(8, 2) == w.lit_tt()) return nullptr;
 
     if (!is_identity_map(mr.map_out)) return nullptr;
 

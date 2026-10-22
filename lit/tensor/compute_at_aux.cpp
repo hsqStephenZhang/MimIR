@@ -18,6 +18,9 @@ int32_t* rev_at(int32_t* a, int32_t* b);
 int32_t* chain_at(int32_t* a, int32_t* b, int32_t* e);
 int32_t* back_at(int32_t* a, int32_t* b);
 int32_t* fused_at(int32_t* x, int32_t* y, int32_t* a);
+int32_t* fold_at(int32_t* x);
+int32_t* fold_plain(int32_t* x);
+int32_t* epi_at(int32_t* a, int32_t* b);
 }
 
 static int compare(const char* name, const int32_t* got, const int32_t* want, int n) {
@@ -136,6 +139,15 @@ int main() {
             fu[i * 5 + j] = f;
         }
 
+    // epi_at: (a9 summed over its last axis) + b9 + 1.
+    int32_t a9[2 * 9 * 2], b9[2 * 9], ep[2 * 9], x15[5] = {10, 20, 30, 40, 50};
+    for (int i = 0; i < 2 * 9 * 2; ++i)
+        a9[i] = (i * 5) % 8 - 3;
+    for (int i = 0; i < 2 * 9; ++i) {
+        b9[i] = (i * 7) % 5 - 2;
+        ep[i] = a9[2 * i] + a9[2 * i + 1] + b9[i] + 1;
+    }
+
     int bad = 0;
     bad += compare("mm_at0", mm_at0(a, b), mm, 4 * 5);
     bad += compare("mm_at1", mm_at1(a, b), mm, 4 * 5);
@@ -148,5 +160,7 @@ int main() {
     bad += compare("chain_at", chain_at(a3, b, e), ch, 3 * 3);
     bad += compare("back_at", back_at(a4, b), bk, 4 * 5);
     bad += compare("fused_at", fused_at(x7, y7, a7), fu, 4 * 5);
+    bad += compare("fold_at", fold_at(x15), fold_plain(x15), 5);
+    bad += compare("epi_at", epi_at(a9, b9), ep, 2 * 9);
     return bad ? 1 : 0;
 }
