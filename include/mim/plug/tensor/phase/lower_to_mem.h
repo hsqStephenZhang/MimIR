@@ -53,6 +53,8 @@ private:
     const Def* lower_map_reduce(const App*);
     /// Realizes a `tensor.compute_at` in the schedule of the map_reduce_post @p app, if it can; `nullptr` otherwise.
     const Def* lower_compute_at(const App*);
+    /// Realizes the `tensor.reverse_compute_at` in the schedule of @p app, described by @p mr, if it can.
+    const Def* lower_reverse(const App* app, const btensor::MapRedPost& mr);
 
     /// A map_reduce_post being lowered with inputs computed one tile at a time.
     struct Staged {
@@ -66,18 +68,17 @@ private:
         bool fuse;          ///< Whether an enclosing tile_and_fuse computes the op's inputs ahead of the op.
         u64 budget;         ///< That tile_and_fuse's recompute budget.
         u64 runs;           ///< How often the op runs.
+        u64 post_dim = 0;   ///< The loop that runs `post` after the nest inside it, if `post` is set.
+        Lam* post    = nullptr;
     };
 
     /// The op of @p s applied to @p mem and @p dst, `[mem, dst]`, with the inputs its schedule or an enclosing
-    /// tile_and_fuse names computed one tile at a time; a null @p mem and @p dst stand for a destination allocated on
-    /// #alloc_mem_ once every tile is.
+    /// tile_and_fuse names computed one tile at a time; a null @p mem stands for #alloc_mem_ once every tile is
+    /// allocated, and a null @p dst for a destination allocated there.
     const Def* lower_staged(const Staged& s, const Def* mem, const Def* dst);
-    /// The schedule of the producer @p mp on a tile at @p base that cuts the loops of the axes @p clip short at the
-    /// producer's end; `axis_of` tells which axis each loop writes.
-    const Def* clip_lim(const btensor::MapRedPost& mp,
-                        const std::vector<std::optional<u64>>& axis_of,
-                        const Def* base,
-                        const std::vector<bool>& clip);
+    /// The schedule of @p op on a tile whose loop `d` starts at `starts[d]` of the whole op, and stops at `ends[d]`
+    /// where that is set, or earlier where @p op's own `lim` does.
+    const Def* clip_lim(const btensor::MapRedPost& op, const DefVec& starts, const DefVec& ends);
     /// The `btensor.map_reduce_post` of @p mr, with mem-threaded combiner and epilogue, over @p shapes, @p in_tys and
     /// @p maps_all, awaiting its memory and buffers.
     const Def* btensor_op(const btensor::MapRedPost& mr, const Def* shapes, const Def* in_tys, const Def* maps_all);

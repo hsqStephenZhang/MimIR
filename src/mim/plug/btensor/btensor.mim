@@ -168,12 +168,17 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 /// - `acts`, `act_dim`, `act`: whether to run `act` inside the loop of dim `act_dim` before the nest inside it
 ///   (see `at_stage`);
 /// - `lim`: for the loop of dim `d`, given the loop-vector prefix (by dim), whether it stops before its extent and
-///   where — the tail of a split that does not divide (see `tensor.split_par`).
+///   where — the tail of a split that does not divide (see `tensor.split_par`);
+/// - `rev`: whether `at` asks instead to compute this op inside the loop of dim `at_dim` of the producer of the
+///   input `at_slots` names (see `tensor.reverse_compute_at`);
+/// - `posts`, `post_dim`, `post`: whether to run `post` inside the loop of dim `post_dim` after the nest inside it
+///   (see `after_stage`).
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
 anx let Sched = [vdim unroll: Nat, at: Bool, at_slots at_dim: Nat, fuse: Bool, budget: Nat, acts: Bool,
-                 act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32]];
+                 act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32],
+                 rev posts: Bool, post_dim: Nat, post: Fn [mem.M 0, Nat → I32] → mem.M 0];
 ///
 /// #### act_none
 ///
@@ -186,7 +191,7 @@ anx lam lim_none (_: Nat → I32, _: Nat): [Bool, I32] = (ff, 0I32);
 /// #### sched_of
 ///
 /// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
-anx lam sched_of (vdim unroll: Nat): Sched = (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none);
+anx lam sched_of (vdim unroll: Nat): Sched = (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none, ff, ff, 0, act_none);
 ///
 /// ### SchedT
 ///
@@ -365,6 +370,23 @@ anx lam at_stage (d: Nat, run: Fn [mem.M 0, Nat → I32] → mem.M 0) (r: Nat, U
                     (‹i: d + 1; core.idx2nat i›, tt);
     let ok    = core.bit2.or 2 ((tt, ff)#here, core.bit2.and 2 (l#depth == d + 1, fixed));
     (b, refly.check (ok, at, "compute_at: the loops around the tile must be those of the dims before it"))#here;
+
+/// ### after_stage
+///
+/// The counterpart of `at_stage` after the nest: inside the loop of dim `d`, `run` gets the loop-vector prefix once
+/// the nest inside the loop has run (see `tensor.reverse_compute_at`).
+anx lam after_stage (d: Nat, run: Fn [mem.M 0, Nat → I32] → mem.M 0) (r: Nat, U: *) (l: Loop) (b: Body (r, U))
+                  : Body (r, U) =
+    con at (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
+        con done (m: mem.M 0, u: U) =
+            con go (m: mem.M 0) = k (m, u);
+            run ((m, lm (e: Nat): I32 = pref#(core.idx 0 r e)), go);
+        b (pref, m, u, done);
+    let here  = core.bit2.and 2 (l#dim == d, d < r);
+    let fixed = vec.fold.r @(Bool, Nat) @(d + 1) (lm (e: Nat, acc: Bool): Bool = core.bit2.and 2 (l#outer e, acc))
+                    (‹i: d + 1; core.idx2nat i›, tt);
+    let ok    = core.bit2.or 2 ((tt, ff)#here, core.bit2.and 2 (l#depth == d + 1, fixed));
+    (b, refly.check (ok, at, "reverse_compute_at: the loops around the tile must be those of the dims before it"))#here;
 
 /// ### range_nest
 ///
@@ -660,12 +682,13 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
 ///
 /// ### mr_nest
 ///
-/// `mr_nest_with` with the schedule's action (see `at_stage`) in the slots of the loops threading the write-back
-/// target, and every other slot empty: the nest `lower_map_reduce` binds a schedule to.
+/// `mr_nest_with` with the schedule's actions (see `at_stage` and `after_stage`) in the slots of the loops threading
+/// the write-back target, and every other slot empty: the nest `lower_map_reduce` binds a schedule to.
 anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched): NestT (ro, rr, Sr, To, U) =
-    let r  = ro + rr;
-    let hu = (hook_none (r, U), at_stage (s#act_dim, s#act) (r, U))#(s#acts);
-    mr_nest_with (ro, rr, Sr, To, U) (hu, hook_none (r, To)) s;
+    let r    = ro + rr;
+    let pre  = (hook_none (r, U), at_stage (s#act_dim, s#act) (r, U))#(s#acts);
+    let post = (hook_none (r, U), after_stage (s#post_dim, s#post) (r, U))#(s#posts);
+    mr_nest_with (ro, rr, Sr, To, U) (lm (l: Loop) (b: Body (r, U)): Body (r, U) = pre l (post l b), hook_none (r, To)) s;
 ///
 /// ### Write-Back Stages
 ///

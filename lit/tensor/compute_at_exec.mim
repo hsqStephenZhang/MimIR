@@ -39,6 +39,9 @@
 //   «3, 12» of Q, the last ones cut short.
 // * `shared_at`: C · Dᵀ with C = P · B computing P at i and D = P · E reading it whole: P's rows go into its one
 //   whole buffer «5, 14», which D reads once C has filled it.
+// * `rev_rowsum`: C[i] = Σ_j (A · B)[i, j] with C inside the loop of i of the product: a row of C per row of it.
+// * `rev_ew`:   C = P + 1 inside the loop of i of the reduction P.
+// * `rev_halo`: C[i, j] = Σ_k P[i + k, j] reads three rows of P: no part of C reads one row only, so warned.
 // * `plain`:   an input that no map_reduce_post computes cannot be computed at a loop: warned, and read as is.
 plugin core;
 plugin tensor;
@@ -225,12 +228,32 @@ extern fun shared_at (a: «5, 14, 2; I32», b e: «14, 3; I32»): «5, 5; I32» 
     let d = tensor.materialize (tensor.mr_tileable @2 @(2, 1) ((5, 3), (0, 1), (5, 3, 14)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf e));
     return (tensor.materialize (tensor.mr_tileable @2 @(2, 1) ((5, 5), (0, 1), (5, 5, 3)) (mac, 0I32, tensor.id) mo (ma, mdt) (c, d)));
 
+lam rv1 (i _: affine.Index): affine.Index = i;
+lam rv2 (i k: affine.Index): «2; affine.Index» = (i, k);
+lam rvh (i j k: affine.Index): «2; affine.Index» = (affine.op.add (i, k), j);
+
+extern fun rev_rowsum (a: «6, 5; I32», b: «5, 7; I32»): «6; I32» =
+    let p = tensor.materialize (tensor.mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b));
+    let t = tensor.mr_tileable @1 @(1, 1) (6, 0, (6, 7)) (sum, 0I32, tensor.id) rv1 rv2 p;
+    return (tensor.materialize (tensor.reverse_compute_at (t, 0, 0)));
+
+extern fun rev_ew (a: «6, 7, 2; I32»): «6, 7; I32» =
+    let p = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((6, 7), (0, 1), (6, 7, 2)) (sum, 0I32, tensor.id) qo pa (tensor.buf a));
+    let t = tensor.mr_tileable @1 @(2, 0) ((6, 7), (0, 1), (6, 7)) (inc, 0I32, tensor.id) po po p;
+    return (tensor.materialize (tensor.reverse_compute_at (t, 0, 0)));
+
+extern fun rev_halo (a: «6, 8, 2; I32»): «4, 8; I32» =
+    let p = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((6, 8), (0, 1), (6, 8, 2)) (sum, 0I32, tensor.id) qo pa (tensor.buf a));
+    let t = tensor.mr_tileable @1 @(2, 1) ((4, 8), (0, 1), (4, 8, 3)) (sum, 0I32, tensor.id) mo rvh p;
+    return (tensor.materialize (tensor.reverse_compute_at (t, 0, 0)));
+
 extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
 
 // WARN-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the box does not start at the read of the corner
 // WARN-DAG: compute_at of input 1 inside dim 0 of {{.*}} not realized: the input is not a map_reduce_post
+// WARN-DAG: reverse_compute_at of {{.*}} inside dim 0 of the producer of its input 0 not realized: the part of this op that reads one box is not exact
 // WARN-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the input's shape is not the producer's
 
 // Every producer runs inside its consumer's nest on a tile buffer of the box's static size — a row «1, 6»

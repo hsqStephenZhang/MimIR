@@ -1,5 +1,7 @@
 #include "mim/plug/tensor/phase/lower_to_mem.h"
 
+#include <bit>
+
 #include <fe/worklist.h>
 
 #include <mim/axm.h>
@@ -692,6 +694,7 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     auto mr  = F::of(rewrite(app->callee())->as<App>());
     auto rks = mr.ranks();
     if (!rks || mr.sched_field(F::At) != w.lit_tt()) return nullptr;
+    if (mr.sched_field(F::Rev) == w.lit_tt()) return lower_reverse(app, mr);
 
     auto [old_is, old_post_is] = app->arg()->projs<2>();
     auto post_is               = buffer_list(rewrite(old_post_is), old_post_is, mr.nps);
@@ -708,41 +711,153 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     return scalar_result(app, m, out);
 }
 
-const Def* LowerToMem::clip_lim(const btensor::MapRedPost& mp,
-                                const std::vector<std::optional<u64>>& axis_of,
-                                const Def* base,
-                                const std::vector<bool>& clip) {
+const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& mr) {
+    using F    = btensor::MapRedPost;
+    auto& w    = new_world();
+    auto rks   = *mr.ranks();
+    auto rn    = rks.nloops();
+    auto slots = Lit::isa<u64>(mr.sched_field(F::AtSlots)).value_or(0);
+    auto dim   = Lit::isa<u64>(mr.sched_field(F::AtDim));
+    auto j     = u64(std::countr_zero(slots));
+
+    auto give_up = [&](const char* why) -> const Def* {
+        log().w("reverse_compute_at of {} inside dim {} of the producer of its input {} not realized: {}", app,
+                dim ? *dim : 0, j, why);
+        return nullptr;
+    };
+    if (!dim || j >= rks.nis) return give_up("no such input");
+
+    auto [old_is, old_post_is] = app->arg()->projs<2>();
+    auto old_p                 = Axm::isa<tensor::map_reduce_post>(old_is->proj(rks.nis, j));
+    if (!old_p) return give_up("the input is not a map_reduce_post");
+    if (fresh_memo_.contains(old_p)) return give_up("another op has computed the producer already");
+    auto mp  = F::of(rewrite(old_p->callee())->as<App>());
+    auto prk = mp.ranks();
+    if (!prk || *dim >= prk->rp) return give_up("not a parallel dim of the producer");
+    auto prn = prk->nloops();
+    if (mp.So != mr.Sis->proj(rks.nis, j)) return give_up("the input's shape is not the producer's");
+
+    // The action after the nest inside the producer's loop of `dim`; it gets the loop-vector prefix.
+    auto mem_ty      = w.call<mem::M>(0);
+    auto post        = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("tile_after");
+    auto [pdata, pk] = post->vars<2>();
+    auto [pm, get]   = pdata->projs<2>();
+
+    // The box of the producer one iteration writes, and the part of this op that reads only that box.
+    auto origin = DefVec(prn, [&](size_t d) -> const Def* {
+        return d <= *dim ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
+    });
+    auto ext    = DefVec(prn, [&](size_t d) { return d <= *dim ? w.lit_nat_1() : mp.Sr->proj(prn, d); });
+    auto box    = w.app(w.app(w.app(w.annex<affine::image>(), {mp.Rn, mp.Ro}), mp.map_out),
+                        w.tuple({w.tuple(origin), w.tuple(ext), mp.So}));
+    // The box at its static size bounds the part by a static size too.
+    auto part = [&](const Def* ext) {
+        return w.app(
+            w.app(w.app(w.annex<affine::preimage>(), {mr.Rn, mr.Ris->proj(rks.nis, j)}), mr.maps->proj(rks.nis, j)),
+            w.tuple({box->proj(4, 0), ext, mr.Sr}));
+    };
+    auto [lo, len, _, exact] = part(box->proj(4, 1))->projs<4>();
+    auto cap                 = part(box->proj(4, 2))->proj(4, 2);
+    if (exact != w.lit_tt()) return give_up("the part of this op that reads one box is not exact");
+    auto caps = DefVec(rn, [&](size_t d) { return cap->proj(rn, d); });
+    for (u64 d = 0; d != rn; ++d) {
+        if (!Lit::isa(caps[d])) return give_up("the part has no literal size");
+        if (d >= rks.rp && (caps[d] != mr.Sr->proj(rn, d) || lo->proj(rn, d) != w.lit_nat_0()))
+            return give_up("the part does not span a reduction dim");
+    }
+
+    auto ins = DefVec(rks.nis);
+    for (u64 i = 0; i != rks.nis; ++i)
+        if (i != j) {
+            auto old = old_is->proj(rks.nis, i);
+            ins[i]   = to_buffer(rewrite(old), old);
+            if (!Axm::isa<buffer::Buf>(ins[i]->type())) return give_up("an input is not a buffer");
+        }
+    auto post_is    = buffer_list(rewrite(old_post_is), old_post_is, mr.nps);
+    auto old_p_post = old_p->arg()->proj(2, 1);
+    auto p_post_is  = buffer_list(rewrite(old_p_post), old_p_post, mp.nps);
+    if (!post_is || !p_post_is) return give_up("an epilogue input is not a buffer");
+
+    // The part shifted to its start, writing into this op's whole result; it stops at its end, which may come before
+    // its literal size.
+    auto lit   = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
+    auto shift = [&](const Def* f, const char* name) -> const Def* {
+        auto pi  = f->type()->as<Pi>();
+        auto lam = w.mut_lam(pi->dom(), pi->codom())->set(name);
+        auto o   = lam->var();
+        auto at  = w.tuple(DefVec(rn, [&](size_t d) {
+            return d < rks.rp ? w.call(affine::op::add, Defs{o->proj(rn, d), lit(lo->proj(rn, d))}) : o->proj(rn, d);
+        }));
+        lam->set(true, w.app(f, at));
+        return lam;
+    };
+    auto mc     = mr;
+    mc.Sr       = w.tuple(DefVec(rn, [&](size_t d) { return d < rks.rp ? caps[d] : mr.Sr->proj(rn, d); }));
+    mc.maps     = w.tuple(DefVec(rks.nis, [&](size_t i) { return shift(mr.maps->proj(rks.nis, i), "tile_map"); }));
+    mc.map_out  = shift(mr.map_out, "tile_out");
+    auto starts = DefVec(rn), ends = DefVec(rn);
+    for (u64 d = 0; d != rks.rp; ++d) {
+        starts[d] = lo->proj(rn, d);
+        if (len->proj(rn, d) != caps[d]) ends[d] = w.call(core::nat::add, Defs{starts[d], len->proj(rn, d)});
+    }
+    mc.sched = clip_lim(mr, starts, ends);
+
+    auto outer        = std::exchange(alloc_mem_, fresh_mem());
+    auto [am, c_full] = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, alloc_mem_)->projs<2>();
+    auto [bm, p_full] = buffer::op_alloc(mp.Ro, mp.So, mp.Tp, am)->projs<2>();
+    alloc_mem_        = bm;
+    ins[j]            = p_full;
+    auto op_c         = btensor_op(mc, w.tuple({mr.So, mc.Sr, mc.sched}), mr.in_tys, w.tuple({mc.maps, mr.post_maps}));
+    post->app(true, pk, w.app(op_c, w.tuple({pm, c_full, w.tuple(ins), post_is}))->proj(2, 0));
+
+    auto res   = lower_staged({mp, mp, std::vector<bool>(prn), std::vector<bool>(prn), old_p->arg()->proj(2, 0),
+                               p_post_is, old_p, false, 0, 1, *dim, post},
+                              nullptr, p_full);
+    alloc_mem_ = outer;
+    if (!res) return give_up("the producer's inputs are not buffers");
+
+    // The producer's other readers read its result; this op's result is whole once the producer is done.
+    auto [m, p_out]    = res->projs<2>();
+    fresh_memo_[old_p] = scalar_result(old_p, m, p_out);
+    auto after         = w.app(w.app(w.annex<buffer::after>(), c_full->type()->as<App>()->arg()), w.tuple({m, c_full}));
+    auto [cm, c_out]   = after->projs<2>();
+    log().d("reverse: computing {} inside dim {} of the producer of its input {}", app, *dim, j);
+    return scalar_result(app, cm, c_out);
+}
+
+const Def* LowerToMem::clip_lim(const btensor::MapRedPost& op, const DefVec& starts, const DefVec& ends) {
     using F     = btensor::MapRedPost;
     auto& w     = new_world();
-    auto rec    = mp.sched_record();
+    auto rec    = op.sched_record();
     auto own    = rec->proj(F::Num_Fields, F::Lim);
-    auto ro     = clip.size();
-    auto prn    = axis_of.size();
+    auto n      = starts.size();
     auto i32    = w.type_i32();
     auto get_ty = w.pi(w.type_nat(), i32);
-    auto i32_of = [&](const Def* n) { return w.call<core::bitcast>(i32, n); };
+    auto i32_of = [&](const Def* x) { return w.call<core::bitcast>(i32, x); };
     auto select = [&](const Def* c, const Def* t, const Def* f) { return w.extract(w.tuple({f, t}), c); };
-    auto is     = [&](const Def* n, u64 d) { return w.call(core::ncmp::e, Defs{n, w.lit_nat(d)}); };
+    auto is     = [&](const Def* x, u64 d) { return w.call(core::ncmp::e, Defs{x, w.lit_nat(d)}); };
 
     auto lim       = w.mut_lam(w.pi(w.sigma({get_ty, w.type_nat()}), w.sigma({w.type_bool(), i32})))->set("tile_lim");
     auto [get, jj] = lim->vars<2>();
-    // The producer's own `lim` reads the loops of the whole producer, where a shifted dim starts at the box.
+    // The op's own `lim` reads the loops of the whole op, where a shifted dim starts at the tile.
     auto whole = w.mut_lam(get_ty)->set("tile_get");
     auto e     = whole->var();
     auto at    = w.app(get, e);
-    for (u64 dd = 0; dd != prn; ++dd)
-        if (auto a = axis_of[dd])
-            at = select(is(e, dd),
-                        w.call(core::wrap::add, core::Mode::none, Defs{w.app(get, e), i32_of(base->proj(ro, *a))}), at);
+    for (u64 d = 0; d != n; ++d)
+        if (starts[d])
+            at = select(is(e, d), w.call(core::wrap::add, core::Mode::none, Defs{w.app(get, e), i32_of(starts[d])}),
+                        at);
     whole->set(true, at);
 
     const Def* body = w.app(own, w.tuple({whole, jj}));
-    for (u64 dd = 0; dd != prn; ++dd)
-        if (auto a = axis_of[dd]; a && clip[*a]) {
-            auto mine = w.app(own, w.tuple({whole, w.lit_nat(dd)}));
-            auto end  = select(mine->proj(2, 0), mine->proj(2, 1), i32_of(mp.So->proj(ro, *a)));
-            auto stop = w.call(core::wrap::sub, core::Mode::none, Defs{end, i32_of(base->proj(ro, *a))});
-            body      = select(is(jj, dd), w.tuple({w.lit_tt(), stop}), body);
+    for (u64 d = 0; d != n; ++d)
+        if (ends[d]) {
+            auto mine = w.app(own, w.tuple({whole, w.lit_nat(d)}));
+            auto end  = i32_of(ends[d]);
+            auto cut  = w.call(core::icmp::ul, Defs{mine->proj(2, 1), end});
+            end       = select(mine->proj(2, 0), select(cut, mine->proj(2, 1), end), end);
+            auto stop = w.call(core::wrap::sub, core::Mode::none, Defs{end, i32_of(starts[d])});
+            body      = select(is(jj, d), w.tuple({w.lit_tt(), stop}), body);
         }
     lim->set(true, body);
 
@@ -762,7 +877,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     // An op's own intent computes its inputs inside the loop of `dim`, an enclosing tile_and_fuse ahead of the op.
     auto rec    = mr.sched_record();
     auto field  = [&](F::Field f) { return rec->proj(F::Num_Fields, f); };
-    auto own    = field(F::At) == w.lit_tt();
+    auto own    = field(F::At) == w.lit_tt() && field(F::Rev) != w.lit_tt();
     auto fuse   = own ? field(F::Fuse) == w.lit_tt() : s.fuse;
     auto budget = own ? Lit::isa<u64>(field(F::Budget)).value_or(0) : s.budget;
     auto slots  = Lit::isa<u64>(field(F::AtSlots)).value_or(0);
@@ -911,7 +1026,15 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         if (shared) mt.map_out = shift(mp.map_out, "tile_out");
         mt.maps     = w.tuple(pmaps);
         mt.maps_all = w.tuple({mt.maps, mp.post_maps});
-        if (std::ranges::any_of(clip, [](bool c) { return c; })) mt.sched = clip_lim(mp, axis_of, base, clip);
+        if (std::ranges::any_of(clip, [](bool c) { return c; })) {
+            auto starts = DefVec(prn), ends = DefVec(prn);
+            for (u64 dd = 0; dd != prn; ++dd)
+                if (auto a = axis_of[dd]) {
+                    starts[dd] = base->proj(prk->ro, *a);
+                    if (clip[*a]) ends[dd] = mp.So->proj(prk->ro, *a);
+                }
+            mt.sched = clip_lim(mp, starts, ends);
+        }
         mt.shapes    = w.tuple({mt.So, Sr_t, mt.sched});
         auto shifted = std::vector<bool>(prn), clipped = std::vector<bool>(prn);
         for (u64 dd = 0; dd != prn; ++dd)
@@ -969,10 +1092,18 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         fields[F::ActDim] = w.lit_nat(*dim);
         fields[F::Act]    = run;
     }
+    if (s.post) {
+        fields[F::Posts]   = w.lit_tt();
+        fields[F::PostDim] = w.lit_nat(s.post_dim);
+        fields[F::Post]    = s.post;
+    }
     auto sched  = w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
     auto in_tys = w.tuple({mr.Tis, mr.Ris, w.tuple(Sis), mr.Tps, mr.Rps, mr.Sps});
     auto op     = btensor_op(mr, w.tuple({mr.So, mr.Sr, sched}), in_tys, w.tuple({w.tuple(maps), mr.post_maps}));
-    if (!mem) std::tie(pre, dst) = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, alloc_mem_)->projs<2>();
+    if (!mem) {
+        if (!dst) std::tie(alloc_mem_, dst) = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, alloc_mem_)->projs<2>();
+        pre = alloc_mem_;
+    }
     auto res = w.app(op, w.tuple({pre, dst, w.tuple(ins), s.post_is}));
     // The other readers of a shared producer read its whole buffer once this op has filled it.
     for (auto [old_p, buf] : write_backs) {

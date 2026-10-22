@@ -1,0 +1,29 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// C[i] = Σ_j (A · B)[i, j] inside the loop of i of the product: the row sum runs as the product's action after each
+// of its rows, into C's whole result, which is read once the product is done.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+use core.ops.u.w;
+use tensor;
+
+fun mac (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun sum (acc: I32, x: I32)@tt: I32 = return (acc + x);
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+lam ro (i _: affine.Index): affine.Index = i;
+lam ri (i j: affine.Index): «2; affine.Index» = (i, j);
+
+// CHECK-LABEL: extern fun rowsum
+// CHECK:       tile_after
+// CHECK:       buffer.after
+extern fun rowsum (a: «6, 5; I32», b: «5, 7; I32»): «6; I32» =
+    let p = materialize (mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (mac, 0I32, id) mo (ma, mb) (buf a, buf b));
+    return (materialize (reverse_compute_at (mr_tileable @1 @(1, 1) (6, 0, (6, 7)) (sum, 0I32, id) ro ri p, 0, 0)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);

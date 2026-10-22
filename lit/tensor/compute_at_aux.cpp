@@ -33,6 +33,9 @@ int32_t* tail_at(int32_t* a, int32_t* b);
 int32_t* tail_perm(int32_t* a, int32_t* b);
 int32_t* fuse_tail(int32_t* a, int32_t* b, int32_t* e);
 int32_t* shared_at(int32_t* a, int32_t* b, int32_t* e);
+int32_t* rev_rowsum(int32_t* a, int32_t* b);
+int32_t* rev_ew(int32_t* a);
+int32_t* rev_halo(int32_t* a);
 }
 
 // q[i] = a[i, 0] + a[i, 1] over the n pairs of a.
@@ -187,6 +190,23 @@ int main() {
                 hf[i * 5 + j] += hc[i * 3 + k] * hd[j * 3 + k];
         }
 
+    // rev_rowsum: row sums of ra · rb; rev_ew and rev_halo over the pair sums wp of wa.
+    int32_t ra[6 * 5], rb[5 * 7], rq[6 * 7], rs[6], wa[6 * 7 * 2], wp[6 * 7], we[6 * 7];
+    int32_t za[6 * 8 * 2], zp[6 * 8], wh[4 * 8];
+    fill(ra, 6 * 5, 7), fill(rb, 5 * 7, 4), fill(wa, 6 * 7 * 2, 5);
+    matmul(ra, rb, rq, 6, 5, 7), pair_sum(wa, wp, 6 * 7);
+    for (int i = 0; i < 6; ++i) {
+        rs[i] = 0;
+        for (int j = 0; j < 7; ++j)
+            rs[i] += rq[i * 7 + j];
+    }
+    for (int i = 0; i < 6 * 7; ++i)
+        we[i] = wp[i] + 1;
+    fill(za, 6 * 8 * 2, 7), pair_sum(za, zp, 6 * 8);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 8; ++j)
+            wh[i * 8 + j] = zp[i * 8 + j] + zp[(i + 1) * 8 + j] + zp[(i + 2) * 8 + j];
+
     int32_t la[2 * 5 * 2], lb[5 * 7], le[7 * 3], lq[2 * 5], lp[2 * 7], lc[2 * 3];
     fill(la, 2 * 5 * 2, 4), fill(lb, 5 * 7, 5), fill(le, 7 * 3, 7);
     pair_sum(la, lq, 2 * 5), matmul(lq, lb, lp, 2, 5, 7), matmul(lp, le, lc, 2, 7, 3);
@@ -255,6 +275,9 @@ int main() {
     bad += compare("tail_perm", tail_perm(ka, kb), kc, 7 * 3);
     bad += compare("fuse_tail", fuse_tail(va, vb, ve), vc, 7 * 2);
     bad += compare("shared_at", shared_at(ha, hb, he), hf, 5 * 5);
+    bad += compare("rev_rowsum", rev_rowsum(ra, rb), rs, 6);
+    bad += compare("rev_ew", rev_ew(wa), we, 6 * 7);
+    bad += compare("rev_halo", rev_halo(za), wh, 4 * 8);
     bad += compare("back_at", back_at(a4, b), bk, 4 * 5);
     bad += compare("fused_at", fused_at(x7, y7, a7), fu, 4 * 5);
     bad += compare("fold_at", fold_at(x15), fold_plain(x15), 5);
