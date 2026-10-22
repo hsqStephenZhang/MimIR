@@ -20,6 +20,7 @@
 // * `fused_at`: C = Σ_k (x + y)[i, j, k] · P[i, k], P at i: fuse_tensor splices x + y into two inputs, so P moves to slot 2.
 // * `fold_at`: a producer of «1, 5» read as «5, 1», one type as unit axes fold: warned, and read as `fold_plain` reads it.
 // * `epi_at`: C = R + P with R a reduction and P at i: epilogue fusion would sink C into R, dropping the schedule.
+// * `inl_at`: R[i] = Σ_j P[i, j] over P = Q + B with Q at i of P: fusing P into R would drop P's schedule.
 // * `plain`:   an input that no map_reduce_post computes cannot be computed at a loop: warned, and read as is.
 plugin core;
 plugin tensor;
@@ -133,6 +134,13 @@ extern fun epi_at (a: «2, 9, 2; I32», b: «2, 9; I32»): «2, 9; I32» =
     let t = tensor.mr_tileable @2 @(2, 0) ((2, 9), (0, 1), (2, 9)) (add, 0I32, tensor.id) po (po, po) (r, p);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
 
+lam rj2 (i j: affine.Index): «2; affine.Index» = (i, j);
+
+extern fun inl_at (a: «5, 8, 2; I32», b: «5, 8; I32»): «5; I32» =
+    let q = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((5, 8), (0, 1), (5, 8, 2)) (sum, 0I32, tensor.id) qo pa (tensor.buf a));
+    let p = tensor.materialize (tensor.compute_at (tensor.mr_tileable @2 @(2, 0) ((5, 8), (0, 1), (5, 8)) (add, 0I32, tensor.id) po (po, po) (q, tensor.buf b), 0, 0));
+    return (tensor.materialize (tensor.mr_tileable @1 @(1, 1) (5, 0, (5, 8)) (sum, 0I32, tensor.id) ro rj2 p));
+
 extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
@@ -151,6 +159,7 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // CHECK-DAG: mem.mslot («2; I32», 0)
 // CHECK-DAG: mem.mslot («7; I32», 0)
 // CHECK-DAG: mem.mslot («9; I32», 0)
+// CHECK-DAG: mem.mslot («8; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («3, 6; I32», 0)
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 6; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («2, 2, 6, 6; I32»

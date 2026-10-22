@@ -220,6 +220,8 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
         auto im       = btensor::MapRedPost::of(inner->callee()->as<App>());
         auto inner_is = inner->arg()->proj(2, 0);
+        // The fused op takes this op's schedule, which would drop the inner's compute_at.
+        if (im.sched_record()->proj(8, 2) == w.lit_tt()) continue;
 
         auto inner_nis_nat = Lit::isa<u64>(im.nis);
         if (!inner_nis_nat || im.So != mr.Sis->proj(nis_nat, k)) continue; // see reads_as_produced
