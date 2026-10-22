@@ -76,6 +76,13 @@ axm shape: [r: Nat, s: «r; Nat», T: *] as rsT → [Buf rsT, i: Idx r] → Nat,
 axm copy: [r: Nat, s: «r; Nat», T: *] as rsT
         → [mem.M 0, dst src: Buf rsT] → mem.M 0;
 ///
+/// ### after
+///
+/// The buffer `b` once the memory `m` is current: no operation, only an order, as what reads the result reads `b`
+/// after the writes `m` follows.
+///
+axm after: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT] → [mem.M 0, Buf rsT];
+///
 /// ### free
 ///
 /// Releases the buffer; the handle must not be used afterwards.

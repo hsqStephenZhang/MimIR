@@ -159,6 +159,9 @@ private:
     /// The memory the tile buffers of the op being lowered by lower_compute_at are allocated on, once each.
     const Def* alloc_mem_ = nullptr;
 
+    /// How many ops read each old map_reduce_post.
+    DefMap<u64> consumers_;
+
     /// A function is bufferized iff it is external, set, and mentions a tensor type in its domain.
     bool is_tensor_fn(Lam*) const;
 

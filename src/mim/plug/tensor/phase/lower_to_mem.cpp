@@ -275,6 +275,7 @@ void LowerToMem::start() {
     collect_tensor_types(); // hard-errors on shapes the conversion cannot handle
     // Nothing tensor-related in the program: skip the whole-world rebuild entirely.
     if (tensor_fns_.empty() && !ops_seen_) return;
+    consumers_ = count_consumers(old_world(), [](const Def* d) { return Axm::isa<tensor::map_reduce_post>(d); });
     RWPhase::start();
     // Every fresh-memory continuation must have found an enclosing lam to be chained into.
     assert(pending_.empty());
@@ -793,7 +794,8 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     auto add = [&](const Def* a, const Def* b) { return w.call(affine::op::add, Defs{a, b}); };
     auto nat = [&](const Def* d) { return Lit::isa<u64>(d); };
 
-    auto ins  = DefVec(rks->nis);
+    auto ins         = DefVec(rks->nis);
+    auto write_backs = std::vector<std::pair<const App*, const Def*>>();
     auto Sis  = DefVec(rks->nis, [&](size_t j) { return mr.Sis->proj(rks->nis, j); });
     auto maps = DefVec(rks->nis, [&](size_t j) { return mr.maps->proj(rks->nis, j); });
 
@@ -877,34 +879,40 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                 return give_up(j, "the loops around the tile have no literal extent");
         if (fuse && tile * runs > budget * whole) return give_up(j, "the tiles would recompute it beyond the budget");
 
+        // A producer another op reads too is computed into its whole buffer, which that op then reads after this one.
+        auto uses   = consumers_.find(old_p);
+        auto shared = !mem && dim && uses != consumers_.end() && uses->second > 1;
+        if (shared && fresh_memo_.contains(old_p)) return give_up(j, "another op computes the input whole");
+
         auto So_t         = w.tuple(caps);
-        auto [am, tile_b] = buffer::op_alloc(mp.Ro, So_t, mp.Tp, alloc_mem_)->projs<2>();
+        auto [am, tile_b] = buffer::op_alloc(mp.Ro, shared ? mp.So : So_t, mp.Tp, alloc_mem_)->projs<2>();
         alloc_mem_        = am;
 
         // The producer on the tile: its parallel dims are shifted to the box's start on the axis they write and
         // span the tile; its reduction dims stay whole.
         auto base  = box->proj(4, 0);
-        auto pmaps = DefVec(prk->nis, [&](size_t i) -> const Def* {
-            auto pmap = mp.maps->proj(prk->nis, i);
-            auto pi   = pmap->type()->as<Pi>();
-            auto lam  = w.mut_lam(pi->dom(), pi->codom())->set("tile_map");
-            auto o    = lam->var();
-            auto at   = w.tuple(DefVec(prn, [&](size_t dd) {
+        auto shift = [&](const Def* f, const char* name) -> const Def* {
+            auto pi  = f->type()->as<Pi>();
+            auto lam = w.mut_lam(pi->dom(), pi->codom())->set(name);
+            auto o   = lam->var();
+            auto at  = w.tuple(DefVec(prn, [&](size_t dd) {
                 return axis_of[dd] ? add(o->proj(prn, dd), lit(base->proj(prk->ro, *axis_of[dd]))) : o->proj(prn, dd);
             }));
-            lam->set(true, w.app(pmap, at));
+            lam->set(true, w.app(f, at));
             return lam;
-        });
+        };
+        auto pmaps = DefVec(prk->nis, [&](size_t i) { return shift(mp.maps->proj(prk->nis, i), "tile_map"); });
         auto Sr_t
             = w.tuple(DefVec(prn, [&](size_t dd) { return axis_of[dd] ? caps[*axis_of[dd]] : mp.Sr->proj(prn, dd); }));
 
         auto mt     = mp;
-        mt.So       = So_t;
+        mt.So       = shared ? mp.So : So_t;
         mt.Sr       = Sr_t;
+        if (shared) mt.map_out = shift(mp.map_out, "tile_out");
         mt.maps     = w.tuple(pmaps);
         mt.maps_all = w.tuple({mt.maps, mp.post_maps});
         if (std::ranges::any_of(clip, [](bool c) { return c; })) mt.sched = clip_lim(mp, axis_of, base, clip);
-        mt.shapes    = w.tuple({So_t, Sr_t, mt.sched});
+        mt.shapes    = w.tuple({mt.So, Sr_t, mt.sched});
         auto shifted = std::vector<bool>(prn), clipped = std::vector<bool>(prn);
         for (u64 dd = 0; dd != prn; ++dd)
             shifted[dd] = axis_of[dd].has_value(), clipped[dd] = shifted[dd] && clip[*axis_of[dd]];
@@ -930,7 +938,11 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         })));
 
         log().d("compute input {} of {} one tile {} at a time{}", j, s.who, So_t, dim ? " inside its loop" : " ahead");
-        ins[j]  = tile_b;
+        ins[j] = tile_b;
+        if (shared) {
+            write_backs.emplace_back(old_p, tile_b);
+            return true;
+        }
         Sis[j]  = So_t;
         maps[j] = read;
         return true;
@@ -961,7 +973,15 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     auto in_tys = w.tuple({mr.Tis, mr.Ris, w.tuple(Sis), mr.Tps, mr.Rps, mr.Sps});
     auto op     = btensor_op(mr, w.tuple({mr.So, mr.Sr, sched}), in_tys, w.tuple({w.tuple(maps), mr.post_maps}));
     if (!mem) std::tie(pre, dst) = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, alloc_mem_)->projs<2>();
-    return w.app(op, w.tuple({pre, dst, w.tuple(ins), s.post_is}));
+    auto res = w.app(op, w.tuple({pre, dst, w.tuple(ins), s.post_is}));
+    // The other readers of a shared producer read its whole buffer once this op has filled it.
+    for (auto [old_p, buf] : write_backs) {
+        auto after
+            = w.app(w.app(w.annex<buffer::after>(), buf->type()->as<App>()->arg()), w.tuple({res->proj(2, 0), buf}));
+        auto [m, b]        = after->projs<2>();
+        fresh_memo_[old_p] = scalar_result(old_p, m, b);
+    }
+    return res;
 }
 
 const Def* LowerToMem::lower_pad(const App* app) {

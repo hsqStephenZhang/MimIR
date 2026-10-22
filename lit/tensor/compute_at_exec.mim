@@ -5,6 +5,7 @@
 // RUN: %mim -p opt %s -o - | %FileCheck %s
 // RUN: %mim -p opt %s -o - | %FileCheck %s --check-prefix=FULL
 // RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+// RUN: %mim -p opt %s -o - | %FileCheck %s --check-prefix=SHARED
 
 // `tensor.compute_at` end to end, driven by compute_at_aux.cpp against a scalar reference:
 // * `mm_at0`:  (a + 1) · b with a + 1 computed one row «1, 6» per iteration of i.
@@ -36,6 +37,8 @@
 // * `tail_perm`: the split interchanged to (j, i₀, i₁, k): the tail moves with its dims.
 // * `fuse_tail`: tile_and_fuse into the tiles of 3 rows of 7 over Q → P = Q · B → C = P · E: tiles «3, 9» of P and
 //   «3, 12» of Q, the last ones cut short.
+// * `shared_at`: C · Dᵀ with C = P · B computing P at i and D = P · E reading it whole: P's rows go into its one
+//   whole buffer «5, 14», which D reads once C has filled it.
 // * `plain`:   an input that no map_reduce_post computes cannot be computed at a loop: warned, and read as is.
 plugin core;
 plugin tensor;
@@ -214,6 +217,14 @@ extern fun fuse_tail (a: «7, 12, 2; I32», b: «12, 9; I32», e: «9, 2; I32»)
     let t = tensor.mr_tileable @2 @(2, 1) ((7, 2), (0, 1), (7, 2, 9)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf e);
     return (tensor.materialize (tensor.tile_and_fuse (tensor.split_par (t, 0, 3), 0, 2)));
 
+lam mdt (_ j k: affine.Index): «2; affine.Index» = (j, k);
+
+extern fun shared_at (a: «5, 14, 2; I32», b e: «14, 3; I32»): «5, 5; I32» =
+    let p = tensor.materialize (tensor.mr_tileable @1 @(2, 1) ((5, 14), (0, 1), (5, 14, 2)) (sum, 0I32, tensor.id) qo pa (tensor.buf a));
+    let c = tensor.materialize (tensor.compute_at (tensor.mr_tileable @2 @(2, 1) ((5, 3), (0, 1), (5, 3, 14)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf b), 0, 0));
+    let d = tensor.materialize (tensor.mr_tileable @2 @(2, 1) ((5, 3), (0, 1), (5, 3, 14)) (mac, 0I32, tensor.id) mo (ma, mb) (p, tensor.buf e));
+    return (tensor.materialize (tensor.mr_tileable @2 @(2, 1) ((5, 5), (0, 1), (5, 5, 3)) (mac, 0I32, tensor.id) mo (ma, mdt) (c, d)));
+
 extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
@@ -258,3 +269,6 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 2, 5; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («5; I64»
 // FULL-NOT: mem.{{m?slot|malloc}} («7, 12; I32»
+// SHARED-COUNT-1: mem.{{m?slot|malloc}} («5, 14; I32»
+// SHARED-NOT:     mem.{{m?slot|malloc}} («5, 14; I32»
+// SHARED-NOT:     mem.{{m?slot|malloc}} («14; I32»

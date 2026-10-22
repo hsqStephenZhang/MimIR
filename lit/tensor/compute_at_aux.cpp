@@ -32,6 +32,7 @@ int32_t* tail_mm(int32_t* a, int32_t* b);
 int32_t* tail_at(int32_t* a, int32_t* b);
 int32_t* tail_perm(int32_t* a, int32_t* b);
 int32_t* fuse_tail(int32_t* a, int32_t* b, int32_t* e);
+int32_t* shared_at(int32_t* a, int32_t* b, int32_t* e);
 }
 
 // q[i] = a[i, 0] + a[i, 1] over the n pairs of a.
@@ -175,6 +176,17 @@ int main() {
     fill(va, 7 * 12 * 2, 7), fill(vb, 12 * 9, 4), fill(ve, 9 * 2, 5);
     pair_sum(va, vq, 7 * 12), matmul(vq, vb, vp, 7, 12, 9), matmul(vp, ve, vc, 7, 9, 2);
 
+    // shared_at: (P · B) · (P · E)ᵀ with P the pair sums of ha.
+    int32_t ha[5 * 14 * 2], hb[14 * 3], he[14 * 3], hp[5 * 14], hc[5 * 3], hd[5 * 3], hf[5 * 5];
+    fill(ha, 5 * 14 * 2, 5), fill(hb, 14 * 3, 7), fill(he, 14 * 3, 4);
+    pair_sum(ha, hp, 5 * 14), matmul(hp, hb, hc, 5, 14, 3), matmul(hp, he, hd, 5, 14, 3);
+    for (int i = 0; i < 5; ++i)
+        for (int j = 0; j < 5; ++j) {
+            hf[i * 5 + j] = 0;
+            for (int k = 0; k < 3; ++k)
+                hf[i * 5 + j] += hc[i * 3 + k] * hd[j * 3 + k];
+        }
+
     int32_t la[2 * 5 * 2], lb[5 * 7], le[7 * 3], lq[2 * 5], lp[2 * 7], lc[2 * 3];
     fill(la, 2 * 5 * 2, 4), fill(lb, 5 * 7, 5), fill(le, 7 * 3, 7);
     pair_sum(la, lq, 2 * 5), matmul(lq, lb, lp, 2, 5, 7), matmul(lp, le, lc, 2, 7, 3);
@@ -242,6 +254,7 @@ int main() {
     bad += compare("tail_at", tail_at(ka, kb), kc, 7 * 3);
     bad += compare("tail_perm", tail_perm(ka, kb), kc, 7 * 3);
     bad += compare("fuse_tail", fuse_tail(va, vb, ve), vc, 7 * 2);
+    bad += compare("shared_at", shared_at(ha, hb, he), hf, 5 * 5);
     bad += compare("back_at", back_at(a4, b), bk, 4 * 5);
     bad += compare("fused_at", fused_at(x7, y7, a7), fu, 4 * 5);
     bad += compare("fold_at", fold_at(x15), fold_plain(x15), 5);
