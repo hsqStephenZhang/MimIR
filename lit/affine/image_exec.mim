@@ -22,6 +22,8 @@ lam st1  (i j: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.li
 lam al   (i j: affine.Index): «2; affine.Index» =
     (affine.semiop.floordiv (affine.op.add (affine.semiop.mul (i, 8), j), 12),
      affine.semiop.ceildiv (affine.op.add (affine.semiop.mul (i, 6), j), 9));
+lam bk   (i j: affine.Index): «2; affine.Index» =
+    (affine.op.add (affine.op.sub (i, affine.lit 3), affine.lit 3), affine.op.add (affine.op.sub (j, affine.lit 2), affine.lit 1));
 lam ws   (i j _: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.lit 2), affine.op.sub (j, affine.lit 1));
 
 lam n (x: Nat): I64 = core.bitcast I64 x;
@@ -44,6 +46,9 @@ extern fun img_trs (m: mem.M 0, out: mem.Ptr0 «8; I64», a0 a1: Nat): mem.M 0 =
 
 extern fun img_st (m: mem.M 0, out: mem.Ptr0 «8; I64», a0 a1: Nat): mem.M 0 =
     return (put (m, out, affine.cover (st0, st1) ((a0, a1), (3, 4), (32, 32))));
+
+extern fun img_bk (m: mem.M 0, out: mem.Ptr0 «8; I64», a0 a1: Nat): mem.M 0 =
+    return (put (m, out, affine.image bk ((a0, a1), (2, 3), (16, 16))));
 
 // The box starts at column 0, so the caps use the residues a run-time row admits.
 extern fun img_al (m: mem.M 0, out: mem.Ptr0 «8; I64», a0 _: Nat): mem.M 0 =

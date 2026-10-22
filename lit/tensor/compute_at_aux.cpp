@@ -16,6 +16,8 @@ int32_t* grp_at(int32_t* x, int32_t* g);
 int32_t* edge_at(int32_t* x, int32_t* g);
 int32_t* rev_at(int32_t* a, int32_t* b);
 int32_t* chain_at(int32_t* a, int32_t* b, int32_t* e);
+int32_t* back_at(int32_t* a, int32_t* b);
+int32_t* fused_at(int32_t* x, int32_t* y, int32_t* a);
 }
 
 static int compare(const char* name, const int32_t* got, const int32_t* want, int n) {
@@ -114,6 +116,26 @@ int main() {
             ch[i * 3 + j] = s;
         }
 
+    // back_at: P = Σ over the last axis of a4 «4, 6, 2», times b; fused_at: Σ_k (x + y)[i, j, k] · P7[i, k].
+    int32_t a4[4 * 6 * 2], bk[4 * 5], x7[4 * 5 * 7], y7[4 * 5 * 7], a7[4 * 7 * 2], fu[4 * 5];
+    for (int i = 0; i < 4 * 6 * 2; ++i)
+        a4[i] = (i * 5) % 9 - 4;
+    for (int i = 0; i < 4 * 5 * 7; ++i)
+        x7[i] = (i * 3) % 7 - 3, y7[i] = (i * 11) % 5 - 2;
+    for (int i = 0; i < 4 * 7 * 2; ++i)
+        a7[i] = (i * 7) % 6 - 2;
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 5; ++j) {
+            int32_t r = 0, f = 0;
+            for (int k = 0; k < 6; ++k)
+                r += (a4[(i * 6 + k) * 2] + a4[(i * 6 + k) * 2 + 1]) * b[k * 5 + j];
+            for (int k = 0; k < 7; ++k)
+                f += (x7[(i * 5 + j) * 7 + k] + y7[(i * 5 + j) * 7 + k])
+                   * (a7[(i * 7 + k) * 2] + a7[(i * 7 + k) * 2 + 1]);
+            bk[i * 5 + j] = r;
+            fu[i * 5 + j] = f;
+        }
+
     int bad = 0;
     bad += compare("mm_at0", mm_at0(a, b), mm, 4 * 5);
     bad += compare("mm_at1", mm_at1(a, b), mm, 4 * 5);
@@ -124,5 +146,7 @@ int main() {
     bad += compare("edge_at", edge_at(x48, g5), ed, 24);
     bad += compare("rev_at", rev_at(a3, b), rv, 3 * 5);
     bad += compare("chain_at", chain_at(a3, b, e), ch, 3 * 3);
+    bad += compare("back_at", back_at(a4, b), bk, 4 * 5);
+    bad += compare("fused_at", fused_at(x7, y7, a7), fu, 4 * 5);
     return bad ? 1 : 0;
 }

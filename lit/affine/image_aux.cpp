@@ -16,6 +16,7 @@ void img_rdiv(int64_t* out, int64_t a0, int64_t a1);
 void img_trs(int64_t* out, int64_t a0, int64_t a1);
 void img_st(int64_t* out, int64_t a0, int64_t a1);
 void img_al(int64_t* out, int64_t a0, int64_t a1);
+void img_bk(int64_t* out, int64_t a0, int64_t a1);
 void pre_ws(int64_t* out, int64_t y0, int64_t y1);
 }
 
@@ -30,6 +31,7 @@ static std::array<int64_t, 2> resh(int64_t i, int64_t j) {
 static std::array<int64_t, 2> rdiv(int64_t i, int64_t j) { return {i % 8, j / 3}; }
 static std::array<int64_t, 2> trs(int64_t i, int64_t j) { return {j + 2, i - 1}; }
 static std::array<int64_t, 2> al(int64_t i, int64_t j) { return {(8 * i + j) / 12, (6 * i + j + 8) / 9}; }
+static std::array<int64_t, 2> bk(int64_t i, int64_t j) { return {i, j - 1}; }
 static std::array<int64_t, 2> st0(int64_t i, int64_t j) { return {i - 1, j}; }
 static std::array<int64_t, 2> st1(int64_t i, int64_t j) { return {i + 1, j + 2}; }
 
@@ -113,6 +115,7 @@ int main() {
     bad += check("trs", img_trs, {trs}, {2, 3}, {16, 16}, {1, 0}, {16, 16});
     bad += check("st", img_st, {st0, st1}, {3, 4}, {32, 32}, {1, 0}, {30, 28});
     bad += check("al", img_al, {al}, {1, 8}, {64, 64}, {0, 0}, {40, 1});
+    bad += check("bk", img_bk, {bk}, {2, 3}, {16, 16}, {0, 0}, {14, 13});
     bad += check_pre();
     return bad ? 1 : 0;
 }

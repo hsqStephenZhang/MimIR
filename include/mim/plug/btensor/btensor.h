@@ -49,6 +49,15 @@ struct MapRedPost {
         if (!nis_l || !nps_l || !ro_l || !rn_l || *rn_l < *ro_l) return {};
         return Ranks{*nis_l, *nps_l, *ro_l, *rn_l - *ro_l};
     }
+
+    /// The `btensor.Sched` record of the schedule, read off its chooser by handing it the identity builder.
+    const Def* sched_record() const {
+        auto& w       = sched->world();
+        auto sched_ty = w.annex<btensor::Sched>();
+        auto id       = w.mut_lam(sched_ty, sched_ty)->set("sched");
+        id->set(true, id->var());
+        return w.app(w.app(sched, sched_ty), id);
+    }
 };
 
 /// `affine.map @(m, n) @(s_in, s_out) f idxs as mem` with the address space `as` of @p mem ↦ `[mem', coords]`.

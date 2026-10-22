@@ -33,6 +33,7 @@ struct Lin {
 /// The values `[lo, hi]` an affine expression takes over a box, a bound on their number that does not depend
 /// on the box's origin, whether it takes `exact`ly all of them, the domain dims it depends on, and its linear
 /// form if it has one.
+/// A `clamped` bound may have saturated at 0 in `Nat` arithmetic, so it holds under the final clamp to the shape only.
 struct Itv {
     const Def* lo;
     const Def* hi;
@@ -40,6 +41,8 @@ struct Itv {
     const Def* exact;
     u64 dims;
     std::optional<Lin> lin;
+    bool lo_clamped = false;
+    bool hi_clamped = false;
 };
 
 class Region {
@@ -79,11 +82,17 @@ public:
             switch (o.id()) {
                 case op::add: {
                     auto exact = all(x->exact, y->exact, disjoint);
-                    return Itv{add(x->lo, y->lo), add(x->hi, y->hi), width, exact, dims, lin_add(x->lin, y->lin)};
+                    auto itv   = Itv{add(x->lo, y->lo), add(x->hi, y->hi), width, exact, dims, lin_add(x->lin, y->lin)};
+                    return settle(itv, x->lo_clamped || y->lo_clamped, false, false);
                 }
                 case op::sub: {
                     auto exact = all(x->exact, y->dims == 0 ? y->exact : w_.lit_ff(), disjoint);
-                    return Itv{sub(x->lo, y->hi), sub(x->hi, y->lo), width, exact, dims, lin_sub(x->lin, y->lin)};
+                    auto itv   = Itv{sub(x->lo, y->hi), sub(x->hi, y->lo), width, exact, dims, lin_sub(x->lin, y->lin)};
+                    auto ge    = [](const Def* a, const Def* b) {
+                        auto la = Lit::isa(a), lb = Lit::isa(b);
+                        return lb == 0 || (la && lb && *la >= *lb);
+                    };
+                    return settle(itv, x->lo_clamped || y->lo_clamped, !ge(x->lo, y->hi), !ge(x->hi, y->lo));
                 }
                 default: return {};
             }
@@ -93,13 +102,16 @@ public:
             auto [a, c] = o->args<2>();
             auto x      = eval(a);
             if (!x) return {};
+            if (o.id() == semiop::mul) {
+                auto unit  = Lit::isa(c) == 1 || x->dims == 0 ? x->exact : w_.lit_ff();
+                auto exact = Lit::isa(c) == 0 ? w_.lit_tt() : unit;
+                auto width = add(mul(sub(x->width, one()), c), one());
+                auto itv   = Itv{mul(x->lo, c), mul(x->hi, c), width, exact, x->dims, lin_mul(x->lin, c)};
+                return settle(itv, x->lo_clamped, false, false);
+            }
+            if (x->lo_clamped) return {};
             switch (o.id()) {
-                case semiop::mul: {
-                    auto unit  = Lit::isa(c) == 1 || x->dims == 0 ? x->exact : w_.lit_ff();
-                    auto exact = Lit::isa(c) == 0 ? w_.lit_tt() : unit;
-                    auto width = add(mul(sub(x->width, one()), c), one());
-                    return Itv{mul(x->lo, c), mul(x->hi, c), width, exact, x->dims, lin_mul(x->lin, c)};
-                }
+                case semiop::mul: return {};
                 case semiop::floordiv:
                     return Itv{div(x->lo, c), div(x->hi, c), div_width(*x, c, 0), x->exact, x->dims, {}};
                 case semiop::ceildiv:
@@ -146,6 +158,41 @@ private:
 
     const Def* cdiv(const Def* a, const Def* b) { return div(sub(add(a, b), one()), b); }
 
+    /// Bounds built from @p operands that may have saturated are recomputed from the linear form, which saturates
+    /// only once at its end, or dropped; @p lo and @p hi state that this op itself may have saturated them.
+    std::optional<Itv> settle(Itv itv, bool operands, bool lo, bool hi) {
+        if (!operands && !lo && !hi) return itv;
+        if (itv.lin) return from_lin(itv);
+        if (operands) return {};
+        itv.lo_clamped = lo || hi;
+        itv.hi_clamped = hi;
+        return itv;
+    }
+
+    /// A non-literal origin or extent is at least 0 or 1, which bounds whether its sum may drop below 0.
+    Itv from_lin(Itv itv) {
+        auto& l        = *itv.lin;
+        const Def* lo  = l.sym ? l.sym : w_.lit_nat_0();
+        const Def* hi  = lo;
+        int64_t lo_min = 0, hi_min = 0;
+        for (u64 i = 0; i != n_; ++i) {
+            if (l.c[i] == 0) continue;
+            auto c  = w_.lit_nat(u64(l.c[i]));
+            auto li = lo_->proj(n_, i);
+            auto ei = ext_->proj(n_, i);
+            lo      = add(lo, mul(li, c));
+            hi      = add(hi, mul(sub(add(li, ei), one()), c));
+            lo_min += l.c[i] * int64_t(Lit::isa(li).value_or(0));
+            hi_min += l.c[i] * int64_t(Lit::isa(li).value_or(0) + Lit::isa(ei).value_or(1) - 1);
+        }
+        auto k         = w_.lit_nat(u64(l.k < 0 ? -l.k : l.k));
+        itv.lo         = l.k < 0 ? sub(lo, k) : add(lo, k);
+        itv.hi         = l.k < 0 ? sub(hi, k) : add(hi, k);
+        itv.lo_clamped = lo_min + l.k < 0;
+        itv.hi_clamped = hi_min + l.k < 0;
+        return itv;
+    }
+
     /// `w` consecutive values from `v` take `(v rem c + w − 1)/c + 1` quotients by `c`, and never more than `w`.
     /// `v rem c` is bounded by the residues `v` admits, as a non-literal origin may be any value.
     const Def* div_width(const Itv& x, const Def* c, int64_t shift) {
@@ -188,9 +235,11 @@ private:
         const Def* exact  = w_.lit_tt();
         u64 dims          = 0;
         auto lin          = std::optional<Lin>(Lin{std::vector<int64_t>(n_)});
+        bool clamped      = false;
         for (u64 k = *r; k-- > 0;) {
             auto x = eval(idxs->proj(*r, k));
             if (!x) return {};
+            clamped |= x->lo_clamped;
             lo    = add(lo, mul(x->lo, stride));
             hi    = add(hi, mul(x->hi, stride));
             width = add(width, mul(sub(x->width, one()), stride));
@@ -199,7 +248,7 @@ private:
             lin    = lin_add(lin, lin_mul(x->lin, stride));
             stride = mul(stride, s->proj(*r, k));
         }
-        return Itv{lo, hi, width, exact, dims, lin};
+        return settle(Itv{lo, hi, width, exact, dims, lin}, clamped, false, false);
     }
 
     /// Coordinate `k` of `delinearize (lin, s)` is `(lin floordiv ∏_{j>k} s#j) rem s#k`.
@@ -208,7 +257,7 @@ private:
         auto r        = Lit::isa(s->arity());
         if (!r || k >= *r) return {};
         auto x = eval(lin);
-        if (!x) return {};
+        if (!x || x->lo_clamped) return {};
         const Def* stride = one();
         for (u64 j = k + 1; j < *r; ++j)
             stride = mul(stride, s->proj(*r, j));
@@ -299,8 +348,8 @@ std::array<const Def*, 4> hull(Region& r, const DefVec& bodies, u64 m, u64 j, co
             end   = std::max(end, itv.lin->k + int64_t(*Lit::isa(itv.width)));
         }
         lo    = itvs.front().lo;
+        hi    = itvs.back().hi;
         width = w.lit_nat(size);
-        hi    = r.sub(r.add(lo, width), r.one());
     } else {
         lo = itvs[0].lo, hi = itvs[0].hi;
         for (auto& itv : itvs)
@@ -308,6 +357,8 @@ std::array<const Def*, 4> hull(Region& r, const DefVec& bodies, u64 m, u64 j, co
         width = s, exact = w.lit_ff();
     }
 
+    // An upper bound that saturated claims 0, which the box need not reach.
+    if (std::ranges::any_of(itvs, [](const Itv& itv) { return itv.hi_clamped; })) exact = w.lit_ff();
     auto top = r.min(hi, last);
     return {lo, r.sub(r.add(top, r.one()), lo), r.min(width, s), exact};
 }
@@ -355,6 +406,11 @@ const Def* normalize_cover(const Def*, const Def* c, const Def* arg) {
     auto [k, n, m] = knm->projs<3>();
     auto lk = Lit::isa(k), ln = Lit::isa(n), lm = Lit::isa(m);
     if (!lk || !ln || !lm || *ln > 64) return nullptr;
+    if (*lk == 0) {
+        auto& w    = c->world();
+        auto zeros = w.tuple(DefVec(*lm, [&](size_t) -> const Def* { return w.lit_nat_0(); }));
+        return w.tuple({zeros, zeros, zeros, w.tuple(DefVec(*lm, [&](size_t) -> const Def* { return w.lit_tt(); }))});
+    }
     return boxes(fs, *lk, *ln, *lm, arg);
 }
 

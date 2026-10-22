@@ -63,6 +63,14 @@ extern fun c_clamp (): B2 = return (affine.image shift ((4, 1), (2, 3), (6, 8)))
 // Row 1 of a «4, 6» reshaped to «3, 8»: flat [6, 12) is row 0 or 1, and columns that wrap.
 extern fun c_resh (): B2 = return (affine.image resh ((1, 0), (1, 6), (3, 8)));
 
+// (i − 5) + 5 is i: an intermediate below 0 must not saturate; a floordiv of one is not bounded.
+lam back (i: affine.Index): «2; affine.Index» =
+    (affine.op.add (affine.op.sub (i, affine.lit 5), affine.lit 5), affine.semiop.floordiv (affine.op.sub (i, affine.lit 1), 2));
+extern fun c_back (): B2 = return (affine.image back (0, 8, (8, 8)));
+
+// The hull of no maps is empty.
+extern fun c_none (): [Nat, Nat, Nat, Bool] = return (affine.cover @(0, 1, 1) () (0, 1, 8));
+
 // A run-time origin yields bounds in terms of it, and still a literal cap.
 extern fun c_sym (i0: Nat): B2 = return (affine.image tr ((0, i0), (2, 3), (8, 6)));
 
@@ -115,6 +123,8 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 
 // CHECK-LABEL: extern fun c_align
 // CHECK:       return ({{.*}}, {{.*}}, (1, 2), ‹2; tt›);
+// CHECK-LABEL: extern fun c_back
+// CHECK-NEXT:  return (‹2; 0›, ‹2; 8›, ‹2; 8›, (tt, ff));
 // CHECK-LABEL: extern fun c_bcast
 // CHECK-NEXT:  return ((2, 0), (3, 1), (3, 1), ‹2; tt›);
 // CHECK-LABEL: extern fun c_clamp
@@ -129,6 +139,8 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK:       return ({{.*}}, {{.*}}, 64, ff);
 // CHECK-LABEL: extern fun c_neg
 // CHECK-NEXT:  return ((0, 1), (7, 2), (7, 2), (ff, tt));
+// CHECK-LABEL: extern fun c_none
+// CHECK-NEXT:  return (0, 0, 0, tt);
 // CHECK-LABEL: extern fun c_open
 // CHECK-NEXT:  affine.image
 // CHECK-LABEL: extern fun c_proj

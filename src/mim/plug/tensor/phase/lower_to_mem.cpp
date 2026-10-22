@@ -692,11 +692,7 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     if (!rks) return nullptr;
     auto rn = rks->nloops();
 
-    // The schedule record, read off the chooser by handing it the identity builder.
-    auto sched_ty = w.annex<btensor::Sched>();
-    auto id       = w.mut_lam(sched_ty, sched_ty)->set("sched");
-    id->set(true, id->var());
-    auto rec = w.app(w.app(mr.sched, sched_ty), id);
+    auto rec = mr.sched_record();
     if (rec->proj(8, 2) != w.lit_tt()) return nullptr;
     auto slot = Lit::isa<u64>(rec->proj(8, 3));
     auto dim  = Lit::isa<u64>(rec->proj(8, 4));
@@ -767,8 +763,7 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     }
     auto So_t = w.tuple(caps);
 
-    auto prec = w.app(w.app(mp.sched, sched_ty), id);
-    if (prec->proj(8, 2) == w.lit_tt())
+    if (mp.sched_record()->proj(8, 2) == w.lit_tt())
         log().w("compute_at inside input {} of {} not realized: the input is computed one tile at a time", *slot, app);
 
     auto old_p_is = old_p->arg()->proj(2, 0);

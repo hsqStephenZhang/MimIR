@@ -196,6 +196,10 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     if (!nis_lit) return nullptr;
     auto nis_nat = *nis_lit;
 
+    // The input the schedule computes at a loop keeps its producer, which follows it to its new position.
+    auto rec = mr.sched_record();
+    auto at  = rec->proj(8, 2) == w.lit_tt() ? Lit::isa<u64>(rec->proj(8, 3)) : std::nullopt;
+
     struct InnerInfo {
         const Def* comb;
         const Def* init;
@@ -212,7 +216,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
     for (u64 k = 0; k < nis_nat; ++k) {
         auto inner = Axm::isa<tensor::map_reduce_post>(is->proj(nis_nat, k));
-        if (!inner) continue;
+        if (!inner || at == k) continue;
 
         auto im       = btensor::MapRedPost::of(inner->callee()->as<App>());
         auto inner_is = inner->arg()->proj(2, 0);
@@ -347,10 +351,17 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
     // Construct the fused map_reduce; the loop domain, output map, init and epilogue (including the
     // epilogue inputs) are the outer's.
+    auto shapes = mr.shapes;
+    if (at && *at < nis_nat) {
+        auto fields = DefVec(8, [&](size_t i) { return rec->proj(8, i); });
+        fields[3]   = w.lit_nat(new_pos[*at]);
+        shapes      = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
+    }
+
     auto res = w.annex<tensor::map_reduce_post>();
     res      = w.app(res, {new_nis_def, mr.nps});
     res      = w.app(res, mr.meta);
-    res      = w.app(res, mr.shapes);
+    res      = w.app(res, shapes);
     res      = w.app(res, {new_Tis, new_Ris, new_Sis, mr.Tps, mr.Rps, mr.Sps});
     res      = w.app(res, {new_comb, mr.init, mr.post});
     res      = w.app(res, mr.map_out);
