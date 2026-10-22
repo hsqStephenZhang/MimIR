@@ -117,16 +117,18 @@ void link_libdevice(const NvptxCompileArgs& c) {
                                      c.dev_bc_raw_name));
 }
 
-void optimize_bytecode(const NvptxCompileArgs& c) {
-    auto opt = fe::sys::require_cmd("opt");
-    fe::sys::require_run(std::format("{} {} {} -o {}", opt, c.opt_args, c.dev_bc_raw_name, c.dev_bc_opt_name));
+void optimize_bytecode(const NvptxCompileArgs& c, bool uses_libdevice) {
+    auto opt_input = uses_libdevice ? c.dev_bc_raw_name : c.dev_ll_name;
+    auto opt       = fe::sys::require_cmd("opt");
+    // Unlinked device IR has no target triple; opt needs one to register NVPTX passes.
+    fe::sys::require_run(std::format("{} -mtriple=nvptx64-nvidia-cuda {} {} -o {}", opt, c.opt_args, opt_input,
+                                     c.dev_bc_opt_name));
 }
 
-void compile2ptx(const NvptxCompileArgs& c, bool uses_libdevice) {
-    auto compile_input = uses_libdevice ? c.dev_bc_opt_name : c.dev_ll_name;
-    auto llc           = fe::sys::require_cmd("llc");
+void compile2ptx(const NvptxCompileArgs& c) {
+    auto llc = fe::sys::require_cmd("llc");
     fe::sys::require_run(std::format("{} -march=nvptx64 -mcpu=sm_{} {} {} -o {}", llc, c.compute_cap, c.llc_args,
-                                     compile_input, c.dev_ptx_name));
+                                     c.dev_bc_opt_name, c.dev_ptx_name));
 }
 
 void compile2cubin(const NvptxCompileArgs& c) {
@@ -203,9 +205,9 @@ public:
                 if (device_flags.uses_libdevice) {
                     if (c.libdevice_path.empty()) c.libdevice_path = find_libdevice();
                     link_libdevice(c);
-                    optimize_bytecode(c);
                 }
-                compile2ptx(c, device_flags.uses_libdevice);
+                optimize_bytecode(c, device_flags.uses_libdevice);
+                compile2ptx(c);
                 compile2cubin(c);
                 compile2fatbin(c);
             } catch (const fe::sys::CmdNotFound& e) {
@@ -243,7 +245,7 @@ static constexpr PluginArg known_args[] = {
     {"sm=<SM>",                         "When embedding: compiles the device binary for compute capability `sm_<SM>`."},
     {"libdevice=<path>",                "When embedding and linking libdevice: uses the NVVM library at `<path>` instead of locating it via the CUDA paths."},
     {"Xlink_llvm=<args>",               "When embedding and linking libdevice: passes `<args>` to `link_llvm` (default: none)."},
-    {"Xopt=<args>",                     "When embedding and linking libdevice: passes `<args>` to `opt` (default: `-passes=\"default<O2>,nvvm-reflect\"`)."},
+    {"Xopt=<args>",                     "When embedding: passes `<args>` to `opt`, with or without libdevice (default: `-passes=\"default<O2>,nvvm-reflect\"`)."},
     {"Xllc=<args>",                     "When embedding: passes `<args>` to `llc` (default: none)."},
     {"Xptxas=<args>",                   "When embedding: passes `<args>` to `ptxas` (default: none); also passed to `fatbinary` via `--cmdline` when the PTX image is embedded."},
     {"Xfatbinary=<args>",               "When embedding: passes `<args>` to `fatbinary` (default: none)."},
