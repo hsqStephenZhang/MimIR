@@ -1048,8 +1048,9 @@ anx lam transform_layout (t: Tileable, i a b: Nat): Tileable =
 /// `reverse_compute_at`): once an iteration of that loop has written its box of the producer, the part of `t` that
 /// reads only that box (see `affine.preimage`) runs, into `t`'s whole result.
 ///
-/// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post` that no other op has computed yet, the part
-///   of `t` is exact and spans `t`'s reduction dims, and it logs a warning wherever it cannot.
+/// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post` that no other op has computed yet, the box an
+///   iteration of the loop writes is exact, the part of `t` is exact and spans `t`'s reduction dims, and it logs a
+///   warning wherever it cannot.
 /// - `d` must be a parallel dim of the producer, and the loops around it those of the dims before it.
 /// - Applied to several inputs, `t` runs inside the loop of the producer of the first, and each part computes the box
 ///   of the others' producers it reads before it, as two GEMMs of SwiGLU feed their product one tile at a time.

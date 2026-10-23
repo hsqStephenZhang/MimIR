@@ -792,6 +792,10 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     auto ext    = DefVec(prn, [&](size_t d) { return d <= *dim ? w.lit_nat_1() : mp.Sr->proj(prn, d); });
     auto box    = w.app(w.app(w.app(w.annex<affine::image>(), {mp.Rn, mp.Ro}), mp.map_out),
                         w.tuple({w.tuple(origin), w.tuple(ext), mp.So}));
+    // A bound that is not exact may hold cells a later iteration writes.
+    for (u64 a = 0; a != prk->ro; ++a)
+        if (box->proj(4, 3)->proj(prk->ro, a) != w.lit_tt())
+            return give_up("the box one iteration of the producer writes is not known exactly");
     u64 runs    = 1;
     for (u64 d = 0; d <= *dim; ++d)
         runs *= Lit::isa<u64>(mp.Sr->proj(prn, d)).value_or(1);

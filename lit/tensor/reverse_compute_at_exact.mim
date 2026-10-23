@@ -1,0 +1,19 @@
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s
+
+// P[5 − i] = A[i] + 1: affine.image only bounds the cell one iteration of i writes by the whole of P, which later
+// iterations write too, so C = P + 1 is not computed inside that loop.
+plugin core;
+plugin tensor;
+plugin affine;
+
+use core.ops.u.w;
+use tensor;
+
+fun inc (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+lam one (i: affine.Index): affine.Index = i;
+lam back (i: affine.Index): affine.Index = affine.op.add (affine.lit 5, affine.op.neg i);
+
+// CHECK: reverse_compute_at of {{.*}} not realized: the box one iteration of the producer writes is not known exactly
+extern fun rev (a: «6; I32»): «6; I32» =
+    let p = materialize (mr_tileable @1 @(1, 0) (6, 0, 6) (inc, 0I32, id) back one (buf a));
+    return (materialize (reverse_compute_at (mr_tileable @1 @(1, 0) (6, 0, 6) (inc, 0I32, id) one one p, 0, 0)));
