@@ -1044,19 +1044,25 @@ anx lam transform_layout (t: Tileable, i a b: Nat): Tileable =
 ///
 /// #### reverse_compute_at
 ///
-/// Compute `t` inside the loop of dim `d` of the producer of its input `i`, one part at a time (cf. TVM's
-/// `reverse_compute_at`): once an iteration of that loop has written its box of the producer, the part of `t` that
-/// reads only that box (see `affine.preimage`) runs, into `t`'s whole result.
+/// Compute `t` inside the loop of dim `d` of the producer of its input `i`, one part at a time: once an iteration of
+/// that loop has written its box of the producer, the part of `t` that reads only that box (see `affine.preimage`)
+/// runs, into `t`'s whole result.
 ///
-/// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post` that no other op has computed yet, the box an
-///   iteration of the loop writes is exact, the part of `t` is exact and spans `t`'s reduction dims, and it logs a
-///   warning wherever it cannot.
-/// - `d` must be a parallel dim of the producer, and the loops around it those of the dims before it.
-/// - Applied to several inputs, `t` runs inside the loop of the producer of the first, and each part computes the box
-///   of the others' producers it reads before it, as two GEMMs of SwiGLU feed their product one tile at a time.
-/// - Every op that asks for one producer at one loop runs its part there, in the order they are lowered; one whose
-///   other inputs depend on such an op reads the producer whole instead.
-/// - `compute_at` on its other inputs computes them inside the loops of its part.
+/// This is MimIR's contract, not TVM's `reverse_compute_at`, which needs every producer of `t` under the target loop:
+///
+/// - The loop of the producer of the first input it names is where `t` runs, each part after the nest inside it.
+/// - Each other input it names has the box of its producer the part reads computed ahead of the part; one `compute_at`
+///   names is computed inside the part's loops; any other is materialized whole ahead of that loop.
+/// - There is no placement within the loop as TVM's `index` gives.
+/// - Every op that names one producer at one loop of the same body runs its part there, in the order they are
+///   lowered; one whose other inputs depend on such an op reads the producer whole instead.
+///
+/// `lower_to_mem` realizes it where input `i` is a `map_reduce_post` that no other op has computed yet, the box an
+/// iteration of the loop writes is exact, so that a part reads only cells already written, and the part of `t` is
+/// exact and spans `t`'s reduction dims.
+/// It keeps the dependences, the scope and the lifetimes of the buffers it materializes; wherever it cannot show a
+/// condition it logs a warning and computes `t` whole.
+/// `d` must be a parallel dim of the producer, and the loops around it those of the dims before it.
 anx lam reverse_compute_at (t: Tileable, i d: Nat): Tileable =
     let s   = t#sched;
     let bit = slot_bit i;
