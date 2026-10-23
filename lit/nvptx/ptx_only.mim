@@ -1,0 +1,12 @@
+// REQUIRES: system-linux, cuda
+// RUN: mkdir -p %t.tools
+// RUN: ln -sf "$(command -v llc)" %t.tools/llc
+// RUN: ln -sf "$(command -v fatbinary)" %t.tools/fatbinary
+// RUN: ln -sf "$(command -v which)" %t.tools/which
+// RUN: ln -sf "$(command -v nvidia-smi)" %t.tools/nvidia-smi
+// RUN: cd %t.tools && PATH="%t.tools" %mim %S/../gpu/simple_kernel.mim -p nvptx -X nvptx:no-cubin-embed -X nvptx:o=%t.ll -X nvptx:o-dev=%t.dev.ll > %t.log
+// RUN: %FileCheck %s --input-file=%t.log --implicit-check-not=ptxas --implicit-check-not=Host-only
+// RUN: clang %t.ll -o %t -lcuda -Wno-override-module
+// RUN: %t; test $? -eq 42
+
+// CHECK: Unified (Fat) LLVM IR written to

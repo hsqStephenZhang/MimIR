@@ -206,7 +206,7 @@ public:
                     optimize_bytecode(c);
                 }
                 compile2ptx(c, device_flags.uses_libdevice);
-                compile2cubin(c);
+                if (c.embed_cubin) compile2cubin(c);
                 compile2fatbin(c);
             } catch (const fe::sys::CmdNotFound& e) {
                 log().w("{}; not embedding device code", e.what());
