@@ -140,8 +140,16 @@ public:
     const Def* div(const Def* a, const Def* b) { return w_.call(core::nat::div, Defs{a, b}); }
     const Def* lt(const Def* a, const Def* b) { return w_.call(core::ncmp::l, Defs{a, b}); }
     const Def* select(const Def* c, const Def* t, const Def* f) { return w_.extract(w_.tuple({f, t}), c); }
-    const Def* min(const Def* a, const Def* b) { return select(lt(a, b), a, b); }
-    const Def* max(const Def* a, const Def* b) { return select(lt(a, b), b, a); }
+    // No `Nat` is below 0.
+    const Def* min(const Def* a, const Def* b) {
+        if (a == w_.lit_nat_0() || b == w_.lit_nat_0()) return w_.lit_nat_0();
+        return select(lt(a, b), a, b);
+    }
+    const Def* max(const Def* a, const Def* b) {
+        if (a == w_.lit_nat_0()) return b;
+        if (b == w_.lit_nat_0()) return a;
+        return select(lt(a, b), b, a);
+    }
     const Def* one() { return w_.lit_nat_1(); }
     const Def* all(const Def* a, const Def* b, const Def* c) {
         auto ab = w_.call(core::bit2::and_, w_.lit_nat(2), Defs{a, b});

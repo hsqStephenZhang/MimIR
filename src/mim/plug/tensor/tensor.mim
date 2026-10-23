@@ -1053,6 +1053,8 @@ anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = ma
 /// - A box that leaves the input at a tail is computed up to the input's end; padding is not handled.
 /// - A domain transform applied after it moves `d` with its loop, the loop of a split dim to its inner half.
 /// - Each input of an op is computed at a loop of its own; several inputs at one loop run in the order of their slots.
+/// - Slots that read one producer at the same loop share one tile spanning their boxes (see `affine.cover`); a slot that
+///   reads it at another loop, or whole, leaves all of them reading it whole.
 /// - A producer's own `compute_at` is realized inside each of its tiles.
 anx lam compute_at (t: Tileable, i d: Nat): Tileable =
     let s   = t#sched;

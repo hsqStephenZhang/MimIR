@@ -1175,6 +1175,13 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     auto maps        = DefVec(rks->nis, [&](size_t j) { return mr.maps->proj(rks->nis, j); });
 
     auto ahead = [&](u64 j) { return j < 64 && (s.ahead >> j) & 1; };
+    // A cached input is copied by `btensor.lower_map_reduce` instead.
+    auto cache = Lit::isa<u64>(field(F::Cache)).value_or(0);
+    auto wants = [&](u64 j) {
+        if (j < s.given.size() && s.given[j]) return false;
+        return !(j < 64 && (cache >> j) & 1) && (fuse || ahead(j) || (own && j < 64 && (slots >> j) & 1));
+    };
+    auto staged = std::vector<bool>(rks->nis), tried = std::vector<bool>(rks->nis);
     auto stage = [&](u64 j) -> bool {
         auto dim = ahead(j) ? std::nullopt : dim_of(j);
         cur      = dim;
@@ -1187,9 +1194,16 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         // The producer: a map_reduce_post whose iterations that write the box are known.
         auto old_p = Axm::isa<tensor::map_reduce_post>(s.old_is->proj(rks->nis, j));
         if (!old_p) return give_up(j, "the input is not a map_reduce_post, e.g. fuse_tensor inlined it");
+        // The slots that read the producer at the same loop share its tiles, which span the boxes of them all.
+        auto group = std::vector<u64>{j};
         for (u64 k = 0; k != rks->nis; ++k)
-            if (k != j && s.old_is->proj(rks->nis, k) == old_p)
-                return give_up(j, "the op reads the input through another slot too");
+            if (k != j && s.old_is->proj(rks->nis, k) == old_p) {
+                if (k < j || !wants(k) || ahead(k) != ahead(j) || (!ahead(j) && dim_of(k) != dim))
+                    return give_up(j, "another slot of the op reads the input elsewhere");
+                group.push_back(k);
+            }
+        for (auto k : group)
+            tried[k] = true;
         auto mp  = F::of(rewrite(old_p->callee())->as<App>());
         auto prk = mp.ranks();
         if (!prk) return give_up(j, "the input's ranks are not known");
@@ -1228,9 +1242,18 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto origin = [&](size_t d) -> const Def* {
             return fixed[d] ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
         };
+        // The hull of the images of the group's reads.
+        auto hull = [&](const F& op, auto lo, auto ext) {
+            if (group.size() == 1) return image(op, op.maps->proj(rks->nis, j), lo, ext);
+            auto n   = op.ranks()->nloops();
+            auto fs  = w.tuple(DefVec(group.size(), [&](size_t i) { return op.maps->proj(rks->nis, group[i]); }));
+            auto box = w.tuple({w.tuple(DefVec(n, lo)), w.tuple(DefVec(n, ext)), mp.So});
+            auto cov = w.app(w.annex<affine::cover>(), {w.lit_nat(group.size()), op.Rn, op.Ris->proj(rks->nis, j)});
+            return w.app(w.app(cov, fs), box);
+        };
         auto zero = [&](size_t) -> const Def* { return w.lit_nat_0(); };
         auto one  = [&](size_t) -> const Def* { return w.lit_nat_1(); };
-        auto box  = image(mr, map, origin, [&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
+        auto box  = hull(mr, origin, [&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
 
         auto caps = DefVec(prk->ro, [&](size_t a) { return box->proj(4, 2)->proj(prk->ro, a); });
         if (!std::ranges::all_of(caps, [&](const Def* cap) { return nat(cap).has_value(); }))
@@ -1243,20 +1266,29 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         // Inside the loop of `dim`, the read can only refer to the box by its read of the iteration's corner, which an
         // inexact image of that single point does not pin down.
         // A dim the read goes down along starts the box on that axis at its end.
-        auto fall  = dim ? btensor::falling(map, mr.Sr, Sis[j], rn, *pro, fixed) : std::vector<std::vector<bool>>();
+        // Each axis starts at the read of the corner of one slot of the group, which every slot reads the tile from.
+        auto falls = std::vector<std::vector<std::vector<bool>>>(group.size());
+        auto from  = std::vector<u64>(*pro);
         auto end_d = [&](size_t d) { return w.call(core::nat::sub, Defs{mr.Sr->proj(rn, d), w.lit_nat_1()}); };
+        for (size_t i = 0; dim && i != group.size(); ++i)
+            falls[i] = btensor::falling(maps[group[i]], mr.Sr, Sis[j], rn, *pro, fixed);
         for (u64 a = 0; dim && a != *pro; ++a) {
-            auto corner = image(mr, map, [&](size_t d) { return fall[a][d] ? end_d(d) : origin(d); }, one);
-            if (corner->proj(4, 3)->proj(*pro, a) != w.lit_tt())
-                return give_up(j, "the read of the corner is not known exactly");
-            if (box->proj(4, 0)->proj(*pro, a) != corner->proj(4, 0)->proj(*pro, a))
-                return give_up(j, "the box does not start at the read of the corner");
+            auto found = false;
+            for (size_t i = 0; !found && i != group.size(); ++i) {
+                auto& fall = falls[i];
+                auto corner
+                    = image(mr, maps[group[i]], [&](size_t d) { return fall[a][d] ? end_d(d) : origin(d); }, one);
+                if (corner->proj(4, 3)->proj(*pro, a) == w.lit_tt()
+                    && box->proj(4, 0)->proj(*pro, a) == corner->proj(4, 0)->proj(*pro, a))
+                    found = true, from[a] = i;
+            }
+            if (!found) return give_up(j, "the box does not start at the read of a corner known exactly");
         }
         // A box starts at most at the read of its corner, which the whole op reaches with the fixed dims spanning their
         // range and each shifted one the starts of the tiles, which fit the whole op.
         auto& g    = s.global;
         auto gn    = g.ranks()->nloops();
-        auto reach = image(g, g.maps->proj(rks->nis, j), zero, [&](size_t d) -> const Def* {
+        auto reach = hull(g, zero, [&](size_t d) -> const Def* {
             if (fixed[d]) return g.Sr->proj(gn, d);
             if (!s.shifted[d]) return w.lit_nat_1();
             if (s.clipped[d]) return g.Sr->proj(gn, d);
@@ -1308,7 +1340,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
             return true;
         };
         auto uses   = consumers_.find(old_p);
-        auto shared = !mem && dim && uses != consumers_.end() && uses->second > 1 && fills();
+        auto shared = !mem && dim && group.size() == 1 && uses != consumers_.end() && uses->second > 1 && fills();
         if (shared && fresh_memo_.contains(old_p)) return give_up(j, "another op computes the input whole");
 
         auto So_t         = w.tuple(caps);
@@ -1409,44 +1441,46 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         chain = res->proj(2, 0);
 
         // Inside the loop of `dim` the box starts at the read of the corner, which only depends on the fixed dims.
-        auto read_pi = map->type()->as<Pi>();
-        auto read    = w.mut_lam(read_pi->dom(), read_pi->codom())->set("tile_read");
-        auto o       = read->var();
-        auto at      = w.app(map, o);
-        auto corner  = [&](size_t a) {
-            return w
-                .app(map, w.tuple(DefVec(rn,
-                                         [&](size_t d) {
-                                             return fixed[d] ? o->proj(rn, d)
-                                                             : lit(fall[a][d] ? end_d(d) : w.lit_nat_0());
-                                         })))
-                ->proj(*pro, a);
+        auto read_of = [&](const Def* map) {
+            auto read_pi = map->type()->as<Pi>();
+            auto read    = w.mut_lam(read_pi->dom(), read_pi->codom())->set("tile_read");
+            auto o       = read->var();
+            auto at      = w.app(map, o);
+            auto corner  = [&](size_t a) {
+                auto& fall = falls[from[a]];
+                auto pt    = w.tuple(DefVec(rn, [&](size_t d) {
+                    return fixed[d] ? o->proj(rn, d) : lit(fall[a][d] ? end_d(d) : w.lit_nat_0());
+                }));
+                return w.app(maps[group[from[a]]], pt)->proj(*pro, a);
+            };
+            return read->set(true, w.tuple(DefVec(*pro, [&](size_t a) {
+                return sub(at->proj(*pro, a), dim ? corner(a) : lit(base->proj(*pro, a)));
+            })));
         };
-        read->set(true, w.tuple(DefVec(*pro, [&](size_t a) {
-            return sub(at->proj(*pro, a), dim ? corner(a) : lit(base->proj(*pro, a)));
-        })));
 
         log().d("compute input {} of {} one tile {} at a time{}", j, s.who, So_t, dim ? " inside its loop" : " ahead");
         if (act) act->used = true;
-        ins[j] = tile_b;
         if (shared) {
+            ins[j] = tile_b;
             write_backs.emplace_back(old_p, tile_b);
             return true;
         }
-        Sis[j]  = So_t;
-        maps[j] = read;
+        auto reads = DefVec(group.size(), [&](size_t i) { return read_of(maps[group[i]]); });
+        for (size_t i = 0; i != group.size(); ++i) {
+            ins[group[i]]    = tile_b;
+            Sis[group[i]]    = So_t;
+            maps[group[i]]   = reads[i];
+            staged[group[i]] = true;
+        }
         return true;
     };
 
-    // A cached input is copied by `btensor.lower_map_reduce` instead.
-    auto cache = Lit::isa<u64>(field(F::Cache)).value_or(0);
     for (u64 j = 0; j != rks->nis; ++j) {
         if (j < s.given.size() && s.given[j]) {
             ins[j] = s.given[j];
             continue;
         }
-        if (!(j < 64 && (cache >> j) & 1) && (fuse || ahead(j) || (own && j < 64 && (slots >> j) & 1)) && stage(j))
-            continue;
+        if (staged[j] || (wants(j) && !tried[j] && stage(j))) continue;
         auto old = s.old_is->proj(rks->nis, j);
         ins[j]   = to_buffer(rewrite(old), old);
         if (!Axm::isa<buffer::Buf>(ins[j]->type())) return nullptr;
