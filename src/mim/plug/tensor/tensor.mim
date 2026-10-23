@@ -333,6 +333,8 @@ lam transpose_shape {r: Nat} (s: «r; Nat», permutation: «r; Idx r»): «r; Na
 /// `permutation` precedes `input`, and `{s}` is a *separate* implicit group introduced after it, so that `{T, r, s}`
 /// can be inferred: `permutation: «r; Idx r»` pins the rank `r`, and only then is the `{s}` Hole created — with the
 /// now-literal type `«r; Nat»`, which lets `input: «s; T»` read off exactly the first `r` axes of its shape.
+/// A literal size-1 axis folds out of the input's type, so `«1, 7, 5; T»` is `«7, 5; T»` is `«7, 5, 1; T»`, and the
+/// inference pads the missing axis last; pass `{s}` explicitly for any other place, as `transpose p @(1, 7, 5) x`.
 /// Merging the two groups would not do: the domain `«s; T»` is built once, while `r` is still unknown.
 axm transpose: {T: *, r: Nat}
              → [permutation: «r; Idx r»]
@@ -426,6 +428,8 @@ pub lam conv_shape (n cout: Nat, s k stride dilation padding: «2; Nat»): «4; 
 ///   map.
 /// - The output shape follows from the extents and window parameters (see `conv_shape`) and is not
 ///   passed explicitly.
+/// - A literal size-1 extent folds out of the operands' types and the inference pads it last, so a batch of 1 needs
+///   the extents spelled out, as `conv R @(1, cin, cout, h, w, kh, kw)` (see `transpose`).
 ///
 axm conv: [R: Ring]
         → {n cin cout h w kh kw: Nat}

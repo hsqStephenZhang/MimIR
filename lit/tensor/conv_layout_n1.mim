@@ -1,0 +1,36 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt -p clos -p ll %s
+// RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// A batch of 1 in NHWC transposed into `conv`: the folded `«1, h, w, c»` needs the shapes of the transpose and of
+// `conv` spelled out.
+// Against the same input generated in NCHW, for a row shorter than 8 (`conv_schedule_co`) and a longer one (the
+// tiled schedule, which copies the input).
+// The exit code counts the values that differ.
+plugin core;
+plugin tensor;
+plugin mem;
+
+use core.ops.u.w;
+use tensor;
+
+lam add (x y: I32): I32 = x + y;
+lam mul (x y: I32): I32 = x * y;
+let Ring = (I32, 0I32, add, mul);
+lam ne (x y: I32): I32 = core.select (core.icmp.e (x, y), 0I32, 1I32);
+lam f (h w c: I64): I32 = core.conv.s 4294967296 (core.wrap.sub 0 (core.wrap.mul 0 (3I64, h), core.bit2.and 0 (core.wrap.add 0 (c, w), 7I64)));
+lam g (o c: I64): I32 = core.conv.s 4294967296 (core.wrap.sub 0 (core.bit2.and 0 (core.wrap.add 0 (o, c), 3I64), 1I64));
+lam diff {s: «3; Nat»} (u v: «s; I32»): I32 =
+    reduce (add, 0I32) 0₁ (reduce (add, 0I32) 1₂ (reduce (add, 0I32) 2₃ (binary ne (u, v))));
+
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
+    let w   = generate (16, 16, 3, 3) (λ i: «4; I64»: I32 = g (i#0_4, i#1_4));
+    let a7  = generate (1, 7, 7, 16) (λ i: «4; I64»: I32 = f (i#1_4, i#2_4, i#3_4));
+    let n7  = generate (1, 16, 7, 7) (λ i: «4; I64»: I32 = f (i#2_4, i#3_4, i#1_4));
+    let a9  = generate (1, 9, 9, 16) (λ i: «4; I64»: I32 = f (i#1_4, i#2_4, i#3_4));
+    let n9  = generate (1, 16, 9, 9) (λ i: «4; I64»: I32 = f (i#2_4, i#3_4, i#1_4));
+    let r7  = conv Ring @(1, 16, 16, 7, 7, 3, 3) ((1, 1), (1, 1), (1, 1)) (transpose (0_4, 2_4, 3_4, 1_4) @(1, 7, 7, 16) (buf a7), buf w);
+    let r9  = conv Ring @(1, 16, 16, 9, 9, 3, 3) ((1, 1), (1, 1), (1, 1)) (transpose (0_4, 2_4, 3_4, 1_4) @(1, 9, 9, 16) (buf a9), buf w);
+    return (m, diff (r7, conv Ring @(1, 16, 16, 7, 7, 3, 3) ((1, 1), (1, 1), (1, 1)) (buf n7, buf w))
+               + diff (r9, conv Ring @(1, 16, 16, 9, 9, 3, 3) ((1, 1), (1, 1), (1, 1)) (buf n9, buf w)));
