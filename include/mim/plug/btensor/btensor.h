@@ -113,6 +113,30 @@ struct MapRedPost {
     }
 };
 
+/// For each of the @p r axes the read @p map of a nest over @p Sr reaches in the shape @p S, the dims outside @p fixed
+/// along which it goes down, as a flip's does: the box of an iteration starts on that axis where these dims end.
+inline std::vector<std::vector<bool>>
+falling(const Def* map, const Def* Sr, const Def* S, u64 rn, u64 r, const std::vector<bool>& fixed) {
+    auto& w   = map->world();
+    auto read = [&](std::optional<u64> d) {
+        auto lo  = w.tuple(DefVec(rn, [&](size_t e) { return w.lit_nat(d == e ? 1 : 0); }));
+        auto one = w.tuple(DefVec(rn, [&](size_t) { return w.lit_nat_1(); }));
+        auto img = w.app(w.app(w.annex<affine::image>(), {w.lit_nat(rn), w.lit_nat(r)}), map);
+        return w.app(img, w.tuple({lo, one, S}))->proj(4, 0);
+    };
+    auto res  = std::vector<std::vector<bool>>(r, std::vector<bool>(rn));
+    auto base = read(std::nullopt);
+    for (u64 d = 0; d != rn; ++d) {
+        if (fixed[d] || Lit::isa<u64>(Sr->proj(rn, d)).value_or(0) < 2) continue;
+        auto step = read(d);
+        for (u64 a = 0; a != r; ++a) {
+            auto x = Lit::isa<u64>(base->proj(r, a)), y = Lit::isa<u64>(step->proj(r, a));
+            res[a][d] = x && y && *y < *x;
+        }
+    }
+    return res;
+}
+
 /// `affine.map @(m, n) @(s_in, s_out) f idxs as mem` with the address space `as` of @p mem ↦ `[mem', coords]`.
 inline const Def* op_affine_map(const Def* f,
                                 const Def* m,

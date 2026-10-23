@@ -16,7 +16,7 @@
 // * `grp_at`:  y[c] = x[c] + (g + 1)[c floordiv 16] with c split 48 = 2 × 24, per outer c: boxes of 2 that overlap.
 // * `edge_at`: y[c] = x[c] + (g + 1)[c floordiv 5] with c split 24 = 3 × 8: the last box of 3 would leave g, so it is
 //   computed up to g's end.
-// * `rev_at`:  P read reversed, P[i, 5 − k]: the box does not start at the corner's read, so warned and whole.
+// * `rev_at`:  P read reversed, P[i, 5 − k]: the row of P starts at the read of k = 5, so one row per iteration.
 // * `chain_at`: Q at i of P, P at i of C: Q is computed one row «11» at a time inside each of P's tiles.
 // * `two_at`:   C = P · Q with both producers inside the loop of j: a row «7» of P and a column «7» of Q.
 // * `fuse_at`:  tile_and_fuse at i over Q → P = Q · B → C = P · E: a row «10» of P, ahead of it a row «13» of Q.
@@ -259,7 +259,6 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
     let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
     return (tensor.materialize (tensor.compute_at (t, 1, 0)));
 
-// WARN-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the box does not start at the read of the corner
 // WARN-DAG: compute_at of input 1 inside dim 0 of {{.*}} not realized: the input is not a map_reduce_post
 // WARN-DAG: reverse_compute_at of {{.*}} inside dim 0 of the producer of its input 0 not realized: the part of this op that reads one box is not exact
 // WARN-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the input's shape is not the producer's
@@ -286,8 +285,8 @@ extern fun plain (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
 // CHECK-DAG: mem.{{m?slot|malloc}} («3, 15; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («2, 7; I32», 0)
 // CHECK-DAG: mem.{{m?slot|malloc}} («2, 5; I32», 0)
-// CHECK-DAG: mem.{{m?slot|malloc}} («3, 6; I32», 0)
 // FULL-NOT: mem.{{m?slot|malloc}} («4, 6; I32»
+// FULL-NOT: mem.{{m?slot|malloc}} («3, 6; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («2, 2, 6, 6; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («4; I32»
 // FULL-NOT: mem.{{m?slot|malloc}} («3; I32»

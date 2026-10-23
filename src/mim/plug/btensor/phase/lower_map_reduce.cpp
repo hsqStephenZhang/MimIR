@@ -133,22 +133,28 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         auto [fmem, get]   = fdata->projs<2>();
         // Sized regardless of the input's end, so that a padded vector loop finds whole runs in the copy.
         auto wide  = w.tuple(DefVec(*r, [&](size_t) { return w.lit_nat(u64(1) << 32); }));
-        auto image = [&](auto ext) {
+        // A dim the read goes down along starts the box on that axis at its end.
+        auto fall  = falling(maps[i], mr.Sr, wide, rn, *r, fixed);
+        auto end_d = [&](size_t d) { return w.call(core::nat::sub, Defs{mr.Sr->proj(rn, d), w.lit_nat_1()}); };
+        auto image = [&](auto ext, std::optional<u64> a) {
             auto lo  = DefVec(rn, [&](size_t d) -> const Def* {
-                return fixed[d] ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
+                if (fixed[d]) return w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d)));
+                return a && fall[*a][d] ? end_d(d) : w.lit_nat_0();
             });
             auto box = w.tuple({w.tuple(lo), w.tuple(DefVec(rn, ext)), wide});
             return w.app(w.app(w.app(w.annex<affine::image>(), {mr.Rn, R}), maps[i]), box);
         };
-        auto box   = image([&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
-        auto point = image([&](size_t) { return w.lit_nat_1(); });
-        // An inexact image of the corner's single point does not pin down where the read starts.
-        if (!std::ranges::all_of(point->proj(4, 3)->projs(*r), [&](const Def* e) { return e == w.lit_tt(); })) {
-            give_up("the read of the corner is not known exactly");
-            continue;
+        auto box = image([&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); }, std::nullopt);
+        auto why = static_cast<const char*>(nullptr);
+        for (u64 a = 0; !why && a != *r; ++a) {
+            auto point = image([&](size_t) { return w.lit_nat_1(); }, a);
+            if (point->proj(4, 3)->proj(*r, a) != w.lit_tt())
+                why = "the read of the corner is not known exactly";
+            else if (box->proj(4, 0)->proj(*r, a) != point->proj(4, 0)->proj(*r, a))
+                why = "the box does not start at the read of the corner";
         }
-        if (box->proj(4, 0) != point->proj(4, 0)) {
-            give_up("the box does not start at the read of the corner");
+        if (why) {
+            give_up(why);
             continue;
         }
         auto lo   = box->proj(4, 0);
@@ -334,10 +340,16 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         auto read   = w.mut_lam(pi->dom(), w.arr(ra, index))->set("cache_read");
         auto o      = read->var();
         auto whole  = w.app(maps[i], o);
-        auto corner = w.app(
-            maps[i], w.tuple(DefVec(rn, [&](size_t d) { return fixed[d] ? o->proj(rn, d) : lit(w.lit_nat_0()); })));
-        auto rel = DefVec(
-            *r, [&](size_t a) { return w.call(affine::op::sub, Defs{whole->proj(*r, a), corner->proj(*r, a)}); });
+        auto corner = [&](size_t a) {
+            return w
+                .app(maps[i], w.tuple(DefVec(rn,
+                                             [&](size_t d) {
+                                                 return fixed[d] ? o->proj(rn, d)
+                                                                 : lit(fall[a][d] ? end_d(d) : w.lit_nat_0());
+                                             })))
+                ->proj(*r, a);
+        };
+        auto rel = DefVec(*r, [&](size_t a) { return w.call(affine::op::sub, Defs{whole->proj(*r, a), corner(a)}); });
         auto xs = DefVec();
         if (!stack.empty())
             xs.push_back(w.call<affine::linearize>(

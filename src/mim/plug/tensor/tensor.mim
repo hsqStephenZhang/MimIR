@@ -1048,7 +1048,8 @@ anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = ma
 /// - `d` must be a parallel dim or a reduction dim `hoist_red` hoists, and the loops around it those of the dims
 ///   before it in the order of the nest.
 /// - A copy computed at a hoisted reduction dim packs a block of its source, as a GEMM packs B per K block.
-/// - The read of each iteration's corner must be where its box starts, which a reversed read is not.
+/// - Each axis of the box must start at the read of an iteration's corner, the dims inside the loop at their start or,
+///   where the read goes down along them as a flip's does, at their end.
 /// - A box that leaves the input at a tail is computed up to the input's end; padding is not handled.
 /// - A domain transform applied after it moves `d` with its loop, the loop of a split dim to its inner half.
 /// - Each input of an op is computed at a loop of its own; several inputs at one loop run in the order of their slots.
@@ -1066,8 +1067,8 @@ anx lam compute_at (t: Tileable, i d: Nat): Tileable =
 /// `cache_read`): ahead of the nest, or inside the loop of dim `d` after `compute_at (t, i, d)`, which then copies
 /// the input instead of computing it.
 ///
-/// - `btensor.lower_map_reduce` realizes it on any input buffer whose box has a literal size and whose read of the
-///   corner of each iteration is where its box starts, and logs a warning wherever it cannot.
+/// - `btensor.lower_map_reduce` realizes it on any input buffer whose box has a literal size and starts at the read of
+///   an iteration's corner as for `compute_at`, and logs a warning wherever it cannot.
 /// - A box that leaves the input at a tail is copied up to the input's end.
 /// - The copy lays its axes out in the order the loops read them, the axis the innermost loop moves last (cf. TVM's
 ///   layout rewrite), whatever the order the input stores them in; without `transform_layout`, a vector run that still

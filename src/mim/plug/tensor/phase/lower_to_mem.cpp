@@ -1242,10 +1242,14 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         };
         // Inside the loop of `dim`, the read can only refer to the box by its read of the iteration's corner, which an
         // inexact image of that single point does not pin down.
-        if (dim) {
-            auto corner = image(mr, map, origin, one);
-            if (!exact(corner, *pro)) return give_up(j, "the read of the corner is not known exactly");
-            if (box->proj(4, 0) != corner->proj(4, 0))
+        // A dim the read goes down along starts the box on that axis at its end.
+        auto fall  = dim ? btensor::falling(map, mr.Sr, Sis[j], rn, *pro, fixed) : std::vector<std::vector<bool>>();
+        auto end_d = [&](size_t d) { return w.call(core::nat::sub, Defs{mr.Sr->proj(rn, d), w.lit_nat_1()}); };
+        for (u64 a = 0; dim && a != *pro; ++a) {
+            auto corner = image(mr, map, [&](size_t d) { return fall[a][d] ? end_d(d) : origin(d); }, one);
+            if (corner->proj(4, 3)->proj(*pro, a) != w.lit_tt())
+                return give_up(j, "the read of the corner is not known exactly");
+            if (box->proj(4, 0)->proj(*pro, a) != corner->proj(4, 0)->proj(*pro, a))
                 return give_up(j, "the box does not start at the read of the corner");
         }
         // A box starts at most at the read of its corner, which the whole op reaches with the fixed dims spanning their
@@ -1409,12 +1413,17 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto read    = w.mut_lam(read_pi->dom(), read_pi->codom())->set("tile_read");
         auto o       = read->var();
         auto at      = w.app(map, o);
-        auto corner
-            = dim ? w.app(map,
-                          w.tuple(DefVec(rn, [&](size_t d) { return fixed[d] ? o->proj(rn, d) : lit(w.lit_nat_0()); })))
-                  : nullptr;
+        auto corner  = [&](size_t a) {
+            return w
+                .app(map, w.tuple(DefVec(rn,
+                                         [&](size_t d) {
+                                             return fixed[d] ? o->proj(rn, d)
+                                                             : lit(fall[a][d] ? end_d(d) : w.lit_nat_0());
+                                         })))
+                ->proj(*pro, a);
+        };
         read->set(true, w.tuple(DefVec(*pro, [&](size_t a) {
-            return sub(at->proj(*pro, a), dim ? corner->proj(*pro, a) : lit(base->proj(*pro, a)));
+            return sub(at->proj(*pro, a), dim ? corner(a) : lit(base->proj(*pro, a)));
         })));
 
         log().d("compute input {} of {} one tile {} at a time{}", j, s.who, So_t, dim ? " inside its loop" : " ahead");
