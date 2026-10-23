@@ -1087,16 +1087,24 @@ const Def* LowerToMem::clip_lim(const btensor::MapRedPost& op, const DefVec& sta
                         at);
     whole->set(true, at);
 
+    // A shifted dim stops where the op's own stop falls into the tile, counted from the tile's start.
+    auto from = [&](const Def* end, u64 d) {
+        auto stop = w.call(core::wrap::sub, core::Mode::none, Defs{end, i32_of(starts[d])});
+        return w.call(core::extrema::smax, Defs{w.lit_i32(0), stop});
+    };
     const Def* body = w.app(own, w.tuple({whole, jj}));
-    for (u64 d = 0; d != n; ++d)
-        if (ends[d]) {
-            auto mine = w.app(own, w.tuple({whole, w.lit_nat(d)}));
-            auto end  = i32_of(ends[d]);
-            auto cut  = w.call(core::icmp::ul, Defs{mine->proj(2, 1), end});
-            end       = select(mine->proj(2, 0), select(cut, mine->proj(2, 1), end), end);
-            auto stop = w.call(core::wrap::sub, core::Mode::none, Defs{end, i32_of(starts[d])});
-            body      = select(is(jj, d), w.tuple({w.lit_tt(), stop}), body);
+    for (u64 d = 0; d != n; ++d) {
+        if (!starts[d] && !ends[d]) continue;
+        auto mine = w.app(own, w.tuple({whole, w.lit_nat(d)}));
+        if (!ends[d]) {
+            body = select(is(jj, d), w.tuple({mine->proj(2, 0), from(mine->proj(2, 1), d)}), body);
+            continue;
         }
+        auto end = i32_of(ends[d]);
+        auto cut = w.call(core::icmp::ul, Defs{mine->proj(2, 1), end});
+        end      = select(mine->proj(2, 0), select(cut, mine->proj(2, 1), end), end);
+        body     = select(is(jj, d), w.tuple({w.lit_tt(), from(end, d)}), body);
+    }
     lim->set(true, body);
 
     auto fields    = DefVec(F::Num_Fields, [&](size_t f) { return rec->proj(F::Num_Fields, f); });
@@ -1174,7 +1182,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         const auto& fixed = act ? act->fixed : no_fixed;
         auto get          = act ? act->get : nullptr;
 
-        // The producer: a map_reduce_post that writes through a projection.
+        // The producer: a map_reduce_post whose iterations that write the box are known.
         auto old_p = Axm::isa<tensor::map_reduce_post>(s.old_is->proj(rks->nis, j));
         if (!old_p) return give_up(j, "the input is not a map_reduce_post, e.g. fuse_tensor inlined it");
         for (u64 k = 0; k != rks->nis; ++k)
@@ -1190,15 +1198,18 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
 
         auto [ovar, obody] = probe(mp.map_out);
         auto axis_of       = std::vector<std::optional<u64>>(prn);
-        for (u64 a = 0; a != prk->ro; ++a) {
+        auto projection    = true;
+        for (u64 a = 0; projection && a != prk->ro; ++a) {
             auto e  = obody->proj(prk->ro, a);
             auto dd = std::optional<u64>();
             if (e == ovar) dd = 0;
             if (auto ex = e->isa<Extract>(); ex && ex->tuple() == ovar) dd = Lit::isa<u64>(ex->index());
             if (!dd || *dd >= prn || axis_of[*dd] || mp.Sr->proj(prn, *dd) != mp.So->proj(prk->ro, a))
-                return give_up(j, "the input's write map is not a projection");
-            axis_of[*dd] = a;
+                projection = false;
+            else
+                axis_of[*dd] = a;
         }
+        if (!projection) axis_of.assign(prn, std::nullopt);
 
         auto map = maps[j];
         auto pro = Lit::isa<u64>(mr.Ris->proj(rks->nis, j));
@@ -1300,25 +1311,56 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
 
         // The producer on the tile: its parallel dims are shifted to the box's start on the axis they write and
         // span the tile; its reduction dims stay whole.
-        auto base  = box->proj(4, 0);
+        auto base = box->proj(4, 0);
+        // Where each dim starts and how far it runs: a projection's dim spans the box on its axis, any other write map
+        // the iterations that write the box.
+        auto off = DefVec(prn), ext_t = DefVec(prn, [&](size_t dd) { return mp.Sr->proj(prn, dd); });
+        auto pre_of = [&](const Def* ext) {
+            return w.app(w.app(w.app(w.annex<affine::preimage>(), {mp.Rn, mp.Ro}), mp.map_out),
+                         w.tuple({base, ext, mp.Sr}));
+        };
+        if (projection) {
+            for (u64 dd = 0; dd != prn; ++dd)
+                if (auto a = axis_of[dd]) off[dd] = base->proj(prk->ro, *a), ext_t[dd] = caps[*a];
+        } else {
+            auto writers = pre_of(w.tuple(caps));
+            if (writers->proj(4, 3) != w.lit_tt())
+                return give_up(j, "the iterations that write the box are not known exactly");
+            for (u64 dd = 0; dd != prn; ++dd) {
+                auto lo = writers->proj(4, 0)->proj(prn, dd), cap = writers->proj(4, 2)->proj(prn, dd);
+                if (lo == w.lit_nat_0() && cap == mp.Sr->proj(prn, dd)) continue;
+                if (dd >= prk->rp) return give_up(j, "the box takes part of a reduction dim");
+                if (!nat(cap)) return give_up(j, "the iterations that write the box have no literal number");
+                off[dd] = lo, ext_t[dd] = cap;
+            }
+        }
         auto shift = [&](const Def* f, const char* name) -> const Def* {
             auto pi  = f->type()->as<Pi>();
             auto lam = w.mut_lam(pi->dom(), pi->codom())->set(name);
             auto o   = lam->var();
-            auto at  = w.tuple(DefVec(prn, [&](size_t dd) {
-                return axis_of[dd] ? add(o->proj(prn, dd), lit(base->proj(prk->ro, *axis_of[dd]))) : o->proj(prn, dd);
-            }));
+            auto at  = w.tuple(DefVec(
+                prn, [&](size_t dd) { return off[dd] ? add(o->proj(prn, dd), lit(off[dd])) : o->proj(prn, dd); }));
             lam->set(true, w.app(f, at));
             return lam;
         };
         auto pmaps = DefVec(prk->nis, [&](size_t i) { return shift(mp.maps->proj(prk->nis, i), "tile_map"); });
-        auto Sr_t
-            = w.tuple(DefVec(prn, [&](size_t dd) { return axis_of[dd] ? caps[*axis_of[dd]] : mp.Sr->proj(prn, dd); }));
+        auto Sr_t  = w.tuple(ext_t);
 
         auto mt = mp;
         mt.So   = shared ? mp.So : So_t;
         mt.Sr   = Sr_t;
-        if (shared) mt.map_out = shift(mp.map_out, "tile_out");
+        if (shared) {
+            mt.map_out = shift(mp.map_out, "tile_out");
+        } else if (!projection) {
+            // The tile writes its cells less the box's start.
+            auto at    = shift(mp.map_out, "tile_at");
+            auto pi    = mp.map_out->type()->as<Pi>();
+            auto out   = w.mut_lam(pi->dom(), pi->codom())->set("tile_out");
+            auto cell  = w.app(at, out->var());
+            mt.map_out = out->set(true, w.tuple(DefVec(prk->ro, [&](size_t a) {
+                return sub(cell->proj(prk->ro, a), lit(base->proj(prk->ro, a)));
+            })));
+        }
         mt.maps = w.tuple(pmaps);
         // A tile at its own origin reads its epilogue inputs at the cells of the whole result it writes.
         if (!shared && prk->nps != 0)
@@ -1333,7 +1375,11 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                 return lam;
             }));
         mt.maps_all = w.tuple({mt.maps, mt.post_maps});
-        if (std::ranges::any_of(clip, [](bool c) { return c; })) {
+        auto clips   = std::ranges::any_of(clip, [](bool c) { return c; });
+        auto shifted = std::vector<bool>(prn), clipped = std::vector<bool>(prn);
+        for (u64 dd = 0; dd != prn; ++dd)
+            shifted[dd] = off[dd] != nullptr, clipped[dd] = shifted[dd] && (axis_of[dd] ? clip[*axis_of[dd]] : clips);
+        if (projection && clips) {
             auto starts = DefVec(prn), ends = DefVec(prn);
             for (u64 dd = 0; dd != prn; ++dd)
                 if (auto a = axis_of[dd]) {
@@ -1341,11 +1387,15 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                     if (clip[*a]) ends[dd] = mp.So->proj(prk->ro, *a);
                 }
             mt.sched = clip_lim(mp, starts, ends);
+        } else if (!projection && std::ranges::any_of(shifted, [](bool b) { return b; })) {
+            // The op's own stops apply at the tile's start, and a box cut at the input's end stops its iterations too.
+            auto reach = clips ? pre_of(box->proj(4, 1)) : nullptr;
+            auto ends  = DefVec(prn);
+            for (u64 dd = 0; dd != prn; ++dd)
+                if (clipped[dd]) ends[dd] = w.call(core::nat::add, Defs{off[dd], reach->proj(4, 1)->proj(prn, dd)});
+            mt.sched = clip_lim(mp, off, ends);
         }
-        mt.shapes    = w.tuple({mt.So, Sr_t, mt.sched});
-        auto shifted = std::vector<bool>(prn), clipped = std::vector<bool>(prn);
-        for (u64 dd = 0; dd != prn; ++dd)
-            shifted[dd] = axis_of[dd].has_value(), clipped[dd] = shifted[dd] && clip[*axis_of[dd]];
+        mt.shapes   = w.tuple({mt.So, Sr_t, mt.sched});
         auto& chain = act ? act->mem : pre;
         auto res = lower_staged({mt, mp, shifted, clipped, old_p->arg()->proj(2, 0), p_post, old_p, fuse, budget, runs},
                                 chain, tile_b);

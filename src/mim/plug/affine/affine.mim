@@ -150,6 +150,8 @@ axm cover: {k n m: Nat}
 /// part of a loop nest that writes a tile, given the nest's write map.
 /// A result coordinate that is a domain dim plus a constant (a projection, a permutation, a shifted tile)
 /// restricts that dim; a dim no coordinate restricts (a reduction) is the whole `[0, S#i)`.
+/// A coordinate `q · x#a + x#b` with `S#b = q`, as a split dim writes, restricts both dims where the box is one cell
+/// or whole runs of `q` from a multiple of `q`.
 /// `cap` bounds `ext` independently of `lo`, so a box at `lo` with extents `cap` covers it at any origin and
 /// can be handed on to `image` to keep its `cap`s literal.
 /// `exact` states that the box is exactly the points mapped into the box; it is not where a coordinate is

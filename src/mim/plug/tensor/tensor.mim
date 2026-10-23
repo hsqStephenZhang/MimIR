@@ -1042,8 +1042,9 @@ anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = ma
 /// tile-and-fuse): before the nest inside that loop runs, the box of the input its iterations read is
 /// computed into a buffer of the box's static size (see `affine.image`), from which the input is then read.
 ///
-/// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post` whose write map is a projection, and the box
-///   has a literal size; it computes that input with the input's own schedule and logs a warning wherever it cannot.
+/// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post`, the box has a literal size, and the iterations
+///   of the input that write the box are known exactly (see `affine.preimage`), as for a projection or a split dim;
+///   it computes that input with the input's own schedule and logs a warning wherever it cannot.
 /// - `d` must be a parallel dim or a reduction dim `hoist_red` hoists, and the loops around it those of the dims
 ///   before it in the order of the nest.
 /// - A copy computed at a hoisted reduction dim packs a block of its source, as a GEMM packs B per K block.

@@ -500,6 +500,34 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
         const Def *lo = nullptr, *ext = nullptr;
     };
     auto quot = std::vector<Split>(*ln), rems = std::vector<Split>(*ln);
+    // `q·x#a + x#b` with `x#b` spanning `[0, q)`, as a split dim writes: a box of one cell, or of whole runs of `q`
+    // from a multiple of `q`, is exactly a box of `x#a` and `x#b`.
+    auto split = [&](const Lin& l, u64 j) {
+        auto nz = std::ranges::count_if(l.c, [](int64_t ci) { return ci != 0; });
+        if (nz != 2 || l.sym || l.k != 0 || std::ranges::count(l.c, 1) != 1) return false;
+        auto b = u64(std::ranges::find(l.c, 1) - l.c.begin());
+        auto a = u64(std::ranges::find_if(l.c, [](int64_t ci) { return ci > 1; }) - l.c.begin());
+        if (a == *ln || seen[a] || seen[b] || quot[a].b || rems[a].b || quot[b].b || rems[b].b) return false;
+        auto q = u64(l.c[a]);
+        if (Lit::isa(S->proj(*ln, b)) != q) return false;
+        auto y_lo = lo->proj(*lm, j), y_ext = ext->proj(*lm, j);
+        auto bq  = w.lit_nat(q);
+        auto div = [&](const Def* x) { return w.call(core::nat::div, Defs{x, bq}); };
+        if (Lit::isa(y_ext) == 1) {
+            los[a] = div(y_lo), exts[a] = caps[a] = w.lit_nat_1();
+            los[b] = w.call(core::nat::rem, Defs{y_lo, bq}), exts[b] = caps[b] = w.lit_nat_1();
+        } else if (auto e = Lit::isa(y_ext);
+                   e && *e % q == 0 && w.call(core::nat::rem, Defs{y_lo, bq}) == w.lit_nat_0()) {
+            los[a]  = div(y_lo);
+            caps[a] = region.min(w.lit_nat(*e / q), S->proj(*ln, a));
+            exts[a] = region.sub(region.min(region.add(los[a], caps[a]), S->proj(*ln, a)), los[a]);
+            los[b] = w.lit_nat_0(), exts[b] = caps[b] = bq;
+        } else {
+            return false;
+        }
+        seen[a] = seen[b] = true;
+        return true;
+    };
     for (u64 j = 0; j != *lm; ++j) {
         if (auto o = Axm::isa<affine::semiop>(body->proj(*lm, j));
             o && (o.id() == semiop::floordiv || o.id() == semiop::rem)) {
@@ -520,6 +548,7 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
             continue;
         }
         auto itv = region.eval(body->proj(*lm, j));
+        if (itv && itv->lin && split(*itv->lin, j)) continue;
         if (!itv || !itv->lin || !one(*itv->lin)) {
             exact = false;
             continue;
