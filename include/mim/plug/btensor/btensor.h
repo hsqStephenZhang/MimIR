@@ -102,6 +102,17 @@ struct MapRedPost {
     }
 
     /// Which of the @p n dims the loop of @p dim and the loops around it iterate (see `btensor.at_outer`).
+    /// Whether the loop of dim @p d runs inside reduction loops that `outer` does not name.
+    /// A vectorized or blocked nest runs its vector loop and the block dim inside the reductions it does not unroll.
+    bool inside_red(u64 d) const {
+        auto rks = ranks();
+        auto vd  = Lit::isa<u64>(sched_field(VDim));
+        if (!rks || !vd || Lit::isa<u64>(sched_field(Hoist)).value_or(0) != 0) return false;
+        auto unroll = std::min(Lit::isa<u64>(sched_field(Unroll)).value_or(0), rks->rr);
+        auto nested = *vd + 1 == rks->rp || *vd + 2 == rks->rp;
+        return nested && unroll < rks->rr && *vd <= d && d < rks->rp;
+    }
+
     std::vector<bool> outer(u64 dim, u64 n) const {
         auto& w = sched->world();
         auto at = w.app(w.annex<btensor::at_outer>(), {sched_record(), Rp, w.lit_nat(dim)});

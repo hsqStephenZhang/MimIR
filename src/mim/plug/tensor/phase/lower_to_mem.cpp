@@ -722,7 +722,8 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     auto mr  = F::of(rewrite(app->callee())->as<App>());
     auto rks = mr.ranks();
     if (!rks || mr.sched_field(F::At) != w.lit_tt()) return nullptr;
-    if (Lit::isa<u64>(mr.sched_field(F::Rev)).value_or(0) != 0) return lower_reverse(app, mr);
+    if (Lit::isa<u64>(mr.sched_field(F::Rev)).value_or(0) != 0)
+        if (auto res = lower_reverse(app, mr)) return res;
 
     auto [old_is, old_post_is] = app->arg()->projs<2>();
     auto post_is               = buffer_list(rewrite(old_post_is), old_post_is, mr.nps);
@@ -796,17 +797,23 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     for (u64 a = 0; a != prk->ro; ++a)
         if (box->proj(4, 3)->proj(prk->ro, a) != w.lit_tt())
             return give_up("the box one iteration of the producer writes is not known exactly");
+    // A cell another iteration of the loops up to `dim` writes as well is not final after this one.
+    auto writers = w.app(w.app(w.app(w.annex<affine::preimage>(), {mp.Rn, mp.Ro}), mp.map_out),
+                         w.tuple({box->proj(4, 0), box->proj(4, 2), mp.Sr}));
+    if (writers->proj(4, 3) != w.lit_tt()) return give_up("the iterations that write the box are not known exactly");
+    for (u64 d = 0; d <= *dim; ++d)
+        if (writers->proj(4, 0)->proj(prn, d) != origin[d] || writers->proj(4, 2)->proj(prn, d) != w.lit_nat_1())
+            return give_up("other iterations of the producer write the box too");
     u64 runs    = 1;
     for (u64 d = 0; d <= *dim; ++d)
         runs *= Lit::isa<u64>(mp.Sr->proj(prn, d)).value_or(1);
 
-    // The part of an op that reads only that box through its input `jc`, shifted to the part's start and writing into
-    // the op's whole result; it stops at its end, which may come before its literal size.
+    // A part writes into the op's whole result and may stop before its literal size.
     struct Part {
         const App* app;
         F mr, mc;
         u64 j;
-        std::vector<bool> shifted, clipped;
+        std::vector<bool> shifted, clipped, post_p;
         const Def* buf = nullptr;
     };
     const char* why = nullptr;
@@ -818,6 +825,21 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
         auto rk = *op.ranks();
         auto rn = rk.nloops();
         if (mp.So != op.Sis->proj(rk.nis, jc)) return fail("the input's shape is not the producer's");
+        for (u64 k = 0; k != rk.nis; ++k)
+            if (k != jc && c->arg()->proj(2, 0)->proj(rk.nis, k) == old_p)
+                return fail("the op reads the producer through another input too");
+        // An epilogue input that is the producer, read at the cells the input reads, reads the box as well.
+        auto pi_out  = op.map_out->type()->as<Pi>();
+        auto o_out   = w.mut_lam(pi_out->dom(), pi_out->codom())->var();
+        auto post_p  = std::vector<bool>(rk.nps);
+        auto old_pis = c->arg()->proj(2, 1);
+        for (u64 k = 0; k != rk.nps; ++k)
+            if (old_pis->proj(rk.nps, k) == old_p) {
+                auto at = w.app(op.post_maps->proj(rk.nps, k), w.app(op.map_out, o_out));
+                if (at != w.app(op.maps->proj(rk.nis, jc), o_out))
+                    return fail("the op's epilogue reads the producer elsewhere than its input");
+                post_p[k] = true;
+            }
         // The box at its static size bounds the part by a static size too.
         auto part = [&](const Def* ext) {
             return w.app(
@@ -860,15 +882,13 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
         auto shifted = std::vector<bool>(rn), clipped = std::vector<bool>(rn);
         for (u64 d = 0; d != rk.rp; ++d)
             shifted[d] = true, clipped[d] = ends[d] != nullptr;
-        return Part{c, op, mc, jc, shifted, clipped};
+        return Part{c, op, mc, jc, shifted, clipped, post_p};
     };
 
     auto first = plan(app, mr, j);
     if (!first) return give_up(why);
     auto parts = std::vector<Part>{*first};
 
-    // The other ops that ask for this producer at this loop run their parts there too, unless an op computed inside
-    // it waits for them or they for it.
     // Only the ops of this body share its memo and memory.
     auto mates = std::vector<std::pair<const App*, u64>>();
     for (auto c : readers_[old_p]) {
@@ -914,13 +934,19 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     if (!p_post_is) return give_up("an epilogue input is not a buffer");
 
     auto outer = std::exchange(alloc_mem_, fresh_mem());
+    // A give-up from here on leaves nothing lowered on the abandoned memory behind in the memo.
+    auto memo   = fresh_memo_;
+    auto revert = [&](const char* r) {
+        alloc_mem_  = outer;
+        fresh_memo_ = std::move(memo);
+        return give_up(r);
+    };
     for (auto& pt : parts)
         std::tie(alloc_mem_, pt.buf) = buffer::op_alloc(pt.mr.Ro, pt.mr.So, pt.mr.Tp, alloc_mem_)->projs<2>();
     auto [bm, p_full] = buffer::op_alloc(mp.Ro, mp.So, mp.Tp, alloc_mem_)->projs<2>();
     alloc_mem_        = bm;
 
-    // A producer a part reads whole runs ahead of this one on the same memory: lowered on a fresh one, its buffer
-    // would only be read inside the producer's loop and could collapse with an equal allocation here.
+    // On a fresh memory, a buffer read only inside the producer's loop could collapse with an equal one here.
     auto whole = [&](const Def* old) -> const Def* {
         if (auto old_k = Axm::isa<tensor::map_reduce_post>(old)) {
             if (auto memo = fe::lookup(fresh_memo_, old_k)) return to_buffer(memo, old_k);
@@ -958,11 +984,9 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
                 !bit(skip, k) && Axm::isa<tensor::map_reduce_post>(old))
                 g[k] = whole(old);
         auto old_post = pt.app->arg()->proj(2, 1);
-        auto posts    = DefVec(rk.nps, [&](size_t k) { return whole(old_post->proj(rk.nps, k)); });
-        if (!std::ranges::all_of(posts, [](const Def* b) { return bool(Axm::isa<buffer::Buf>(b->type())); })) {
-            alloc_mem_ = outer;
-            return give_up("an epilogue input is not a buffer");
-        }
+        auto posts    = DefVec(rk.nps, [&](size_t k) { return pt.post_p[k] ? p_full : whole(old_post->proj(rk.nps, k)); });
+        if (!std::ranges::all_of(posts, [](const Def* b) { return bool(Axm::isa<buffer::Buf>(b->type())); }))
+            return revert("an epilogue input is not a buffer");
         post_is.emplace_back(w.tuple(posts));
     }
 
@@ -973,19 +997,22 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
         auto res = lower_staged({pt.mc, pt.mr, pt.shifted, pt.clipped, pt.app->arg()->proj(2, 0), post_is[i], pt.app,
                                  false, 0, runs, 0, nullptr, given[i], rev_of(pt.mr) & ~(u64(1) << pt.j)},
                                 chain, pt.buf);
-        if (!res) {
-            alloc_mem_ = outer;
-            return give_up("an input is not a buffer");
-        }
+        if (!res) return revert("an input is not a buffer");
         chain = res->proj(2, 0);
     }
     post->app(true, pk, chain);
+    // Lowering the parts' inputs may have lowered the producer, with this op inside it or not.
+    if (fresh_memo_.contains(old_p)) {
+        alloc_mem_ = outer;
+        if (auto done = fresh_memo_.find(app); done != fresh_memo_.end()) return done->second;
+        return give_up("lowering the inputs computed the producer already");
+    }
 
     auto res   = lower_staged({mp, mp, std::vector<bool>(prn), std::vector<bool>(prn), old_p->arg()->proj(2, 0),
                                p_post_is, old_p, false, 0, 1, *dim, post},
                               nullptr, p_full);
+    if (!res) return revert("the producer's inputs are not buffers");
     alloc_mem_ = outer;
-    if (!res) return give_up("the producer's inputs are not buffers");
 
     // The producer's other readers read its result; the ops computed inside it are whole once it is done.
     auto [m, p_out]    = res->projs<2>();
@@ -1110,6 +1137,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         cur      = dim;
         if (own && !dim && !ahead(j)) return give_up(j, "its loop is not known");
         if (dim && *dim >= rks->rp + hoist) return give_up(j, "not a parallel or a hoisted reduction dim");
+        if (dim && mr.inside_red(*dim)) return give_up(j, "the vector loop runs inside the reduction loops");
         auto act          = dim ? &act_at(*dim) : nullptr;
         const auto& fixed = act ? act->fixed : no_fixed;
         auto get          = act ? act->get : nullptr;
@@ -1117,6 +1145,9 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         // The producer: a map_reduce_post without epilogue inputs that writes through a projection.
         auto old_p = Axm::isa<tensor::map_reduce_post>(s.old_is->proj(rks->nis, j));
         if (!old_p) return give_up(j, "the input is not a map_reduce_post, e.g. fuse_tensor inlined it");
+        for (u64 k = 0; k != rks->nis; ++k)
+            if (k != j && s.old_is->proj(rks->nis, k) == old_p)
+                return give_up(j, "the op reads the input through another slot too");
         auto mp  = F::of(rewrite(old_p->callee())->as<App>());
         auto prk = mp.ranks();
         if (!prk || prk->nps != 0) return give_up(j, "the input has epilogue inputs");
@@ -1201,8 +1232,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
             }
         if (fuse && tile * runs > budget * whole) return give_up(j, "the tiles would recompute it beyond the budget");
 
-        // A producer another op reads too is computed into its whole buffer, which that op then reads after this one.
-        // The other readers get the whole buffer, so the tiles must fill all of it: the whole op reads every cell.
+        // Another reader of the producer gets the whole buffer the tiles fill, so the op must read every cell.
         auto fills = [&] {
             auto all = image(g, g.maps->proj(rks->nis, j), zero, [&](size_t d) { return g.Sr->proj(gn, d); });
             if (!exact(all, prk->ro)) return false;
@@ -1262,8 +1292,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         if (!res) return give_up(j, "the input's inputs are not buffers");
         chain = res->proj(2, 0);
 
-        // The op reads the tile at its coordinates less those of the box's start: inside the loop of `dim` the read
-        // of the corner, which only depends on the fixed dims; ahead of the op the start itself.
+        // Inside the loop of `dim` the box starts at the read of the corner, which only depends on the fixed dims.
         auto read_pi = map->type()->as<Pi>();
         auto read    = w.mut_lam(read_pi->dom(), read_pi->codom())->set("tile_read");
         auto o       = read->var();

@@ -242,8 +242,8 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
         auto im       = btensor::MapRedPost::of(inner->callee()->as<App>());
         auto inner_is = inner->arg()->proj(2, 0);
-        // The fused op takes this op's schedule, which would drop the inner's compute_at.
-        if (im.sched_field(F::At) == w.lit_tt()) continue;
+        // The fused op takes this op's schedule, which would drop the inner's compute_at or cache_read.
+        if (im.sched_field(F::At) == w.lit_tt() || at_slots(im) != 0) continue;
 
         auto inner_nis_nat = Lit::isa<u64>(im.nis);
         if (!inner_nis_nat || im.So != mr.Sis->proj(nis_nat, k)) continue; // see reads_as_produced

@@ -1,0 +1,77 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt -p clos -p ll %s
+// RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s
+
+// Schedules that are not realized as asked, against the unscheduled ops; the exit code counts the values that differ.
+// * `w`: Q[i, j / 2] = Σ_k A[i, k] · E[j, k], whose iterations j = 2c and 2c + 1 write one cell, so Q + 1 cannot run
+//   after each iteration of j.
+// * `h`: Q ⊙ R with R = A · F computed at i: the reverse fails, the compute_at of R does not.
+// * `s`: P ⊙ P with P computed at a loop through both slots: P is computed once, whole.
+// * `v`: (A + 1) · B with A + 1 computed at j, which runs inside the loop of k as the vector loop.
+// * `x`: (A + 1) · B with A + 1 computed at i, and the loops of i and j interchanged afterwards.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+
+use core.ops.u.w;
+use tensor;
+
+fun mac1 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun mac2 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun mac3 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun mac4 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun mac5 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun mac9 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun inc1 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun inc2 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun inc3 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun inc9 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun mul1 (_: I32, (x y: I32))@tt: I32 = return (x * y);
+fun mul2 (_: I32, (x y: I32))@tt: I32 = return (x * y);
+fun mul9 (_: I32, (x y: I32))@tt: I32 = return (x * y);
+lam add (x y: I32): I32 = x + y;
+lam ne (x y: I32): I32 = core.select (core.icmp.e (x, y), 0I32, 1I32);
+
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam mh (i j _: affine.Index): «2; affine.Index» = (i, affine.semiop.floordiv (j, 2));
+lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+lam me (_ j k: affine.Index): «2; affine.Index» = (j, k);
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
+
+let a = generate (6, 5) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.sub 0 (core.wrap.mul 0 (3I64, i#0_2), i#1_2)));
+let b = generate (5, 7) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (i#0_2, core.wrap.mul 0 (2I64, i#1_2))));
+let e = generate (4, 5) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.sub 0 (i#1_2, core.wrap.mul 0 (5I64, i#0_2))));
+let f = generate (5, 2) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (core.wrap.mul 0 (7I64, i#0_2), i#1_2)));
+
+lam half (g: Fn [I32, «2; I32»] → I32) =
+    materialize (mr_tileable @2 @(2, 1) ((6, 2), (0, 1), (6, 4, 5)) (g, 0I32, id) mh (ma, me) (buf a, buf e));
+lam prod (g: Fn [I32, «2; I32»] → I32) (x: «6, 5; I32», y: «5, 7; I32») =
+    mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (g, 0I32, id) mo (ma, mb) (x, y);
+lam narrow (g: Fn [I32, «2; I32»] → I32) =
+    materialize (mr_tileable @2 @(2, 1) ((6, 2), (0, 1), (6, 2, 5)) (g, 0I32, id) mo (ma, mb) (buf a, buf f));
+lam ew (g: Fn [I32, I32] → I32) (S: «2; Nat») (p: «S; I32») = mr_tileable @1 @(2, 0) (S, (0, 1), S) (g, 0I32, id) po po p;
+lam ew2 (g: Fn [I32, «2; I32»] → I32) (S: «2; Nat») (p q: «S; I32») =
+    mr_tileable @2 @(2, 0) (S, (0, 1), S) (g, 0I32, id) po (po, po) (p, q);
+lam diff (S: «2; Nat») (u v: «S; I32»): I32 = reduce (add, 0I32) 0₁ (reduce (add, 0I32) 1₂ (binary ne (u, v)));
+
+// CHECK-DAG: reverse_compute_at of {{.*}} inside dim 1 of the producer of its input 0 not realized: other iterations of the producer write the box too
+// CHECK-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the op reads the input through another slot too
+// CHECK-DAG: compute_at of input 1 inside dim 1 of {{.*}} not realized: the op reads the input through another slot too
+// CHECK-DAG: compute_at of input 0 inside dim 1 of {{.*}} not realized: the vector loop runs inside the reduction loops
+// CHECK-NOT: compute_at of input 1 inside dim 0
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
+    let w  = materialize (reverse_compute_at (ew inc1 (6, 2) (half mac1), 0, 1));
+    let h  = materialize (reverse_compute_at (compute_at (ew2 mul1 (6, 2) (half mac2, narrow mac3), 1, 0), 0, 1));
+    let p  = materialize (prod mac4 (a, b));
+    let s  = materialize (compute_at (compute_at (ew2 mul2 (6, 7) (p, p), 0, 0), 1, 1));
+    let v  = materialize (compute_at (vectorize (prod mac5 (materialize (ew inc2 (6, 5) a), b), 1), 0, 1));
+    let x  = materialize (interchange (compute_at (prod mac5 (materialize (ew inc3 (6, 5) a), b), 0, 0), (1, 0, 2)));
+    let qr = half mac9;
+    let pr = materialize (prod mac9 (a, b));
+    let ar = materialize (prod mac9 (materialize (ew inc9 (6, 5) a), b));
+    return (m, diff (6, 2) (w, materialize (ew inc9 (6, 2) qr)) + diff (6, 2) (h, materialize (ew2 mul9 (6, 2) (qr, narrow mac9)))
+               + diff (6, 7) (s, materialize (ew2 mul9 (6, 7) (pr, pr))) + diff (6, 7) (v, ar) + diff (6, 7) (x, ar));

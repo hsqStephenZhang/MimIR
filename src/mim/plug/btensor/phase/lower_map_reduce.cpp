@@ -96,6 +96,10 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             give_up("not a parallel or a hoisted reduction dim");
             continue;
         }
+        if (at && mr.inside_red(*dim)) {
+            give_up("the vector loop runs inside the reduction loops");
+            continue;
+        }
         auto fixed = at ? mr.outer(*dim, rn) : std::vector<bool>(rn);
         auto R     = mr.Ris->proj(rks.nis, i);
         auto T     = mr.Tis->proj(rks.nis, i);
@@ -137,7 +141,8 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         }
 
         // A layout splits axis `ax` of the box by `by`: the run of a cell's split comes last, its block first.
-        auto by    = Lit::isa<u64>(w.app(field(F::LayoutBy), w.lit_nat(i))).value_or(0);
+        auto by     = Lit::isa<u64>(w.app(field(F::LayoutBy), w.lit_nat(i))).value_or(0);
+        auto layout = by > 1;
         auto ax    = Lit::isa<u64>(w.app(field(F::LayoutAx), w.lit_nat(i))).value_or(0);
         // The dims inside the box that move each axis of the read.
         auto map_pi = maps[i]->type()->as<Pi>();
@@ -169,16 +174,19 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
                 if (moved.size() == 1 && (u64(last) != moved[0] || std::ranges::count(key, key[last]) > 1))
                     ax = moved[0], by = *run;
             }
+        auto bytes = Lit::isa<u64>(w.call(core::trait::size, T));
+        auto pads  = bytes && *bytes != 0 && *bytes <= 8;
+        // The split for the vector run is only worth it where its zero padding can be written.
+        if (by > 1 && !layout && !pads) by = 1;
         auto split = by > 1 && ax < *r;
         auto rr    = split ? *r + 1 : *r;
         auto zero  = static_cast<const Def*>(nullptr);
         if (split) {
-            auto size = Lit::isa<u64>(w.call(core::trait::size, T));
-            if (!size || *size == 0 || *size > 8) {
-                give_up("the layout pads with zeros, but the input's type has no size");
+            if (!pads) {
+                give_up("the layout pads with zeros, but the input's type has no size of at most 8 bytes");
                 continue;
             }
-            zero = w.call<core::bitcast>(T, w.lit_idx(Idx::bitwidth2size(*size * 8), 0));
+            zero = w.call<core::bitcast>(T, w.lit_idx(Idx::bitwidth2size(*bytes * 8), 0));
         }
         auto cap_ax = split ? *Lit::isa<u64>(caps[ax]) : u64(0);
         auto order  = std::vector<u64>();

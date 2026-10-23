@@ -680,6 +680,20 @@ let Tileable = [
 ///
 lam comp_map {A B C: *} (m: B → C, g: A → B) (o: A): C = m (g o);
 ///
+/// #### slot_bit
+///
+/// The bit of input slot `i` in a schedule's `at_slots`.
+lam slot_bit (i: Nat): Nat = core.bitcast Nat (core.wrap.shl 0 (1I64, core.bitcast I64 i));
+///
+/// #### renum
+///
+/// The schedule `s` of a domain transform that moves old dim `x` to `f x`: the loops of `at_dim` and `post_dim` move
+/// along, but not those `reverse_compute_at` names, which are the producer's; `hoist_at` moves by `h`.
+lam renum (s: Sched, f h: Nat → Nat): Sched =
+    let s = s#at_dim ← lm (j: Nat): Nat = (f (s#at_dim j), s#at_dim j)#(s#rev / slot_bit j % 2 == 1);
+    let s = s#post_dim ← f (s#post_dim);
+    s#hoist_at ← h (s#hoist_at);
+///
 /// #### interchange
 ///
 /// Permute the loop dims — new loop `j` iterates old dim `perm#j`. Loop order and write
@@ -711,7 +725,12 @@ anx lam interchange (t: Tileable, perm: «t#Rp + t#Rr; Nat»): Tileable =
                   omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (comp_map (iota_p, iota), omega);
-    (t#Out, t#Ro, t#Rp, t#Rr, t#So, oax_n, sr_n, ((t#sched)#vdim ← vdim_n)#lim ← lim_p, retile_n);
+    lam moved (x: Nat): Nat =
+        match vec.first `== (perm_ok, x) with
+            | Some j => core.idx2nat j
+            | None   => x;
+    lam same (x: Nat): Nat = x;
+    (t#Out, t#Ro, t#Rp, t#Rr, t#So, oax_n, sr_n, renum (((t#sched)#vdim ← vdim_n)#lim ← lim_p, moved, same), retile_n);
 ///
 /// #### materialize
 ///
@@ -843,6 +862,16 @@ lam lim_split (d ts: Nat, lim: [Nat → I32, Nat] → [Bool, I32]) (get: Nat →
 /// the stop is literal, so that the cut tile's loops have a literal extent.
 lam lim_last (o: I32, nt rest: Nat): [Bool, I32] = (core.icmp.e (o, core.bitcast I32 (nt - 1)), core.bitcast I32 rest);
 ///
+/// #### split_dim
+///
+/// Where a split of dim `d` moves dim `x`: the loop of `d` itself to its inner half.
+lam split_dim (d: Nat) (x: Nat): Nat = core.select (x < d, x, x + 1);
+///
+/// #### split_at
+///
+/// Where a split of dim `d` moves the first of the dims a hoisted nest runs inside: both halves of `d` stay inside.
+lam split_at (d: Nat) (x: Nat): Nat = core.select (x <= d, x, x + 1);
+///
 /// #### strip_mine_par
 ///
 /// Split parallel dim `d` (d < Ro) into two adjacent parallel dims. The result
@@ -880,7 +909,7 @@ anx lam strip_mine_par (t: Tileable, d ts: Nat): Tileable =
         lam omega_c (oo: «t#Ro; affine.Index», ov: «rp_m + rr_m; affine.Index»): «ro_m; affine.Index» =
             omega (split_omega (ro_n, t#Ro, a, ts) oo, ov);
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (iota_c, omega_c);
-    let sched_n = ((t#sched)#vdim ← vdim_n)#lim ← lim_split (d, ts, t#sched#lim);
+    let sched_n = renum (((t#sched)#vdim ← vdim_n)#lim ← lim_split (d, ts, t#sched#lim), split_dim d, split_at d);
     (t#Out, ro_n, rp_n, t#Rr,
      split_bounds (ro_n, t#Ro, t#So, a, ts, nt), oax_n,
      split_bounds (r_n, r, t#Sr, d, ts, nt), sched_n, retile_n);
@@ -910,7 +939,7 @@ anx lam split_par (t: Tileable, d ts: Nat): Tileable =
                : t#Out (ro_m, so_m) =
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (comp_map (split_iota (r_n, r, d, ts), iota), omega);
     (t#Out, t#Ro, rp_n, t#Rr, t#So, oax_n, split_bounds (r_n, r, t#Sr, d, ts, nt),
-     ((t#sched)#vdim ← vdim_n)#lim ← lim_n, retile_n);
+     renum (((t#sched)#vdim ← vdim_n)#lim ← lim_n, split_dim d, split_at d), retile_n);
 /// #### strip_mine_red
 ///
 /// Split reduction dim `d` (Ro ≤ d < Ro + Rr) of extent N into two adjacent
@@ -936,7 +965,8 @@ anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
                : t#Out (ro_m, so_m) =
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m)
                  (comp_map (split_iota (r_n, r, d, ts), iota), omega);
-    let sched_n = (((t#sched)#vdim ← vdim_n)#unroll ← unroll_n)#lim ← lim_n;
+    lam same (x: Nat): Nat = x;
+    let sched_n = renum ((((t#sched)#vdim ← vdim_n)#unroll ← unroll_n)#lim ← lim_n, split_dim d, same);
     (t#Out, t#Ro, t#Rp, t#Rr + 1, t#So, t#oax, split_bounds (r_n, r, t#Sr, d, ts, nt), sched_n, retile_n);
 ///
 /// ### Tiles
@@ -991,11 +1021,6 @@ anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = ma
 
 /// ### Fusion
 ///
-/// #### slot_bit
-///
-/// The bit of input slot `i` in a schedule's `at_slots`.
-lam slot_bit (i: Nat): Nat = core.bitcast Nat (core.wrap.shl 0 (1I64, core.bitcast I64 i));
-///
 /// #### compute_at
 ///
 /// Compute input `i` one tile at a time inside the loop of dim `d` (cf. TVM's `compute_at`, MLIR's
@@ -1010,7 +1035,7 @@ lam slot_bit (i: Nat): Nat = core.bitcast Nat (core.wrap.shl 0 (1I64, core.bitca
 /// - A copy computed at a hoisted reduction dim packs a block of its source, as a GEMM packs B per K block.
 /// - The read of each iteration's corner must be where its box starts, which a reversed read is not.
 /// - A box that leaves the input at a tail is computed up to the input's end; padding is not handled.
-/// - Apply it after the domain transforms, which do not renumber `d`.
+/// - A domain transform applied after it moves `d` with its loop, the loop of a split dim to its inner half.
 /// - Each input of an op is computed at a loop of its own; several inputs at one loop run in the order of their slots.
 /// - A producer's own `compute_at` is realized inside each of its tiles.
 anx lam compute_at (t: Tileable, i d: Nat): Tileable =
@@ -1105,8 +1130,8 @@ anx lam reverse_compute_at (t: Tileable, i d: Nat): Tileable =
 /// Run the first `h` reduction dims of `t` outside its parallel dims from `s` on, as the K blocks of a GEMM run
 /// outside its M and N loops: the fold of a cell spans their iterations, accumulating in a buffer over the cells
 /// inside them, which the epilogue reads once they have all run.
-/// The vector dim and the unroll window then only apply to the dims inside the hoisted ones; apply it after the
-/// domain transforms, which do not renumber `s`.
+/// The vector dim and the unroll window then only apply to the dims inside the hoisted ones; a domain transform applied
+/// after it moves `s` along, except that `interchange` keeps it.
 anx lam hoist_red (t: Tileable, s h: Nat): Tileable =
     let s = refly.check (s <= t#Rp, s, "hoist_red: the position must lie within the parallel dims");
     let h = refly.check (h <= t#Rr, h, "hoist_red: there are not that many reduction dims");
@@ -1166,7 +1191,8 @@ anx lam tile_par (t: Tileable, sizes: «t#Rp; Nat»): Tileable =
                   omega: [«t#Ro; affine.Index», «rp_m + rr_m; affine.Index»] → «ro_m; affine.Index»)
                : t#Out (ro_m, so_m) =
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m) (comp_map (iota_t, iota), omega);
-    (t#Out, t#Ro, rp_n, t#Rr, t#So, oax_n, sr_n, ((t#sched)#vdim ← vdim_n)#lim ← lim_t, retile_n);
+    lam within (x: Nat): Nat = x + p;
+    (t#Out, t#Ro, rp_n, t#Rr, t#So, oax_n, sr_n, renum (((t#sched)#vdim ← vdim_n)#lim ← lim_t, within, within), retile_n);
 ///
 /// #### tile_and_fuse_by
 ///
