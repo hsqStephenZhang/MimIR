@@ -1,0 +1,31 @@
+// RUN: %mim %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A sum of 5 strip-mined by 3 cuts its last block to 2 points, which `tensor.lower_map_reduce` does not realize:
+// it leaves the op alone instead of running 2 × 3 points.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+use core.ops.u.w;
+
+fun sum (acc: I32, x: I32)@tt: I32 = return (acc + x);
+lam ro (_: affine.Index): «0; affine.Index» = ();
+lam ri (k: affine.Index): «1; affine.Index» = (k,);
+
+extern fun s5 (x: «5; I32»): I32 =
+    let t = tensor.mr_tileable @1 @(0, 1) ((), (), (5,)) (sum, 0I32, tensor.id) ro (ri,) (tensor.buf x);
+    return (tensor.materialize (tensor.strip_mine_red (t, 0, 3)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (
+        tensor.lower_tensor,
+        tensor.fuse_tensor,
+        tensor.lower_map_reduce,
+        compile.cleanup,
+    );
+
+// WARN: cuts a loop short, which only `tensor.lower_to_mem` realizes
+// CHECK-NOT: affine.For
+// CHECK: tensor.map_reduce_post

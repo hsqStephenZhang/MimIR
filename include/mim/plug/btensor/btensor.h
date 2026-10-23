@@ -89,6 +89,16 @@ struct MapRedPost {
 
     const Def* sched_field(Field f) const { return sched_record()->proj(Num_Fields, f); }
 
+    /// Whether the schedule's `lim` may cut one of the @p n loops short.
+    bool may_cut(u64 n) const {
+        auto& w  = sched->world();
+        auto lim = sched_field(Lim);
+        auto get = w.mut_lam(w.pi(w.type_nat(), w.type_i32()), w.type_bool())->var();
+        for (u64 d = 0; d != n; ++d)
+            if (w.app(lim, {get, w.lit_nat(d)})->proj(2, 0) != w.lit_ff()) return true;
+        return false;
+    }
+
     /// Which of the @p n dims the loop of @p dim and the loops around it iterate (see `btensor.at_outer`).
     std::vector<bool> outer(u64 dim, u64 n) const {
         auto& w = sched->world();

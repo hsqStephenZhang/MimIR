@@ -103,8 +103,13 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
         return nullptr;
     }
     auto nis_nat = ranks->nis, nps_nat = ranks->nps, rp = ranks->rp, rr = ranks->rr;
-    auto nloops                     = ranks->nloops();   // length of the full loop vector (= length of Sr)
-    auto n                          = w.lit_nat(nloops); // passed as the affine maps' domain length
+    auto nloops = ranks->nloops();   // length of the full loop vector (= length of Sr)
+    auto n      = w.lit_nat(nloops); // passed as the affine maps' domain length
+
+    if (mr.may_cut(nloops)) {
+        log().w("{} cuts a loop short, which only `tensor.lower_to_mem` realizes", app);
+        return nullptr;
+    }
 
     // the affine maps below take each input's rank as their domain length, so it must be literal
     if (!lit_projs(mr.Ris, nis_nat) || !lit_projs(mr.Rps, nps_nat)) {
