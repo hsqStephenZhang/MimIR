@@ -116,6 +116,18 @@ static bool reads_as_produced(const Def* value, const Def* S) {
     return true;
 }
 
+/// The input slots @p mr's schedule computes at a loop, caches or runs in the producer of keep their producers.
+static u64 at_slots(const btensor::MapRedPost& mr) {
+    using F    = btensor::MapRedPost;
+    auto rec   = mr.sched_record();
+    auto cache = Lit::isa<u64>(rec->proj(F::Num_Fields, F::Cache)).value_or(0);
+    if (rec->proj(F::Num_Fields, F::At) != mr.sched->world().lit_tt()) return cache;
+    return cache | Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0)
+         | Lit::isa<u64>(rec->proj(F::Num_Fields, F::Rev)).value_or(0);
+}
+
+static bool is_at(u64 slots, u64 k) { return k < 64 && (slots >> k) & 1; }
+
 /// If `value` is a pure re-indexed read — a copy-combiner map_reduce (reshape/transpose/slice/
 /// flip/repeat lower to these) or a `tensor.broadcast` — returns its source and access map, to be
 /// composed behind the consuming slot's map. Such reads perform no computation, so reading through
@@ -123,6 +135,9 @@ static bool reads_as_produced(const Def* value, const Def* S) {
 static std::optional<PureRead> read_through(World& w, const Def* value, const Def* slot_map, const Def* S) {
     if (!reads_as_produced(value, S)) return {};
     if (auto pr = is_pure_read(value)) {
+        // Reading through the copy would drop its own compute_at or cache_read.
+        if (at_slots(btensor::MapRedPost::of(Axm::isa<tensor::map_reduce_post>(value)->callee()->as<App>())) != 0)
+            return {};
         // A source whose axes are all size 1 type-collapses to a plain scalar («1; T» ≡ T): the
         // fused op would carry an input the bufferization cannot represent - keep the copy instead.
         if (!pr->src->type()->isa<Arr>()) return {};
@@ -183,17 +198,6 @@ static std::optional<PureRead> read_through(World& w, const Def* value, const De
 // new combination function `f_new` invokes every inner combiner in post-order — each starting from
 // its own init — and finally invokes `f_o`, threading inner results into the corresponding outer
 // input slots.
-/// The input slots @p mr's schedule computes at a loop, caches or runs in the producer of keep their producers.
-static u64 at_slots(const btensor::MapRedPost& mr) {
-    using F    = btensor::MapRedPost;
-    auto rec   = mr.sched_record();
-    auto cache = Lit::isa<u64>(rec->proj(F::Num_Fields, F::Cache)).value_or(0);
-    if (rec->proj(F::Num_Fields, F::At) != mr.sched->world().lit_tt()) return cache;
-    return cache | Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0)
-         | Lit::isa<u64>(rec->proj(F::Num_Fields, F::Rev)).value_or(0);
-}
-
-static bool is_at(u64 slots, u64 k) { return k < 64 && (slots >> k) & 1; }
 
 /// The input slots whose producers a read-through must keep: a cached slot copies whatever it reads.
 static u64 through_slots(const btensor::MapRedPost& mr) {

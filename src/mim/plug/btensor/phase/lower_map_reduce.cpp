@@ -47,6 +47,28 @@ const Def* LowerMapReduce::lower_buffer_lit(const App* app) {
         [](const DefVec&, const Def* ins, const Def* m) -> std::pair<const Def*, const Def*> { return {m, ins}; });
 }
 
+namespace {
+
+/// The value of type @p T whose bytes are all zero, built from its scalars; `nullptr` where a scalar has no size.
+const Def* zero_of(const Def* T) {
+    auto& w = T->world();
+    if (auto arr = T->isa<Arr>()) {
+        auto elem = zero_of(arr->body());
+        return elem ? w.pack(arr->arity(), elem) : nullptr;
+    }
+    if (auto sigma = T->isa_imm<Sigma>()) {
+        auto ops = DefVec(sigma->num_ops());
+        for (size_t i = 0; i != ops.size(); ++i)
+            if (!(ops[i] = zero_of(sigma->op(i)))) return nullptr;
+        return w.tuple(sigma, ops);
+    }
+    auto bytes = Lit::isa<u64>(w.call(core::trait::size, T));
+    if (!bytes || *bytes == 0 || *bytes > 8) return nullptr;
+    return w.call<core::bitcast>(T, w.lit_idx(Idx::bitwidth2size(*bytes * 8), 0));
+}
+
+} // namespace
+
 /// Reads each input the schedule caches from a copy of its box in a buffer allocated on @p mem, put into @p caches.
 /// The copy runs as the schedule's action inside the loop of the input's `at_dim` or ahead of the nest.
 /// @returns the memory after the allocations and the copies ahead of the nest.
@@ -174,19 +196,14 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
                 if (moved.size() == 1 && (u64(last) != moved[0] || std::ranges::count(key, key[last]) > 1))
                     ax = moved[0], by = *run;
             }
-        auto bytes = Lit::isa<u64>(w.call(core::trait::size, T));
-        auto pads  = bytes && *bytes != 0 && *bytes <= 8;
+        auto zero = zero_of(T);
         // The split for the vector run is only worth it where its zero padding can be written.
-        if (by > 1 && !layout && !pads) by = 1;
+        if (by > 1 && !layout && !zero) by = 1;
         auto split = by > 1 && ax < *r;
         auto rr    = split ? *r + 1 : *r;
-        auto zero  = static_cast<const Def*>(nullptr);
-        if (split) {
-            if (!pads) {
-                give_up("the layout pads with zeros, but the input's type has no size of at most 8 bytes");
-                continue;
-            }
-            zero = w.call<core::bitcast>(T, w.lit_idx(Idx::bitwidth2size(*bytes * 8), 0));
+        if (split && !zero) {
+            give_up("the layout pads with zeros, but the input's type has none");
+            continue;
         }
         auto cap_ax = split ? *Lit::isa<u64>(caps[ax]) : u64(0);
         auto order  = std::vector<u64>();

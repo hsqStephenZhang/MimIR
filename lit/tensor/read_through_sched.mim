@@ -1,0 +1,30 @@
+// RUN: %mim %s -V -o - 2>&1 | %FileCheck %s
+
+// A copy whose input is computed at its loop is not read through: D[i] = P[i, i] keeps its own nest, which computes
+// each tile of P inside its loop of i.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+use core.ops.u.w;
+use tensor;
+
+fun sum (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun cp (_: I32, x: I32)@tt: I32 = return x;
+fun inc (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+lam pp (i j k: affine.Index): «3; affine.Index» = (i, j, k);
+lam pq (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam dg (i: affine.Index): «2; affine.Index» = (i, i);
+lam one (i: affine.Index): «1; affine.Index» = (i,);
+
+// CHECK-NOT:   not realized
+// CHECK-LABEL: extern fun diag
+// CHECK:       tile_run
+extern fun diag (q: «4, 4, 3; I32»): «4; I32» =
+    let p = materialize (mr_tileable @1 @(2, 1) ((4, 4), (0, 1), (4, 4, 3)) (sum, 0I32, id) pq pp (buf q));
+    let d = materialize (compute_at (mr_tileable @1 @(1, 0) (4, 0, 4) (cp, 0I32, id) one dg p, 0, 0));
+    return (materialize (mr_tileable @1 @(1, 0) (4, 0, 4) (inc, 0I32, id) one one d));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);
