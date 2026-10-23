@@ -56,6 +56,11 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
     } else if (auto free_ax = Axm::isa<buffer::free>(app)) {
         auto [mem, buf] = free_ax->args<2>([this](const Def* d) { return rewrite(d); });
         return w.call<mem::free>(Defs{mem, buf});
+    } else if (auto persist_ax = Axm::isa<buffer::persist>(app)) {
+        auto [r, s, T]  = persist_ax->decurry()->decurry()->args<3>();
+        auto S          = rewrite(persist_ax->decurry()->arg());
+        auto [mem, src] = persist_ax->args<2>([this](const Def* d) { return rewrite(d); });
+        return w.app(w.app(w.annex<mem::persist>(), {w.arr(rewrite(s), rewrite(T)), S}), {mem, src});
     } else if (auto init_ax = Axm::isa<buffer::init>(app)) {
         auto [mem, val]  = init_ax->args<2>();
         auto [r, s, T]   = init_ax->callee()->as<App>()->args<3>();

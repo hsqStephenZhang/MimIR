@@ -75,6 +75,13 @@ axm malloc: [*, a: Nat] as Ta → [M a, Nat] → [M a, Ptr Ta];
 /// Frees memory of type `T` in address space `a`.
 axm free: {*, a: Nat} as Ta → [M a, Ptr Ta] → M a;
 ///
+/// ### persist
+///
+/// Storage for a `T` that outlives the call, one per call site, kept as long as each call passes the same `src`.
+/// `fresh` holds where the storage is new, on the first call and after `src` changed, and the caller must fill it.
+/// Calls of one site must not overlap.
+axm persist: [T S: *] → [M 0, src: S] → [M 0, Ptr (T, 0), fresh: Bool];
+///
 /// ### mslot
 ///
 /// Reserves a stack slot for type `T` in address space `a`.

@@ -1,6 +1,7 @@
 #include "mim/plug/btensor/phase/lower_map_reduce.h"
 
 #include <algorithm>
+#include <ranges>
 
 #include <mim/axm.h>
 #include <mim/def.h>
@@ -59,6 +60,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     auto bit   = [](u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; };
     auto cache = Lit::isa<u64>(field(F::Cache)).value_or(0);
     auto slots = Lit::isa<u64>(field(F::AtSlots)).value_or(0);
+    auto packs = Lit::isa<u64>(field(F::Prepacks)).value_or(0);
     if (cache == 0) return mem;
 
     auto fields = DefVec(F::Num_Fields, [&](size_t f) { return field(F::Field(f)); });
@@ -68,6 +70,20 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     auto mem_ty = w.call<mem::M>(0);
     auto i64    = w.type_i64();
     auto lit    = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
+    // The new mutables become external only once rewritten.
+    auto param = [&](const Def* d) {
+        if (auto e = d->isa<Extract>()) d = e->tuple();
+        if (auto var = d->isa<Var>())
+            return std::ranges::any_of(old_world().externals().muts(),
+                                       [&](Def* ext) { return lookup(ext) == var->binder(); });
+        return false;
+    };
+    auto size = [](const Def* shape, u64 n) {
+        auto s = u64(1);
+        for (auto e : shape->projs(n))
+            s *= Lit::isa<u64>(e).value_or(0);
+        return s;
+    };
 
     auto copied = std::vector<bool>(rks.nis);
     for (u64 i = 0; i != rks.nis; ++i) {
@@ -177,8 +193,38 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             return w.tuple(dims);
         }();
 
-        auto [amem, buf] = buffer::op_alloc(w.lit_nat(rr), shape, T, mem)->projs<2>();
-        mem              = amem;
+        // A frozen input keeps the copies of every box, stacked by the dims outside the copy that move the box.
+        auto stack   = std::vector<u64>();
+        auto persist = bit(packs, i);
+        for (u64 d = 0; persist && d != rn; ++d)
+            if (fixed[d] && std::ranges::any_of(std::views::iota(u64(0), *r), [&](u64 a) { return moves(d, a); }))
+                stack.push_back(d);
+        auto outer = DefVec(stack.size(), [&](size_t k) { return mr.Sr->proj(rn, stack[k]); });
+        auto count = size(w.tuple(outer), outer.size());
+        if (persist) {
+            auto all = count * size(shape, rr);
+            auto why = !param(inputs[i])                      ? "it is no input buffer of the function"
+                     : all == 0 || all > 2 * size(Sis[i], *r) ? "the copies would exceed twice its size"
+                                                              : nullptr;
+            if (why) {
+                log().w("prepack of input {} of {} not realized: {}", i, mr.map_out, why);
+                persist = false;
+                stack.clear();
+                outer.clear();
+            }
+        }
+        // The stack is one dim, so that LLVM still traces a read of it back to the allocation.
+        auto ra    = (stack.empty() ? 0 : 1) + rr;
+        auto full  = stack.empty() ? DefVec() : DefVec{w.lit_nat(count)};
+        auto inner = shape->projs(rr);
+        full.insert(full.end(), inner.begin(), inner.end());
+        auto s_all = w.tuple(full);
+        auto buf   = static_cast<const Def*>(nullptr);
+        auto fresh = static_cast<const Def*>(nullptr);
+        if (persist)
+            std::tie(mem, buf, fresh) = buffer::op_persist(w.lit_nat(ra), s_all, T, mem, inputs[i])->projs<3>();
+        else
+            std::tie(mem, buf) = buffer::op_alloc(w.lit_nat(rr), shape, T, mem)->projs<2>();
         auto buf_ty      = w.sigma({mem_ty, buf->type()});
         auto add    = [&](const Def* x, const Def* y) { return w.call(core::wrap::add, core::Mode::none, Defs{x, y}); };
         auto in_box      = [&](const DefVec& iters) {
@@ -189,6 +235,17 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
                 xs[ax] = add(w.call(core::wrap::mul, core::Mode::none, Defs{iters[0], w.lit_i64(by)}), iters[*r]);
             return xs;
         };
+        auto prefix = DefVec();
+        if (!stack.empty()) {
+            const Def* lin = w.lit_i64(0);
+            for (size_t k = 0; k != stack.size(); ++k) {
+                auto c
+                    = w.call<core::bitcast>(i64, w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(stack[k]))));
+                lin = add(w.call(core::wrap::mul, core::Mode::none, Defs{lin, w.call<core::bitcast>(i64, outer[k])}),
+                          c);
+            }
+            prefix.push_back(lin);
+        }
         // A box that leaves the input copies the input's last cell there, which only a padded vector loop reads.
         // A layout pads with zeros instead.
         auto copy = build_pointwise(
@@ -207,10 +264,34 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
                     inside = w.call(core::bit2::and_, w.lit_nat(2),
                                     w.tuple({inside, w.call(core::icmp::ul, Defs{at[a], ends[a]})}));
                 return std::pair<const Def*, const Def*>{rm, w.select(inside, value, zero)};
-            });
+            },
+            prefix, s_all);
         fill->app(true, fret, copy->proj(2, 0));
 
-        if (at) {
+        if (persist) {
+            // Where the copies are new, make every one of them ahead of the nest, each given its dims of the stack.
+            auto pre        = w.mut_fun(w.sigma({mem_ty, w.type_bool()}), mem_ty)->set("prepack");
+            auto [pa, pret] = pre->vars<2>();
+            auto [pm, pf]   = pa->projs<2>();
+            Lam* cur        = pre;
+            const Def* exit = pret;
+            const Def* acc  = pm;
+            auto dims       = DefVec{w.select(pf, w.lit_nat_1(), w.lit_nat_0())};
+            dims.insert(dims.end(), outer.begin(), outer.end());
+            auto iters       = affine::counting_nest(cur, exit, acc, dims, "prepack");
+            auto stacked     = w.mut_lam(w.pi(w.type_nat(), w.type_i32()))->set("prepack_get");
+            const Def* coord = w.lit_i32(0);
+            for (size_t k = 0; k != stack.size(); ++k) {
+                auto here = w.call(core::ncmp::e, Defs{stacked->var(), w.lit_nat(stack[k])});
+                auto it   = w.call(core::conv::u, w.lit_nat(u64(1) << 32), iters[k + 1]);
+                coord     = w.extract(w.tuple({coord, it}), here);
+            }
+            stacked->set(true, coord);
+            auto next = w.mut_con(mem_ty)->set("prepack_next");
+            next->app(true, exit, next->var());
+            cur->app(true, fill, {w.tuple({acc, stacked}), next});
+            mem = w.app(cps::op_cps2ds_dep(pre), w.tuple({mem, fresh}));
+        } else if (at) {
             // The copy runs after whatever the action of its dim already does.
             auto old    = fields[F::Act];
             auto act_pi = old->type()->as<Pi>();
@@ -229,7 +310,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         // The op reads the copy at its coordinates less those of the read of the corner, split as the layout splits.
         auto pi     = maps[i]->type()->as<Pi>();
         auto index  = w.annex<affine::Index>();
-        auto read   = w.mut_lam(pi->dom(), w.arr(rr, index))->set("cache_read");
+        auto read   = w.mut_lam(pi->dom(), w.arr(ra, index))->set("cache_read");
         auto o      = read->var();
         auto whole  = w.app(maps[i], o);
         auto corner = w.app(
@@ -237,18 +318,21 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         auto rel = DefVec(
             *r, [&](size_t a) { return w.call(affine::op::sub, Defs{whole->proj(*r, a), corner->proj(*r, a)}); });
         auto xs = DefVec();
+        if (!stack.empty())
+            xs.push_back(w.call<affine::linearize>(
+                Defs{w.tuple(DefVec(stack.size(), [&](size_t k) { return o->proj(rn, stack[k]); })), w.tuple(outer)}));
         if (split) xs.push_back(w.call(affine::semiop::floordiv, Defs{rel[ax], w.lit_nat(by)}));
         for (auto a : order)
             xs.push_back(rel[a]);
         if (split) xs.push_back(w.call(affine::semiop::rem, Defs{rel[ax], w.lit_nat(by)}));
         rel = xs;
         read->set(true, w.tuple(rel));
-        log().d("read input {} of {} from a copy {}", i, mr.map_out, shape);
-        Ris[i]    = w.lit_nat(rr);
-        Sis[i]    = shape;
+        log().d("read input {} of {} from a {}copy {}", i, mr.map_out, persist ? "persistent " : "", s_all);
+        Ris[i]    = w.lit_nat(ra);
+        Sis[i]    = s_all;
         maps[i]   = read;
         inputs[i] = buf;
-        caches.push_back(buf);
+        if (!persist) caches.push_back(buf);
         copied[i] = true;
     }
 

@@ -76,6 +76,7 @@ struct MapRedPost {
         Pad,
         LayoutAx,
         LayoutBy,
+        Prepacks,
         Num_Fields
     };
 
@@ -229,6 +230,7 @@ inline const Def* concat_select(const Def* o_ax, const fe::Vector<u64>& exts, au
 /// `[mem, dst]` and writes `compute`'s element at the loop's (identity) output coordinates.
 /// `compute(iters, ins, mem)` receives the raw i64 loop counters, the fun's inputs var, and the current mem; it
 /// returns `{mem', elem}`.
+/// A non-empty @p at prefixes the write's coordinates into a `dst` of shape @p s_dst.
 inline const Def* build_pointwise(const Def* result_ty, // [mem.M 0, buffer.Buf (r, s_out, T)]
                                   const Def* mem,
                                   const Def* dst,
@@ -236,7 +238,9 @@ inline const Def* build_pointwise(const Def* result_ty, // [mem.M 0, buffer.Buf 
                                   const Def* s_out,
                                   u64 rn,
                                   const std::string& name,
-                                  auto compute) {
+                                  auto compute,
+                                  Defs at          = {},
+                                  const Def* s_dst = nullptr) {
     auto& w                          = mem->world();
     auto [fun, call]                 = ds_splice(w.tuple({mem, dst, ins}), result_ty, name);
     auto [fun_mem, out_buf, fun_ins] = fun->var(2, 0)->projs<3>();
@@ -248,7 +252,9 @@ inline const Def* build_pointwise(const Def* result_ty, // [mem.M 0, buffer.Buf 
 
     std::pair<const Def*, const Def*> el = compute(iters, fun_ins, loop_mem);
     auto [el_mem, elem]                  = el;
-    auto wr_mem = buffer::op_write(el_mem, loop_buf, folded_idx(s_out, iters), elem)->proj(2, 0);
+    auto coords                          = DefVec(at.begin(), at.end());
+    coords.insert(coords.end(), iters.begin(), iters.end());
+    auto wr_mem = buffer::op_write(el_mem, loop_buf, folded_idx(s_dst ? s_dst : s_out, coords), elem)->proj(2, 0);
     cur->app(true, cont, w.tuple({wr_mem, loop_buf}));
     return call;
 }

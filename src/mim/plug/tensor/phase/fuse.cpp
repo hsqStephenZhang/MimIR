@@ -386,9 +386,10 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
                 if (is_at(old, k)) moved |= u64(1) << new_pos[k];
             return w.lit_nat(moved);
         };
-        fields[F::AtSlots] = move(fields[F::AtSlots]);
-        fields[F::Cache]   = move(fields[F::Cache]);
-        fields[F::Rev]     = move(fields[F::Rev]);
+        fields[F::AtSlots]  = move(fields[F::AtSlots]);
+        fields[F::Cache]    = move(fields[F::Cache]);
+        fields[F::Rev]      = move(fields[F::Rev]);
+        fields[F::Prepacks] = move(fields[F::Prepacks]);
 
         // A function of the slot answers for a kept slot at its new position.
         auto per_slot = [&](const Def* f, const char* name) {

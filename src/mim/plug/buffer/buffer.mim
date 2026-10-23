@@ -89,10 +89,19 @@ axm after: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT] → [mem.
 ///
 axm free: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT] → mem.M 0;
 ///
+/// ### persist
+///
+/// A buffer that outlives the call, one per call site, kept as long as each call passes the same `src` (see
+/// `mem.persist`): `fresh` holds where it is new, and the caller must fill it then.
+/// It must not be freed.
+///
+axm persist: [r: Nat, s: «r; Nat», T: *] as rsT → [S: *] → [mem.M 0, src: S] → [mem.M 0, Buf rsT, fresh: Bool];
+///
 /// ## Phases
 ///
 /// ### lower_ptr
 ///
-/// Lowers `Buf` / `alloc` / `read` / `write` / `free` to `mem.Ptr` + `mem.lea` / `mem.load` / `mem.store` / `mem.free`.
+/// Lowers `Buf` / `alloc` / `read` / `write` / `free` / `persist` to `mem.Ptr` + `mem.lea` / `mem.load` / `mem.store` /
+/// `mem.free` / `mem.persist`.
 ///
 axm lower_ptr: compile.Phase;

@@ -62,6 +62,12 @@ inline const Def* op_free(const Def* r, const Def* s, const Def* T, const Def* m
     return w.app(w.app(w.annex<free>(), {r, s, T}), {mem, buf});
 }
 
+/// `buffer.persist (r, s, T) S (mem, src)` ↦ `[mem.M 0, buffer.Buf (r, s, T), Bool]` with `S` the type of @p src.
+inline const Def* op_persist(const Def* r, const Def* s, const Def* T, const Def* mem, const Def* src) {
+    auto& w = mem->world();
+    return w.app(w.app(w.app(w.annex<persist>(), {r, s, T}), src->type()), {mem, src});
+}
+
 /// `buffer.init (r, s, T) (mem, val)` ↦ `[mem.M 0, buffer.Buf (r, s, T)]` (initialised with the array value `val`).
 inline const Def* op_init(const Def* r, const Def* s, const Def* T, const Def* mem, const Def* val) {
     auto& w = mem->world();

@@ -419,9 +419,16 @@ inline void Emitter::start() {
 
     section(type_decls_.str());
 
+    // The embedded runtime declares the C library functions it calls itself, and LLVM rejects a second declaration.
+    auto embedded = [&](std::string_view decl) {
+        if (!rt_used_ || rt_ != Rt::embed) return false;
+        auto at = decl.find('@');
+        return at != std::string_view::npos
+            && rt_module_.find(decl.substr(at, decl.find('(', at) - at + 1)) != std::string::npos;
+    };
     std::ostringstream decls;
     for (auto&& decl : decls_)
-        std::println(decls, "{}", decl);
+        if (!embedded(decl)) std::println(decls, "{}", decl);
     section(decls.str());
 
     section(func_decls_.str());

@@ -562,6 +562,13 @@ axm scatter: {T: *, r: Nat}
            → [input: «s_src; T», index: «s_idx; Idx (s_src#dim)», updates: «s_updates; T»]
            → «s_src; T»;
 ///
+/// ### frozen
+///
+/// The tensor `t`, promised to be a weight that keeps its values from call to call as long as it stays where it is.
+/// A GEMM schedule then packs it once per new place (see `prepack`) where `t` is an input of the function.
+///
+axm frozen: {T: *} → T → T;
+///
 /// ## Reflection
 ///
 /// Compile-time queries about an operand that a schedule selector (see Tiling) branches on.
@@ -1048,6 +1055,22 @@ anx lam transform_layout (t: Tileable, i a b: Nat): Tileable =
     let t   = t#sched#cache ← s#cache + bit * (1 - s#cache / bit % 2);
     let t   = t#sched#layout_ax ← lm (j: Nat): Nat = (s#layout_ax j, a)#(j == i);
     t#sched#layout_by ← lm (j: Nat): Nat = (s#layout_by j, b)#(j == i);
+///
+/// #### prepack
+///
+/// Keep the copies of input `i` of `t` that `cache_read` makes from call to call, made only where the input moved
+/// since the last call (cf. TVM's layout-free buffers): it promises that an input that stays where it is keeps its
+/// values, as a frozen weight does.
+///
+/// - `btensor.lower_map_reduce` makes the copies of every box at once ahead of the nest, stacked by the loops outside
+///   the copy that move the box, so they take about the input's size.
+/// - It realizes it on an input buffer of the function only; anywhere else, and where the stack would exceed twice the
+///   input's size, it copies as `cache_read` does and logs a warning.
+/// - Calls must not overlap, e.g. on two threads.
+anx lam prepack (t: Tileable, i: Nat): Tileable =
+    let s   = t#sched;
+    let bit = slot_bit i;
+    t#sched#prepacks ← s#prepacks + bit * (1 - s#prepacks / bit % 2);
 ///
 /// #### reverse_compute_at
 ///
@@ -1784,12 +1807,12 @@ pub lam dot_general_pick {n: Nat} {na nb nc: Nat} (a: «na; Idx n», b: «nb; Id
 /// `{s1 s2}` has no such problem and stays implicit.
 ///
 /// `tensor::Lower` re-applies the axiom's groups positionally, so the two curry shapes still match —
-/// except for the leading `fastest_2`, which has no axiom counterpart: it is `fastest_axis` of the
-/// right operand, pre-applied by `Lower` where that operand is concrete.
+/// except for the leading `(fastest_2, frozen_2)`, which has no axiom counterpart: it is `fastest_axis` of the
+/// right operand and whether it is `frozen`, pre-applied by `Lower` where that operand is concrete.
 /// The schedule **decision** built on it lives in the body:
 ///
 /// - where `dot_tiled_ok` holds, `dot_schedule_tiled`, whatever the operands' layouts: its copy of B is laid out for
-///   the register block (see `cache_read`);
+///   the register block (see `cache_read`), and kept from call to call for a `frozen` B (see `prepack`);
 /// - otherwise a contracted fastest axis (\f$x \cdot W^T\f$, e.g. behind a weight transpose the read-through absorbs)
 ///   selects `dot_schedule_kvec`, anything else `dot_schedule`;
 /// - the selected schedule may strip-mine an output dim (row/output-cell blocking), packing the
@@ -1798,7 +1821,7 @@ pub lam dot_general_pick {n: Nat} {na nb nc: Nat} (a: «na; Idx n», b: «nb; Id
 ///   read-through in a fused graph.
 ///
 priv anx lam dot_product_impl
-    (fastest_2: Nat)
+    (fastest_2: Nat, frozen_2: Bool)
     (R: Ring) (r1 r2: Nat) {nc nb: Nat}
     (c1: «nc; Idx r1», c2: «nc; Idx r2», b1: «nb; Idx r1», b2: «nb; Idx r2»)
     {s1: «r1; Nat», s2: «r2; Nat»} (a: «s1; R#T», b: «s2; R#T»)
@@ -1840,7 +1863,9 @@ priv anx lam dot_product_impl
           reshape (sched#4_9) s_out (materialize sched);
       let tiles    = dot_tiles (R#T) t;
       lam go_tile (u: []): «s_out; R#T» =
-          let sched = dot_schedule_tiled tiles t;
+          lam pack (t: Tileable): Tileable =
+              t#sched#prepacks ← (t#sched#prepacks, (prepack (t, 1))#sched#prepacks)#frozen_2;
+          let sched = pack (dot_schedule_tiled tiles t);
           reshape (sched#4_9) s_out (materialize sched);
       lam go_kvec (u: []): «s_out; R#T» =
           let sched = dot_schedule_kvec r_out t;
@@ -1850,14 +1875,14 @@ priv anx lam dot_product_impl
 /// ### bmm_impl
 ///
 /// `dot_product_impl` with literal ranks `(3, 3)`, batching axis 0 and contraction `k`.
-priv anx lam bmm_impl (fastest_2: Nat) (R: Ring) {B M K N: Nat} (t1: «B, M, K; R#T», t2: «B, K, N; R#T»): «B, M, N; R#T»
-        = dot_product_impl fastest_2 R (3, 3) (2_3, 1_3, 0_3, 0_3) (t1, t2);
+priv anx lam bmm_impl (fastest_2: Nat, frozen_2: Bool) (R: Ring) {B M K N: Nat} (t1: «B, M, K; R#T», t2: «B, K, N; R#T»): «B, M, N; R#T»
+        = dot_product_impl (fastest_2, frozen_2) R (3, 3) (2_3, 1_3, 0_3, 0_3) (t1, t2);
 ///
 /// ### product_2d_impl
 ///
 /// `dot_product_impl` with literal ranks `(2, 2)` and the contraction `k`; see there for why the ranks are an explicit group.
-priv anx lam product_2d_impl (fastest_2: Nat) (R: Ring) {m k l: Nat} (t1: «m, k; R#T», t2: «k, l; R#T»): «m, l; R#T»
-        = dot_product_impl fastest_2 R (2, 2) (1_2, 0_2, (), ()) (t1, t2);
+priv anx lam product_2d_impl (fastest_2: Nat, frozen_2: Bool) (R: Ring) {m k l: Nat} (t1: «m, k; R#T», t2: «k, l; R#T»): «m, l; R#T»
+        = dot_product_impl (fastest_2, frozen_2) R (2, 2) (1_2, 0_2, (), ()) (t1, t2);
 ///
 /// ### scatter_step_impl
 ///

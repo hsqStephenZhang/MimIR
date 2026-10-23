@@ -886,6 +886,32 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
             i8ptr = bb.assign(name + "i8conv", "addrspacecast i8 addrspace({})* {} to i8*", address_space, i8ptr);
         bb.tail("call void @free(i8* {})", i8ptr);
         return std::string();
+    } else if (auto persist = Axm::isa<mem::persist>(def)) {
+        declare_rt("noalias i8* @mim_persist(i8**, i8*, i64, i64*)");
+
+        auto [m, src] = persist->args<2>();
+        emit_unsafe(m);
+        auto v_src   = emit(src);
+        auto pointee = convert(persist->decurry()->arg(2, 0), false);
+        auto ptr_t   = convert(def->proj(3, 1)->type());
+        auto slot    = "@" + name.substr(1) + ".slot";
+        std::println(vars_decls_, "{} = internal global [2 x i8*] zeroinitializer", slot);
+        std::print(lam2bb_[root()].body().emplace_front(), "{}.fresh.slot = alloca i64", name);
+
+        auto size = bb.assign(name + ".size", "ptrtoint {}* getelementptr ({}, {}* null, i64 1) to i64", pointee,
+                              pointee, pointee);
+        auto key  = bb.assign(name + ".src", "bitcast {} {} to i8*", convert(src->type()), v_src);
+        auto i8ptr
+            = bb.assign(name + ".i8",
+                        "call noalias i8* @mim_persist(i8** getelementptr ([2 x i8*], [2 x i8*]* {}, i64 0, i64 0), "
+                        "i8* {}, i64 {}, i64* {}.fresh.slot)",
+                        slot, key, size, name);
+        auto res   = bb.assign(name + ".res", "load i64, i64* {}.fresh.slot", name);
+        auto fresh = bb.assign(name + ".fresh", "icmp ne i64 {}, 0", res);
+        auto ptr   = bb.assign(name + ".ptr", "bitcast i8* {} to {}", i8ptr, ptr_t);
+        auto t_res = convert(def->type());
+        auto tup   = bb.assign(name + ".tup", "insertvalue {} undef, {} {}, 0", t_res, ptr_t, ptr);
+        return bb.assign(name, "insertvalue {} {}, i1 {}, 1", t_res, tup, fresh);
     } else if (auto load = Axm::isa<mem::load>(def)) {
         auto [m, ptr] = load->args<2>();
         emit_unsafe(m);

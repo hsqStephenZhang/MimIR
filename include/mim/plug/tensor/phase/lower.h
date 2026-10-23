@@ -36,6 +36,8 @@ private:
     /// operand is only concrete at this staging point. The schedule decision built on the answer
     /// stays in the `_impl`'s IR (see tensor.dot_product_impl).
     const Def* fastest_axis_of(const App*, u64 i, const Def* rank);
+    /// `(fastest_axis_of, frozen)` of operand `i` of the dot family, where `frozen` is whether it is `tensor.frozen`.
+    const Def* layout_of(const App*, u64 i, const Def* rank);
 };
 
 } // namespace mim::plug::tensor::phase
