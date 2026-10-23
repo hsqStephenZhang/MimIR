@@ -1009,8 +1009,18 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         if (fuse && tile * runs > budget * whole) return give_up(j, "the tiles would recompute it beyond the budget");
 
         // A producer another op reads too is computed into its whole buffer, which that op then reads after this one.
+        // The other readers get the whole buffer, so the tiles must fill all of it: the whole op reads every cell.
+        auto fills = [&] {
+            auto all = image(g, g.maps->proj(rks->nis, j), zero, [&](size_t d) { return g.Sr->proj(gn, d); });
+            if (!exact(all, prk->ro)) return false;
+            for (u64 a = 0; a != prk->ro; ++a)
+                if (all->proj(4, 0)->proj(prk->ro, a) != w.lit_nat_0()
+                    || all->proj(4, 1)->proj(prk->ro, a) != mp.So->proj(prk->ro, a))
+                    return false;
+            return true;
+        };
         auto uses   = consumers_.find(old_p);
-        auto shared = !mem && dim && uses != consumers_.end() && uses->second > 1;
+        auto shared = !mem && dim && uses != consumers_.end() && uses->second > 1 && fills();
         if (shared && fresh_memo_.contains(old_p)) return give_up(j, "another op computes the input whole");
 
         auto So_t         = w.tuple(caps);
