@@ -72,6 +72,8 @@ private:
         Lam* post    = nullptr;
         DefVec given = {};  ///< The buffers that already hold some inputs, null for the others.
         u64 ahead    = 0;   ///< The inputs to compute ahead of the op whatever its schedule asks.
+        /// The input slot each epilogue input reads as, at its cells, or `nis` for one read on its own.
+        std::vector<u64> post_of = {};
     };
 
     /// The op of @p s applied to @p mem and @p dst, `[mem, dst]`, with the inputs its schedule or an enclosing
@@ -168,6 +170,8 @@ private:
     DefMap<std::vector<const App*>> readers_;
     /// The old ops whose lowering is under way.
     DefSet lowering_;
+    /// The old producers some compute_at computes one tile at a time, short of their whole result.
+    DefSet tiled_;
     /// Lowers the readers of @p p that compute it at a loop before an op that would compute it whole.
     void lower_at_readers(const App* p);
     /// The old defs of the body of the lam being rewritten, short of other mutables.

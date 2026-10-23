@@ -8,6 +8,7 @@
 // split by 4, which writes row 4 · io + ii and cuts the second block to 2 rows.
 // * `s`: S[i] = Σ_j P[i, j] at i, which computes the one iteration (i / 4, i % 4) writing row i.
 // * `t`: the same with S's rows split by 4 too and P computed at their outer dim, a block of whole runs of 4 rows.
+// * `u`: S's rows split by 8 instead, whose one block of 8 rows the end of P cuts to 6.
 // The exit code counts the values that differ.
 plugin core;
 plugin tensor;
@@ -19,9 +20,11 @@ use tensor;
 
 fun mac1 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
 fun mac2 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun mac3 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
 fun mac9 (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
 fun sum1 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun sum2 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun sum3 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun sum9 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 lam add (x y: I32): I32 = x + y;
 lam ne (x y: I32): I32 = core.select (core.icmp.e (x, y), 0I32, 1I32);
@@ -41,5 +44,6 @@ lam d6 (u v: «6; I32»): I32 = reduce (add, 0I32) 0₁ (binary ne (u, v));
 extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
     let s = materialize (compute_at (rsum sum1 (materialize (split_par (prod mac1, 0, 4))), 0, 0));
     let t = materialize (compute_at (split_par (rsum sum2 (materialize (split_par (prod mac2, 0, 4))), 0, 4), 0, 0));
+    let u = materialize (compute_at (split_par (rsum sum3 (materialize (split_par (prod mac3, 0, 4))), 0, 8), 0, 0));
     let r = materialize (rsum sum9 (materialize (prod mac9)));
-    return (m, d6 (s, r) + d6 (t, r));
+    return (m, d6 (s, r) + d6 (t, r) + d6 (u, r));

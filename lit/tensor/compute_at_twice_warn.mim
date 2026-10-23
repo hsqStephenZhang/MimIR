@@ -1,0 +1,30 @@
+// RUN: %mim %s -V -o /dev/null 2>&1 | %FileCheck %s
+
+// P = Σ_k Q[i, j, k] read by D[i] = P[i, i] + 1, which computes it at i but only reaches its diagonal, and by P + 1,
+// which reads it whole: P is computed both ways, which is warned.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+use core.ops.u.w;
+use tensor;
+
+fun sum (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun inc2 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun inc (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+lam pp (i j k: affine.Index): «3; affine.Index» = (i, j, k);
+lam pq (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam dg (i: affine.Index): «2; affine.Index» = (i, i);
+lam one (i: affine.Index): «1; affine.Index» = (i,);
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
+
+// CHECK: {{.*}} is computed whole for an op that reads it whole, and one tile at a time for a compute_at too
+extern fun f (q: «4, 4, 3; I32»): [«4; I32», «4, 4; I32»] =
+    let p = materialize (mr_tileable @1 @(2, 1) ((4, 4), (0, 1), (4, 4, 3)) (sum, 0I32, id) pq pp (buf q));
+    let d = materialize (compute_at (mr_tileable @1 @(1, 0) (4, 0, 4) (inc, 0I32, id) one dg p, 0, 0));
+    let e = materialize (mr_tileable @1 @(2, 0) ((4, 4), (0, 1), (4, 4)) (inc2, 0I32, id) po po p);
+    return (d, e);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);

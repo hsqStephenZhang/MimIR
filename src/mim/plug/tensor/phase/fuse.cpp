@@ -136,7 +136,8 @@ static std::optional<PureRead> read_through(World& w, const Def* value, const De
     if (!reads_as_produced(value, S)) return {};
     if (auto pr = is_pure_read(value)) {
         // Reading through the copy would drop its own compute_at or cache_read.
-        if (at_slots(btensor::MapRedPost::of(Axm::isa<tensor::map_reduce_post>(value)->callee()->as<App>())) != 0)
+        if (auto mr = Axm::isa<tensor::map_reduce_post>(value);
+            mr && at_slots(btensor::MapRedPost::of(mr->callee()->as<App>())) != 0)
             return {};
         // A source whose axes are all size 1 type-collapses to a plain scalar («1; T» ≡ T): the
         // fused op would carry an input the bufferization cannot represent - keep the copy instead.
