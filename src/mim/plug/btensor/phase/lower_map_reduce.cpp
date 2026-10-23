@@ -105,8 +105,14 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             auto box = w.tuple({w.tuple(lo), w.tuple(DefVec(rn, ext)), wide});
             return w.app(w.app(w.app(w.annex<affine::image>(), {mr.Rn, R}), maps[i]), box);
         };
-        auto box = image([&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
-        if (box->proj(4, 0) != image([&](size_t) { return w.lit_nat_1(); })->proj(4, 0)) {
+        auto box   = image([&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
+        auto point = image([&](size_t) { return w.lit_nat_1(); });
+        // An inexact image of the corner's single point does not pin down where the read starts.
+        if (!std::ranges::all_of(point->proj(4, 3)->projs(*r), [&](const Def* e) { return e == w.lit_tt(); })) {
+            give_up("the read of the corner is not known exactly");
+            continue;
+        }
+        if (box->proj(4, 0) != point->proj(4, 0)) {
             give_up("the box does not start at the read of the corner");
             continue;
         }

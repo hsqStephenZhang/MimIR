@@ -963,9 +963,19 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto caps = DefVec(prk->ro, [&](size_t a) { return box->proj(4, 2)->proj(prk->ro, a); });
         if (!std::ranges::all_of(caps, [&](const Def* cap) { return nat(cap).has_value(); }))
             return give_up(j, "the box has no literal size");
-        // Inside the loop of `dim`, the read can only refer to the box by its read of the iteration's corner.
-        if (dim && box->proj(4, 0) != image(mr, map, origin, one)->proj(4, 0))
-            return give_up(j, "the box does not start at the read of the corner");
+        auto exact = [&](const Def* img, u64 r) {
+            for (u64 a = 0; a != r; ++a)
+                if (img->proj(4, 3)->proj(r, a) != w.lit_tt()) return false;
+            return true;
+        };
+        // Inside the loop of `dim`, the read can only refer to the box by its read of the iteration's corner, which an
+        // inexact image of that single point does not pin down.
+        if (dim) {
+            auto corner = image(mr, map, origin, one);
+            if (!exact(corner, *pro)) return give_up(j, "the read of the corner is not known exactly");
+            if (box->proj(4, 0) != corner->proj(4, 0))
+                return give_up(j, "the box does not start at the read of the corner");
+        }
         // A box starts at most at the read of its corner, which the whole op reaches with the fixed dims spanning their
         // range and each shifted one the starts of the tiles, which fit the whole op.
         auto& g    = s.global;
