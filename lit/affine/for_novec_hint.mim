@@ -29,5 +29,5 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
 
 // CHECK-DAG: [[ON:![0-9]+]] = !{!"llvm.loop.vectorize.enable", i1 true}
 // CHECK-DAG: [[OFF:![0-9]+]] = !{!"llvm.loop.vectorize.enable", i1 false}
-// CHECK-DAG: distinct !{{{![0-9]+}}, [[ON]]}
+// CHECK-DAG: distinct !{{{![0-9]+}}, [[ON]]{{[,}]}}
 // CHECK-DAG: distinct !{{{![0-9]+}}, [[OFF]]}

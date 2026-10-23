@@ -31,5 +31,5 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
 
 // CHECK: , !llvm.loop !
 // CHECK: !{!"llvm.loop.vectorize.enable", i1 true}
-// CHECK-COUNT-1: {{distinct !\{}}
+// CHECK: {{distinct !\{.*}}!{!"llvm.loop.vectorize.width", i32 8}, !{!"llvm.loop.interleave.count", i32 1}}
 // CHECK-NOT: {{distinct !\{}}

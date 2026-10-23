@@ -271,11 +271,16 @@ protected:
     std::ostringstream func_impls_;
     LamMap<const Def*> simd_phi_;
 
-    /// Loop-metadata node id per `ll.vec`/`ll.novec`-annotated loop header, and whether it may vectorize;
+    /// Loop-metadata node id per `ll.vec`/`ll.novec`-annotated loop header, whether it may vectorize, and its trip count;
     /// `LoopMdBase` and `LoopMdBase + 1` hold the shared enable/disable hints, the per-loop nodes follow,
     /// clear of the ids the embedded runtime module brings along.
     static constexpr u64 LoopMdBase = 1000;
-    LamMap<std::pair<u64, bool>> loop_md_;
+    struct LoopMd {
+        u64 id;
+        bool vec;
+        u64 width = 0;
+    };
+    LamMap<LoopMd> loop_md_;
 
     bool simd_    = true;
     Rt rt_        = Rt::embed;
@@ -428,9 +433,17 @@ inline void Emitter::start() {
         std::ostringstream md_decls;
         std::println(md_decls, "!{} = !{{!\"llvm.loop.vectorize.enable\", i1 true}}", LoopMdBase);
         std::println(md_decls, "!{} = !{{!\"llvm.loop.vectorize.enable\", i1 false}}", LoopMdBase + 1);
-        for (const auto& [_, md] : loop_md_)
-            std::println(md_decls, "!{} = distinct !{{!{}, !{}}}", md.first, md.first,
-                         md.second ? LoopMdBase : LoopMdBase + 1);
+        // A whole vector run as one vector keeps each broadcast A element next to all its FMAs.
+        for (const auto& [_, md] : loop_md_) {
+            auto hint = md.vec ? LoopMdBase : LoopMdBase + 1;
+            if (md.width >= 2 && md.width <= 64 && std::has_single_bit(md.width))
+                std::println(md_decls,
+                             "!{} = distinct !{{!{}, !{}, !{{!\"llvm.loop.vectorize.width\", i32 {}}}, "
+                             "!{{!\"llvm.loop.interleave.count\", i32 1}}}}",
+                             md.id, md.id, hint, md.width);
+            else
+                std::println(md_decls, "!{} = distinct !{{!{}, !{}}}", md.id, md.id, hint);
+        }
         section(md_decls.str());
     }
 }

@@ -17,6 +17,23 @@ namespace clos = mim::plug::clos;
 namespace core = mim::plug::core;
 namespace vecp = mim::plug::vec;
 
+namespace {
+
+/// The trip count of the loop at @p head bounded by @p cond when @p app enters it with a literal start.
+std::optional<u64> trip(Lam* head, const App* app, const Def* cond) {
+    if (auto cmp = Axm::isa<core::icmp>(cond); cmp && cmp.id() == core::icmp::ul) {
+        auto [iv, end] = cmp->args<2>();
+        auto n         = head->num_vars();
+        for (size_t i = 0; i != n; ++i)
+            if (head->var(n, i) == iv)
+                if (auto b = Lit::isa(app->arg(n, i)))
+                    if (auto e = Lit::isa(end); e && *b < *e) return *e - *b;
+    }
+    return {};
+}
+
+} // namespace
+
 /// Pipeline phase for `ll.emit`.
 /// Writes the LLVM IR of the fully lowered world to `<world>.ll` (or `a.ll` if the world is unnamed).
 /// The output path can be overridden via [`-X ll:o=<file>`](@ref xarg_ll) or `-X ll:output=<file>`.
@@ -360,8 +377,10 @@ void Emitter::emit_epilogue_impl(Lam* lam) {
                     auto vec   = Axm::isa<ll::vec>(dispatch.index());
                     auto novec = Axm::isa<ll::novec>(dispatch.index());
                     if (vec || novec) {
-                        auto [it, _] = loop_md_.emplace(callee, std::pair{LoopMdBase + 2 + loop_md_.size(), bool(vec)});
-                        return bb.tail("br label {}, !llvm.loop !{}", id(callee), it->second.first);
+                        auto [it, _] = loop_md_.emplace(callee, LoopMd{LoopMdBase + 2 + loop_md_.size(), bool(vec)});
+                        if (vec)
+                            if (auto n = trip(callee, app, vec->arg())) it->second.width = *n;
+                        return bb.tail("br label {}, !llvm.loop !{}", id(callee), it->second.id);
                     }
                 }
             }
