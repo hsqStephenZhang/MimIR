@@ -123,6 +123,22 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         // A layout splits axis `ax` of the box by `by`: the run of a cell's split comes last, its block first.
         auto by    = Lit::isa<u64>(w.app(field(F::LayoutBy), w.lit_nat(i))).value_or(0);
         auto ax    = Lit::isa<u64>(w.app(field(F::LayoutAx), w.lit_nat(i))).value_or(0);
+        // Without one, a vector run that moves along another axis than the last splits that axis by the run, so that
+        // the vector loop reads the copy at unit stride (cf. OpenBLAS packing a transposed B).
+        // The vector loop is the vector dim, or the dim after it where that is the block dim jammed into it.
+        auto vd = Lit::isa<u64>(field(F::VDim));
+        if (vd && *vd + 2 == rks.rp) ++*vd;
+        if (by <= 1 && vd && *vd < rks.rp && !fixed[*vd])
+            if (auto run = Lit::isa<u64>(mr.Sr->proj(rn, *vd)); run && *run > 1) {
+                auto pi = maps[i]->type()->as<Pi>();
+                auto o  = w.mut_lam(pi->dom(), pi->codom())->var();
+                auto still
+                    = w.tuple(DefVec(rn, [&](size_t d) { return d == *vd ? lit(w.lit_nat_0()) : o->proj(rn, d); }));
+                auto moved = std::vector<u64>();
+                for (u64 a = 0; a != *r; ++a)
+                    if (w.app(maps[i], o)->proj(*r, a) != w.app(maps[i], still)->proj(*r, a)) moved.push_back(a);
+                if (moved.size() == 1 && moved[0] + 1 != *r) ax = moved[0], by = *run;
+            }
         auto split = by > 1 && ax < *r;
         auto rr    = split ? *r + 1 : *r;
         auto zero  = static_cast<const Def*>(nullptr);

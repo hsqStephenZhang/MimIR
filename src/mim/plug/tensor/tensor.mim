@@ -1018,6 +1018,8 @@ anx lam compute_at (t: Tileable, i d: Nat): Tileable =
 /// - `btensor.lower_map_reduce` realizes it on any input buffer whose box has a literal size and whose read of the
 ///   corner of each iteration is where its box starts, and logs a warning wherever it cannot.
 /// - A box that leaves the input at a tail is copied up to the input's end.
+/// - Without `transform_layout`, a copy that the vector loop reads along another axis than its last splits that axis by
+///   the vector run, so that the loop reads it at unit stride (cf. OpenBLAS packing a transposed B).
 /// - `space` is e.g. `gpu.addr_space_shared`; only a GPU lowering tells the address spaces apart.
 anx lam cache_read (t: Tileable, i space: Nat): Tileable =
     let s   = t#sched;
@@ -1777,8 +1779,10 @@ pub lam dot_general_pick {n: Nat} {na nb nc: Nat} (a: «na; Idx n», b: «nb; Id
 /// right operand, pre-applied by `Lower` where that operand is concrete.
 /// The schedule **decision** built on it lives in the body:
 ///
-/// - a contracted fastest axis (\f$x \cdot W^T\f$, e.g. behind a weight transpose the read-through absorbs) selects
-///   `dot_schedule_kvec`, anything else `dot_schedule`;
+/// - where `dot_tiled_ok` holds, `dot_schedule_tiled`, whatever the operands' layouts: its copy of B is laid out for
+///   the register block (see `cache_read`);
+/// - otherwise a contracted fastest axis (\f$x \cdot W^T\f$, e.g. behind a weight transpose the read-through absorbs)
+///   selects `dot_schedule_kvec`, anything else `dot_schedule`;
 /// - the selected schedule may strip-mine an output dim (row/output-cell blocking), packing the
 ///   materialized tensor along that axis, whereupon the row-major `reshape` restores `s_out` — the
 ///   identity for the neutral split, and absorbed into the consumers' access maps by `fuse_tensor`'s
@@ -1832,7 +1836,7 @@ priv anx lam dot_product_impl
       lam go_kvec (u: []): «s_out; R#T» =
           let sched = dot_schedule_kvec r_out t;
           reshape (sched#4_9) s_out (materialize sched);
-      ((go_n, go_tile)#(dot_tiled_ok (r_out, tiles) t), go_kvec)#kvec ();
+      (((go_n, go_kvec)#kvec), go_tile)#(dot_tiled_ok (r_out, tiles) t) ();
 ///
 /// ### bmm_impl
 ///

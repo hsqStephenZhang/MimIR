@@ -195,6 +195,15 @@ static u64 at_slots(const btensor::MapRedPost& mr) {
 
 static bool is_at(u64 slots, u64 k) { return k < 64 && (slots >> k) & 1; }
 
+/// The input slots whose producers a read-through must keep: a cached slot copies whatever it reads.
+static u64 through_slots(const btensor::MapRedPost& mr) {
+    using F    = btensor::MapRedPost;
+    auto rec   = mr.sched_record();
+    auto field = [&](F::Field f) { return Lit::isa<u64>(rec->proj(F::Num_Fields, f)).value_or(0); };
+    if (rec->proj(F::Num_Fields, F::At) != mr.sched->world().lit_tt()) return 0;
+    return (field(F::AtSlots) & ~field(F::Cache)) | field(F::Rev);
+}
+
 const Def* Fuse::fuse_map_reduce(const App* app) {
     auto mr            = btensor::MapRedPost::of(rewrite(app->callee())->as<App>());
     auto [is, post_is] = rewrite(app->arg())->projs<2>();
@@ -630,7 +639,7 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
         return slots;
     };
 
-    auto ins = rewire(nis_nat, mr.Tis, mr.Ris, mr.Sis, mr.maps, is, at_slots(mr));
+    auto ins = rewire(nis_nat, mr.Tis, mr.Ris, mr.Sis, mr.maps, is, through_slots(mr));
     auto eps = rewire(nps_nat, mr.Tps, mr.Rps, mr.Sps, mr.post_maps, ps, 0);
     if (!changed) return nullptr;
 
