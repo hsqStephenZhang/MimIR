@@ -20,10 +20,13 @@ namespace vecp = mim::plug::vec;
 namespace {
 
 /// The trip count of the loop at @p head bounded by @p cond when @p app enters it with a literal start.
+/// A loop that carries a value besides its counter and memory has none: as one vector its reductions would not fit.
 std::optional<u64> trip(Lam* head, const App* app, const Def* cond) {
     if (auto cmp = Axm::isa<core::icmp>(cond); cmp && cmp.id() == core::icmp::ul) {
         auto [iv, end] = cmp->args<2>();
         auto n         = head->num_vars();
+        for (size_t i = 0; i != n; ++i)
+            if (auto v = head->var(n, i); v != iv && !Axm::isa<mem::M>(v->type())) return {};
         for (size_t i = 0; i != n; ++i)
             if (head->var(n, i) == iv)
                 if (auto b = Lit::isa(app->arg(n, i)))

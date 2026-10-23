@@ -2,6 +2,7 @@
 // RUN: %mim -p opt -p clos -p ll %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=256 -X tensor:gemm-nc=64
 // RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
+// RUN: %FileCheck %s --check-prefix=WIDTH < %{s:stem}.ll
 // RUN: %mim -p opt %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=256 -X tensor:gemm-nc=64 -o - | %FileCheck %s
 // RUN: %mim -p opt -p clos -p ll %s -X tensor:vec-bytes=32 -X tensor:vec-regs=16 -X tensor:lane-fma=0 -X tensor:l1=32768 -X ll:o=%t.ll
 // RUN: clang++ %t.ll -o %t.derived -Wno-override-module
@@ -45,3 +46,6 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
 // CHECK-DAG: («100, 16; I32», 0)
 // CHECK-DAG: («128, 64; I32», 0)
 // CHECK-DAG: («i8, 16; I32», 0)
+
+// A whole run of 16 columns is one vector.
+// WIDTH: !{!"llvm.loop.vectorize.width", i32 16}, !{!"llvm.loop.interleave.count", i32 1}

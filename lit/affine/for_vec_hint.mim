@@ -8,7 +8,7 @@
 // loop: lower_for moves the wrapper onto the loop's exit condition (the ll module is loaded),
 // which the emitter turns into `llvm.loop.vectorize.enable` metadata on the branches into the
 // loop's header. The unannotated `affine.For` gets none, so exactly one distinct loop-metadata
-// node is emitted.
+// node is emitted. The loop carries its sum, so it gets no vector width.
 
 plugin core;
 plugin affine;
@@ -31,5 +31,6 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
 
 // CHECK: , !llvm.loop !
 // CHECK: !{!"llvm.loop.vectorize.enable", i1 true}
-// CHECK: {{distinct !\{.*}}!{!"llvm.loop.vectorize.width", i32 8}, !{!"llvm.loop.interleave.count", i32 1}}
+// CHECK: {{distinct !\{}}
 // CHECK-NOT: {{distinct !\{}}
+// CHECK-NOT: llvm.loop.vectorize.width
