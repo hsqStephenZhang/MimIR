@@ -606,17 +606,25 @@ axm vec_width: [d: Nat] → Nat, normalize_vec_width;
 ///
 /// ### gemm_tiles
 ///
-/// Target reflection for GEMM schedules: the blocks `(mr, nr, kc, nc)` of a GEMM over elements of type `T`.
+/// Target reflection for GEMM schedules: the blocks `(mr, nr, kc, nc)` of an `M × K` by `K × N` product over elements
+/// of type `T`.
 ///
-/// - `mr × nr` is the register block, sized by the target's vector registers so that its accumulators, a row of B
-///   and the A operands all fit.
-/// - `kc` is the K block, sized so that B's micro-panel «kc, nr» fits L1 with room to spare.
-/// - `nc` is the width of B's block «kc, nc» that a K block caches, sized by L2.
+/// - `mr × nr` is the register block.
+///   Its accumulators, a row of B and the A operands fit the target's vector registers (cf. OpenBLAS): an A element
+///   read off a lane holds a register per row, a broadcast one only while its row runs, and an in-order target keeps
+///   `bufs` sets of operands in flight.
+///   Of the heights that fit, `mr` takes the fewest and then the most even blocks of `M`.
+/// - `kc` splits `K` into equal blocks, each at most the K block that four of B's micro-panels «kc, nr» take in half
+///   of L1.
+/// - `nc` is the width of B's block «kc, nc» that a K block caches: as many panels as fit half of L1, at most 8 and
+///   ⌈N/nr⌉.
 ///
-/// The target is the host unless `-X tensor:vec-bytes`, `vec-regs`, `lane-fma`, `l1` or `l2` describe another;
-/// `-X tensor:gemm-mr`, `gemm-nr`, `gemm-kc` and `gemm-nc` override the blocks themselves.
+/// It stays stuck until `T` is closed and `M`, `N` and `K` are literals.
+/// The target is the host unless `-X tensor:vec-bytes`, `vec-regs`, `lane-fma`, `bufs` or `l1` describe another;
+/// `-X tensor:gemm-mr`, `gemm-nr`, `gemm-kc` and `gemm-nc` override the blocks themselves, where a pinned `kc` still
+/// takes `K` in one block up to `1.5 kc`.
 /// See `dot_schedule_tiled`.
-axm gemm_tiles: [T: *] → «4; Nat», normalize_gemm_tiles;
+axm gemm_tiles: [T: *] → [M N K: Nat] → «4; Nat», normalize_gemm_tiles;
 ///
 /// ## Tiling
 ///
@@ -1265,14 +1273,16 @@ lam dot_schedule (r_out: Nat) (t: Tileable): Tileable =
     let ts  = if_static (ts0, ts0, 1);
     unroll_trailing (strip_mine_red (vectorize (t, r_out - 1), d, ts), 1);
 ///
-/// #### dot_kc
+/// #### dot_tiles
 ///
-/// The K block of `dot_schedule_tiled` for a K block `kc` of the target: `K` itself up to `1.5 kc`, else `kc`.
-lam dot_kc (kc K: Nat): Nat = (kc, K)#(K <= kc + kc / 2);
+/// `gemm_tiles` for the product `t` with dims `(i, j, k)`.
+lam dot_tiles (T: *) (t: Tileable): «4; Nat» =
+    let r = t#Rp + t#Rr;
+    gemm_tiles T (t#Sr#(core.idx 0 r 0), t#Sr#(core.idx 0 r 1), t#Sr#(core.idx 0 r 2));
 ///
 /// #### dot_tiled_ok
 ///
-/// Whether `dot_schedule_tiled` with the blocks `tl` of `gemm_tiles` applies to a product with `r_out` output dims:
+/// Whether `dot_schedule_tiled` with the blocks `tl` of `dot_tiles` applies to a product with `r_out` output dims:
 /// one contraction, literal extents, and at least one whole register block.
 lam dot_tiled_ok (r_out: Nat, tl: «4; Nat») (t: Tileable): Bool =
     let r = t#Rp + t#Rr;
@@ -1286,11 +1296,11 @@ lam dot_tiled_ok (r_out: Nat, tl: «4; Nat») (t: Tileable): Bool =
 /// #### dot_schedule_tiled
 ///
 /// The cache-blocked GEMM schedule for \f$A \cdot B\f$ with dims `(i, j, k)` and the blocks `(mr, nr, kc, nc)` of
-/// `gemm_tiles` (cf. BLIS): the loops run `(jo, io, jm, ii, ji, ko, ki)`, where
+/// `dot_tiles` (cf. BLIS): the loops run `(jo, io, jm, ii, ji, ko, ki)`, where
 ///
 /// - `ii × ji` is the `mr × nr` register block, `ji` the vector loop and `ii` jammed into it;
 /// - `jm` groups up to `nc / nr` of the ⌈N/nr⌉ panels, at most 8 and a power of two that divides their number;
-/// - `ko` steps through the K blocks of `dot_kc`, hoisted outside the rows `io`, so each block of B stays in cache
+/// - `ko` steps through the K blocks, hoisted outside the rows `io`, so each block of B stays in cache
 ///   for every row block;
 /// - B's block «Kc, Nc» is copied once per K block (`cache_read`);
 /// - the last block of rows, of columns and of K is cut short where `mr`, `nr` and Kc do not divide M, N and K.
@@ -1310,7 +1320,7 @@ lam dot_schedule_tiled (tl: «4; Nat») (t: Tileable): Tileable =
                        core.select (jj == 0, 2, core.select (jj == 1, 0, core.select (jj == 2, 3,
                        core.select (jj == 3, 1, jj))))›;
     let t4 = interchange (t3, perm);
-    let t5 = strip_mine_red (t4, t4#2_9, dot_kc (kc, t#Sr#(core.idx 0 r 2)));
+    let t5 = strip_mine_red (t4, t4#2_9, kc);
     compute_at (cache_read (hoist_red (vectorize (t5, 3), 1, 1), 1, 0), 1, t5#2_9);
 ///
 /// #### dot_schedule_kvec
@@ -1724,7 +1734,7 @@ priv anx lam dot_product_impl
       lam go_n    (u: []): «s_out; R#T» =
           let sched = dot_schedule r_out t;
           reshape (sched#4_9) s_out (materialize sched);
-      let tiles    = gemm_tiles (R#T);
+      let tiles    = dot_tiles (R#T) t;
       lam go_tile (u: []): «s_out; R#T» =
           let sched = dot_schedule_tiled tiles t;
           reshape (sched#4_9) s_out (materialize sched);

@@ -165,8 +165,9 @@ namespace {
 
 /// What `tensor.gemm_tiles` derives its blocks from.
 struct Target {
-    u64 vec_bytes, vec_regs, l1, l2;
+    u64 vec_bytes, vec_regs, l1;
     bool lane_fma; ///< Whether a vector FMA takes its broadcast operand from a lane, which costs a register per row.
+    u64 bufs;      ///< Operand sets in flight per K step: 2 on an in-order core that pipelines the loads by hand.
 };
 
 std::optional<u64> sysctl_u64([[maybe_unused]] const char* name) {
@@ -179,7 +180,7 @@ std::optional<u64> sysctl_u64([[maybe_unused]] const char* name) {
 }
 
 Target host_target() {
-    Target t{16, 16, 32 * 1024, 1024 * 1024, false};
+    Target t{16, 16, 32 * 1024, false, 1};
 #if defined(__aarch64__) || defined(_M_ARM64)
     t.vec_regs = 32, t.lane_fma = true;
 #elif (defined(__x86_64__) || defined(__i386__)) && defined(__GNUC__)
@@ -192,11 +193,8 @@ Target host_target() {
     // A hybrid CPU reports its performance cores as level 0.
     if (auto v = sysctl_u64("hw.perflevel0.l1dcachesize").or_else([] { return sysctl_u64("hw.l1dcachesize"); }))
         t.l1 = *v;
-    if (auto v = sysctl_u64("hw.perflevel0.l2cachesize").or_else([] { return sysctl_u64("hw.l2cachesize"); }))
-        t.l2 = *v;
 #elif defined(__linux__) && defined(_SC_LEVEL1_DCACHE_SIZE)
     if (auto v = sysconf(_SC_LEVEL1_DCACHE_SIZE); v > 0) t.l1 = u64(v);
-    if (auto v = sysconf(_SC_LEVEL2_CACHE_SIZE); v > 0) t.l2 = u64(v);
 #endif
     return t;
 }
@@ -208,39 +206,68 @@ Target target(Driver& d) {
     if (auto v = d.arg_nat("tensor", "vec-bytes")) t.vec_bytes = *v;
     if (auto v = d.arg_nat("tensor", "vec-regs")) t.vec_regs = *v;
     if (auto v = d.arg_nat("tensor", "l1")) t.l1 = *v;
-    if (auto v = d.arg_nat("tensor", "l2")) t.l2 = *v;
     if (auto v = d.arg_nat("tensor", "lane-fma")) t.lane_fma = *v != 0;
+    if (auto v = d.arg_nat("tensor", "bufs")) t.bufs = std::max<u64>(1, *v);
     return t;
 }
 
 u64 pow2_floor(u64 x) { return x == 0 ? 1 : std::bit_floor(x); }
+u64 ceil_div(u64 a, u64 b) { return (a + b - 1) / b; }
+
+/// The largest register block height whose accumulators, B row and A operands fit the vector registers.
+u64 max_mr(const Target& t, u64 nv) {
+    auto regs = [&](u64 mr) { return mr * nv + t.bufs * nv + t.bufs * (t.lane_fma ? mr : 1); };
+    u64 mr    = 1;
+    while (regs(mr + 1) <= t.vec_regs) ++mr;
+    return mr;
+}
+
+/// The block height up to @p hi for @p M rows: fewest blocks, then the most even ones.
+/// Below `hi / 2` rows it stays `hi`, which leaves such a product to the untiled schedule.
+u64 fit_mr(u64 hi, u64 M) {
+    auto lo = std::max<u64>(1, ceil_div(hi, 2));
+    if (M < lo) return hi;
+    auto best = hi;
+    for (auto mr = hi; mr >= lo; --mr) {
+        auto cost = [&](u64 m) { return std::pair{ceil_div(M, m), ceil_div(M, m) * m - M}; };
+        if (cost(mr) < cost(best)) best = mr;
+    }
+    return best;
+}
 
 } // namespace
 
-const Def* normalize_gemm_tiles(const Def*, const Def*, const Def* T) {
+const Def* normalize_gemm_tiles(const Def*, const Def* callee, const Def* arg) {
     // An open element type waits for its instance; a closed one without a size, such as `Nat`, takes 8 bytes.
+    auto T = callee->as<App>()->arg();
     if (T->is_open()) return nullptr;
+    auto [Md, Nd, Kd] = arg->projs<3>();
+    auto M            = Lit::isa(Md);
+    auto N            = Lit::isa(Nd);
+    auto K            = Lit::isa(Kd);
+    if (!M || !N || !K) return nullptr;
+
     auto& w = T->world();
     auto& d = w.driver();
     auto eb = Lit::isa<u64>(w.call(core::trait::size, T)).value_or(8);
     if (eb == 0) eb = 8;
     auto t = target(d);
 
-    // A row of the register block takes `nv` vector registers of accumulators, and the block's B row the same; each
-    // row also needs its A element, broadcast to a register of its own or read off a lane.
-    auto lanes   = std::max<u64>(1, t.vec_bytes / eb);
-    auto nv      = u64(t.vec_regs >= 32 ? 4 : 2);
-    auto spare   = u64(t.lane_fma ? 4 : 1);
-    auto per_row = t.lane_fma ? nv + 1 : nv;
-    auto mr      = t.vec_regs > nv + spare ? std::max<u64>(1, (t.vec_regs - nv - spare) / per_row) : 1;
-    auto nr      = nv * lanes;
-    if (auto v = d.arg_nat("tensor", "gemm-mr")) mr = *v;
-    if (auto v = d.arg_nat("tensor", "gemm-nr")) nr = *v;
-    // B's micro-panel «kc, nr» takes an eighth of L1, and its block «kc, nc» a sixteenth of L2.
-    auto kc = std::clamp<u64>(pow2_floor(t.l1 / (8 * nr * eb)), 64, 512);
-    if (auto v = d.arg_nat("tensor", "gemm-kc")) kc = *v;
-    auto nc = nr * std::clamp<u64>(pow2_floor(t.l2 / (16 * kc * nr * eb)), 1, 4);
-    if (auto v = d.arg_nat("tensor", "gemm-nc")) nc = *v;
+    // A row of the register block takes `nv` vector registers of accumulators, and the block's B row the same.
+    auto lanes = std::max<u64>(1, t.vec_bytes / eb);
+    auto nv    = u64(t.vec_regs >= 32 ? 4 : 2);
+    auto mr    = d.arg_nat("tensor", "gemm-mr").value_or(fit_mr(max_mr(t, nv), *M));
+    auto nr    = d.arg_nat("tensor", "gemm-nr").value_or(nv * lanes);
+
+    // A is read in place, so B's block «kc, nc» shares L1 with it and takes half; four of its panels set the K block.
+    auto budget = t.l1 / 2;
+    u64 kc;
+    if (auto v = d.arg_nat("tensor", "gemm-kc"))
+        kc = *K <= *v + *v / 2 ? *K : *v;
+    else
+        kc = ceil_div(*K, ceil_div(*K, std::clamp<u64>(pow2_floor(budget / (4 * nr * eb)), 64, 512)));
+    auto panels = std::min(pow2_floor(std::clamp<u64>(budget / (kc * nr * eb), 1, 8)), pow2_floor(ceil_div(*N, nr)));
+    auto nc     = d.arg_nat("tensor", "gemm-nc").value_or(nr * panels);
     return w.tuple({w.lit_nat(mr), w.lit_nat(nr), w.lit_nat(kc), w.lit_nat(nc)});
 }
 

@@ -1,16 +1,28 @@
-// RUN: %mim %s -X tensor:vec-bytes=16 -X tensor:vec-regs=32 -X tensor:lane-fma=1 -X tensor:l1=131072 -X tensor:l2=16777216 -o - | %FileCheck %s --check-prefix=NEON
-// RUN: %mim %s -X tensor:vec-bytes=32 -X tensor:vec-regs=16 -X tensor:lane-fma=0 -X tensor:l1=32768 -X tensor:l2=1048576 -o - | %FileCheck %s --check-prefix=AVX2
-// RUN: %mim %s -X tensor:vec-bytes=16 -X tensor:vec-regs=32 -X tensor:lane-fma=1 -X tensor:l1=131072 -X tensor:l2=16777216 -X tensor:gemm-mr=6 -X tensor:gemm-kc=128 -o - | %FileCheck %s --check-prefix=PIN
+// RUN: %mim %s -X tensor:vec-bytes=16 -X tensor:vec-regs=32 -X tensor:lane-fma=1 -X tensor:l1=131072 -o - | %FileCheck %s --check-prefix=NEON
+// RUN: %mim %s -X tensor:vec-bytes=16 -X tensor:vec-regs=32 -X tensor:lane-fma=1 -X tensor:l1=131072 -X tensor:bufs=2 -o - | %FileCheck %s --check-prefix=INORDER
+// RUN: %mim %s -X tensor:vec-bytes=32 -X tensor:vec-regs=16 -X tensor:lane-fma=0 -X tensor:l1=32768 -o - | %FileCheck %s --check-prefix=AVX2
+// RUN: %mim %s -X tensor:vec-bytes=16 -X tensor:vec-regs=32 -X tensor:lane-fma=1 -X tensor:l1=131072 -X tensor:gemm-mr=6 -X tensor:gemm-kc=128 -o - | %FileCheck %s --check-prefix=PIN
 
-// `tensor.gemm_tiles` for 4- and 8-byte elements on a NEON-like and an AVX2-like target, and with blocks pinned.
+// `tensor.gemm_tiles` on a NEON-like target, an in-order one and an AVX2-like one, and with blocks pinned:
+// * `big`: 4-byte elements in a large square product;
+// * `small`: few rows, a K that the K block does not divide and two panels of columns;
+// * `wide`: 8-byte elements.
 plugin core;
 plugin tensor;
 
-extern fun tiles4 (): «4; Nat» = return (tensor.gemm_tiles I32);
-extern fun tiles8 (): «4; Nat» = return (tensor.gemm_tiles I64);
+extern fun big (): «4; Nat» = return (tensor.gemm_tiles I32 (1024, 1024, 1024));
+extern fun small (): «4; Nat» = return (tensor.gemm_tiles I32 (8, 20, 1000));
+extern fun wide (): «4; Nat» = return (tensor.gemm_tiles I64 (1024, 1024, 1024));
 
-// NEON: return ({{.*}}, 4, 16, i8, 64)
-// NEON: return ({{.*}}, 4, 8, i8, 32)
-// AVX2: return ({{.*}}, 6, 16, 64, 64)
-// AVX2: return ({{.*}}, 6, 8, 64, 32)
-// PIN:  return ({{.*}}, 6, 16, 128, 64)
+// NEON:    return ({{.*}}, 5, 16, i8, 64)
+// NEON:    return ({{.*}}, 4, 16, 250, 32)
+// NEON:    return ({{.*}}, 5, 8, i8, 32)
+// INORDER: return ({{.*}}, 4, 16, i8, 64)
+// INORDER: return ({{.*}}, 4, 16, 250, 32)
+// INORDER: return ({{.*}}, 4, 8, i8, 32)
+// AVX2:    return ({{.*}}, 6, 16, 64, 64)
+// AVX2:    return ({{.*}}, 4, 16, 63, 32)
+// AVX2:    return ({{.*}}, 6, 8, 64, 32)
+// PIN:     return ({{.*}}, 6, 16, 128, 128)
+// PIN:     return ({{.*}}, 6, 16, 128, 32)
+// PIN:     return ({{.*}}, 6, 8, 128, 64)

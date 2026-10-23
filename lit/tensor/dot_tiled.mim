@@ -3,12 +3,16 @@
 // RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
 // RUN: %mim -p opt %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=256 -X tensor:gemm-nc=64 -o - | %FileCheck %s
+// RUN: %mim -p opt -p clos -p ll %s -X tensor:vec-bytes=32 -X tensor:vec-regs=16 -X tensor:lane-fma=0 -X tensor:l1=32768 -X ll:o=%t.ll
+// RUN: clang++ %t.ll -o %t.derived -Wno-override-module
+// RUN: %t.derived
 
 // `product_2d` against the unscheduled product, for shapes `chk (m, k, n)` that take `dot_schedule_tiled`:
 // * rows in whole 4-row blocks or with a last block of 1, 2 or 3 rows;
 // * columns in whole 16-wide panels, grouped by 4, 2 or 1, or with a last panel of 1 to 15 columns;
 // * `K` in one block, in whole blocks of 256 or with a last block cut short;
 // and for shapes that fall back to `dot_schedule`: fewer than 4 rows, fewer than 16 columns.
+// The derived blocks of an AVX2-like target split the rows and `K` by the shape instead.
 // The exit code counts the cells that differ.
 plugin core;
 plugin tensor;
