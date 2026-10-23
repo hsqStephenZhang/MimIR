@@ -1,0 +1,38 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt -p clos -p ll %s
+// RUN: clang++ -std=c++23 %S/schedule_cover_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// Schedules whose tiles or loops cover less than they seem to, driven by schedule_cover_aux.cpp against a scalar
+// reference:
+// * `diag`: D[i] = P[i, i] + 1 with P computed at i, which another op reads whole: the tiles reach every row and every
+//   column of P but only its diagonal, so P is computed whole for the other op.
+// * `rows`: Σ_k A[i, k] with k of 10 split by 4 and its inner dim by 2 again, which keeps the stop of the last block.
+// * `rows_i`, `rows_t`: the same with i of 6 split by 4 and its inner dim split by 2 again, or tiled by 2.
+plugin core;
+plugin tensor;
+plugin affine;
+
+use core.ops.u.w;
+use tensor;
+
+fun sum1 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun inc1 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
+lam dg (i: affine.Index): «2; affine.Index» = (i, i);
+lam one (i: affine.Index): «1; affine.Index» = (i,);
+lam pp (i j k: affine.Index): «3; affine.Index» = (i, j, k);
+lam pq (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam ro (i _: affine.Index): affine.Index = i;
+lam ri (i j: affine.Index): «2; affine.Index» = (i, j);
+
+extern fun diag (q: «4, 4, 3; I32»): [«4; I32», «4, 4; I32»] =
+    let p  = materialize (mr_tileable @1 @(2, 1) ((4, 4), (0, 1), (4, 4, 3)) (sum1, 0I32, id) pq pp (buf q));
+    let dd = materialize (compute_at (mr_tileable @1 @(1, 0) (4, 0, 4) (inc1, 0I32, id) one dg p, 0, 0));
+    let e  = materialize (mr_tileable @1 @(2, 0) ((4, 4), (0, 1), (4, 4)) (inc1, 0I32, id) po po p);
+    return (dd, e);
+
+lam rsum (a: «6, 10; I32») = mr_tileable @1 @(1, 1) (6, 0, (6, 10)) (sum1, 0I32, id) ro ri (buf a);
+extern fun rows (a: «6, 10; I32»): «6; I32» = return (materialize (strip_mine_red (strip_mine_red (rsum a, 1, 4), 2, 2)));
+extern fun rows_i (a: «6, 10; I32»): «6; I32» = return (materialize (split_par (split_par (rsum a, 0, 4), 1, 2)));
+extern fun rows_t (a: «6, 10; I32»): «6; I32» = return (materialize (tile_par (split_par (rsum a, 0, 4), (0, 2))));

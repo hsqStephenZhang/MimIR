@@ -1240,6 +1240,19 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                 if (all->proj(4, 0)->proj(prk->ro, a) != w.lit_nat_0()
                     || all->proj(4, 1)->proj(prk->ro, a) != mp.So->proj(prk->ro, a))
                     return false;
+            // The axes cover the box jointly only where no loop moves two of them, as the diagonal `(i, i)` does.
+            auto gm   = g.maps->proj(rks->nis, j);
+            auto gpi  = gm->type()->as<Pi>();
+            auto o    = w.mut_lam(gpi->dom(), gpi->codom())->var();
+            auto read = w.app(gm, o);
+            for (u64 d = 0; d != gn; ++d) {
+                auto still = w.app(
+                    gm, w.tuple(DefVec(gn, [&](size_t e) { return e == d ? lit(w.lit_nat_0()) : o->proj(gn, e); })));
+                auto moved = 0;
+                for (u64 a = 0; a != prk->ro; ++a)
+                    moved += read->proj(prk->ro, a) != still->proj(prk->ro, a);
+                if (moved > 1) return false;
+            }
             return true;
         };
         auto uses   = consumers_.find(old_p);

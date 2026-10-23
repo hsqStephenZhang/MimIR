@@ -256,18 +256,21 @@ const Def* normalize_gemm_tiles(const Def*, const Def* callee, const Def* arg) {
     // A row of the register block takes `nv` vector registers of accumulators, and the block's B row the same.
     auto lanes = std::max<u64>(1, t.vec_bytes / eb);
     auto nv    = u64(t.vec_regs >= 32 ? 4 : 2);
-    auto mr    = d.arg_nat("tensor", "gemm-mr").value_or(fit_mr(max_mr(t, nv), *M));
-    auto nr    = d.arg_nat("tensor", "gemm-nr").value_or(nv * lanes);
+    // Blocks of at least one point keep the divisions below defined, also for an empty extent.
+    auto mr = std::max<u64>(1, d.arg_nat("tensor", "gemm-mr").value_or(fit_mr(max_mr(t, nv), *M)));
+    auto nr = std::max<u64>(1, d.arg_nat("tensor", "gemm-nr").value_or(nv * lanes));
+    auto k  = std::max<u64>(1, *K);
 
     // A is read in place, so B's block «kc, nc» shares L1 with it and takes half; four of its panels set the K block.
     auto budget = t.l1 / 2;
     u64 kc;
     if (auto v = d.arg_nat("tensor", "gemm-kc"))
-        kc = *K <= *v + *v / 2 ? *K : *v;
+        kc = std::max<u64>(1, k <= *v + *v / 2 ? k : *v);
     else
-        kc = ceil_div(*K, ceil_div(*K, std::clamp<u64>(pow2_floor(budget / (4 * nr * eb)), 64, 512)));
-    auto panels = std::min(pow2_floor(std::clamp<u64>(budget / (kc * nr * eb), 1, 8)), pow2_floor(ceil_div(*N, nr)));
-    auto nc     = d.arg_nat("tensor", "gemm-nc").value_or(nr * panels);
+        kc = ceil_div(k, ceil_div(k, std::clamp<u64>(pow2_floor(budget / (4 * nr * eb)), 64, 512)));
+    auto panels = std::min(pow2_floor(std::clamp<u64>(budget / (kc * nr * eb), 1, 8)),
+                           pow2_floor(ceil_div(std::max<u64>(1, *N), nr)));
+    auto nc     = std::max<u64>(1, d.arg_nat("tensor", "gemm-nc").value_or(nr * panels));
     return w.tuple({w.lit_nat(mr), w.lit_nat(nr), w.lit_nat(kc), w.lit_nat(nc)});
 }
 
