@@ -1576,6 +1576,38 @@ priv anx lam reshape_impl {T: *, r_in r_out: Nat}
 /// Fused multiply-add over the ring `R`; `x` is the padded-input element, `w` the weight.
 fun conv_fun (R: Ring) (acc: R#T, (x w: R#T))@tt: R#T = return (R#add (acc, R#mul (x, w)));
 ///
+/// ### conv_schedule_tiled
+///
+/// The convolution as an implicit GEMM of `co` by `ow` over `(ci, kh, kw)`, blocked as `dot_schedule_tiled` blocks a
+/// GEMM: an `8 × 8` register block of `co_i` jammed into the vector loop of `ow_i`, under blocks of `kc` channels
+/// hoisted outside it, with the weights packed into panels of 8 output channels (cf. OpenBLAS packing A).
+///
+/// - `kc` is the largest power of two up to 32 that divides `ci` into at least two blocks.
+/// - Select it with `conv_tiled_ok`.
+lam conv_schedule_tiled (t: Tileable): Tileable =
+    let r  = t#Rp + t#Rr;
+    let ci = t#Sr#(core.idx 0 r 4);
+    lam kc_ok (b: Nat): Bool = core.bit2.and 2 (ci / b * b == ci, b * 2 <= ci);
+    let kc = (((((1, 2)#(kc_ok 2), 4)#(kc_ok 4), 8)#(kc_ok 8), 16)#(kc_ok 16), 32)#(kc_ok 32);
+    let t2 = split_par (split_par (t, 1, 8), 4, 8);
+    // Dims are (n, co/8, 8, oh, ow/8, 8 | …); bring the `co` block down next to the `ow` run.
+    let r2   = t2#2_9 + t2#3_9;
+    let perm = ‹j: r2; let jj = core.idx2nat j;
+                       core.select (jj == 2, 3, core.select (jj == 3, 4, core.select (jj == 4, 2, jj)))›;
+    let t4   = strip_mine_red (interchange (t2, perm), 6, kc);
+    transform_layout (hoist_red (vectorize (t4, 4), 4, 1), 1, 0, 8);
+///
+/// ### conv_tiled_ok
+///
+/// Whether `conv_schedule_tiled` applies: literal extents, at least one whole register block and two input channels.
+lam conv_tiled_ok (t: Tileable): Bool =
+    let r  = t#Rp + t#Rr;
+    let co = t#Sr#(core.idx 0 r 1);
+    let ow = t#Sr#(core.idx 0 r 3);
+    let ci = t#Sr#(core.idx 0 r 4);
+    if_static (co * ow * ci * t#Sr#(core.idx 0 r 2) * t#Sr#(core.idx 0 r 5) * t#Sr#(core.idx 0 r 6),
+               core.bit2.and 2 (core.bit2.and 2 (8 <= co, 8 <= ow), 2 <= ci), ff);
+///
 /// ### conv2d_in_map
 ///
 /// The `«7; affine.Index»` loop vector is `o = (n, co, oh, ow, ci, kh, kw)`, so the weight read map
@@ -1609,16 +1641,22 @@ priv anx lam conv_impl (R: Ring) {n cin cout h w kh kw: Nat}
     // schedule may strip-mine `oh` (row blocking), packing the materialized tensor along that axis;
     // the row-major `reshape` restores `s_out` (an identity for the neutral split, and absorbed into
     // the consumers' access maps by `fuse_tensor`'s read-through in a fused graph).
-    let sched = conv_schedule (stride, dilation) (
-        mr_tileable @2 @(4, 3)
-            ((n, cout, oh, ow), (0, 1, 2, 3), (n, cout, oh, ow, cin, kh, kw))
-            @((R#T, R#T), (4, 4), (s_padded, (cout, cin, kh, kw)))
-            (conv_fun R, R#_0, id @(R#T))
-            (proj_map @(7, 4) (0, 1, 2, 3))
-            (conv2d_in_map (stride, dilation), proj_map @(7, 4) (1, 4, 5, 6))
-            (padded, weight));
-    // `sched#4_9` is the scheduled Tileable's (possibly packed) output shape `So`.
-    reshape (sched#4_9) s_out (materialize sched);
+    let t     = mr_tileable @2 @(4, 3)
+                    ((n, cout, oh, ow), (0, 1, 2, 3), (n, cout, oh, ow, cin, kh, kw))
+                    @((R#T, R#T), (4, 4), (s_padded, (cout, cin, kh, kw)))
+                    (conv_fun R, R#_0, id @(R#T))
+                    (proj_map @(7, 4) (0, 1, 2, 3))
+                    (conv2d_in_map (stride, dilation), proj_map @(7, 4) (1, 4, 5, 6))
+                    (padded, weight);
+    // `sched#4_9` is the scheduled Tileable's (possibly packed) output shape `So`; each choice materializes on its own,
+    // as behind a stuck choice the record's `Out` field would not reduce.
+    lam go_rows (u: []): «s_out; R#T» =
+        let sched = conv_schedule (stride, dilation) t;
+        reshape (sched#4_9) s_out (materialize sched);
+    lam go_tiled (u: []): «s_out; R#T» =
+        let sched = conv_schedule_tiled t;
+        reshape (sched#4_9) s_out (materialize sched);
+    ((go_rows, go_tiled)#(conv_tiled_ok t)) ();
 ///
 /// ### conv_grouped_in_map
 ///
