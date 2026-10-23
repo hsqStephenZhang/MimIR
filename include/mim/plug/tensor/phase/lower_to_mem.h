@@ -166,6 +166,10 @@ private:
     DefMap<u64> consumers_;
     /// The old map_reduce_posts that read each old map_reduce_post as an input.
     DefMap<std::vector<const App*>> readers_;
+    /// The old defs of the body of the lam being rewritten, short of other mutables.
+    const DefSet& local_defs();
+    Def* local_of_ = nullptr;
+    DefSet local_;
 
     /// A function is bufferized iff it is external, set, and mentions a tensor type in its domain.
     bool is_tensor_fn(Lam*) const;

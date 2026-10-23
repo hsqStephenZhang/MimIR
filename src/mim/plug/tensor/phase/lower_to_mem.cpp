@@ -739,6 +739,22 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     return scalar_result(app, m, out);
 }
 
+const DefSet& LowerToMem::local_defs() {
+    if (auto lam = curr_mut(); lam != local_of_) {
+        local_of_ = lam;
+        local_.clear();
+        auto todo = lam && lam->is_set() ? DefVec(lam->ops().begin(), lam->ops().end()) : DefVec();
+        while (!todo.empty()) {
+            auto def = todo.back();
+            todo.pop_back();
+            if (!def || def->isa_mut() || !local_.emplace(def).second) continue;
+            for (auto op : def->ops())
+                todo.push_back(op);
+        }
+    }
+    return local_;
+}
+
 const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& mr) {
     using F     = btensor::MapRedPost;
     auto& w     = new_world();
@@ -849,9 +865,10 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
 
     // The other ops that ask for this producer at this loop run their parts there too, unless an op computed inside
     // it waits for them or they for it.
+    // Only the ops of this body share its memo and memory.
     auto mates = std::vector<std::pair<const App*, u64>>();
     for (auto c : readers_[old_p]) {
-        if (c == app) continue;
+        if (c == app || !local_defs().contains(c)) continue;
         auto op = F::of(rewrite(c->callee())->as<App>());
         auto rk = op.ranks();
         if (!rk || rev_of(op) == 0) continue;

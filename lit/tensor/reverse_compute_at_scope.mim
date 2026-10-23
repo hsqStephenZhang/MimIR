@@ -1,0 +1,34 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// Two functions share the closed P = A · B and each computes its own op inside P's loop of i: each lowering only
+// gathers the ops of its own body, so `first` keeps its parameter and runs P · q there.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin compile;
+
+use core.ops.u.w;
+use tensor;
+
+fun mac (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun mul (_: I32, (x y: I32))@tt: I32 = return (x * y);
+fun add (_: I32, (x y: I32))@tt: I32 = return (x + y);
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
+
+let a = generate (6, 5) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.sub 0 (core.wrap.mul 0 (3I64, i#0_2), i#1_2)));
+let b = generate (5, 7) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (i#0_2, core.wrap.mul 0 (2I64, i#1_2))));
+let p = materialize (mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (mac, 0I32, id) mo (ma, mb) (buf a, buf b));
+lam ew (f: Fn [I32, «2; I32»] → I32) (q: «6, 7; I32») =
+    mr_tileable @2 @(2, 0) ((6, 7), (0, 1), (6, 7)) (f, 0I32, id) po (po, po) (p, q);
+
+// CHECK-LABEL: extern fun first (q: buffer.Buf (2, (6, 7), I32))
+// CHECK:       tile_after
+// CHECK:       btensor.map_reduce_post {{.*}} ((6, 7), (1, 7), {{.*}} (_{{[0-9]+}}#tt, q)
+extern fun first (q: «6, 7; I32»): «6, 7; I32» = return (materialize (reverse_compute_at (ew mul q, 0, 0)));
+extern fun second (q: «6, 7; I32»): «6, 7; I32» = return (materialize (reverse_compute_at (ew add q, 0, 0)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);
