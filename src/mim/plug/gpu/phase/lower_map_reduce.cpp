@@ -326,7 +326,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         return Super::rewrite_imm_App(app);
     }
     auto [nis_n, nps_n, ro, rp, rr] = *ranks;
-    if (mr.sched_field(btensor::MapRedPost::Acts) == w.lit_tt()
+    if (mr.sched_field(btensor::MapRedPost::Acts) != w.lit_nat_0()
         || mr.sched_field(btensor::MapRedPost::Posts) == w.lit_tt()) {
         log().w("{} runs a schedule action, e.g. a compute_at, which only the CPU lowering realizes", app);
         return Super::rewrite_imm_App(app);

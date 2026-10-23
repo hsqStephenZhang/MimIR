@@ -160,37 +160,46 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 ///   of accumulators, the innermost **reduction** dim selects the reduction-vectorized nest (see
 ///   `mr_nest`), and `vdim ≥ Rn` means "none";
 /// - `unroll`, the number of trailing reduction dims to unroll into straight-line code;
-/// - `at`, `at_slots`, `at_dim`: whether to compute the inputs whose bits `at_slots` sets one tile at a time
-///   inside the loop of dim `at_dim` (see `tensor.compute_at`) — an intent that `tensor.lower_to_mem`
-///   realizes as an action;
+/// - `at`, `at_slots`, `at_dim`: whether to compute each input `i` whose bit `at_slots` sets one tile at a time
+///   inside the loop of dim `at_dim i` (see `tensor.compute_at`) — an intent that `tensor.lower_to_mem`
+///   realizes as actions;
 /// - `fuse`, `budget`: whether to compute every input that allows it, and recursively theirs, as long as each
 ///   is recomputed at most `budget` times over (see `tensor.tile_and_fuse`);
-/// - `acts`, `act_dim`, `act`: whether to run `act` inside the loop of dim `act_dim` before the nest inside it
-///   (see `at_stage`);
+/// - `acts`, `act`: for each dim `d` whose bit `acts` sets, the action `act d` to run inside the loop of `d` before
+///   the nest inside it (see `at_stage`);
 /// - `lim`: for the loop of dim `d`, given the loop-vector prefix (by dim), whether it stops before its extent and
 ///   where — the tail of a split that does not divide (see `tensor.split_par`);
-/// - `rev`: whether `at` asks instead to compute this op inside the loop of dim `at_dim` of the producer of the
-///   input `at_slots` names (see `tensor.reverse_compute_at`);
+/// - `rev`: whether `at` asks instead to compute this op inside the loop of dim `at_dim i` of the producer of the
+///   input `i` that `at_slots` names (see `tensor.reverse_compute_at`);
 /// - `posts`, `post_dim`, `post`: whether to run `post` inside the loop of dim `post_dim` after the nest inside it
 ///   (see `after_stage`);
 /// - `hoist`, `hoist_at`: the number of leading reduction dims to run outside the parallel dims from `hoist_at` on
 ///   (see `mr_nest_with`'s hoisted nest);
 /// - `cache`, `scope`: the inputs whose bits `cache` sets are read from a copy of the box the nest reads, made inside
-///   the loop of `at_dim` where `at_slots` sets their bits too and ahead of the nest otherwise (see
+///   the loop of `at_dim i` where `at_slots` sets the bit of input `i` too and ahead of the nest otherwise (see
 ///   `tensor.cache_read`), in the address space `scope i` of input `i`, which only a GPU lowering tells apart;
-/// - `pad`: whether every input the last parallel dim moves the read of is a copy of whole runs of it, so that a vector
+/// - `pad_runs`: whether every input the last parallel dim moves the read of is a copy of whole runs of it, so that a vector
 ///   loop over it may compute a cut run whole, as only the write-back stops at its `lim`.
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
-anx let Sched = [vdim unroll: Nat, at: Bool, at_slots at_dim: Nat, fuse: Bool, budget: Nat, acts: Bool,
-                 act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32],
+anx let Sched = [vdim unroll: Nat, at: Bool, at_slots: Nat, at_dim: Nat → Nat, fuse: Bool, budget: Nat, acts: Nat,
+                 act: Nat → Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32],
                  rev posts: Bool, post_dim: Nat, post: Fn [mem.M 0, Nat → I32] → mem.M 0, hoist hoist_at: Nat,
-                 cache: Nat, scope: Nat → Nat, pad: Bool];
+                 cache: Nat, scope: Nat → Nat, pad_runs: Bool];
 ///
 /// #### act_none
 ///
 anx fun act_none (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 = return m;
+///
+/// #### acts_none
+///
+anx fun acts_none (_: Nat) (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 = return m;
+///
+/// #### has_bit
+///
+/// Whether `mask` sets bit `i`.
+lam has_bit (mask i: Nat): Bool = mask / core.bitcast Nat (core.wrap.shl 0 (1I64, core.bitcast I64 i)) % 2 == 1;
 ///
 /// #### lim_none
 ///
@@ -217,7 +226,7 @@ anx fun act_seq (a b: Fn [mem.M 0, Nat → I32] → mem.M 0) (m: mem.M 0, get: N
 ///
 /// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
 anx lam sched_of (vdim unroll: Nat): Sched =
-    (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none, ff, ff, 0, act_none, 0, 0, 0, scope_none, ff);
+    (vdim, unroll, ff, 0, scope_none, ff, 0, 0, acts_none, lim_none, ff, ff, 0, act_none, 0, 0, 0, scope_none, ff);
 ///
 /// ### SchedT
 ///
@@ -636,7 +645,7 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
     let none = (hook_none (r, U), ctx_root (ro, s#lim));
     let c0   = ctx_root (ro, s#lim);
     // The nests that write back through a tile compute a padded cut vector run whole.
-    let cp   = ctx_root (ro, (s#lim, lim_whole (s#lim, ro - 1))#(s#pad));
+    let cp   = ctx_root (ro, (s#lim, lim_whole (s#lim, ro - 1))#(s#pad_runs));
     // The accumulator buffer of a hoisted nest is whole, so its row or panel moves whole as well.
     let nonep = (hook_none (r, U), cp);
     lam nest (init: To,
@@ -870,7 +879,8 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
 /// the write-back target, and every other slot empty: the nest `lower_map_reduce` binds a schedule to.
 anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched): NestT (ro, rr, Sr, To, U) =
     let r    = ro + rr;
-    let pre  = (hook_none (r, U), at_stage (s#act_dim, at_outer (s, ro, s#act_dim), s#act) (r, U))#(s#acts);
+    lam pre (l: Loop) (b: Body (r, U)): Body (r, U) =
+        (b, at_stage (l#dim, at_outer (s, ro, l#dim), s#act l#dim) (r, U) l b)#(has_bit (s#acts, l#dim));
     let post = (hook_none (r, U), after_stage (s#post_dim, s#post) (r, U))#(s#posts);
     mr_nest_with (ro, rr, Sr, To, U) (lm (l: Loop) (b: Body (r, U)): Body (r, U) = pre l (post l b), hook_none (r, To)) s;
 ///

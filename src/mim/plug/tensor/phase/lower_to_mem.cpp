@@ -717,8 +717,8 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     auto rks   = *mr.ranks();
     auto rn    = rks.nloops();
     auto slots = Lit::isa<u64>(mr.sched_field(F::AtSlots)).value_or(0);
-    auto dim   = Lit::isa<u64>(mr.sched_field(F::AtDim));
     auto j     = u64(std::countr_zero(slots));
+    auto dim   = Lit::isa<u64>(w.app(mr.sched_field(F::AtDim), w.lit_nat(j)));
 
     auto give_up = [&](const char* why) -> const Def* {
         log().w("reverse_compute_at of {} inside dim {} of the producer of its input {} not realized: {}", app,
@@ -874,39 +874,46 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     if (!rks) return nullptr;
     auto rn = rks->nloops();
 
-    // An op's own intent computes its inputs inside the loop of `dim`, an enclosing tile_and_fuse ahead of the op.
+    // An op's own intent computes each input inside the loop of its dim, an enclosing tile_and_fuse ahead of the op.
     auto rec    = mr.sched_record();
     auto field  = [&](F::Field f) { return rec->proj(F::Num_Fields, f); };
     auto own    = field(F::At) == w.lit_tt() && field(F::Rev) != w.lit_tt();
     auto fuse   = own ? field(F::Fuse) == w.lit_tt() : s.fuse;
     auto budget = own ? Lit::isa<u64>(field(F::Budget)).value_or(0) : s.budget;
     auto slots  = Lit::isa<u64>(field(F::AtSlots)).value_or(0);
-    auto dim    = own ? Lit::isa<u64>(field(F::AtDim)) : std::nullopt;
-    if (own && !dim) return nullptr;
+    auto dim_of = [&](u64 j) { return own ? Lit::isa<u64>(w.app(field(F::AtDim), w.lit_nat(j))) : std::nullopt; };
 
+    auto cur     = std::optional<u64>();
     auto give_up = [&](u64 j, const char* why) {
         if (fuse)
             log().d("tile_and_fuse: input {} of {} is computed whole: {}", j, s.who, why);
         else
-            log().w("compute_at of input {} inside dim {} of {} not realized: {}", j, *dim, s.who, why);
+            log().w("compute_at of input {} inside dim {} of {} not realized: {}", j, cur.value_or(rn), s.who, why);
         return false;
     };
 
-    // The action computing the tiles inside the loop of `dim`; it gets the loop-vector prefix.
-    auto mem_ty    = w.call<mem::M>(0);
-    Lam* run       = nullptr;
-    const Def *get = nullptr, *run_mem = nullptr;
-    if (dim) {
-        run              = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("tile_run");
-        auto [rdata, rk] = run->vars<2>();
-        std::tie(run_mem, get) = rdata->projs<2>();
-    }
-    auto pre  = mem;
-    auto acts = run_mem;
-
-    // The dims of the loop of `dim` and of the loops around it, which a hoisted nest reorders.
-    auto hoist = Lit::isa<u64>(field(F::Hoist)).value_or(0);
-    auto fixed = dim ? mr.outer(*dim, rn) : std::vector<bool>(rn);
+    // The action computing the tiles inside the loop of a dim; it gets the loop-vector prefix.
+    // `fixed` names the dims of that loop and of the loops around it, which a hoisted nest reorders.
+    struct Act {
+        Lam* run;
+        const Def *get, *mem;
+        std::vector<bool> fixed;
+        bool used = false;
+    };
+    auto mem_ty = w.call<mem::M>(0);
+    auto acts   = std::vector<std::optional<Act>>(rn);
+    auto act_at = [&](u64 d) -> Act& {
+        if (!acts[d]) {
+            auto run         = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("tile_run");
+            auto [rdata, rk] = run->vars<2>();
+            auto [rmem, get] = rdata->projs<2>();
+            acts[d]          = Act{run, get, rmem, mr.outer(d, rn)};
+        }
+        return *acts[d];
+    };
+    auto pre      = mem;
+    auto no_fixed = std::vector<bool>(rn);
+    auto hoist    = Lit::isa<u64>(field(F::Hoist)).value_or(0);
 
     auto lit = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
     auto sub = [&](const Def* a, const Def* b) { return w.call(affine::op::sub, Defs{a, b}); };
@@ -919,7 +926,13 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     auto maps        = DefVec(rks->nis, [&](size_t j) { return mr.maps->proj(rks->nis, j); });
 
     auto stage = [&](u64 j) -> bool {
+        auto dim = dim_of(j);
+        cur      = dim;
+        if (own && !dim) return give_up(j, "its loop is not known");
         if (dim && *dim >= rks->rp + hoist) return give_up(j, "not a parallel or a hoisted reduction dim");
+        auto act          = dim ? &act_at(*dim) : nullptr;
+        const auto& fixed = act ? act->fixed : no_fixed;
+        auto get          = act ? act->get : nullptr;
 
         // The producer: a map_reduce_post without epilogue inputs that writes through a projection.
         auto old_p = Axm::isa<tensor::map_reduce_post>(s.old_is->proj(rks->nis, j));
@@ -1063,7 +1076,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto shifted = std::vector<bool>(prn), clipped = std::vector<bool>(prn);
         for (u64 dd = 0; dd != prn; ++dd)
             shifted[dd] = axis_of[dd].has_value(), clipped[dd] = shifted[dd] && clip[*axis_of[dd]];
-        auto& chain = dim ? acts : pre;
+        auto& chain = act ? act->mem : pre;
         auto res    = lower_staged(
             {mt, mp, shifted, clipped, old_p->arg()->proj(2, 0), w.tuple(), old_p, fuse, budget, runs}, chain, tile_b);
         if (!res) return give_up(j, "the input's inputs are not buffers");
@@ -1084,6 +1097,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         })));
 
         log().d("compute input {} of {} one tile {} at a time{}", j, s.who, So_t, dim ? " inside its loop" : " ahead");
+        if (act) act->used = true;
         ins[j] = tile_b;
         if (shared) {
             write_backs.emplace_back(old_p, tile_b);
@@ -1095,27 +1109,32 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     };
 
     // A cached input is copied by `btensor.lower_map_reduce` instead.
-    auto cache  = Lit::isa<u64>(field(F::Cache)).value_or(0);
-    bool acting = false;
+    auto cache = Lit::isa<u64>(field(F::Cache)).value_or(0);
     for (u64 j = 0; j != rks->nis; ++j) {
-        if (!(j < 64 && (cache >> j) & 1) && (fuse || (own && j < 64 && (slots >> j) & 1)) && stage(j)) {
-            acting |= dim.has_value();
-            continue;
-        }
+        if (!(j < 64 && (cache >> j) & 1) && (fuse || (own && j < 64 && (slots >> j) & 1)) && stage(j)) continue;
         auto old = s.old_is->proj(rks->nis, j);
         ins[j]   = to_buffer(rewrite(old), old);
         if (!Axm::isa<buffer::Buf>(ins[j]->type())) return nullptr;
     }
 
-    // The schedule, its intent now done: the action runs the tiles inside the loop of `dim`.
+    // The schedule, its intent now done: the action of each dim runs its tiles inside the loop of that dim.
     auto fields     = DefVec(F::Num_Fields, [&](size_t f) { return field(F::Field(f)); });
     fields[F::At]   = w.lit_ff();
     fields[F::Fuse] = w.lit_ff();
-    if (acting) {
-        run->app(true, run->var(2, 1), acts);
-        fields[F::Acts]   = w.lit_tt();
-        fields[F::ActDim] = w.lit_nat(*dim);
-        fields[F::Act]    = run;
+    if (std::ranges::any_of(acts, [](const auto& a) { return a && a->used; })) {
+        auto mask       = Lit::isa<u64>(field(F::Acts)).value_or(0);
+        auto act_pi     = field(F::Act)->type()->as<Pi>();
+        auto act_of     = w.mut_lam(act_pi->dom(), act_pi->codom())->set("tile_acts");
+        const Def* body = w.app(field(F::Act), act_of->var());
+        for (u64 d = 0; d != rn; ++d)
+            if (acts[d] && acts[d]->used) {
+                acts[d]->run->app(true, acts[d]->run->var(2, 1), acts[d]->mem);
+                mask |= u64(1) << d;
+                auto here = w.call(core::ncmp::e, Defs{act_of->var(), w.lit_nat(d)});
+                body      = w.extract(w.tuple({body, acts[d]->run}), here);
+            }
+        fields[F::Acts] = w.lit_nat(mask);
+        fields[F::Act]  = act_of->set(true, body);
     }
     if (s.post) {
         fields[F::Posts]   = w.lit_tt();

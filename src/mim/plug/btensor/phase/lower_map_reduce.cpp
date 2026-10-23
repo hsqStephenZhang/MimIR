@@ -47,7 +47,7 @@ const Def* LowerMapReduce::lower_buffer_lit(const App* app) {
 }
 
 /// Reads each input the schedule caches from a copy of its box in a buffer allocated on @p mem, put into @p caches.
-/// The copy runs as the schedule's action inside the loop of `at_dim` or ahead of the nest.
+/// The copy runs as the schedule's action inside the loop of the input's `at_dim` or ahead of the nest.
 /// @returns the memory after the allocations and the copies ahead of the nest.
 const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& inputs, DefVec& caches) {
     using F    = MapRedPost;
@@ -59,7 +59,6 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     auto bit   = [](u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; };
     auto cache = Lit::isa<u64>(field(F::Cache)).value_or(0);
     auto slots = Lit::isa<u64>(field(F::AtSlots)).value_or(0);
-    auto dim   = Lit::isa<u64>(field(F::AtDim));
     if (cache == 0) return mem;
 
     auto fields = DefVec(F::Num_Fields, [&](size_t f) { return field(F::Field(f)); });
@@ -75,12 +74,9 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         auto at = bit(slots, i);
         auto give_up
             = [&](const char* why) { log().w("cache_read of input {} of {} not realized: {}", i, mr.map_out, why); };
+        auto dim = Lit::isa<u64>(w.app(field(F::AtDim), w.lit_nat(i)));
         if (at && (!dim || *dim >= rks.rp + Lit::isa<u64>(field(F::Hoist)).value_or(0))) {
             give_up("not a parallel or a hoisted reduction dim");
-            continue;
-        }
-        if (at && fields[F::Acts] == w.lit_tt() && fields[F::ActDim] != w.lit_nat(*dim)) {
-            give_up("the schedule runs an action inside another loop");
             continue;
         }
         auto fixed = at ? mr.outer(*dim, rn) : std::vector<bool>(rn);
@@ -145,10 +141,15 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         fill->app(true, fret, copy->proj(2, 0));
 
         if (at) {
-            fields[F::Act]
-                = fields[F::Acts] == w.lit_tt() ? w.app(w.annex<btensor::act_seq>(), {fields[F::Act], fill}) : fill;
-            fields[F::Acts]   = w.lit_tt();
-            fields[F::ActDim] = w.lit_nat(*dim);
+            // The copy runs after whatever the action of its dim already does.
+            auto old    = fields[F::Act];
+            auto act_pi = old->type()->as<Pi>();
+            auto act_of = w.mut_lam(act_pi->dom(), act_pi->codom())->set("cache_acts");
+            auto then   = w.app(w.annex<btensor::act_seq>(), {w.app(old, w.lit_nat(*dim)), fill});
+            auto here   = w.call(core::ncmp::e, Defs{act_of->var(), w.lit_nat(*dim)});
+            act_of->set(true, w.extract(w.tuple({w.app(old, act_of->var()), then}), here));
+            fields[F::Act]  = act_of;
+            fields[F::Acts] = w.lit_nat(Lit::isa<u64>(fields[F::Acts]).value_or(0) | u64(1) << *dim);
         } else {
             auto none = w.mut_lam(w.pi(w.type_nat(), w.type_i32()))->set("cache_get");
             none->set(true, w.lit_i32(0));

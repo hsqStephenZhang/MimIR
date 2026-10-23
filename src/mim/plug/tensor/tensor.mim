@@ -989,16 +989,14 @@ lam slot_bit (i: Nat): Nat = core.bitcast Nat (core.wrap.shl 0 (1I64, core.bitca
 /// - The read of each iteration's corner must be where its box starts, which a reversed read is not.
 /// - The boxes must lie within the input: neither boundary tiles nor padding are handled yet.
 /// - Apply it after the domain transforms, which do not renumber `d`.
-/// - Several inputs of an op can be computed at one loop, in the order of their slots.
+/// - Each input of an op is computed at a loop of its own; several inputs at one loop run in the order of their slots.
 /// - A producer's own `compute_at` is realized inside each of its tiles.
 anx lam compute_at (t: Tileable, i d: Nat): Tileable =
     let s   = t#sched;
     let bit = slot_bit i;
-    let d   = refly.check (core.bit2.or 2 (core.icmp.e @2 (s#at, ff), d == s#at_dim), d,
-                           "compute_at: the inputs of an op must be computed at one loop");
     let t   = t#sched#at ← tt;
     let t   = t#sched#at_slots ← s#at_slots + bit * (1 - s#at_slots / bit % 2);
-    t#sched#at_dim ← d;
+    t#sched#at_dim ← lm (j: Nat): Nat = (s#at_dim j, d)#(j == i);
 ///
 /// #### cache_read
 ///
@@ -1032,7 +1030,7 @@ anx lam reverse_compute_at (t: Tileable, i d: Nat): Tileable =
     let t = t#sched#at ← tt;
     let t = t#sched#rev ← tt;
     let t = t#sched#at_slots ← slot_bit i;
-    t#sched#at_dim ← d;
+    t#sched#at_dim ← lm (_: Nat): Nat = d;
 ///
 /// #### hoist_red
 ///
@@ -1053,14 +1051,13 @@ anx lam hoist_red (t: Tileable, s h: Nat): Tileable =
 /// producers in turn ahead of each of its tiles (cf. MLIR's `tileConsumerAndFuseProducersUsingSCF`).
 /// An input is fused where `compute_at` could realize it and its producer is recomputed at most `recompute`
 /// times over across all tiles; every other input is computed whole, without a warning.
+/// An input that `compute_at` puts at a loop already stays at that loop.
 anx lam tile_and_fuse (t: Tileable, d recompute: Nat): Tileable =
     let s = t#sched;
-    let d = refly.check (core.bit2.or 2 (core.icmp.e @2 (s#at, ff), d == s#at_dim), d,
-                         "tile_and_fuse: the inputs of an op must be computed at one loop");
     let t = t#sched#at ← tt;
     let t = t#sched#fuse ← tt;
     let t = t#sched#budget ← recompute;
-    t#sched#at_dim ← d;
+    t#sched#at_dim ← lm (j: Nat): Nat = (d, s#at_dim j)#(s#at_slots / slot_bit j % 2 == 1);
 ///
 /// #### tile_par
 ///

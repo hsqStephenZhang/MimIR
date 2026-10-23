@@ -63,7 +63,6 @@ struct MapRedPost {
         Fuse,
         Budget,
         Acts,
-        ActDim,
         Act,
         Lim,
         Rev,

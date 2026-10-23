@@ -379,14 +379,19 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
         fields[F::AtSlots] = move(fields[F::AtSlots]);
         fields[F::Cache]   = move(fields[F::Cache]);
 
-        auto scope       = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("scope");
-        const Def* where = w.lit_nat_0();
-        for (u64 k = 0; k != nis_nat; ++k)
-            if (at(k)) {
-                auto here = w.call(core::ncmp::e, Defs{scope->var(), w.lit_nat(new_pos[k])});
-                where     = w.extract(w.tuple({where, w.app(fields[F::Scope], w.lit_nat(k))}), here);
-            }
-        fields[F::Scope] = scope->set(true, where);
+        // A function of the slot answers for a kept slot at its new position.
+        auto per_slot = [&](const Def* f, const char* name) {
+            auto lam         = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set(name);
+            const Def* where = w.lit_nat_0();
+            for (u64 k = 0; k != nis_nat; ++k)
+                if (at(k)) {
+                    auto here = w.call(core::ncmp::e, Defs{lam->var(), w.lit_nat(new_pos[k])});
+                    where     = w.extract(w.tuple({where, w.app(f, w.lit_nat(k))}), here);
+                }
+            return lam->set(true, where);
+        };
+        fields[F::Scope] = per_slot(fields[F::Scope], "scope");
+        fields[F::AtDim] = per_slot(fields[F::AtDim], "at_dim");
         shapes           = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
     }
 
