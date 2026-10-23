@@ -6,6 +6,8 @@
 // RUN: %if system-linux && cuda %{ %t; test $? -eq 84 %}
 // RUN: %if system-linux && cuda %{ %t 1 2 3; test $? -eq 84 %}
 // RUN: %if system-linux && cuda %{ %t 1 2 3 4 5; test $? -eq 84 %}
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X mem:heap2stack=0 -X nvptx:o=%t.heap.ll -X nvptx:o-dev=%t.heap.dev.ll
+// RUN: %FileCheck %s --input-file=%t.heap.ll --check-prefix=HEAP
 
 // HOST: define i32 @main(
 // HOST-DAG: call i32 @cuInit(i32 0)
@@ -24,3 +26,11 @@
 
 // DEVICE: define ptx_kernel void @{{.*}}([[GL_PTR_T:.*]] addrspace(1)* %[[GL_PTR:[0-9_a-zA-Z]+]])
 // DEVICE: store {{.*}} addrspace(1)* %{{.*}}
+
+// HEAP: [[ALLOC:%[a-zA-Z_0-9]+]] = call i8* @malloc(i64 16)
+// HEAP-NEXT: [[STREAMS:%[a-zA-Z_0-9]+]] = bitcast i8* [[ALLOC]] to [[TYPE:.*]]
+// HEAP: call i32 @cuStreamDestroy
+// HEAP: [[FREE:%[a-zA-Z_0-9]+]] = bitcast [[TYPE]] [[STREAMS]] to i8 addrspace(0)*
+// HEAP: call void @free(i8* [[FREE]])
+// HEAP-NOT: call void @free(i8* [[FREE]])
+// HEAP: ret i32
