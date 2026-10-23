@@ -110,6 +110,8 @@ public:
                 return settle(itv, x->lo_clamped, false, false);
             }
             if (x->lo_clamped) return {};
+            if (o.id() == semiop::floordiv || o.id() == semiop::rem)
+                if (auto q = quotient(*x, c, o.id() == semiop::rem)) return q;
             switch (o.id()) {
                 case semiop::mul: return {};
                 case semiop::floordiv:
@@ -149,11 +151,58 @@ public:
 private:
     /// A dim of extent 1 is a single value, which any number of uses may share.
     Itv dim(u64 i) {
-        auto lo = lo_->proj(n_, i);
-        auto ex = ext_->proj(n_, i);
-        auto l  = Lin{std::vector<int64_t>(n_)};
-        l.c[i]  = 1;
-        return Itv{lo, sub(add(lo, ex), one()), ex, w_.lit_tt(), Lit::isa(ex) == 1 ? 0 : u64(1) << i, l};
+        auto lo   = lo_->proj(n_, i);
+        auto ex   = ext_->proj(n_, i);
+        auto l    = Lin{std::vector<int64_t>(n_)};
+        l.c[i]    = 1;
+        auto unit = Lit::isa(ex) == 1;
+        return Itv{lo, unit ? lo : sub(add(lo, ex), one()), ex, w_.lit_tt(), unit ? 0 : u64(1) << i, l};
+    }
+
+    /// Exact when every non-literal origin enters `x` through a multiple of `c`.
+    std::optional<Itv> quotient(const Itv& x, const Def* c, bool rem) {
+        auto n = Lit::isa<u64>(c);
+        if (!n || *n == 0 || !x.lin || x.lin->sym) return {};
+        auto b        = int64_t(*n);
+        const Def* q  = w_.lit_nat_0();
+        auto r_lo     = x.lin->k;
+        auto r_hi     = x.lin->k;
+        bool all_mult = x.lin->k % b == 0;
+        for (u64 i = 0; i != n_; ++i) {
+            auto ci = x.lin->c[i];
+            if (ci == 0) continue;
+            auto ext = Lit::isa<u64>(ext_->proj(n_, i));
+            if (!ext) return {};
+            auto span = ci * int64_t(*ext - 1);
+            if (auto lo = Lit::isa<u64>(lo_->proj(n_, i))) {
+                r_lo += ci * int64_t(*lo), r_hi += ci * int64_t(*lo) + span;
+                all_mult &= ci % b == 0;
+            } else {
+                if (ci % b != 0) return {};
+                q = add(q, mul(lo_->proj(n_, i), w_.lit_nat(u64(ci / b))));
+                r_hi += span;
+            }
+        }
+        if (r_lo < 0) return {};
+        if (!rem) {
+            auto lo  = add(q, w_.lit_nat(u64(r_lo / b)));
+            auto hi  = add(q, w_.lit_nat(u64(r_hi / b)));
+            auto lin = std::optional<Lin>();
+            if (all_mult) {
+                lin = *x.lin;
+                for (auto& ci : lin->c)
+                    ci /= b;
+                lin->k /= b;
+            }
+            return Itv{lo, hi, w_.lit_nat(u64(r_hi / b - r_lo / b + 1)), x.exact, x.dims, lin};
+        }
+        // A contiguous run of at least `c` values takes every residue.
+        if (r_lo / b == r_hi / b) {
+            auto lo = w_.lit_nat(u64(r_lo % b)), hi = w_.lit_nat(u64(r_hi % b));
+            return Itv{lo, hi, w_.lit_nat(u64(r_hi - r_lo + 1)), x.exact, x.dims, {}};
+        }
+        auto whole = r_hi - r_lo + 1 >= b ? x.exact : w_.lit_ff();
+        return Itv{w_.lit_nat_0(), w_.lit_nat(u64(b - 1)), c, whole, x.dims, {}};
     }
 
     const Def* cdiv(const Def* a, const Def* b) { return div(sub(add(a, b), one()), b); }
@@ -441,12 +490,36 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
     auto caps  = exts;
     auto seen  = std::vector<bool>(*ln);
     bool exact = true;
+    auto one   = [](const Lin& l) {
+        auto nz = std::ranges::count_if(l.c, [](int64_t ci) { return ci != 0; });
+        return nz == 1 && std::ranges::count(l.c, 1) == 1;
+    };
+    // A dim's quotient and remainder coordinates only bound it together.
+    struct Split {
+        u64 b         = 0;
+        const Def *lo = nullptr, *ext = nullptr;
+    };
+    auto quot = std::vector<Split>(*ln), rems = std::vector<Split>(*ln);
     for (u64 j = 0; j != *lm; ++j) {
+        if (auto o = Axm::isa<affine::semiop>(body->proj(*lm, j));
+            o && (o.id() == semiop::floordiv || o.id() == semiop::rem)) {
+            auto [a, c] = o->args<2>();
+            auto x      = region.eval(a);
+            auto b      = Lit::isa<u64>(c);
+            if (!x || !x->lin || !one(*x->lin) || x->lin->k != 0 || x->lin->sym || !b || *b == 0) {
+                exact = false;
+                continue;
+            }
+            auto i  = u64(std::ranges::find(x->lin->c, 1) - x->lin->c.begin());
+            auto& d = o.id() == semiop::floordiv ? quot[i] : rems[i];
+            if (seen[i] || d.b) {
+                exact = false;
+                continue;
+            }
+            d = Split{*b, lo->proj(*lm, j), ext->proj(*lm, j)};
+            continue;
+        }
         auto itv = region.eval(body->proj(*lm, j));
-        auto one = [](const Lin& l) {
-            auto nz = std::ranges::count_if(l.c, [](int64_t ci) { return ci != 0; });
-            return nz == 1 && std::ranges::count(l.c, 1) == 1;
-        };
         if (!itv || !itv->lin || !one(*itv->lin)) {
             exact = false;
             continue;
@@ -468,6 +541,30 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
         los[i]    = shift(y_lo);
         exts[i]   = region.sub(hi, los[i]);
         caps[i]   = region.min(ext->proj(*lm, j), S->proj(*ln, i));
+    }
+
+    for (u64 i = 0; i != *ln; ++i) {
+        auto &q = quot[i], &rm = rems[i];
+        if (!q.b && !rm.b) continue;
+        if (seen[i] || !q.b || (rm.b && rm.b != q.b)) {
+            exact = false;
+            continue;
+        }
+        auto b     = w.lit_nat(q.b);
+        auto whole = !rm.b || (Lit::isa(rm.lo) == 0 && Lit::isa(rm.ext) >= q.b);
+        auto start = region.mul(q.lo, b);
+        auto size  = region.mul(q.ext, b);
+        if (!whole) {
+            if (Lit::isa(q.ext) != 1) {
+                exact = false;
+                continue;
+            }
+            start = region.add(start, rm.lo);
+            size  = rm.ext;
+        }
+        los[i]  = start;
+        exts[i] = region.sub(region.min(region.add(start, size), S->proj(*ln, i)), start);
+        caps[i] = region.min(size, S->proj(*ln, i));
     }
 
     return w.tuple({w.tuple(los), w.tuple(exts), w.tuple(caps), exact ? w.lit_tt() : w.lit_ff()});

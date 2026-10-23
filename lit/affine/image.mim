@@ -51,6 +51,13 @@ extern fun c_align (i0: Nat): B2 = return (affine.image fsplit ((i0, 0), (1, 8),
 // rem 8 of i ∈ [9, 13) stays in one block; of j ∈ [6, 11) it wraps, so it is all of [0, 8).
 extern fun c_rem (): B2 = return (affine.image rem8 ((9, 6), (4, 5), (8, 8)));
 
+// 4·a + k for a at a run-time origin and k ∈ [0, 4): floordiv 2 is 2·a plus [0, 2) and rem 2 all of [0, 2), both
+// exact, as the run-time part enters in multiples of 2.
+lam q4 (a k: affine.Index): «2; affine.Index» =
+    let x = affine.op.add (affine.semiop.mul (a, 4), k);
+    (affine.semiop.floordiv (x, 2), affine.semiop.rem (x, 2));
+extern fun c_quot (a0: Nat): B2 = return (affine.image q4 ((a0, 0), (1, 4), (64, 2)));
+
 // i + i skips the odd values; i + j of independent ranges does not.
 extern fun c_twice (): B2 = return (affine.image twice ((1, 1), (3, 3), (16, 16)));
 
@@ -100,6 +107,9 @@ lam wr (i j _: affine.Index): «2; affine.Index» = (i, j);
 lam wt (i j _: affine.Index): «2; affine.Index» = (j, i);
 lam ws (i j _: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.lit 2), affine.op.sub (j, affine.lit 1));
 lam wd (i j _: affine.Index): «2; affine.Index» = (i, affine.semiop.floordiv (j, 2));
+lam wf (v _: affine.Index): «2; affine.Index» = (affine.semiop.floordiv (v, 4), affine.semiop.rem (v, 4));
+lam wm (v w: affine.Index): «2; affine.Index» = (affine.semiop.rem (v, 4), w);
+let P2 = [«2; Nat», «2; Nat», «2; Nat», Bool];
 
 // The points of an (i, j | k) nest writing the box (2..4, 4..8): the reduction dim k stays whole.
 extern fun p_proj (): P3 = return (affine.preimage wr ((2, 4), (2, 4), (6, 8, 5)));
@@ -110,8 +120,14 @@ extern fun p_tr (): P3 = return (affine.preimage wt ((4, 2), (4, 2), (6, 8, 5)))
 // A tile's shifted write map at a run-time origin.
 extern fun p_shift (a0: Nat): P3 = return (affine.preimage ws ((a0, 3), (2, 4), (6, 8, 5)));
 
-// A coordinate that is not a shifted dim does not restrict anything and is not exact.
+// j floordiv 2 ∈ [1, 3) is j ∈ [2, 6).
 extern fun p_div (): P3 = return (affine.preimage wd ((1, 1), (2, 2), (6, 8, 5)));
+
+// (v floordiv 4, v rem 4) ∈ [2, 3) × [1, 3) is v ∈ [9, 11), the remainder narrowing the one quotient.
+extern fun p_flat (): P2 = return (affine.preimage wf ((2, 1), (1, 2), (16, 3)));
+
+// A remainder alone does not bound its dim to one range, so it is not exact.
+extern fun p_rem (): P2 = return (affine.preimage wm ((1, 0), (2, 3), (16, 3)));
 
 // A chain, as for softmax: the «2, 16» tile of y at row i0 reads e at (i, j), e writes through (i, j), so its
 // points are that box, and they read mx at i: the caps stay literal along the chain.
@@ -151,8 +167,10 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK-NEXT:  affine.image
 // CHECK-LABEL: extern fun c_proj
 // CHECK-NEXT:  return ((2, 0), (2, 4), (2, 4), ‹2; tt›);
+// CHECK-LABEL: extern fun c_quot
+// CHECK:       return ((_{{[0-9]+}}, 0), (_{{[0-9]+}}, 2), ‹2; 2›, ‹2; tt›);
 // CHECK-LABEL: extern fun c_rem
-// CHECK-NEXT:  return ((1, 0), (4, 8), ‹2; 8›, (tt, ff));
+// CHECK-NEXT:  return ((1, 0), (4, 8), (4, 8), (tt, ff));
 // CHECK-LABEL: extern fun c_resh
 // CHECK-NEXT:  return (‹2; 0›, (2, 8), (3, 8), (tt, ff));
 // CHECK-LABEL: extern fun c_shift
@@ -170,9 +188,13 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK-LABEL: extern fun chain
 // CHECK-NEXT:  return 2;
 // CHECK-LABEL: extern fun p_div
-// CHECK-NEXT:  return ((1, 0, 0), (2, 8, 5), (2, 8, 5), ff);
+// CHECK-NEXT:  return ((1, 2, 0), (2, 4, 5), (2, 4, 5), tt);
+// CHECK-LABEL: extern fun p_flat
+// CHECK-NEXT:  return ((9, 0), (2, 3), (2, 3), tt);
 // CHECK-LABEL: extern fun p_proj
 // CHECK-NEXT:  return ((2, 4, 0), (2, 4, 5), (2, 4, 5), tt);
+// CHECK-LABEL: extern fun p_rem
+// CHECK-NEXT:  return (‹2; 0›, (16, 3), (16, 3), ff);
 // CHECK-LABEL: extern fun p_shift
 // CHECK:       return (({{.*}}, 4, 0), ({{.*}}, 4, 5), (2, 4, 5), tt);
 // CHECK-LABEL: extern fun p_tr
