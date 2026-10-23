@@ -4,7 +4,8 @@
 // RUN: %t
 
 // `conv` through `conv_schedule_tiled` against the unscheduled op, for shapes `chk` with a last block of output
-// channels and of columns cut short, channel blocks of 1, 2 and 4, and stride 2, which copies the input per block.
+// channels and of columns cut short, channel blocks of 1, 2 and 4, stride 2, which copies the input per block, and a
+// row shorter than 8, which runs the vector loop over output channels (`conv_schedule_co`).
 // The exit code counts the values that differ.
 plugin core;
 plugin tensor;
@@ -40,4 +41,4 @@ lam chk (n ci co h w kh kw s p: Nat): I32 =
 
 extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
     return (m, chk (2, 6, 12, 7, 10, 3, 3, 1, 1) + chk (2, 5, 9, 4, 8, 3, 3, 1, 1)
-               + chk (2, 4, 8, 9, 19, 3, 3, 2, 1));
+               + chk (2, 4, 8, 9, 19, 3, 3, 2, 1) + chk (2, 6, 12, 5, 5, 3, 3, 1, 1));

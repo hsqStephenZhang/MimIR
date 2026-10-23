@@ -2,11 +2,12 @@
 
 // Schedule SELECTION for convolutions, decided in the IR from the op's parameters.
 // With at least 8 output channels and columns and 2 input channels, `conv_schedule_tiled` blocks the op as an implicit
-// GEMM — c64, c13, p64 and p14 (chooser (4, 0): vdim 4, no window unrolled).
+// GEMM — c64, c13, p64 and p14 (chooser (4, 0): vdim 4, no window unrolled); rows shorter than 8 run the vector loop
+// over output channels with the row jammed (`conv_schedule_co`) — c7 (chooser (3, 0)).
 // The others take `conv_schedule`, the old lowering's heuristics, which strip-mines `ci`, `co` and `oh` (neutrally by 1,
 // or by a real tile: `ci`/`co` when the window is POINTWISE, `oh` by the largest dividing size ≤ 4 when rows BLOCK:
 // vectorized, ow < 16, oh divisible), so the domain is rank 10 (n, co/cb, cb, oh/ts, ts, ow, ci/cts, cts, kh, kw):
-// * stride 2 (ow = 4): the window unrolls (9 taps), cin stays a loop (576 > 32), ow vectorizes and rows block
+// * stride 2 (ow = 4) with co = 4: the window unrolls (9 taps), cin stays a loop (576 > 32), ow vectorizes and rows block
 //   (oh = 4 → block size 4) — chooser (4, 2) (vdim = ro − 2 = the block dim);
 // * cin = 64, 3x3 at 16x16 with co = 4: ow vectorizes but rows do not block (ow = 16) — chooser (5, 2);
 // * cin = 3, 3x3 with co = 4: the whole reduction unrolls (27 taps ≤ 32), nothing left to vectorize against — chooser
@@ -30,7 +31,7 @@ extern lam c64 (input: «2, 64, 8, 8; F32», w: «16, 64, 3, 3; F32»): «2, 16,
     conv Ring same (input, w);
 extern lam c3 (input: «2, 3, 8, 8; F32», w: «4, 3, 3, 3; F32»): «2, 4, 8, 8; F32» =
     conv Ring same (input, w);
-extern lam cs2 (input: «2, 64, 9, 9; F32», w: «16, 64, 3, 3; F32»): «2, 16, 4, 4; F32» =
+extern lam cs2 (input: «2, 64, 9, 9; F32», w: «4, 64, 3, 3; F32»): «2, 4, 4, 4; F32» =
     conv Ring ((2, 2), (1, 1), (0, 0)) (input, w);
 extern lam c64w (input: «2, 64, 16, 16; F32», w: «4, 64, 3, 3; F32»): «2, 4, 16, 16; F32» =
     conv Ring same (input, w);
@@ -40,6 +41,8 @@ extern lam p3 (input: «2, 64, 8, 8; F32», w: «3, 64, 1, 1; F32»): «2, 3, 8,
     conv Ring pw (input, w);
 extern lam p14 (input: «2, 64, 14, 14; F32», w: «16, 64, 1, 1; F32»): «2, 16, 14, 14; F32» =
     conv Ring pw (input, w);
+extern lam c7 (input: «2, 64, 7, 7; F32», w: «16, 64, 3, 3; F32»): «2, 16, 7, 7; F32» =
+    conv Ring same (input, w);
 extern lam c13 (input: «2, 64, 13, 13; F32», w: «16, 64, 3, 3; F32»): «2, 16, 13, 13; F32» =
     conv Ring same (input, w);
 
@@ -55,5 +58,6 @@ extern lam _compile (): compile.Phase =
 // CHECK-DAG: {{mk_[0-9]+ \(5, 2, }}
 // CHECK-DAG: {{mk_[0-9]+ \(4, 3, }}
 // CHECK-DAG: {{mk_[0-9]+ \(4, 0, }}
+// CHECK-DAG: {{mk_[0-9]+ \(3, 0, }}
 // The binding-time guards must all have resolved.
 // CHECK-NOT: if_static
