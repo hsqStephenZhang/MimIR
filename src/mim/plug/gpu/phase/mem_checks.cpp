@@ -30,6 +30,8 @@ MemFinder::IsaMem MemFinder::next_mem() {
         if (cur->isa<Sigma>())
             for (auto op : cur->ops())
                 to_search.push_back(op);
+        else if (auto arr = cur->isa<Arr>())
+            to_search.push_back(arr->body());
         else if (auto mem = Axm::isa<mem::M>(cur))
             return mem;
     }
@@ -62,14 +64,14 @@ void MemChecks::rewrite_external(Def* def) {
         MemFinder intype_mem_finder(lam->type()->dom());
         while (auto mem = intype_mem_finder.next_mem()) {
             auto addr_space = mem->arg();
-            if (Lit::as(addr_space) != 0)
+            if (Lit::isa(addr_space) != 0)
                 lam->blame("the `main` function must not take a `mem.M n` with a non-zero `n` as an argument").bail();
         }
 
         MemFinder outtype_mem_finder(lam->type()->ret_dom());
         while (auto mem = outtype_mem_finder.next_mem()) {
             auto addr_space = mem->arg();
-            if (Lit::as(addr_space) != 0)
+            if (Lit::isa(addr_space) != 0)
                 lam->blame("the `main` function must not return a `mem.M n` with a non-zero `n`").bail();
         }
     }

@@ -1,0 +1,13 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin gpu;
+plugin mem;
+import compile;
+
+extern lam _compile (): compile.Phase = gpu.mem_checks;
+
+extern fun main (m: mem.M 0): [mem.M 0, «2; gpu.GlobalM»] =
+    let (m, g, _) = gpu.init m;
+    return (m, ‹2; g›);
+
+// CHECK: error: the `main` function must not return a `mem.M n` with a non-zero `n`

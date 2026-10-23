@@ -253,8 +253,8 @@ axm host_malloc2gpualloc_repl: compile.Phase;
 ///
 /// ### mem_checks
 ///
-/// Rejects `mem.M` crossing a device boundary — passed to a `gpu.launch` kernel, or taken/returned
-/// by `main` with a non-zero address space.
+/// Rejects `mem.M` passed to a `gpu.launch` kernel, including in nested tuples and arrays.
+/// `main` may only take or return memory from address space zero.
 ///
 axm mem_checks: compile.Phase;
 ///

@@ -1,0 +1,13 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin gpu;
+plugin mem;
+plugin core;
+import compile;
+
+extern lam _compile (): compile.Phase = gpu.mem_checks;
+
+extern fun main (m: mem.M 0, n: Nat, tokens: «a: n; mem.M (core.idx2nat a)»): [mem.M 0, I32] =
+    return (m, 0I32);
+
+// CHECK: error: the `main` function must not take a `mem.M n` with a non-zero `n` as an argument

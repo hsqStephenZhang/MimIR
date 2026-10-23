@@ -1,0 +1,20 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin gpu;
+plugin mem;
+import compile;
+
+extern lam _compile (): compile.Phase = gpu.mem_checks;
+
+con kernel (g: gpu.GlobalM, s: gpu.SharedM, c: gpu.ConstM, l: gpu.LocalM,
+            group_id item_id: Idx 2, (), tokens: «2; mem.M 0»,
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    return (g, s, c, l);
+
+extern fun main (m: mem.M 0): [mem.M 0, I32] =
+    let (m, g, c) = gpu.init m;
+    ret (m, g, c) = gpu.launch (2, 2, gpu.default_stream, ff, ()) kernel ‹2; m› $ (m, g, c);
+    let m = gpu.deinit (m, g, c);
+    return (m, 0I32);
+
+// CHECK: error: `mem.M` must not be passed across device boundaries

@@ -1,0 +1,11 @@
+// RUN: %mim %s
+
+plugin gpu;
+plugin mem;
+import compile;
+
+extern lam _compile (): compile.Phase = gpu.mem_checks;
+
+extern fun main (m: mem.M 0, tokens: «2; mem.M 0», data: «2; I32»,
+                 ptr: mem.Ptr0 «2; gpu.GlobalM», empty: «2, 0; gpu.GlobalM»): [mem.M 0, «2; mem.M 0»] =
+    return (m, tokens);
