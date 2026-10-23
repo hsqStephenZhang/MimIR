@@ -1,0 +1,27 @@
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+// reverse_compute_at runs the consumer as an action after the producer's loop, which the GPU lowering does not
+// realize, so it leaves both ops to the CPU lowering instead of launching the producer alone.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin gpu;
+
+use core.ops.u.w;
+
+fun mac (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun sum (acc: I32, x: I32)@tt: I32 = return (acc + x);
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+lam rv1 (i _: affine.Index): «1; affine.Index» = (i,);
+lam rv2 (i j: affine.Index): «2; affine.Index» = (i, j);
+
+extern fun rev_rowsum (a: «6, 5; I32», b: «5, 7; I32»): «6; I32» =
+    let p = tensor.materialize (tensor.mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b));
+    let t = tensor.mr_tileable @1 @(1, 1) (6, 0, (6, 7)) (sum, 0I32, tensor.id) rv1 rv2 p;
+    return (tensor.materialize (tensor.reverse_compute_at (t, 0, 0)));
+
+// WARN: runs a schedule action, e.g. a compute_at, which only the CPU lowering realizes
+// CHECK-NOT: gpu.launch
