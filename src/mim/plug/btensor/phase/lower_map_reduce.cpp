@@ -69,6 +69,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     auto i64    = w.type_i64();
     auto lit    = [&](const Def* n) { return w.app(w.annex<affine::lit>(), n); };
 
+    auto copied = std::vector<bool>(rks.nis);
     for (u64 i = 0; i != rks.nis; ++i) {
         if (!bit(cache, i)) continue;
         auto at = bit(slots, i);
@@ -95,11 +96,13 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         auto fill          = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("cache_fill");
         auto [fdata, fret] = fill->vars<2>();
         auto [fmem, get]   = fdata->projs<2>();
-        auto image         = [&](auto ext) {
+        // Sized regardless of the input's end, so that a padded vector loop finds whole runs in the copy.
+        auto wide  = w.tuple(DefVec(*r, [&](size_t) { return w.lit_nat(u64(1) << 32); }));
+        auto image = [&](auto ext) {
             auto lo  = DefVec(rn, [&](size_t d) -> const Def* {
                 return fixed[d] ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
             });
-            auto box = w.tuple({w.tuple(lo), w.tuple(DefVec(rn, ext)), Sis[i]});
+            auto box = w.tuple({w.tuple(lo), w.tuple(DefVec(rn, ext)), wide});
             return w.app(w.app(w.app(w.annex<affine::image>(), {mr.Rn, R}), maps[i]), box);
         };
         auto box = image([&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); });
@@ -118,7 +121,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         auto [amem, buf] = buffer::op_alloc(R, shape, T, mem)->projs<2>();
         mem              = amem;
         auto buf_ty      = w.sigma({mem_ty, buf->type()});
-        // A box that leaves the input at a tail copies its last cell there, which no iteration reads.
+        // A box that leaves the input copies the input's last cell there, which only a padded vector loop reads.
         auto copy
             = build_pointwise(buf_ty, fmem, buf, inputs[i], shape, *r, "cache_copy",
                               [&](const DefVec& iters, const Def* in, const Def* m) {
@@ -161,7 +164,22 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         maps[i]   = read;
         inputs[i] = buf;
         caches.push_back(buf);
+        copied[i] = true;
     }
+
+    // A vector loop over the last parallel dim may compute a cut run whole where every input it moves is a copy of
+    // whole runs: the copies clamp their reads, and only the write-back of the run stops at the lim.
+    auto vdim = Lit::isa<u64>(field(F::VDim));
+    auto pad  = rks.rp != 0 && vdim && (*vdim + 1 == rks.rp || *vdim + 2 == rks.rp);
+    for (u64 i = 0; pad && i != rks.nis; ++i) {
+        if (copied[i]) continue;
+        auto pi = maps[i]->type()->as<Pi>();
+        auto o  = w.mut_lam(pi->dom(), pi->codom())->var();
+        auto fixed
+            = w.tuple(DefVec(rn, [&](size_t d) { return d + 1 == rks.rp ? lit(w.lit_nat_0()) : o->proj(rn, d); }));
+        pad = w.app(maps[i], o) == w.app(maps[i], fixed);
+    }
+    fields[F::Pad] = w.lit_bool(pad);
 
     fields[F::Cache] = w.lit_nat_0();
     mr.sched         = w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));

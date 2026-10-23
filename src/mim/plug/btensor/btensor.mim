@@ -177,14 +177,16 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 ///   (see `mr_nest_with`'s hoisted nest);
 /// - `cache`, `scope`: the inputs whose bits `cache` sets are read from a copy of the box the nest reads, made inside
 ///   the loop of `at_dim` where `at_slots` sets their bits too and ahead of the nest otherwise (see
-///   `tensor.cache_read`), in the address space `scope i` of input `i`, which only a GPU lowering tells apart.
+///   `tensor.cache_read`), in the address space `scope i` of input `i`, which only a GPU lowering tells apart;
+/// - `pad`: whether every input the last parallel dim moves the read of is a copy of whole runs of it, so that a vector
+///   loop over it may compute a cut run whole, as only the write-back stops at its `lim`.
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
 anx let Sched = [vdim unroll: Nat, at: Bool, at_slots at_dim: Nat, fuse: Bool, budget: Nat, acts: Bool,
                  act_dim: Nat, act: Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32],
                  rev posts: Bool, post_dim: Nat, post: Fn [mem.M 0, Nat → I32] → mem.M 0, hoist hoist_at: Nat,
-                 cache: Nat, scope: Nat → Nat];
+                 cache: Nat, scope: Nat → Nat, pad: Bool];
 ///
 /// #### act_none
 ///
@@ -193,6 +195,12 @@ anx fun act_none (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 = return m;
 /// #### lim_none
 ///
 anx lam lim_none (_: Nat → I32, _: Nat): [Bool, I32] = (ff, 0I32);
+///
+/// #### lim_whole
+///
+/// `lim` with the loop of dim `d` run whole.
+lam lim_whole (lim: [Nat → I32, Nat] → [Bool, I32], d: Nat) (get: Nat → I32, j: Nat): [Bool, I32] =
+    (lim (get, j), (ff, 0I32))#(j == d);
 ///
 /// #### scope_none
 ///
@@ -209,7 +217,7 @@ anx fun act_seq (a b: Fn [mem.M 0, Nat → I32] → mem.M 0) (m: mem.M 0, get: N
 ///
 /// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
 anx lam sched_of (vdim unroll: Nat): Sched =
-    (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none, ff, ff, 0, act_none, 0, 0, 0, scope_none);
+    (vdim, unroll, ff, 0, 0, ff, 0, ff, 0, act_none, lim_none, ff, ff, 0, act_none, 0, 0, 0, scope_none, ff);
 ///
 /// ### SchedT
 ///
@@ -438,11 +446,14 @@ lam range_nest (r: Nat, Sr: «r; Nat») (A: *) (hook: Hook (r, A), ctx: Ctx) (lo
                 let pref = ‹j: r; core.select (core.idx2nat j == d, iv, pref#j)›;
                 w (pref, m, acc, yield);
             con lexit (macc: [mem.M 0, A]) = k macc;
+            let short = core.select (core.icmp.ul (at, n), at, n);
+            con plain (m: mem.M 0) = loop lbody lexit (0I32, (n, short)#cut, 1I32, (m, acc));
+            // A vector loop that a lim may cut runs a whole run at its literal extent and a cut one up to the stop alone,
+            // which a lim keeps literal where it can, so that the backend vectorizes both.
             con whole (m: mem.M 0) = loop lbody lexit (0I32, n, 1I32, (m, acc));
-            con part (m: mem.M 0) = loop lbody lexit (0I32, core.select (core.icmp.ul (at, n), at, n), 1I32, (m, acc));
-            // A vector loop that a lim may cut runs its whole runs at their literal extent, which the backend unrolls.
-            let full = core.bit2.or 2 ((tt, ff)#cut, core.bit2.and 2 (impl == impl_vec, core.icmp.uge (at, n)));
-            (part, whole)#full m;
+            con part (m: mem.M 0) = loop lbody lexit (0I32, short, 1I32, (m, acc));
+            let full = core.bit2.or 2 ((tt, ff)#cut, core.icmp.uge (at, n));
+            (plain, (part, whole)#full)#(impl == impl_vec) m;
         level;
     let m = hi - lo;
     vec.fold.r @(Body (r, A), Nat) @m
@@ -610,6 +621,10 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
     let u_lo = (ro, u_lo)#(ro <= u_lo);
     let none = (hook_none (r, U), ctx_root (ro, s#lim));
     let c0   = ctx_root (ro, s#lim);
+    // The nests that write back through a tile compute a padded cut vector run whole.
+    let cp   = ctx_root (ro, (s#lim, lim_whole (s#lim, ro - 1))#(s#pad));
+    // The accumulator buffer of a hoisted nest is whole, so its row or panel moves whole as well.
+    let nonep = (hook_none (r, U), cp);
     lam nest (init: To,
               cell: Cn [mem.M 0, To, «r; I32», Cn [mem.M 0, To]],
               wb:   WbT (r, To, U))
@@ -642,16 +657,16 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
             con done_row (m: mem.M 0, u: U) =
                 let m = buffer.free (1, Sv, To) (m, row);
                 done (m, u);
-            let tile = range_nest (r, Sr) U none (vec_for @U, impl_vec, vd, vd + 1);
-            let c1   = ctx_in (c0, 0, vd);
+            let tile = range_nest (r, Sr) U none (vec_for @U, impl_for, vd, vd + 1);
+            let c1   = ctx_in (cp, 0, vd);
             let c2   = ctx_in (c1, ro, u_lo);
             let c3   = ctx_in (c2, vd, vd + 1);
-            let body = range_nest (r, Sr) U (hu, c0) (novec_for @U, impl_novec, 0, vd)
+            let body = range_nest (r, Sr) U (hu, cp) (novec_for @U, impl_novec, 0, vd)
                            (acc_tile (r, To, U) (Sv, row, vi_of, tile) (init, wb)
                                (range_nest (r, Sr) U (hu, c1) (novec_for @U, impl_novec, ro, u_lo)
                                    (range_nest (r, Sr) U (hu, c2) (vec_for @U, impl_vec, vd, vd + 1)
                                        (acc_cell (r, To, U) (Sv, row, vi_of) (win c3)))));
-            (hu (loop_root r c0) body) (‹r; 0I32›, m, u, done_row);
+            (hu (loop_root r cp) body) (‹r; 0I32›, m, u, done_row);
 
         // BLOCKED (`vdim = ro − 2`): the two trailing parallel dims are sunk inside the reduction
         // loops — the last dim runs as the vector loop and the BLOCK dim before it (any extent Sp;
@@ -680,18 +695,18 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
                 done (m, u);
             let tile = lm (b: Body (r, U)): Body (r, U) =
                 range_nest (r, Sr) U none (novec_for @U, impl_novec, pd_c, sd_c)
-                    (range_nest (r, Sr) U none (vec_for @U, impl_vec, sd_c, ro) b);
-            let c1   = ctx_in (c0, 0, pd_c);
+                    (range_nest (r, Sr) U none (vec_for @U, impl_for, sd_c, ro) b);
+            let c1   = ctx_in (cp, 0, pd_c);
             let c2   = ctx_in (c1, ro, u_lo);
             let c3   = ctx_in (c2, sd_c, sd_c + 1);
             let c4   = ctx_in (c3, pd_c, pd_c + 1);
-            let body = range_nest (r, Sr) U (hu, c0) (novec_for @U, impl_novec, 0, pd_c)
+            let body = range_nest (r, Sr) U (hu, cp) (novec_for @U, impl_novec, 0, pd_c)
                            (acc_tile (r, To, U) (Np, panel, vi_of, tile) (init, wb)
                                (range_nest (r, Sr) U (hu, c1) (novec_for @U, impl_novec, ro, u_lo)
                                    (range_nest (r, Sr) U (hu, c2) (vec_for @U, impl_vec, sd_c, sd_c + 1)
                                        (range_unroll (r, Sr) U (hu, c3) (pd_c, pd_c + 1)
                                            (acc_cell (r, To, U) (Np, panel, vi_of) (win c4))))));
-            (hu (loop_root r c0) body) (‹r; 0I32›, m, u, done_panel);
+            (hu (loop_root r cp) body) (‹r; 0I32›, m, u, done_panel);
 
         // REDUCTION-VECTORIZED (`ro ≤ vdim < r`: the schedule names the innermost REDUCTION dim):
         // the contraction itself runs as the innermost (vector) loop. For a contraction whose
@@ -783,7 +798,7 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
                 let m = buffer.free (1, Nc, To) (m, acc);
                 done (m, u);
             lam win_h (c: Ctx): Body (r, To) = range_unroll (r, Sr) To (ht, c) (u_h, r) cell_at;
-            let c1 = ctx_in (c0, 0, hs);
+            let c1 = ctx_in (cp, 0, hs);
             let c2 = ctx_in (c1, ro, h_hi);
             // Each cell folds the remaining dims in a register.
             let c3 = ctx_in (c2, hs, ro);
@@ -796,7 +811,7 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
             let v2 = ctx_in (v1, h_hi, u_h);
             let v3 = ctx_in (v2, vd, vd + 1);
             let vec_in = range_nest (r, Sr) U (hu, c2) (novec_for @U, impl_novec, hs, vd)
-                             (acc_swap (r, To, U) (Sv, row, vi_of, range_nest (r, Sr) U none (vec_for @U, impl_vec, vd, vd + 1))
+                             (acc_swap (r, To, U) (Sv, row, vi_of, range_nest (r, Sr) U nonep (vec_for @U, impl_for, vd, vd + 1))
                                                   (Nc, acc, ci_of)
                                  (range_nest (r, Sr) U (hu, v1) (novec_for @U, impl_novec, h_hi, u_h)
                                      (range_nest (r, Sr) U (hu, v2) (vec_for @U, impl_vec, vd, vd + 1)
@@ -808,7 +823,7 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
             let b4 = ctx_in (b3, pd_c, pd_c + 1);
             let panel_tile = lm (b: Body (r, U)): Body (r, U) =
                 range_nest (r, Sr) U none (novec_for @U, impl_novec, pd_c, sd_c)
-                    (range_nest (r, Sr) U none (vec_for @U, impl_vec, sd_c, ro) b);
+                    (range_nest (r, Sr) U nonep (vec_for @U, impl_for, sd_c, ro) b);
             let block_in = range_nest (r, Sr) U (hu, c2) (novec_for @U, impl_novec, hs, pd_c)
                                (acc_swap (r, To, U) (Np, panel, bi_of, panel_tile) (Nc, acc, ci_of)
                                    (range_nest (r, Sr) U (hu, b1) (novec_for @U, impl_novec, h_hi, u_h)
@@ -817,10 +832,10 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
                                                (acc_cell (r, To, U) (Np, panel, bi_of) (win_h b4))))));
             let inner = ((classic_in, vec_in)#vec_h, block_in)#block_h;
             let tile  = range_nest (r, Sr) U none (affine_for @U, impl_for, hs, ro);
-            let body  = range_nest (r, Sr) U (hu, c0) (affine_for @U, impl_for, 0, hs)
+            let body  = range_nest (r, Sr) U (hu, cp) (affine_for @U, impl_for, 0, hs)
                             (acc_tile (r, To, U) (Nc, acc, ci_of, tile) (init, wb)
                                 (range_nest (r, Sr) U (hu, c1) (affine_for @U, impl_for, ro, h_hi) inner));
-            (hu (loop_root r c0) body) (‹r; 0I32›, m, u, done_acc);
+            (hu (loop_root r cp) body) (‹r; 0I32›, m, u, done_acc);
 
         con run (m: mem.M 0, u: U, done: Cn [mem.M 0, U])@tt =
             (((((classic, vectorized)#vec_ok, blocked)#block_ok, redvec)#redvec_ok, hoisted)#hoist_ok) (m, u, done);

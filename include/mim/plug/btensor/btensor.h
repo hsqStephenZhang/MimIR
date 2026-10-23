@@ -74,6 +74,7 @@ struct MapRedPost {
         HoistAt,
         Cache,
         Scope,
+        Pad,
         Num_Fields
     };
 
