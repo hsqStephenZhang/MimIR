@@ -1180,7 +1180,6 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         cur      = dim;
         if (own && !dim && !ahead(j)) return give_up(j, "its loop is not known");
         if (dim && *dim >= rks->rp + hoist) return give_up(j, "not a parallel or a hoisted reduction dim");
-        if (dim && mr.inside_red(*dim)) return give_up(j, "the vector loop runs inside the reduction loops");
         auto act          = dim ? &act_at(*dim) : nullptr;
         const auto& fixed = act ? act->fixed : no_fixed;
         auto get          = act ? act->get : nullptr;

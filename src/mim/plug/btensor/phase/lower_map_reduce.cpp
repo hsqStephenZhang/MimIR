@@ -118,10 +118,6 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             give_up("not a parallel or a hoisted reduction dim");
             continue;
         }
-        if (at && mr.inside_red(*dim)) {
-            give_up("the vector loop runs inside the reduction loops");
-            continue;
-        }
         auto fixed = at ? mr.outer(*dim, rn) : std::vector<bool>(rn);
         auto R     = mr.Ris->proj(rks.nis, i);
         auto T     = mr.Tis->proj(rks.nis, i);

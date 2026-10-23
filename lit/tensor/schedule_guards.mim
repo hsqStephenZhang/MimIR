@@ -4,12 +4,12 @@
 // RUN: %t
 // RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s
 
-// Schedules that are not realized as asked, against the unscheduled ops; the exit code counts the values that differ.
+// Schedules that are not realized as asked or only in an unusual nest, against the unscheduled ops; the exit code counts the values that differ.
 // * `w`: Q[i, j / 2] = Σ_k A[i, k] · E[j, k], whose iterations j = 2c and 2c + 1 write one cell, so Q + 1 cannot run
 //   after each iteration of j.
 // * `h`: Q ⊙ R with R = A · F computed at i: the reverse fails, the compute_at of R does not.
 // * `s`: P ⊙ P with P computed at a loop through both slots: P is computed once, whole.
-// * `v`: (A + 1) · B with A + 1 computed at j, which runs inside the loop of k as the vector loop.
+// * `v`: (A + 1) · B with A + 1 computed at j, which runs inside the loop of k as the vector loop, once per k.
 // * `x`: (A + 1) · B with A + 1 computed at i, and the loops of i and j interchanged afterwards.
 plugin core;
 plugin tensor;
@@ -61,7 +61,6 @@ lam diff (S: «2; Nat») (u v: «S; I32»): I32 = reduce (add, 0I32) 0₁ (reduc
 // CHECK-DAG: reverse_compute_at of {{.*}} inside dim 1 of the producer of its input 0 not realized: other iterations of the producer write the box too
 // CHECK-DAG: compute_at of input 0 inside dim 0 of {{.*}} not realized: the op reads the input through another slot too
 // CHECK-DAG: compute_at of input 1 inside dim 1 of {{.*}} not realized: the op reads the input through another slot too
-// CHECK-DAG: compute_at of input 0 inside dim 1 of {{.*}} not realized: the vector loop runs inside the reduction loops
 // CHECK-NOT: compute_at of input 1 inside dim 0
 extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
     let w  = materialize (reverse_compute_at (ew inc1 (6, 2) (half mac1), 0, 1));
