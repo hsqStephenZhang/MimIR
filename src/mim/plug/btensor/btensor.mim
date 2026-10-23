@@ -178,8 +178,8 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 /// - `cache`, `scope`: the inputs whose bits `cache` sets are read from a copy of the box the nest reads, made inside
 ///   the loop of `at_dim i` where `at_slots` sets the bit of input `i` too and ahead of the nest otherwise (see
 ///   `tensor.cache_read`), in the address space `scope i` of input `i`, which only a GPU lowering tells apart;
-/// - `pad_runs`: whether every input the last parallel dim moves the read of is a copy of whole runs of it, so that a vector
-///   loop over it may compute a cut run whole, as only the write-back stops at its `lim`.
+/// - `pad_runs`: whether every input the last parallel dim moves the read of is a copy of whole runs of it, so that a
+///   vector loop over it may compute a cut run whole, as only the write-back stops at its `lim`.
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
@@ -457,8 +457,8 @@ lam range_nest (r: Nat, Sr: «r; Nat») (A: *) (hook: Hook (r, A), ctx: Ctx) (lo
             con lexit (macc: [mem.M 0, A]) = k macc;
             let short = core.select (core.icmp.ul (at, n), at, n);
             con plain (m: mem.M 0) = loop lbody lexit (0I32, (n, short)#cut, 1I32, (m, acc));
-            // A vector loop that a lim may cut runs a whole run at its literal extent and a cut one up to the stop alone,
-            // which a lim keeps literal where it can, so that the backend vectorizes both.
+            // A cut vector loop runs a whole run at its literal extent and a cut one only up to the stop.
+            // A lim keeps that stop literal where it can, so that the backend vectorizes both.
             con whole (m: mem.M 0) = loop lbody lexit (0I32, n, 1I32, (m, acc));
             con part (m: mem.M 0) = loop lbody lexit (0I32, short, 1I32, (m, acc));
             let full = core.bit2.or 2 ((tt, ff)#cut, core.icmp.uge (at, n));
@@ -516,7 +516,8 @@ lam by_cut (r: Nat, Sr: «r; Nat», A: *) (e: Nat, c: Ctx) (mk: Ctx → Body (r,
         lam fix (v: [Bool, I32]) (get: Nat → I32, j: Nat): [Bool, I32] = (c#lim (get, j), v)#(j == e);
         con run_whole (m: mem.M 0) = (mk (c#lim ← fix (ff, 0I32))) (pref, m, acc, k);
         con run_cut (m: mem.M 0) = (mk (c#lim ← fix (tt, stop))) (pref, m, acc, k);
-        (run_cut, run_whole)#(core.bit2.or 2 ((tt, ff)#cut, core.icmp.uge (stop, core.bitcast I32 (Sr#(core.idx 0 r e))))) m;
+        let whole = core.bit2.or 2 ((tt, ff)#cut, core.icmp.uge (stop, core.bitcast I32 (Sr#(core.idx 0 r e))));
+        (run_cut, run_whole)#whole m;
     at;
 
 /// ### NestT
@@ -589,8 +590,8 @@ lam acc_cell (r: Nat, To U: *) (N: Nat, buf: buffer.Buf (1, N, To), ix: «r; I32
 ///
 /// #### acc_swap
 ///
-/// `acc_tile` over the partial folds in `src` instead of `init` and `wb`: it loads the tile from `src` (indexed by `jx`)
-/// before the inner nest and stores it back after.
+/// `acc_tile` over the partial folds in `src` instead of `init` and `wb`.
+/// It loads the tile from `src` (indexed by `jx`) before the inner nest and stores it back after.
 lam acc_swap (r: Nat, To U: *)
              (N: Nat, buf: buffer.Buf (1, N, To), ix: «r; I32» → Idx N, tile: Stage (r, U, U))
              (M: Nat, src: buffer.Buf (1, M, To), jx: «r; I32» → Idx M)
@@ -835,7 +836,8 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
             let v2 = ctx_in (v1, h_hi, u_h);
             let v3 = ctx_in (v2, vd, vd + 1);
             let vec_in = range_nest (r, Sr) U (hu, c2) (novec_for @U, impl_novec, hs, vd)
-                             (acc_swap (r, To, U) (Sv, row, vi_of, range_nest (r, Sr) U nonep (vec_for @U, impl_for, vd, vd + 1))
+                             (acc_swap (r, To, U)
+                                       (Sv, row, vi_of, range_nest (r, Sr) U nonep (vec_for @U, impl_for, vd, vd + 1))
                                                   (Nc, acc, ci_of)
                                  (range_nest (r, Sr) U (hu, v1) (novec_for @U, impl_novec, h_hi, u_h)
                                      (range_nest (r, Sr) U (hu, v2) (vec_for @U, impl_vec, vd, vd + 1)
@@ -861,7 +863,8 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
                 let ct = ctx_in (ctx_root (ro, s#lim), hs, ro - 1);
                 range_nest (r, Sr) U none (affine_for @U, impl_for, hs, ro - 1)
                     (by_cut (r, Sr, U) (ro - 1, ct)
-                        (lm (c: Ctx): Body (r, U) = range_nest (r, Sr) U (hook_none (r, U), c) (vec_for @U, impl_for, ro - 1, ro) b));
+                        (lm (c: Ctx): Body (r, U) =
+                            range_nest (r, Sr) U (hook_none (r, U), c) (vec_for @U, impl_for, ro - 1, ro) b));
             let tile  = (range_nest (r, Sr) U none (affine_for @U, impl_for, hs, ro), runs)#(hs < ro);
             let body  = range_nest (r, Sr) U (hu, cp) (affine_for @U, impl_for, 0, hs)
                             (acc_tile (r, To, U) (Nc, acc, ci_of, tile) (init, wb)
@@ -882,7 +885,8 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched): NestT (r
     lam pre (l: Loop) (b: Body (r, U)): Body (r, U) =
         (b, at_stage (l#dim, at_outer (s, ro, l#dim), s#act l#dim) (r, U) l b)#(has_bit (s#acts, l#dim));
     let post = (hook_none (r, U), after_stage (s#post_dim, s#post) (r, U))#(s#posts);
-    mr_nest_with (ro, rr, Sr, To, U) (lm (l: Loop) (b: Body (r, U)): Body (r, U) = pre l (post l b), hook_none (r, To)) s;
+    lam hu (l: Loop) (b: Body (r, U)): Body (r, U) = pre l (post l b);
+    mr_nest_with (ro, rr, Sr, To, U) (hu, hook_none (r, To)) s;
 ///
 /// ### Write-Back Stages
 ///
