@@ -334,6 +334,13 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         log().w("{} caches an input, which only the CPU lowering realizes yet", app);
         return Super::rewrite_imm_App(app);
     }
+    auto lim = mr.sched_field(btensor::MapRedPost::Lim);
+    auto get = w.mut_lam(w.pi(w.type_nat(), w.type_i32()), w.type_bool())->var();
+    for (u64 d = 0; d != rp + rr; ++d)
+        if (w.app(lim, {get, w.lit_nat(d)})->proj(2, 0) != w.lit_ff()) {
+            log().w("{} cuts a loop short, which only the CPU lowering realizes", app);
+            return Super::rewrite_imm_App(app);
+        }
     if (rp != ro) {
         log().w("{} splits an output axis over several parallel loops, which only the CPU lowering realizes", app);
         return Super::rewrite_imm_App(app);

@@ -1,0 +1,20 @@
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+
+// K = 6 strip-mined by 4 cuts its last block short, which the GPU lowering leaves to the CPU lowering.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin gpu;
+
+use core.ops.u.w;
+
+fun mac (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+
+extern fun mm (a: «4, 6; I32», b: «6, 5; I32»): «4, 5; I32» =
+    let t = tensor.mr_tileable @2 @(2, 1) ((4, 5), (0, 1), (4, 5, 6)) (mac, 0I32, tensor.id) mo (ma, mb) (tensor.buf a, tensor.buf b);
+    return (tensor.materialize (tensor.strip_mine_red (t, 2, 4)));
+
+// WARN: cuts a loop short, which only the CPU lowering realizes

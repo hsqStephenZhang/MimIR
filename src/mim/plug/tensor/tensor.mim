@@ -875,12 +875,17 @@ anx lam split_par (t: Tileable, d ts: Nat): Tileable =
 /// #### strip_mine_red
 ///
 /// Split reduction dim `d` (Ro ≤ d < Ro + Rr) of extent N into two adjacent
-/// reduction dims (N/ts, ts). If the split lands inside the trailing unroll window, both halves
+/// reduction dims (⌈N/ts⌉, ts). If the split lands inside the trailing unroll window, both halves
 /// unroll — the tap count is unchanged.
+/// Where `ts` does not divide N, the last block is cut short as `split_par` cuts its last tile.
 anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
     let r   = t#Rp + t#Rr;
     let r_n = t#Rp + (t#Rr + 1);
-    let nt  = check_div (t#Sr#(core.idx 0 r d), ts) / ts;
+    let n   = t#Sr#(core.idx 0 r d);
+    let nt  = (n + ts - 1) / ts;
+    lam lim_n (get: Nat → I32, j: Nat): [Bool, I32] =
+        let rest = core.wrap.sub 0 (core.bitcast I32 n, core.wrap.mul 0 (core.bitcast I32 ts, get d));
+        (lim_split (d, ts, t#sched#lim) (get, j), (tt, rest))#(core.bit2.and 2 (n % ts != 0, j == d + 1));
     let vd       = t#sched#vdim;
     let un       = t#sched#unroll;
     let vdim_n   = core.select (vd < t#Rp, vd, r_n);
@@ -892,7 +897,7 @@ anx lam strip_mine_red (t: Tileable, d ts: Nat): Tileable =
                : t#Out (ro_m, so_m) =
         t#retile (ro_m, rp_m, rr_m) (so_m, sr_m, sched_m)
                  (comp_map (split_iota (r_n, r, d, ts), iota), omega);
-    let sched_n = (((t#sched)#vdim ← vdim_n)#unroll ← unroll_n)#lim ← lim_split (d, ts, t#sched#lim);
+    let sched_n = (((t#sched)#vdim ← vdim_n)#unroll ← unroll_n)#lim ← lim_n;
     (t#Out, t#Ro, t#Rp, t#Rr + 1, t#So, t#oax, split_bounds (r_n, r, t#Sr, d, ts, nt), sched_n, retile_n);
 ///
 /// ### Tiles
