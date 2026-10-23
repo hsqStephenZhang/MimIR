@@ -721,9 +721,9 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
             con done_panel (m: mem.M 0, u: U) =
                 let m = buffer.free (1, Np, To) (m, panel);
                 done (m, u);
+            // A loop over a cut run of rows becomes a memcpy of run-time length, which pins the panel to the stack.
             let tile = lm (b: Body (r, U)): Body (r, U) =
-                range_nest (r, Sr) U none (novec_for @U, impl_novec, pd_c, sd_c)
-                    (range_nest (r, Sr) U none (vec_for @U, impl_for, sd_c, ro) b);
+                range_unroll (r, Sr) U none (pd_c, sd_c) (range_nest (r, Sr) U none (vec_for @U, impl_for, sd_c, ro) b);
             lam panel_in (c1: Ctx): Body (r, U) =
                 let c2 = ctx_in (c1, ro, u_lo);
                 let c3 = ctx_in (c2, sd_c, sd_c + 1);
@@ -848,7 +848,7 @@ pub lam mr_nest_with (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (hu: Hook (ro +
                                          (acc_cell (r, To, U) (Sv, row, vi_of) (win_h v3)))));
             // The vector dim innermost with the block dim jammed into its body, over a panel loaded from `acc`.
             let panel_tile = lm (b: Body (r, U)): Body (r, U) =
-                range_nest (r, Sr) U none (novec_for @U, impl_novec, pd_c, sd_c)
+                range_unroll (r, Sr) U none (pd_c, sd_c)
                     (range_nest (r, Sr) U nonep (vec_for @U, impl_for, sd_c, ro) b);
             lam block_panel (b1: Ctx): Body (r, U) =
                 let b2 = ctx_in (b1, h_hi, u_h);
