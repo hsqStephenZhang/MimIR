@@ -1,0 +1,12 @@
+// RUN: bash -c "ulimit -s 1024 && %mim -p opt %s -o - | %FileCheck %s"
+
+// A rank-1 nest reads its one extent for any dim, so an unroll that no dim of its range applies must not unroll it:
+// within a small stack, elaborating the nest of 20000 cells used to recurse once per cell.
+plugin core;
+plugin tensor;
+plugin math;
+
+let F32 = math.F32;
+
+// CHECK-LABEL: extern con copy
+extern fun copy (a: «2500, 8; F32»): «20000; F32» = return (tensor.reshape (2500, 8) 20000 (tensor.unary (λ (x: F32): F32 = x) a));

@@ -486,7 +486,9 @@ lam range_unroll (r: Nat, Sr: «r; Nat») (A: *) (hook: Hook (r, A), ctx: Ctx) (
         let w = hook (loop_at (ctx, impl_unroll, lo, d)) w;
         con level (pref: «r; I32», m: mem.M 0, acc: A, k: Cn [mem.M 0, A]) =
             let (cut, stop) = ctx#lim (lm (e: Nat): I32 = pref#(core.idx 0 r e), d);
-            let t           = Sr#(core.idx 0 r d);
+            // Guarded by the range, as a rank of 1 reads its one extent for any `d`, so that the fold would unroll
+            // even inside a `wrap` that no dim of the range applies.
+            let t           = (0, Sr#(core.idx 0 r d))#(core.bit2.and 2 (lo <= d, d < hi));
             lam step (i: Nat, kk: Cn [mem.M 0, A]): Cn [mem.M 0, A] =
                 con at (m: mem.M 0, acc: A) =
                     let pref = ‹j: r; core.select (core.idx2nat j == d, core.bitcast I32 i, pref#j)›;
