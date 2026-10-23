@@ -25,6 +25,15 @@ static void reg_phases(Flags2Phases& phases) {
 static constexpr PluginArg known_args[] = {
     {"reassoc-max=<n>", "Longest matrix chain whose `Catalan(n − 1)` bracketings `tensor.reassoc` enumerates and, failing one that provably wins for every extent, dispatches over at run time (default `4`; below `3` switches the dispatch off)."},
     {"vec-width=<n>", "Vector lanes the target's registers hold (`1`, `4`, `8` or `16`, default `8`). It caps the block of independent accumulators a vectorized loop body jams into its registers, and `tensor.reassoc` charges each product's vector loop in units of it; `1` means no lane-sized blocking and plain multiplication counts. See `tensor.vec_width`."},
+    {"vec-bytes=<n>", "Bytes in one vector register of the target, for `tensor.gemm_tiles` (default: the host's)."},
+    {"vec-regs=<n>", "Vector registers of the target, for `tensor.gemm_tiles` (default: the host's)."},
+    {"lane-fma=<0|1>", "Whether the target's vector FMA reads its broadcast operand off a lane, as on AArch64, for `tensor.gemm_tiles` (default: the host's)."},
+    {"l1=<bytes>", "L1 data cache of the target, for `tensor.gemm_tiles` (default: the host's)."},
+    {"l2=<bytes>", "L2 cache of the target, for `tensor.gemm_tiles` (default: the host's)."},
+    {"gemm-mr=<n>", "Rows of a GEMM's register block, overriding `tensor.gemm_tiles`."},
+    {"gemm-nr=<n>", "Columns of a GEMM's register block, overriding `tensor.gemm_tiles`."},
+    {"gemm-kc=<n>", "K block of a GEMM, overriding `tensor.gemm_tiles`."},
+    {"gemm-nc=<n>", "Columns of a GEMM's cached B block, overriding `tensor.gemm_tiles`."},
 };
 // clang-format on
 

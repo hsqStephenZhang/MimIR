@@ -1,8 +1,8 @@
 // RUN: rm -f %{s:stem}.ll
-// RUN: %mim -p opt -p clos -p ll %s
+// RUN: %mim -p opt -p clos -p ll %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=256 -X tensor:gemm-nc=64
 // RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
-// RUN: %mim -p opt %s -o - | %FileCheck %s
+// RUN: %mim -p opt %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=256 -X tensor:gemm-nc=64 -o - | %FileCheck %s
 
 // `product_2d` against the unscheduled product, for shapes `chk (m, k, n)` that take `dot_schedule_tiled`:
 // * rows in whole 4-row blocks or with a last block of 1, 2 or 3 rows;

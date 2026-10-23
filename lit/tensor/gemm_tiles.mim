@@ -1,0 +1,16 @@
+// RUN: %mim %s -X tensor:vec-bytes=16 -X tensor:vec-regs=32 -X tensor:lane-fma=1 -X tensor:l1=131072 -X tensor:l2=16777216 -o - | %FileCheck %s --check-prefix=NEON
+// RUN: %mim %s -X tensor:vec-bytes=32 -X tensor:vec-regs=16 -X tensor:lane-fma=0 -X tensor:l1=32768 -X tensor:l2=1048576 -o - | %FileCheck %s --check-prefix=AVX2
+// RUN: %mim %s -X tensor:vec-bytes=16 -X tensor:vec-regs=32 -X tensor:lane-fma=1 -X tensor:l1=131072 -X tensor:l2=16777216 -X tensor:gemm-mr=6 -X tensor:gemm-kc=128 -o - | %FileCheck %s --check-prefix=PIN
+
+// `tensor.gemm_tiles` for 4- and 8-byte elements on a NEON-like and an AVX2-like target, and with blocks pinned.
+plugin core;
+plugin tensor;
+
+extern fun tiles4 (): «4; Nat» = return (tensor.gemm_tiles I32);
+extern fun tiles8 (): «4; Nat» = return (tensor.gemm_tiles I64);
+
+// NEON: return ({{.*}}, 4, 16, i8, 64)
+// NEON: return ({{.*}}, 4, 8, i8, 32)
+// AVX2: return ({{.*}}, 6, 16, 64, 64)
+// AVX2: return ({{.*}}, 6, 8, 64, 32)
+// PIN:  return ({{.*}}, 6, 16, 128, 64)

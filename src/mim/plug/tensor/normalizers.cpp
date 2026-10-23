@@ -1,5 +1,13 @@
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <optional>
+
+#ifdef __APPLE__
+#    include <sys/sysctl.h>
+#elif defined(__linux__)
+#    include <unistd.h>
+#endif
 
 #include <fe/format.h>
 
@@ -10,6 +18,7 @@
 #include <mim/world.h>
 
 #include <mim/plug/affine/affine.h>
+#include <mim/plug/core/core.h>
 
 #include "mim/plug/tensor/tensor.h"
 
@@ -150,6 +159,89 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
         return arg;
     }
     return w.lit_nat(*n);
+}
+
+namespace {
+
+/// What `tensor.gemm_tiles` derives its blocks from.
+struct Target {
+    u64 vec_bytes, vec_regs, l1, l2;
+    bool lane_fma; ///< Whether a vector FMA takes its broadcast operand from a lane, which costs a register per row.
+};
+
+std::optional<u64> sysctl_u64([[maybe_unused]] const char* name) {
+#ifdef __APPLE__
+    u64 v    = 0;
+    size_t n = sizeof(v);
+    if (sysctlbyname(name, &v, &n, nullptr, 0) == 0 && v != 0) return v;
+#endif
+    return {};
+}
+
+Target host_target() {
+    Target t{16, 16, 32 * 1024, 1024 * 1024, false};
+#if defined(__aarch64__) || defined(_M_ARM64)
+    t.vec_regs = 32, t.lane_fma = true;
+#elif (defined(__x86_64__) || defined(__i386__)) && defined(__GNUC__)
+    if (__builtin_cpu_supports("avx512f"))
+        t.vec_bytes = 64, t.vec_regs = 32;
+    else if (__builtin_cpu_supports("avx2"))
+        t.vec_bytes = 32;
+#endif
+#ifdef __APPLE__
+    // A hybrid CPU reports its performance cores as level 0.
+    if (auto v = sysctl_u64("hw.perflevel0.l1dcachesize").or_else([] { return sysctl_u64("hw.l1dcachesize"); }))
+        t.l1 = *v;
+    if (auto v = sysctl_u64("hw.perflevel0.l2cachesize").or_else([] { return sysctl_u64("hw.l2cachesize"); }))
+        t.l2 = *v;
+#elif defined(__linux__) && defined(_SC_LEVEL1_DCACHE_SIZE)
+    if (auto v = sysconf(_SC_LEVEL1_DCACHE_SIZE); v > 0) t.l1 = u64(v);
+    if (auto v = sysconf(_SC_LEVEL2_CACHE_SIZE); v > 0) t.l2 = u64(v);
+#endif
+    return t;
+}
+
+/// The host's target with the `-X tensor:` overrides of @p d applied.
+Target target(Driver& d) {
+    static const auto host = host_target();
+    auto t                 = host;
+    if (auto v = d.arg_nat("tensor", "vec-bytes")) t.vec_bytes = *v;
+    if (auto v = d.arg_nat("tensor", "vec-regs")) t.vec_regs = *v;
+    if (auto v = d.arg_nat("tensor", "l1")) t.l1 = *v;
+    if (auto v = d.arg_nat("tensor", "l2")) t.l2 = *v;
+    if (auto v = d.arg_nat("tensor", "lane-fma")) t.lane_fma = *v != 0;
+    return t;
+}
+
+u64 pow2_floor(u64 x) { return x == 0 ? 1 : std::bit_floor(x); }
+
+} // namespace
+
+const Def* normalize_gemm_tiles(const Def*, const Def*, const Def* T) {
+    // An open element type waits for its instance; a closed one without a size, such as `Nat`, takes 8 bytes.
+    if (T->is_open()) return nullptr;
+    auto& w = T->world();
+    auto& d = w.driver();
+    auto eb = Lit::isa<u64>(w.call(core::trait::size, T)).value_or(8);
+    if (eb == 0) eb = 8;
+    auto t = target(d);
+
+    // A row of the register block takes `nv` vector registers of accumulators, and the block's B row the same; each
+    // row also needs its A element, broadcast to a register of its own or read off a lane.
+    auto lanes   = std::max<u64>(1, t.vec_bytes / eb);
+    auto nv      = u64(t.vec_regs >= 32 ? 4 : 2);
+    auto spare   = u64(t.lane_fma ? 4 : 1);
+    auto per_row = t.lane_fma ? nv + 1 : nv;
+    auto mr      = t.vec_regs > nv + spare ? std::max<u64>(1, (t.vec_regs - nv - spare) / per_row) : 1;
+    auto nr      = nv * lanes;
+    if (auto v = d.arg_nat("tensor", "gemm-mr")) mr = *v;
+    if (auto v = d.arg_nat("tensor", "gemm-nr")) nr = *v;
+    // B's micro-panel «kc, nr» takes an eighth of L1, and its block «kc, nc» a sixteenth of L2.
+    auto kc = std::clamp<u64>(pow2_floor(t.l1 / (8 * nr * eb)), 64, 512);
+    if (auto v = d.arg_nat("tensor", "gemm-kc")) kc = *v;
+    auto nc = nr * std::clamp<u64>(pow2_floor(t.l2 / (16 * kc * nr * eb)), 1, 4);
+    if (auto v = d.arg_nat("tensor", "gemm-nc")) nc = *v;
+    return w.tuple({w.lit_nat(mr), w.lit_nat(nr), w.lit_nat(kc), w.lit_nat(nc)});
 }
 
 const Def* normalize_shape(const Def*, const Def* c, const Def* arg) {
