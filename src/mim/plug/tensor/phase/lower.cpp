@@ -64,9 +64,9 @@ const Def* Lower::rewrite_imm_Extract(const Extract* extract) {
     return RWPhase::rewrite_imm_Extract(extract);
 }
 
-const Def* Lower::fastest_axis_2(const App* app, const Def* rank) {
+const Def* Lower::fastest_axis_of(const App* app, u64 i, const Def* rank) {
     auto& w = new_world();
-    auto b  = rewrite(app->arg()->proj(2, 1));
+    auto b  = rewrite(app->arg()->proj(2, i));
     return w.app(w.app(w.annex<tensor::fastest_axis>(), b->type()), {rank, b});
 }
 
@@ -99,7 +99,9 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::reshape>(app)) return lower_via_impl(app, impl<tensor::reshape_impl>());
     if (Axm::isa<tensor::slice>(app)) return lower_via_impl(app, impl<tensor::slice_impl>());
     if (Axm::isa<tensor::flip>(app)) return lower_via_impl(app, impl<tensor::flip_impl>());
-    if (Axm::isa<tensor::conv>(app)) return lower_via_impl(app, impl<tensor::conv_impl>());
+    // `conv_impl` takes the `tensor.fastest_axis` reflection of the input likewise.
+    if (Axm::isa<tensor::conv>(app))
+        return lower_via_impl(app, w.app(impl<tensor::conv_impl>(), fastest_axis_of(app, 0, w.lit_nat(4))));
     if (Axm::isa<tensor::conv_grouped>(app)) return lower_via_impl(app, impl<tensor::conv_grouped_impl>());
     if (Axm::isa<tensor::pool>(app)) return lower_via_impl(app, impl<tensor::pool_impl>());
 
@@ -107,15 +109,15 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     // `tensor.fastest_axis` reflection of the right operand, pre-applied here at the staging
     // point where that operand is concrete (see tensor.dot_product_impl for the decision).
     if (Axm::isa<tensor::product_2d>(app))
-        return lower_via_impl(app, w.app(impl<tensor::product_2d_impl>(), fastest_axis_2(app, w.lit_nat(2))));
+        return lower_via_impl(app, w.app(impl<tensor::product_2d_impl>(), fastest_axis_of(app, 1, w.lit_nat(2))));
     if (Axm::isa<tensor::bmm>(app))
-        return lower_via_impl(app, w.app(impl<tensor::bmm_impl>(), fastest_axis_2(app, w.lit_nat(3))));
+        return lower_via_impl(app, w.app(impl<tensor::bmm_impl>(), fastest_axis_of(app, 1, w.lit_nat(3))));
     if (Axm::isa<tensor::dot_product>(app)) {
         // The curry chain, outermost app first: [a, b] {s1 s2} [c1, c2, b1, b2] {nc nb} {r1 r2};
         // the right operand's rank is {r1 r2}#1.
         auto groups = app->callee()->as<App>()->callee()->as<App>()->callee()->as<App>();
         auto r2     = groups->callee()->as<App>()->arg()->proj(2, 1);
-        return lower_via_impl(app, w.app(impl<tensor::dot_product_impl>(), fastest_axis_2(app, rewrite(r2))));
+        return lower_via_impl(app, w.app(impl<tensor::dot_product_impl>(), fastest_axis_of(app, 1, rewrite(r2))));
     }
 
     return RWPhase::rewrite_imm_App(app);

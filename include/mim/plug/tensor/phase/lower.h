@@ -31,11 +31,11 @@ private:
     }
 
     const Def* lower_via_impl(const App*, const Def* impl);
-    /// `tensor.fastest_axis` applied to the dot family's right operand (of the given rank):
-    /// the reflection the dot `_impl`s take as their leading argument, pre-applied here because the
+    /// `tensor.fastest_axis` applied to operand `i` (of the given rank) of the dot family or of `conv`:
+    /// the reflection their `_impl`s take as their leading argument, pre-applied here because the
     /// operand is only concrete at this staging point. The schedule decision built on the answer
     /// stays in the `_impl`'s IR (see tensor.dot_product_impl).
-    const Def* fastest_axis_2(const App*, const Def* rank);
+    const Def* fastest_axis_of(const App*, u64 i, const Def* rank);
 };
 
 } // namespace mim::plug::tensor::phase

@@ -123,21 +123,35 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         // A layout splits axis `ax` of the box by `by`: the run of a cell's split comes last, its block first.
         auto by    = Lit::isa<u64>(w.app(field(F::LayoutBy), w.lit_nat(i))).value_or(0);
         auto ax    = Lit::isa<u64>(w.app(field(F::LayoutAx), w.lit_nat(i))).value_or(0);
-        // Without one, a vector run that moves along another axis than the last splits that axis by the run, so that
+        // The dims inside the box that move each axis of the read.
+        auto map_pi = maps[i]->type()->as<Pi>();
+        auto mo     = w.mut_lam(map_pi->dom(), map_pi->codom())->var();
+        auto moves  = [&](u64 d, u64 a) {
+            auto still = w.tuple(DefVec(rn, [&](size_t e) { return e == d ? lit(w.lit_nat_0()) : mo->proj(rn, e); }));
+            return w.app(maps[i], mo)->proj(*r, a) != w.app(maps[i], still)->proj(*r, a);
+        };
+        // The vector loop is the vector dim, or the dim after it where that is the block dim jammed into it; both run
+        // innermost, inside the other loops of the box.
+        auto vd    = Lit::isa<u64>(field(F::VDim));
+        auto block = vd && *vd + 2 == rks.rp ? vd : std::nullopt;
+        if (block) ++*vd;
+        auto rank = [&](u64 d) { return d == vd || d == block ? rn : d; };
+        // An axis sorts by the innermost loop that moves it, so that the copy follows the order the box is read in
+        // (cf. TVM's layout rewrite): an axis no loop moves first.
+        auto key = std::vector<u64>(*r);
+        for (u64 a = 0; a != *r; ++a)
+            for (u64 d = 0; d != rn; ++d)
+                if (!fixed[d] && moves(d, a)) key[a] = std::max(key[a], rank(d) + 1);
+        // Without a layout, a vector run that moves another axis than the last splits that axis by the run, so that
         // the vector loop reads the copy at unit stride (cf. OpenBLAS packing a transposed B).
-        // The vector loop is the vector dim, or the dim after it where that is the block dim jammed into it.
-        auto vd = Lit::isa<u64>(field(F::VDim));
-        if (vd && *vd + 2 == rks.rp) ++*vd;
         if (by <= 1 && vd && *vd < rks.rp && !fixed[*vd])
             if (auto run = Lit::isa<u64>(mr.Sr->proj(rn, *vd)); run && *run > 1) {
-                auto pi = maps[i]->type()->as<Pi>();
-                auto o  = w.mut_lam(pi->dom(), pi->codom())->var();
-                auto still
-                    = w.tuple(DefVec(rn, [&](size_t d) { return d == *vd ? lit(w.lit_nat_0()) : o->proj(rn, d); }));
                 auto moved = std::vector<u64>();
                 for (u64 a = 0; a != *r; ++a)
-                    if (w.app(maps[i], o)->proj(*r, a) != w.app(maps[i], still)->proj(*r, a)) moved.push_back(a);
-                if (moved.size() == 1 && moved[0] + 1 != *r) ax = moved[0], by = *run;
+                    if (moves(*vd, a)) moved.push_back(a);
+                auto last = std::ranges::max_element(key) - key.begin();
+                if (moved.size() == 1 && (u64(last) != moved[0] || std::ranges::count(key, key[last]) > 1))
+                    ax = moved[0], by = *run;
             }
         auto split = by > 1 && ax < *r;
         auto rr    = split ? *r + 1 : *r;
@@ -151,10 +165,12 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             zero = w.call<core::bitcast>(T, w.lit_idx(Idx::bitwidth2size(*size * 8), 0));
         }
         auto cap_ax = split ? *Lit::isa<u64>(caps[ax]) : u64(0);
-        auto others = DefVec();
+        auto order  = std::vector<u64>();
         for (u64 a = 0; a != *r; ++a)
-            if (a != ax) others.push_back(caps[a]);
-        auto shape = !split ? w.tuple(caps) : [&] {
+            if (!split || a != ax) order.push_back(a);
+        std::ranges::stable_sort(order, {}, [&](u64 a) { return key[a]; });
+        auto others = DefVec(order.size(), [&](size_t k) { return caps[order[k]]; });
+        auto shape = !split ? w.tuple(others) : [&] {
             auto dims = DefVec{w.lit_nat((cap_ax + by - 1) / by)};
             dims.insert(dims.end(), others.begin(), others.end());
             dims.push_back(w.lit_nat(by));
@@ -165,13 +181,12 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         mem              = amem;
         auto buf_ty      = w.sigma({mem_ty, buf->type()});
         auto add    = [&](const Def* x, const Def* y) { return w.call(core::wrap::add, core::Mode::none, Defs{x, y}); };
-        auto in_box = [&](const DefVec& iters) {
-            if (!split) return iters;
+        auto in_box      = [&](const DefVec& iters) {
             auto xs = DefVec(*r);
-            for (u64 a = 0, k = 1; a != *r; ++a)
-                xs[a] = a == ax
-                          ? add(w.call(core::wrap::mul, core::Mode::none, Defs{iters[0], w.lit_i64(by)}), iters[*r])
-                          : iters[k++];
+            for (size_t k = 0; k != order.size(); ++k)
+                xs[order[k]] = iters[k + (split ? 1 : 0)];
+            if (split)
+                xs[ax] = add(w.call(core::wrap::mul, core::Mode::none, Defs{iters[0], w.lit_i64(by)}), iters[*r]);
             return xs;
         };
         // A box that leaves the input copies the input's last cell there, which only a padded vector loop reads.
@@ -221,14 +236,12 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             maps[i], w.tuple(DefVec(rn, [&](size_t d) { return fixed[d] ? o->proj(rn, d) : lit(w.lit_nat_0()); })));
         auto rel = DefVec(
             *r, [&](size_t a) { return w.call(affine::op::sub, Defs{whole->proj(*r, a), corner->proj(*r, a)}); });
-        if (split) {
-            auto by_n = w.lit_nat(by);
-            auto xs   = DefVec{w.call(affine::semiop::floordiv, Defs{rel[ax], by_n})};
-            for (u64 a = 0; a != *r; ++a)
-                if (a != ax) xs.push_back(rel[a]);
-            xs.push_back(w.call(affine::semiop::rem, Defs{rel[ax], by_n}));
-            rel = xs;
-        }
+        auto xs = DefVec();
+        if (split) xs.push_back(w.call(affine::semiop::floordiv, Defs{rel[ax], w.lit_nat(by)}));
+        for (auto a : order)
+            xs.push_back(rel[a]);
+        if (split) xs.push_back(w.call(affine::semiop::rem, Defs{rel[ax], w.lit_nat(by)}));
+        rel = xs;
         read->set(true, w.tuple(rel));
         log().d("read input {} of {} from a copy {}", i, mr.map_out, shape);
         Ris[i]    = w.lit_nat(rr);

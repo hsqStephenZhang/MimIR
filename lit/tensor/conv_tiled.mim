@@ -39,6 +39,27 @@ lam chk (n ci co h w kh kw s p: Nat): I32 =
     let res    = conv Ring ((s, s), (1, 1), (p, p)) (buf a, buf b);
     reduce (add, 0I32) 0₁ (reduce (add, 0I32) 1₂ (reduce (add, 0I32) 2₃ (reduce (add, 0I32) 3₄ (binary ne (res, ref)))));
 
+// The same with the input in NHWC and the weight in OHWI, transposed into the op: the weight copy follows the order
+// the register block reads it in, and the input, not unit-stride along its rows, is copied per channel block.
+lam inpt (s: Nat) (n _ oh ow ci kh kw: affine.Index): «4; affine.Index» =
+    (n, affine.op.add (affine.semiop.mul (oh, s), kh), affine.op.add (affine.semiop.mul (ow, s), kw), ci);
+lam wtt (_ co _ _ ci kh kw: affine.Index): «4; affine.Index» = (co, kh, kw, ci);
+lam chk_t (n ci co h w kh kw s p: Nat): I32 =
+    let a      = generate (n, h, w, ci) (λ i: «4; I64»: I32 =
+                     core.conv.s 4294967296 (core.wrap.sub 0 (core.wrap.mul 0 (3I64, i#1_4), core.bit2.and 0 (core.wrap.add 0 (i#3_4, i#2_4), 7I64))));
+    let b      = generate (co, kh, kw, ci) (λ i: «4; I64»: I32 =
+                     core.conv.s 4294967296 (core.wrap.sub 0 (core.bit2.and 0 (core.wrap.add 0 (i#0_4, i#3_4), 3I64), i#2_4)));
+    let lohi   = (0, p, p, 0);
+    let padded = pad (n, h, w, ci) (0, lohi, lohi) (a, 0I32);
+    let so     = conv_shape (n, co, (h, w), (kh, kw), (s, s), (1, 1), (p, p));
+    let ref    = materialize (mr_tileable @2 @(4, 3) (so, (0, 1, 2, 3), (so#0_4, so#1_4, so#2_4, so#3_4, ci, kh, kw))
+                     @((I32, I32), (4, 4), (shape 4 padded, (co, kh, kw, ci)))
+                     (mac, 0I32, id) out (inpt s, wtt) (padded, buf b));
+    let res    = conv Ring ((s, s), (1, 1), (p, p))
+                     (transpose (0_4, 2_4, 3_4, 1_4) (buf a), transpose (0_4, 2_4, 3_4, 1_4) (buf b));
+    reduce (add, 0I32) 0₁ (reduce (add, 0I32) 1₂ (reduce (add, 0I32) 2₃ (reduce (add, 0I32) 3₄ (binary ne (res, ref)))));
+
 extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
     return (m, chk (2, 6, 12, 7, 10, 3, 3, 1, 1) + chk (2, 5, 9, 4, 8, 3, 3, 1, 1)
-               + chk (2, 4, 8, 9, 19, 3, 3, 2, 1) + chk (2, 6, 12, 5, 5, 3, 3, 1, 1));
+               + chk (2, 4, 8, 9, 19, 3, 3, 2, 1) + chk (2, 6, 12, 5, 5, 3, 3, 1, 1)
+               + chk_t (2, 6, 12, 7, 10, 3, 3, 1, 1) + chk_t (2, 8, 16, 5, 9, 1, 1, 1, 0));

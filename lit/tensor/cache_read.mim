@@ -6,7 +6,7 @@
 // RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
 
 // `tensor.cache_read` on a matrix product of «6, 8» · «8, 5» with K split by 4, against the plain product:
-// * `ck`:    B copied per K block «4, 5», with ko outermost.
+// * `ck`:    B copied per K block, with ko outermost, in the order its loops read it: «5, 4», as ki runs innermost.
 // * `whole`: A copied whole, ahead of the nest.
 // * `cvec`:  B «8, 8» copied per K block «4, 8» around a vectorized micro-kernel.
 // * `ctail`: A copied per K block inside tiles of 4 rows: «4, 4», the last tile reading the 2 rows left.
@@ -51,7 +51,7 @@ extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.
               + diff (mixed, materialize (mmf (inc inc2, b))) + diff (inner, plain);
     return (m, bad);
 
-// CHECK-DAG: («4, 5; I32», 0)
+// CHECK-DAG: («5, 4; I32», 0)
 // CHECK-DAG: («4, 8; I32», 0)
 // CHECK-DAG: («4, 4; I32», 0)
 // WARN: cache_read of input 1 of {{.*}} not realized: not a parallel or a hoisted reduction dim

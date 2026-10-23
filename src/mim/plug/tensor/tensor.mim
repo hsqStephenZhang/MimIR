@@ -1018,8 +1018,9 @@ anx lam compute_at (t: Tileable, i d: Nat): Tileable =
 /// - `btensor.lower_map_reduce` realizes it on any input buffer whose box has a literal size and whose read of the
 ///   corner of each iteration is where its box starts, and logs a warning wherever it cannot.
 /// - A box that leaves the input at a tail is copied up to the input's end.
-/// - Without `transform_layout`, a copy that the vector loop reads along another axis than its last splits that axis by
-///   the vector run, so that the loop reads it at unit stride (cf. OpenBLAS packing a transposed B).
+/// - The copy lays its axes out in the order the loops read them, the axis the innermost loop moves last (cf. TVM's
+///   layout rewrite), whatever the order the input stores them in; without `transform_layout`, a vector run that still
+///   moves another axis than the last splits that axis by the run, so that the loop reads the copy at unit stride.
 /// - `space` is e.g. `gpu.addr_space_shared`; only a GPU lowering tells the address spaces apart.
 anx lam cache_read (t: Tileable, i space: Nat): Tileable =
     let s   = t#sched;
@@ -1585,8 +1586,9 @@ fun conv_fun (R: Ring) (acc: R#T, (x w: R#T))@tt: R#T = return (R#add (acc, R#mu
 /// hoisted outside it, with the weights packed into panels of 8 output channels (cf. OpenBLAS packing A).
 ///
 /// - `kc` is the largest power of two up to 32 that divides `ci` into at least two blocks.
-/// - `conv_schedule_tiled_strided`, for a strided row, runs every `co` block inside the block of `kc` channels, which
-///   copies the input it reads once for all of them, so that the register block reads it at unit stride.
+/// - `conv_schedule_tiled_strided`, for a strided row or an input whose rows are not unit-stride, runs every `co` block
+///   inside the block of `kc` channels, which copies the input it reads once for all of them, so that the register
+///   block reads it at unit stride.
 /// - Select it with `conv_tiled_ok`.
 lam conv_blocks (strided: Bool) (t: Tileable): Tileable =
     let r  = t#Rp + t#Rr;
@@ -1661,7 +1663,9 @@ lam conv2d_in_map (stride dilation: «2; Nat») (o: «7; affine.Index»): «4; a
 ///
 /// ### conv_impl
 ///
-priv anx lam conv_impl (R: Ring) {n cin cout h w kh kw: Nat}
+/// `conv` with a leading `fastest_in`, the `fastest_axis` of the input that `tensor::Lower` pre-applies: an input whose
+/// rows are not unit-stride, as behind a transpose from NHWC, takes the schedule that copies it.
+priv anx lam conv_impl (fastest_in: Nat) (R: Ring) {n cin cout h w kh kw: Nat}
                       (stride dilation padding: «2; Nat»)
                       (input: «n, cin, h, w; R#T», weight: «cout, cin, kh, kw; R#T»)
                     : «conv_shape (n, cout, (h, w), (kh, kw), stride, dilation, padding); R#T» =
@@ -1701,7 +1705,8 @@ priv anx lam conv_impl (R: Ring) {n cin cout h w kh kw: Nat}
     lam go_co (u: []): «s_out; R#T» =
         let sched = conv_schedule_co t;
         reshape (sched#4_9) s_out (materialize sched);
-    (((go_rows, go_co)#(conv_co_ok t), (go_tiled, go_strided)#(stride#1_2 != 1))#(conv_tiled_ok t)) ();
+    let copy = core.bit2.or 2 (stride#1_2 != 1, fastest_in < 3);
+    (((go_rows, go_co)#(conv_co_ok t), (go_tiled, go_strided)#copy)#(conv_tiled_ok t)) ();
 ///
 /// ### conv_grouped_in_map
 ///

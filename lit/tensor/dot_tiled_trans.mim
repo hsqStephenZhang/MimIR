@@ -1,12 +1,13 @@
 // RUN: rm -f %{s:stem}.ll
-// RUN: %mim -p opt -p clos -p ll %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=64 -X tensor:gemm-nc=64
+// RUN: %mim -p opt -p clos -p ll %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=32 -X tensor:gemm-nc=64
 // RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
-// RUN: %mim -p opt %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=64 -X tensor:gemm-nc=64 -o - | %FileCheck %s
+// RUN: %mim -p opt %s -X tensor:gemm-mr=4 -X tensor:gemm-nr=16 -X tensor:gemm-kc=32 -X tensor:gemm-nc=64 -o - | %FileCheck %s
 
 // `product_2d` over transposed operands against the unscheduled product, for shapes `chk (m, k, n)` with a last block of
 // rows, of columns and of K cut short: Aᵀ·Bᵀ, A·Bᵀ and Aᵀ·B.
-// The transposes are read through, so a transposed B is packed per K block into panels of 16 columns.
+// The transposes are read through, and a transposed B is copied per K block in the order the register block reads it:
+// «32, 64», not as stored, «64, 32».
 // The exit code counts the cells that differ.
 plugin core;
 plugin tensor;
@@ -40,4 +41,5 @@ lam chk (m k n: Nat): I32 =
 extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
     return (m, chk (8, 64, 64) + chk (7, 100, 50) + chk (13, 130, 33));
 
-// CHECK: mem.malloc («4, 64, 16;
+// CHECK: mem.malloc («32, 64;
+// CHECK-NOT: mem.malloc («64, 32;
