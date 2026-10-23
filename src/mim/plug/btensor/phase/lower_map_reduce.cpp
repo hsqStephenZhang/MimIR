@@ -111,8 +111,11 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     for (u64 i = 0; i != rks.nis; ++i) {
         if (!bit(cache, i)) continue;
         auto at = bit(slots, i);
-        auto give_up
-            = [&](const char* why) { log().w("cache_read of input {} of {} not realized: {}", i, mr.map_out, why); };
+        auto give_up = [&](const char* why) {
+            if (strict(w))
+                mr.map_out->blame("cache_read of input {} of {} not realized: {}", i, mr.map_out, why).bail();
+            log().w("cache_read of input {} of {} not realized: {}", i, mr.map_out, why);
+        };
         auto dim = Lit::isa<u64>(w.app(field(F::AtDim), w.lit_nat(i)));
         if (at && (!dim || *dim >= rks.rp + Lit::isa<u64>(field(F::Hoist)).value_or(0))) {
             give_up("not a parallel or a hoisted reduction dim");

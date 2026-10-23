@@ -1044,7 +1044,8 @@ anx lam tile_at (t: Tileable, origin ext: «t#Ro; Nat»): t#Out (t#Ro, ext) = ma
 ///
 /// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post`, the box has a literal size, and the iterations
 ///   of the input that write the box are known exactly (see `affine.preimage`), as for a projection or a split dim;
-///   it computes that input with the input's own schedule and logs a warning wherever it cannot.
+///   it computes that input with the input's own schedule and logs a warning wherever it cannot, or stops with an
+///   error under `-X tensor:strict=1`.
 /// - `d` must be a parallel dim or a reduction dim `hoist_red` hoists, and the loops around it those of the dims
 ///   before it in the order of the nest.
 /// - A copy computed at a hoisted reduction dim packs a block of its source, as a GEMM packs B per K block.
@@ -1070,7 +1071,8 @@ anx lam compute_at (t: Tileable, i d: Nat): Tileable =
 /// the input instead of computing it.
 ///
 /// - `btensor.lower_map_reduce` realizes it on any input buffer whose box has a literal size and starts at the read of
-///   an iteration's corner as for `compute_at`, and logs a warning wherever it cannot.
+///   an iteration's corner as for `compute_at`, and logs a warning wherever it cannot, or stops with an error under
+///   `-X tensor:strict=1`.
 /// - A box that leaves the input at a tail is copied up to the input's end.
 /// - The copy lays its axes out in the order the loops read them, the axis the innermost loop moves last (cf. TVM's
 ///   layout rewrite), whatever the order the input stores them in; without `transform_layout`, a vector run that still
@@ -1134,7 +1136,7 @@ anx lam prepack (t: Tileable, i: Nat): Tileable =
 /// iteration of the loop writes is exact, so that a part reads only cells already written, and the part of `t` is
 /// exact and spans `t`'s reduction dims.
 /// It keeps the dependences, the scope and the lifetimes of the buffers it materializes; wherever it cannot show a
-/// condition it logs a warning and computes `t` whole.
+/// condition it logs a warning and computes `t` whole, or stops with an error under `-X tensor:strict=1`.
 /// `d` must be a parallel dim of the producer, and the loops around it those of the dims before it.
 anx lam reverse_compute_at (t: Tileable, i d: Nat): Tileable =
     let s   = t#sched;

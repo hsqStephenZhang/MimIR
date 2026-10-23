@@ -827,6 +827,10 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     auto dim    = dim_of(mr, j);
 
     auto give_up = [&](const char* why) -> const Def* {
+        if (btensor::strict(w))
+            app->blame("reverse_compute_at of {} inside dim {} of the producer of its input {} not realized: {}", app,
+                       dim ? *dim : 0, j, why)
+                .bail();
         log().w("reverse_compute_at of {} inside dim {} of the producer of its input {} not realized: {}", app,
                 dim ? *dim : 0, j, why);
         return nullptr;
@@ -1165,6 +1169,9 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     auto give_up = [&](u64 j, const char* why) {
         if (fuse)
             log().d("tile_and_fuse: input {} of {} is computed whole: {}", j, s.who, why);
+        else if (btensor::strict(w))
+            s.who->blame("compute_at of input {} inside dim {} of {} not realized: {}", j, cur.value_or(rn), s.who, why)
+                .bail();
         else
             log().w("compute_at of input {} inside dim {} of {} not realized: {}", j, cur.value_or(rn), s.who, why);
         return false;

@@ -1,0 +1,41 @@
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+// RUN: (! %mim -p opt %s -X tensor:strict=1 -o /dev/null 2>&1) | %FileCheck %s
+
+// Schedules the lowering cannot realize, under `-X tensor:strict=1`: an error instead of a warning and whole ops.
+// * `c`: A + 1 computed at the reduction dim k of A · B, which is not hoisted.
+// * `r`: B copied at the inner reduction dim ki, which is not hoisted.
+// * `v`: the row sums of P computed inside the reduction dim of P.
+plugin core;
+plugin tensor;
+plugin affine;
+
+use core.ops.u.w;
+use tensor;
+
+fun mac (acc: I32, (x y: I32))@tt: I32 = return (acc + x * y);
+fun inc (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun sum (acc: I32, x: I32)@tt: I32 = return (acc + x);
+lam mo (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam ma (i _ k: affine.Index): «2; affine.Index» = (i, k);
+lam mb (_ j k: affine.Index): «2; affine.Index» = (k, j);
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
+lam ro (i _: affine.Index): affine.Index = i;
+lam ri (i j: affine.Index): «2; affine.Index» = (i, j);
+
+lam prod (x: «6, 8; I32», y: «8, 5; I32») = mr_tileable @2 @(2, 1) ((6, 5), (0, 1), (6, 5, 8)) (mac, 0I32, id) mo (ma, mb) (x, y);
+lam ew (x: «6, 8; I32») = mr_tileable @1 @(2, 0) ((6, 8), (0, 1), (6, 8)) (inc, 0I32, id) po po x;
+lam rsum (p: «6, 5; I32») = mr_tileable @1 @(1, 1) (6, 0, (6, 5)) (sum, 0I32, id) ro ri p;
+
+extern fun c (a: «6, 8; I32», b: «8, 5; I32»): «6, 5; I32» =
+    return (materialize (compute_at (prod (materialize (ew (buf a)), buf b), 0, 2)));
+
+extern fun r (a: «6, 8; I32», b: «8, 5; I32»): «6, 5; I32» =
+    return (materialize (compute_at (cache_read (hoist_red (strip_mine_red (prod (buf a, buf b), 2, 4), 1, 1), 1, 3), 1, 3)));
+
+extern fun v (a: «6, 8; I32», b: «8, 5; I32»): «6; I32» =
+    return (materialize (reverse_compute_at (rsum (materialize (prod (buf a, buf b))), 0, 2)));
+
+// WARN-DAG: compute_at of input 0 inside dim 2 of {{.*}} not realized: not a parallel or a hoisted reduction dim
+// WARN-DAG: cache_read of input 1 of {{.*}} not realized: not a parallel or a hoisted reduction dim
+// WARN-DAG: reverse_compute_at of {{.*}} not realized: not a parallel dim of the producer
+// CHECK: error: {{compute_at of input 0 inside dim 2|cache_read of input 1|reverse_compute_at}} of {{.*}} not realized

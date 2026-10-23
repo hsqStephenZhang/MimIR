@@ -3,6 +3,7 @@
 #include <optional>
 #include <vector>
 
+#include <mim/driver.h>
 #include <mim/lam.h>
 #include <mim/tuple.h>
 #include <mim/world.h>
@@ -18,6 +19,9 @@
 namespace mim::plug::btensor {
 
 /// The curried meta arguments of a `tensor.map_reduce_post` or `btensor.map_reduce_post` callee (same layout).
+/// Whether `-X tensor:strict=1` turns a schedule the lowering cannot realize into an error.
+inline bool strict(World& w) { return w.driver().arg_nat("tensor", "strict").value_or(0) != 0; }
+
 struct MapRedPost {
     const Def *nis_nps, *meta, *shapes, *in_tys, *comb_init, *map_out, *maps_all;
     const Def *nis, *nps, *To, *Tp, *Ro, *Rp, *Rn, *TSched, *So, *Sr, *sched;
