@@ -961,6 +961,9 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
                     jc, why);
     }
 
+    std::ranges::stable_sort(parts, {},
+                             [](const Part& pt) { return Lit::isa<u64>(pt.mr.sched_field(F::RevIndex)).value_or(0); });
+
     auto old_p_post = old_p->arg()->proj(2, 1);
     auto p_post_is  = buffer_list(rewrite(old_p_post), old_p_post, mp.nps);
     if (!p_post_is) return give_up("an epilogue input is not a buffer");

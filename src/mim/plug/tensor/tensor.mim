@@ -1140,6 +1140,12 @@ anx lam reverse_compute_at (t: Tileable, i d: Nat): Tileable =
     let t   = t#sched#rev ← s#rev + bit * (1 - s#rev / bit % 2);
     t#sched#at_dim ← lm (j: Nat): Nat = (s#at_dim j, d)#(j == i);
 ///
+/// #### reverse_index
+///
+/// Run `t` at position `k` among the ops `reverse_compute_at` computes inside one loop of a producer, lower first and
+/// those with equal positions in the order the lowering reaches them (cf. TVM's `index`).
+anx lam reverse_index (t: Tileable, k: Nat): Tileable = t#sched#rev_index ← k;
+///
 /// #### hoist_red
 ///
 /// Run the first `h` reduction dims of `t` outside its parallel dims from `s` on, as the K blocks of a GEMM run

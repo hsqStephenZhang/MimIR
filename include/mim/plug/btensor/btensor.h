@@ -77,6 +77,7 @@ struct MapRedPost {
         LayoutAx,
         LayoutBy,
         Prepacks,
+        RevIndex,
         Num_Fields
     };
 

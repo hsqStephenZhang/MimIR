@@ -4,7 +4,7 @@
 // RUN: %t
 
 // reverse_compute_at with several producers and several consumers, against the unscheduled ops, with P = A · B:
-// * `y1`, `y2`: Σ_j P[i, j] and P + 1 both inside the loop of i of one P.
+// * `y1`, `y2`: Σ_j P[i, j] and P + 1 both inside the loop of i of one P, the sum after P + 1.
 // * `h`: G ⊙ U with G = A · B and U = A · Bu, as SwiGLU: inside the loop of i of G, which computes the row of U first.
 // * `z1`, `z2`: Σ_j Q[i, j] and Q + z1 inside one Q: z2 reads z1, so the two do not share Q's loop.
 // * `h2`: G ⊙ V with V = A · Bu + 1 computed at j of each part of the op inside G.
@@ -63,7 +63,7 @@ lam diff7 (u v: «6, 7; I32»): I32 = reduce (add, 0I32) 0₁ (reduce (add, 0I32
 
 extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
     let p   = prod mac1 (a, b);
-    let y1  = materialize (reverse_compute_at (rsum sum1 p, 0, 0));
+    let y1  = materialize (reverse_index (reverse_compute_at (rsum sum1 p, 0, 0), 1));
     let y2  = materialize (reverse_compute_at (ew inc1 p, 0, 0));
     let h   = materialize (reverse_compute_at (reverse_compute_at (ew2 mul1 (prod mac2 (a, b), prod mac3 (a, bu)), 0, 0), 1, 0));
     let q   = prod mac4 (a, b);
