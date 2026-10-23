@@ -1142,7 +1142,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         const auto& fixed = act ? act->fixed : no_fixed;
         auto get          = act ? act->get : nullptr;
 
-        // The producer: a map_reduce_post without epilogue inputs that writes through a projection.
+        // The producer: a map_reduce_post that writes through a projection.
         auto old_p = Axm::isa<tensor::map_reduce_post>(s.old_is->proj(rks->nis, j));
         if (!old_p) return give_up(j, "the input is not a map_reduce_post, e.g. fuse_tensor inlined it");
         for (u64 k = 0; k != rks->nis; ++k)
@@ -1150,7 +1150,10 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                 return give_up(j, "the op reads the input through another slot too");
         auto mp  = F::of(rewrite(old_p->callee())->as<App>());
         auto prk = mp.ranks();
-        if (!prk || prk->nps != 0) return give_up(j, "the input has epilogue inputs");
+        if (!prk) return give_up(j, "the input's ranks are not known");
+        auto old_pp = old_p->arg()->proj(2, 1);
+        auto p_post = prk->nps == 0 ? w.tuple() : buffer_list(rewrite(old_pp), old_pp, mp.nps);
+        if (!p_post) return give_up(j, "an epilogue input of the input is not a buffer");
         auto prn = prk->nloops();
 
         auto [ovar, obody] = probe(mp.map_out);
@@ -1284,8 +1287,20 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         mt.So   = shared ? mp.So : So_t;
         mt.Sr   = Sr_t;
         if (shared) mt.map_out = shift(mp.map_out, "tile_out");
-        mt.maps     = w.tuple(pmaps);
-        mt.maps_all = w.tuple({mt.maps, mp.post_maps});
+        mt.maps = w.tuple(pmaps);
+        // A tile at its own origin reads its epilogue inputs at the cells of the whole result it writes.
+        if (!shared && prk->nps != 0)
+            mt.post_maps = w.tuple(DefVec(prk->nps, [&](size_t k) -> const Def* {
+                auto f   = mp.post_maps->proj(prk->nps, k);
+                auto pi  = f->type()->as<Pi>();
+                auto lam = w.mut_lam(pi->dom(), pi->codom())->set("tile_post_map");
+                auto oo  = lam->var();
+                lam->set(true, w.app(f, w.tuple(DefVec(prk->ro, [&](size_t a) {
+                    return add(oo->proj(prk->ro, a), lit(base->proj(prk->ro, a)));
+                }))));
+                return lam;
+            }));
+        mt.maps_all = w.tuple({mt.maps, mt.post_maps});
         if (std::ranges::any_of(clip, [](bool c) { return c; })) {
             auto starts = DefVec(prn), ends = DefVec(prn);
             for (u64 dd = 0; dd != prn; ++dd)
@@ -1300,8 +1315,8 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         for (u64 dd = 0; dd != prn; ++dd)
             shifted[dd] = axis_of[dd].has_value(), clipped[dd] = shifted[dd] && clip[*axis_of[dd]];
         auto& chain = act ? act->mem : pre;
-        auto res    = lower_staged(
-            {mt, mp, shifted, clipped, old_p->arg()->proj(2, 0), w.tuple(), old_p, fuse, budget, runs}, chain, tile_b);
+        auto res = lower_staged({mt, mp, shifted, clipped, old_p->arg()->proj(2, 0), p_post, old_p, fuse, budget, runs},
+                                chain, tile_b);
         if (!res) return give_up(j, "the input's inputs are not buffers");
         chain = res->proj(2, 0);
 
