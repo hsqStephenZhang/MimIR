@@ -390,9 +390,11 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
                 }
             return lam->set(true, where);
         };
-        fields[F::Scope] = per_slot(fields[F::Scope], "scope");
-        fields[F::AtDim] = per_slot(fields[F::AtDim], "at_dim");
-        shapes           = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
+        fields[F::Scope]    = per_slot(fields[F::Scope], "scope");
+        fields[F::AtDim]    = per_slot(fields[F::AtDim], "at_dim");
+        fields[F::LayoutAx] = per_slot(fields[F::LayoutAx], "layout_ax");
+        fields[F::LayoutBy] = per_slot(fields[F::LayoutBy], "layout_by");
+        shapes              = w.tuple({mr.So, mr.Sr, w.app(w.annex<btensor::mk_sched>(), w.tuple(fields))});
     }
 
     auto res = w.annex<tensor::map_reduce_post>();

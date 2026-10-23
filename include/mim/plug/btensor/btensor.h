@@ -74,6 +74,8 @@ struct MapRedPost {
         Cache,
         Scope,
         Pad,
+        LayoutAx,
+        LayoutBy,
         Num_Fields
     };
 

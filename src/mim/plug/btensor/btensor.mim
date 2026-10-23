@@ -179,14 +179,17 @@ pub lam hook_none (r: Nat, A: *) (l: Loop) (b: Body (r, A)): Body (r, A) = b;
 ///   the loop of `at_dim i` where `at_slots` sets the bit of input `i` too and ahead of the nest otherwise (see
 ///   `tensor.cache_read`), in the address space `scope i` of input `i`, which only a GPU lowering tells apart;
 /// - `pad_runs`: whether every input the last parallel dim moves the read of is a copy of whole runs of it, so that a
-///   vector loop over it may compute a cut run whole, as only the write-back stops at its `lim`.
+///   vector loop over it may compute a cut run whole, as only the write-back stops at its `lim`;
+/// - `layout_ax`, `layout_by`: the copy of a cached input `i` with `layout_by i > 1` stores its box's axis
+///   `a = layout_ax i` split by `b = layout_by i`, `x[…, x_a, …]` at `[x_a / b, …, x_a % b]`, with zeros past the box
+///   (see `tensor.transform_layout`).
 ///
 /// Transforms update the field they decide (`s#vdim ← d`) and pass the rest through.
 /// `tensor.Sched` is an alias for this type: `btensor` owns it for the same reason it owns `Ring`.
 anx let Sched = [vdim unroll: Nat, at: Bool, at_slots: Nat, at_dim: Nat → Nat, fuse: Bool, budget: Nat, acts: Nat,
                  act: Nat → Fn [mem.M 0, Nat → I32] → mem.M 0, lim: [Nat → I32, Nat] → [Bool, I32],
                  rev posts: Bool, post_dim: Nat, post: Fn [mem.M 0, Nat → I32] → mem.M 0, hoist hoist_at: Nat,
-                 cache: Nat, scope: Nat → Nat, pad_runs: Bool];
+                 cache: Nat, scope: Nat → Nat, pad_runs: Bool, layout_ax layout_by: Nat → Nat];
 ///
 /// #### act_none
 ///
@@ -226,7 +229,8 @@ anx fun act_seq (a b: Fn [mem.M 0, Nat → I32] → mem.M 0) (m: mem.M 0, get: N
 ///
 /// The schedule with vector dim `vdim`, `unroll`ed trailing reduction dims, and nothing else.
 anx lam sched_of (vdim unroll: Nat): Sched =
-    (vdim, unroll, ff, 0, scope_none, ff, 0, 0, acts_none, lim_none, ff, ff, 0, act_none, 0, 0, 0, scope_none, ff);
+    (vdim, unroll, ff, 0, scope_none, ff, 0, 0, acts_none, lim_none, ff, ff, 0, act_none, 0, 0, 0, scope_none, ff,
+     scope_none, scope_none);
 ///
 /// ### SchedT
 ///

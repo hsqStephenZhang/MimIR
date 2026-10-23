@@ -1017,6 +1017,23 @@ anx lam cache_read (t: Tileable, i space: Nat): Tileable =
     let t   = t#sched#cache ← s#cache + bit * (1 - s#cache / bit % 2);
     t#sched#scope ← lm (j: Nat): Nat = (s#scope j, space)#(j == i);
 ///
+/// #### transform_layout
+///
+/// Store input `i` of `t` in a copy whose box splits its axis `a` by `b`: the cell `x[…, x_a, …]` of the box at
+/// `[x_a / b, …, x_a % b]`, so that a run of `b` along `a` lies unit-stride (cf. TVM's `transform_layout`), as a GEMM
+/// packs A into panels of `mr` rows by `transform_layout (t, 0, 0, mr)` and B into panels of `nr` columns by
+/// `transform_layout (t, 1, 1, nr)`.
+///
+/// - It caches input `i` as `cache_read (t, i, 0)` does, unless a `cache_read` gives it another space.
+/// - The cells of the split past the box, and of the box past the input, hold zeros.
+/// - Only this one layout is supported; the input's type must have a size, for its zero.
+anx lam transform_layout (t: Tileable, i a b: Nat): Tileable =
+    let s   = t#sched;
+    let bit = slot_bit i;
+    let t   = t#sched#cache ← s#cache + bit * (1 - s#cache / bit % 2);
+    let t   = t#sched#layout_ax ← lm (j: Nat): Nat = (s#layout_ax j, a)#(j == i);
+    t#sched#layout_by ← lm (j: Nat): Nat = (s#layout_by j, b)#(j == i);
+///
 /// #### reverse_compute_at
 ///
 /// Compute `t` inside the loop of dim `d` of the producer of its input `i`, one tile at a time (cf. TVM's

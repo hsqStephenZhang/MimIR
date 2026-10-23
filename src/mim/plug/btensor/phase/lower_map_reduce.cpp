@@ -62,6 +62,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     if (cache == 0) return mem;
 
     auto fields = DefVec(F::Num_Fields, [&](size_t f) { return field(F::Field(f)); });
+    auto Ris    = DefVec(rks.nis, [&](size_t i) { return mr.Ris->proj(rks.nis, i); });
     auto Sis    = DefVec(rks.nis, [&](size_t i) { return mr.Sis->proj(rks.nis, i); });
     auto maps   = DefVec(rks.nis, [&](size_t i) { return mr.maps->proj(rks.nis, i); });
     auto mem_ty = w.call<mem::M>(0);
@@ -119,25 +120,63 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             continue;
         }
 
-        auto shape       = w.tuple(caps);
-        auto [amem, buf] = buffer::op_alloc(R, shape, T, mem)->projs<2>();
+        // A layout splits axis `ax` of the box by `by`: the run of a cell's split comes last, its block first.
+        auto by    = Lit::isa<u64>(w.app(field(F::LayoutBy), w.lit_nat(i))).value_or(0);
+        auto ax    = Lit::isa<u64>(w.app(field(F::LayoutAx), w.lit_nat(i))).value_or(0);
+        auto split = by > 1 && ax < *r;
+        auto rr    = split ? *r + 1 : *r;
+        auto zero  = static_cast<const Def*>(nullptr);
+        if (split) {
+            auto size = Lit::isa<u64>(w.call(core::trait::size, T));
+            if (!size || *size == 0 || *size > 8) {
+                give_up("the layout pads with zeros, but the input's type has no size");
+                continue;
+            }
+            zero = w.call<core::bitcast>(T, w.lit_idx(Idx::bitwidth2size(*size * 8), 0));
+        }
+        auto cap_ax = split ? *Lit::isa<u64>(caps[ax]) : u64(0);
+        auto others = DefVec();
+        for (u64 a = 0; a != *r; ++a)
+            if (a != ax) others.push_back(caps[a]);
+        auto shape = !split ? w.tuple(caps) : [&] {
+            auto dims = DefVec{w.lit_nat((cap_ax + by - 1) / by)};
+            dims.insert(dims.end(), others.begin(), others.end());
+            dims.push_back(w.lit_nat(by));
+            return w.tuple(dims);
+        }();
+
+        auto [amem, buf] = buffer::op_alloc(w.lit_nat(rr), shape, T, mem)->projs<2>();
         mem              = amem;
         auto buf_ty      = w.sigma({mem_ty, buf->type()});
+        auto add    = [&](const Def* x, const Def* y) { return w.call(core::wrap::add, core::Mode::none, Defs{x, y}); };
+        auto in_box = [&](const DefVec& iters) {
+            if (!split) return iters;
+            auto xs = DefVec(*r);
+            for (u64 a = 0, k = 1; a != *r; ++a)
+                xs[a] = a == ax
+                          ? add(w.call(core::wrap::mul, core::Mode::none, Defs{iters[0], w.lit_i64(by)}), iters[*r])
+                          : iters[k++];
+            return xs;
+        };
         // A box that leaves the input copies the input's last cell there, which only a padded vector loop reads.
-        auto copy
-            = build_pointwise(buf_ty, fmem, buf, inputs[i], shape, *r, "cache_copy",
-                              [&](const DefVec& iters, const Def* in, const Def* m) {
-                                  auto coords      = DefVec(*r, [&](size_t a) {
-                                      auto x = w.call(core::wrap::add, core::Mode::none,
-                                                      Defs{w.call<core::bitcast>(i64, lo->proj(*r, a)), iters[a]});
-                                      auto hi
-                                          = w.call(core::wrap::sub, core::Mode::none,
-                                                   Defs{w.call<core::bitcast>(i64, Sis[i]->proj(*r, a)), w.lit_i64(1)});
-                                      return clamp(x, hi);
-                                  });
-                                  auto [rm, value] = buffer::op_read(m, in, folded_idx(Sis[i], coords))->projs<2>();
-                                  return std::pair<const Def*, const Def*>{rm, value};
-                              });
+        // A layout pads with zeros instead.
+        auto copy = build_pointwise(
+            buf_ty, fmem, buf, inputs[i], shape, rr, "cache_copy",
+            [&](const DefVec& iters, const Def* in, const Def* m) {
+                auto xs = in_box(iters);
+                auto at = DefVec(*r, [&](size_t a) { return add(w.call<core::bitcast>(i64, lo->proj(*r, a)), xs[a]); });
+                auto ends   = DefVec(*r, [&](size_t a) { return w.call<core::bitcast>(i64, Sis[i]->proj(*r, a)); });
+                auto coords = DefVec(*r, [&](size_t a) {
+                    return clamp(at[a], w.call(core::wrap::sub, core::Mode::none, Defs{ends[a], w.lit_i64(1)}));
+                });
+                auto [rm, value] = buffer::op_read(m, in, folded_idx(Sis[i], coords))->projs<2>();
+                if (!split) return std::pair<const Def*, const Def*>{rm, value};
+                const Def* inside = w.call(core::icmp::ul, Defs{xs[ax], w.lit_i64(cap_ax)});
+                for (u64 a = 0; a != *r; ++a)
+                    inside = w.call(core::bit2::and_, w.lit_nat(2),
+                                    w.tuple({inside, w.call(core::icmp::ul, Defs{at[a], ends[a]})}));
+                return std::pair<const Def*, const Def*>{rm, w.select(inside, value, zero)};
+            });
         fill->app(true, fret, copy->proj(2, 0));
 
         if (at) {
@@ -156,17 +195,27 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             mem = w.app(cps::op_cps2ds_dep(fill), w.tuple({mem, none}));
         }
 
-        // The op reads the copy at its coordinates less those of the read of the corner.
+        // The op reads the copy at its coordinates less those of the read of the corner, split as the layout splits.
         auto pi     = maps[i]->type()->as<Pi>();
-        auto read   = w.mut_lam(pi->dom(), pi->codom())->set("cache_read");
+        auto index  = w.annex<affine::Index>();
+        auto read   = w.mut_lam(pi->dom(), w.arr(rr, index))->set("cache_read");
         auto o      = read->var();
         auto whole  = w.app(maps[i], o);
         auto corner = w.app(
             maps[i], w.tuple(DefVec(rn, [&](size_t d) { return fixed[d] ? o->proj(rn, d) : lit(w.lit_nat_0()); })));
-        read->set(true, w.tuple(DefVec(*r, [&](size_t a) {
-            return w.call(affine::op::sub, Defs{whole->proj(*r, a), corner->proj(*r, a)});
-        })));
+        auto rel = DefVec(
+            *r, [&](size_t a) { return w.call(affine::op::sub, Defs{whole->proj(*r, a), corner->proj(*r, a)}); });
+        if (split) {
+            auto by_n = w.lit_nat(by);
+            auto xs   = DefVec{w.call(affine::semiop::floordiv, Defs{rel[ax], by_n})};
+            for (u64 a = 0; a != *r; ++a)
+                if (a != ax) xs.push_back(rel[a]);
+            xs.push_back(w.call(affine::semiop::rem, Defs{rel[ax], by_n}));
+            rel = xs;
+        }
+        read->set(true, w.tuple(rel));
         log().d("read input {} of {} from a copy {}", i, mr.map_out, shape);
+        Ris[i]    = w.lit_nat(rr);
         Sis[i]    = shape;
         maps[i]   = read;
         inputs[i] = buf;
@@ -191,6 +240,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     fields[F::Cache] = w.lit_nat_0();
     mr.sched         = w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
     mr.shapes        = w.tuple({mr.So, mr.Sr, mr.sched});
+    mr.Ris           = w.tuple(Ris);
     mr.Sis           = w.tuple(Sis);
     mr.maps          = w.tuple(maps);
     return mem;
