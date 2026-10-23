@@ -4,7 +4,7 @@
 // RUN: %t
 
 // `conv` through `conv_schedule_tiled` against the unscheduled op, for shapes `chk` with a last block of output
-// channels and of columns cut short, channel blocks of 1, 2 and 4, and stride 2.
+// channels and of columns cut short, channel blocks of 1, 2 and 4, and stride 2, which copies the input per block.
 // The exit code counts the values that differ.
 plugin core;
 plugin tensor;

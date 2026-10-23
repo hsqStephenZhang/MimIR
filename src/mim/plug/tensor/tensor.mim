@@ -1583,19 +1583,26 @@ fun conv_fun (R: Ring) (acc: R#T, (x w: R#T))@tt: R#T = return (R#add (acc, R#mu
 /// hoisted outside it, with the weights packed into panels of 8 output channels (cf. OpenBLAS packing A).
 ///
 /// - `kc` is the largest power of two up to 32 that divides `ci` into at least two blocks.
+/// - `conv_schedule_tiled_strided`, for a strided row, runs every `co` block inside the block of `kc` channels, which
+///   copies the input it reads once for all of them, so that the register block reads it at unit stride.
 /// - Select it with `conv_tiled_ok`.
-lam conv_schedule_tiled (t: Tileable): Tileable =
+lam conv_blocks (strided: Bool) (t: Tileable): Tileable =
     let r  = t#Rp + t#Rr;
     let ci = t#Sr#(core.idx 0 r 4);
     lam kc_ok (b: Nat): Bool = core.bit2.and 2 (ci / b * b == ci, b * 2 <= ci);
     let kc = (((((1, 2)#(kc_ok 2), 4)#(kc_ok 4), 8)#(kc_ok 8), 16)#(kc_ok 16), 32)#(kc_ok 32);
     let t2 = split_par (split_par (t, 1, 8), 4, 8);
-    // Dims are (n, co/8, 8, oh, ow/8, 8 | …); bring the `co` block down next to the `ow` run.
+    // Dims are (n, co/8, 8, oh, ow/8, 8 | …): bring the `co` block down next to the `ow` run, and for a strided row
+    // the `co` blocks too, below `oh` and `ow/8`.
     let r2   = t2#2_9 + t2#3_9;
     let perm = ‹j: r2; let jj = core.idx2nat j;
-                       core.select (jj == 2, 3, core.select (jj == 3, 4, core.select (jj == 4, 2, jj)))›;
+                       (core.select (jj == 2, 3, core.select (jj == 3, 4, core.select (jj == 4, 2, jj))),
+                        core.select (jj == 1, 3, core.select (jj == 2, 4, core.select (jj == 3, 1,
+                        core.select (jj == 4, 2, jj)))))#strided›;
     let t4   = strip_mine_red (interchange (t2, perm), 6, kc);
-    transform_layout (hoist_red (vectorize (t4, 4), 4, 1), 1, 0, 8);
+    transform_layout (hoist_red (vectorize (t4, 4), (4, 3)#strided, 1), 1, 0, 8);
+lam conv_schedule_tiled (t: Tileable): Tileable = conv_blocks ff t;
+lam conv_schedule_tiled_strided (t: Tileable): Tileable = cache_read (compute_at (conv_blocks tt t, 0, 6), 0, 0);
 ///
 /// ### conv_tiled_ok
 ///
@@ -1656,7 +1663,10 @@ priv anx lam conv_impl (R: Ring) {n cin cout h w kh kw: Nat}
     lam go_tiled (u: []): «s_out; R#T» =
         let sched = conv_schedule_tiled t;
         reshape (sched#4_9) s_out (materialize sched);
-    ((go_rows, go_tiled)#(conv_tiled_ok t)) ();
+    lam go_strided (u: []): «s_out; R#T» =
+        let sched = conv_schedule_tiled_strided t;
+        reshape (sched#4_9) s_out (materialize sched);
+    ((go_rows, (go_tiled, go_strided)#(stride#1_2 != 1))#(conv_tiled_ok t)) ();
 ///
 /// ### conv_grouped_in_map
 ///
