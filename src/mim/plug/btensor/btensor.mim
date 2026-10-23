@@ -434,14 +434,15 @@ lam range_nest (r: Nat, Sr: «r; Nat») (A: *) (hook: Hook (r, A), ctx: Ctx) (lo
         con level (pref: «r; I32», m: mem.M 0, acc: A, k: Cn [mem.M 0, A]) =
             let n         = core.bitcast I32 (Sr#(core.idx 0 r d));
             let (cut, at) = ctx#lim (lm (e: Nat): I32 = pref#(core.idx 0 r e), d);
-            let stop      = (n, core.select (core.icmp.ul (at, n), at, n))#cut;
-            loop lbody lexit (0I32, stop, 1I32, (m, acc))
-            where
-                con lbody (iv: I32, (m: mem.M 0, acc: A), yield: Cn [mem.M 0, A]) =
-                    let pref = ‹j: r; core.select (core.idx2nat j == d, iv, pref#j)›;
-                    w (pref, m, acc, yield);
-                con lexit (macc: [mem.M 0, A]) = k macc;
-            end;
+            con lbody (iv: I32, (m: mem.M 0, acc: A), yield: Cn [mem.M 0, A]) =
+                let pref = ‹j: r; core.select (core.idx2nat j == d, iv, pref#j)›;
+                w (pref, m, acc, yield);
+            con lexit (macc: [mem.M 0, A]) = k macc;
+            con whole (m: mem.M 0) = loop lbody lexit (0I32, n, 1I32, (m, acc));
+            con part (m: mem.M 0) = loop lbody lexit (0I32, core.select (core.icmp.ul (at, n), at, n), 1I32, (m, acc));
+            // A vector loop that a lim may cut runs its whole runs at their literal extent, which the backend unrolls.
+            let full = core.bit2.or 2 ((tt, ff)#cut, core.bit2.and 2 (impl == impl_vec, core.icmp.uge (at, n)));
+            (part, whole)#full m;
         level;
     let m = hi - lo;
     vec.fold.r @(Body (r, A), Nat) @m

@@ -1231,20 +1231,20 @@ lam dot_schedule (r_out: Nat) (t: Tileable): Tileable =
 ///
 /// #### dot_kc
 ///
-/// The K block of `dot_schedule_tiled`: 256 or 128 where they divide `K`, `K` itself up to 384, else `0`.
-lam dot_kc (K: Nat): Nat = (((0, K)#(K <= 384), 128)#(K / 128 * 128 == K), 256)#(K / 256 * 256 == K);
+/// The K block of `dot_schedule_tiled`: `K` itself up to 384, else 256.
+lam dot_kc (K: Nat): Nat = (256, K)#(K <= 384);
 ///
 /// #### dot_tiled_ok
 ///
-/// Whether `dot_schedule_tiled` applies to a product with `r_out` output dims: one contraction, literal extents, an
-/// `N` of whole 16-wide panels, at least one 4-row block, and a `K` it blocks.
+/// Whether `dot_schedule_tiled` applies to a product with `r_out` output dims: one contraction, literal extents, at
+/// least one 4-row block and one 16-wide panel.
 lam dot_tiled_ok (r_out: Nat) (t: Tileable): Bool =
     let r = t#Rp + t#Rr;
     let M = t#Sr#(core.idx 0 r 0);
     let N = t#Sr#(core.idx 0 r 1);
     let K = t#Sr#(core.idx 0 r 2);
-    let shape = core.bit2.and 2 (core.bit2.and 2 (N / 16 * 16 == N, 4 <= M), dot_kc K != 0);
-    core.bit2.and 2 (core.bit2.and 2 (r_out == 2, r == 3), if_static (M * N * K, shape, ff));
+    core.bit2.and 2 (core.bit2.and 2 (r_out == 2, r == 3),
+                     if_static (M * N * K, core.bit2.and 2 (4 <= M, 16 <= N), ff));
 ///
 /// #### dot_schedule_tiled
 ///
@@ -1252,17 +1252,18 @@ lam dot_tiled_ok (r_out: Nat) (t: Tileable): Bool =
 /// `(jo, io, jm, ii, ji, ko, ki)`, where
 ///
 /// - `ii × ji` is a 4 × 16 register block, `ji` the vector loop and `ii` jammed into it;
+/// - `jm` groups 4, 2 or 1 of the ⌈N/16⌉ panels, whichever divides their number, into a block of N;
 /// - `ko` steps through the K blocks of `dot_kc`, hoisted outside the rows `io`, so each block of B stays in cache
 ///   for every row block;
-/// - B's block «Kc, Nc» is copied once per K block (`cache_read`), `Nc` the largest of 64, 32 and 16 dividing `N`;
-/// - a last row block of fewer than 4 rows is cut short.
+/// - B's block «Kc, Nc» is copied once per K block (`cache_read`);
+/// - the last block of rows, of columns and of K is cut short where 4, 16 and Kc do not divide M, N and K.
 ///
 /// Select it with `dot_tiled_ok`.
 lam dot_schedule_tiled (t: Tileable): Tileable =
     let r  = t#Rp + t#Rr;
-    let N  = t#Sr#(core.idx 0 r 1);
-    let nc = ((16, 32)#(N / 32 * 32 == N), 64)#(N / 64 * 64 == N);
-    let t3 = split_par (split_par (split_par (t, 0, 4), 2, nc), 3, 16);
+    let np = (t#Sr#(core.idx 0 r 1) + 15) / 16;
+    let jm = ((1, 2)#(np % 2 == 0), 4)#(np % 4 == 0);
+    let t3 = split_par (split_par (split_par (t, 0, 4), 2, 16), 2, jm);
     // Dims now (io, ii, jo, jm, ji, k): bring jo outermost and jm before ii.
     let r3   = t3#2_9 + t3#3_9;
     let perm = ‹j: r3; let jj = core.idx2nat j;
