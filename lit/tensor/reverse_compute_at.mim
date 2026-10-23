@@ -2,6 +2,8 @@
 
 // C[i] = Σ_j (A · B)[i, j] inside the loop of i of the product: the row sum runs as the product's action after each
 // of its rows, into C's whole result, which is read once the product is done.
+// `two` runs the row sum and P + 1 after each row of one P; `swiglu` computes G ⊙ U inside the loop of i of G, whose
+// action computes the row of U first.
 plugin core;
 plugin tensor;
 plugin affine;
@@ -24,6 +26,32 @@ lam ri (i j: affine.Index): «2; affine.Index» = (i, j);
 extern fun rowsum (a: «6, 5; I32», b: «5, 7; I32»): «6; I32» =
     let p = materialize (mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (mac, 0I32, id) mo (ma, mb) (buf a, buf b));
     return (materialize (reverse_compute_at (mr_tileable @1 @(1, 1) (6, 0, (6, 7)) (sum, 0I32, id) ro ri p, 0, 0)));
+
+fun inc (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun mul (_: I32, (x y: I32))@tt: I32 = return (x * y);
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
+
+// CHECK-LABEL: extern fun swiglu
+// CHECK:       tile_after
+// CHECK:       btensor.map_reduce_post {{.*}} ((1, 7), (1, 7, 5), 
+// CHECK:       btensor.map_reduce_post {{.*}} ((6, 7), (1, 7), 
+extern fun swiglu (a: «6, 5; I32», b c: «5, 7; I32»): «6, 7; I32» =
+    let g = materialize (mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (mac, 0I32, id) mo (ma, mb) (buf a, buf b));
+    let u = materialize (mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (mac, 0I32, id) mo (ma, mb) (buf a, buf c));
+    let h = mr_tileable @2 @(2, 0) ((6, 7), (0, 1), (6, 7)) (mul, 0I32, id) po (po, po) (g, u);
+    return (materialize (reverse_compute_at (reverse_compute_at (h, 0, 0), 1, 0)));
+
+// CHECK-LABEL: extern fun two
+// CHECK:       tile_after
+// CHECK:       btensor.map_reduce_post {{.*}} (6, (1, 7), 
+// CHECK:       btensor.map_reduce_post {{.*}} ((6, 7), (1, 7), 
+// CHECK:       buffer.after
+// CHECK:       buffer.after
+extern fun two (a: «6, 5; I32», b: «5, 7; I32»): [«6; I32», «6, 7; I32»] =
+    let p = materialize (mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (mac, 0I32, id) mo (ma, mb) (buf a, buf b));
+    let s = materialize (reverse_compute_at (mr_tileable @1 @(1, 1) (6, 0, (6, 7)) (sum, 0I32, id) ro ri p, 0, 0));
+    let e = materialize (reverse_compute_at (mr_tileable @1 @(2, 0) ((6, 7), (0, 1), (6, 7)) (inc, 0I32, id) po po p, 0, 0));
+    return (s, e);
 
 extern lam _compile (): compile.Phase =
     compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);

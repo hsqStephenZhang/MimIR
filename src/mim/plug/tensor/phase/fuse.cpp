@@ -183,13 +183,14 @@ static std::optional<PureRead> read_through(World& w, const Def* value, const De
 // new combination function `f_new` invokes every inner combiner in post-order — each starting from
 // its own init — and finally invokes `f_o`, threading inner results into the corresponding outer
 // input slots.
-/// The input slots @p mr's schedule computes at a loop or caches, which keep their producers.
+/// The input slots @p mr's schedule computes at a loop, caches or runs in the producer of keep their producers.
 static u64 at_slots(const btensor::MapRedPost& mr) {
     using F    = btensor::MapRedPost;
     auto rec   = mr.sched_record();
     auto cache = Lit::isa<u64>(rec->proj(F::Num_Fields, F::Cache)).value_or(0);
     if (rec->proj(F::Num_Fields, F::At) != mr.sched->world().lit_tt()) return cache;
-    return cache | Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0);
+    return cache | Lit::isa<u64>(rec->proj(F::Num_Fields, F::AtSlots)).value_or(0)
+         | Lit::isa<u64>(rec->proj(F::Num_Fields, F::Rev)).value_or(0);
 }
 
 static bool is_at(u64 slots, u64 k) { return k < 64 && (slots >> k) & 1; }
@@ -378,6 +379,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
         };
         fields[F::AtSlots] = move(fields[F::AtSlots]);
         fields[F::Cache]   = move(fields[F::Cache]);
+        fields[F::Rev]     = move(fields[F::Rev]);
 
         // A function of the slot answers for a kept slot at its new position.
         auto per_slot = [&](const Def* f, const char* name) {

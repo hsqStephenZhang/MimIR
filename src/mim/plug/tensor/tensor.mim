@@ -1044,21 +1044,24 @@ anx lam transform_layout (t: Tileable, i a b: Nat): Tileable =
 ///
 /// #### reverse_compute_at
 ///
-/// Compute `t` inside the loop of dim `d` of the producer of its input `i`, one tile at a time (cf. TVM's
+/// Compute `t` inside the loop of dim `d` of the producer of its input `i`, one part at a time (cf. TVM's
 /// `reverse_compute_at`): once an iteration of that loop has written its box of the producer, the part of `t` that
 /// reads only that box (see `affine.preimage`) runs, into `t`'s whole result.
 ///
 /// - `lower_to_mem` realizes it where input `i` is a `map_reduce_post` that no other op has computed yet, the part
 ///   of `t` is exact and spans `t`'s reduction dims, and it logs a warning wherever it cannot.
 /// - `d` must be a parallel dim of the producer, and the loops around it those of the dims before it.
-/// - It excludes `compute_at` and `tile_and_fuse` on `t`.
+/// - Applied to several inputs, `t` runs inside the loop of the producer of the first, and each part computes the box
+///   of the others' producers it reads before it, as two GEMMs of SwiGLU feed their product one tile at a time.
+/// - Every op that asks for one producer at one loop runs its part there, in the order they are lowered; one whose
+///   other inputs depend on such an op reads the producer whole instead.
+/// - `compute_at` on its other inputs computes them inside the loops of its part.
 anx lam reverse_compute_at (t: Tileable, i d: Nat): Tileable =
-    let d = refly.check (core.icmp.e @2 (t#sched#at, ff), d,
-                         "reverse_compute_at: an op computed inside its producer computes no input at a loop");
-    let t = t#sched#at ← tt;
-    let t = t#sched#rev ← tt;
-    let t = t#sched#at_slots ← slot_bit i;
-    t#sched#at_dim ← lm (_: Nat): Nat = d;
+    let s   = t#sched;
+    let bit = slot_bit i;
+    let t   = t#sched#at ← tt;
+    let t   = t#sched#rev ← s#rev + bit * (1 - s#rev / bit % 2);
+    t#sched#at_dim ← lm (j: Nat): Nat = (s#at_dim j, d)#(j == i);
 ///
 /// #### hoist_red
 ///

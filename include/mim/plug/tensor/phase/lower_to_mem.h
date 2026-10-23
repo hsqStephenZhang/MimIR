@@ -70,6 +70,8 @@ private:
         u64 runs;           ///< How often the op runs.
         u64 post_dim = 0;   ///< The loop that runs `post` after the nest inside it, if `post` is set.
         Lam* post    = nullptr;
+        DefVec given = {};  ///< The buffers that already hold some inputs, null for the others.
+        u64 ahead    = 0;   ///< The inputs to compute ahead of the op whatever its schedule asks.
     };
 
     /// The op of @p s applied to @p mem and @p dst, `[mem, dst]`, with the inputs its schedule or an enclosing
@@ -162,6 +164,8 @@ private:
 
     /// How many ops read each old map_reduce_post.
     DefMap<u64> consumers_;
+    /// The old map_reduce_posts that read each old map_reduce_post as an input.
+    DefMap<std::vector<const App*>> readers_;
 
     /// A function is bufferized iff it is external, set, and mentions a tensor type in its domain.
     bool is_tensor_fn(Lam*) const;
