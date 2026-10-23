@@ -38,7 +38,7 @@ let c = generate (6, 7) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wr
 lam prod (f: Fn [I32, «2; I32»] → I32) =
     binary add (materialize (mr_tileable @2 @(2, 1) ((6, 7), (0, 1), (6, 7, 5)) (f, 0I32, id) mo (ma, mb) (buf a, buf b)), c);
 lam rsum (f: Fn [I32, I32] → I32) (p: «6, 7; I32») = mr_tileable @1 @(1, 1) (6, 0, (6, 7)) (f, 0I32, id) ro ri p;
-lam co (_ j: affine.Index): affine.Index = j;
+lam co (j _: affine.Index): affine.Index = j;
 lam ci (j i: affine.Index): «2; affine.Index» = (i, j);
 lam csum (f: Fn [I32, I32] → I32) (p: «6, 7; I32») = mr_tileable @1 @(1, 1) (7, 0, (7, 6)) (f, 0I32, id) co ci p;
 lam d6 (u v: «6; I32»): I32 = reduce (add, 0I32) 0₁ (binary ne (u, v));

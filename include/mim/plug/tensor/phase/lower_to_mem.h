@@ -166,6 +166,10 @@ private:
     DefMap<u64> consumers_;
     /// The old map_reduce_posts that read each old map_reduce_post as an input.
     DefMap<std::vector<const App*>> readers_;
+    /// The old ops whose lowering is under way.
+    DefSet lowering_;
+    /// Lowers the readers of @p p that compute it at a loop before an op that would compute it whole.
+    void lower_at_readers(const App* p);
     /// The old defs of the body of the lam being rewritten, short of other mutables.
     const DefSet& local_defs();
     Def* local_of_ = nullptr;

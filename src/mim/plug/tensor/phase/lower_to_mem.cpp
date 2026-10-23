@@ -333,7 +333,13 @@ const Def* LowerToMem::rewrite(const Def* old_def) {
     auto ins = old_def->isa<Insert>(); // allocates the copy it writes into
     if ((app && wants_fresh_mem(app)) || (ins && tensor_ty_.contains(ins->tuple()->type()))) {
         if (auto new_def = fe::lookup(fresh_memo_, old_def)) return new_def;
+        if (app && Axm::isa<tensor::map_reduce_post>(app)) {
+            lower_at_readers(app);
+            if (auto new_def = fe::lookup(fresh_memo_, old_def)) return new_def;
+        }
+        lowering_.emplace(old_def);
         auto new_def = app ? rewrite_imm_App(app) : rewrite_imm_Insert(ins);
+        lowering_.erase(old_def);
         fresh_memo_.emplace(old_def, new_def);
         return new_def;
     }
@@ -373,6 +379,7 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     // their own requests (and their own per-lam op memo).
     auto _       = fe::Restore(pending_, {});
     auto __      = fe::Restore(fresh_memo_, {});
+    auto ____    = fe::Restore(lowering_, {});
     auto new_lam = new_world().mut_lam(conv_type(lam));
     map(lam, new_lam);
     if (!lam->is_set()) return new_lam;
@@ -738,6 +745,31 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     if (!res) return nullptr;
     auto [m, out] = res->projs<2>();
     return scalar_result(app, m, out);
+}
+
+void LowerToMem::lower_at_readers(const App* p) {
+    using F   = btensor::MapRedPost;
+    auto& w   = new_world();
+    auto bit  = [](u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; };
+    auto list = readers_.find(p);
+    if (list == readers_.end()) return;
+    for (auto r : std::vector<const App*>(list->second)) {
+        if (lowering_.contains(r) || fresh_memo_.contains(r) || !local_defs().contains(r)) continue;
+        auto op = F::of(rewrite(r->callee())->as<App>());
+        auto rk = op.ranks();
+        if (!rk || op.sched_field(F::At) != w.lit_tt()) continue;
+        auto field = [&](F::Field f) { return Lit::isa<u64>(op.sched_field(f)).value_or(0); };
+        auto at    = (field(F::AtSlots) & ~field(F::Cache)) | field(F::Rev);
+        auto is    = r->arg()->proj(2, 0);
+        auto here  = false;
+        for (u64 k = 0; k != rk->nis; ++k)
+            here |= bit(at, k) && is->proj(rk->nis, k) == p;
+        // A reader of an op whose lowering is under way would lower that op again.
+        if (!here || reaches(r->arg(), lowering_)) continue;
+        log().d("lowering {} ahead, as it computes {} at a loop", r, p);
+        rewrite(r);
+        if (fresh_memo_.contains(p)) return;
+    }
 }
 
 const DefSet& LowerToMem::local_defs() {
