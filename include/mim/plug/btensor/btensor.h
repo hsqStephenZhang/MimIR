@@ -107,6 +107,12 @@ struct MapRedPost {
     }
 
     /// Which of the @p n dims the loop of @p dim and the loops around it iterate (see `btensor.at_outer`).
+    /// Whether the schedule asks for more than its nest - inputs computed at a loop, fused, cached, or this op
+    /// computed inside a producer - which an op that absorbs this one would drop.
+    bool keeps_schedule() const {
+        return sched_field(At) == sched->world().lit_tt() || Lit::isa<u64>(sched_field(Cache)).value_or(0) != 0;
+    }
+
     std::vector<bool> outer(u64 dim, u64 n) const {
         auto& w = sched->world();
         auto at = w.app(w.annex<btensor::at_outer>(), {sched_record(), Rp, Rn, Sr, w.lit_nat(dim)});

@@ -1,7 +1,7 @@
 // RUN: %mim %s -V -o - 2>&1 | %FileCheck %s
 
 // A copy whose input is computed at its loop is not read through: D[i] = P[i, i] keeps its own nest, which computes
-// each tile of P inside its loop of i.
+// each tile of P inside its loop of i, and so does Pᵀ with P fused into its tiles of rows.
 plugin core;
 plugin tensor;
 plugin affine;
@@ -17,6 +17,10 @@ lam pp (i j k: affine.Index): «3; affine.Index» = (i, j, k);
 lam pq (i j _: affine.Index): «2; affine.Index» = (i, j);
 lam dg (i: affine.Index): «2; affine.Index» = (i, i);
 lam one (i: affine.Index): «1; affine.Index» = (i,);
+lam tr (i j: affine.Index): «2; affine.Index» = (j, i);
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
+lam ro (i _: affine.Index): affine.Index = i;
+lam ri (i j: affine.Index): «2; affine.Index» = (i, j);
 
 // CHECK-NOT:   not realized
 // CHECK-LABEL: extern fun diag
@@ -25,6 +29,13 @@ extern fun diag (q: «4, 4, 3; I32»): «4; I32» =
     let p = materialize (mr_tileable @1 @(2, 1) ((4, 4), (0, 1), (4, 4, 3)) (sum, 0I32, id) pq pp (buf q));
     let d = materialize (compute_at (mr_tileable @1 @(1, 0) (4, 0, 4) (cp, 0I32, id) one dg p, 0, 0));
     return (materialize (mr_tileable @1 @(1, 0) (4, 0, 4) (inc, 0I32, id) one one d));
+
+// CHECK-LABEL: extern fun fused
+// CHECK:       tile_run
+extern fun fused (q: «4, 6, 3; I32»): «6; I32» =
+    let p = materialize (mr_tileable @1 @(2, 1) ((4, 6), (0, 1), (4, 6, 3)) (sum, 0I32, id) pq pp (buf q));
+    let c = materialize (tile_and_fuse (mr_tileable @1 @(2, 0) ((6, 4), (0, 1), (6, 4)) (cp, 0I32, id) po tr p, 0, 4));
+    return (materialize (mr_tileable @1 @(1, 1) (6, 0, (6, 4)) (sum, 0I32, id) ro ri c));
 
 extern lam _compile (): compile.Phase =
     compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);

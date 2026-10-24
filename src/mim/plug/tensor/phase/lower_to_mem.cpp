@@ -1275,7 +1275,6 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         }
         if (!projection) axis_of.assign(prn, std::nullopt);
 
-        auto map = maps[j];
         auto pro = Lit::isa<u64>(mr.Ris->proj(rks->nis, j));
         if (!pro || *pro != prk->ro) return give_up(j, "the read rank does not match the input");
         // Unit axes fold «1, 4» and «4, 1» to one type, so only the shapes tell whether the read and the write agree.

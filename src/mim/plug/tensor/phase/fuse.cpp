@@ -137,7 +137,7 @@ static std::optional<PureRead> read_through(World& w, const Def* value, const De
     if (auto pr = is_pure_read(value)) {
         // Reading through the copy would drop its own compute_at or cache_read.
         if (auto mr = Axm::isa<tensor::map_reduce_post>(value);
-            mr && at_slots(btensor::MapRedPost::of(mr->callee()->as<App>())) != 0)
+            mr && btensor::MapRedPost::of(mr->callee()->as<App>()).keeps_schedule())
             return {};
         // A source whose axes are all size 1 type-collapses to a plain scalar («1; T» ≡ T): the
         // fused op would carry an input the bufferization cannot represent - keep the copy instead.
@@ -248,7 +248,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
         auto im       = btensor::MapRedPost::of(inner->callee()->as<App>());
         auto inner_is = inner->arg()->proj(2, 0);
         // The fused op takes this op's schedule, which would drop the inner's compute_at or cache_read.
-        if (im.sched_field(F::At) == w.lit_tt() || at_slots(im) != 0) continue;
+        if (im.keeps_schedule()) continue;
 
         auto inner_nis_nat = Lit::isa<u64>(im.nis);
         if (!inner_nis_nat || im.So != mr.Sis->proj(nis_nat, k)) continue; // see reads_as_produced
@@ -492,7 +492,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     if (nis_nat == 0) return nullptr;
     if (mr.Sr != mr.So) return nullptr;
     // The fused op takes the producer's schedule, which would drop this one's compute_at or cache_read.
-    if (mr.sched_field(btensor::MapRedPost::At) == w.lit_tt() || at_slots(mr) != 0) return nullptr;
+    if (mr.keeps_schedule()) return nullptr;
 
     if (!is_identity_map(mr.map_out)) return nullptr;
 
