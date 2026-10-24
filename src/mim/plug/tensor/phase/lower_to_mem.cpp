@@ -868,6 +868,11 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     auto prk = mp.ranks();
     if (!prk || *dim >= prk->rp) return give_up("not a parallel dim of the producer");
     auto prn = prk->nloops();
+    // An iteration of the loop has written its box only where no other loop runs around it, as K blocks hoisted
+    // outside the loop would.
+    auto around = mp.outer(*dim, prn);
+    for (u64 e = 0; e != prn; ++e)
+        if (around[e] != (e <= *dim)) return give_up("other loops than the dims before it run around the loop");
 
     // The action after the nest inside the producer's loop of `dim`; it gets the loop-vector prefix.
     auto mem_ty      = w.call<mem::M>(0);
