@@ -801,6 +801,30 @@ void LowerToMem::lower_at_readers(const App* p) {
     }
 }
 
+const Def* LowerToMem::lower_whole(const Def* old) {
+    using F = btensor::MapRedPost;
+    if (auto old_k = Axm::isa<tensor::map_reduce_post>(old); old_k && alloc_mem_) {
+        if (auto memo = fe::lookup(fresh_memo_, old_k)) return to_buffer(memo, old_k);
+        auto mk     = F::of(rewrite(old_k->callee())->as<App>());
+        auto kr     = mk.ranks();
+        auto rev    = Lit::isa<u64>(mk.sched_field(F::Rev)).value_or(0);
+        auto old_kp = old_k->arg()->proj(2, 1);
+        if (auto kp_post = kr && rev == 0 ? buffer_list(rewrite(old_kp), old_kp, mk.nps) : nullptr) {
+            auto [km, kb] = buffer::op_alloc(mk.Ro, mk.So, mk.Tp, alloc_mem_)->projs<2>();
+            alloc_mem_    = km;
+            auto none     = std::vector<bool>(kr->nloops());
+            if (auto res = lower_staged({mk, mk, none, none, old_k->arg()->proj(2, 0), kp_post, old_k, false, 0, 1},
+                                        nullptr, kb)) {
+                auto [rm, rb]      = res->projs<2>();
+                alloc_mem_         = rm;
+                fresh_memo_[old_k] = scalar_result(old_k, rm, rb);
+                return rb;
+            }
+        }
+    }
+    return to_buffer(rewrite(old), old);
+}
+
 const DefSet& LowerToMem::local_defs() {
     if (auto lam = curr_mut(); lam != local_of_) {
         local_of_ = lam;
@@ -1014,28 +1038,7 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     auto [bm, p_full] = buffer::op_alloc(mp.Ro, mp.So, mp.Tp, alloc_mem_)->projs<2>();
     alloc_mem_        = bm;
 
-    // On a fresh memory, a buffer read only inside the producer's loop could collapse with an equal one here.
-    auto whole = [&](const Def* old) -> const Def* {
-        if (auto old_k = Axm::isa<tensor::map_reduce_post>(old)) {
-            if (auto memo = fe::lookup(fresh_memo_, old_k)) return to_buffer(memo, old_k);
-            auto mk     = F::of(rewrite(old_k->callee())->as<App>());
-            auto kr     = mk.ranks();
-            auto old_kp = old_k->arg()->proj(2, 1);
-            if (auto kp_post = kr && rev_of(mk) == 0 ? buffer_list(rewrite(old_kp), old_kp, mk.nps) : nullptr) {
-                auto [km, kb] = buffer::op_alloc(mk.Ro, mk.So, mk.Tp, alloc_mem_)->projs<2>();
-                alloc_mem_    = km;
-                auto none     = std::vector<bool>(kr->nloops());
-                if (auto res = lower_staged({mk, mk, none, none, old_k->arg()->proj(2, 0), kp_post, old_k, false, 0, 1},
-                                            nullptr, kb)) {
-                    auto [rm, rb]      = res->projs<2>();
-                    alloc_mem_         = rm;
-                    fresh_memo_[old_k] = scalar_result(old_k, rm, rb);
-                    return rb;
-                }
-            }
-        }
-        return to_buffer(rewrite(old), old);
-    };
+    auto whole   = [&](const Def* old) { return lower_whole(old); };
     auto bit     = [](u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; };
     auto given   = std::vector<DefVec>();
     auto post_is = DefVec();
@@ -1244,7 +1247,11 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto prk = mp.ranks();
         if (!prk) return give_up(j, "the input's ranks are not known");
         auto old_pp = old_p->arg()->proj(2, 1);
-        auto p_post = prk->nps == 0 ? w.tuple() : buffer_list(rewrite(old_pp), old_pp, mp.nps);
+        auto p_post = prk->nps == 0
+                        ? w.tuple()
+                        : buffer_list(w.tuple(DefVec(prk->nps,
+                                                     [&](size_t k) { return lower_whole(old_pp->proj(prk->nps, k)); })),
+                                      old_pp, mp.nps);
         if (!p_post) return give_up(j, "an epilogue input of the input is not a buffer");
         auto prn = prk->nloops();
 
@@ -1522,7 +1529,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         }
         if (staged[j] || (wants(j) && !tried[j] && stage(j))) continue;
         auto old = s.old_is->proj(rks->nis, j);
-        ins[j]   = to_buffer(rewrite(old), old);
+        ins[j]   = mem ? lower_whole(old) : to_buffer(rewrite(old), old);
         if (!Axm::isa<buffer::Buf>(ins[j]->type())) return nullptr;
     }
 

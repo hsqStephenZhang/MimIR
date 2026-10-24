@@ -168,6 +168,9 @@ private:
     DefMap<u64> consumers_;
     /// The old map_reduce_posts that read each old map_reduce_post as an input.
     DefMap<std::vector<const App*>> readers_;
+    /// The buffer of @p old computed whole on #alloc_mem_, for a tile or a part that reads it inside a loop: lowered
+    /// on a fresh memory, it could collapse with an equal allocation there.
+    const Def* lower_whole(const Def* old);
     /// The old ops whose lowering is under way.
     DefSet lowering_;
     /// The old producers some compute_at computes one tile at a time, short of their whole result.
