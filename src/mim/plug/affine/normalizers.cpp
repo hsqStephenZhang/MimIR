@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <ranges>
@@ -116,8 +117,15 @@ public:
                 case semiop::mul: return {};
                 case semiop::floordiv:
                     return Itv{div(x->lo, c), div(x->hi, c), div_width(*x, c, 0), x->exact, x->dims, {}};
-                case semiop::ceildiv:
-                    return Itv{cdiv(x->lo, c), cdiv(x->hi, c), div_width(*x, c, -1), x->exact, x->dims, {}};
+                case semiop::ceildiv: {
+                    // `x + (c − 1)` wraps past the largest `Nat` like the lowering, which takes any quotient then.
+                    auto top   = w_.lit_nat(std::numeric_limits<u64>::max());
+                    auto fits  = w_.call(core::ncmp::le, Defs{sub(c, one()), sub(top, x->hi)});
+                    auto lo    = select(fits, cdiv(x->lo, c), w_.lit_nat_0());
+                    auto hi    = select(fits, cdiv(x->hi, c), div(top, c));
+                    auto width = select(fits, div_width(*x, c, -1), top);
+                    return Itv{lo, hi, width, all(x->exact, fits, w_.lit_tt()), x->dims, {}};
+                }
                 case semiop::rem: return rem(*x, c);
             }
         }
@@ -213,7 +221,7 @@ private:
         return Itv{w_.lit_nat_0(), w_.lit_nat(u64(b - 1)), c, whole, x.dims, {}};
     }
 
-    const Def* cdiv(const Def* a, const Def* b) { return div(sub(add(a, b), one()), b); }
+    const Def* cdiv(const Def* a, const Def* b) { return div(add(a, sub(b, one())), b); }
 
     /// Bounds built from @p operands that may have saturated are recomputed from the linear form, which saturates
     /// only once at its end, or dropped; @p lo and @p hi state that this op itself may have saturated them.

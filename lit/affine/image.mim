@@ -39,8 +39,14 @@ extern fun c_win (): B2 = return (affine.image win ((1, 0), (3, 3), (16, 16)));
 extern fun c_bcast (): B2 = return (affine.image bcast ((2, 1), (3, 4), (8, 1)));
 
 // i ∈ [5, 12): floordiv 4 ∈ [1, 2], ceildiv 4 ∈ [2, 3]; at a run-time origin they may take 3 values.
+// There, ceildiv is exact only where i + 3 does not wrap.
 extern fun c_div (): B2 = return (affine.image fdiv (5, 7, (8, 8)));
 extern fun c_div_sym (i0: Nat): B2 = return (affine.image fdiv (i0, 7, (8, 8)));
+
+// At the largest Nat, ceildiv 1 is that Nat, 3 rem 4, and i + 3 wraps for ceildiv 4, which may then be any quotient.
+lam cwrap (i: affine.Index): «2; affine.Index» =
+    (affine.semiop.rem (affine.semiop.ceildiv (i, 1), 4), affine.semiop.ceildiv (i, 4));
+extern fun c_wrap (): B2 = return (affine.image cwrap (18446744073709551615, 1, (4, 8)));
 
 // A strip-mined dim 8·i + j, j ∈ [0, 8), stays in one block of 16 at any i, and spans two blocks of 12 at most.
 lam fsplit (i j: affine.Index): «2; affine.Index» =
@@ -156,7 +162,7 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK-LABEL: extern fun c_div
 // CHECK-NEXT:  return ((1, 2), ‹2; 2›, ‹2; 2›, ‹2; tt›);
 // CHECK-LABEL: extern fun c_div_sym
-// CHECK:       return ({{.*}}, {{.*}}, ‹2; 3›, ‹2; tt›);
+// CHECK:       return ({{.*}}, {{.*}}, (3, {{.*}}), (tt, _{{[0-9]+}}));
 // CHECK-LABEL: extern fun c_empty
 // CHECK-NEXT:  return (0, 0, 0, tt);
 // CHECK-LABEL: extern fun c_gap
@@ -189,6 +195,8 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK-NEXT:  return (‹2; 2›, ‹2; 5›, ‹2; 5›, (ff, tt));
 // CHECK-LABEL: extern fun c_win
 // CHECK-NEXT:  return ((1, 2), (5, 7), (5, 7), (tt, ff));
+// CHECK-LABEL: extern fun c_wrap
+// CHECK-NEXT:  return ((3, 0), (1, 8), (1, 8), (tt, ff));
 // CHECK-LABEL: extern fun chain
 // CHECK-NEXT:  return 2;
 // CHECK-LABEL: extern fun p_div
