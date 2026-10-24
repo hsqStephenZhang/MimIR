@@ -252,6 +252,12 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
         auto inner_nis_nat = Lit::isa<u64>(im.nis);
         if (!inner_nis_nat || im.So != mr.Sis->proj(nis_nat, k)) continue; // see reads_as_produced
+        // An input the inner reads that this op computes at a loop would be read through a second slot.
+        auto rereads = false;
+        for (u64 l = 0; l != *inner_nis_nat; ++l)
+            for (u64 s = 0; s != nis_nat; ++s)
+                rereads |= at(s) && inner_is->proj(*inner_nis_nat, l) == is->proj(nis_nat, s);
+        if (rereads) continue;
 
         // Epilogue inputs on the inner would have to be re-read inside the fused combiner; only
         // epilogue-free inners fuse (their identity post is checked below).
