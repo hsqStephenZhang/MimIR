@@ -27,6 +27,9 @@ lam ew (f: Fn [I32, «2; I32»] → I32) (q: «6, 7; I32») =
 // CHECK-LABEL: extern fun first (q: buffer.Buf (2, (6, 7), I32))
 // CHECK:       tile_after
 // CHECK:       btensor.map_reduce_post {{.*}} ((6, 7), (1, 7), {{.*}} (_{{[0-9]+}}#tt, q)
+// CHECK-LABEL: extern fun second (q_1: buffer.Buf (2, (6, 7), I32))
+// CHECK:       tile_after
+// CHECK:       btensor.map_reduce_post {{.*}} ((6, 7), (1, 7), {{.*}} (_{{[0-9]+}}#tt, q_1)
 extern fun first (q: «6, 7; I32»): «6, 7; I32» = return (materialize (reverse_compute_at (ew mul q, 0, 0)));
 extern fun second (q: «6, 7; I32»): «6, 7; I32» = return (materialize (reverse_compute_at (ew add q, 0, 0)));
 

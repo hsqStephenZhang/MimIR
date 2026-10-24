@@ -312,7 +312,9 @@ const Def* LowerToMem::bot_mem() {
 const Def* LowerToMem::fresh_mem() {
     auto k = mem::mut_con(new_world())->set("fresh_mem");
     pending_.push_back(k);
-    return k->var();
+    auto var = k->var()->as<Var>();
+    bind_new(var);
+    return var;
 }
 
 const Def* LowerToMem::wrap_fresh_mem(const Def* body) {
@@ -388,9 +390,12 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     map(lam, new_lam);
     if (!lam->is_set()) return new_lam;
 
+    // What reads a fresh memory of this body is rewritten anew in any other body that mentions the same old Def.
+    push();
     auto ___    = enter(lam);
     auto filter = rewrite(lam->filter());
     auto body   = wrap_fresh_mem(rewrite(lam->body()));
+    pop();
     new_lam->set(filter, body);
     return seal(lam, new_lam);
 }
