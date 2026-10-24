@@ -76,6 +76,15 @@ extern fun c_clamp (): B2 = return (affine.image shift ((4, 1), (2, 3), (6, 8)))
 // Row 1 of a «4, 6» reshaped to «3, 8»: flat [6, 12) is row 0 or 1, and columns that wrap.
 extern fun c_resh (): B2 = return (affine.image resh ((1, 0), (1, 6), (3, 8)));
 
+// 9 − i of i ∈ [2, 5) runs down [5, 8) exactly; of j ∈ [8, 12) it would drop below 0.
+lam flip (i j: affine.Index): «2; affine.Index» = (affine.op.sub (affine.lit 9, i), affine.op.sub (affine.lit 9, j));
+extern fun c_flip (): B2 = return (affine.image flip ((2, 8), (3, 4), (16, 16)));
+
+// Whole rows of a «4, 6» are one flat range; a part of each row is not.
+lam flat (o: «2; affine.Index»): affine.Index = affine.linearize (o, (4, 6));
+extern fun c_rows (i0: Nat): [Nat, Nat, Nat, Bool] = return (affine.image flat ((i0, 0), (2, 6), 24));
+extern fun c_cols (): [Nat, Nat, Nat, Bool] = return (affine.image flat ((1, 1), (2, 5), 24));
+
 // (i − 5) + 5 is i: an intermediate below 0 must not saturate; a floordiv of one is not bounded.
 lam back (i: affine.Index): «2; affine.Index» =
     (affine.op.add (affine.op.sub (i, affine.lit 5), affine.lit 5), affine.semiop.floordiv (affine.op.sub (i, affine.lit 1), 2));
@@ -115,6 +124,8 @@ lam ws (i j _: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.li
 lam wd (i j _: affine.Index): «2; affine.Index» = (i, affine.semiop.floordiv (j, 2));
 lam wf (v _: affine.Index): «2; affine.Index» = (affine.semiop.floordiv (v, 4), affine.semiop.rem (v, 4));
 lam wm (v w: affine.Index): «2; affine.Index» = (affine.semiop.rem (v, 4), w);
+lam wv (i j _: affine.Index): «2; affine.Index» = (affine.op.sub (affine.lit 9, i), j);
+lam wx (i j _: affine.Index): «2; affine.Index» = (affine.op.add (affine.semiop.mul (i, 2), affine.lit 1), j);
 let P2 = [«2; Nat», «2; Nat», «2; Nat», Bool];
 
 // The points of an (i, j | k) nest writing the box (2..4, 4..8): the reduction dim k stays whole.
@@ -125,6 +136,12 @@ extern fun p_tr (): P3 = return (affine.preimage wt ((4, 2), (4, 2), (6, 8, 5)))
 
 // A tile's shifted write map at a run-time origin.
 extern fun p_shift (a0: Nat): P3 = return (affine.preimage ws ((a0, 3), (2, 4), (6, 8, 5)));
+
+// 9 − i ∈ [5, 8) is i ∈ [2, 5).
+extern fun p_flip (): P3 = return (affine.preimage wv ((5, 4), (3, 4), (10, 8, 5)));
+
+// 2·i + 1 ∈ [4, 9) is i ∈ [2, 4); a run of 5 holds at most 3 odd values.
+extern fun p_stride (): P3 = return (affine.preimage wx ((4, 4), (5, 4), (10, 8, 5)));
 
 // j floordiv 2 ∈ [1, 3) is j ∈ [2, 6).
 extern fun p_div (): P3 = return (affine.preimage wd ((1, 1), (2, 2), (6, 8, 5)));
@@ -159,12 +176,16 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK-NEXT:  return ((2, 0), (3, 1), (3, 1), ‹2; tt›);
 // CHECK-LABEL: extern fun c_clamp
 // CHECK-NEXT:  return ((5, 0), (1, 3), (2, 3), ‹2; tt›);
+// CHECK-LABEL: extern fun c_cols
+// CHECK-NEXT:  return (7, 11, 11, ff);
 // CHECK-LABEL: extern fun c_div
 // CHECK-NEXT:  return ((1, 2), ‹2; 2›, ‹2; 2›, ‹2; tt›);
 // CHECK-LABEL: extern fun c_div_sym
 // CHECK:       return ({{.*}}, {{.*}}, (3, {{.*}}), (tt, _{{[0-9]+}}));
 // CHECK-LABEL: extern fun c_empty
 // CHECK-NEXT:  return (0, 0, 0, tt);
+// CHECK-LABEL: extern fun c_flip
+// CHECK-NEXT:  return ((5, 0), (3, 2), (3, 4), (tt, ff));
 // CHECK-LABEL: extern fun c_gap
 // CHECK:       return ({{.*}}, {{.*}}, 10, ff);
 // CHECK-LABEL: extern fun c_mixed
@@ -183,6 +204,8 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK-NEXT:  return ((1, 0), (4, 8), (4, 8), (tt, ff));
 // CHECK-LABEL: extern fun c_resh
 // CHECK-NEXT:  return (‹2; 0›, (2, 8), (3, 8), (tt, ff));
+// CHECK-LABEL: extern fun c_rows
+// CHECK:       return (_{{[0-9]+}}, _{{[0-9]+}}, 12, tt);
 // CHECK-LABEL: extern fun c_shift
 // CHECK-NEXT:  return ((1, 0), (2, 3), (2, 3), ‹2; tt›);
 // CHECK-LABEL: extern fun c_stencil
@@ -207,11 +230,15 @@ extern lam _compile (): compile.Phase = compile.phases ff (compile.cleanup,);
 // CHECK-NEXT:  return ((1, 0), ‹2; 3›, (4, 3), tt);
 // CHECK-LABEL: extern fun p_flat_none
 // CHECK-NEXT:  return ((4, 0), (0, 3), (1, 3), tt);
+// CHECK-LABEL: extern fun p_flip
+// CHECK-NEXT:  return ((2, 4, 0), (3, 4, 5), (3, 4, 5), tt);
 // CHECK-LABEL: extern fun p_proj
 // CHECK-NEXT:  return ((2, 4, 0), (2, 4, 5), (2, 4, 5), tt);
 // CHECK-LABEL: extern fun p_rem
 // CHECK-NEXT:  return (‹2; 0›, (16, 3), (16, 3), ff);
 // CHECK-LABEL: extern fun p_shift
 // CHECK:       return (({{.*}}, 4, 0), ({{.*}}, 4, 5), (2, 4, 5), tt);
+// CHECK-LABEL: extern fun p_stride
+// CHECK-NEXT:  return ((2, 4, 0), (2, 4, 5), (3, 4, 5), tt);
 // CHECK-LABEL: extern fun p_tr
 // CHECK-NEXT:  return ((2, 4, 0), (2, 4, 5), (2, 4, 5), tt);

@@ -87,13 +87,17 @@ public:
                     return settle(itv, x->lo_clamped || y->lo_clamped, false, false);
                 }
                 case op::sub: {
-                    auto exact = all(x->exact, y->dims == 0 ? y->exact : w_.lit_ff(), disjoint);
+                    // A range taken backwards is a range while no value drops below 0.
+                    auto down  = y->dims == 0 ? y->exact : all(y->exact, le(y->hi, x->lo), w_.lit_tt());
+                    auto exact = all(x->exact, down, disjoint);
                     auto itv   = Itv{sub(x->lo, y->hi), sub(x->hi, y->lo), width, exact, dims, lin_sub(x->lin, y->lin)};
                     auto ge    = [](const Def* a, const Def* b) {
                         auto la = Lit::isa(a), lb = Lit::isa(b);
                         return lb == 0 || (la && lb && *la >= *lb);
                     };
-                    return settle(itv, x->lo_clamped || y->lo_clamped, !ge(x->lo, y->hi), !ge(x->hi, y->lo));
+                    auto lo = !ge(x->lo, y->hi), hi = !ge(x->hi, y->lo);
+                    // `down` already rules out an upper bound that saturated.
+                    return settle(itv, x->lo_clamped || y->lo_clamped, lo || hi, y->dims == 0 && hi);
                 }
                 default: return {};
             }
@@ -147,6 +151,9 @@ public:
     const Def* mul(const Def* a, const Def* b) { return w_.call(core::nat::mul, Defs{a, b}); }
     const Def* div(const Def* a, const Def* b) { return w_.call(core::nat::div, Defs{a, b}); }
     const Def* lt(const Def* a, const Def* b) { return w_.call(core::ncmp::l, Defs{a, b}); }
+    const Def* le(const Def* a, const Def* b) { return w_.call(core::ncmp::le, Defs{a, b}); }
+    const Def* eq(const Def* a, const Def* b) { return w_.call(core::ncmp::e, Defs{a, b}); }
+    const Def* cdiv(const Def* a, const Def* b) { return div(add(a, sub(b, one())), b); }
     const Def* select(const Def* c, const Def* t, const Def* f) { return w_.extract(w_.tuple({f, t}), c); }
     // No `Nat` is below 0.
     const Def* min(const Def* a, const Def* b) {
@@ -221,8 +228,6 @@ private:
         return Itv{w_.lit_nat_0(), w_.lit_nat(u64(b - 1)), c, whole, x.dims, {}};
     }
 
-    const Def* cdiv(const Def* a, const Def* b) { return div(add(a, sub(b, one())), b); }
-
     /// Bounds built from @p operands that may have saturated are recomputed from the linear form, which saturates
     /// only once at its end, or dropped; @p lo and @p hi state that this op itself may have saturated them.
     std::optional<Itv> settle(Itv itv, bool operands, bool lo, bool hi) {
@@ -288,7 +293,7 @@ private:
         return Itv{lo, hi, width, all(x.exact, same, w_.lit_tt()), x.dims, {}};
     }
 
-    /// Row-major strides `∏_{j>k} s#j`; exact only while every index but the innermost is a single value.
+    /// Row-major strides `∏_{j>k} s#j`; exact while every index that moves has only whole rows `[0, s#j)` inside it.
     std::optional<Itv> linearize(const Def* app) {
         auto [idxs, s] = app->as<App>()->args<2>();
         auto r         = Lit::isa(s->arity());
@@ -298,6 +303,7 @@ private:
         const Def* width  = one();
         const Def* stride = one();
         const Def* exact  = w_.lit_tt();
+        const Def* whole  = w_.lit_tt();
         u64 dims          = 0;
         auto lin          = std::optional<Lin>(Lin{std::vector<int64_t>(n_)});
         bool clamped      = false;
@@ -308,7 +314,10 @@ private:
             lo    = add(lo, mul(x->lo, stride));
             hi    = add(hi, mul(x->hi, stride));
             width = add(width, mul(sub(x->width, one()), stride));
-            exact = all(exact, x->exact, k + 1 == *r || x->dims == 0 ? w_.lit_tt() : w_.lit_ff());
+            auto moves = x->dims == 0 ? w_.lit_tt() : (x->dims & dims) == 0 ? whole : w_.lit_ff();
+            exact      = all(exact, x->exact, moves);
+            auto row   = all(x->exact, eq(x->lo, w_.lit_nat_0()), eq(x->hi, sub(s->proj(*r, k), one())));
+            whole      = all(whole, x->lo_clamped ? w_.lit_ff() : row, w_.lit_tt());
             dims |= x->dims;
             lin    = lin_add(lin, lin_mul(x->lin, stride));
             stride = mul(stride, s->proj(*r, k));
@@ -563,30 +572,51 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
             d = Split{*b, lo->proj(*lm, j), ext->proj(*lm, j)};
             continue;
         }
+        auto y_lo = lo->proj(*lm, j), y_ext = ext->proj(*lm, j);
+        // `y − (sym + k)`, which saturates at 0 only once its additions are done.
+        auto shift = [&](const Lin& l, const Def* y) {
+            if (l.k < 0) y = region.add(y, w.lit_nat(u64(-l.k)));
+            if (l.sym) y = region.sub(y, l.sym);
+            return l.k > 0 ? region.sub(y, w.lit_nat(u64(l.k))) : y;
+        };
+        // `a − (x#i + sym + k)` with a constant `a` reads `x#i` backwards.
+        if (auto o = Axm::isa<affine::op>(body->proj(*lm, j)); o && o.id() == op::sub) {
+            auto [a, b] = o->args<2>();
+            auto x = region.eval(a), y = region.eval(b);
+            if (x && y && x->lin && x->lin->constant() && !x->lo_clamped && y->lin && one(*y->lin)) {
+                auto i = u64(std::ranges::find(y->lin->c, 1) - y->lin->c.begin());
+                if (seen[i]) {
+                    exact = false;
+                    continue;
+                }
+                seen[i]  = true;
+                auto top = shift(*y->lin, region.add(x->lo, w.lit_nat_1()));
+                los[i]   = region.sub(top, region.add(y_lo, y_ext));
+                exts[i]  = region.sub(region.min(region.sub(top, y_lo), S->proj(*ln, i)), los[i]);
+                caps[i]  = region.min(y_ext, S->proj(*ln, i));
+                continue;
+            }
+        }
         auto itv = region.eval(body->proj(*lm, j));
         if (itv && itv->lin && split(*itv->lin, j)) continue;
-        if (!itv || !itv->lin || !one(*itv->lin)) {
+        if (!itv || !itv->lin || std::ranges::count_if(itv->lin->c, [](int64_t ci) { return ci != 0; }) != 1) {
             exact = false;
             continue;
         }
         auto& l = *itv->lin;
-        auto i  = u64(std::ranges::find(l.c, 1) - l.c.begin());
+        auto i  = u64(std::ranges::find_if(l.c, [](int64_t ci) { return ci != 0; }) - l.c.begin());
         if (seen[i]) {
             exact = false;
             continue;
         }
         seen[i] = true;
-        // x#i = y#j − (sym + k), which saturates at 0 only once its additions are done.
-        auto shift = [&](const Def* y) {
-            if (l.k < 0) y = region.add(y, w.lit_nat(u64(-l.k)));
-            if (l.sym) y = region.sub(y, l.sym);
-            return l.k > 0 ? region.sub(y, w.lit_nat(u64(l.k))) : y;
-        };
-        auto y_lo = lo->proj(*lm, j);
-        auto hi   = region.min(shift(region.add(y_lo, ext->proj(*lm, j))), S->proj(*ln, i));
-        los[i]    = shift(y_lo);
-        exts[i]   = region.sub(hi, los[i]);
-        caps[i]   = region.min(ext->proj(*lm, j), S->proj(*ln, i));
+        // `c·x#i` lands in the box from the first multiple of `c` in it on.
+        auto c     = w.lit_nat(u64(l.c[i]));
+        auto first = [&](const Def* y) { return l.c[i] == 1 ? shift(l, y) : region.cdiv(shift(l, y), c); };
+        auto hi    = region.min(first(region.add(y_lo, y_ext)), S->proj(*ln, i));
+        los[i]     = first(y_lo);
+        exts[i]    = region.sub(hi, los[i]);
+        caps[i]    = region.min(l.c[i] == 1 ? y_ext : region.cdiv(y_ext, c), S->proj(*ln, i));
     }
 
     for (u64 i = 0; i != *ln; ++i) {
