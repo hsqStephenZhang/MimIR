@@ -79,7 +79,6 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     auto rn    = rks.nloops();
     auto rec   = mr.sched_record();
     auto field = [&](F::Field f) { return rec->proj(F::Num_Fields, f); };
-    auto bit   = [](u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; };
     auto cache = Lit::isa<u64>(field(F::Cache)).value_or(0);
     auto slots = Lit::isa<u64>(field(F::AtSlots)).value_or(0);
     auto packs = Lit::isa<u64>(field(F::Prepacks)).value_or(0);
@@ -96,8 +95,9 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
     auto param = [&](const Def* d) {
         if (auto e = d->isa<Extract>()) d = e->tuple();
         if (auto var = d->isa<Var>())
-            return std::ranges::any_of(old_world().externals().muts(),
-                                       [&](Def* ext) { return lookup(ext) == var->binder(); });
+            return var->binder()->is_external() || std::ranges::any_of(old_world().externals().muts(), [&](Def* ext) {
+                       return lookup(ext) == var->binder();
+                   });
         return false;
     };
     auto size = [](const Def* shape, u64 n) {
@@ -109,8 +109,8 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
 
     auto copied = std::vector<bool>(rks.nis);
     for (u64 i = 0; i != rks.nis; ++i) {
-        if (!bit(cache, i)) continue;
-        auto at = bit(slots, i);
+        if (!has_slot(cache, i)) continue;
+        auto at      = has_slot(slots, i);
         auto give_up = [&](const char* why) {
             if (strict(w))
                 mr.map_out->blame("cache_read of input {} of {} not realized: {}", i, mr.map_out, why).bail();
@@ -147,21 +147,21 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             auto box = w.tuple({w.tuple(lo), w.tuple(DefVec(rn, ext)), wide});
             return w.app(w.app(w.app(w.annex<affine::image>(), {mr.Rn, R}), maps[i]), box);
         };
-        auto box = image([&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); }, std::nullopt);
+        auto [lo, _, box_cap, __]
+            = image([&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); }, std::nullopt)->projs<4>();
         auto why = static_cast<const char*>(nullptr);
         for (u64 a = 0; !why && a != *r; ++a) {
             auto point = image([&](size_t) { return w.lit_nat_1(); }, a);
             if (point->proj(4, 3)->proj(*r, a) != w.lit_tt())
                 why = "the read of the corner is not known exactly";
-            else if (box->proj(4, 0)->proj(*r, a) != point->proj(4, 0)->proj(*r, a))
+            else if (lo->proj(*r, a) != point->proj(4, 0)->proj(*r, a))
                 why = "the box does not start at the read of the corner";
         }
         if (why) {
             give_up(why);
             continue;
         }
-        auto lo   = box->proj(4, 0);
-        auto caps = DefVec(*r, [&](size_t a) { return box->proj(4, 2)->proj(*r, a); });
+        auto caps = DefVec(*r, [&](size_t a) { return box_cap->proj(*r, a); });
         if (!std::ranges::all_of(caps, [](const Def* c) { return Lit::isa(c).has_value(); })) {
             give_up("the box has no literal size");
             continue;
@@ -178,20 +178,17 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             auto still = w.tuple(DefVec(rn, [&](size_t e) { return e == d ? lit(w.lit_nat_0()) : mo->proj(rn, e); }));
             return w.app(maps[i], mo)->proj(*r, a) != w.app(maps[i], still)->proj(*r, a);
         };
-        // The vector loop is the vector dim, or the dim after it where that is the block dim jammed into it; both run
-        // innermost, inside the other loops of the box.
+        // The vector loop, and a block dim jammed into it, run innermost inside the other loops of the box.
         auto vd    = Lit::isa<u64>(field(F::VDim));
         auto block = vd && *vd + 2 == rks.rp ? vd : std::nullopt;
         if (block) ++*vd;
         auto rank = [&](u64 d) { return d == vd || d == block ? rn : d; };
-        // An axis sorts by the innermost loop that moves it, so that the copy follows the order the box is read in
-        // (cf. TVM's layout rewrite): an axis no loop moves first.
+        // An axis sorts by the innermost loop that moves it, so the copy follows the read (cf. TVM's layout rewrite).
         auto key = std::vector<u64>(*r);
         for (u64 a = 0; a != *r; ++a)
             for (u64 d = 0; d != rn; ++d)
                 if (!fixed[d] && moves(d, a)) key[a] = std::max(key[a], rank(d) + 1);
-        // Without a layout, a vector run that moves another axis than the last splits that axis by the run, so that
-        // the vector loop reads the copy at unit stride (cf. OpenBLAS packing a transposed B).
+        // Without a layout, a vector run along another axis than the last splits that axis by the run (cf. OpenBLAS).
         if (by <= 1 && vd && *vd < rks.rp && !fixed[*vd])
             if (auto run = Lit::isa<u64>(mr.Sr->proj(rn, *vd)); run && *run > 1) {
                 auto moved = std::vector<u64>();
@@ -225,7 +222,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
 
         // A frozen input keeps the copies of every box, stacked by the dims outside the copy that move the box.
         auto stack   = std::vector<u64>();
-        auto persist = bit(packs, i);
+        auto persist = has_slot(packs, i);
         for (u64 d = 0; persist && d != rn; ++d)
             if (fixed[d] && std::ranges::any_of(std::views::iota(u64(0), *r), [&](u64 a) { return moves(d, a); }))
                 stack.push_back(d);
@@ -372,8 +369,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         copied[i] = true;
     }
 
-    // A vector loop over the last parallel dim may compute a cut run whole where every input it moves is a copy of
-    // whole runs: the copies clamp their reads, and only the write-back of the run stops at the lim.
+    // Where every input the vector dim moves copies whole runs, a cut run is computed whole and written to its lim.
     auto vdim = Lit::isa<u64>(field(F::VDim));
     auto pad  = rks.rp != 0 && vdim && (*vdim + 1 == rks.rp || *vdim + 2 == rks.rp);
     for (u64 i = 0; pad && i != rks.nis; ++i) {

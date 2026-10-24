@@ -126,8 +126,6 @@ static u64 at_slots(const btensor::MapRedPost& mr) {
          | Lit::isa<u64>(rec->proj(F::Num_Fields, F::Rev)).value_or(0);
 }
 
-static bool is_at(u64 slots, u64 k) { return k < 64 && (slots >> k) & 1; }
-
 /// If `value` is a pure re-indexed read — a copy-combiner map_reduce (reshape/transpose/slice/
 /// flip/repeat lower to these) or a `tensor.broadcast` — returns its source and access map, to be
 /// composed behind the consuming slot's map. Such reads perform no computation, so reading through
@@ -225,7 +223,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     // The producers of the inputs computed at a loop follow them to their new positions.
     using F  = btensor::MapRedPost;
     auto ats = at_slots(mr);
-    auto at  = [&](u64 k) { return is_at(ats, k); };
+    auto at  = [&](u64 k) { return btensor::has_slot(ats, k); };
 
     struct InnerInfo {
         const Def* comb;
@@ -394,7 +392,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
             auto old  = Lit::isa<u64>(mask).value_or(0);
             u64 moved = 0;
             for (u64 k = 0; k != nis_nat; ++k)
-                if (is_at(old, k)) moved |= u64(1) << new_pos[k];
+                if (btensor::has_slot(old, k)) moved |= u64(1) << new_pos[k];
             return w.lit_nat(moved);
         };
         fields[F::AtSlots]  = move(fields[F::AtSlots]);
@@ -638,7 +636,7 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
         for (u64 i = 0; i < n; ++i) {
             auto T = Ts->proj(n, i), R = Rs->proj(n, i), S = Ss->proj(n, i);
             auto m = ms->proj(n, i), v = vs->proj(n, i);
-            if (auto rt = is_at(keep, i) ? std::nullopt : read_through(w, v, m, S)) {
+            if (auto rt = btensor::has_slot(keep, i) ? std::nullopt : read_through(w, v, m, S)) {
                 log().d("read input {} of {} through {}", i, callee, v);
                 // The bypassed read forwards its consumers to the source: a shared (or uncounted,
                 // e.g. broadcast) read leaves the source multiply-consumed for the epilogue guard.

@@ -733,7 +733,7 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     auto mr  = F::of(rewrite(app->callee())->as<App>());
     auto rks = mr.ranks();
     if (!rks || mr.sched_field(F::At) != w.lit_tt()) return nullptr;
-    if (Lit::isa<u64>(mr.sched_field(F::Rev)).value_or(0) != 0)
+    if (mr.mask(F::Rev) != 0)
         if (auto res = lower_reverse(app, mr)) return res;
 
     auto [old_is, old_post_is] = app->arg()->projs<2>();
@@ -745,7 +745,7 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     for (u64 k = 0; k != rks->nps; ++k) {
         auto old = old_post_is->proj(rks->nps, k);
         for (u64 j = 0; j != rks->nis && j < 64 && is_identity_map(mr.map_out); ++j)
-            if ((at >> j) & 1 && old_is->proj(rks->nis, j) == old
+            if (btensor::has_slot(at, j) && old_is->proj(rks->nis, j) == old
                 && mr.post_maps->proj(rks->nps, k) == mr.maps->proj(rks->nis, j))
                 post_of[k] = j;
         posts[k] = post_of[k] != rks->nis ? w.lit_nat_0() : to_buffer(rewrite(old), old);
@@ -753,6 +753,7 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
     }
 
     // Lowering an input whole may lower another op with a compute_at.
+    auto tiled = tiled_;
     auto outer = std::exchange(alloc_mem_, fresh_mem());
     auto res   = lower_staged({mr,
                                mr,
@@ -771,7 +772,10 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
                                post_of},
                               nullptr, nullptr);
     alloc_mem_ = outer;
-    if (!res) return nullptr;
+    if (!res) {
+        tiled_ = std::move(tiled);
+        return nullptr;
+    }
     auto [m, out] = res->projs<2>();
     return scalar_result(app, m, out);
 }
@@ -779,7 +783,6 @@ const Def* LowerToMem::lower_compute_at(const App* app) {
 void LowerToMem::lower_at_readers(const App* p) {
     using F   = btensor::MapRedPost;
     auto& w   = new_world();
-    auto bit  = [](u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; };
     auto list = readers_.find(p);
     if (list == readers_.end()) return;
     for (auto r : std::vector<const App*>(list->second)) {
@@ -792,7 +795,7 @@ void LowerToMem::lower_at_readers(const App* p) {
         auto is    = r->arg()->proj(2, 0);
         auto here  = false;
         for (u64 k = 0; k != rk->nis; ++k)
-            here |= bit(at, k) && is->proj(rk->nis, k) == p;
+            here |= btensor::has_slot(at, k) && is->proj(rk->nis, k) == p;
         // A reader of an op whose lowering is under way would lower that op again.
         if (!here || reaches(r->arg(), lowering_)) continue;
         log().d("lowering {} ahead, as it computes {} at a loop", r, p);
@@ -807,7 +810,7 @@ const Def* LowerToMem::lower_whole(const Def* old) {
         if (auto memo = fe::lookup(fresh_memo_, old_k)) return to_buffer(memo, old_k);
         auto mk     = F::of(rewrite(old_k->callee())->as<App>());
         auto kr     = mk.ranks();
-        auto rev    = Lit::isa<u64>(mk.sched_field(F::Rev)).value_or(0);
+        auto rev    = mk.mask(F::Rev);
         auto old_kp = old_k->arg()->proj(2, 1);
         if (auto kp_post = kr && rev == 0 ? buffer_list(rewrite(old_kp), old_kp, mk.nps) : nullptr) {
             auto [km, kb] = buffer::op_alloc(mk.Ro, mk.So, mk.Tp, alloc_mem_)->projs<2>();
@@ -844,7 +847,7 @@ const DefSet& LowerToMem::local_defs() {
 const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& mr) {
     using F     = btensor::MapRedPost;
     auto& w     = new_world();
-    auto rev_of = [](const F& op) { return Lit::isa<u64>(op.sched_field(F::Rev)).value_or(0); };
+    auto rev_of = [](const F& op) { return op.mask(F::Rev); };
     auto dim_of = [&](const F& op, u64 j) { return Lit::isa<u64>(w.app(op.sched_field(F::AtDim), w.lit_nat(j))); };
     auto rks    = *mr.ranks();
     auto j      = u64(std::countr_zero(rev_of(mr)));
@@ -868,8 +871,7 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     auto prk = mp.ranks();
     if (!prk || *dim >= prk->rp) return give_up("not a parallel dim of the producer");
     auto prn = prk->nloops();
-    // An iteration of the loop has written its box only where no other loop runs around it, as K blocks hoisted
-    // outside the loop would.
+    // K blocks hoisted around the loop leave an iteration's box unfinished when it ends.
     auto around = mp.outer(*dim, prn);
     for (u64 e = 0; e != prn; ++e)
         if (around[e] != (e <= *dim)) return give_up("other loops than the dims before it run around the loop");
@@ -885,18 +887,21 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
         return d <= *dim ? w.call<core::bitcast>(w.type_nat(), w.app(get, w.lit_nat(d))) : w.lit_nat_0();
     });
     auto ext    = DefVec(prn, [&](size_t d) { return d <= *dim ? w.lit_nat_1() : mp.Sr->proj(prn, d); });
-    auto box    = w.app(w.app(w.app(w.annex<affine::image>(), {mp.Rn, mp.Ro}), mp.map_out),
-                        w.tuple({w.tuple(origin), w.tuple(ext), mp.So}));
+    auto [box_lo, box_ext, box_cap, box_exact]
+        = w.app(w.app(w.app(w.annex<affine::image>(), {mp.Rn, mp.Ro}), mp.map_out),
+                w.tuple({w.tuple(origin), w.tuple(ext), mp.So}))
+              ->projs<4>();
     // A bound that is not exact may hold cells a later iteration writes.
     for (u64 a = 0; a != prk->ro; ++a)
-        if (box->proj(4, 3)->proj(prk->ro, a) != w.lit_tt())
+        if (box_exact->proj(prk->ro, a) != w.lit_tt())
             return give_up("the box one iteration of the producer writes is not known exactly");
     // A cell another iteration of the loops up to `dim` writes as well is not final after this one.
-    auto writers = w.app(w.app(w.app(w.annex<affine::preimage>(), {mp.Rn, mp.Ro}), mp.map_out),
-                         w.tuple({box->proj(4, 0), box->proj(4, 2), mp.Sr}));
-    if (writers->proj(4, 3) != w.lit_tt()) return give_up("the iterations that write the box are not known exactly");
+    auto [w_lo, w_ext, w_cap, w_exact] = w.app(w.app(w.app(w.annex<affine::preimage>(), {mp.Rn, mp.Ro}), mp.map_out),
+                                               w.tuple({box_lo, box_cap, mp.Sr}))
+                                             ->projs<4>();
+    if (w_exact != w.lit_tt()) return give_up("the iterations that write the box are not known exactly");
     for (u64 d = 0; d <= *dim; ++d)
-        if (writers->proj(4, 0)->proj(prn, d) != origin[d] || writers->proj(4, 2)->proj(prn, d) != w.lit_nat_1())
+        if (w_lo->proj(prn, d) != origin[d] || w_cap->proj(prn, d) != w.lit_nat_1())
             return give_up("other iterations of the producer write the box too");
     u64 runs    = 1;
     for (u64 d = 0; d <= *dim; ++d)
@@ -938,10 +943,10 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
         auto part = [&](const Def* ext) {
             return w.app(
                 w.app(w.app(w.annex<affine::preimage>(), {op.Rn, op.Ris->proj(rk.nis, jc)}), op.maps->proj(rk.nis, jc)),
-                w.tuple({box->proj(4, 0), ext, op.Sr}));
+                w.tuple({box_lo, ext, op.Sr}));
         };
-        auto [lo, len, _, exact] = part(box->proj(4, 1))->projs<4>();
-        auto cap                 = part(box->proj(4, 2))->proj(4, 2);
+        auto [lo, len, _, exact] = part(box_ext)->projs<4>();
+        auto cap                 = part(box_cap)->proj(4, 2);
         if (exact != w.lit_tt()) return fail("the part of this op that reads one box is not exact");
         auto caps = DefVec(rn, [&](size_t d) { return cap->proj(rn, d); });
         for (u64 d = 0; d != rn; ++d) {
@@ -1033,9 +1038,11 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     auto outer = std::exchange(alloc_mem_, fresh_mem());
     // A give-up from here on leaves nothing lowered on the abandoned memory behind in the memo.
     auto memo   = fresh_memo_;
+    auto tiled  = tiled_;
     auto revert = [&](const char* r) {
         alloc_mem_  = outer;
         fresh_memo_ = std::move(memo);
+        tiled_      = std::move(tiled);
         return give_up(r);
     };
     for (auto& pt : parts)
@@ -1044,7 +1051,6 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     alloc_mem_        = bm;
 
     auto whole   = [&](const Def* old) { return lower_whole(old); };
-    auto bit     = [](u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; };
     auto given   = std::vector<DefVec>();
     auto post_is = DefVec();
     for (const auto& pt : parts) {
@@ -1057,10 +1063,10 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
         g[pt.j] = p_full;
         for (u64 k = 0; k != rk.nis; ++k)
             if (auto old = pt.app->arg()->proj(2, 0)->proj(rk.nis, k);
-                !bit(skip, k) && Axm::isa<tensor::map_reduce_post>(old))
+                !btensor::has_slot(skip, k) && Axm::isa<tensor::map_reduce_post>(old))
                 g[k] = whole(old);
         auto old_post = pt.app->arg()->proj(2, 1);
-        auto posts    = DefVec(rk.nps, [&](size_t k) { return pt.post_p[k] ? p_full : whole(old_post->proj(rk.nps, k)); });
+        auto posts = DefVec(rk.nps, [&](size_t k) { return pt.post_p[k] ? p_full : whole(old_post->proj(rk.nps, k)); });
         if (!std::ranges::all_of(posts, [](const Def* b) { return bool(Axm::isa<buffer::Buf>(b->type())); }))
             return revert("an epilogue input is not a buffer");
         post_is.emplace_back(w.tuple(posts));
@@ -1218,12 +1224,12 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
     auto Sis         = DefVec(rks->nis, [&](size_t j) { return mr.Sis->proj(rks->nis, j); });
     auto maps        = DefVec(rks->nis, [&](size_t j) { return mr.maps->proj(rks->nis, j); });
 
-    auto ahead = [&](u64 j) { return j < 64 && (s.ahead >> j) & 1; };
+    auto ahead = [&](u64 j) { return btensor::has_slot(s.ahead, j); };
     // A cached input is copied by `btensor.lower_map_reduce` instead.
     auto cache = Lit::isa<u64>(field(F::Cache)).value_or(0);
     auto wants = [&](u64 j) {
         if (j < s.given.size() && s.given[j]) return false;
-        return !(j < 64 && (cache >> j) & 1) && (fuse || ahead(j) || (own && j < 64 && (slots >> j) & 1));
+        return !btensor::has_slot(cache, j) && (fuse || ahead(j) || (own && btensor::has_slot(slots, j)));
     };
     auto staged = std::vector<bool>(rks->nis), tried = std::vector<bool>(rks->nis);
     auto stage = [&](u64 j) -> bool {
@@ -1301,9 +1307,9 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto zero = [&](size_t) -> const Def* { return w.lit_nat_0(); };
         auto one  = [&](size_t) -> const Def* { return w.lit_nat_1(); };
         auto spans = [&](size_t d) { return fixed[d] ? w.lit_nat_1() : mr.Sr->proj(rn, d); };
-        auto box   = hull(mr, origin, spans);
+        auto [base, _, box_cap, __] = hull(mr, origin, spans)->projs<4>();
 
-        auto caps = DefVec(prk->ro, [&](size_t a) { return box->proj(4, 2)->proj(prk->ro, a); });
+        auto caps = DefVec(prk->ro, [&](size_t a) { return box_cap->proj(prk->ro, a); });
         if (!std::ranges::all_of(caps, [&](const Def* cap) { return nat(cap).has_value(); }))
             return give_up(j, "the box has no literal size");
         auto exact = [&](const Def* img, u64 r) {
@@ -1311,10 +1317,9 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                 if (img->proj(4, 3)->proj(r, a) != w.lit_tt()) return false;
             return true;
         };
-        // Inside the loop of `dim`, the read can only refer to the box by its read of the iteration's corner, which an
-        // inexact image of that single point does not pin down.
-        // A dim the read goes down along starts the box on that axis at its end.
-        // Each axis starts at the read of the corner of one slot of the group, which every slot reads the tile from.
+        // Inside the loop of `dim` the tile is read from a corner's read, which an inexact image does not pin down.
+        // Along a dim the read goes down, the corner takes the dim's end.
+        // Each axis starts at the corner of one slot of the group, from which every slot reads the tile.
         auto falls = std::vector<std::vector<std::vector<bool>>>(group.size());
         auto from  = std::vector<u64>(*pro);
         auto end_d = [&](size_t d) { return w.call(core::nat::sub, Defs{mr.Sr->proj(rn, d), w.lit_nat_1()}); };
@@ -1327,13 +1332,12 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                 auto corner
                     = image(mr, maps[group[i]], [&](size_t d) { return fall[a][d] ? end_d(d) : origin(d); }, one);
                 if (corner->proj(4, 3)->proj(*pro, a) == w.lit_tt()
-                    && box->proj(4, 0)->proj(*pro, a) == corner->proj(4, 0)->proj(*pro, a))
+                    && base->proj(*pro, a) == corner->proj(4, 0)->proj(*pro, a))
                     found = true, from[a] = i;
             }
             if (!found) return give_up(j, "the box does not start at the read of a corner known exactly");
         }
-        // A box starts at most at the read of its corner, which the whole op reaches with the fixed dims spanning their
-        // range and each shifted one the starts of the tiles, which fit the whole op.
+        // The reads of the corners span the fixed dims' range and the shifted dims' tile starts.
         auto& g    = s.global;
         auto gn    = g.ranks()->nloops();
         auto reach = hull(g, zero, [&](size_t d) -> const Def* {
@@ -1395,11 +1399,8 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         auto [am, tile_b] = buffer::op_alloc(mp.Ro, shared ? mp.So : So_t, mp.Tp, alloc_mem_)->projs<2>();
         alloc_mem_        = am;
 
-        // The producer on the tile: its parallel dims are shifted to the box's start on the axis they write and
-        // span the tile; its reduction dims stay whole.
-        auto base = box->proj(4, 0);
-        // Where each dim starts and how far it runs: a projection's dim spans the box on its axis, any other write map
-        // the iterations that write the box.
+        // The tile runs the producer's parallel dims from the box's start and its reduction dims whole.
+        // A projection's dim spans the box on its axis, another write map's dims the iterations that write the box.
         auto off = DefVec(prn), ends = DefVec(prn),
              ext_t  = DefVec(prn, [&](size_t dd) { return mp.Sr->proj(prn, dd); });
         auto pre_of = [&](const Def* ext) {
@@ -1412,12 +1413,10 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         } else {
             // The box as read, before the input's end cuts it: no iteration writes past that end.
             auto open    = w.tuple(DefVec(prk->ro, [&](size_t) { return w.lit_nat(u64(1) << 32); }));
-            auto writers = pre_of(hull(mr, origin, spans, open)->proj(4, 2));
-            if (writers->proj(4, 3) != w.lit_tt())
-                return give_up(j, "the iterations that write the box are not known exactly");
+            auto [w_lo, w_ext, w_cap, w_exact] = pre_of(hull(mr, origin, spans, open)->proj(4, 2))->projs<4>();
+            if (w_exact != w.lit_tt()) return give_up(j, "the iterations that write the box are not known exactly");
             for (u64 dd = 0; dd != prn; ++dd) {
-                auto lo = writers->proj(4, 0)->proj(prn, dd), cap = writers->proj(4, 2)->proj(prn, dd);
-                auto ext = writers->proj(4, 1)->proj(prn, dd);
+                auto lo = w_lo->proj(prn, dd), ext = w_ext->proj(prn, dd), cap = w_cap->proj(prn, dd);
                 if (lo == w.lit_nat_0() && cap == mp.Sr->proj(prn, dd)) continue;
                 if (dd >= prk->rp) return give_up(j, "the box takes part of a reduction dim");
                 if (!nat(cap)) return give_up(j, "the iterations that write the box have no literal number");

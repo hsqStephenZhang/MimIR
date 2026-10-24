@@ -18,14 +18,18 @@
 
 namespace mim::plug::btensor {
 
-/// The curried meta arguments of a `tensor.map_reduce_post` or `btensor.map_reduce_post` callee (same layout).
+/// Whether the slot mask @p mask sets slot @p i.
+inline bool has_slot(u64 mask, u64 i) { return i < 64 && (mask >> i) & 1; }
+
 /// Whether `-X tensor:strict=1` turns a schedule the lowering cannot realize into an error.
 inline bool strict(World& w) { return w.driver().arg_nat("tensor", "strict").value_or(0) != 0; }
 
+/// The curried meta arguments of a `tensor.map_reduce_post` or `btensor.map_reduce_post` callee (same layout).
 struct MapRedPost {
     const Def *nis_nps, *meta, *shapes, *in_tys, *comb_init, *map_out, *maps_all;
     const Def *nis, *nps, *To, *Tp, *Ro, *Rp, *Rn, *TSched, *So, *Sr, *sched;
     const Def *Tis, *Ris, *Sis, *Tps, *Rps, *Sps, *comb, *init, *post, *maps, *post_maps;
+    mutable const Def *record_of_ = nullptr, *record_ = nullptr;
 
     static MapRedPost of(const App* callee) {
         auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all] = callee->uncurry_args<7>();
@@ -87,14 +91,18 @@ struct MapRedPost {
 
     /// The `btensor.Sched` record of the schedule, read off its chooser by handing it the identity builder.
     const Def* sched_record() const {
+        if (record_of_ == sched) return record_;
         auto& w       = sched->world();
         auto sched_ty = w.annex<btensor::Sched>();
         auto id       = w.mut_lam(sched_ty, sched_ty)->set("sched");
         id->set(true, id->var());
-        return w.app(w.app(sched, sched_ty), id);
+        record_of_     = sched;
+        return record_ = w.app(w.app(sched, sched_ty), id);
     }
 
     const Def* sched_field(Field f) const { return sched_record()->proj(Num_Fields, f); }
+    /// The slot mask or count in field @p f, 0 where it is not a literal.
+    u64 mask(Field f) const { return Lit::isa<u64>(sched_field(f)).value_or(0); }
 
     /// Whether the schedule's `lim` may cut one of the @p n loops short.
     bool may_cut(u64 n) const {
