@@ -1,0 +1,42 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt -p clos -p ll %s
+// RUN: clang++ %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t 1 2 3 4
+// RUN: %t 1 2 3 4 5 6 7
+// RUN: %t 1 2 3 4 5 6 7 8
+
+// C[i] = P[i + s - 5] + 1 inside the loop of P, with P the row sums of A «12, 3», C of length 8 and s = argc a run-time
+// value from 5 to 9, against the unscheduled ops: row k of P is read by C[k + 5 - s], whose start saturates at 0 only
+// once the shift is done.
+// The exit code counts the values that differ.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+
+use core.ops.u.w;
+use tensor;
+
+fun sum1 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun sum9 (acc: I32, x: I32)@tt: I32 = return (x + acc);
+fun inc1 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun inc9 (_: I32, x: I32)@tt: I32 = return (x + 2I32 - 1I32);
+lam add (x y: I32): I32 = x + y;
+lam ne (x y: I32): I32 = core.select (core.icmp.e (x, y), 0I32, 1I32);
+lam ro (i _: affine.Index): affine.Index = i;
+lam ri (i j: affine.Index): «2; affine.Index» = (i, j);
+lam one (i: affine.Index): «1; affine.Index» = (i,);
+
+let a = generate (12, 3) (λ i: «2; I64»: I32 = core.conv.s 4294967296 (core.wrap.add 0 (core.wrap.mul 0 (7I64, i#0_2), i#1_2)));
+
+lam rows (f: Fn [I32, I32] → I32) = materialize (mr_tileable @1 @(1, 1) (12, 0, (12, 3)) (f, 0I32, id) ro ri (buf a));
+lam shifted (s: Nat) (f: Fn [I32, I32] → I32) (p: «12; I32») =
+    lam at (i: affine.Index): affine.Index = affine.op.sub (affine.op.add (i, affine.lit s), affine.lit 5);
+    mr_tileable @1 @(1, 0) (8, 0, 8) (f, 0I32, id) one at p;
+lam d8 (u v: «8; I32»): I32 = reduce (add, 0I32) 0₁ (binary ne (u, v));
+
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
+    let s = core.idx2nat argc;
+    let c = materialize (reverse_compute_at (shifted s inc1 (rows sum1), 0, 0));
+    let r = materialize (shifted s inc9 (rows sum9));
+    return (m, d8 (c, r));

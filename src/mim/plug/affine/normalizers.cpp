@@ -568,10 +568,11 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
             continue;
         }
         seen[i] = true;
-        // x#i = y#j − (sym + k); shifting both ends keeps the box exact where the lower one saturates at 0.
+        // x#i = y#j − (sym + k), which saturates at 0 only once its additions are done.
         auto shift = [&](const Def* y) {
+            if (l.k < 0) y = region.add(y, w.lit_nat(u64(-l.k)));
             if (l.sym) y = region.sub(y, l.sym);
-            return l.k >= 0 ? region.sub(y, w.lit_nat(u64(l.k))) : region.add(y, w.lit_nat(u64(-l.k)));
+            return l.k > 0 ? region.sub(y, w.lit_nat(u64(l.k))) : y;
         };
         auto y_lo = lo->proj(*lm, j);
         auto hi   = region.min(shift(region.add(y_lo, ext->proj(*lm, j))), S->proj(*ln, i));
