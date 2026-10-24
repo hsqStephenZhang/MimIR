@@ -105,14 +105,15 @@ inline const Def* isa_transpose_2d(const Def* def) {
 /// Counts the consumers of every def of @p world matched by @p pred.
 /// Tuples and packs are transparent argument wrappers, so a wrapped def is charged to the enclosing
 /// non-tuple consumer - a shared argument tuple charges each of its users, and a def used twice in one
-/// argument list counts twice.
+/// argument list counts twice, or @p once.
 /// A phase whose world does not track uses needs this up front.
-DefMap<u64> count_consumers(const World& world, std::predicate<const Def*> auto pred) {
-    auto counts = DefMap<u64>();
-    auto charge = [&](this auto&& charge, const Def* d) -> void {
-        if (pred(d))
-            ++counts[d];
-        else if (d->isa<Tuple>() || d->isa<Pack>())
+DefMap<u64> count_consumers(const World& world, std::predicate<const Def*> auto pred, bool once = false) {
+    auto counts  = DefMap<u64>();
+    auto charged = DefSet();
+    auto charge  = [&](this auto&& charge, const Def* d) -> void {
+        if (pred(d)) {
+            if (!once || charged.emplace(d).second) ++counts[d];
+        } else if (d->isa<Tuple>() || d->isa<Pack>())
             for (auto op : d->ops())
                 if (op) charge(op);
     };
@@ -123,6 +124,7 @@ DefMap<u64> count_consumers(const World& world, std::predicate<const Def*> auto 
     while (!wl.empty()) {
         auto def         = wl.pop();
         auto transparent = def->isa<Tuple>() || def->isa<Pack>();
+        charged.clear();
         for (auto op : def->ops())
             if (op) {
                 if (!transparent) charge(op);

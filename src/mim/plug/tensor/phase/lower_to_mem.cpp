@@ -277,7 +277,7 @@ void LowerToMem::start() {
     collect_tensor_types(); // hard-errors on shapes the conversion cannot handle
     // Nothing tensor-related in the program: skip the whole-world rebuild entirely.
     if (tensor_fns_.empty() && !ops_seen_) return;
-    consumers_ = count_consumers(old_world(), [](const Def* d) { return Axm::isa<tensor::map_reduce_post>(d); });
+    consumers_ = count_consumers(old_world(), [](const Def* d) { return Axm::isa<tensor::map_reduce_post>(d); }, true);
     auto wl    = fe::BFSWorklist<DefSet>();
     wl.push(old_world().externals().muts());
     while (!wl.empty()) {
