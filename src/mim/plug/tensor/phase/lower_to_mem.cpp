@@ -579,7 +579,7 @@ const Def* LowerToMem::lower_splat(const App* app) {
     return splat_buffer(app->type(), rewrite(value));
 }
 
-const Def* LowerToMem::lower_generate(const App* app) {
+const Def* LowerToMem::lower_generate(const App* app, const Def** mem) {
     auto& w            = new_world();
     auto [meta, s_out] = rewrite(app->callee())->as<App>()->uncurry_args<2>();
     auto [T, r]        = meta->projs<2>();
@@ -601,8 +601,10 @@ const Def* LowerToMem::lower_generate(const App* app) {
     auto compute      = [&](Defs iters, const Def*, const Def* m) -> std::pair<const Def*, const Def*> {
         return {m, w.call(body, iters)};
     };
-    auto [am, dst] = buffer::op_alloc(br, bs, bT, fresh_mem())->projs<2>();
-    return btensor::build_pointwise(result_ty, am, dst, w.tuple(), s_out, rn, "generate", compute)->proj(2, 1);
+    auto [am, dst] = buffer::op_alloc(br, bs, bT, mem ? *mem : fresh_mem())->projs<2>();
+    auto [m, buf] = btensor::build_pointwise(result_ty, am, dst, w.tuple(), s_out, rn, "generate", compute)->projs<2>();
+    if (mem) *mem = m;
+    return buf;
 }
 
 const Def* LowerToMem::lower_broadcast(const App* app) {
@@ -811,6 +813,7 @@ void LowerToMem::lower_at_readers(const App* p) {
 
 const Def* LowerToMem::lower_whole(const Def* old) {
     using F = btensor::MapRedPost;
+    if (auto b = Axm::isa<tensor::buf>(old)) return lower_whole(b->arg());
     if (auto old_k = Axm::isa<tensor::map_reduce_post>(old); old_k && alloc_mem_) {
         if (auto memo = fe::lookup(fresh_memo_, old_k)) return to_buffer(memo, old_k);
         auto mk     = F::of(rewrite(old_k->callee())->as<App>());
@@ -830,6 +833,9 @@ const Def* LowerToMem::lower_whole(const Def* old) {
             }
         }
     }
+    // A fill that drops its memory would run inside the actions of the loops that read its buffer.
+    if (auto gen = Axm::isa<tensor::generate>(old); gen && alloc_mem_ && gen->type()->isa<Arr>())
+        return lower_generate(gen, &alloc_mem_);
     return to_buffer(rewrite(old), old);
 }
 

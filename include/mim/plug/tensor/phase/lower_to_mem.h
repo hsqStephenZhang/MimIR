@@ -48,7 +48,8 @@ private:
     /// Yields a null base if @p d does not read a tensor.
     std::pair<const Def*, const Def*> peel_tensor(const Def*);
     const Def* lower_splat(const App*);
-    const Def* lower_generate(const App*);
+    /// Allocates and fills on @p mem and advances it, if given, instead of on a fresh memory.
+    const Def* lower_generate(const App*, const Def** mem = nullptr);
     const Def* lower_broadcast(const App*);
     const Def* lower_map_reduce(const App*);
     /// Realizes a `tensor.compute_at` in the schedule of the map_reduce_post @p app, if it can; `nullptr` otherwise.
