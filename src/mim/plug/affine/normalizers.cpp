@@ -592,17 +592,21 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
         auto whole = !rm.b || (Lit::isa(rm.lo) == 0 && Lit::isa(rm.ext) >= q.b);
         auto start = region.mul(q.lo, b);
         auto size  = region.mul(q.ext, b);
+        auto cap   = size;
         if (!whole) {
             if (Lit::isa(q.ext) != 1) {
                 exact = false;
                 continue;
             }
-            start = region.add(start, rm.lo);
-            size  = rm.ext;
+            // The remainder only takes values below `b`.
+            auto r_lo = region.min(rm.lo, b);
+            start     = region.add(start, r_lo);
+            size      = region.sub(region.min(region.add(rm.lo, rm.ext), b), r_lo);
+            cap       = region.min(rm.ext, b);
         }
         los[i]  = start;
         exts[i] = region.sub(region.min(region.add(start, size), S->proj(*ln, i)), start);
-        caps[i] = region.min(size, S->proj(*ln, i));
+        caps[i] = region.min(cap, S->proj(*ln, i));
     }
 
     return w.tuple({w.tuple(los), w.tuple(exts), w.tuple(caps), exact ? w.lit_tt() : w.lit_ff()});
