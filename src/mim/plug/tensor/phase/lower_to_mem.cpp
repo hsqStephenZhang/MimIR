@@ -990,6 +990,7 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
             if (len->proj(rn, d) != caps[d]) ends[d] = w.call(core::nat::add, Defs{starts[d], len->proj(rn, d)});
         }
         mc.sched     = clip_lim(op, starts, ends);
+        mc.sched     = no_prepacks(mc, c, true);
         mc.shapes    = w.tuple({op.So, mc.Sr, mc.sched});
         mc.maps_all  = w.tuple({mc.maps, op.post_maps});
         auto shifted = std::vector<bool>(rn), clipped = std::vector<bool>(rn);
@@ -1173,6 +1174,20 @@ const Def* LowerToMem::clip_lim(const btensor::MapRedPost& op, const DefVec& sta
 
     auto fields    = DefVec(F::Num_Fields, [&](size_t f) { return rec->proj(F::Num_Fields, f); });
     fields[F::Lim] = lim;
+    return w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
+}
+
+const Def* LowerToMem::no_prepacks(const btensor::MapRedPost& op, const App* old, bool warn) {
+    using F    = btensor::MapRedPost;
+    auto packs = op.mask(F::Prepacks);
+    if (!packs) return op.sched;
+    for (u64 i = 0, n = op.ranks()->nis; i != n && warn; ++i)
+        if (btensor::has_slot(packs, i))
+            log().w("prepack of input {} of {} not realized: it is computed one tile at a time", i, old);
+    auto& w             = new_world();
+    auto rec            = op.sched_record();
+    auto fields         = DefVec(F::Num_Fields, [&](size_t f) { return rec->proj(F::Num_Fields, f); });
+    fields[F::Prepacks] = w.lit_nat_0();
     return w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
 }
 
@@ -1499,16 +1514,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
             // The op's own stops apply at the tile's start, and iterations past the end of a dim do not run.
             mt.sched = clip_lim(mp, off, ends);
         }
-        // The copies a prepack keeps from call to call hold the boxes of the whole nest, which a tile shifts.
-        if (auto packs = mp.mask(F::Prepacks)) {
-            for (u64 i = 0; i != prk->nis && !fuse; ++i)
-                if (btensor::has_slot(packs, i))
-                    log().w("prepack of input {} of {} not realized: it is computed one tile at a time", i, old_p);
-            auto rec            = mt.sched_record();
-            auto fields         = DefVec(F::Num_Fields, [&](size_t f) { return rec->proj(F::Num_Fields, f); });
-            fields[F::Prepacks] = w.lit_nat_0();
-            mt.sched            = w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
-        }
+        mt.sched    = no_prepacks(mt, old_p, !fuse);
         mt.shapes   = w.tuple({mt.So, Sr_t, mt.sched});
         auto& chain = act ? act->mem : pre;
         auto res = lower_staged({mt, mp, shifted, clipped, old_p->arg()->proj(2, 0), p_post, old_p, fuse, budget, runs},

@@ -7,6 +7,7 @@
 // the same input: the copies of a tile shift with the tile, so none of them is kept from call to call.
 // * `grouped`: P = Σ_k x[i, j, k] with a prepack, read by C[j] = Σ_i P[i, j], which group_tensor leaves apart.
 // * `at`:      the same with P computed at j of C, one column per tile.
+// * `rev`:     C = P + y with a prepack of y, computed inside the loop of i of P, one row per part.
 plugin core;
 plugin tensor;
 plugin affine;
@@ -19,10 +20,13 @@ fun sum1 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun sum2 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun sum3 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun sum4 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun sum5 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun add (_: I32, (x y: I32))@tt: I32 = return (x + y);
 lam q2 (i j _: affine.Index): «2; affine.Index» = (i, j);
 lam q3 (i j k: affine.Index): «3; affine.Index» = (i, j, k);
 lam tr (j i: affine.Index): «2; affine.Index» = (i, j);
 lam ro (j _: affine.Index): affine.Index = j;
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
 
 lam rows (f: Fn [I32, I32] → I32) (x: «6, 4, 3; I32») =
     prepack (cache_read (mr_tileable @1 @(2, 1) ((6, 4), (0, 1), (6, 4, 3)) (f, 0I32, id) q2 q3 (buf x), 0, 0), 0);
@@ -30,3 +34,7 @@ lam cols (f: Fn [I32, I32] → I32) (p: «6, 4; I32») = mr_tileable @1 @(1, 1) 
 
 extern fun grouped (x: «6, 4, 3; I32»): «4; I32» = return (materialize (cols sum2 (materialize (rows sum1 x))));
 extern fun at (x: «6, 4, 3; I32»): «4; I32» = return (materialize (compute_at (cols sum4 (materialize (rows sum3 x)), 0, 0)));
+extern fun rev (x: «6, 4, 3; I32», y: «6, 4; I32»): «6, 4; I32» =
+    let p = materialize (mr_tileable @1 @(2, 1) ((6, 4), (0, 1), (6, 4, 3)) (sum5, 0I32, id) q2 q3 (buf x));
+    let c = mr_tileable @2 @(2, 0) ((6, 4), (0, 1), (6, 4)) (add, 0I32, id) po (po, po) (p, buf y);
+    return (materialize (reverse_compute_at (prepack (cache_read (c, 1, 0), 1), 0, 0)));

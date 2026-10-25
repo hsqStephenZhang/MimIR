@@ -84,6 +84,8 @@ private:
     /// The schedule of @p op on a tile whose loop `d` starts at `starts[d]` of the whole op, and stops at `ends[d]`
     /// where that is set, or earlier where @p op's own `lim` does.
     const Def* clip_lim(const btensor::MapRedPost& op, const DefVec& starts, const DefVec& ends);
+    /// The schedule of @p op without the copies a prepack keeps from call to call, which hold the boxes of the whole nest.
+    const Def* no_prepacks(const btensor::MapRedPost& op, const App* old, bool warn);
     /// The `btensor.map_reduce_post` of @p mr, with mem-threaded combiner and epilogue, over @p shapes, @p in_tys and
     /// @p maps_all, awaiting its memory and buffers.
     const Def* btensor_op(const btensor::MapRedPost& mr, const Def* shapes, const Def* in_tys, const Def* maps_all);
