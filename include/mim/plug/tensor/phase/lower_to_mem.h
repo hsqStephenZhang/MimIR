@@ -98,7 +98,8 @@ private:
 
     /// Converts an argument to a converted parameter type: tensor values become buffers (via `buffer.init`
     /// on a `⊥` memory), recursing through sigmas; anything else is `rewrite`d.
-    const Def* materialize(const Def* old_ty, const Def* old_arg);
+    /// Fills on @p mem and advances it, if given, instead of on a `⊥` memory.
+    const Def* materialize(const Def* old_ty, const Def* old_arg, const Def** mem = nullptr);
 
     /// The already rewritten @p val as a `buffer.Buf`, materializing a value-world tensor (e.g. a literal)
     /// from its old-world @p old.
@@ -117,7 +118,7 @@ private:
     /// `buffer.lit`. `btensor.lower_map_reduce` turns that into a fill loop, so it never materializes as a
     /// monolithic `mem.store` of a giant literal array (which the LLVM backend cannot digest).
     /// Used for constant splats `‹s; c›` and scalar `tensor.broadcast`s.
-    const Def* splat_buffer(const Def* arr_ty, const Def* scalar);
+    const Def* splat_buffer(const Def* arr_ty, const Def* scalar, const Def** mem = nullptr);
 
     /// Pre-pass: records every array type used as a tensor operand/result and the set of bufferized
     /// functions; hard-errors on program shapes the conversion cannot handle (there is no value-semantics

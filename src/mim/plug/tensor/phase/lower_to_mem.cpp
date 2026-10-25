@@ -477,20 +477,21 @@ const Def* LowerToMem::lower_call(const App* app, Lam* old_callee) {
     return w.app(new_callee, w.tuple(args));
 }
 
-const Def* LowerToMem::splat_buffer(const Def* arr_ty, const Def* scalar) {
+const Def* LowerToMem::splat_buffer(const Def* arr_ty, const Def* scalar, const Def** mem) {
     // `buffer.lit` sets every element to `scalar`; `btensor.lower_map_reduce` fills it with a loop rather
     // than storing a monolithic literal array (which the LLVM backend cannot digest for large shapes).
     auto [bro, bso, boT] = Axm::isa<buffer::Buf>(buf_of(arr_ty))->args<3>();
-    auto [m, out]        = buffer::op_lit(bro, bso, boT, bot_mem(), scalar)->projs<2>();
+    auto [m, out]        = buffer::op_lit(bro, bso, boT, mem ? *mem : bot_mem(), scalar)->projs<2>();
+    if (mem) *mem = m;
     return out;
 }
 
-const Def* LowerToMem::materialize(const Def* old_ty, const Def* old_arg) {
+const Def* LowerToMem::materialize(const Def* old_ty, const Def* old_arg, const Def** mem) {
     auto& w = new_world();
     if (tensor_ty_.contains(old_ty)) {
         // A constant splat `‹s; c›` (e.g. a learning-rate or bias literal): a `buffer.init` would store the
         // whole array as one giant LLVM constant. Emit `buffer.lit` (lowered to a fill loop) instead.
-        if (auto c = splat_scalar(old_arg)) return splat_buffer(old_ty, rewrite(c));
+        if (auto c = splat_scalar(old_arg)) return splat_buffer(old_ty, rewrite(c), mem);
         auto v = rewrite(old_arg);
         if (Axm::isa<buffer::Buf>(v->type())) return v; // already a buffer
         if (holds_buf(v)) {
@@ -501,14 +502,15 @@ const Def* LowerToMem::materialize(const Def* old_ty, const Def* old_arg) {
                 .bail();
         }
         auto [br, bs, bT] = Axm::isa<buffer::Buf>(buf_of(old_ty))->args<3>();
-        auto [m, buf]     = buffer::op_init(br, bs, bT, bot_mem(), v)->projs<2>();
+        auto [m, buf]     = buffer::op_init(br, bs, bT, mem ? *mem : bot_mem(), v)->projs<2>();
+        if (mem) *mem = m;
         return buf;
     }
     if (auto sig = old_ty->isa_imm<Sigma>(); sig && mentions_tensor(sig)) {
         auto n = sig->num_ops();
         DefVec ops(n);
         for (size_t i = 0; i != n; ++i)
-            ops[i] = materialize(sig->op(i), old_arg->proj(n, i));
+            ops[i] = materialize(sig->op(i), old_arg->proj(n, i), mem);
         return w.tuple(ops);
     }
     return rewrite(old_arg);
@@ -836,6 +838,7 @@ const Def* LowerToMem::lower_whole(const Def* old) {
     // A fill that drops its memory would run inside the actions of the loops that read its buffer.
     if (auto gen = Axm::isa<tensor::generate>(old); gen && alloc_mem_ && gen->type()->isa<Arr>())
         return lower_generate(gen, &alloc_mem_);
+    if (alloc_mem_ && tensor_ty_.contains(old->type())) return materialize(old->type(), old, &alloc_mem_);
     return to_buffer(rewrite(old), old);
 }
 
@@ -1377,7 +1380,6 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                 if (!n) return give_up(j, "the loops around the tile have no literal extent");
                 runs *= *n;
             }
-        if (fuse && tile * runs > budget * whole) return give_up(j, "the tiles would recompute it beyond the budget");
 
         // Another reader of the producer gets the whole buffer the tiles fill, so the op must read every cell.
         auto fills = [&] {
