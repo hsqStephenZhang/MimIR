@@ -324,11 +324,13 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
             auto old    = fields[F::Act];
             auto act_pi = old->type()->as<Pi>();
             auto act_of = w.mut_lam(act_pi->dom(), act_pi->codom())->set("cache_acts");
-            auto then   = w.app(w.annex<btensor::act_seq>(), {w.app(old, w.lit_nat(*dim)), fill});
+            auto acts   = Lit::isa<u64>(fields[F::Acts]).value_or(0);
+            auto then   = has_slot(acts, *dim) ? w.app(w.annex<btensor::act_seq>(), {w.app(old, w.lit_nat(*dim)), fill})
+                                               : static_cast<const Def*>(fill);
             auto here   = w.call(core::ncmp::e, Defs{act_of->var(), w.lit_nat(*dim)});
             act_of->set(true, w.extract(w.tuple({w.app(old, act_of->var()), then}), here));
             fields[F::Act]  = act_of;
-            fields[F::Acts] = w.lit_nat(Lit::isa<u64>(fields[F::Acts]).value_or(0) | u64(1) << *dim);
+            fields[F::Acts] = w.lit_nat(acts | u64(1) << *dim);
         } else {
             auto none = w.mut_lam(w.pi(w.type_nat(), w.type_i32()))->set("cache_get");
             none->set(true, w.lit_i32(0));
