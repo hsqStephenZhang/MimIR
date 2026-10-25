@@ -93,37 +93,35 @@ void Group::start() {
 
     // A producer that a schedule's tiles take in follows that schedule instead of grouping its own producers.
     // Another group may still leave it whole, so its own group stands, inside that group's tiles where they take it.
-    auto taken = DefSet();
     for (auto def : ops) {
         auto app   = def->as<App>();
         auto mr    = mr_of(app);
         auto fuse  = mr.sched_field(F::Fuse) == mr.sched->world().lit_tt();
         auto slots = mr.sched_field(F::At) == mr.sched->world().lit_tt() ? mr.mask(F::AtSlots) : 0;
         for (auto [k, p] : producers(app))
-            if (fuse || btensor::has_slot(slots, k)) taken.emplace(p);
+            if (fuse || btensor::has_slot(slots, k)) taken_.emplace(p);
     }
-
-    // An op groups the producers of its inputs where the tiles reach no root of its own.
-    // They reach through a producer without a group of its own into that producer's producers as well.
-    auto dims    = DefMap<std::optional<u64>>();
-    auto grouped = [&](this auto& self, const App* app) -> std::optional<u64> {
-        if (auto d = dims.find(app); d != dims.end()) return d->second;
-        auto reaches = [&](this auto& reaches, const App* p) -> bool {
-            return root(mr_of(p))
-                || (!self(p) && std::ranges::any_of(producers(p), [&](auto q) { return reaches(q.second); }));
-        };
-        auto mr = mr_of(app);
-        auto d  = std::optional<u64>();
-        if (mr.ranks() && !places(mr) && !taken.contains(app))
-            if (auto ps = producers(app);
-                !ps.empty() && std::ranges::none_of(ps, [&](auto p) { return reaches(p.second); }))
-                d = outermost(mr);
-        return dims[app] = d;
-    };
 
     for (auto def : ops)
         if (auto d = grouped(def->as<App>())) roots_[def] = *d;
     RWPhase::start();
+}
+
+std::optional<u64> Group::grouped(const App* app) {
+    if (auto d = dims_.find(app); d != dims_.end()) return d->second;
+    auto mr = mr_of(app);
+    auto d  = std::optional<u64>();
+    if (mr.ranks() && !places(mr) && !taken_.contains(app))
+        if (auto ps = producers(app);
+            !ps.empty() && std::ranges::none_of(ps, [&](auto p) { return reaches(p.second); }))
+            d = outermost(mr);
+    return dims_[app] = d;
+}
+
+bool Group::reaches(const App* p) {
+    if (auto r = reach_.find(p); r != reach_.end()) return r->second;
+    if (root(mr_of(p))) return reach_[p] = true;
+    return reach_[p] = !grouped(p) && std::ranges::any_of(producers(p), [&](auto q) { return reaches(q.second); });
 }
 
 const Def* Group::rewrite_imm_App(const App* app) {
