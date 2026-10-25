@@ -42,10 +42,10 @@ bool contracts(const F& mr, const F::Ranks& rks) {
     return false;
 }
 
-/// A root of its own: a contraction, or an op placing its own inputs.
+/// A root of its own: a contraction, an op placing its own inputs, or one keeping copies from call to call.
 bool root(const F& mr) {
     auto rks = mr.ranks();
-    return !rks || contracts(mr, *rks) || places(mr);
+    return !rks || contracts(mr, *rks) || places(mr) || mr.mask(F::Prepacks) != 0;
 }
 
 /// The dim of the outermost loop of @p mr's nest among its parallel dims, unless that loop is its vector loop.
@@ -102,12 +102,13 @@ void Group::start() {
         if (auto d = outermost(mr)) groups[app] = *d;
     }
 
-    // A producer that a consumer's tiles take in follows that consumer instead of grouping its own producers.
+    // A producer that a schedule's tiles take in follows that schedule instead of grouping its own producers.
+    // Another group may still leave it whole, so its own group stands, inside that group's tiles where they take it.
     auto taken = DefSet();
     for (auto def : ops) {
         auto app   = def->as<App>();
         auto mr    = mr_of(app);
-        auto fuse  = groups.contains(app) || mr.sched_field(F::Fuse) == mr.sched->world().lit_tt();
+        auto fuse  = mr.sched_field(F::Fuse) == mr.sched->world().lit_tt();
         auto slots = mr.sched_field(F::At) == mr.sched->world().lit_tt() ? mr.mask(F::AtSlots) : 0;
         for (auto [k, p] : producers(app))
             if (fuse || btensor::has_slot(slots, k)) taken.emplace(p);
