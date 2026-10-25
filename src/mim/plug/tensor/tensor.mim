@@ -2067,7 +2067,8 @@ axm fuse_tensor: compile.Phase;
 /// - It leaves an op alone whose schedule places inputs itself, by `compute_at`, `tile_and_fuse` or a default
 ///   schedule's, and an op whose outermost loop is its vector loop.
 /// - A producer that is a root itself, a contraction, an op whose schedule places inputs or one with a `prepack`,
-///   stays apart, and so does its consumer.
+///   stays apart, and so does its consumer, and any op whose tiles reach that root through producers without a group
+///   of their own.
 /// - A producer that a `tile_and_fuse` or `compute_at` takes in follows that schedule instead of grouping its own; one
 ///   that another group takes in keeps its own group, which runs inside that group's tiles.
 /// - It groups nothing where the `gpu` plugin is loaded, whose lowering runs no schedule actions.

@@ -91,17 +91,6 @@ void Group::start() {
         if (def->type()) wl.push(def->type());
     }
 
-    // An op groups the producers of its inputs where none of them is a root of its own.
-    auto groups = DefMap<u64>();
-    for (auto def : ops) {
-        auto app = def->as<App>();
-        auto mr  = mr_of(app);
-        if (!mr.ranks() || places(mr)) continue;
-        auto ps = producers(app);
-        if (ps.empty() || std::ranges::any_of(ps, [](auto p) { return root(mr_of(p.second)); })) continue;
-        if (auto d = outermost(mr)) groups[app] = *d;
-    }
-
     // A producer that a schedule's tiles take in follows that schedule instead of grouping its own producers.
     // Another group may still leave it whole, so its own group stands, inside that group's tiles where they take it.
     auto taken = DefSet();
@@ -114,8 +103,26 @@ void Group::start() {
             if (fuse || btensor::has_slot(slots, k)) taken.emplace(p);
     }
 
-    for (auto [app, d] : groups)
-        if (!taken.contains(app)) roots_[app] = d;
+    // An op groups the producers of its inputs where the tiles reach no root of its own.
+    // They reach through a producer without a group of its own into that producer's producers as well.
+    auto dims    = DefMap<std::optional<u64>>();
+    auto grouped = [&](this auto& self, const App* app) -> std::optional<u64> {
+        if (auto d = dims.find(app); d != dims.end()) return d->second;
+        auto reaches = [&](this auto& reaches, const App* p) -> bool {
+            return root(mr_of(p))
+                || (!self(p) && std::ranges::any_of(producers(p), [&](auto q) { return reaches(q.second); }));
+        };
+        auto mr = mr_of(app);
+        auto d  = std::optional<u64>();
+        if (mr.ranks() && !places(mr) && !taken.contains(app))
+            if (auto ps = producers(app);
+                !ps.empty() && std::ranges::none_of(ps, [&](auto p) { return reaches(p.second); }))
+                d = outermost(mr);
+        return dims[app] = d;
+    };
+
+    for (auto def : ops)
+        if (auto d = grouped(def->as<App>())) roots_[def] = *d;
     RWPhase::start();
 }
 

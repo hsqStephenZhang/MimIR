@@ -2,11 +2,14 @@
 // RUN: %mim -p opt %s -p ll
 // RUN: clang++ -std=c++23 %S/group_prepack_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
+// RUN: %mim -p opt %s -o - | %FileCheck %s
 
 // A producer with a prepack inside its consumer's loop, driven by group_prepack_aux.cpp, which calls each twice with
 // the same input: the copies of a tile shift with the tile, so none of them is kept from call to call.
 // * `grouped`: P = Σ_k x[i, j, k] with a prepack, read by C[j] = Σ_i P[i, j], which group_tensor leaves apart.
 // * `at`:      the same with P computed at j of C, one column per tile.
+// * `chain`:   Q = Σ_l w[i, j, k, l] with a prepack, B = Σ_k Q and C[j] = Σ_i B[i, j]: C's tiles would take B and Q
+//              with it, so C groups neither, and the copies of Q stay.
 // * `rev`:     C = P + y with a prepack of y, computed inside the loop of i of P, one row per part.
 plugin core;
 plugin tensor;
@@ -21,11 +24,16 @@ fun sum2 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun sum3 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun sum4 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun sum5 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun sum6 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun sum7 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun sum8 (acc: I32, x: I32)@tt: I32 = return (acc + x);
 fun add (_: I32, (x y: I32))@tt: I32 = return (x + y);
 lam q2 (i j _: affine.Index): «2; affine.Index» = (i, j);
 lam q3 (i j k: affine.Index): «3; affine.Index» = (i, j, k);
 lam tr (j i: affine.Index): «2; affine.Index» = (i, j);
 lam ro (j _: affine.Index): affine.Index = j;
+lam q4 (i j k l: affine.Index): «4; affine.Index» = (i, j, k, l);
+lam p3 (i j k _: affine.Index): «3; affine.Index» = (i, j, k);
 lam po (o: «2; affine.Index»): «2; affine.Index» = o;
 
 lam rows (f: Fn [I32, I32] → I32) (x: «6, 4, 3; I32») =
@@ -38,3 +46,9 @@ extern fun rev (x: «6, 4, 3; I32», y: «6, 4; I32»): «6, 4; I32» =
     let p = materialize (mr_tileable @1 @(2, 1) ((6, 4), (0, 1), (6, 4, 3)) (sum5, 0I32, id) q2 q3 (buf x));
     let c = mr_tileable @2 @(2, 0) ((6, 4), (0, 1), (6, 4)) (add, 0I32, id) po (po, po) (p, buf y);
     return (materialize (reverse_compute_at (prepack (cache_read (c, 1, 0), 1), 0, 0)));
+
+// CHECK: mem.persist («6, 4, 3, 2; I32»
+extern fun chain (w: «6, 4, 3, 2; I32»): «4; I32» =
+    let q = prepack (cache_read (mr_tileable @1 @(3, 1) ((6, 4, 3), (0, 1, 2), (6, 4, 3, 2)) (sum6, 0I32, id) p3 q4 (buf w), 0, 0), 0);
+    let b = mr_tileable @1 @(2, 1) ((6, 4), (0, 1), (6, 4, 3)) (sum7, 0I32, id) q2 q3 (materialize q);
+    return (materialize (mr_tileable @1 @(1, 1) (4, 0, (4, 6)) (sum8, 0I32, id) ro tr (materialize b)));
