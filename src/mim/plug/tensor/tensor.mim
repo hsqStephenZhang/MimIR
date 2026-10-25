@@ -1169,7 +1169,8 @@ anx lam hoist_red (t: Tileable, s h: Nat): Tileable =
 /// Compute every input of `t` one tile at a time inside the loop of dim `d`, and the inputs of each of those
 /// producers in turn ahead of each of its tiles (cf. MLIR's `tileConsumerAndFuseProducersUsingSCF`).
 /// An input is fused where `compute_at` could realize it and its producer is recomputed at most `recompute`
-/// times over across all tiles; every other input is computed whole, without a warning.
+/// times over across all tiles, counting a whole computation for its other readers unless the tiles fill one buffer
+/// they all read; every other input is computed whole, without a warning.
 /// An input that `compute_at` puts at a loop already stays at that loop.
 anx lam tile_and_fuse (t: Tileable, d recompute: Nat): Tileable =
     let s = t#sched;
@@ -2056,6 +2057,21 @@ axm lower_map_reduce: compile.Phase;
 ///   consumer.
 ///
 axm fuse_tensor: compile.Phase;
+///
+/// ### group_tensor
+///
+/// Groups each op with the producers of its inputs, as a dispatch region gathers a root with its producers, and fuses
+/// them into its tiles greedily: `tile_and_fuse` at the outermost loop of its nest within a budget of 1.
+///
+/// - It leaves an op alone whose schedule places inputs itself, by `compute_at`, `tile_and_fuse` or a default
+///   schedule's, and an op whose outermost loop is its vector loop.
+/// - A producer that is a root itself, a contraction or an op whose schedule places inputs, stays apart, and so does
+///   its consumer; a producer that a consumer's tiles take in follows that consumer instead of grouping its own.
+/// - It groups nothing where the `gpu` plugin is loaded, whose lowering runs no schedule actions.
+/// - A producer joins where its tiles compute it no more than once over; any other is computed whole, as before.
+/// - It runs after `fuse_tensor`, which has already inlined the producers each cell reads once.
+///
+axm group_tensor: compile.Phase;
 ///
 /// ### lower_to_mem
 ///

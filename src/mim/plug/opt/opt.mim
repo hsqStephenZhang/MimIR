@@ -41,6 +41,7 @@ extern lam _default_compile (): compile.Phase =
         compile.named "tensor.reassoc",
         compile.named "tensor.lower_tensor",
         compile.named "tensor.fuse_tensor",
+        compile.named "tensor.group_tensor",
         compile.named "tensor.lower_to_mem",
         // tensor bufferization emits mem.M placeholders that need a mem chain.
         compile.cond "tensor" mem.add_mem,

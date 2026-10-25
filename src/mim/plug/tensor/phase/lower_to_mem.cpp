@@ -1406,6 +1406,10 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         };
         auto uses   = consumers_.find(old_p);
         auto shared = !mem && dim && group.size() == 1 && uses != consumers_.end() && uses->second > 1 && fills();
+        // The other readers of a producer that the tiles do not fill compute it whole as well.
+        auto elsewhere = uses != consumers_.end() && uses->second > 1 && !shared ? whole : 0;
+        if (fuse && tile * runs + elsewhere > budget * whole)
+            return give_up(j, "the tiles would recompute it beyond the budget");
         if (fresh_memo_.contains(old_p)) return give_up(j, "another op computes the input whole");
 
         auto So_t         = w.tuple(caps);
