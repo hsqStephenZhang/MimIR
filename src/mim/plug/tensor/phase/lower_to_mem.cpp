@@ -1499,6 +1499,16 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
             // The op's own stops apply at the tile's start, and iterations past the end of a dim do not run.
             mt.sched = clip_lim(mp, off, ends);
         }
+        // The copies a prepack keeps from call to call hold the boxes of the whole nest, which a tile shifts.
+        if (auto packs = mp.mask(F::Prepacks)) {
+            for (u64 i = 0; i != prk->nis && !fuse; ++i)
+                if (btensor::has_slot(packs, i))
+                    log().w("prepack of input {} of {} not realized: it is computed one tile at a time", i, old_p);
+            auto rec            = mt.sched_record();
+            auto fields         = DefVec(F::Num_Fields, [&](size_t f) { return rec->proj(F::Num_Fields, f); });
+            fields[F::Prepacks] = w.lit_nat_0();
+            mt.sched            = w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
+        }
         mt.shapes   = w.tuple({mt.So, Sr_t, mt.sched});
         auto& chain = act ? act->mem : pre;
         auto res = lower_staged({mt, mp, shifted, clipped, old_p->arg()->proj(2, 0), p_post, old_p, fuse, budget, runs},
