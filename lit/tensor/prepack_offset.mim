@@ -1,0 +1,23 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: %mim -p opt %s -V -o /dev/null 2>&1 | %FileCheck %s
+// RUN: clang++ -std=c++23 %S/prepack_offset_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// P[i] = Σ_j x[i + off, j] with a prepack of x, driven by prepack_offset_aux.cpp with the same x at two offsets:
+// copies kept by the buffer of x alone would hold the rows of the first offset.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+
+use core.ops.u.w;
+use tensor;
+
+fun sum (acc: I32, x: I32)@tt: I32 = return (acc + x);
+lam ro (i _: affine.Index): affine.Index = i;
+
+// CHECK: prepack of input 0 of {{.*}} not realized: its reads depend on a value other than the input
+extern fun shifted (x: «8, 3; I32», off: Nat): «4; I32» =
+    lam at (i j: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.lit off), j);
+    return (materialize (prepack (cache_read (mr_tileable @1 @(1, 1) (4, 0, (4, 3)) (sum, 0I32, id) ro at (buf x), 0, 0), 0)));

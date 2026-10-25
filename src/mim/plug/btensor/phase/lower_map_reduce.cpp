@@ -231,6 +231,7 @@ const Def* LowerMapReduce::cache_inputs(MapRedPost& mr, const Def* mem, DefVec& 
         if (persist) {
             auto all = count * size(shape, rr);
             auto why = !param(inputs[i])                      ? "it is no input buffer of the function"
+                     : maps[i]->is_open()                     ? "its reads depend on a value other than the input"
                      : all == 0 || all > 2 * size(Sis[i], *r) ? "the copies would exceed twice its size"
                                                               : nullptr;
             if (why) {

@@ -1109,8 +1109,9 @@ anx lam transform_layout (t: Tileable, i a b: Nat): Tileable =
 ///
 /// - `btensor.lower_map_reduce` makes the copies of every box at once ahead of the nest, stacked by the loops outside
 ///   the copy that move the box, so they take about the input's size.
-/// - It realizes it on an input buffer of the function only; anywhere else, and where the stack would exceed twice the
-///   input's size, it copies as `cache_read` does and logs a warning.
+/// - It realizes it on an input buffer of the function only, read at cells that depend on nothing else, such as an
+///   offset the function takes, nor on the tile that computes `t`; anywhere else, and where the stack would exceed
+///   twice the input's size, it copies as `cache_read` does and logs a warning.
 /// - Calls must not overlap, e.g. on two threads.
 anx lam prepack (t: Tileable, i: Nat): Tileable =
     let s   = t#sched;
