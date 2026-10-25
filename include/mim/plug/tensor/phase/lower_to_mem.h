@@ -82,7 +82,7 @@ private:
     /// allocated, and a null @p dst for a destination allocated there.
     const Def* lower_staged(const Staged& s, const Def* mem, const Def* dst);
     /// The schedule of @p op on a tile whose loop `d` starts at `starts[d]` of the whole op, and stops at `ends[d]`
-    /// where that is set, or earlier where @p op's own `lim` does.
+    /// where that is set, or earlier where @p op's own `lim` does; its actions and post still get the whole op's loops.
     const Def* clip_lim(const btensor::MapRedPost& op, const DefVec& starts, const DefVec& ends);
     /// The schedule of @p op without the copies a prepack keeps from call to call, which hold the boxes of the whole nest.
     const Def* no_prepacks(const btensor::MapRedPost& op, const App* old, bool warn);

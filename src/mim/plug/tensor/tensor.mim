@@ -1134,8 +1134,8 @@ anx lam prepack (t: Tileable, i: Nat): Tileable =
 ///   lowered; one whose other inputs depend on such an op reads the producer whole instead.
 ///
 /// `lower_to_mem` realizes it where input `i` is a `map_reduce_post` that no other op has computed yet, the box an
-/// iteration of the loop writes is exact, so that a part reads only cells already written, and the part of `t` is
-/// exact and spans `t`'s reduction dims.
+/// iteration of the loop writes is exact, so that a part reads only cells already written, the part of `t` is exact
+/// and spans `t`'s reduction dims, and the producer has no `post` of its own after another loop.
 /// It keeps the dependences, the scope and the lifetimes of the buffers it materializes; wherever it cannot show a
 /// condition it logs a warning and computes `t` whole, or stops with an error under `-X tensor:strict=1`.
 /// `d` must be a parallel dim of the producer, and the loops around it those of the dims before it.

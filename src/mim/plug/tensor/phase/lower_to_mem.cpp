@@ -890,6 +890,9 @@ const Def* LowerToMem::lower_reverse(const App* app, const btensor::MapRedPost& 
     for (u64 e = 0; e != prn; ++e)
         if (around[e] != (e <= *dim)) return give_up("other loops than the dims before it run around the loop");
 
+    if (mp.sched_field(F::Posts) == w.lit_tt() && Lit::isa<u64>(mp.sched_field(F::PostDim)) != *dim)
+        return give_up("the producer runs its own post after another loop");
+
     // The action after the nest inside the producer's loop of `dim`; it gets the loop-vector prefix.
     auto mem_ty      = w.call<mem::M>(0);
     auto post        = w.mut_fun(w.sigma({mem_ty, w.pi(w.type_nat(), w.type_i32())}), mem_ty)->set("tile_after");
@@ -1142,15 +1145,18 @@ const Def* LowerToMem::clip_lim(const btensor::MapRedPost& op, const DefVec& sta
 
     auto lim       = w.mut_lam(w.pi(w.sigma({get_ty, w.type_nat()}), w.sigma({w.type_bool(), i32})))->set("tile_lim");
     auto [get, jj] = lim->vars<2>();
-    // The op's own `lim` reads the loops of the whole op, where a shifted dim starts at the tile.
-    auto whole = w.mut_lam(get_ty)->set("tile_get");
-    auto e     = whole->var();
-    auto at    = w.app(get, e);
-    for (u64 d = 0; d != n; ++d)
-        if (starts[d])
-            at = select(is(e, d), w.call(core::wrap::add, core::Mode::none, Defs{w.app(get, e), i32_of(starts[d])}),
-                        at);
-    whole->set(true, at);
+    // The op's own `lim`, actions and post read the loops of the whole op, where a shifted dim starts at the tile.
+    auto relocate = [&](const Def* get) {
+        auto whole = w.mut_lam(get_ty)->set("tile_get");
+        auto e     = whole->var();
+        auto at    = w.app(get, e);
+        for (u64 d = 0; d != n; ++d)
+            if (starts[d])
+                at = select(is(e, d), w.call(core::wrap::add, core::Mode::none, Defs{w.app(get, e), i32_of(starts[d])}),
+                            at);
+        return whole->set(true, at);
+    };
+    auto whole = relocate(get);
 
     // A shifted dim stops where the op's own stop falls into the tile, counted from the tile's start.
     auto from = [&](const Def* end, u64 d) {
@@ -1174,6 +1180,24 @@ const Def* LowerToMem::clip_lim(const btensor::MapRedPost& op, const DefVec& sta
 
     auto fields    = DefVec(F::Num_Fields, [&](size_t f) { return rec->proj(F::Num_Fields, f); });
     fields[F::Lim] = lim;
+    auto mem_ty    = w.call<mem::M>(0);
+    auto moved     = [&](const Def* f) {
+        auto fn            = w.mut_fun(w.sigma({mem_ty, get_ty}), mem_ty)->set("tile_stage");
+        auto [data, ret]   = fn->vars<2>();
+        auto [m, tile_get] = data->projs<2>();
+        fn->app(true, f, {w.tuple({m, relocate(tile_get)}), ret});
+        return fn;
+    };
+    if (auto acts = op.mask(F::Acts)) {
+        auto act_pi     = fields[F::Act]->type()->as<Pi>();
+        auto act_of     = w.mut_lam(act_pi->dom(), act_pi->codom())->set("tile_acts");
+        const Def* body = w.app(fields[F::Act], act_of->var());
+        for (u64 d = 0; d != n; ++d)
+            if (btensor::has_slot(acts, d))
+                body = select(is(act_of->var(), d), moved(w.app(fields[F::Act], w.lit_nat(d))), body);
+        fields[F::Act] = act_of->set(true, body);
+    }
+    if (fields[F::Posts] == w.lit_tt()) fields[F::Post] = moved(fields[F::Post]);
     return w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
 }
 
@@ -1510,7 +1534,7 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
                     if (clip[*a]) ends[dd] = mp.So->proj(prk->ro, *a);
                 }
             mt.sched = clip_lim(mp, starts, ends);
-        } else if (!projection && std::ranges::any_of(shifted, [](bool b) { return b; })) {
+        } else if (std::ranges::any_of(shifted, [](bool b) { return b; })) {
             // The op's own stops apply at the tile's start, and iterations past the end of a dim do not run.
             mt.sched = clip_lim(mp, off, ends);
         }
@@ -1594,9 +1618,11 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         fields[F::Act]  = act_of->set(true, body);
     }
     if (s.post) {
+        // The parts run after the producer's own post at that loop.
+        fields[F::Post]    = fields[F::Posts] == w.lit_tt() ? w.app(w.annex<btensor::act_seq>(), {fields[F::Post], s.post})
+                                                            : s.post;
         fields[F::Posts]   = w.lit_tt();
         fields[F::PostDim] = w.lit_nat(s.post_dim);
-        fields[F::Post]    = s.post;
     }
     auto sched  = w.app(w.annex<btensor::mk_sched>(), w.tuple(fields));
     auto in_tys = w.tuple({mr.Tis, mr.Ris, w.tuple(Sis), mr.Tps, mr.Rps, mr.Sps});

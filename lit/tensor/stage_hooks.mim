@@ -1,0 +1,56 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/stage_hooks_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+// The actions and posts an op runs, counted through n by stage_hooks_aux.cpp, once another schedule moves the op:
+// * `moved`: P[i, j] = Σ_k x[i, j, k] adds j + 1 in its loop of j; group_tensor computes P one column per j of C.
+// * `after`: P counts the ends of its rows, while C = P + 1 runs after each row by reverse_compute_at.
+// * `copied`: C = x + 1 counts its loop of i and copies x inside its loop of j.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+
+use core.ops.u.w;
+use tensor;
+
+fun sum1 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun sum2 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun sum3 (acc: I32, x: I32)@tt: I32 = return (acc + x);
+fun inc1 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+fun inc2 (_: I32, x: I32)@tt: I32 = return (x + 1I32);
+lam q2 (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam q3 (i j k: affine.Index): «3; affine.Index» = (i, j, k);
+lam tr (j i: affine.Index): «2; affine.Index» = (i, j);
+lam ro (j _: affine.Index): affine.Index = j;
+lam po (o: «2; affine.Index»): «2; affine.Index» = o;
+
+extern fun moved (x: «6, 4, 3; I32», n: mem.Ptr0 I32): «4; I32» =
+    fun tick (m: mem.M 0, get: Nat → I32)@tt: mem.M 0 =
+        let (m, v) = mem.load (m, n);
+        return (mem.store (m, n, v + get 1 + 1I32));
+    let p = mr_tileable @1 @(2, 1) ((6, 4), (0, 1), (6, 4, 3)) (sum1, 0I32, id) q2 q3 (buf x);
+    let p = p#7_9#7_23 ← 2;
+    let p = p#7_9#8_23 ← lm (_: Nat): Fn [mem.M 0, Nat → I32] → mem.M 0 = tick;
+    return (materialize (mr_tileable @1 @(1, 1) (4, 0, (4, 6)) (sum2, 0I32, id) ro tr (materialize p)));
+
+extern fun after (x: «6, 4, 3; I32», n: mem.Ptr0 I32): «6, 4; I32» =
+    fun tick (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 =
+        let (m, v) = mem.load (m, n);
+        return (mem.store (m, n, v + 1I32));
+    let p = mr_tileable @1 @(2, 1) ((6, 4), (0, 1), (6, 4, 3)) (sum3, 0I32, id) q2 q3 (buf x);
+    let p = p#7_9#11_23 ← tt;
+    let p = p#7_9#12_23 ← 0;
+    let p = p#7_9#13_23 ← tick;
+    let c = mr_tileable @1 @(2, 0) ((6, 4), (0, 1), (6, 4)) (inc1, 0I32, id) po po (materialize p);
+    return (materialize (reverse_compute_at (c, 0, 0)));
+
+extern fun copied (x: «6, 4; I32», n: mem.Ptr0 I32): «6, 4; I32» =
+    fun tick (m: mem.M 0, _: Nat → I32)@tt: mem.M 0 =
+        let (m, v) = mem.load (m, n);
+        return (mem.store (m, n, v + 1I32));
+    let c = mr_tileable @1 @(2, 0) ((6, 4), (0, 1), (6, 4)) (inc2, 0I32, id) po po (buf x);
+    let c = c#7_9#7_23 ← 1;
+    let c = c#7_9#8_23 ← lm (_: Nat): Fn [mem.M 0, Nat → I32] → mem.M 0 = tick;
+    return (materialize (compute_at (cache_read (c, 0, 0), 0, 1)));
