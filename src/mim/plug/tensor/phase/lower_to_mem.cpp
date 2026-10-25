@@ -1582,9 +1582,13 @@ const Def* LowerToMem::lower_staged(const Staged& s, const Def* mem, const Def* 
         for (u64 d = 0; d != rn; ++d)
             if (acts[d] && acts[d]->used) {
                 acts[d]->run->app(true, acts[d]->run->var(2, 1), acts[d]->mem);
+                // The tiles run after whatever the action of their dim already does.
+                const Def* run = acts[d]->run;
+                if (btensor::has_slot(mask, d))
+                    run = w.app(w.annex<btensor::act_seq>(), {w.app(field(F::Act), w.lit_nat(d)), run});
                 mask |= u64(1) << d;
                 auto here = w.call(core::ncmp::e, Defs{act_of->var(), w.lit_nat(d)});
-                body      = w.extract(w.tuple({body, acts[d]->run}), here);
+                body      = w.extract(w.tuple({body, run}), here);
             }
         fields[F::Acts] = w.lit_nat(mask);
         fields[F::Act]  = act_of->set(true, body);
