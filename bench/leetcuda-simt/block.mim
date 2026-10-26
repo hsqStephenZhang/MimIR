@@ -1,0 +1,63 @@
+let BlockState = [GlobalM, %gpu.SharedM];
+let Shared = %gpu.SharedPtr «256; F32»;
+let Combine = [F32, F32] → F32;
+
+fun reduce_stage (g: GlobalM, s: %gpu.SharedM, p: Shared, tid stride: I64, combine: Combine)@tt: BlockState =
+    (skip, merge)#(%core.icmp.ul (tid, stride)) (g, s)
+    where
+        con skip (g: GlobalM, s: %gpu.SharedM) = return (g, s);
+        con merge (g: GlobalM, s: %gpu.SharedM) =
+            let index = %core.conv.u 256 tid;
+            let other = %core.conv.u 256 (%core.wrap.add 0 (tid, stride));
+            let (s, x) = %mem.load (s, %mem.lea (p, index));
+            let (s, y) = %mem.load (s, %mem.lea (p, other));
+            let value = combine (x, y);
+            let s = %mem.store (s, %mem.lea (p, index), value);
+            return (g, s);
+    end;
+
+fun block_reduce (g: GlobalM, s: %gpu.SharedM, p: Shared, tid: I64, value: F32, combine: Combine)@tt
+               : [GlobalM, %gpu.SharedM, F32] =
+    let s = %mem.store (s, %mem.lea (p, %core.conv.u 256 tid), value);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    ret (g, s) = reduce_stage $ (g, s, p, tid, 128I64, combine);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    ret (g, s) = reduce_stage $ (g, s, p, tid, 64I64, combine);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    ret (g, s) = reduce_stage $ (g, s, p, tid, 32I64, combine);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    ret (g, s) = reduce_stage $ (g, s, p, tid, 16I64, combine);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    ret (g, s) = reduce_stage $ (g, s, p, tid, 8I64, combine);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    ret (g, s) = reduce_stage $ (g, s, p, tid, 4I64, combine);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    ret (g, s) = reduce_stage $ (g, s, p, tid, 2I64, combine);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    ret (g, s) = reduce_stage $ (g, s, p, tid, 1I64, combine);
+    let (g, s) = %gpu.sync_work_items (g, s);
+    let (s, total) = %mem.load (s, %mem.lea (p, 0_256));
+    let (g, s) = %gpu.sync_work_items (g, s);
+    return (g, s, total);
+
+fun run_block {S: *} (na nb no groups shared_n: Nat,
+               body: Fn [GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM, I64, I64,
+                         %gpu.SharedPtr «shared_n; S»,
+                         %gpu.GlobalPtr «na; F32», %gpu.GlobalPtr «nb; F32», %gpu.GlobalPtr «no; F32»]
+                     → [GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM],
+               m: %mem.M 0, a: %mem.Ptr0 «na; F32», b: %mem.Ptr0 «nb; F32», out: %mem.Ptr0 «no; F32»)@tt: %mem.M 0 =
+    con kernel (g: GlobalM, s: %gpu.SharedM, c: %gpu.ConstM, l: %gpu.LocalM,
+                gid: Idx groups, tid: Idx 256, p: %gpu.SharedPtr «shared_n; S»,
+                (a: %gpu.GlobalPtr «na; F32», b: %gpu.GlobalPtr «nb; F32», out: %gpu.GlobalPtr «no; F32»),
+                return: Cn [GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM]) =
+        body ((g, s, c, l, %core.conv.u 0 gid, %core.conv.u 0 tid, p, a, b, out), return);
+    let (m, g, c) = %gpu.init m;
+    let (m, g, a) = %gpu.alloc_copy.block (m, g, a);
+    let (m, g, b) = %gpu.alloc_copy.block (m, g, b);
+    let (g, result) = %gpu.alloc.block «no; F32» g;
+    ret (m, g, c) = %gpu.launch (groups, 256, %gpu.default_stream, tt, «shared_n; S») kernel (a, b, result) $ (m, g, c);
+    let (m, g) = %gpu.copy_to_host.block (m, g, result, out);
+    let g = %gpu.free.block (g, a);
+    let g = %gpu.free.block (g, b);
+    let g = %gpu.free.block (g, result);
+    return (%gpu.deinit (m, g, c));

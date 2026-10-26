@@ -1,0 +1,68 @@
+plugin core;
+plugin math;
+plugin mem;
+plugin gpu;
+plugin affine;
+plugin cps;
+
+let F32 = %math.F32;
+let F16 = %math.F16;
+let GlobalM = %gpu.GlobalM;
+let State = [GlobalM, F32];
+
+lam add (a b: F32): F32 = %math.arith.add 0 (a, b);
+lam sub (a b: F32): F32 = %math.arith.sub 0 (a, b);
+lam mul (a b: F32): F32 = %math.arith.mul 0 (a, b);
+lam div (a b: F32): F32 = %math.arith.div 0 (a, b);
+lam exp (x: F32): F32 = %math.exp.exp 0 x;
+lam sqrt (x: F32): F32 = %math.rt.sq 0 x;
+lam maximum (a b: F32): F32 = %math.extrema.fmax 0 (a, b);
+lam minimum (a b: F32): F32 = %math.extrema.fmin 0 (a, b);
+lam as_float (i: I64): F32 = %math.conv.u2f %math.f32 i;
+lam offset (r c stride: I64): I64 = %core.wrap.add 0 (%core.wrap.mul 0 (r, stride), c);
+lam imod (i n: I64): I64 = %core.bitcast I64 (%core.nat.mod (%core.bitcast Nat i, %core.bitcast Nat n));
+lam idiv (i n: I64): I64 = %core.bitcast I64 (%core.nat.div (%core.bitcast Nat i, %core.bitcast Nat n));
+
+lam load (n: Nat) (g: GlobalM, p: %gpu.GlobalPtr «n; F32», i: I64): State =
+    %mem.load (g, %mem.lea (p, %core.conv.u n i));
+
+lam load_half (n: Nat) (g: GlobalM, p: %gpu.GlobalPtr «n; F16», i: I64): State =
+    let (g, x) = %mem.load (g, %mem.lea (p, %core.conv.u n i));
+    (g, %math.conv.f2f %math.f32 x);
+
+fun fold {T: *} (n: Nat, step: Fn [GlobalM, T, I64] → [GlobalM, T], g: GlobalM, init: T)@tt: [GlobalM, T] =
+    %affine.For body done (0I64, %core.bitcast I64 n, 1I64, (g, init))
+    where
+        con body (i: I64, state: [GlobalM, T], yield: Cn [GlobalM, T]) =
+            step ((state#0_2, state#1_2, i), yield);
+        con done (state: [GlobalM, T]) = return state;
+    end;
+
+fun run {Ta Tb Tc: *} (na nb no: Nat,
+         eval: Fn [GlobalM, %gpu.GlobalPtr «na; Ta», %gpu.GlobalPtr «nb; Tb», I64] → [GlobalM, Tc],
+         m: %mem.M 0, a: %mem.Ptr0 «na; Ta», b: %mem.Ptr0 «nb; Tb», out: %mem.Ptr0 «no; Tc»)@tt: %mem.M 0 =
+    let threads = 256;
+    let groups = %core.nat.div (%core.nat.add (no, 255), threads);
+    con kernel (g: GlobalM, s: %gpu.SharedM, c: %gpu.ConstM, l: %gpu.LocalM,
+                gid: Idx groups, tid: Idx threads, (),
+                (a: %gpu.GlobalPtr «na; Ta», b: %gpu.GlobalPtr «nb; Tb», out: %gpu.GlobalPtr «no; Tc»),
+                return: Cn [GlobalM, %gpu.SharedM, %gpu.ConstM, %gpu.LocalM]) =
+        let i = offset (%core.conv.u 0 gid, %core.conv.u 0 tid, 256I64);
+        (skip, write)#(%core.icmp.ul (i, %core.bitcast I64 no)) (g, s, c, l)
+        where
+            con skip (g: GlobalM, s: %gpu.SharedM, c: %gpu.ConstM, l: %gpu.LocalM) = return (g, s, c, l);
+            con write (g: GlobalM, s: %gpu.SharedM, c: %gpu.ConstM, l: %gpu.LocalM) =
+                ret (g, value) = eval $ (g, a, b, i);
+                let g = %mem.store (g, %mem.lea (out, %core.conv.u no i), value);
+                return (g, s, c, l);
+        end;
+    let (m, g, c) = %gpu.init m;
+    let (m, g, a) = %gpu.alloc_copy.block (m, g, a);
+    let (m, g, b) = %gpu.alloc_copy.block (m, g, b);
+    let (g, result) = %gpu.alloc.block «no; Tc» g;
+    ret (m, g, c) = %gpu.launch (groups, threads, %gpu.default_stream, ff, ()) kernel (a, b, result) $ (m, g, c);
+    let (m, g) = %gpu.copy_to_host.block (m, g, result, out);
+    let g = %gpu.free.block (g, a);
+    let g = %gpu.free.block (g, b);
+    let g = %gpu.free.block (g, result);
+    return (%gpu.deinit (m, g, c));

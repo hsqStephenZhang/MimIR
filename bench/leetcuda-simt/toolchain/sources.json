@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/llvm/llvm-project.git",
+  "ref": "llvmorg-22.1.3",
+  "commit": "e9846648fd6183ee6d8cbdb4502213fcf902a211",
+  "component": "libc",
+  "license": "Apache-2.0 WITH LLVM-exception",
+  "entrypoints": ["powf", "erff", "pow", "exp", "fabs"],
+  "patches": ["pow-subnormal.patch"],
+  "openlibm": {
+    "repository": "https://github.com/JuliaMath/openlibm.git",
+    "ref": "v0.8.7",
+    "commit": "9fbeafcd4f1b6ef6aa3946c1c8faead50f38a94d",
+    "source": "src/s_erf.c",
+    "license": "Sun permissive license; retain upstream notices"
+  }
+}
