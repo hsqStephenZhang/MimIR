@@ -87,5 +87,7 @@ axm free: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT] → mem.M 
 /// ### lower_ptr
 ///
 /// Lowers `Buf` / `alloc` / `read` / `write` / `free` to `mem.Ptr` + `mem.lea` / `mem.load` / `mem.store` / `mem.free`.
+/// A runtime extent is erased here: such a `Buf` lowers to the flat `mem.Ptr («⊤; T», 0)` and its element
+/// address is linearized from the logical shape, so no type below this phase names a runtime extent.
 ///
 axm lower_ptr: compile.Phase;

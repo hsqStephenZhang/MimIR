@@ -1541,6 +1541,8 @@ axm fuse_tensor: compile.Phase;
 /// threading `mem.M`.
 /// This is where a `buf` annotation is consumed: it seeds the set of array types that denote tensors, next to
 /// the operand and result types of the operations above.
+/// A shape-polymorphic `fun extern f {n: Nat} (…)` is uncurried into a first-order `con` over `[n, …]`, the
+/// runtime extents staying values next to the handles they type.
 /// `mem.add_mem` (scheduled next in the pipeline) threads the memory; run `buffer.lower_ptr`
 /// afterwards to reach `mem.Ptr`.
 ///

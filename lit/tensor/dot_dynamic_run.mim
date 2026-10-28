@@ -1,0 +1,47 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t ; test $? -eq 16
+// RUN: %t x ; test $? -eq 32
+// RUN: %t x y z ; test $? -eq 64
+
+// A matrix product whose contraction extent is a *runtime* value, executed end to end: n = 4 · argc.
+// `mm_opaque` takes an opaque `n`, so `dot_schedule`'s tile-size guard falls back to ts = 1 (see
+// dot_dynamic.mim); `mm_refined` recasts `n` to the factored `4 · (n / 4)`, the spelling under which the
+// guard discharges symbolically (see dot_symbolic_div.mim), so the contraction is register-blocked by 4.
+// Both compute `a · b` with `a[i][k] = i + 1`, `b = 1`, hence `c[3][3] = 4 · n`; the exit code is
+// `c - d + c` over the two probes, i.e. `4 · n` iff the two kernels agree.
+// The shape-polymorphic `fun extern f {n} (…)` is uncurried into a first-order `con` over `[n, bufs…]`
+// by `tensor.lower_to_mem`.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin cps;
+plugin btensor;
+plugin buffer;
+
+use core.ops.u.w;
+use tensor;
+
+let Ring = (I32, 0I32, core.wrap.add 0, core.wrap.mul 0);
+
+lam refine_div {T: *} (d: Nat) {m n: Nat} (x: «m, n; T»): «m, core.nat.mul (d, core.nat.div (n, d)); T» =
+    core.bitcast «m, core.nat.mul (d, core.nat.div (n, d)); T» x;
+
+extern fun mm_opaque {n: Nat} (a: «4, n; I32», b: «n, 4; I32»): «4, 4; I32» =
+    return (product_2d Ring (buf a, buf b));
+
+extern fun mm_refined {n: Nat} (a: «4, n; I32», b: «core.nat.mul (4, core.nat.div (n, 4)), 4; I32»): «4, 4; I32» =
+    return (product_2d Ring (refine_div 4 (buf a), buf b));
+
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
+    let n  = core.nat.mul (4, core.bitcast Nat argc);
+    let np = core.nat.mul (4, core.nat.div (n, 4));
+    let a  = generate (4, n) (λ (i: «2; I64»): I32 = core.conv.u 4294967296 (core.wrap.add 0 (i#0₂, 1I64)));
+    let b  = splat ((n, 4), 1I32);
+    let bp = splat ((np, 4), 1I32);
+    con done_r (c: «4, 4; I32») =
+        con done_o (d: «4, 4; I32») = return (m, c#(3₄, 3₄) - d#(3₄, 3₄) + c#(3₄, 3₄));
+        mm_opaque ((a, b), done_o);
+    mm_refined ((a, bp), done_r);

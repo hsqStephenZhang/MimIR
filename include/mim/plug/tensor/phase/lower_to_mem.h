@@ -40,6 +40,7 @@ private:
 
     /// The type of @p lam with its tensor-typed domain converted.
     const Pi* conv_type(Lam* lam);
+    const Def* uncurry(Lam* lam);
 
     /// Splits the Extract @p d into the recorded tensor it reads and its *rewritten* index.
     /// A size-1 axis folds out of the array type, so the index is already the folded one `buffer` expects.
@@ -125,7 +126,7 @@ private:
     DefMap<const Def*> fresh_memo_;
 
     /// A function is bufferized iff it is external, set, and mentions a tensor type in its domain.
-    bool is_tensor_fn(Lam*) const;
+    bool is_tensor_fn(Lam*);
 
     /// Whether a type is a tensor or (recursively, through sigmas and continuation domains) contains one.
     /// Never descends into `Arr` elements (so an index/shape array is not mistaken for a tensor).
@@ -141,6 +142,8 @@ private:
     /// Old-world functions that get bufferized (external, signature mentions a tensor).
     /// Call sites of these functions must be adapted (see `lower_call`).
     LamSet tensor_fns_;
+    /// `fun extern f {n: Nat} (…)`: a curried `Π{n}. Cn […]` whose tensor boundaries sit behind the shape parameters.
+    LamSet shape_poly_;
 
     /// Lams passed inside a tensor op's curry chain (combiners, affine index maps): they stay element-level —
     /// they receive element values, never buffers — even when a parameter type incidentally collides with a
