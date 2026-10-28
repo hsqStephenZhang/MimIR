@@ -23,3 +23,6 @@ extern con vector_one (m: mem.M 0, return: Cn [mem.M 0, buffer.Buf (1, 1, I32)])
 
 extern con vector_zero (m: mem.M 0, return: Cn [mem.M 0, buffer.Buf (1, 0, I32)]) =
     make_vector (m, 0, return);
+
+extern con vector_four (m: mem.M 0, return: Cn [mem.M 0, buffer.Buf (1, 4, I32)]) =
+    make_vector (m, 4, return);

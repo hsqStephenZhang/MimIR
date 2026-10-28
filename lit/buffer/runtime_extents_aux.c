@@ -5,6 +5,7 @@ extern int32_t* make_vector(uint64_t n);
 extern int32_t* make_matrix(uint64_t n);
 extern int32_t update_last(uint64_t n, int32_t* a);
 extern int32_t* vector_one(void);
+extern int32_t* vector_four(void);
 extern void* vector_zero(void);
 
 int main(void) {
@@ -29,5 +30,9 @@ int main(void) {
     if (*one != 7) return 5;
     free(one);
     free(vector_zero());
+    int32_t* four = vector_four();
+    for (unsigned i = 0; i < 4; ++i)
+        if (four[i] != 7) return 6;
+    free(four);
     return 0;
 }

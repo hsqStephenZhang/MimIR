@@ -16,7 +16,7 @@ namespace {
 /// Does the shape @p s have a runtime extent (a non-literal dim)?
 bool has_runtime_extent(const Def* s) {
     auto r = Lit::isa(s->arity());
-    if (!r) return false;
+    if (!r) s->blame("cannot lower buffer with a non-literal rank").bail();
     for (size_t i = 0; i != *r; ++i)
         if (!Lit::isa(s->proj(*r, i))) return true;
     return false;

@@ -1,0 +1,13 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin compile;
+
+extern con free_buffer (r: Nat, s: «r; Nat», m: mem.M 0, a: buffer.Buf (r, s, I32), return: Cn [mem.M 0]) =
+    return (buffer.free (r, s, I32) (m, a));
+
+extern lam _compile (): compile.Phase = buffer.lower_ptr;
+
+// CHECK: error: cannot lower buffer with a non-literal rank
