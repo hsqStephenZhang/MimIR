@@ -15,6 +15,12 @@ public:
     using RWPhase::RWPhase;
 
     const Def* rewrite_imm_App(const App*) override;
+    const Def* coerce_leaf(const Def*, const Def*) override;
+
+private:
+    void remember_empty(const Def*, const Def*, const Def*);
+    // Only pre-erasure Buf contracts authorize element types lost from empty pointees.
+    DefMap<DefSet> empty_elements_;
 };
 
 } // namespace mim::plug::buffer

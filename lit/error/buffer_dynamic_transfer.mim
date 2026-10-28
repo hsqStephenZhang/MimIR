@@ -1,0 +1,13 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin buffer;
+plugin compile;
+plugin gpu;
+plugin mem;
+
+extern lam transfer (n: Nat, m: mem.M 0, d: gpu.GlobalM, a: buffer.Buf (1, n, I32)) =
+    gpu.buf_alloc_copy (m, d, a);
+
+extern lam _compile (): compile.Phase = buffer.lower_ptr;
+
+// CHECK: error: cannot lower a device transfer of a runtime extent

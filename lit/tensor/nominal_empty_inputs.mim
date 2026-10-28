@@ -1,0 +1,22 @@
+// RUN: %mim %s -p ll -X ll:o=%t.ll
+// RUN: clang %t.ll %S/nominal_empty_inputs_aux.c -o %t -Wno-override-module
+// RUN: %t
+
+plugin core;
+plugin tensor;
+use tensor;
+
+extern fun pad_empty (a: Tensor 1 0 I32): Tensor 1 2 I32 =
+    return (pad 0 (0, 1, 1) (a, 7I32));
+
+extern fun pad_dynamic {n: Nat} (a: Tensor 1 n I32): Tensor 1 (core.nat.add (core.nat.add (1, n), 1)) I32 =
+    return (pad n (0, 1, 1) (a, 7I32));
+
+extern fun concat_empty (a: Tensor 1 0 I32, b: Tensor 1 4 I32): Tensor 1 8 I32 =
+    return (concat 0₁ @(0, 4, 0, 4, 0) (a, b, a, b, a));
+
+extern fun concat_all_empty (a: Tensor 1 0 I32): Tensor 1 0 I32 =
+    return (concat 0₁ @(0, 0) (a, a));
+
+extern fun broadcast_empty {n: Nat} (a: Tensor 2 (0, 1) I32): Tensor 2 (0, n) I32 =
+    return (broadcast ((0, 1), (0, n), a));

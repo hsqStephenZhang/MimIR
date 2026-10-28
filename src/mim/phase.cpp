@@ -271,11 +271,13 @@ const Def* RWPhase::coerce(const Def* type, const Def* val) {
     return res;
 }
 
+const Def* RWPhase::coerce_leaf(const Def* type, const Def* val) { return Check::coerce(type, val); }
+
 const Def* RWPhase::reshape(DefVec& todo, const Def* type) {
     auto& w    = new_world();
     auto front = todo.empty() ? nullptr : todo.back();
     if (front) {
-        if (auto res = Check::coerce(type, front)) return todo.pop_back(), res;
+        if (auto res = coerce_leaf(type, front)) return todo.pop_back(), res;
         if (auto res = eta_coerce(type, front)) return todo.pop_back(), res;
     }
 

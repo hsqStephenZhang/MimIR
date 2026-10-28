@@ -1,0 +1,25 @@
+// RUN: %mim -p opt -p ll %s -X ll:o=%t.ll
+// RUN: clang %t.ll %S/runtime_extents_aux.c -o %t -Wno-override-module
+// RUN: %t
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin btensor;
+
+extern con make_vector (m: mem.M 0, n: Nat, return: Cn [mem.M 0, buffer.Buf (1, n, I32)]) =
+    return (buffer.lit (1, n, I32) (m, 7I32));
+
+extern con make_matrix (m: mem.M 0, n: Nat, return: Cn [mem.M 0, buffer.Buf (2, (n, 3), I32)]) =
+    return (buffer.lit (2, (n, 3), I32) (m, 7I32));
+
+extern con update_last (m: mem.M 0, n: Nat, a: buffer.Buf (2, (n, 3), I32), return: Cn [mem.M 0, I32]) =
+    let i = (core.idx 0 n (core.nat.sub (n, 1)), 2₃);
+    let (m, a) = buffer.write (2, (n, 3), I32) (m, a, i, 9I32);
+    return (buffer.read (2, (n, 3), I32) (m, a, i));
+
+extern con vector_one (m: mem.M 0, return: Cn [mem.M 0, buffer.Buf (1, 1, I32)]) =
+    make_vector (m, 1, return);
+
+extern con vector_zero (m: mem.M 0, return: Cn [mem.M 0, buffer.Buf (1, 0, I32)]) =
+    make_vector (m, 0, return);
