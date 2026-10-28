@@ -57,31 +57,21 @@ const Def* flat_index(const Def* s, const Def* idx) {
     return w.call<core::bitcast>(w.type_idx(w.top(w.type_nat())), lin);
 }
 
-/// Is @p t the pointer to an erased (`«⊤; T»`) or precise array?
-bool is_arr_ptr(const Def* t) {
-    if (auto ptr = Axm::isa<mem::Ptr>(t)) return ptr->arg(2, 0)->isa<Arr>();
-    return false;
+/// The innermost element type and address space of a pointer to (nested) arrays, or `nullptr`.
+std::pair<const Def*, const Def*> arr_ptr_elem(const Def* t) {
+    if (auto ptr = Axm::isa<mem::Ptr>(t))
+        if (auto arr = ptr->arg(2, 0)->isa<Arr>()) {
+            const Def* elem = arr;
+            while (auto a = elem->isa<Arr>())
+                elem = a->body();
+            return {elem, ptr->arg(2, 1)};
+        }
+    return {nullptr, nullptr};
 }
 
-/// Adapts @p v to the type @p dst where the two differ only by erasure, component-wise through sigmas.
-/// A pointer is cast; precise→erased forgets the extent, erased→precise reinstates the one the caller chose.
-/// A continuation is contravariant: an η-wrapper takes @p dst's parameters and adapts them to @p v's.
-const Def* adapt(const Def* dst, const Def* v) {
-    auto& w = dst->world();
-    if (v->type() == dst) return v;
-    if (auto sig = dst->isa<Sigma>(); sig && !sig->isa_mut()) {
-        auto n = sig->num_ops();
-        if (v->type()->isa<Sigma>() && v->type()->num_ops() == n)
-            return w.tuple(DefVec(n, [&](size_t i) { return adapt(sig->op(i), v->proj(n, i)); }));
-    }
-    if (auto pi = Pi::isa_cn(dst))
-        if (auto vpi = Pi::isa_cn(v->type()); vpi && vpi->dom()->num_projs() == pi->dom()->num_projs()) {
-            auto k = w.mut_con(pi->dom())->set(v->dbg());
-            k->set(true, w.app(v, adapt(vpi->dom(), k->var())));
-            return k;
-        }
-    if (is_arr_ptr(dst) && is_arr_ptr(v->type())) return w.call<core::bitcast>(dst, v);
-    return v;
+bool is_erased(const Def* t) {
+    auto arr = Axm::isa<mem::Ptr>(t)->arg(2, 0)->as<Arr>();
+    return arr->arity()->isa<Top>();
 }
 
 } // namespace
@@ -158,22 +148,30 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         auto mem3        = w.call<mem::store>(Defs{mem2, ptr, w.pack(s, val)});
         return w.tuple({mem3, ptr});
     } else if (auto buf_alloc_copy = Axm::isa<gpu::buf_alloc_copy>(app)) {
+        if (has_runtime_extent(rewrite(buf_alloc_copy->callee()->as<App>()->arg(3, 1))))
+            app->blame("cannot lower a device transfer of a runtime extent").bail();
         auto [m0, m1, ptr] = buf_alloc_copy->args<3>([this](const Def* d) { return rewrite(d); });
         return w.call(gpu::alloc_copy::block, Defs{m0, m1, ptr});
     } else if (auto buf_copy_to_host = Axm::isa<gpu::buf_copy_to_host>(app)) {
+        if (has_runtime_extent(rewrite(buf_copy_to_host->callee()->as<App>()->arg(3, 1))))
+            app->blame("cannot lower a device transfer of a runtime extent").bail();
         auto [m0, m1, d_ptr, h_ptr] = buf_copy_to_host->args<4>([this](const Def* d) { return rewrite(d); });
         return w.call(gpu::copy_to_host::block, Defs{m0, m1, d_ptr, h_ptr});
     }
 
-    // A callee whose buffer parameter has a symbolic shape takes the erased pointer and hands an erased result to
-    // its continuation; a precise argument and a precise continuation are adapted to it.
-    if (auto pi = app->callee()->type()->isa<Pi>()) {
-        auto callee = rewrite(app->callee());
-        auto arg    = rewrite(app->arg());
-        return w.app(callee, adapt(callee->type()->as<Pi>()->dom(), arg));
-    }
-
     return RWPhase::rewrite_imm_App(app);
+}
+
+const Def* LowerPtr::coerce_leaf(const Def* type, const Def* val) {
+    if (auto res = RWPhase::coerce_leaf(type, val)) return res;
+    // Erasure relates a precise pointer to the flat one of the same element type and address space.
+    // A checking position already type-checked before erasure, so the precise extents are the erased ones:
+    // widening forgets them, narrowing (into a continuation's precise parameter) reinstates them.
+    auto [de, da] = arr_ptr_elem(type);
+    auto [se, sa] = arr_ptr_elem(val->type());
+    if (de && se && de == se && da == sa && (is_erased(type) || is_erased(val->type())))
+        return type->world().call<core::bitcast>(type, val);
+    return nullptr;
 }
 
 } // namespace mim::plug::buffer

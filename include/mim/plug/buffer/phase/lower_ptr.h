@@ -15,6 +15,7 @@ public:
     using RWPhase::RWPhase;
 
     const Def* rewrite_imm_App(const App*) override;
+    const Def* coerce_leaf(const Def*, const Def*) override;
 };
 
 } // namespace mim::plug::buffer

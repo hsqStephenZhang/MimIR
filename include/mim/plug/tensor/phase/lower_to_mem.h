@@ -93,6 +93,11 @@ private:
     /// Converts a boundary type: tensor array types become `buffer.Buf`, recursing through (immutable) sigmas
     /// so that grouped parameters like `[«s; T», Idx s]` are converted as well; anything else is `rewrite`d.
     const Def* conv_boundary(const Def* t);
+    void collect_leaves(const Def* pv, DefVec& out);
+    const DefVec& leaves(Lam* lam);
+    const Def* conv_leaf(const Def* pv);
+    const Def* rebuild_param(const Def* pv);
+    void explode_arg(const Def* pv, const Def* a, DefVec& out);
 
     /// A `⊥: mem.M 0` placeholder consumed by emitted buffer operations; AddMem replaces it with the
     /// scheduler-placed current memory.
@@ -126,7 +131,7 @@ private:
     DefMap<const Def*> fresh_memo_;
 
     /// A function is bufferized iff it is external, set, and mentions a tensor type in its domain.
-    bool is_tensor_fn(Lam*);
+    bool is_tensor_fn(Lam*, bool inner = false);
 
     /// Whether a type is a tensor or (recursively, through sigmas and continuation domains) contains one.
     /// Never descends into `Arr` elements (so an index/shape array is not mistaken for a tensor).
@@ -144,6 +149,9 @@ private:
     LamSet tensor_fns_;
     /// `fun extern f {n: Nat} (…)`: a curried `Π{n}. Cn […]` whose tensor boundaries sit behind the shape parameters.
     LamSet shape_poly_;
+    /// The leaves of an uncurried function's parameters (see `collect_leaves`), and all leaves.
+    LamMap<DefVec> leaves_;
+    DefSet leaf_;
 
     /// Lams passed inside a tensor op's curry chain (combiners, affine index maps): they stay element-level —
     /// they receive element values, never buffers — even when a parameter type incidentally collides with a

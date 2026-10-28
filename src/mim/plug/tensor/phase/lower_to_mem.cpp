@@ -221,7 +221,7 @@ void LowerToMem::collect_tensor_types() {
         auto lam = mut->isa_mut<Lam>();
         if (!lam || !lam->is_set() || op_args_.contains(lam) || Pi::isa_cn(lam->type())) continue;
         auto inner = lam->body()->isa_mut<Lam>();
-        if (!inner || !Pi::isa_cn(inner->type()) || !mentions_tensor(inner->type()->as<Pi>()->dom())) continue;
+        if (!inner || !Pi::isa_cn(inner->type()) || !is_tensor_fn(inner, true)) continue;
         shape_poly_.emplace(lam);
     }
     // No tensor boundaries AND no tensor ops: nothing for the sweeps below to check.
@@ -248,14 +248,33 @@ void LowerToMem::collect_tensor_types() {
         return !r || !k || *k >= *r;
     };
 
-    std::function<void(const Def*)> record_boundary = [&](const Def* t) {
-        if (t->isa<Arr>())
+    // The instantiated type `t` of an argument is a boundary exactly where the callee's parameter type is one:
+    // the callee decides the roles, so a shape vector passed next to a tensor stays a value.
+    // Parameters are compared by value `pv` (a var or its projections), as the body spells their types.
+    std::function<void(const Def*, const Def*)> record_boundary_ty = [&](const Def* p, const Def* t) {
+        if (tensor_ty_.contains(p)) {
             add_tensor_ty(t);
-        else if (auto cn = Pi::isa_cn(t))
-            record_boundary(cn->dom());
-        else if (auto sig = t->isa<Sigma>())
-            for (auto op : sig->ops())
-                record_boundary(op);
+        } else if (auto pcn = Pi::isa_cn(p)) {
+            if (auto tcn = Pi::isa_cn(t)) record_boundary_ty(pcn->dom(), tcn->dom());
+        } else if (auto psig = p->isa<Sigma>()) {
+            auto n = psig->num_ops();
+            if (auto tsig = t->isa<Sigma>(); tsig && tsig->num_ops() == n)
+                for (size_t i = 0; i != n; ++i)
+                    record_boundary_ty(psig->op(i), tsig->op(i));
+        }
+    };
+    std::function<void(const Def*, const Def*)> record_boundary = [&](const Def* pv, const Def* t) {
+        auto p = pv->type();
+        if (tensor_ty_.contains(p)) {
+            add_tensor_ty(t);
+        } else if (Pi::isa_cn(p)) {
+            record_boundary_ty(p, t);
+        } else if (auto psig = p->isa<Sigma>()) {
+            auto n = psig->num_ops();
+            if (auto tsig = t->isa<Sigma>(); tsig && tsig->num_ops() == n)
+                for (size_t i = 0; i != n; ++i)
+                    record_boundary(pv->proj(n, i), tsig->op(i));
+        }
     };
 
     // Second sweep: shapes the conversion cannot adapt — the value-semantics path lowers everything instead.
@@ -275,10 +294,16 @@ void LowerToMem::collect_tensor_types() {
         if (auto app = def->isa<App>()) {
             auto f = app->callee()->isa_mut<Lam>();
             if (auto sh = app->callee()->isa<App>()) f = sh->callee()->isa_mut<Lam>();
-            if (f
-                && (shape_poly_.contains(f)
-                    || (tensor_fns_.contains(f) && f->type()->dom()->isa_binder<Sigma>().second)))
-                record_boundary(app->arg()->type());
+            Lam* callee = nullptr;
+            if (f && shape_poly_.contains(f))
+                callee = f->body()->as_mut<Lam>();
+            else if (f && tensor_fns_.contains(f) && f->type()->dom()->isa_binder<Sigma>().second)
+                callee = f;
+            if (callee) {
+                auto n = callee->num_vars();
+                for (size_t i = 0; i != n; ++i)
+                    record_boundary(callee->var(n, i), app->arg()->proj(n, i)->type());
+            }
         }
 
         for (auto op : def->ops()) {
@@ -371,13 +396,76 @@ bool LowerToMem::mentions_tensor(const Def* t) const {
     return false;
 }
 
-bool LowerToMem::is_tensor_fn(Lam* lam) {
-    if (!lam->is_external() || !lam->is_set()) return false;
+bool LowerToMem::is_tensor_fn(Lam* lam, bool inner) {
+    if (!(inner || lam->is_external()) || !lam->is_set()) return false;
     // A dependent dom spells its components with the Sigma's Var; the parameters' types are the recorded boundaries.
     auto n = lam->num_vars();
     for (size_t i = 0; i != n; ++i)
         if (mentions_tensor(lam->var(n, i)->type())) return true;
     return false;
+}
+
+/// The leaves of a parameter value @p pv: a grouped parameter holding a tensor is exploded into its components, so
+/// a bufferized function takes one flat list and its dom is a single binder to spell extents against.
+void LowerToMem::collect_leaves(const Def* pv, DefVec& out) {
+    auto t = pv->type();
+    if (auto sig = t->isa<Sigma>(); sig && !tensor_ty_.contains(t)) {
+        auto n   = sig->num_ops();
+        bool any = false;
+        for (size_t i = 0; i != n && !any; ++i)
+            any = mentions_tensor(pv->proj(n, i)->type());
+        if (any) {
+            for (size_t i = 0; i != n; ++i)
+                collect_leaves(pv->proj(n, i), out);
+            return;
+        }
+    }
+    leaf_.emplace(pv);
+    out.emplace_back(pv);
+}
+
+const DefVec& LowerToMem::leaves(Lam* lam) {
+    auto [it, ins] = leaves_.try_emplace(lam);
+    if (ins) {
+        auto m = lam->num_vars();
+        for (size_t j = 0; j != m; ++j)
+            collect_leaves(lam->var(m, j), it->second);
+    }
+    return it->second;
+}
+
+const Def* LowerToMem::conv_leaf(const Def* pv) {
+    auto t = pv->type();
+    if (tensor_ty_.contains(t)) return buf_of(t);
+    if (auto pi = Pi::isa_cn(t); pi && mentions_tensor(pi->dom())) return new_world().cn(conv_boundary(pi->dom()));
+    return rewrite(t);
+}
+
+/// Rebuilds the value of the old parameter @p pv from its (already mapped) leaves.
+const Def* LowerToMem::rebuild_param(const Def* pv) {
+    if (leaf_.contains(pv)) return rewrite(pv);
+    auto n = pv->type()->as<Sigma>()->num_ops();
+    return new_world().tuple(DefVec(n, [&](size_t i) { return rebuild_param(pv->proj(n, i)); }));
+}
+
+/// The flat argument list for the leaves of the callee's old parameter @p pv, given the old argument @p a.
+void LowerToMem::explode_arg(const Def* pv, const Def* a, DefVec& out) {
+    if (leaf_.contains(pv)) {
+        auto t = pv->type();
+        if (Pi::isa_cn(t)) {
+            out.emplace_back(rewrite(a));
+        } else if (tensor_ty_.contains(t) || tensor_ty_.contains(a->type())) {
+            // A dependent dom names the callee's own Var; the argument's type is the instantiated boundary.
+            if (auto arr = a->type()->isa<Arr>()) tensor_ty_.emplace(arr);
+            out.emplace_back(materialize(a->type(), a));
+        } else {
+            out.emplace_back(rewrite(a));
+        }
+        return;
+    }
+    auto n = pv->type()->as<Sigma>()->num_ops();
+    for (size_t i = 0; i != n; ++i)
+        explode_arg(pv->proj(n, i), a->proj(n, i), out);
 }
 
 const Def* LowerToMem::conv_boundary(const Def* t) {
@@ -415,19 +503,20 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
 }
 
 const Def* LowerToMem::uncurry(Lam* lam) {
-    auto& w       = new_world();
-    auto poly     = shape_poly_.contains(lam);
-    auto pi       = lam->type()->as<Pi>();
-    auto pi_mut   = poly ? lam->type()->isa_mut<Pi>() : nullptr; // dependent iff some boundary names a shape parameter
-    auto inner    = poly ? lam->body()->as_mut<Lam>() : lam;
-    auto inner_pi = inner->type()->as<Pi>();
-    auto k        = poly ? pi->dom()->num_projs() : 0;
-    auto m        = inner_pi->dom()->num_projs();
-    auto n        = k + m;
+    auto& w     = new_world();
+    auto poly   = shape_poly_.contains(lam);
+    auto pi     = lam->type()->as<Pi>();
+    auto pi_mut = poly ? lam->type()->isa_mut<Pi>() : nullptr; // dependent iff some boundary names a shape parameter
+    auto inner  = poly ? lam->body()->as_mut<Lam>() : lam;
+    auto k      = poly ? pi->dom()->num_projs() : 0;
+    auto m      = inner->num_vars();
+    auto& ls    = leaves(inner);
+    auto n      = k + ls.size();
 
-    // The shape parameters come first, then the value parameters with their boundaries converted.
-    // A boundary names a shape parameter, so the dom is a mutable Sigma whose components refer to its own Var.
-    // Spell the components with that Var in a scope of their own: the body is spelled with the new lam's Var.
+    // The shape parameters come first, then the value parameters' leaves with their boundaries converted.
+    // A boundary names a shape parameter or an earlier leaf, so the dom is a mutable Sigma whose components refer
+    // to its own Var. Spell the components with that Var in a scope of their own: the body is spelled with the new
+    // lam's Var.
     auto sigma = w.mut_sigma(n);
     push();
     if (pi_mut) bind_old(pi_mut->has_var());
@@ -443,9 +532,9 @@ const Def* LowerToMem::uncurry(Lam* lam) {
         if (pi_mut) map(pi_mut->var(), vars);
         map(lam->var(), vars);
     }
-    for (size_t j = 0; j != m; ++j) {
-        sigma->set(k + j, conv_boundary(inner->var(m, j)->type()));
-        map(inner->var(m, j), sigma->var(n, k + j));
+    for (size_t l = 0; l != ls.size(); ++l) {
+        sigma->set(k + l, conv_leaf(ls[l]));
+        map(ls[l], sigma->var(n, k + l));
     }
     pop();
 
@@ -455,9 +544,11 @@ const Def* LowerToMem::uncurry(Lam* lam) {
     for (size_t i = 0; i != k; ++i)
         map(lam->var(k, i), new_lam->var(n, i));
     if (k > 1) map(lam->var(), w.tuple(DefVec(k, [&](size_t i) { return new_lam->var(n, i); })));
+    for (size_t l = 0; l != ls.size(); ++l)
+        map(ls[l], new_lam->var(n, k + l)->set(ls[l]->dbg()));
     for (size_t j = 0; j != m; ++j)
-        map(inner->var(m, j), new_lam->var(n, k + j)->set(inner->var(m, j)->dbg()));
-    if (m > 1) map(inner->var(), w.tuple(DefVec(m, [&](size_t j) { return new_lam->var(n, k + j); })));
+        map(inner->var(m, j), rebuild_param(inner->var(m, j)));
+    if (m > 1) map(inner->var(), w.tuple(DefVec(m, [&](size_t j) { return rewrite(inner->var(m, j)); })));
 
     auto ___ = enter(new_lam);
     new_lam->set(rewrite(inner->filter()), wrap_fresh_mem(rewrite(inner->body())));
@@ -513,15 +604,14 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
         if (auto f = sh->callee()->isa_mut<Lam>(); f && shape_poly_.contains(f)) {
             auto& w    = new_world();
             auto new_f = rewrite(f);
+            auto inner = f->body()->as_mut<Lam>();
             auto k     = sh->arg()->num_projs();
-            auto m     = app->arg()->num_projs();
-            DefVec args(k + m);
+            auto m     = inner->num_vars();
+            DefVec args;
             for (size_t i = 0; i != k; ++i)
-                args[i] = rewrite(sh->arg()->proj(k, i));
-            for (size_t j = 0; j != m; ++j) {
-                auto a      = app->arg()->proj(m, j);
-                args[k + j] = Pi::isa_cn(a->type()) ? rewrite(a) : materialize(a->type(), a);
-            }
+                args.emplace_back(rewrite(sh->arg()->proj(k, i)));
+            for (size_t j = 0; j != m; ++j)
+                explode_arg(inner->var(m, j), app->arg()->proj(m, j), args);
             return w.app(new_f, w.tuple(args));
         }
 
@@ -552,6 +642,14 @@ const Def* LowerToMem::lower_call(const App* app, Lam* old_callee) {
     auto new_callee = rewrite(old_callee);
     auto dom        = old_callee->type()->dom();
     auto n          = dom->num_projs();
+
+    // An uncurried callee (see `uncurry`) takes the leaves of its parameters.
+    if (dom->isa_binder<Sigma>().second) {
+        DefVec args;
+        for (size_t i = 0; i != n; ++i)
+            explode_arg(old_callee->var(n, i), app->arg()->proj(n, i), args);
+        return w.app(new_callee, w.tuple(args));
+    }
 
     DefVec args(n);
     for (size_t i = 0; i != n; ++i) {
