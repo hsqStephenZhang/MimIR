@@ -14,6 +14,23 @@
 
 namespace mim::plug::btensor::phase {
 
+namespace {
+
+const Def* conditional_read(const Def* valid, const Def* mem, const Def* buf, const Def* index, const Def* fill) {
+    auto& w          = mem->world();
+    auto result      = w.sigma({mem->type(), fill->type()});
+    auto [fun, call] = ds_splice(mem, result, "pad_read");
+    auto [m, ret]    = fun->vars<2>();
+    auto read        = w.mut_con(mem->type())->set("pad_input");
+    auto pad         = w.mut_con(mem->type())->set("pad_fill");
+    read->app(true, ret, buffer::op_read(read->var(), buf, index));
+    pad->app(true, ret, {pad->var(), fill});
+    fun->branch(true, valid, read, pad, m);
+    return call;
+}
+
+} // namespace
+
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (Axm::isa<btensor::map_reduce_post>(app)) return lower_map_reduce_post(app);
     if (Axm::isa<btensor::broadcast>(app)) return lower_broadcast(app);
@@ -62,6 +79,8 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     impl      = w.app(impl, mr.map_out);
 
     auto [mem, dst, inputs, post_inputs]                 = rewrite(app->arg())->projs<4>();
+    for (auto extent : mr.So->projs(ranks->ro))
+        if (Lit::isa<u64>(extent) == 0) return w.tuple({mem, dst});
     auto [read_inputs_ty, read_post_ty, write_output_ty] = impl->type()->as<Pi>()->dom()->projs<3>();
 
     // A `buffer.Buf` has its literal size-1 axes folded away, so the indices fold alike.
@@ -71,8 +90,17 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         auto [args, ret]  = fun->vars<2>();
         auto [m, indices] = args->projs<2>();
         auto values       = DefVec(num);
+        bool empty        = false;
+        for (auto extent : bounds->projs(*Lit::isa<u64>(rank)))
+            empty |= Lit::isa<u64>(extent) == 0;
         for (u64 i = 0; i != num; ++i) {
+            if (empty) {
+                values[i] = w.bot(Axm::isa<buffer::Buf>(buffers->proj(num, i)->type())->arg(3, 2));
+                continue;
+            }
             auto si = ss->proj(num, i);
+            if (has_zero_extent(si))
+                app->blame("cannot lower map-reduce read from an empty input with a nonempty iteration domain").bail();
             auto [mapped, coords]
                 = op_affine_map(maps->proj(num, i), rs->proj(num, i), rank, bounds, si, indices, m)->projs<2>();
             auto [read, value] = buffer::op_read(mapped, buffers->proj(num, i), *Shape(coords).fold(si))->projs<2>();
@@ -113,6 +141,8 @@ const Def* LowerMapReduce::lower_broadcast(const App* app) {
 
     // Non-size-1 input dims mirror the matching output index; size-1 dims are dropped from each buffer index.
     auto compute = [&](const DefVec& iters, const Def* in_buf, const Def* mem) -> std::pair<const Def*, const Def*> {
+        if (has_zero_extent(s_in))
+            app->blame("cannot lower broadcast from an empty input to a nonempty iteration domain").bail();
         auto idxs             = w.tuple(to_idxs(w, s_out->projs(*r_l), iters));
         auto [rd_mem, rd_val] = buffer::op_read(mem, in_buf, *Shape(idxs).fold(s_in))->projs<2>();
         return {rd_mem, rd_val};
@@ -139,11 +169,22 @@ const Def* LowerMapReduce::lower_pad(const App* app) {
         return RWPhase::rewrite_imm_App(app);
     }
 
+    bool runtime_input = false;
+    for (auto extent : s_in->projs(*r_l))
+        runtime_input |= !Lit::isa<u64>(extent);
     auto compute = [&](const DefVec& iters, const Def* ins, const Def* mem) -> std::pair<const Def*, const Def*> {
         auto [in_buf, fill]  = ins->projs<2>();
+        if (has_zero_extent(s_in)) {
+            if (*mode_l != 0) app->blame("cannot lower replicate padding of an empty input").bail();
+            return {mem, fill};
+        }
         auto [coords, valid] = pad_coords(iters, lo, s_in, *mode_l != 0);
+        if (valid && runtime_input) {
+            auto [rd_mem, elem] = conditional_read(valid, mem, in_buf, *Shape(w, coords).fold(s_in), fill)->projs<2>();
+            return {rd_mem, elem};
+        }
         auto [rd_mem, elem]  = buffer::op_read(mem, in_buf, *Shape(w, coords).fold(s_in))->projs<2>();
-        return {rd_mem, valid ? w.select(valid, elem, fill) : elem}; // constant: fill out-of-region cells with `val`
+        return {rd_mem, valid ? w.select(valid, elem, fill) : elem};
     };
 
     return build_pointwise(result_ty, op_mem, dst, w.tuple({input, val}), s_out, *r_l, "pad", compute);

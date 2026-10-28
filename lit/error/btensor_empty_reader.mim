@@ -1,0 +1,15 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin tensor;
+plugin btensor;
+plugin affine;
+plugin compile;
+
+fun copy (_ x: I32)@tt: I32 = return x;
+
+extern con read_empty (a: tensor.Tensor 1 0 I32, return: Cn [tensor.Tensor 1 2 I32]) =
+    return (tensor.map_reduce (2, 2) (copy, 0I32) (affine.id @1) (affine.id @1) a);
+
+extern lam _compile (): compile.Phase = compile.phases ff (tensor.lower_tensor, tensor.lower_to_mem, btensor.lower_map_reduce);
+
+// CHECK: error: cannot lower map-reduce read from an empty input with a nonempty iteration domain

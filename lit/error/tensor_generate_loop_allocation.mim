@@ -1,0 +1,20 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin core;
+plugin compile;
+plugin cps;
+plugin affine;
+plugin tensor;
+
+extern con nested_generate (n: Nat, return: Cn [tensor.Tensor 1 n I32]) =
+    fun choose (i: I64): I32 =
+        con body (_: I64, acc: I32, next: Cn I32) =
+            next (tensor.get (tensor.splat (2, core.conv.u 4294967296 i), 0₂));
+        con finish (acc: I32) = return acc;
+        affine.For body finish (0I64, 2I64, 1I64, 0I32);
+    let callback = λ (i: I64): I32 = cps.cps2ds choose i;
+    return (tensor.generate n callback);
+
+extern lam _compile (): compile.Phase = tensor.lower_to_mem;
+
+// CHECK: error: cannot bufferize: allocating generate callback requires CPS conversion

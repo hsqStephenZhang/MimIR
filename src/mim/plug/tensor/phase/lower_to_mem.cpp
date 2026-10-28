@@ -2,10 +2,6 @@
 
 #include <fe/worklist.h>
 
-#include <mim/axm.h>
-#include <mim/def.h>
-#include <mim/lam.h>
-
 #include <mim/plug/affine/affine.h>
 #include <mim/plug/btensor/btensor.h>
 #include <mim/plug/buffer/buffer.h>
@@ -20,278 +16,195 @@ namespace mim::plug::tensor::phase {
 
 namespace {
 
-/// Does `t` (recursively through immutable sigmas) contain a Pi?
-bool contains_pi(const Def* t) {
-    if (t->isa<Pi>()) return true;
-    if (auto sig = t->isa_imm<Sigma>())
-        for (auto op : sig->ops())
-            if (contains_pi(op)) return true;
-    return false;
-}
-
-/// Peels nested `Pack`s off `d`; returns the innermost body iff `d` is a constant splat — every axis a
-/// `Pack` (so `d` is uniform, not e.g. a `Tuple` of distinct rows), bottoming out in a closed scalar
-/// (index-independent, non-array). So `‹784, 1024; 1e-3›` yields the scalar `1e-3`, while an index-dependent
-/// pack `‹i; f i›` or a genuine literal `((1, 2), (3, 4))` yields `nullptr`.
 const Def* splat_scalar(const Def* d) {
     if (!d->isa<Pack>()) return nullptr;
     while (auto pack = d->isa<Pack>())
         d = pack->body();
-    return (d->is_closed() && !d->type()->isa<Arr>()) ? d : nullptr;
+    return d->is_closed() && !d->type()->isa<Arr>() ? d : nullptr;
 }
 
-/// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
     return Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app)
         || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app)
-        || Axm::isa<tensor::scatter>(app);
+        || Axm::isa<tensor::scatter>(app) || Axm::isa<tensor::set>(app) || Axm::isa<tensor::from_array>(app)
+        || Axm::isa<tensor::scalar>(app) || Axm::isa<tensor::splat>(app);
 }
 
-/// Is `app` one of the tensor ops this phase bufferizes?
-bool is_tensor_op(const App* app) { return Axm::isa<tensor::splat>(app) || wants_fresh_mem(app); }
-
-/// The Lam a - possibly projected - parameter belongs to; `nullptr` for anything else.
-Lam* param_of(const Def* d) {
-    while (auto ex = d->isa<Extract>())
-        d = ex->tuple();
-    if (auto var = d->isa<Var>()) return var->binder()->isa_mut<Lam>();
-    return nullptr;
-}
-
-/// Does @p d - a value or an aggregate of them - contain a `buffer.Buf`?
-bool holds_buf(const Def* d) {
-    if (Axm::isa<buffer::Buf>(d->type())) return true;
-    if (auto tuple = d->isa<Tuple>()) return std::ranges::any_of(tuple->ops(), holds_buf);
+bool has_zero_extent(const Def* shape) {
+    for (auto extent : shape->projs())
+        if (Lit::isa<u64>(extent) == 0) return true;
     return false;
 }
 
-/// @p buf, or its sole element if @p app's result has been folded to a scalar.
-const Def* scalar_result(const App* app, const Def* mem, const Def* buf) {
-    if (app->type()->isa<Arr>()) return buf;
-    return buffer::op_read(mem, buf, buf->world().tuple())->proj(2, 1);
+bool contains_pi(const Def* type) {
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(type);
+    while (!wl.empty()) {
+        auto t = wl.pop();
+        if (t->isa<Pi>()) return true;
+        if (t->isa<Sigma>())
+            wl.push(t->ops());
+        else if (auto array = t->isa<Arr>())
+            wl.push(array->body());
+    }
+    return false;
 }
 
 } // namespace
 
-void LowerToMem::collect_tensor_types() {
-    // The default pipeline lowers tensors exclusively through buffers — there is no value-semantics
-    // fallback. A program shape the conversion cannot handle is a hard error, not silent residue.
-    auto gate = [](const char* why, const Def* culprit) { fe::throwf("cannot bufferize: {} (`{}`)", why, culprit); };
-    auto elem = [&gate](const Def* T) {
-        if (T->isa<Arr>()) gate("tensor with array element type", T);
-    };
-    // Fully folded shapes (`«1; T»` ≡ `T`) denote plain scalars — recording them would poison every
-    // function whose signature mentions the element type, so only genuine array types count as tensors.
-    auto add_tensor_ty = [this](const Def* t) {
-        if (t->isa<Arr>()) tensor_ty_.emplace(t);
-    };
+bool LowerToMem::is_tensor_type(const Def* t) const {
+    if (auto nom = t->isa<Nom>()) return nom->key() == tensor_key_;
+    return false;
+}
 
-    fe::BFSWorklist<DefSet> wl;
-    auto push = [&wl](const Def* d) {
-        if (d) wl.push(d);
-    };
-
-    for (auto mut : old_world().externals().muts())
-        push(mut);
-
+bool LowerToMem::mentions_tensor(const Def* type) const {
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(type);
     while (!wl.empty()) {
-        auto def = wl.pop();
+        auto t = wl.pop();
+        if (is_tensor_type(t)) return true;
+        if (t->isa<Sigma>() || t->isa<Variant>())
+            wl.push(t->ops());
+        else if (auto arr = t->isa<Arr>())
+            wl.push(arr->body());
+        else if (auto pi = t->isa<Pi>())
+            wl.push(pi->ops());
+        else if (auto nom = t->isa<Nom>())
+            wl.push(nom->op());
+    }
+    return false;
+}
 
-        if (auto app = def->isa<App>()) {
+bool LowerToMem::is_tensor_fn(Lam* lam) const { return mentions_tensor(lam->type()); }
+
+bool LowerToMem::has_memory_effects(const Def* body, bool allocations_only) const {
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(body);
+    while (!wl.empty()) {
+        auto d = wl.pop();
+        if (d->isa<Var>()) continue;
+        if (auto lam = d->isa_mut<Lam>(); lam && (!lam->is_set() || lam->is_external() || !Pi::isa_cn(lam->type())))
+            continue;
+        if (auto app = d->isa<App>()) {
             auto [axm, curry, trip] = Axm::get(app);
-            bool tensor_op          = axm && curry == 0 && axm->plugin() == tensor::Plugin_Id;
-            ops_seen_ |= tensor_op;
-            if (Axm::isa<tensor::buf>(app)) {
-                // What an array value *is* cannot be read off its type - an `(x y: I32)` group *is* a
-                // `«2; I32»` - so a tensor no other tensor op mentions says so itself.
-                add_tensor_ty(app->type());
-            } else if (Axm::isa<tensor::splat>(app)) {
-                auto [T, r] = app->callee()->as<App>()->args<2>();
-                elem(T);
-                add_tensor_ty(app->type());
-            } else if (Axm::isa<tensor::generate>(app)) {
-                auto [meta, s_out] = app->callee()->as<App>()->uncurry_args<2>();
-                auto [T, r]        = meta->projs<2>();
-                elem(T);
-                if (!Lit::isa<u64>(r)) gate("non-literal rank of `tensor.generate`", app);
-                add_tensor_ty(app->type());
-            } else if (Axm::isa<tensor::map_reduce_post>(app)) {
-                // result and each of the `nis` inputs / `nps` epilogue inputs are tensors.
-                add_tensor_ty(app->type());
-                auto mr            = btensor::MapRedPost::of(app->callee()->as<App>());
-                auto [is, post_is] = app->arg()->projs<2>();
-                elem(mr.To), elem(mr.Tp);
-                if (auto nis_l = Lit::isa<u64>(mr.nis))
-                    for (u64 i = 0; i < *nis_l; ++i) {
-                        elem(mr.Tis->proj(*nis_l, i));
-                        add_tensor_ty(is->proj(*nis_l, i)->type());
-                    }
-                if (auto nps_l = Lit::isa<u64>(mr.nps))
-                    for (u64 j = 0; j < *nps_l; ++j) {
-                        elem(mr.Tps->proj(*nps_l, j));
-                        add_tensor_ty(post_is->proj(*nps_l, j)->type());
-                    }
-            } else if (Axm::isa<tensor::broadcast>(app)) {
-                // result «s_out; T» and input «s_in; T» (the 3rd argument) are tensors.
-                auto [T, r] = app->callee()->as<App>()->args<2>();
-                elem(T);
-                add_tensor_ty(app->type());
-                add_tensor_ty(app->arg()->proj(3, 2)->type());
-            } else if (Axm::isa<tensor::pad>(app)) {
-                // callee: pad {T, r} [s_in] [mode, lo, hi]; result «s_out; T» and `input` are tensors.
-                auto [Tr, s_in, params] = app->callee()->as<App>()->uncurry_args<3>();
-                auto [T, r]             = Tr->projs<2>();
-                auto [mode, lo, hi]     = params->projs<3>();
-                elem(T);
-                if (!Lit::isa<u64>(r) || !Lit::isa<u64>(mode)) gate("non-literal rank/mode of `tensor.pad`", app);
-                add_tensor_ty(app->type());
-                add_tensor_ty(app->arg()->proj(2, 0)->type());
-            } else if (Axm::isa<tensor::concat>(app)) {
-                // callee: concat {T, nis, r} [ax] {Sis}; result «s_out; T» and each input are tensors.
-                auto [TnisR, ax, Sis] = app->callee()->as<App>()->uncurry_args<3>();
-                auto [T, nis, r]      = TnisR->projs<3>();
-                elem(T);
-                auto nis_l = Lit::isa<u64>(nis);
-                auto r_l   = Lit::isa<u64>(r);
-                auto ax_l  = Lit::isa<u64>(ax);
-                if (!nis_l || !r_l || !ax_l) {
-                    gate("non-literal nis/rank/axis of `tensor.concat`", app);
-                } else {
-                    add_tensor_ty(app->type());
-                    for (u64 i = 0; i < *nis_l; ++i) {
-                        // The loop generation needs literal extents along `ax` for the prefix offsets.
-                        if (!Lit::isa<u64>(Sis->proj(*nis_l, i)->proj(*r_l, *ax_l)))
-                            gate("non-literal extent along the concat axis", app);
-                        add_tensor_ty(app->arg()->proj(*nis_l, i)->type());
-                    }
-                }
-            } else if (Axm::isa<tensor::if_static>(app)) {
-                // Value-level binding-time dispatch; this phase's rewrite residualizes it to its
-                // dynamic branch - not a tensor op.
-            } else if (Axm::isa<tensor::gather>(app)) {
-                auto [Tr, shapes, dim] = app->callee()->as<App>()->uncurry_args<3>();
-                auto [T, r]            = Tr->projs<2>();
-                elem(T);
-                if (!Lit::isa<u64>(r) || !Lit::isa<u64>(dim)) gate("non-literal rank/axis of `tensor.gather`", app);
-                add_tensor_ty(app->type());
-                add_tensor_ty(app->arg()->proj(2, 0)->type());
-                add_tensor_ty(app->arg()->proj(2, 1)->type());
-            } else if (Axm::isa<tensor::scatter>(app)) {
-                auto [Tr, shapes, dim] = app->callee()->as<App>()->uncurry_args<3>();
-                auto [T, r]            = Tr->projs<2>();
-                elem(T);
-                if (!Lit::isa<u64>(r) || !Lit::isa<u64>(dim)) gate("non-literal rank/axis of `tensor.scatter`", app);
-                add_tensor_ty(app->type());
-                add_tensor_ty(app->arg()->proj(3, 0)->type());
-                add_tensor_ty(app->arg()->proj(3, 1)->type());
-                add_tensor_ty(app->arg()->proj(3, 2)->type());
-            } else if (tensor_op) {
-                // Any other tensor op (a symbolic `shape`, …) has no buffer-world lowering.
-                gate("unbufferizable tensor op", app);
-            }
-            // Lams passed inside a tensor op's curry chain (combiners, affine index maps, schedule
-            // nests) are element-level — TRANSITIVELY, including their local helper lams: e.g. the
-            // loop-vector prefixes «r; I32» inside a schedule nest must not be mistaken for value
-            // tensors of a recorded «r; I32» tensor type.
-            if (is_tensor_op(app)) {
-                auto args = fe::BFSWorklist<DefSet>();
-                for (const App* a = app; a; a = a->callee()->isa<App>())
-                    args.push(a->arg());
-                while (!args.empty()) {
-                    auto d = args.pop();
-                    if (auto k = d->isa_mut<Lam>()) op_args_.emplace(k);
-                    for (auto op : d->ops())
-                        if (op) args.push(op);
+            if (axm && !curry && axm->plugin() == tensor::Plugin_Id
+                && (wants_fresh_mem(app)
+                    || (!allocations_only && (Axm::isa<tensor::get>(app) || Axm::isa<tensor::item>(app)))))
+                return true;
+        }
+        for (auto op : d->ops())
+            if (op) wl.push(op);
+    }
+    return false;
+}
+
+void LowerToMem::validate() {
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(old_world().externals().muts());
+    DefVec nodes;
+    while (!wl.empty()) {
+        auto d = wl.pop();
+        nodes.emplace_back(d);
+        if (d->isa<Axm>()) continue;
+        if (is_tensor_type(d)) {
+            tensors_seen_      = true;
+            auto [r, shape, T] = TensorType::decode(d->as<Nom>());
+            if (!Lit::isa<u64>(r)) d->blame("cannot bufferize: non-literal tensor rank").bail();
+            if (T->isa<Arr>() || mentions_tensor(T))
+                d->blame("cannot bufferize: tensor with aggregate tensor element type").bail();
+        } else if ((d->isa<Nom>() || d->isa<Variant>()) && mentions_tensor(d)) {
+            d->blame("cannot bufferize: unsupported tensor aggregate carrier").bail();
+        }
+        if (auto app = d->isa<App>())
+            if (Axm::isa<tensor::generate>(app))
+                if (auto body = app->arg()->isa_mut<Lam>(); body && body->filter() == old_world().lit_tt())
+                    inline_callbacks_.emplace(body);
+        if (auto lam = d->isa_mut<Lam>(); lam && is_tensor_fn(lam)) {
+            if (!lam->is_set()) lam->blame("cannot bufferize: tensor external requires an explicit buffer ABI").bail();
+            if (Pi::isa_cn(lam->type()))
+                tensor_fns_.emplace(lam);
+            else if (auto inner = lam->body()->isa_mut<Lam>(); inner && Pi::isa_cn(inner->type()))
+                shape_poly_.emplace(lam);
+            else
+                lam->blame("cannot bufferize: tensor function requires memory-aware CPS conversion").bail();
+            for (auto param : lam->vars()) {
+                auto type = param->type();
+                if (!mentions_tensor(type)) continue;
+                if (auto pi = type->isa<Pi>()) {
+                    if (!Pi::isa_cn(pi) || contains_pi(pi->dom()))
+                        param->blame("cannot bufferize: unsupported higher-order tensor contract").bail();
+                } else if (contains_pi(type)) {
+                    param->blame("cannot bufferize: unsupported higher-order tensor contract").bail();
                 }
             }
         }
-
-        for (auto op : def->ops())
-            push(op);
-        push(def->type());
+        for (auto op : d->ops())
+            if (op) wl.push(op);
+        if (auto app = d->isa<App>()) {
+            auto [axm, curry, trip] = Axm::get(app);
+            // Partial axiom applications still carry uninstantiated tensor ranks in their schemas.
+            if (axm && curry) continue;
+        }
+        if (d->type()) wl.push(d->type());
     }
-
-    for (auto mut : old_world().externals().muts())
-        if (auto lam = mut->isa_mut<Lam>(); lam && is_tensor_fn(lam)) tensor_fns_.emplace(lam);
-    // No tensor boundaries AND no tensor ops: nothing for the sweeps below to check.
-    // (Ops without boundaries still bufferize: their value-world operands are materialized.)
-    if (tensor_fns_.empty() && !ops_seen_) return;
-
-    // Higher-order bufferized functions: a continuation parameter whose domain itself contains a Pi would
-    // need boundary conversion inside nested continuation types, which `conv_boundary` does not perform.
-    for (auto old_fn : tensor_fns_) {
-        auto dom = old_fn->type()->dom();
-        auto n   = dom->num_projs();
-        for (size_t i = 0; i != n; ++i)
-            if (auto pi = Pi::isa_cn(dom->proj(n, i)); pi && contains_pi(pi->dom()))
-                return gate("higher-order bufferized function", old_fn);
-    }
-
-    // A partial access - an index that stops short of the element - denotes a sub-tensor, which has no buffer
-    // of its own; `tensor.get`/`set` used to reject this by construction.
-    auto covers_every_axis = [this](const Def* agg, const Def* index) {
-        auto arr = agg->type()->isa<Arr>();
-        if (!arr || !tensor_ty_.contains(arr)) return true;
-        auto r = arr->shape().rank();
-        auto k = Shape(index).rank();
-        return !r || !k || *k >= *r;
-    };
-
-    // Second sweep: shapes the conversion cannot adapt — the value-semantics path lowers everything instead.
-    fe::BFSWorklist<DefSet> wl2;
-    for (auto mut : old_world().externals().muts())
-        wl2.push(mut);
-    while (!wl2.empty()) {
-        auto def = wl2.pop();
-
-        if (auto ex = def->isa<Extract>(); ex && !covers_every_axis(ex->tuple(), ex->index()))
-            ex->blame("cannot bufferize: partial tensor read yields a sub-tensor").bail();
-        if (auto in = def->isa<Insert>(); in && !covers_every_axis(in->tuple(), in->index()))
-            in->blame("cannot bufferize: partial tensor write targets a sub-tensor").bail();
-
-        for (auto op : def->ops()) {
+    for (auto d : nodes)
+        if (auto lam = d->isa_mut<Lam>(); lam && lam->is_set() && !Pi::isa_cn(lam->type()))
+            if (auto inner = lam->body()->isa_mut<Lam>();
+                inner && inner->is_set() && Pi::isa_cn(inner->type()) && has_memory_effects(inner->body()))
+                shape_poly_.emplace(lam);
+    for (auto d : nodes) {
+        if (auto lam = d->isa_mut<Lam>();
+            lam && inline_callbacks_.contains(lam) && has_memory_effects(lam->body(), true))
+            lam->blame("cannot bufferize: allocating generate callback requires CPS conversion").bail();
+        if (auto lam = d->isa_mut<Lam>(); lam && lam->is_set() && !Pi::isa_cn(lam->type()) && !shape_poly_.contains(lam)
+                                          && !inline_callbacks_.contains(lam) && has_memory_effects(lam->body()))
+            lam->blame("cannot bufferize: direct-style tensor memory effects require CPS conversion").bail();
+        if (auto app = d->isa<App>())
+            if (auto shape = app->callee()->isa<App>())
+                if (auto f = shape->callee()->isa_mut<Lam>(); f && shape_poly_.contains(f)) continue;
+        for (auto op : d->ops()) {
             if (!op) continue;
-            if (auto fn = op->isa_mut<Lam>()) {
-                // A bufferized function referenced as a value (not as the callee of a call, and not the
-                // binder back-reference of its own variable) cannot be adapted.
-                if (tensor_fns_.contains(fn))
-                    if (!(def->isa<App>() && def->as<App>()->callee() == op) && !def->isa<Var>())
-                        return gate("bufferized function used as a value", fn);
-                if (!tensor_fns_.contains(fn) && !op_args_.contains(fn) && mentions_tensor(fn->type()->dom())) {
-                    // A tensor-typed function the conversion does not rewrite: an unset external keeps its
-                    // value ABI, a direct-style local cannot be rebuilt as a continuation — either way a
-                    // bufferized caller would pass a buffer against a value-array signature.
-                    if (fn->is_external() || !Pi::isa_cn(fn->type()))
-                        return gate("unconvertible tensor-typed function", fn);
-                }
-            }
-            wl2.push(op);
+            if (auto lam = d->isa_mut<Lam>(); lam && shape_poly_.contains(lam) && lam->body() == op) continue;
+            if (auto f = op->isa_mut<Lam>(); f && (shape_poly_.contains(f) || tensor_fns_.contains(f)))
+                if ((f->ret_pi() || shape_poly_.contains(f)) && !d->isa<Var>()
+                    && !(d->isa<App>() && d->as<App>()->callee() == op))
+                    f->blame("cannot bufferize: tensor-processing function used as a value").bail();
+            if (auto shape = op->isa<App>())
+                if (auto f = shape->callee()->isa_mut<Lam>(); f && shape_poly_.contains(f))
+                    if (!(d->isa<App>() && d->as<App>()->callee() == op))
+                        op->blame("cannot bufferize: partially applied shape-polymorphic function").bail();
         }
-        if (def->type()) wl2.push(def->type());
     }
 }
 
 void LowerToMem::start() {
-    collect_tensor_types(); // hard-errors on shapes the conversion cannot handle
-    // Nothing tensor-related in the program: skip the whole-world rebuild entirely.
-    if (tensor_fns_.empty() && !ops_seen_) return;
+    tensor_key_ = tensor_key(old_world());
+    validate();
+    if (!tensors_seen_) return;
     RWPhase::start();
-    // Every fresh-memory continuation must have found an enclosing lam to be chained into.
     assert(pending_.empty());
 }
 
-const Def* LowerToMem::buf_of(const Def* arr_ty) {
-    auto& w  = new_world();
-    auto arr = arr_ty->isa<Arr>();
-    if (!arr) return buffer::type_buf(w.lit_nat_0(), w.tuple(), rewrite(arr_ty));
-    auto shape = rewrite(*arr->shape());
-    return buffer::type_buf(shape->arity(), shape, rewrite(arr->body()));
+const Def* LowerToMem::buf_of(const Def* type) {
+    auto [r, s, T] = TensorType::decode(type->as<Nom>());
+    return buffer::type_buf(rewrite(r), rewrite(s), rewrite(T));
 }
 
-const Def* LowerToMem::bot_mem() {
-    auto& w = new_world();
-    return w.bot(w.call<mem::M>(0));
+const Def* LowerToMem::rewrite_imm_Nom(const Nom* nom) {
+    return is_tensor_type(nom) ? buf_of(nom) : RWPhase::rewrite_imm_Nom(nom);
 }
+
+const Def* LowerToMem::rewrite_imm_Name(const Name* name) {
+    if (is_tensor_type(name->type())) name->blame("cannot bufferize: escaped Tensor representation").bail();
+    return RWPhase::rewrite_imm_Name(name);
+}
+
+const Def* LowerToMem::rewrite_imm_Struc(const Struc* struc) {
+    if (is_tensor_type(struc->op()->type())) struc->blame("cannot bufferize: escaped Tensor representation").bail();
+    return RWPhase::rewrite_imm_Struc(struc);
+}
+
+const Def* LowerToMem::bot_mem() { return new_world().bot(new_world().call<mem::M>(0)); }
 
 const Def* LowerToMem::fresh_mem() {
     auto k = mem::mut_con(new_world())->set("fresh_mem");
@@ -301,102 +214,134 @@ const Def* LowerToMem::fresh_mem() {
 
 const Def* LowerToMem::wrap_fresh_mem(const Def* body) {
     auto& w = new_world();
-    // The last-minted continuation carries the original body; the lam ends up requesting the first memory.
     for (auto k : pending_ | std::views::reverse) {
-        k->set(true, body); // filter `tt`: k vanishes as soon as AddMem substitutes the real memory
-        body = w.app(w.annex<mem::fresh>(), w.tuple({w.lit_nat_0(), k}));
+        k->set(true, body);
+        body = w.app(w.annex<mem::fresh>(), {w.lit_nat_0(), k});
     }
     return body;
 }
 
-const Def* LowerToMem::rewrite(const Def* old_def) {
-    // An op lowering that consumes a fresh memory references its receiving continuation's var (see
-    // fresh_mem). The global memo would share such a lowering with every other function that mentions the
-    // same (closed) old op - where that var would dangle - so these ops are memoized per enclosing lam.
-    auto app = old_def->isa<App>();
-    auto ins = old_def->isa<Insert>(); // allocates the copy it writes into
-    if ((app && wants_fresh_mem(app)) || (ins && tensor_ty_.contains(ins->tuple()->type()))) {
-        if (auto new_def = fe::lookup(fresh_memo_, old_def)) return new_def;
-        auto new_def = app ? rewrite_imm_App(app) : rewrite_imm_Insert(ins);
-        fresh_memo_.emplace(old_def, new_def);
-        return new_def;
+const Def* LowerToMem::rewrite(const Def* def) {
+    if (auto app = def->isa<App>(); app && wants_fresh_mem(app)) {
+        if (auto value = fe::lookup(fresh_memo_, def)) return value;
+        auto result = rewrite_imm_App(app);
+        fresh_memo_.emplace(def, result);
+        return result;
     }
-    return RWPhase::rewrite(old_def);
+    return RWPhase::rewrite(def);
 }
 
-bool LowerToMem::mentions_tensor(const Def* t) const {
-    if (tensor_ty_.contains(t)) return true;
-    if (auto sig = t->isa<Sigma>()) {
-        for (auto op : sig->ops())
-            if (mentions_tensor(op)) return true;
-    } else if (auto pi = t->isa<Pi>()) {
-        return mentions_tensor(pi->dom()); // descend into continuation domains, but never into `Arr` elements
+void LowerToMem::collect_leaves(const Def* pv, DefVec& out) {
+    if (auto sig = pv->type()->isa<Sigma>(); sig && mentions_tensor(sig)) {
+        for (auto part : pv->projs(sig->num_ops()))
+            collect_leaves(part, out);
+        return;
     }
-    return false;
+    leaf_.emplace(pv);
+    out.emplace_back(pv);
 }
 
-bool LowerToMem::is_tensor_fn(Lam* lam) const {
-    return lam->is_external() && lam->is_set() && mentions_tensor(lam->type()->dom());
+const DefVec& LowerToMem::leaves(Lam* lam) {
+    auto [it, fresh] = leaves_.try_emplace(lam);
+    if (fresh)
+        for (auto param : lam->vars())
+            collect_leaves(param, it->second);
+    return it->second;
 }
 
-const Def* LowerToMem::conv_boundary(const Def* t) {
-    if (tensor_ty_.contains(t)) return buf_of(t);
-    if (auto sig = t->isa_imm<Sigma>(); sig && mentions_tensor(sig)) {
-        auto n = sig->num_ops();
-        DefVec ops(n);
-        for (size_t i = 0; i != n; ++i)
-            ops[i] = conv_boundary(sig->op(i));
-        return new_world().sigma(ops);
+const Def* LowerToMem::conv_leaf(const Def* pv) { return rewrite(pv->type()); }
+
+const Def* LowerToMem::rebuild_param(const Def* pv) {
+    if (leaf_.contains(pv)) return rewrite(pv);
+    auto n = pv->type()->as<Sigma>()->num_ops();
+    return new_world().tuple(DefVec(n, [&](size_t i) { return rebuild_param(pv->proj(n, i)); }));
+}
+
+void LowerToMem::explode_arg(const Def* pv, const Def* a, DefVec& out) {
+    if (leaf_.contains(pv)) {
+        out.emplace_back(rewrite(a));
+        return;
     }
-    return rewrite(t);
+    auto n = pv->type()->as<Sigma>()->num_ops();
+    for (size_t i = 0; i != n; ++i)
+        explode_arg(pv->proj(n, i), a->proj(n, i), out);
 }
 
 const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
-    // Scope the fresh-memory bookkeeping: ops lowered while this body is rewritten mint their receiving
-    // continuations into pending_, which are chained in front of the finished body. Nested lams anchor
-    // their own requests (and their own per-lam op memo).
-    auto _       = fe::Restore(pending_, {});
-    auto __      = fe::Restore(fresh_memo_, {});
-    auto new_lam = new_world().mut_lam(conv_type(lam));
-    map(lam, new_lam);
-    if (!lam->is_set()) return new_lam;
-
-    auto ___    = enter(lam);
+    auto pending = fe::Restore(pending_, {});
+    auto memo    = fe::Restore(fresh_memo_, {});
+    if (shape_poly_.contains(lam) || (tensor_fns_.contains(lam) && lam->type()->dom()->isa_binder<Sigma>().second))
+        return uncurry(lam);
+    auto result = new_world().mut_lam(rewrite(lam->type())->as<Pi>());
+    map(lam, result);
+    if (!lam->is_set()) return result;
+    auto scope  = enter(lam);
     auto filter = rewrite(lam->filter());
-    auto body   = wrap_fresh_mem(rewrite(lam->body()));
-    new_lam->set(filter, body);
+    result->set(filter, wrap_fresh_mem(rewrite(lam->body())));
+    return seal(lam, result);
+}
+
+const Def* LowerToMem::uncurry(Lam* lam) {
+    auto& w     = new_world();
+    auto poly   = shape_poly_.contains(lam);
+    auto pi     = lam->type()->as<Pi>();
+    auto pi_mut = poly ? lam->type()->isa_mut<Pi>() : nullptr; // dependent iff some boundary names a shape parameter
+    auto inner  = poly ? lam->body()->as_mut<Lam>() : lam;
+    auto k      = poly ? pi->dom()->num_projs() : 0;
+    auto m      = inner->num_vars();
+    auto& ls    = leaves(inner);
+    auto n      = k + ls.size();
+
+    // Dependent boundaries must refer to the new domain's binders.
+    auto sigma = w.mut_sigma(n);
+    push();
+    if (pi_mut) bind_old(pi_mut->has_var());
+    bind_old(lam->has_var());
+    bind_old(inner->has_var());
+    for (size_t i = 0; i != k; ++i) {
+        sigma->set(i, rewrite(pi->dom()->proj(k, i)));
+        if (pi_mut) map(pi_mut->var(k, i), sigma->var(n, i));
+        map(lam->var(k, i), sigma->var(n, i));
+    }
+    if (k > 1) {
+        auto vars = w.tuple(DefVec(k, [&](size_t i) { return sigma->var(n, i); }));
+        if (pi_mut) map(pi_mut->var(), vars);
+        map(lam->var(), vars);
+    }
+    for (size_t l = 0; l != ls.size(); ++l) {
+        sigma->set(k + l, conv_leaf(ls[l]));
+        map(ls[l], sigma->var(n, k + l));
+    }
+    pop();
+
+    auto new_lam = w.mut_con(sigma)->set(lam->dbg());
+    map(lam, new_lam);
+    if (poly) map(inner, new_lam);
+    for (size_t i = 0; i != k; ++i)
+        map(lam->var(k, i), new_lam->var(n, i));
+    if (k > 1) map(lam->var(), w.tuple(DefVec(k, [&](size_t i) { return new_lam->var(n, i); })));
+    for (size_t l = 0; l != ls.size(); ++l)
+        map(ls[l], new_lam->var(n, k + l)->set(ls[l]->dbg()));
+    for (size_t j = 0; j != m; ++j)
+        map(inner->var(m, j), rebuild_param(inner->var(m, j)));
+    if (m > 1) map(inner->var(), w.tuple(DefVec(m, [&](size_t j) { return rewrite(inner->var(m, j)); })));
+
+    auto ___ = enter(new_lam);
+    new_lam->set(rewrite(inner->filter()), wrap_fresh_mem(rewrite(inner->body())));
     return seal(lam, new_lam);
 }
 
-const Pi* LowerToMem::conv_type(Lam* lam) {
-    auto& w = new_world();
-    // A bufferized function: convert tensor-typed parameters to `buffer.Buf`, including inside grouped
-    // sigma parameters and continuation domains. No memory is introduced here — AddMem does that.
-    if (is_tensor_fn(lam)) {
-        auto dom = lam->type()->dom();
-        auto n   = dom->num_projs();
-        DefVec doms(n, [&](size_t i) -> const Def* {
-            auto d = dom->proj(n, i);
-            if (auto pi = Pi::isa_cn(d)) return w.cn(conv_boundary(pi->dom()));
-            return conv_boundary(d);
-        });
-        return w.cn(w.sigma(doms));
-    }
-
-    // A local continuation carrying tensor types (a return continuation of a bufferized call, a join point,
-    // an error continuation): convert its domain the same way. This is context-independent, so the order in
-    // which references reach it does not matter.
-    if (!lam->is_external() && lam->is_set() && !op_args_.contains(lam))
-        if (auto pi = Pi::isa_cn(lam->type()); pi && mentions_tensor(pi->dom())) return w.cn(conv_boundary(pi->dom()));
-
-    return rewrite(lam->type())->as<Pi>();
-}
-
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
-    if (Axm::isa<tensor::buf>(app)) return rewrite(app->arg()); // consumed: the buffer *is* the tensor now
-    // A `tensor.if_static` still stuck at lowering time guards a runtime value: residualize to
-    // its dynamic branch.
+    auto& w = new_world();
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
+    if (Axm::isa<tensor::from_array>(app)) return lower_from_array(app);
+    if (Axm::isa<tensor::get>(app)) return lower_get(app);
+    if (Axm::isa<tensor::set>(app)) return lower_set(app);
+    if (Axm::isa<tensor::scalar>(app)) {
+        auto T = rewrite(app->arg()->type());
+        return buffer::op_init(w.lit_nat_0(), w.tuple(), T, fresh_mem(), rewrite(app->arg()))->proj(2, 1);
+    }
+    if (Axm::isa<tensor::item>(app)) return buffer::op_read(bot_mem(), rewrite(app->arg()), w.tuple())->proj(2, 1);
     if (Axm::isa<tensor::splat>(app)) return lower_splat(app);
     if (Axm::isa<tensor::generate>(app)) return lower_generate(app);
     if (Axm::isa<tensor::broadcast>(app)) return lower_broadcast(app);
@@ -405,172 +350,103 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::concat>(app)) return lower_concat(app);
     if (Axm::isa<tensor::gather>(app)) return lower_gather(app);
     if (Axm::isa<tensor::scatter>(app)) return lower_scatter(app);
-
-    // Call of a bufferized function: adapt the call site.
-    if (auto callee = app->callee()->isa_mut<Lam>(); callee && tensor_fns_.contains(callee))
-        return lower_call(app, callee);
-
-    // Call of a converted continuation (a local lam or a parameter var whose domain mentions a tensor):
-    // materialize value-world tensor arguments into buffers. Element-level lams (op_args_) — and their
-    // continuation PARAMETERS (e.g. a schedule nest's `cell`, whose «r; I32» loop vector may look like
-    // a recorded tensor type) — keep value ABI.
-    if (auto pi = Pi::isa_cn(app->callee()->type()); pi && mentions_tensor(pi->dom())) {
-        auto elementwise = [&](const Def* callee) {
-            auto lam = callee->isa_mut<Lam>();
-            if (!lam) lam = param_of(callee);
-            return lam && op_args_.contains(lam);
-        };
-        if (elementwise(app->callee())) return RWPhase::rewrite_imm_App(app);
-        auto& w = new_world();
-        return w.app(rewrite(app->callee()), materialize(pi->dom(), app->arg()));
-    }
-
+    if (auto sh = app->callee()->isa<App>())
+        if (auto f = sh->callee()->isa_mut<Lam>(); f && shape_poly_.contains(f)) {
+            auto callee = rewrite(f);
+            auto inner  = f->body()->as_mut<Lam>();
+            DefVec args;
+            for (auto part : sh->arg()->projs())
+                args.emplace_back(rewrite(part));
+            auto m = inner->num_vars();
+            for (size_t j = 0; j != m; ++j)
+                explode_arg(inner->var(m, j), app->arg()->proj(m, j), args);
+            return w.app(callee, w.tuple(args));
+        }
+    if (auto f = app->callee()->isa_mut<Lam>(); f && tensor_fns_.contains(f)) return lower_call(app, f);
+    if (auto cast = Axm::isa<core::bitcast>(app); cast && is_tensor_type(app->type()))
+        return w.call<core::bitcast>(buf_of(app->type()), rewrite(cast->arg()));
     return RWPhase::rewrite_imm_App(app);
 }
 
-const Def* LowerToMem::lower_call(const App* app, Lam* old_callee) {
-    auto& w         = new_world();
-    auto new_callee = rewrite(old_callee);
-    auto dom        = old_callee->type()->dom();
-    auto n          = dom->num_projs();
-
-    DefVec args(n);
-    for (size_t i = 0; i != n; ++i) {
-        auto d = dom->proj(n, i);
-        auto a = app->arg()->proj(n, i);
-        // Continuations pass through: their domains are converted by `rewrite_mut_Lam` to exactly the
-        // domain the callee's new signature expects.
-        args[i] = Pi::isa_cn(d) ? rewrite(a) : materialize(d, a);
-    }
-    return w.app(new_callee, w.tuple(args));
-}
-
-const Def* LowerToMem::splat_buffer(const Def* arr_ty, const Def* scalar) {
-    // `buffer.lit` sets every element to `scalar`; `btensor.lower_map_reduce` fills it with a loop rather
-    // than storing a monolithic literal array (which the LLVM backend cannot digest for large shapes).
-    auto [bro, bso, boT] = Axm::isa<buffer::Buf>(buf_of(arr_ty))->args<3>();
-    auto [m, out]        = buffer::op_lit(bro, bso, boT, bot_mem(), scalar)->projs<2>();
-    return out;
-}
-
-const Def* LowerToMem::materialize(const Def* old_ty, const Def* old_arg) {
-    auto& w = new_world();
-    if (tensor_ty_.contains(old_ty)) {
-        // A constant splat `‹s; c›` (e.g. a learning-rate or bias literal): a `buffer.init` would store the
-        // whole array as one giant LLVM constant. Emit `buffer.lit` (lowered to a fill loop) instead.
-        if (auto c = splat_scalar(old_arg)) return splat_buffer(old_ty, rewrite(c));
-        auto v = rewrite(old_arg);
-        if (Axm::isa<buffer::Buf>(v->type())) return v; // already a buffer
-        if (holds_buf(v)) {
-            const Def* culprit = old_arg;
-            if (old_arg->num_ops() != 0)
-                if (auto lam = param_of(old_arg->op(0))) culprit = lam;
-            culprit->blame("cannot bufferize: tensor parameter was split into parts; annotate it with `tensor.buf`")
-                .bail();
-        }
-        auto [br, bs, bT] = Axm::isa<buffer::Buf>(buf_of(old_ty))->args<3>();
-        auto [m, buf]     = buffer::op_init(br, bs, bT, bot_mem(), v)->projs<2>();
-        return buf;
-    }
-    if (auto sig = old_ty->isa_imm<Sigma>(); sig && mentions_tensor(sig)) {
-        auto n = sig->num_ops();
-        DefVec ops(n);
+const Def* LowerToMem::lower_call(const App* app, Lam* f) {
+    if (f->type()->dom()->isa_binder<Sigma>().second) {
+        auto callee = rewrite(f);
+        DefVec args;
+        auto n = f->num_vars();
         for (size_t i = 0; i != n; ++i)
-            ops[i] = materialize(sig->op(i), old_arg->proj(n, i));
-        return w.tuple(ops);
+            explode_arg(f->var(n, i), app->arg()->proj(n, i), args);
+        return new_world().app(callee, new_world().tuple(args));
     }
-    return rewrite(old_arg);
+    return RWPhase::rewrite_imm_App(app);
 }
 
-const Def* LowerToMem::to_buffer(const Def* val, const Def* old) {
-    if (Axm::isa<buffer::Buf>(val->type())) return val;
-    return materialize(old->type(), old);
+const Def* LowerToMem::buffer_list(const Def* list, const Def* n) {
+    auto count = Lit::isa<u64>(n);
+    if (!count) list->blame("cannot bufferize: non-literal tensor operand count").bail();
+    return new_world().tuple(list->projs(*count));
 }
 
-const Def* LowerToMem::buffer_list(const Def* list, const Def* old_list, const Def* n) {
-    auto n_l = Lit::isa<u64>(n);
-    if (!n_l) return list;
-
-    DefVec ins(*n_l, [&](size_t i) { return to_buffer(list->proj(*n_l, i), old_list->proj(*n_l, i)); });
-    for (auto in : ins)
-        if (!Axm::isa<buffer::Buf>(in->type())) return nullptr;
-    return new_world().tuple(ins);
+const Def* LowerToMem::splat_buffer(const Def* type, const Def* value) {
+    auto [r, s, T] = Axm::isa<buffer::Buf>(buf_of(type))->args<3>();
+    return buffer::op_lit(r, s, T, fresh_mem(), value)->proj(2, 1);
 }
 
-std::pair<const Def*, const Def*> LowerToMem::peel_tensor(const Def* d) {
-    // One Extract carries every axis, so there is no chain to walk back up and no sub-tensor to mistake the
-    // base for: an index that stops short of the element yields an array type, which the caller rejects.
-    auto ex = d->isa<Extract>();
-    if (!ex || !tensor_ty_.contains(ex->tuple()->type())) return {nullptr, nullptr};
-    return {ex->tuple(), rewrite(ex->index())};
+const Def* LowerToMem::lower_from_array(const App* app) {
+    auto [r, s, T] = TensorType::decode(app->type()->as<Nom>());
+    if (auto value = splat_scalar(app->arg()); value && value->type() == T)
+        return splat_buffer(app->type(), rewrite(value));
+    auto [br, bs, bT] = Axm::isa<buffer::Buf>(buf_of(app->type()))->args<3>();
+    return buffer::op_init(br, bs, bT, fresh_mem(), rewrite(app->arg()))->proj(2, 1);
 }
 
-const Def* LowerToMem::rewrite_imm_Extract(const Extract* extract) {
-    // A partial read yields a sub-tensor, which has no buffer of its own; `collect_tensor_types` rejects it.
-    if (extract->type()->isa<Arr>()) return RWPhase::rewrite_imm_Extract(extract);
-
-    auto [old_arr, index] = peel_tensor(extract);
-    if (!old_arr) return RWPhase::rewrite_imm_Extract(extract);
-
-    // Only read through a tensor that *is* a buffer already - materializing one here would bufferize a plain
-    // value tuple whose type merely coincides with some tensor's.
-    auto arr = rewrite(old_arr);
-    if (!Axm::isa<buffer::Buf>(arr->type())) return RWPhase::rewrite_imm_Extract(extract);
-
-    return buffer::op_read(bot_mem(), arr, index)->proj(2, 1); // the loaded value
+const Def* LowerToMem::lower_get(const App* app) {
+    auto [old, index] = app->args<2>();
+    auto [r, s, T]    = TensorType::decode(old->type()->as<Nom>());
+    auto shape        = rewrite(s);
+    auto idx          = Shape(rewrite(index)).fold(shape);
+    return buffer::op_read(bot_mem(), rewrite(old), *idx)->proj(2, 1);
 }
 
-const Def* LowerToMem::rewrite_imm_Insert(const Insert* insert) {
-    if (!tensor_ty_.contains(insert->tuple()->type())) return RWPhase::rewrite_imm_Insert(insert);
-
-    auto arr = rewrite(insert->tuple()); // cf. rewrite_imm_Extract: no materialization here
-    auto buf = Axm::isa<buffer::Buf>(arr->type());
-    if (!buf) return RWPhase::rewrite_imm_Insert(insert);
-    auto [br, bs, bT] = buf->args<3>(); // actual (folded) buffer metadata
-    auto x            = rewrite(insert->value());
-    auto idx          = rewrite(insert->index()); // one write, every axis
-
-    // AlwaysAllocate policy: allocate a fresh buffer, copy the source in, then write the element.
-    // This local chain is properly threaded; AddMem splices its placeholder root into the global chain.
-    auto [m1, q] = buffer::op_alloc(br, bs, bT, fresh_mem())->projs<2>();
-    auto m2      = buffer::op_copy(m1, q, arr);
-    return buffer::op_write(m2, q, idx, x)->proj(2, 1);
+const Def* LowerToMem::lower_set(const App* app) {
+    auto& w                  = new_world();
+    auto [old, index, value] = app->args<3>();
+    auto [r, s, T]           = TensorType::decode(app->type()->as<Nom>());
+    auto shape               = rewrite(s);
+    auto source              = rewrite(old);
+    auto [br, bs, bT]        = Axm::isa<buffer::Buf>(buf_of(app->type()))->args<3>();
+    auto [m, dst]            = buffer::op_alloc(br, bs, bT, fresh_mem())->projs<2>();
+    if (has_zero_extent(shape)) return dst;
+    auto result = w.sigma({m->type(), dst->type()});
+    auto copy
+        = btensor::build_pointwise(result, m, dst, source, shape, *Lit::isa<u64>(r), "tensor_copy",
+                                   [shape](Defs iters, const Def* src, const Def* mem) {
+                                       auto [m, elem]
+                                           = buffer::op_read(mem, src, btensor::folded_idx(shape, iters))->projs<2>();
+                                       return std::pair(m, elem);
+                                   });
+    auto [after, out] = copy->projs<2>();
+    auto idx          = *Shape(rewrite(index)).fold(shape);
+    return buffer::op_write(after, out, idx, rewrite(value))->proj(2, 1);
 }
 
 const Def* LowerToMem::lower_splat(const App* app) {
-    auto value = app->arg()->proj(2, 1);
-
-    // MimIR folds rank-zero tensors and tensors whose literal dimensions are all
-    // one into their scalar element type. Such results have no tensor boundary to
-    // bufferize, so lower the splat directly to its scalar value.
-    if (!app->type()->isa<Arr>()) return rewrite(value);
-    return splat_buffer(app->type(), rewrite(value));
+    return splat_buffer(app->type(), rewrite(app->arg()->proj(2, 1)));
 }
 
 const Def* LowerToMem::lower_generate(const App* app) {
-    auto& w            = new_world();
-    auto [meta, s_out] = rewrite(app->callee())->as<App>()->uncurry_args<2>();
-    auto [T, r]        = meta->projs<2>();
-    auto r_l           = Lit::isa<u64>(r);
-    if (!r_l) return RWPhase::rewrite_imm_App(app);
-    auto rn   = *r_l;
-    auto body = rewrite(app->arg());
-
-    // A logical rank-zero tensor, or one consisting only of literal singleton
-    // axes, is represented by its scalar element in MimIR.
-    if (!app->type()->isa<Arr>()) {
-        DefVec zeros(rn, [&](size_t) { return w.lit_i64(0); });
-        return w.call(body, w.tuple(zeros));
-    }
-
-    auto out_ty       = buf_of(app->type());
-    auto [br, bs, bT] = Axm::isa<buffer::Buf>(out_ty)->args<3>();
-    auto result_ty    = w.sigma({w.call<mem::M>(0), out_ty});
-    auto compute      = [&](Defs iters, const Def*, const Def* m) -> std::pair<const Def*, const Def*> {
-        return {m, w.call(body, iters)};
-    };
-    auto [am, dst] = buffer::op_alloc(br, bs, bT, fresh_mem())->projs<2>();
-    return btensor::build_pointwise(result_ty, am, dst, w.tuple(), s_out, rn, "generate", compute)->proj(2, 1);
+    auto& w           = new_world();
+    auto [r, s, T]    = TensorType::decode(app->type()->as<Nom>());
+    auto shape        = rewrite(s);
+    auto body         = rewrite(app->arg());
+    auto [br, bs, bT] = Axm::isa<buffer::Buf>(buf_of(app->type()))->args<3>();
+    auto [m, dst]     = buffer::op_alloc(br, bs, bT, fresh_mem())->projs<2>();
+    if (has_zero_extent(shape)) return dst;
+    auto result = w.sigma({m->type(), dst->type()});
+    return btensor::build_pointwise(result, m, dst, w.tuple(), shape, *Lit::isa<u64>(r), "generate",
+                                    [body](Defs iters, const Def*, const Def* mem) {
+                                        return std::pair(mem, mem->world().call(body, iters));
+                                    })
+        ->proj(2, 1);
 }
 
 const Def* LowerToMem::lower_broadcast(const App* app) {
@@ -585,12 +461,7 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     // No-op broadcast (already normalized away in most cases).
     if (s_in == s_out) return input;
 
-    input       = to_buffer(input, app->arg()->proj(3, 2));
     auto in_buf = Axm::isa<buffer::Buf>(input->type());
-
-    // Rank-0 source: an all-size-1 input shape folds to a plain scalar that is never recorded as a tensor
-    // type, so `materialize` leaves it as a value. Broadcasting a scalar fills every element with it.
-    if (!in_buf) return splat_buffer(app->type(), input);
 
     // Actual (size-1-folded) input/output buffer shapes — `btensor.broadcast` is parameterised by them.
     auto [bri, bsi, biT] = in_buf->args<3>();
@@ -616,13 +487,8 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
 
     auto mr = btensor::MapRedPost::of(c);
 
-    // The generic rewrite rebuilds the argument tuple with its stale value-array type even when its
-    // elements were converted to buffers, which would not be assignable to the op's
-    // `«nis; buffer.Buf …»` domain - hence the re-tupling in `buffer_list`.
-    auto [old_is, old_post_is] = app->arg()->projs<2>();
-    is                         = buffer_list(is, old_is, mr.nis);
-    post_is                    = buffer_list(post_is, old_post_is, mr.nps);
-    if (!is || !post_is) return RWPhase::rewrite_imm_App(app); // leave it alone
+    is      = buffer_list(is, mr.nis);
+    post_is = buffer_list(post_is, mr.nps);
 
     // Wrap the pure tensor combiner `Fn [To, «nis; Tis»] → To` into the mem-threaded combiner
     // `Fn [mem.M 0, To, «nis; Tis»] → [mem.M 0, To]` that `btensor.map_reduce_post` expects.
@@ -661,7 +527,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     op             = w.app(op, mr.maps_all);
     auto [am, dst] = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, fresh_mem())->projs<2>();
     auto [m, out]  = w.app(op, w.tuple({am, dst, is, post_is}))->projs<2>();
-    return scalar_result(app, m, out);
+    return out;
 }
 
 const Def* LowerToMem::lower_pad(const App* app) {
@@ -675,12 +541,8 @@ const Def* LowerToMem::lower_pad(const App* app) {
     auto [T, r]             = Tr->projs<2>();
     auto [mode, lo, hi]     = params->projs<3>();
 
-    input = to_buffer(input, app->arg()->proj(2, 0));
-    if (!Axm::isa<buffer::Buf>(input->type()))
-        return RWPhase::rewrite_imm_App(app); // not a recorded tensor type: leave it alone
-
     auto r_l = Lit::isa<u64>(r);
-    if (!r_l) return RWPhase::rewrite_imm_App(app);
+    if (!r_l) app->blame("cannot bufferize: pad requires a literal rank").bail();
 
     // The LOGICAL output shape `s_out#d = lo#d + s_in#d + hi#d` — the loop generation iterates it, so it
     // must keep size-1 axes (the result type's `Buf` folds them away and cannot be used here).
@@ -707,18 +569,16 @@ const Def* LowerToMem::lower_concat(const App* app) {
     auto nis_l = Lit::isa<u64>(nis);
     auto r_l   = Lit::isa<u64>(r);
     auto ax_l  = Lit::isa<u64>(ax);
-    if (!nis_l || !r_l || !ax_l) return RWPhase::rewrite_imm_App(app);
+    if (!nis_l || !r_l || !ax_l)
+        app->blame("cannot bufferize: concat requires literal operand count, rank and axis").bail();
 
-    auto inputs = buffer_list(arg, app->arg(), nis);
-    if (!inputs) return RWPhase::rewrite_imm_App(app); // not a recorded tensor type: leave it alone
+    auto inputs = buffer_list(arg, nis);
 
-    // The LOGICAL output shape: the summed extent along `ax` (literal, gated in `collect_tensor_types`),
-    // the shared extents elsewhere — the loop generation iterates it, so it must keep size-1 axes (the
-    // result type's `Buf` folds them away and cannot be used here).
+    // The logical output shape retains size-1 axes for loop generation.
     u64 sum_ax = 0;
     for (u64 i = 0; i < *nis_l; ++i) {
         auto e = Lit::isa<u64>(Sis->proj(*nis_l, i)->proj(*r_l, *ax_l));
-        if (!e) return RWPhase::rewrite_imm_App(app);
+        if (!e) app->blame("cannot bufferize: concat requires literal extents along its axis").bail();
         sum_ax += *e;
     }
     DefVec so(*r_l, [&](size_t d) { return d == *ax_l ? w.lit_nat(sum_ax) : Sis->proj(*nis_l, 0)->proj(*r_l, d); });
@@ -738,12 +598,6 @@ const Def* LowerToMem::lower_concat(const App* app) {
     return out;
 }
 
-const Def* LowerToMem::make_buffer(const Def* old_arg, const Def* r, const Def* shape) {
-    auto value = materialize(old_arg->type(), old_arg);
-    if (Axm::isa<buffer::Buf>(value->type())) return value;
-    return buffer::op_lit(r, shape, value->type(), bot_mem(), value)->proj(2, 1);
-}
-
 const Def* LowerToMem::lower_gather(const App* app) {
     auto& w = new_world();
     auto c  = rewrite(app->callee())->as<App>();
@@ -751,15 +605,16 @@ const Def* LowerToMem::lower_gather(const App* app) {
     auto [Tr, shapes, dim] = c->uncurry_args<3>();
     auto [T, r]            = Tr->projs<2>();
     auto [s_src, s_idx]    = shapes->projs<2>();
-    if (!check_gather_shape_constraints(app, r, dim, s_src, s_idx)) return RWPhase::rewrite_imm_App(app);
+    if (!check_gather_shape_constraints(app, r, dim, s_src, s_idx))
+        app->blame("cannot bufferize: gather requires a literal axis and proven non-axis shape bounds").bail();
     auto [old_input, old_index] = app->args<2>();
-    auto input                  = make_buffer(old_input, r, s_src);
-    auto index                  = make_buffer(old_index, r, s_idx);
+    auto input                  = rewrite(old_input);
+    auto index                  = rewrite(old_index);
 
     auto op                 = w.app(w.annex<btensor::gather>(), {T, r});
     auto [am, dst]          = buffer::op_alloc(r, s_idx, T, fresh_mem())->projs<2>();
     auto [out_mem, out_buf] = w.call(op, Defs{s_src, s_idx}, dim, Defs{am, dst, input, index})->projs<2>();
-    return scalar_result(app, out_mem, out_buf);
+    return out_buf;
 }
 
 const Def* LowerToMem::lower_scatter(const App* app) {
@@ -769,17 +624,18 @@ const Def* LowerToMem::lower_scatter(const App* app) {
     auto [Tr, shapes, dim]         = c->uncurry_args<3>();
     auto [T, r]                    = Tr->projs<2>();
     auto [s_src, s_idx, s_updates] = shapes->projs<3>();
-    if (!check_scatter_shape_constraints(app, r, dim, s_src, s_idx, s_updates)) return RWPhase::rewrite_imm_App(app);
+    if (!check_scatter_shape_constraints(app, r, dim, s_src, s_idx, s_updates))
+        app->blame("cannot bufferize: scatter requires a literal axis and proven index shape bounds").bail();
     auto [old_input, old_index, old_updates] = app->args<3>();
-    auto input                               = make_buffer(old_input, r, s_src);
-    auto index                               = make_buffer(old_index, r, s_idx);
-    auto updates                             = make_buffer(old_updates, r, s_updates);
+    auto input                               = rewrite(old_input);
+    auto index                               = rewrite(old_index);
+    auto updates                             = rewrite(old_updates);
 
     auto op        = w.app(w.annex<btensor::scatter>(), {T, r});
     auto [am, dst] = buffer::op_alloc(r, s_src, T, fresh_mem())->projs<2>();
     auto [out_mem, out_buf]
         = w.call(op, Defs{s_src, s_idx, s_updates}, dim, Defs{am, dst, input, index, updates})->projs<2>();
-    return scalar_result(app, out_mem, out_buf);
+    return out_buf;
 }
 
 } // namespace mim::plug::tensor::phase

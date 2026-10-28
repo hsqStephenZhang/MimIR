@@ -1,0 +1,15 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin btensor;
+plugin compile;
+
+extern con broadcast_empty (n: Nat, m: mem.M 0, a: buffer.Buf (2, (0, n), I32), return: Cn [mem.M 0, buffer.Buf (2, (3, n), I32)]) =
+    let (m, dst) = buffer.alloc (2, (3, n), I32) m;
+    return (btensor.broadcast @(I32, 2, (0, n), 2, (3, n), 2) ((0, n), (3, n)) (m, dst, a));
+
+extern lam _compile (): compile.Phase = btensor.lower_map_reduce;
+
+// CHECK: error: cannot lower broadcast from an empty input to a nonempty iteration domain

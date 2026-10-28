@@ -17,7 +17,6 @@ public:
 
 private:
     const Def* rewrite_imm_App(const App*) final;
-    const Def* rewrite_imm_Extract(const Extract*) final;
 
     /// Reads straight through a `broadcast` / `repeat` at @p index instead of materializing it.
     /// Per axis the shape op either passes the index through, reads a size-1 input axis at 0, or (for `repeat`)

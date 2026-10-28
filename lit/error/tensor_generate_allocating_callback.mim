@@ -1,0 +1,13 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin core;
+plugin tensor;
+plugin compile;
+
+extern con generate_allocating (n: Nat, return: Cn [tensor.Tensor 1 n I32]) =
+    let body = λ (i: I64): I32 = tensor.get (tensor.splat (2, core.conv.u 4294967296 i), 0₂);
+    return (tensor.generate n body);
+
+extern lam _compile (): compile.Phase = tensor.lower_to_mem;
+
+// CHECK: error: cannot bufferize: allocating generate callback requires CPS conversion

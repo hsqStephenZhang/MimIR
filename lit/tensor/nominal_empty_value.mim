@@ -1,0 +1,12 @@
+// RUN: %mim %s -o - | %FileCheck %s --implicit-check-not=affine.For
+
+plugin tensor;
+plugin compile;
+
+extern fun empty_concat (a: tensor.Tensor 1 0 I32): tensor.Tensor 1 0 I32 =
+    return (tensor.concat 0₁ @(0, 0) (a, a));
+
+extern lam _compile (): compile.Phase = compile.phases ff (tensor.lower_map_reduce, compile.cleanup);
+
+// CHECK: extern fun empty_concat
+// CHECK: inj Tensor

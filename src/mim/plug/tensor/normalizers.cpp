@@ -15,6 +15,70 @@
 
 namespace mim::plug::tensor {
 
+const Def* normalize_from_array(const Def* type, const Def*, const Def* arg) {
+    auto [r, s, T] = TensorType::decode(type->as<Nom>());
+    auto rank      = Lit::isa<u64>(r);
+    if (!rank) arg->blame("from_array requires a static shape").bail();
+    for (auto extent : s->projs(*rank))
+        if (!Lit::isa<u64>(extent)) arg->blame("from_array requires a static shape").bail();
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(arg);
+    while (!wl.empty()) {
+        auto d = wl.pop();
+        if (d->isa<Lit>()) continue;
+        if (d->isa<Tuple>())
+            wl.push(d->ops());
+        else if (auto pack = d->isa<Pack>(); pack && Lit::isa<u64>(pack->arity()))
+            wl.push(pack->body());
+        else
+            arg->blame("from_array requires a static array literal").bail();
+    }
+    return nullptr;
+}
+
+const Def* normalize_get(const Def*, const Def* callee, const Def* arg) {
+    auto [tensor, index] = arg->projs<2>();
+    if (auto array = Axm::isa<tensor::from_array>(tensor)) return arg->world().extract(array->arg(), index);
+    if (auto scalar = Axm::isa<tensor::scalar>(tensor)) return scalar->arg();
+    if (auto set = Axm::isa<tensor::set>(tensor)) {
+        auto [base, written, value] = set->args<3>();
+        if (written == index) return value;
+        if (auto rank = Lit::isa<u64>(callee->as<App>()->arg(3, 0))) {
+            auto a = lit_projs(written, *rank);
+            auto b = lit_projs(index, *rank);
+            if (a && b && *a != *b) return op_get(base, index);
+        }
+    }
+    return nullptr;
+}
+
+const Def* normalize_set(const Def*, const Def* callee, const Def* arg) {
+    auto [tensor, index, value] = arg->projs<3>();
+    if (auto array = Axm::isa<tensor::from_array>(tensor)) {
+        auto data = array->arg();
+        auto rank = Lit::isa<u64>(callee->as<App>()->arg(3, 0));
+        if (data->is_closed() && rank && lit_projs(index, *rank) && value->isa<Lit>()) {
+            auto& w = arg->world();
+            auto op = w.app(w.annex<tensor::from_array>(), callee->as<App>()->arg());
+            return w.app(op, w.insert(data, index, value));
+        }
+    }
+    return nullptr;
+}
+
+const Def* normalize_scalar(const Def* type, const Def*, const Def* arg) {
+    if (auto item = Axm::isa<tensor::item>(arg))
+        if (item->arg()->type() == type) return item->arg();
+    return nullptr;
+}
+
+const Def* normalize_item(const Def*, const Def*, const Def* arg) {
+    if (auto scalar = Axm::isa<tensor::scalar>(arg)) return scalar->arg();
+    if (auto array = Axm::isa<tensor::from_array>(arg)) return array->arg();
+    if (auto set = Axm::isa<tensor::set>(arg)) return set->arg()->proj(3, 2);
+    return nullptr;
+}
+
 const Def* normalize_broadcast(const Def* type, const Def* c, const Def* arg) {
     auto& w = c->world();
 
@@ -33,7 +97,6 @@ const Def* normalize_broadcast_in_dim(const Def*, const Def*, const Def*) { retu
 
 const Def* normalize_repeat(const Def* type, const Def* c, const Def* arg) {
     // Identity repeat: if the input and output shapes agree, the repeat is a no-op.
-    // Size-1 axes collapse out of the type, so equal types suffice.
     auto [Tr, s_in, s_out] = c->as<App>()->uncurry_args<3>();
     if (s_in == s_out || arg->type() == type) return arg;
     return nullptr;
@@ -41,7 +104,6 @@ const Def* normalize_repeat(const Def* type, const Def* c, const Def* arg) {
 
 const Def* normalize_reshape(const Def* type, const Def* c, const Def* arg) {
     // Identity reshape: if the input and output shapes agree, the reshape is a no-op.
-    // Size-1 axes collapse out of the type, so equal types suffice.
     auto [Trr, s_in, s_out] = c->as<App>()->uncurry_args<3>();
     if (s_in == s_out || arg->type() == type) return arg;
     return nullptr;
@@ -150,21 +212,6 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
         return arg;
     }
     return w.lit_nat(*n);
-}
-
-const Def* normalize_shape(const Def*, const Def* c, const Def* arg) {
-    // `tensor.shape r arr` is the first `r` axes of `arr`'s (fused) array type.
-    auto& w = c->world();
-    auto r  = Lit::isa<u64>(c->as<App>()->arg()); // the explicit rank `r`
-    if (!r) return nullptr;
-    if (*r == 0) return w.tuple();
-
-    auto arr = arg->type()->isa<Arr>();
-    if (!arr) return nullptr;
-    auto shape = arr->shape();
-    auto rank  = shape.rank();
-    if (!rank || *rank < *r) return nullptr; // `arr` is not (statically) at least rank `r`
-    return *shape.take(*r);
 }
 
 MIM_tensor_NORMALIZER_IMPL

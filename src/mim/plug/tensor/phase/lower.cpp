@@ -30,16 +30,13 @@ const Def* Lower::read_through(const Def* base, Defs index) {
     }
 
     auto r = Lit::isa(rank);
-    // An index reaching past the shape op's own axes continues into an array element type - not ours to answer.
-    if (!r || index.size() > *r) return nullptr;
+    if (!r || index.size() != *r) return nullptr;
 
     auto new_index = DefVec(*r);
-    for (u64 d = 0, i = 0; d != *r; ++d) {
+    for (u64 d = 0; d != *r; ++d) {
         auto in_d  = s_in->proj(*r, d);
         auto out_d = s_out->proj(*r, d);
-        // A size-1 output axis folds out of the array type, so the chain carries no index for it.
-        auto idx_d = Lit::isa(out_d) == 1 ? w.lit_idx(1, 0) : (i < index.size() ? rewrite(index[i++]) : nullptr);
-        if (!idx_d) return nullptr;
+        auto idx_d = rewrite(index[d]);
 
         if (in_d == out_d)
             new_index[d] = idx_d;
@@ -51,17 +48,7 @@ const Def* Lower::read_through(const Def* base, Defs index) {
             return nullptr;
     }
 
-    return w.extract(rewrite(input), w.tuple(new_index));
-}
-
-const Def* Lower::rewrite_imm_Extract(const Extract* extract) {
-    auto base = Axm::peel<tensor::buf>(extract->tuple());
-    if (Axm::isa<tensor::repeat>(base) || Axm::isa<tensor::broadcast>(base)) {
-        auto index = Shape(extract->index());
-        if (auto r = index.rank())
-            if (auto res = read_through(base, DefVec(*r, [&](size_t i) { return index[i]; }))) return res;
-    }
-    return RWPhase::rewrite_imm_Extract(extract);
+    return tensor::op_get(rewrite(input), w.tuple(new_index));
 }
 
 const Def* Lower::fastest_axis_2(const App* app, const Def* rank) {
@@ -88,6 +75,13 @@ const Def* Lower::lower_via_impl(const App* app, const Def* impl) {
 
 const Def* Lower::rewrite_imm_App(const App* app) {
     auto& w = new_world();
+
+    if (auto get = Axm::isa<tensor::get>(app)) {
+        auto [base, idx] = get->args<2>();
+        auto index       = Shape(idx);
+        if (auto rank = index.rank())
+            if (auto value = read_through(base, index->projs(*rank))) return value;
+    }
 
     if (Axm::isa<tensor::broadcast_in_dim>(app)) return lower_via_impl(app, impl<tensor::broadcast_in_dim_impl>());
     if (Axm::isa<tensor::transpose>(app)) return lower_via_impl(app, impl<tensor::transpose_impl>());

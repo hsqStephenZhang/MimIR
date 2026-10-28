@@ -249,7 +249,8 @@ void SEO::Analysis::live(Lam* lam, Defs abstr_args) {
 }
 
 Vars SEO::Analysis::non_mem_free_vars(const Def* def) {
-    if (isa_mem(def) || def->is_closed()) return {};
+    // A closed def first: a dependent type's `*` has no type for isa_mem to inspect.
+    if (def->is_closed() || isa_mem(def)) return {};
     if (auto var = def->isa<Var>()) return Vars{var};
     if (def->isa_mut()) return def->free_vars();
     if (auto res = fe::lookup(non_mem_fvs_, def)) return *res;
