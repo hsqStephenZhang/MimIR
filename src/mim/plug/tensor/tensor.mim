@@ -40,6 +40,8 @@ anx Ring = btensor.Ring;
 priv nom Tensor (r: Nat) (s: «r; Nat») (T: *) = [indices: «(r, s, ⊥:T)», data: «s; T»];
 pub anx let Tensor = Tensor;
 
+/// Bufferization accepts static literals here; external data must use Tensor-typed parameters.
+/// Validation follows specialization so unused generic helpers can remain abstract.
 axm from_array: {r: Nat, s: «r; Nat», T: *} → [a: «s; T»] → Tensor r s T, normalize_from_array;
 axm get: {r: Nat, s: «r; Nat», T: *}
        → [t: Tensor r s T, i: «j: r; Idx (s#j)»] → T, normalize_get;

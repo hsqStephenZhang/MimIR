@@ -1,0 +1,38 @@
+// RUN: %mim %s -o - | %FileCheck %s --implicit-check-not='nom Tensor' --implicit-check-not=core.Ptr
+
+plugin core;
+plugin tensor;
+plugin compile;
+use tensor;
+
+extern con forward (s: «2; Nat», a: Tensor 2 s I32, return: Cn [Tensor 2 s I32]) = return a;
+
+extern fun family {n: Nat} (a: Tensor 1 n I32): Tensor 1 n I32 = return a;
+
+extern con call_family (n: Nat, a: Tensor 1 n I32, return: Cn [Tensor 1 n I32]) = family @n (a, return);
+
+extern fun scalar_family {n: Nat} (x: I32, active: Bool): I32 =
+    con plain () = return x;
+    con materialize () =
+        let size = core.nat.add (n, 1);
+        let a = generate size (λ (_: I64): I32 = x);
+        return (get (a, core.idx 0 size n));
+    (plain, materialize)#active ();
+
+extern lam _compile (): compile.Phase = compile.phases ff (tensor.lower_to_mem, compile.cleanup);
+
+// CHECK-LABEL: extern con call_family (n: Nat, a: buffer.Buf (1, n, I32),
+// CHECK-SAME: Cn buffer.Buf (1, n, I32)
+// CHECK-LABEL: extern con family (
+// CHECK-SAME: [[N:[a-zA-Z_0-9]+]]: Nat,
+// CHECK-SAME: buffer.Buf (1, [[N]], I32)
+// CHECK-SAME: Cn buffer.Buf (1, [[N]], I32)
+// CHECK-LABEL: extern con forward (
+// CHECK-SAME: [[S:[a-zA-Z_0-9]+]]: «2; Nat»,
+// CHECK-SAME: buffer.Buf (2, [[S]], I32)
+// CHECK-SAME: Cn buffer.Buf (2, [[S]], I32)
+// CHECK-LABEL: extern con scalar_family (
+// CHECK-SAME: [[M:[a-zA-Z_0-9]+]]: Nat,
+// CHECK: let size = core.nat.add (1, [[M]])
+// CHECK: buffer.alloc (1, size, I32)
+// CHECK: buffer.read (1, size, I32)

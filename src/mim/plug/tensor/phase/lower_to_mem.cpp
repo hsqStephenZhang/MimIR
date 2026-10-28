@@ -36,6 +36,26 @@ bool has_zero_extent(const Def* shape) {
     return false;
 }
 
+void validate_array_literal(const App* app) {
+    auto [r, s, T] = TensorType::decode(app->type()->as<Nom>());
+    auto rank      = Lit::isa<u64>(r);
+    if (!rank) app->blame("from_array requires a static shape").bail();
+    for (auto extent : s->projs(*rank))
+        if (!Lit::isa<u64>(extent)) app->blame("from_array requires a static shape").bail();
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(app->arg());
+    while (!wl.empty()) {
+        auto d = wl.pop();
+        if (d->isa<Lit>()) continue;
+        if (d->isa<Tuple>())
+            wl.push(d->ops());
+        else if (auto pack = d->isa<Pack>(); pack && Lit::isa<u64>(pack->arity()))
+            wl.push(pack->body());
+        else
+            app->blame("from_array requires a static array literal").bail();
+    }
+}
+
 bool contains_pi(const Def* type) {
     auto wl = fe::BFSWorklist<DefSet>();
     wl.push(type);
@@ -115,6 +135,7 @@ void LowerToMem::validate() {
         } else if ((d->isa<Nom>() || d->isa<Variant>()) && mentions_tensor(d)) {
             d->blame("cannot bufferize: unsupported tensor aggregate carrier").bail();
         }
+        if (auto app = Axm::isa<tensor::from_array>(d)) validate_array_literal(app);
         if (auto app = d->isa<App>())
             if (Axm::isa<tensor::generate>(app))
                 if (auto body = app->arg()->isa_mut<Lam>(); body && body->filter() == old_world().lit_tt())

@@ -1,9 +1,7 @@
 # Nominal, shape-indexed tensors
 
-Status: nominal Tensor integration stage on `feat/nominal-tensor`, 2026-10-28.
-Runtime pointer erasure and native dynamic execution land next in `feat/buffer-runtime-extents`.
-Base: branch `zc/feat/erase-dynamic-extents` (HEAD 047a543b57, on top of origin/master b276ad719a).
-Companion: `docs/design/bufferize_roles.md` (the problem statement; this document replaces its section 2.1 plan).
+Nominal tensor representation, public operations and conversion to the buffer layer.
+
 
 ## 0. Summary
 
@@ -239,6 +237,7 @@ First-version eligibility and diagnostics:
 tensor requires its own conversion contract; detect and diagnose that unsupported carrier, without rejecting
 unrelated nominal values. Type inspection must terminate on recursive types. Captures and supported element-level
 callbacks follow their memory-threading contract; there is no blanket `op_args_` exemption for a callback body.
+Effect detection conservatively follows referenced local CPS functions as well as local continuations.
 An inline direct-style `generate` callback may read existing tensors with `get`/`item`, but
 allocating tensor operations require CPS conversion and are explicitly rejected before rewriting.
 
@@ -281,8 +280,8 @@ static bounds proofs; unresolved obligations have explicit diagnostics and regre
   rejects runtime extents. Empty domains execute no copy iterations. Give allocating operations distinct
   fresh-memory requests, scoped and memoized per enclosing lambda; using the same placeholder for two
   otherwise identical allocations would hash-cons them into one buffer.
-- `from_array` is a static-literal ingress operation. Its normalizer rejects non-literal ranks/extents and
-  non-literal payloads, including opaque static-array parameters. Uniform literals use `buffer.lit`; other
+- `from_array` is a static-literal ingress operation. The bufferization preflight rejects non-literal ranks/extents and
+  non-literal payloads after specialization, including opaque static-array parameters. Uniform literals use `buffer.lit`; other
   literals use `buffer.init`. Dynamic tensor parameters/results use the `Tensor` contract, and dynamic tensor
   construction uses `generate` or `splat`. Dynamic Pack materialization and raw-array export are absent.
 - Runtime rank and runtime-sized device transfers remain gated. Device support must carry logical sizes to
@@ -295,7 +294,8 @@ If an extent is already a literal zero, return the empty allocated buffer before
 loop bodies. The shared pointwise helper and map-reduce readers also avoid unreachable accesses; an empty
 reduction still writes its initial accumulator through the epilogue. Constant padding of an empty input
 produces the fill value, including when an extent becomes zero at runtime; replicate padding of a statically
-empty input is diagnosed. Concat skips empty input segments. A map-reduce reader with a nonempty iteration
+empty input is diagnosed. Static nonempty pad inputs use clamped reads and select; runtime input extents
+use conditional reads because they may be zero. Concat skips empty input segments. A map-reduce reader with a nonempty iteration
 domain and a statically empty input (including an epilogue input) is diagnosed instead of emitting a read.
 Broadcast similarly rejects a statically empty input unless the output is already known to be empty.
 A zero-trip loop alone is insufficient: lowering an unreachable access through the normalized empty-array
@@ -325,35 +325,12 @@ to `lower_to_mem` and gone before codegen. Do not move them. Custom `_compile` p
 
 ## 8. Phases and integration checks
 
-This branch contains nominal typing, the static-literal API, tensor-to-buffer conversion and static execution
-coverage. This stage builds all plugins and passes 554 lit tests (7 skipped) and all 55 unit tests.
-The historical full-suite numbers below describe the combined prototype; runtime erasure, pointer adaptation
-and native dynamic tests are isolated in the subsequent buffer branch.
+Nominal typing, static-literal ingress and tensor-to-buffer conversion are validated independently of
+runtime pointer erasure. Tests that stop after `lower_to_mem` check dynamic shape binders, grouped parameters,
+shape-only curry groups and tensor-free signatures whose local continuations use tensors. Static execution
+coverage runs through the default pipeline; native dynamic execution belongs to the pointer-erasure stage.
 
-Implementation status on `feat/nominal-tensor`: E1 introduces the full nominal type and five axioms with
-compositional normalizers. `lit/tensor/nominal.mim`, six negative nominal tests and `test/tensor.cpp` cover
-the new surface.
-The E1 checkpoint (`9a966c379f`) builds all plugins, passes all 55 unit tests, and has no failures in the full
-546-test lit suite with the LLVM runtime wrappers enabled. E2 migrates all data signatures, implementations
-and Tileable output types to `Tensor`, removes `buf`/the shape axiom and replaces element reads/updates with
-`get`/`set`. Direct plugin elaboration and header bootstrap pass. E3 replaces role/type-set machinery with
-nominal-key conversion, adds dynamic copy loops, updates fusion and value-world lowering, and extends
-pointer coercion for scalar/empty results. The 16 nominal/native/diagnostic lit regressions and all 55 unit
-tests pass, including the original non-inlined literal-extent-0/1 failures. Existing lit inputs and dump checks
-are migrated in E4 (`57b62fb8a8`). The E5 integration checkpoint reports 553 lit tests passed, 7 skipped and
-zero failures, plus all 55 unit tests. The seven skips are six fixture modules and the release-only VGG16
-case; VGG16 elaboration is checked separately in this Debug build. Native coverage additionally exercises
-runtime generation, captured tensor reads, empty map/reduction and unrelated nominal types.
-E5 removes stale role-set/scalar-folding descriptions and records the completed integration.
-The review follow-up adds ten lit regressions for mixed array ingress, allocating callback diagnostics,
-empty init/lit pointer adaptation, empty-input padding/concat/readers and scalar-only shape curry groups.
-That checkpoint reports 564 passed, 7 skipped and zero failures. The subsequent pack-effect/broadcast follow-up reports 568 passed, 7 skipped and zero failures.
-The current public surface then removes raw-array export and dynamic Pack ingress: `from_array` is restricted
-to static literals, while `get`/`set` and dynamic tensor computation remain supported. Continuation effect
-scans follow local CPS bodies, and static nonempty pad inputs retain read/select without a per-element branch.
-The simplified combined tree passes 569 lit tests with 7 skips and no failures, plus all 55 unit tests.
-For integration, `feat/nominal-tensor` lands first on `origin/master`; `feat/buffer-runtime-extents` stacks
-on it and adds runtime pointer erasure, precise/erased adapters and native dynamic execution coverage.
+The checkpoints below record the intended validation scope.
 
 E1 (no production migration): lit probes declaring the type of §2 and the value semantics of §3, with
 - a function `{n: Nat} (a: Tensor 2 (4, n) I32)` applying `unary`-shaped and `binary`-shaped lams whose implicit
@@ -404,33 +381,6 @@ Estimate: the original 6–9 working days on the compiler side is provisional an
 runtime copy work separately. Re-estimate after E1 with §5.2 and its execution tests included;
 frontend migration, runtime rank and dynamic device transfers are excluded.
 
-### Preliminary E1 experiment (2026-10-28)
-
-An isolated prototype built at `0e257f2789` tests the full witness and a small nominal-to-buffer phase for
-`generate`/`get`/`set`, using existing affine/btensor helpers and the remaining compilation pipeline.
-
-- Passed: parameter inequality for empty/singleton/rank-0 tensors, `Tensor r s T : *`, implicit unary/binary
-  inference with runtime extents, nested dependent groups, private representation checks across files, annex
-  key identity across instances, canonical instance reuse, index decoding and key preservation by rewriting.
-- Passed: native I32 execution for runtime lengths 0, 1, 2, 7 and 17; independent C callers verify distinct
-  source/destination buffers and every element after `set`. Rank-0 and literal-extent-0/1 construction pass.
-  A two-dimensional runtime tensor passes through a dependent shape-vector parameter without converting that
-  vector to a buffer. Unrelated nominal values coexist with these operations.
-- Passed: late nominal/singleton erasure leaves the same native ABI as the corresponding raw array/scalar,
-  with no witness fields. Callable-contract probes detect return-only thunks and tensor continuations while
-  leaving plain shape-vector signatures unmarked.
-- Required corrections confirmed experimentally: `@ff` is insufficient for operation preservation; retain
-  fresh-memory allocation requests; bypass element-loop construction for a literal-zero extent.
-- Initially blocked with the base revision's lower layer: `make (n, k) = k (generate n ...)` called at literal extent 1 or 0
-  fails with `cannot coerce to core.Ptr (I32, 0)` or `core.Ptr ([], 0)`, respectively. A trivial forwarding
-  call can inline and mask this failure. This established the adapter requirement in §5.2; these cases were
-  retained as failing reproductions in the prototype. E3 resolves both in production; `call_one` and
-  `call_zero` in `lit/tensor/nominal_dynamic.mim` are passing, non-trivial producer regressions.
-
-The prototype established the representation and a small dynamic lowering path. The production work in
-E1–E4 adds the operation migration, five primitive normalizers, supported CPS adaptation and full-suite
-integration. General higher-order/closure adaptation remains explicitly gated as specified in §5.1.
-
 ## 9. Acceptance
 
 - Full `lit` green with static and dynamic execution cases and explicit unsupported-operation/callable diagnostics.
@@ -444,7 +394,7 @@ integration. General higher-order/closure adaptation remains explicitly gated as
   value semantics, and dynamic-array ingress is explicitly rejected. No runtime-sized whole-array `copy` or
   `init` reaches `buffer.lower_ptr`. Rank remains literal, and unsupported exports/transfers have specific gates.
 - Reuse btensor, affine, mem and ll without changing their interfaces. Limit buffer-layer changes to the
-  required precise/erased boundary correction and its regressions; no change to `include/mim/phase.h` is planned.
+  required precise/erased boundary correction and its regressions.
 
 ## 10. Frontend (deferred, for the record)
 
@@ -475,8 +425,6 @@ separate migration.
 
 ## 12. Conventions for the implementer
 
-- Work on a branch off `zc/feat/erase-dynamic-extents`; commit per phase with the repo's `type(scope): subject`
-  style, no co-author trailers.
 - Follow `.github/copilot-instructions.md`: comments only for a non-obvious invariant, one line; `.clang-format`
   via `git clang-format`; Mim style per `.github/instructions/mim-style.instructions.md`.
 - Build: `cmake --build build --target mim_all mim_lit_tests`; run `lit build/lit -q`. This Linux validation

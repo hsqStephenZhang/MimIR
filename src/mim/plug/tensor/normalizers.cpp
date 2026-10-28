@@ -15,26 +15,7 @@
 
 namespace mim::plug::tensor {
 
-const Def* normalize_from_array(const Def* type, const Def*, const Def* arg) {
-    auto [r, s, T] = TensorType::decode(type->as<Nom>());
-    auto rank      = Lit::isa<u64>(r);
-    if (!rank) arg->blame("from_array requires a static shape").bail();
-    for (auto extent : s->projs(*rank))
-        if (!Lit::isa<u64>(extent)) arg->blame("from_array requires a static shape").bail();
-    auto wl = fe::BFSWorklist<DefSet>();
-    wl.push(arg);
-    while (!wl.empty()) {
-        auto d = wl.pop();
-        if (d->isa<Lit>()) continue;
-        if (d->isa<Tuple>())
-            wl.push(d->ops());
-        else if (auto pack = d->isa<Pack>(); pack && Lit::isa<u64>(pack->arity()))
-            wl.push(pack->body());
-        else
-            arg->blame("from_array requires a static array literal").bail();
-    }
-    return nullptr;
-}
+const Def* normalize_from_array(const Def*, const Def*, const Def*) { return nullptr; }
 
 const Def* normalize_get(const Def*, const Def* callee, const Def* arg) {
     auto [tensor, index] = arg->projs<2>();
