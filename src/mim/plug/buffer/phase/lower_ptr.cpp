@@ -57,20 +57,31 @@ const Def* flat_index(const Def* s, const Def* idx) {
     return w.call<core::bitcast>(w.type_idx(w.top(w.type_nat())), lin);
 }
 
-/// Casts the precise pointers in @p arg to the erased pointer types @p dom expects, component-wise.
-const Def* erase_arg(const Def* dom, const Def* arg) {
-    auto& w = dom->world();
-    if (arg->type() == dom) return arg;
-    if (auto sig = dom->isa<Sigma>(); sig && !sig->isa_mut()) {
+/// Is @p t the pointer to an erased (`«⊤; T»`) or precise array?
+bool is_arr_ptr(const Def* t) {
+    if (auto ptr = Axm::isa<mem::Ptr>(t)) return ptr->arg(2, 0)->isa<Arr>();
+    return false;
+}
+
+/// Adapts @p v to the type @p dst where the two differ only by erasure, component-wise through sigmas.
+/// A pointer is cast; precise→erased forgets the extent, erased→precise reinstates the one the caller chose.
+/// A continuation is contravariant: an η-wrapper takes @p dst's parameters and adapts them to @p v's.
+const Def* adapt(const Def* dst, const Def* v) {
+    auto& w = dst->world();
+    if (v->type() == dst) return v;
+    if (auto sig = dst->isa<Sigma>(); sig && !sig->isa_mut()) {
         auto n = sig->num_ops();
-        if (arg->type()->isa<Sigma>() && arg->type()->num_ops() == n)
-            return w.tuple(DefVec(n, [&](size_t i) { return erase_arg(sig->op(i), arg->proj(n, i)); }));
+        if (v->type()->isa<Sigma>() && v->type()->num_ops() == n)
+            return w.tuple(DefVec(n, [&](size_t i) { return adapt(sig->op(i), v->proj(n, i)); }));
     }
-    if (auto dst = Axm::isa<mem::Ptr>(dom))
-        if (auto src = Axm::isa<mem::Ptr>(arg->type()))
-            if (auto darr = dst->arg(2, 0)->isa<Arr>(); darr && darr->arity()->isa<Top>() && src->arg(2, 0)->isa<Arr>())
-                return w.call<core::bitcast>(dom, arg);
-    return arg;
+    if (auto pi = Pi::isa_cn(dst))
+        if (auto vpi = Pi::isa_cn(v->type()); vpi && vpi->dom()->num_projs() == pi->dom()->num_projs()) {
+            auto k = w.mut_con(pi->dom())->set(v->dbg());
+            k->set(true, w.app(v, adapt(vpi->dom(), k->var())));
+            return k;
+        }
+    if (is_arr_ptr(dst) && is_arr_ptr(v->type())) return w.call<core::bitcast>(dst, v);
+    return v;
 }
 
 } // namespace
@@ -154,11 +165,12 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         return w.call(gpu::copy_to_host::block, Defs{m0, m1, d_ptr, h_ptr});
     }
 
-    // A callee whose buffer parameter has a symbolic shape takes the erased pointer; a precise argument is cast to it.
+    // A callee whose buffer parameter has a symbolic shape takes the erased pointer and hands an erased result to
+    // its continuation; a precise argument and a precise continuation are adapted to it.
     if (auto pi = app->callee()->type()->isa<Pi>()) {
         auto callee = rewrite(app->callee());
         auto arg    = rewrite(app->arg());
-        return w.app(callee, erase_arg(callee->type()->as<Pi>()->dom(), arg));
+        return w.app(callee, adapt(callee->type()->as<Pi>()->dom(), arg));
     }
 
     return RWPhase::rewrite_imm_App(app);
