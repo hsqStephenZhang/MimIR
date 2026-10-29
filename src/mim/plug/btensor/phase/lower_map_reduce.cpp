@@ -130,6 +130,8 @@ const Def* LowerMapReduce::lower_broadcast(const App* app) {
 
     // Non-size-1 input dims mirror the matching output index; size-1 dims are dropped from each buffer index.
     auto compute = [&](const DefVec& iters, const Def* in_buf, const Def* mem) -> std::pair<const Def*, const Def*> {
+        if (has_zero_extent(s_in))
+            app->blame("cannot lower broadcast from an empty input to a nonempty iteration domain").bail();
         auto idxs             = w.tuple(to_idxs(w, s_out->projs(*r_l), iters));
         auto [rd_mem, rd_val] = buffer::op_read(mem, in_buf, *Shape(idxs).fold(s_in))->projs<2>();
         return {rd_mem, rd_val};
@@ -160,7 +162,11 @@ const Def* LowerMapReduce::lower_pad(const App* app) {
     for (auto extent : s_in->projs(*r_l))
         runtime_input |= !Lit::isa<u64>(extent);
     auto compute = [&](const DefVec& iters, const Def* ins, const Def* mem) -> std::pair<const Def*, const Def*> {
-        auto [in_buf, fill]  = ins->projs<2>();
+        auto [in_buf, fill] = ins->projs<2>();
+        if (has_zero_extent(s_in)) {
+            if (*mode_l != 0) app->blame("cannot lower replicate padding of an empty input").bail();
+            return {mem, fill};
+        }
         auto [coords, valid] = pad_coords(iters, lo, s_in, *mode_l != 0);
         if (valid && runtime_input) {
             auto [rd_mem, elem] = conditional_read(valid, mem, in_buf, *Shape(w, coords).fold(s_in), fill)->projs<2>();

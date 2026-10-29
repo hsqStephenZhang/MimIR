@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cassert>
+
 #include <optional>
 
 #include <mim/lam.h>
@@ -156,13 +158,26 @@ inline const Def* concat_select(const Def* o_ax, const fe::Vector<u64>& exts, au
         auto loc = w.call(core::wrap::sub, core::Mode::none, Defs{o_ax, w.lit_i64(off)});
         return read(i, clamp(loc, w.lit_i64(exts[i] - 1)));
     };
-    auto result = read_i(0);
-    for (u64 i = 1; i < exts.size(); ++i) {
-        off += exts[i - 1];
-        auto cond = w.call(core::icmp::uge, Defs{o_ax, w.lit_i64(off)});
-        result    = w.select(cond, read_i(i), result);
+    const Def* result = nullptr;
+    for (u64 i = 0; i < exts.size(); ++i) {
+        if (exts[i] == 0) continue;
+        auto value = read_i(i);
+        if (result) {
+            auto cond = w.call(core::icmp::uge, Defs{o_ax, w.lit_i64(off)});
+            result    = w.select(cond, value, result);
+        } else {
+            result = value;
+        }
+        off += exts[i];
     }
+    assert(result && "empty outputs must bypass element selection");
     return result;
+}
+
+inline bool has_zero_extent(const Def* shape) {
+    for (auto extent : shape->projs())
+        if (Lit::isa<u64>(extent) == 0) return true;
+    return false;
 }
 
 /// A `[mem, dst, ins] → [mem, Buf]` fun spliced via `cps.cps2ds_dep` that loops over @p s_out carrying
@@ -177,6 +192,7 @@ inline const Def* build_pointwise(const Def* result_ty, // [mem.M 0, buffer.Buf 
                                   u64 rn,
                                   const std::string& name,
                                   auto compute) {
+    if (has_zero_extent(s_out)) return mem->world().tuple({mem, dst});
     auto& w                          = mem->world();
     auto [fun, call]                 = ds_splice(w.tuple({mem, dst, ins}), result_ty, name);
     auto [fun_mem, out_buf, fun_ins] = fun->var(2, 0)->projs<3>();

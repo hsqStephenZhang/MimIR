@@ -18,3 +18,6 @@ adaptation.
 
 Constant padding branches before reading an input with runtime extents, since its size may be zero at execution.
 Static nonempty inputs keep clamped reads and select.
+
+Fully applied shape-polymorphic tensor functions become first-order CPS functions with explicit extent arguments.
+Dynamic tensor updates copy elements using runtime bounds; literal empty handles are supported at buffer boundaries.

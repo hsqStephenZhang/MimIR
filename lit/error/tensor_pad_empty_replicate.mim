@@ -1,0 +1,8 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin tensor;
+
+extern fun pad_empty (a: tensor.Tensor 1 0 I32): tensor.Tensor 1 2 I32 =
+    return (tensor.pad 0 (1, 1, 1) (a, 7I32));
+
+// CHECK: error: cannot lower replicate padding of an empty input
