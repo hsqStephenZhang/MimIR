@@ -15,8 +15,6 @@
 
 namespace mim::plug::tensor {
 
-const Def* normalize_from_array(const Def*, const Def*, const Def*) { return nullptr; }
-
 const Def* normalize_get(const Def*, const Def* callee, const Def* arg) {
     auto [tensor, index] = arg->projs<2>();
     if (auto array = Axm::isa<tensor::from_array>(tensor)) return arg->world().extract(array->arg(), index);

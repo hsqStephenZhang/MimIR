@@ -75,7 +75,7 @@ execution through these dependent boundaries, including callers that instantiate
 All element-level access becomes an operation.
 
 ```mim
-axm from_array: {r: Nat, s: «r; Nat», T: *} → [a: «s; T»] → Tensor r s T, normalize_from_array;
+axm from_array: {r: Nat, s: «r; Nat», T: *} → [a: «s; T»] → Tensor r s T;
 axm get: {r: Nat, s: «r; Nat», T: *}
        → [t: Tensor r s T, i: «j: r; Idx (s#j)»] → T, normalize_get;
 axm set: {r: Nat, s: «r; Nat», T: *}
@@ -266,7 +266,7 @@ static bounds proofs; unresolved obligations have explicit diagnostics and regre
   batch, input width, hidden width and output width unresolved until execution. One compiled function passes
   56 shape combinations against an independent scalar reference, including zero and singleton extents.
 - `buffer.lower_ptr` remains the erasure point: runtime-sized `Buf` handles become flat pointers, and accesses
-  linearize using logical shape terms. Preserve the branch's argument coercions and continuation adapters at
+  linearize using logical shape terms. Preserve argument coercions and continuation adapters at
   precise/erased boundaries, including a polymorphic callee instantiated at a literal extent of 0 or 1.
   Extend that adaptation to scalar precise pointers (`Ptr (T, 0)`, after size-1 axes fold) and empty precise
   pointers (`Ptr ([], 0)`, after a zero extent folds away the payload). The current array-pointer-only leaf
@@ -398,11 +398,10 @@ frontend migration, runtime rank and dynamic device transfers are excluded.
 
 ## 10. Frontend (deferred, for the record)
 
-`mimir-frontend` builds tensor types with `world.arr` (21 sites in `operators.py`), peels `Seq` for shapes,
-keeps singleton dims outside the type, reads elements with `world.extract` (1 site) and refers to a `tensor.get`
-that no longer exists on this branch. After this change it builds `Tensor r s T` via the annex, wraps inputs with
-`from_array`, reads probes with `get`/`item`, and stops special-casing singleton dims. The `torch` dialect is a
-separate migration.
+The frontend must construct `Tensor r s T` through the annex, pass external data through Tensor-typed
+parameters, and use `get`/`item` for element access. `from_array` is reserved for static literals. Shape queries
+read the nominal indices, so singleton dimensions no longer need a separate frontend convention. The `torch`
+dialect is a separate migration.
 
 ## 11. Risks
 
