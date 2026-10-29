@@ -15,3 +15,6 @@ A runtime fill must pass through the btensor loop lowering first. Runtime-sized 
 
 The `coerce_leaf` hook lets pointer erasure extend the generic structural rewriter's argument and continuation
 adaptation.
+
+Constant padding branches before reading an input with runtime extents, since its size may be zero at execution.
+Static nonempty inputs keep clamped reads and select.

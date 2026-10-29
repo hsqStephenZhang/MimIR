@@ -14,6 +14,23 @@
 
 namespace mim::plug::btensor::phase {
 
+namespace {
+
+const Def* conditional_read(const Def* valid, const Def* mem, const Def* buf, const Def* index, const Def* fill) {
+    auto& w          = mem->world();
+    auto result      = w.sigma({mem->type(), fill->type()});
+    auto [fun, call] = ds_splice(mem, result, "pad_read");
+    auto [m, ret]    = fun->vars<2>();
+    auto read        = w.mut_con(mem->type())->set("pad_input");
+    auto pad         = w.mut_con(mem->type())->set("pad_fill");
+    read->app(true, ret, buffer::op_read(read->var(), buf, index));
+    pad->app(true, ret, {pad->var(), fill});
+    fun->branch(true, valid, read, pad, m);
+    return call;
+}
+
+} // namespace
+
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (Axm::isa<btensor::map_reduce_post>(app)) return lower_map_reduce_post(app);
     if (Axm::isa<btensor::broadcast>(app)) return lower_broadcast(app);
@@ -139,10 +156,17 @@ const Def* LowerMapReduce::lower_pad(const App* app) {
         return RWPhase::rewrite_imm_App(app);
     }
 
+    bool runtime_input = false;
+    for (auto extent : s_in->projs(*r_l))
+        runtime_input |= !Lit::isa<u64>(extent);
     auto compute = [&](const DefVec& iters, const Def* ins, const Def* mem) -> std::pair<const Def*, const Def*> {
         auto [in_buf, fill]  = ins->projs<2>();
         auto [coords, valid] = pad_coords(iters, lo, s_in, *mode_l != 0);
-        auto [rd_mem, elem]  = buffer::op_read(mem, in_buf, *Shape(w, coords).fold(s_in))->projs<2>();
+        if (valid && runtime_input) {
+            auto [rd_mem, elem] = conditional_read(valid, mem, in_buf, *Shape(w, coords).fold(s_in), fill)->projs<2>();
+            return {rd_mem, elem};
+        }
+        auto [rd_mem, elem] = buffer::op_read(mem, in_buf, *Shape(w, coords).fold(s_in))->projs<2>();
         return {rd_mem, valid ? w.select(valid, elem, fill) : elem}; // constant: fill out-of-region cells with `val`
     };
 
