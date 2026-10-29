@@ -51,6 +51,8 @@ private:
     bool preserving_ = false;
     /// Lams (transitively) reachable from axm-app arguments: their ABI is pinned by the axiom.
     LamSet preserved_;
+    /// Mutables that reach themselves; such a fresh-memory continuation is a loop and stays a call.
+    LamSet recursive_;
 };
 
 } // namespace mim::plug::mem::phase

@@ -1,0 +1,17 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A fresh-memory continuation that requests itself is a loop: `add_mem` must apply it, not splice it in.
+
+plugin core;
+plugin mem;
+plugin compile;
+
+extern lam _compile (): compile.Phase = compile.phases ff (mem.add_mem,);
+
+con k (m: mem.M 0)@tt = mem.fresh (0, k);
+extern con f (m: mem.M 0) = mem.fresh (0, k);
+
+// CHECK:      con k ({{.*}}: mem.M 0)
+// CHECK-NEXT: k {{.*}}
+// CHECK:      extern con f ({{.*}}: mem.M 0)
+// CHECK-NEXT: k {{.*}}

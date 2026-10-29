@@ -42,6 +42,57 @@ bool AddMem::analyze() {
             pinned.push(d);
     }
 
+    // Tarjan's SCCs over the reachable world: a lam in a nontrivial SCC, or with itself as a dep, reaches itself.
+    struct Frame {
+        const Def* def;
+        size_t next;
+    };
+    GIDMap<const Def*, uint32_t> index, low;
+    GIDSet<const Def*> on_stack;
+    DefVec stack, scc;
+    std::vector<Frame> frames;
+    uint32_t counter = 0;
+    auto push = [&](const Def* def) {
+        index[def] = low[def] = counter++;
+        stack.push_back(def);
+        on_stack.emplace(def);
+        frames.push_back({def, 0});
+    };
+    for (auto root : old_world().externals().muts()) {
+        if (index.contains(root)) continue;
+        push(root);
+        while (!frames.empty()) {
+            auto [def, next] = frames.back();
+            auto deps        = def->deps();
+            if (next < deps.size()) {
+                frames.back().next = next + 1;
+                auto dep           = deps[next];
+                if (dep == def) {
+                    if (auto lam = def->isa_mut<Lam>()) recursive_.emplace(lam);
+                } else if (!index.contains(dep)) {
+                    push(dep);
+                } else if (on_stack.contains(dep)) {
+                    low[def] = std::min(low[def], index[dep]);
+                }
+                continue;
+            }
+            frames.pop_back();
+            if (!frames.empty()) low[frames.back().def] = std::min(low[frames.back().def], low[def]);
+            if (low[def] != index[def]) continue;
+            scc.clear();
+            const Def* member;
+            do {
+                member = stack.back();
+                stack.pop_back();
+                on_stack.erase(member);
+                scc.push_back(member);
+            } while (member != def);
+            if (scc.size() > 1)
+                for (auto m : scc)
+                    if (auto lam = m->isa_mut<Lam>()) recursive_.emplace(lam);
+        }
+    }
+
     return false; // one prepass suffices
 }
 
@@ -155,7 +206,8 @@ const Def* AddMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<mem::fresh>(app)) {
         auto [_, k] = app->args<2>();
         // Splice the `tt`-filtered `k` in here: letting World::app β-reduce it re-traverses the rest of the function per request.
-        if (auto lam = k->isa_mut<Lam>(); lam && lam->is_set() && lam->filter() == old_world().lit_tt()) {
+        if (auto lam = k->isa_mut<Lam>();
+            lam && lam->is_set() && lam->filter() == old_world().lit_tt() && !recursive_.contains(lam)) {
             if (auto var = lam->has_var()) map(var, curr_mem_);
             return rewrite(lam->body());
         }
