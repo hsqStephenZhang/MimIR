@@ -154,6 +154,11 @@ const Def* AddMem::rewrite_imm_App(const App* app) {
     // here - jump to `k` with it. (Like the rest of this phase, only address space 0 is threaded.)
     if (Axm::isa<mem::fresh>(app)) {
         auto [_, k] = app->args<2>();
+        // Splice the `tt`-filtered `k` in here: letting World::app β-reduce it re-traverses the rest of the function per request.
+        if (auto lam = k->isa_mut<Lam>(); lam && lam->is_set() && lam->filter() == old_world().lit_tt()) {
+            if (auto var = lam->has_var()) map(var, curr_mem_);
+            return rewrite(lam->body());
+        }
         return w.app(rewrite(k), curr_mem_);
     }
     // Rewrite the argument before the callee (as the base Rewriter does). This threads the current memory
