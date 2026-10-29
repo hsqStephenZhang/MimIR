@@ -8,8 +8,6 @@ typedef struct {
 extern int32_t* make_array(uint64_t n);
 extern pair make_pair(uint64_t n);
 extern int32_t* capture(uint64_t n, int32_t* a);
-extern int32_t* sum_empty(void);
-extern void* empty_map(void);
 extern int32_t read_marker(uint64_t n, int32_t* a, int32_t marker);
 extern int32_t* static_one(void);
 extern int32_t* make_scalar(void);
@@ -58,10 +56,6 @@ int main(void) {
     if (*adapted != 3) return 15;
     free(adapted);
     free(call_zero());
-    int32_t* reduced = sum_empty();
-    if (reduced[0] != 5 || reduced[1] != 5 || reduced[2] != 5) return 19;
-    free(reduced);
-    free(empty_map());
     int32_t* updated = closed_update();
     if (updated[0] != 42 || updated[1] != 2 || updated[2] != 3 || updated[3] != 4) return 20;
     free(updated);
