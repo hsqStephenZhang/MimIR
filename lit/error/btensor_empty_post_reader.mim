@@ -1,0 +1,18 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin btensor;
+plugin buffer;
+plugin mem;
+plugin affine;
+plugin compile;
+
+fun copy (m: mem.M 0, _: I32, x: I32)@tt: [mem.M 0, I32] = return (m, x);
+fun post (m: mem.M 0, _: I32, bias: I32)@tt: [mem.M 0, I32] = return (m, bias);
+
+extern con read_empty (m: mem.M 0, dst: buffer.Buf (1, 2, I32), a: buffer.Buf (1, 2, I32), bias: buffer.Buf (1, 0, I32), return: Cn [mem.M 0, buffer.Buf (1, 2, I32)]) =
+    return (btensor.map_reduce_post @(1, 1) (2, 2, btensor.mk_sched (1, 0))
+        (copy, 0I32, post) (affine.id @1) (affine.id @1, affine.id @1) (m, dst, a, bias));
+
+extern lam _compile (): compile.Phase = btensor.lower_map_reduce;
+
+// CHECK: error: cannot lower map-reduce read from an empty input with a nonempty iteration domain

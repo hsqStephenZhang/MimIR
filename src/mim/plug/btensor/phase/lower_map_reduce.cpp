@@ -14,6 +14,16 @@
 
 namespace mim::plug::btensor::phase {
 
+namespace {
+
+bool is_empty_domain(const Def* shape) {
+    for (auto extent : shape->projs())
+        if (Lit::isa<u64>(extent) == 0) return true;
+    return false;
+}
+
+} // namespace
+
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (Axm::isa<btensor::map_reduce_post>(app)) return lower_map_reduce_post(app);
     if (Axm::isa<btensor::broadcast>(app)) return lower_broadcast(app);
@@ -61,7 +71,8 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     impl      = w.app(impl, {mr.comb, mr.init, mr.post});
     impl      = w.app(impl, mr.map_out);
 
-    auto [mem, dst, inputs, post_inputs]                 = rewrite(app->arg())->projs<4>();
+    auto [mem, dst, inputs, post_inputs] = rewrite(app->arg())->projs<4>();
+    if (is_empty_domain(mr.So)) return w.tuple({mem, dst});
     auto [read_inputs_ty, read_post_ty, write_output_ty] = impl->type()->as<Pi>()->dom()->projs<3>();
 
     // A `buffer.Buf` has its literal size-1 axes folded away, so the indices fold alike.
@@ -71,8 +82,15 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         auto [args, ret]  = fun->vars<2>();
         auto [m, indices] = args->projs<2>();
         auto values       = DefVec(num);
+        auto empty        = is_empty_domain(bounds);
         for (u64 i = 0; i != num; ++i) {
+            if (empty) {
+                values[i] = w.bot(Axm::isa<buffer::Buf>(buffers->proj(num, i)->type())->arg(3, 2));
+                continue;
+            }
             auto si = ss->proj(num, i);
+            if (is_empty_domain(si))
+                app->blame("cannot lower map-reduce read from an empty input with a nonempty iteration domain").bail();
             auto [mapped, coords]
                 = op_affine_map(maps->proj(num, i), rs->proj(num, i), rank, bounds, si, indices, m)->projs<2>();
             auto [read, value] = buffer::op_read(mapped, buffers->proj(num, i), *Shape(coords).fold(si))->projs<2>();
