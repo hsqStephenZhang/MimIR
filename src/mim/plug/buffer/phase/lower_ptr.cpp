@@ -13,19 +13,21 @@ namespace mim::plug::buffer {
 
 namespace {
 
-/// Does the shape @p s have a runtime extent (a non-literal dim)?
-bool has_runtime_extent(const Def* s) {
-    auto r = Lit::isa(s->arity());
-    if (!r) s->blame("cannot lower buffer with a non-literal rank").bail();
-    for (size_t i = 0; i != *r; ++i)
-        if (!Lit::isa(s->proj(*r, i))) return true;
+u64 rank_of(const Def* s) {
+    if (auto rank = Lit::isa<u64>(s->arity())) return *rank;
+    s->blame("cannot lower buffer with a non-literal rank").bail();
+}
+
+bool has_runtime_extent(const Def* s, u64 rank) {
+    for (u64 i = 0; i != rank; ++i)
+        if (!Lit::isa(s->proj(rank, i))) return true;
     return false;
 }
 
 // Runtime extents must not survive in pointee types.
 const Def* type_ptr(const Def* s, const Def* T) {
     auto& w = s->world();
-    if (has_runtime_extent(s)) s = w.top(w.type_nat());
+    if (has_runtime_extent(s, rank_of(s))) s = w.top(w.type_nat());
     return w.call<mem::Ptr>(Defs{w.arr(s, T), w.lit_nat_0()});
 }
 
@@ -39,9 +41,9 @@ std::pair<const Def*, const Def*> alloc_erased(const Def* s, const Def* T, const
 
 // Erased pointers cannot retain multidimensional indices.
 const Def* flat_index(const Def* s, const Def* idx) {
-    if (!has_runtime_extent(s)) return idx;
+    auto r = rank_of(s);
+    if (!has_runtime_extent(s, r)) return idx;
     auto& w           = s->world();
-    auto r            = *Lit::isa(s->arity());
     auto i64          = w.type_i64();
     const Def* lin    = w.lit(i64, 0);
     const Def* stride = w.lit_nat(1);
@@ -120,7 +122,8 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         return w.tuple({mem2, buf});
     } else if (auto copy_ax = Axm::isa<buffer::copy>(app)) {
         auto [mem, dst, src] = copy_ax->args<3>();
-        if (has_runtime_extent(rewrite(copy_ax->callee()->as<App>()->arg(3, 1))))
+        auto s               = rewrite(copy_ax->callee()->as<App>()->arg(3, 1));
+        if (has_runtime_extent(s, rank_of(s)))
             app->blame("cannot lower `buffer.copy` of a runtime extent to a whole-array load/store").bail();
         mem = rewrite(mem);
         dst = rewrite(dst);
@@ -138,11 +141,11 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         val             = rewrite(val);
         s               = rewrite(s);
         T               = rewrite(T);
-        if (has_runtime_extent(s))
+        if (has_runtime_extent(s, rank_of(s)))
             app->blame("cannot lower `buffer.init` of a runtime extent to a whole-array store").bail();
         auto [mem2, ptr] = mem::op_alloc(w.arr(s, T), mem)->projs<2>();
         remember_empty(s, T, ptr->type());
-        auto mem3        = w.call<mem::store>(Defs{mem2, ptr, val});
+        auto mem3 = w.call<mem::store>(Defs{mem2, ptr, val});
         return w.tuple({mem3, ptr});
     } else if (auto const_ax = Axm::isa<buffer::lit>(app)) {
         auto [mem, val] = const_ax->args<2>();
@@ -151,20 +154,20 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         val             = rewrite(val);
         s               = rewrite(s);
         T               = rewrite(T);
-        if (has_runtime_extent(s))
+        if (has_runtime_extent(s, rank_of(s)))
             app->blame("cannot lower `buffer.lit` of a runtime extent to a whole-array store").bail();
         auto [mem2, ptr] = mem::op_alloc(w.arr(s, T), mem)->projs<2>();
         remember_empty(s, T, ptr->type());
-        auto mem3        = w.call<mem::store>(Defs{mem2, ptr, w.pack(s, val)});
+        auto mem3 = w.call<mem::store>(Defs{mem2, ptr, w.pack(s, val)});
         return w.tuple({mem3, ptr});
     } else if (auto buf_alloc_copy = Axm::isa<gpu::buf_alloc_copy>(app)) {
-        if (has_runtime_extent(rewrite(buf_alloc_copy->callee()->as<App>()->arg(3, 1))))
-            app->blame("cannot lower a device transfer of a runtime extent").bail();
+        auto s = rewrite(buf_alloc_copy->callee()->as<App>()->arg(3, 1));
+        if (has_runtime_extent(s, rank_of(s))) app->blame("cannot lower a device transfer of a runtime extent").bail();
         auto [m0, m1, ptr] = buf_alloc_copy->args<3>([this](const Def* d) { return rewrite(d); });
         return w.call(gpu::alloc_copy::block, Defs{m0, m1, ptr});
     } else if (auto buf_copy_to_host = Axm::isa<gpu::buf_copy_to_host>(app)) {
-        if (has_runtime_extent(rewrite(buf_copy_to_host->callee()->as<App>()->arg(3, 1))))
-            app->blame("cannot lower a device transfer of a runtime extent").bail();
+        auto s = rewrite(buf_copy_to_host->callee()->as<App>()->arg(3, 1));
+        if (has_runtime_extent(s, rank_of(s))) app->blame("cannot lower a device transfer of a runtime extent").bail();
         auto [m0, m1, d_ptr, h_ptr] = buf_copy_to_host->args<4>([this](const Def* d) { return rewrite(d); });
         return w.call(gpu::copy_to_host::block, Defs{m0, m1, d_ptr, h_ptr});
     }

@@ -15,10 +15,3 @@ A runtime fill must pass through the btensor loop lowering first. Runtime-sized 
 
 The `coerce_leaf` hook lets pointer erasure extend the generic structural rewriter's argument and continuation
 adaptation.
-
-`lit/buffer/runtime_extents.mim` compiles one native program with an independent C caller. It covers runtime
-lengths 0, 1, 2, 7 and 17, vector/matrix fills, two-dimensional read/write linearization, and nontrivial dynamic
-producers returning to literal-extent-0/1/4 continuations. `empty_init_adapter.mim` and `empty_lit_adapter.mim`
-check empty-value initialization without the btensor fill phase. `lit/error/buffer_dynamic_transfer.mim` covers
-the device-transfer gate. `lit/error/buffer_runtime_rank.mim` verifies that non-literal rank is rejected
-by the buffer layer itself, independently of tensor validation.
