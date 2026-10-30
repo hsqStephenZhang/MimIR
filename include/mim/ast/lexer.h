@@ -37,6 +37,7 @@ private:
     Tok tok(Tok::Tag tag) { return {loc_, tag}; }
     Sym sym() { return driver().sym(view()); }
     bool lex_id();
+    bool is_eol() const { return ahead() == fe::utf8::EoF || ahead() == '\n' || ahead() == '\r'; }
     char8_t lex_char();
     Tok lex_str();
     Tok lex_lit();

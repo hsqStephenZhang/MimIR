@@ -186,8 +186,8 @@ Tok Lexer::lex() {
             if (accept('\'')) return {loc_, c};
             // Like C, a malformed literal extends to its closing quote or the end of the line so that its tail doesn't
             // cascade.
-            while (ahead() != '\'' && !eol())
-                if (next() == '\\' && !eol()) next();
+            while (ahead() != '\'' && !is_eol())
+                if (next() == '\\' && !is_eol()) next();
             if (accept('\''))
                 error().e(loc_, "character literal must contain exactly one character");
             else

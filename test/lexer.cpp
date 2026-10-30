@@ -90,6 +90,30 @@ TEST_CASE("Lexer") {
     }
 }
 
+TEST_CASE("Lexer: malformed character recovery stops at line endings and EOF") {
+    Driver drv;
+    for (auto ending : {"\n"sv, "\r"sv, "\r\n"sv}) {
+        for (auto body : {"'ab"sv, "'ab\\"sv}) {
+            CAPTURE(ending);
+            CAPTURE(body);
+            auto source = std::string(body) + std::string(ending) + "lam";
+            Lexer lexer(drv, source);
+            lexer.lex();
+            CHECK(drv.error().num_errors() == 1);
+            CHECK(lexer.lex().isa(Tok::Tag::K_lam));
+            CHECK(lexer.lex().isa(Tok::Tag::EoF));
+            drv.error().clear();
+        }
+    }
+    for (auto source : {"'ab"sv, "'ab\\"sv}) {
+        Lexer lexer(drv, source);
+        lexer.lex();
+        CHECK(drv.error().num_errors() == 1);
+        CHECK(lexer.lex().isa(Tok::Tag::EoF));
+        drv.error().clear();
+    }
+}
+
 TEST_CASE("Lexer: floating-point literals") {
     Driver drv;
 
