@@ -1,0 +1,15 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin compile;
+use core.ops.n;
+
+// Match canonical core operators, retaining the function's parameter binding.
+rule distribute (x: Nat): (x + 1) * 2 => x * 2 + 2;
+extern lam result (x: Nat): Nat = (x + 1) * 2;
+extern lam _compile (): compile.Phase = compile.rule_app distribute;
+
+// CHECK-LABEL: extern lam result
+// CHECK: core.nat.mul (2, x)
+// CHECK: core.nat.add (2,
+// CHECK-NOT: core.nat.add (1,

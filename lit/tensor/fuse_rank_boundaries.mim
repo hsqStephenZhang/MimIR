@@ -1,0 +1,24 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+plugin core;
+plugin tensor;
+plugin compile;
+use tensor;
+
+lam add1 (x: Nat): Nat = core.nat.add (x, 1);
+lam mul2 (x: Nat): Nat = core.nat.mul (x, 2);
+
+extern con rank0 (x: Nat, return: Cn Nat) = return (unary mul2 @(0, ()) (unary add1 @(0, ()) x));
+extern con rank1 (x: «3; Nat», return: Cn «3; Nat») = return (unary mul2 (unary add1 (buf x)));
+extern con rank3 (x: «2, 3, 4; Nat», return: Cn «2, 3, 4; Nat») = return (unary mul2 (unary add1 (buf x)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, compile.cleanup);
+
+// CHECK: extern {{fun|con}} rank0
+// CHECK: tensor.map_reduce
+// CHECK: extern {{fun|con}} rank1
+// CHECK: tensor.map_reduce
+// CHECK: extern {{fun|con}} rank3
+// CHECK: tensor.map_reduce
+// CHECK-NOT: tensor.map_reduce

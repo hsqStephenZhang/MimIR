@@ -45,9 +45,11 @@ add_mim_test(mim-test
     SOURCES
         cast.cpp
         dump.cpp
+        graph_pattern.cpp
         level.cpp
         lexer.cpp
         nom.cpp
+        pattern.cpp
         restricted_dep_types.cpp
         test.cpp
         variant.cpp
@@ -59,6 +61,16 @@ add_mim_test(mim-regex-test
     PRIVATE
         automaton
 )
+
+add_mim_test(mim-tensor-pattern-test
+    SOURCES
+        tensor_pattern.cpp
+)
+# Dynamic plugins are MODULE libraries and cannot be linked into a test. Compile the small
+# read-only adapter into this executable; phases are exercised through the loaded plugin.
+if(NOT MIM_STATIC_PLUGINS)
+    target_sources(mim-tensor-pattern-test PRIVATE ../src/mim/plug/tensor/pattern.cpp)
+endif()
 
 mim_extra_plugins(test MIM_EXTRA_PLUGINS)
 foreach(PLUGIN IN LISTS MIM_EXTRA_PLUGINS)

@@ -13,6 +13,7 @@
 #include <mim/phase/lam_spec.h>
 #include <mim/phase/nom_erasure.h>
 #include <mim/phase/ret_wrap.h>
+#include <mim/phase/rule_rewrite.h>
 #include <mim/phase/scalarize.h>
 #include <mim/phase/sccp.h>
 #include <mim/phase/single_erasure.h>
@@ -67,6 +68,7 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<compile::nom_erasure,        NomErasure       >(phases);
     Phase::hook<compile::phases,             PhaseMan         >(phases);
     Phase::hook<compile::ret_wrap,           RetWrap          >(phases);
+    Phase::hook<compile::rule_app,           RuleRewrite      >(phases);
     Phase::hook<compile::scalarize,          Scalarize        >(phases);
     Phase::hook<compile::sccp,               SCCP             >(phases);
     Phase::hook<compile::single_erasure,     SingleErasure    >(phases);

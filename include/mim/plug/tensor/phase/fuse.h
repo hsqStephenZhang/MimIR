@@ -17,8 +17,8 @@ private:
     const Def* fuse_read_through(const App* callee, const Def* arg);
     bool sole_consumer(const Def*) const;
 
-    /// Old-world consumer count per `map_reduce_post` app (attributed through tuple wrappers), for
-    /// the epilogue direction's single-consumer guard.
+    /// Old-world single-slot consumption proof from the closed semantic graph. A value of 2
+    /// includes multiple slots, output escape and unknown users; none can sink a reduction.
     DefMap<u64> mr_consumers_;
     /// New-world defs whose consumers were multiplied by bypassing a shared (or uncounted) read;
     /// the old-world count cannot see this, so `sole_consumer` rejects them.

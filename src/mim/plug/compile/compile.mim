@@ -114,6 +114,15 @@ axm null: Phase;
 ///
 axm ret_wrap: Phase;
 ///
+/// ### rule_app
+///
+/// Applies an explicitly supplied Rule or tuple of Rules in declaration order, rebuilding the
+/// program once from its leaves. The first rule whose LHS and guard succeed is used.
+/// New RHS nodes are considered on the next iteration of an enclosing `compile.phases tt`.
+/// Unknown conditions are skipped; unmatched metavariables are never filled with Holes.
+///
+axm rule_app: {T: *} → T → Phase;
+///
 /// ### scalarize
 ///
 /// Flattens function signatures (mim::Scalarize).

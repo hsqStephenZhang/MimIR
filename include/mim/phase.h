@@ -480,6 +480,8 @@ class PhaseMan : public Phase {
 public:
     /// @name Construction
     ///@{
+    PhaseMan(World& world, std::string name)
+        : Phase(world, std::move(name)) {}
     PhaseMan(World& world, flags_t annex)
         : Phase(world, annex) {}
 

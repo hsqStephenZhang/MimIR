@@ -2,6 +2,7 @@
 
 #include <mim/plugin.h>
 
+#include "mim/plug/tensor/phase/combine_products.h"
 #include "mim/plug/tensor/phase/fuse.h"
 #include "mim/plug/tensor/phase/lower.h"
 #include "mim/plug/tensor/phase/lower_map_reduce.h"
@@ -13,6 +14,7 @@ using namespace mim::plug;
 
 namespace mim::plug::tensor {
 static void reg_phases(Flags2Phases& phases) {
+    Phase::hook<combine_products, phase::CombineProducts>(phases);
     Phase::hook<reassoc, phase::Reassoc>(phases);
     Phase::hook<lower_tensor, phase::Lower>(phases);
     Phase::hook<lower_map_reduce, phase::LowerMapReduce>(phases);

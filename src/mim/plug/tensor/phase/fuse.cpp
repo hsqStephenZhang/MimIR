@@ -8,6 +8,7 @@
 #include <mim/lam.h>
 #include <mim/tuple.h>
 
+#include <mim/pattern/graph.h>
 #include <mim/util/types.h>
 
 #include <mim/plug/affine/affine.h>
@@ -108,11 +109,11 @@ struct Slots {
 /// Does a slot that declares @p value in shape @p S read it in the shape it is produced in?
 /// Size-1 axes collapse out of the type, so they may differ - and then their maps do not compose.
 static bool reads_as_produced(const Def* value, const Def* S) {
-    if (auto mr = Axm::isa<tensor::map_reduce_post>(value)) {
+    if (auto mr = graph::map_reduce(value)) {
         auto shapes = mr->uncurry_args<8>()[2];
         return shapes->proj(3, 0) == S;
     }
-    if (auto bc = Axm::isa<tensor::broadcast>(value)) return bc->arg()->proj(3, 1) == S;
+    if (auto bc = graph::broadcast(value)) return bc->arg()->proj(3, 1) == S;
     return true;
 }
 
@@ -129,7 +130,7 @@ static std::optional<PureRead> read_through(World& w, const Def* value, const De
         return pr;
     }
 
-    if (auto bc = Axm::isa<tensor::broadcast>(value)) {
+    if (auto bc = graph::broadcast(value)) {
         auto [T, r]               = bc->callee()->as<App>()->args<2>();
         auto [s_in, s_out, input] = bc->arg()->projs<3>();
         auto r_l                  = Lit::isa<u64>(r);
@@ -211,7 +212,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     fe::Vector<std::optional<InnerInfo>> infos(nis_nat);
 
     for (u64 k = 0; k < nis_nat; ++k) {
-        auto inner = Axm::isa<tensor::map_reduce_post>(is->proj(nis_nat, k));
+        auto inner = graph::map_reduce(is->proj(nis_nat, k));
         if (!inner) continue;
 
         auto im       = btensor::MapRedPost::of(inner->callee()->as<App>());
@@ -438,7 +439,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     const Def* inner_def = nullptr;
     bool unpack          = false;
     for (u64 k = 0; k < nis_nat && !inner_def; ++k) {
-        auto cand = Axm::isa<tensor::map_reduce_post>(is->proj(nis_nat, k));
+        auto cand = graph::map_reduce(is->proj(nis_nat, k));
         if (!cand || !sole_consumer(cand) || !reads_as_produced(cand, mr.Sis->proj(nis_nat, k))) continue;
 
         auto m = mr.maps->proj(nis_nat, k);
@@ -462,7 +463,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     if (unpack)
         to_cells = w.app(w.app(w.annex<tensor::reshape_map>(), {mr.Ro, mr.Ris->proj(nis_nat, k0)}),
                          {mr.So, mr.Sis->proj(nis_nat, k0)});
-    auto inner = Axm::isa<tensor::map_reduce_post>(inner_def);
+    auto inner = graph::map_reduce(inner_def);
 
     auto im           = btensor::MapRedPost::of(inner->callee()->as<App>());
     auto [i_is, i_ps] = inner->arg()->projs<2>();
@@ -593,18 +594,47 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
 
 namespace {
 
-bool is_mr(const Def* d) { return static_cast<bool>(Axm::isa<tensor::map_reduce_post>(d)); }
+bool is_mr(const Def* d) { return static_cast<bool>(graph::map_reduce(d)); }
 
 } // namespace
 
 void Fuse::start() {
-    // The epilogue direction needs to know whether a map_reduce is consumed by exactly one other node.
-    mr_consumers_ = count_consumers(old_world(), is_mr);
+    // Include every reachable binder body, including closures. GraphView itself stops at binders;
+    // these roots establish closed coverage over all users in the whole program.
+    DefVec roots;
+    DefSet seen;
+    DefVec pending;
+    for (auto ext : old_world().externals().muts())
+        pending.push_back(ext);
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (!seen.insert(def).second) continue;
+        if (def->is_mutable() || def->node() == Node::Lam)
+            for (auto op : def->ops())
+                if (op) roots.push_back(op);
+        for (auto dep : def->deps())
+            if (dep) pending.push_back(dep);
+    }
+    pattern::OpRegistry ops;
+    graph::register_operations(ops);
+    pattern::GraphView view(roots, {.coverage = pattern::UseCoverage::Closed, .operators = &ops});
+    mr_consumers_.clear();
+    shared_.clear();
+    new2old_.clear();
+    for (auto def : view.operations()) {
+        if (!is_mr(def)) continue;
+        auto uses = view.data_uses(def);
+        // Count slots, not distinct consumers or physical Pack body edges. Unknown users and
+        // outputs cannot certify sole consumption and therefore cannot sink a reduction.
+        bool sole
+            = uses.size() == 1 && view.data_only_used_by(def, uses.front().consumer) == pattern::CheckResult::True;
+        mr_consumers_[def] = sole ? 1 : 2;
+    }
     RWPhase::start();
 }
 
 const Def* Fuse::rewrite_imm_App(const App* app) {
-    if (Axm::isa<tensor::map_reduce_post>(app)) {
+    if (graph::map_reduce(app)) {
         const App* cur = nullptr;
         if (auto res = fuse_map_reduce(app)) {
             log().d("fused map_reduce {} → {}", app, res);

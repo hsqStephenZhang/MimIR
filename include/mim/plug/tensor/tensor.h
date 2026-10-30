@@ -11,6 +11,7 @@
 #include <mim/world.h>
 
 #include "mim/plug/tensor/autogen.h"
+#include "mim/plug/tensor/pattern.h"
 
 namespace mim::plug::tensor {
 
@@ -49,7 +50,7 @@ struct PureRead {
 /// lower to these) — returns its single access map and source.
 /// `fuse_tensor`'s read-through absorbs exactly these into the consuming op's access maps.
 inline std::optional<PureRead> is_pure_read(const Def* value) {
-    auto mr = Axm::isa<tensor::map_reduce_post>(value);
+    auto mr = graph::map_reduce(value);
     if (!mr) return {};
     auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, is_all] = mr->uncurry_args<8>();
 

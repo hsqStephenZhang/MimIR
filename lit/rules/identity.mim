@@ -1,0 +1,15 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+
+axm step: Nat -> Nat;
+rule identity (x: Nat): step x => step x;
+
+extern lam result (x: Nat): Nat = step x;
+
+// Identity matches must not keep requesting fixed-point iterations.
+extern lam _compile (): compile.Phase = compile.phases tt (compile.rule_app identity,);
+
+// CHECK: extern lam result
+// CHECK: step
+// CHECK-NOT: step

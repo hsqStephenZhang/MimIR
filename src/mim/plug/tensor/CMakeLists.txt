@@ -2,6 +2,8 @@ add_mim_plugin(tensor
     SOURCES
         tensor.cpp
         normalizers.cpp
+        pattern.cpp
+        phase/combine_products.cpp
         phase/lower.cpp
         phase/constraints.cpp
         phase/lower_map_reduce.cpp

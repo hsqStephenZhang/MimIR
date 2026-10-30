@@ -25,6 +25,12 @@
 
 namespace mim {
 
+namespace pattern {
+class GraphView;
+class GraphSnapshot;
+class PatternProgram;
+} // namespace pattern
+
 template<class T>
 concept Enum = std::is_enum_v<std::remove_reference_t<T>>;
 
@@ -988,7 +994,14 @@ private:
         std::array<const Lit*, Num_Lit_Nats> lit_nats = {}; ///< @see World::lit_nat
         u32 curr_run                                  = 0;
         u32 pe_depth                                  = 0;
+        // Follows the IR storage across World swaps. Analysis handles can retain the token without
+        // retaining Def storage, so a destroyed/rebuilt World cannot revive stale handles by address reuse.
+        std::shared_ptr<const void> storage_token = std::make_shared<char>();
     } data_;
+
+    friend class pattern::GraphView;
+    friend class pattern::GraphSnapshot;
+    friend class pattern::PatternProgram;
 
     friend void swap(World& w1, World& w2) noexcept {
         using std::swap;

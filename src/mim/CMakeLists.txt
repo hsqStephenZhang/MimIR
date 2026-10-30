@@ -18,6 +18,12 @@ target_sources(libmim
         tuple.cpp
         union.cpp
         world.cpp
+        pattern/graph.cpp
+        pattern/match.cpp
+        pattern/op.cpp
+        pattern/pattern.cpp
+        pattern/rule.cpp
+        pattern/rewrite.cpp
         ast/ast.cpp
         ast/bind.cpp
         ast/emit.cpp
@@ -36,6 +42,7 @@ target_sources(libmim
         phase/single_erasure.cpp
         phase/nom_erasure.cpp
         phase/ret_wrap.cpp
+        phase/rule_rewrite.cpp
         phase/sccp_analysis.cpp
         phase/sccp_transform.cpp
 )

@@ -1,0 +1,18 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+
+axm step: Nat -> Nat;
+rule skip (x: Nat): step (step x) when ff => 0;
+rule collapse (x: Nat): step (step x) => step x;
+
+extern lam result (x: Nat): Nat = step (step (step x));
+
+// Cleanup rebuilds and deletes the source World before and after rule_app.
+extern lam _compile (): compile.Phase =
+    compile.phases tt (compile.cleanup, compile.rule_app (skip, collapse), compile.cleanup);
+
+// CHECK-NOT: rule collapse
+// CHECK: extern lam result
+// CHECK: step
+// CHECK-NOT: step

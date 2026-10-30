@@ -1,0 +1,23 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+plugin core;
+plugin tensor;
+plugin compile;
+use tensor;
+
+fun fold (acc x: Nat)@tt: Nat = return (core.nat.add (acc, x));
+fun post (x: Nat, extras: «2; Nat»)@tt: Nat =
+    return (core.nat.add (x, core.nat.add (extras#0_2, extras#1_2)));
+lam add1 (x: Nat): Nat = core.nat.add (x, 1);
+
+extern con f (a b c: «2; Nat», return: Cn «2; Nat») =
+    let (a, b, c) = (buf a, buf b, buf c);
+    let inner = map_reduce_post (2, 2, mk_sched (1, 0)) (fold, 0, post)
+        (proj_map 0) (proj_map 0, ‹2; proj_map 0›) (a, (b, c));
+    return (unary add1 inner);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, compile.cleanup);
+
+// CHECK: tensor.map_reduce_post @ (1, 2)
+// CHECK-NOT: tensor.map_reduce

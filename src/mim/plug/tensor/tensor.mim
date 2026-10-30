@@ -1508,6 +1508,17 @@ priv anx lam unary_impl {Ti To: *} (app: Ti → To) {r: Nat, s: «r; Nat»} (i: 
 ///
 axm reassoc: compile.Phase;
 ///
+/// ### combine_products
+///
+/// Explicit graph rewrite before `lower_tensor`: combine three `product_2d` calls sharing their
+/// left operand and standard Nat or wrapping integer ring into a weight concat, one product,
+/// and three slices. Floating-point and user-defined rings are left unchanged.
+/// Widths must be positive literals with a representable sum; row and contraction dimensions
+/// must agree. One triple per closed external function is rewritten per phase invocation.
+/// This phase does not estimate backend profitability and is not in the default pipeline.
+///
+axm combine_products: compile.Phase;
+///
 /// ### lower_tensor
 ///
 /// Lowers the derived operations to the core ones by re-applying the matching `_impl` annexes.

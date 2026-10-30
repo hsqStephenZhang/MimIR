@@ -1,0 +1,22 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/combine_products_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin tensor;
+plugin core;
+plugin compile;
+import opt;
+use tensor;
+
+let Ring = (I64, 0I64, core.wrap.add 0 @0, core.wrap.mul 0 @0);
+let `* = product_2d Ring;
+
+// Concatenate the three observable results to expose a simple pointer ABI. The only shared
+// input is x; weights and outputs are tensors, not scalar stand-ins for matrix multiplication.
+extern fun qkv (x: «2, 3; I64», wq: «3, 4; I64», wk: «3, 5; I64», wv: «3, 6; I64»): «2, 15; I64» =
+    let (x, wq, wk, wv) = (buf x, buf wq, buf wk, buf wv);
+    return (concat 1₂ (x * wq, x * wk, x * wv));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (combine_products, opt._default_compile ());

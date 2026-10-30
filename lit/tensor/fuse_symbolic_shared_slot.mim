@@ -1,0 +1,30 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s --implicit-check-not=fused_post
+
+plugin core;
+plugin tensor;
+plugin compile;
+use tensor;
+
+lam add1 (x: Nat): Nat = core.nat.add (x, 1);
+let `+ = binary core.nat.add;
+let Ring = (Nat, 0, core.nat.add, core.nat.mul);
+
+// One consumer reads the same reduction in two slots. It must not sink the product into
+// its epilogue and leave a second materialization of the product for the remaining slot.
+extern con shared (a: «2, 3; Nat», b: «3, 4; Nat», return: Cn «2, 4; Nat») =
+    let product = product_2d Ring (buf a, buf b);
+    return (product + product);
+
+// Ranks are fixed while extents are symbolic. The identity maps remain provably injective.
+extern con symbolic (n: Nat, a: «n; Nat», return: Cn «n; Nat») =
+    return (unary add1 (unary add1 (buf a)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup, lower_tensor, fuse_tensor, compile.cleanup);
+
+// CHECK: extern con shared
+// CHECK: tensor.map_reduce
+// CHECK: tensor.map_reduce
+// CHECK: extern con symbolic
+// CHECK: tensor.map_reduce
+// CHECK-NOT: tensor.map_reduce

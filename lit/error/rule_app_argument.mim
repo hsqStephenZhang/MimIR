@@ -1,0 +1,8 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+
+plugin compile;
+
+extern lam result (x: Nat): Nat = x;
+extern lam _compile (): compile.Phase = compile.rule_app 1;
+
+// CHECK: rule_app expects a Rule or a tuple of Rules

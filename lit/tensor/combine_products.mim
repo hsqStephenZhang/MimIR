@@ -1,0 +1,23 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+plugin tensor;
+plugin core;
+plugin compile;
+use tensor;
+
+let Ring = (Nat, 0, core.nat.add, core.nat.mul);
+let `* = product_2d Ring;
+
+// Distinct widths require correct prefix sums and per-result types.
+extern con f (x: «2, 3; Nat», wq: «3, 4; Nat», wk: «3, 5; Nat», wv: «3, 6; Nat»,
+              return: Cn [«2, 4; Nat», «2, 5; Nat», «2, 6; Nat»]) =
+    return (x * wq, x * wk, x * wv);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.cleanup, combine_products, compile.cleanup);
+
+// CHECK: tensor.concat
+// CHECK: tensor.product_2d
+// CHECK-NOT: tensor.product_2d
+// CHECK-COUNT-3: tensor.slice
+// CHECK-NOT: tensor.slice
