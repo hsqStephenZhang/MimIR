@@ -52,7 +52,7 @@ bool AddMem::analyze() {
     DefVec stack, scc;
     std::vector<Frame> frames;
     uint32_t counter = 0;
-    auto push = [&](const Def* def) {
+    auto push        = [&](const Def* def) {
         index[def] = low[def] = counter++;
         stack.push_back(def);
         on_stack.emplace(def);
@@ -114,6 +114,8 @@ const Def* AddMem::rewrite(const Def* old_def) {
         if (auto tuple = old_def->isa<Tuple>();
             tuple && std::ranges::any_of(tuple->ops(), [](const Def* op) { return isa_mem(op); }))
             return rewrite_imm_Tuple(tuple);
+        // Likewise a `mem.fresh` request resolves to the memory current at *this* use (see rewrite_imm_App).
+        if (auto app = old_def->isa<App>(); app && Axm::isa<mem::fresh>(app)) return rewrite_imm_App(app);
     }
     auto new_def = Rewriter::rewrite(old_def);
     // Rewrite every memory operand to the current memory - after threading the operand's producers, which
@@ -174,18 +176,18 @@ const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
     auto p = fe::Restore(preserving_, false);
 
     auto new_lam = new_world().mut_lam(rewrite(old_lam->type())->as<Pi>())->set(old_lam->dbg_key());
-    map(old_lam, new_lam);
+    map_for(old_lam, old_lam, new_lam);
 
     // Map the parameters, accounting for a possibly inserted leading mem var.
     if (auto n = old_lam->num_vars(); n != 0) {
         auto offset = new_lam->num_doms() - old_lam->num_doms(); // 1 iff we prepended a mem var
         auto new_n  = new_lam->num_vars();
         for (size_t i = 0; i != n; ++i)
-            map(old_lam->var(n, i), new_lam->var(new_n, i + offset)->set(old_lam->var(n, i)->dbg_key()));
+            map_for(old_lam, old_lam->var(n, i), new_lam->var(new_n, i + offset)->set(old_lam->var(n, i)->dbg_key()));
         // A use of the whole parameter tuple is reconstructed from the new (shifted) components.
         if (n > 1)
-            map(old_lam->var(),
-                new_world().tuple(DefVec(n, [&](size_t i) { return new_lam->var(new_n, i + offset); })));
+            map_for(old_lam, old_lam->var(),
+                    new_world().tuple(DefVec(n, [&](size_t i) { return new_lam->var(new_n, i + offset); })));
     }
 
     if (!old_lam->is_set()) return new_lam;
@@ -194,6 +196,22 @@ const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
     auto _ = fe::Restore(curr_mem_, mem::mem_var(new_lam));
     new_lam->set(rewrite(old_lam->filter()), rewrite(old_lam->body()));
     return new_lam;
+}
+
+const Def* AddMem::rewrite_stub(Def* old_mut, Def* new_mut) {
+    map_for(old_mut, old_mut, new_mut);
+    if (!old_mut->is_set()) return new_mut;
+
+    auto _ = enter(old_mut);
+    for (size_t i = 0, e = old_mut->num_ops(); i != e; ++i)
+        new_mut->set(i, rewrite(old_mut->op(i)));
+
+    return seal_stub(old_mut, new_mut);
+}
+
+const Def* AddMem::map_for(Def* old_mut, const Def* old_def, const Def* new_def) {
+    if (!spliced_.empty() && !old_mut->has_free_vars_in(spliced_)) return map_root(old_def, new_def);
+    return map(old_def, new_def);
 }
 
 const Def* AddMem::rewrite_imm_App(const App* app) {
@@ -205,11 +223,17 @@ const Def* AddMem::rewrite_imm_App(const App* app) {
     // here - jump to `k` with it. (Like the rest of this phase, only address space 0 is threaded.)
     if (Axm::isa<mem::fresh>(app)) {
         auto [_, k] = app->args<2>();
-        // Splice the `tt`-filtered `k` in here: letting World::app β-reduce it re-traverses the rest of the function per request.
+        // Splice `k` in here: World::app β-reducing it would re-traverse the rest of the function per request.
+        // `k` may be requested several times, so scope its var-to-memory binding to this request.
         if (auto lam = k->isa_mut<Lam>();
             lam && lam->is_set() && lam->filter() == old_world().lit_tt() && !recursive_.contains(lam)) {
-            if (auto var = lam->has_var()) map(var, curr_mem_);
-            return rewrite(lam->body());
+            auto var = lam->has_var();
+            push();
+            auto _ = fe::Restore(spliced_, var ? old_world().vars().insert(spliced_, var) : spliced_);
+            if (var) map(var, curr_mem_);
+            auto res = rewrite(lam->body());
+            pop();
+            return res;
         }
         return w.app(rewrite(k), curr_mem_);
     }

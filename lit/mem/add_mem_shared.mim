@@ -1,0 +1,27 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// One continuation requested from two functions: each request must resolve to *that* function's memory,
+// whether `k` is spliced in (`tt` filter) or `j` is applied.
+
+plugin core;
+plugin mem;
+plugin compile;
+
+extern lam _compile (): compile.Phase = compile.phases ff (mem.add_mem,);
+
+extern con exit (m: mem.M 0);
+con k (m: mem.M 0)@tt = exit m;
+con j (m: mem.M 0) = exit m;
+extern con f (m: mem.M 0) = mem.fresh (0, k);
+extern con g (m: mem.M 0) = mem.fresh (0, k);
+extern con h (m: mem.M 0) = mem.fresh (0, j);
+extern con i (m: mem.M 0) = mem.fresh (0, j);
+
+// CHECK:      extern con f ([[MF:_[0-9]+]]: mem.M 0)
+// CHECK-NEXT: exit [[MF]]
+// CHECK:      extern con g ([[MG:_[0-9]+]]: mem.M 0)
+// CHECK-NEXT: exit [[MG]]
+// CHECK:      extern con h ([[MH:_[0-9]+]]: mem.M 0)
+// CHECK-NEXT: j [[MH]]
+// CHECK:      extern con i ([[MI:_[0-9]+]]: mem.M 0)
+// CHECK-NEXT: j [[MI]]
