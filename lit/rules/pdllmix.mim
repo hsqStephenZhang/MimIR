@@ -1,0 +1,32 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+axm n: [Nat, Bool] -> Nat;
+axm b: [Nat, Bool] -> Bool;
+axm mixed: [Nat, Bool] -> [Nat, Bool];
+
+// PDLL adaptation: docs/PDLL.md "Replacing Multiple Operations" and result indexing;
+// PDL runtime corroboration: test/Integration/Dialect/PDL/CPU/multiroot.mlir
+// softmax_cross_entropy, test.mlp_split.
+// Three telescope fields keep x/flag as individual captures, not a whole-telescope capture.
+rule merge (x: Nat, flag: Bool, unused: Nat): (n (x, flag), b (x, flag)) => mixed (x, flag);
+
+// The last pair has different inputs and must survive the actual graph_rule_app phase.
+extern lam result (x: Nat, flag: Bool, y: Nat): [Nat, Bool, Nat, Bool] =
+    (n (x, flag), b (x, flag), n (y, flag), b (n (y, flag), flag));
+extern lam _compile (): compile.Phase =
+    compile.phases tt (compile.cleanup, compile.graph_rule_app (merge, (n, b, mixed)), compile.cleanup);
+
+// CHECK-NOT: rule merge
+// CHECK-LABEL: extern lam result
+// CHECK-SAME: [Nat, Bool, Nat, Bool]
+// CHECK-NOT: n (x, flag)
+// CHECK-NOT: b (x, flag)
+// CHECK-DAG: let [[NEW:[a-zA-Z_][a-zA-Z_0-9]*]]{{(: \[Nat, Bool\])?}} = mixed (x, flag);
+// CHECK-DAG: let [[KEPT:[a-zA-Z_][a-zA-Z_0-9]*]]{{(: Nat)?}} = n (y, flag);
+// CHECK-DAG: let [[BOOL:[a-zA-Z_][a-zA-Z_0-9]*]]{{(: Bool)?}} = b ([[KEPT]], flag);
+// CHECK-NOT: n (x, flag)
+// CHECK-NOT: b (x, flag)
+// CHECK-NOT: mixed
+// CHECK: ([[NEW]]#ff, [[NEW]]#tt, [[KEPT]], [[BOOL]]);
+// CHECK-NOT: mixed

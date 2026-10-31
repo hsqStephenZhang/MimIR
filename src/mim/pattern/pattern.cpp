@@ -49,6 +49,18 @@ Pattern PatternProgram::node(Node node, std::vector<Pattern> operands, std::opti
     return append({.kind = Kind::Node, .operands = std::move(operands), .node = node, .flags = flags});
 }
 
+Pattern PatternProgram::node_range(Node node,
+                                   std::vector<Pattern> prefix,
+                                   Pattern tail,
+                                   size_t min,
+                                   size_t max,
+                                   std::optional<flags_t> flags) {
+    if (min > max) throw std::invalid_argument("invalid operand range");
+    prefix.push_back(tail);
+    return append(
+        {.kind = Kind::Range, .operands = std::move(prefix), .node = node, .flags = flags, .min = min, .max = max});
+}
+
 Pattern PatternProgram::capture(Pattern p) { return append({.kind = Kind::Capture, .operands = {p}}); }
 Pattern PatternProgram::all(Pattern p, Pattern q) {
     return append({

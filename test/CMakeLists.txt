@@ -46,6 +46,10 @@ add_mim_test(mim-test
         cast.cpp
         dump.cpp
         graph_pattern.cpp
+        pattern_dpl.cpp
+        pattern_dpl_extended.cpp
+        pattern_pdll.cpp
+        pattern_p5.cpp
         level.cpp
         lexer.cpp
         nom.cpp
@@ -61,6 +65,9 @@ add_mim_test(mim-regex-test
     PRIVATE
         automaton
 )
+
+add_executable(mim-pattern-bench EXCLUDE_FROM_ALL pattern_bench.cpp)
+target_link_libraries(mim-pattern-bench PRIVATE libmim)
 
 add_mim_test(mim-tensor-pattern-test
     SOURCES

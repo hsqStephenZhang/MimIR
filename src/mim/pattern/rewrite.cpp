@@ -58,11 +58,26 @@ void RewritePlan::replace(const Def* old, Recipe recipe) {
 
 namespace {
 
+struct RebuildBudget {
+    RewriteOptions options;
+    size_t depth = 0, work = 0;
+    void touch() {
+        if (++work > options.max_source_nodes) throw std::invalid_argument("graph rebuild source work budget exceeded");
+        if (depth >= options.max_depth) throw std::invalid_argument("graph rebuild depth budget exceeded");
+    }
+};
+
 class GraphImporter : public Rewriter {
 public:
-    GraphImporter(const GraphView& graph, World& target)
+    GraphImporter(const GraphView& graph, World& target, RebuildBudget& budget)
         : Rewriter(target)
-        , graph_(graph) {}
+        , graph_(graph)
+        , budget_(budget) {}
+    const Def* rewrite(const Def* def) override {
+        budget_.touch();
+        auto depth = fe::Restore(budget_.depth, budget_.depth + 1);
+        return Rewriter::rewrite(def);
+    }
     const Def* lookup(const Def* def) override {
         if (auto mapped = Rewriter::lookup(def)) return mapped;
         if (auto flags = graph_.world().annexes().opaque(def)) return map(def, world().annex(*flags));
@@ -71,6 +86,7 @@ public:
 
 private:
     const GraphView& graph_;
+    RebuildBudget& budget_;
 };
 
 } // namespace
@@ -83,7 +99,8 @@ public:
                    RewriteOptions options)
         : Rewriter(target)
         , graph_(graph)
-        , importer_(graph, target)
+        , budget_{options}
+        , importer_(graph, target, budget_)
         , options_(options) {
         if (!graph.is_current()) throw std::invalid_argument("graph snapshot is stale");
         size_t count = 0;
@@ -104,6 +121,8 @@ public:
                     throw std::invalid_argument("recipe imports a value outside the graph");
                 if (entry.kind == RewritePlan::Kind::Call && !graph.has_purity(entry.def->flags()))
                     throw std::invalid_argument("recipe calls an operator without a purity guarantee");
+                if (entry.kind == RewritePlan::Kind::Literal && entry.def->node() != Node::Nat && !Idx::isa(entry.def))
+                    throw std::invalid_argument("literal recipes require a Nat or Idx scalar type");
             }
         }
         for (auto a : plans)
@@ -136,7 +155,10 @@ public:
                     if (!visited.insert(current).second) continue;
                     if (++scanned > options.max_source_nodes)
                         throw std::invalid_argument("source dependency budget exceeded");
-                    if (replacements_.contains(current)) dependencies[def].push_back(current);
+                    if (replacements_.contains(current)) {
+                        dependencies[def].push_back(current);
+                        continue; // Its new recipe, not its old operands, determines dependencies.
+                    }
                     if (current->is_mutable() || current->node() == Node::Var || current->node() == Node::Lam
                         || current->node() == Node::Pi || current->node() == Node::Axm)
                         continue;
@@ -157,13 +179,20 @@ public:
         };
         for (auto [def, replacement] : replacements_)
             visit(def, 0);
+        for (auto def : graph.nodes())
+            if (auto app = def->isa<App>(); app && !app->type()->isa<Pi>() && !graph.is_pure(def))
+                protected_.insert(def);
     }
 
     const Def* rewrite(const Def* def) override {
-        if (active_depth_ >= options_.max_depth) throw std::invalid_argument("selected graph rewrite depth exceeded");
-        auto active      = fe::Restore(active_depth_, active_depth_ + 1);
+        budget_.touch();
+        auto active      = fe::Restore(budget_.depth, budget_.depth + 1);
         auto replacement = replacements_.find(def);
-        if (replacement == replacements_.end()) return Rewriter::rewrite(def);
+        if (replacement == replacements_.end()) {
+            auto value = Rewriter::rewrite(def);
+            if (protected_.contains(def)) retained_.insert_or_assign(def, value);
+            return value;
+        }
         if (auto i = results_.find(def); i != results_.end()) return i->second;
         auto value    = evaluate(replacement->second.first, replacement->second.second, 0);
         auto expected = importer_.rewrite(def->type());
@@ -208,6 +237,24 @@ public:
         auto roots = std::vector<const Def*>();
         for (auto root : graph_.roots())
             roots.push_back(rewrite(root));
+        // A pure replacement key may still enclose an unproved computation. Require that each
+        // such computation survives in the selected result, including after normalization.
+        DefSet reachable;
+        auto pending = new_scope_ ? std::vector<const Def*>{new_scope_->body()} : roots;
+        for (size_t i = 0; i != pending.size(); ++i) {
+            budget_.touch();
+            auto def = pending[i];
+            if (!reachable.insert(def).second || def->is_mutable() || def->node() == Node::Lam
+                || def->node() == Node::Pi || def->node() == Node::Var || def->node() == Node::Axm)
+                continue;
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+        }
+        for (auto def : protected_) {
+            auto i = retained_.find(def);
+            if (i == retained_.end() || !reachable.contains(i->second))
+                throw std::invalid_argument("replacement removes a computation without a purity proof");
+        }
         world().verify();
         if (!graph_.is_current()) throw std::invalid_argument("graph changed while building replacements");
         return GraphRewrite(&graph_.world(), std::move(target), graph_.snapshot(), std::move(roots), new_scope_,
@@ -216,9 +263,9 @@ public:
 
 private:
     const Def* evaluate(const RewritePlan* plan, size_t index, size_t depth) {
-        if (depth >= options_.max_depth || active_depth_ >= options_.max_depth)
+        if (depth >= options_.max_depth || budget_.depth >= options_.max_depth)
             throw std::invalid_argument("recipe evaluation depth exceeded");
-        auto active = fe::Restore(active_depth_, active_depth_ + 1);
+        auto active = fe::Restore(budget_.depth, budget_.depth + 1);
         auto& value = memo_.at(plan)[index];
         if (value) return value;
         const auto& entry = plan->entries_[index];
@@ -249,13 +296,15 @@ private:
     }
 
     const GraphView& graph_;
+    RebuildBudget budget_;
     GraphImporter importer_;
     RewriteOptions options_;
     DefMap<std::pair<const RewritePlan*, size_t>> replacements_;
     std::unordered_map<const RewritePlan*, std::vector<const Def*>> memo_;
     DefMap<const Def*> results_;
-    Lam* new_scope_      = nullptr;
-    size_t active_depth_ = 0;
+    Lam* new_scope_ = nullptr;
+    DefSet protected_;
+    DefMap<const Def*> retained_;
 };
 
 GraphRewrite::GraphRewrite(World* source,
@@ -267,6 +316,7 @@ GraphRewrite::GraphRewrite(World* source,
     : source_(source)
     , target_(std::move(target))
     , snapshot_(std::move(snapshot))
+    , result_snapshot_(GraphSnapshot::capture(*target_))
     , roots_(std::move(roots))
     , scope_(scope)
     , replacements_(replacements) {}
@@ -275,14 +325,23 @@ GraphRewrite::GraphRewrite(GraphRewrite&&)            = default;
 GraphRewrite& GraphRewrite::operator=(GraphRewrite&&) = default;
 GraphRewrite::~GraphRewrite()                         = default;
 
-World& GraphRewrite::world() const { return published_ ? *source_ : *target_; }
+void GraphRewrite::check_live() const {
+    if (!result_snapshot_ || !result_snapshot_->is_live()) throw std::invalid_argument("rebuilt graph result is stale");
+}
+
+World& GraphRewrite::world() const {
+    check_live();
+    return published_ ? *source_ : *target_;
+}
 
 void GraphRewrite::publish(const GraphView& graph) {
+    check_live();
     if (published_ || !scope_ || snapshot_ != graph.snapshot() || source_ != &graph.world() || !graph.is_current())
         throw std::invalid_argument("cannot publish an unscoped, stale, or already published graph rewrite");
     swap(*source_, *target_);
-    snapshot_->published_ = true;
-    published_            = true;
+    result_snapshot_->world_ = source_;
+    snapshot_->published_    = true;
+    published_               = true;
 }
 
 GraphRewrite rewrite_graph(const GraphView& graph, std::span<const RewritePlan* const> plans, RewriteOptions options) {

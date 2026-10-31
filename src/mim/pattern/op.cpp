@@ -26,19 +26,21 @@ void OpRegistry::add(flags_t axm, size_t num_groups, std::vector<InputGroup> inp
             OpView view;
             if (args.size() != num_groups) return {};
             std::ranges::reverse(args);
+            size_t work = 0;
             auto expand = [&](this auto&& expand, const Def* value, size_t depth, size_t group,
                               std::vector<size_t> path) -> void {
-                if (view.inputs.size() >= limit) {
+                if (work >= limit || view.inputs.size() >= limit) {
                     view.complete = false;
                     return;
                 }
+                ++work;
                 if (!depth) {
                     view.inputs.push_back({value, group, std::move(path)});
                     return;
                 }
                 if (auto tuple = value->isa<Tuple>()) {
                     for (size_t i = 0; i != tuple->num_ops(); ++i) {
-                        if (view.inputs.size() >= limit) {
+                        if (work >= limit || view.inputs.size() >= limit) {
                             view.complete = false;
                             break;
                         }
@@ -53,6 +55,10 @@ void OpRegistry::add(flags_t axm, size_t num_groups, std::vector<InputGroup> inp
                         return;
                     }
                     for (size_t i = 0; i != *count; ++i) {
+                        if (work >= limit) {
+                            view.complete = false;
+                            break;
+                        }
                         auto next = path;
                         next.push_back(i);
                         expand(pack->body(), depth - 1, group, std::move(next));

@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+#include <fe/restore.h>
+
 #include "mim/rewrite.h"
 #include "mim/tuple.h"
 #include "mim/world.h"
@@ -26,6 +28,9 @@ bool RulePattern::is_meta(const Def* def) const {
 }
 
 Pattern RulePattern::lower(const Def* def) {
+    if (lowering_depth_ >= 256 || lowered_.size() >= 100000)
+        throw std::invalid_argument("Rule pattern compilation budget exceeded");
+    auto depth = fe::Restore(lowering_depth_, lowering_depth_ + 1);
     if (!def) throw std::invalid_argument("incomplete node in Rule pattern");
     if (auto i = lowered_.find(def); i != lowered_.end()) return i->second;
 
@@ -66,6 +71,12 @@ RuleMatch RulePattern::match_lhs(const Def* candidate, MatchOptions options) con
     if (outcome.result)
         for (auto [meta, capture] : captures_)
             if (auto value = outcome.result->isa_capture(capture)) bindings.emplace(meta, value);
+    auto status = validate_bindings(bindings);
+    if (status != MatchStatus::Matched) return {status, {}, outcome.steps};
+    return {outcome.status, std::move(bindings), outcome.steps};
+}
+
+MatchStatus RulePattern::validate_bindings(const Def2Def& bindings) const {
     // A whole telescope and one of its projections must describe the same substitution.
     // Inspect existing tuple/pack nodes or projections; never construct an Extract in the source.
     const Def* whole = nullptr;
@@ -83,10 +94,10 @@ RuleMatch RulePattern::match_lhs(const Def* candidate, MatchOptions options) con
                 else if (auto extract = value->isa<Extract>();
                          extract && extract->tuple() == whole && Lit::isa(extract->index()) == index)
                     expected = value;
-                if (!expected) return {MatchStatus::Unknown, {}, outcome.steps};
-                if (expected != value) return {MatchStatus::No_Match, {}, outcome.steps};
+                if (!expected) return MatchStatus::Unknown;
+                if (expected != value) return MatchStatus::No_Match;
             }
-    return {outcome.status, std::move(bindings), outcome.steps};
+    return MatchStatus::Matched;
 }
 
 bool RulePattern::is_bound(Defs roots, const Def2Def& bindings) const {

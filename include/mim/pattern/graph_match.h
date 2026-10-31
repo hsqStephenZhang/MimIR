@@ -63,18 +63,28 @@ class GraphMatch {
 public:
     const Def* at(Anchor) const;
     const Def* isa_capture(Pattern) const;
-    std::span<const Def* const> anchors() const { return anchors_; }
-    std::span<const Def* const> reads() const { return reads_; }
+    std::span<const Def* const> anchors() const {
+        check_live();
+        return anchors_;
+    }
+    std::span<const Def* const> reads() const {
+        check_live();
+        return *reads_;
+    }
     /// Anchor and capture values; input captures may denote boundaries, not internal operations.
-    std::span<const Def* const> nodes() const { return matched_; }
+    std::span<const Def* const> nodes() const {
+        check_live();
+        return matched_;
+    }
     std::shared_ptr<const GraphSnapshot> snapshot() const { return snapshot_; }
 
 private:
+    void check_live() const;
     GraphMatch(const GraphPattern* pattern,
                const GraphView& graph,
                std::vector<const Def*> anchors,
                MatchResult captures,
-               std::vector<const Def*> reads,
+               std::shared_ptr<const std::vector<const Def*>> reads,
                std::vector<const Def*> matched)
         : pattern_(pattern)
         , snapshot_(graph.snapshot())
@@ -86,18 +96,20 @@ private:
     std::shared_ptr<const GraphSnapshot> snapshot_;
     std::vector<const Def*> anchors_;
     MatchResult captures_;
-    std::vector<const Def*> reads_;
+    std::shared_ptr<const std::vector<const Def*>> reads_;
     std::vector<const Def*> matched_;
     friend class MatchEngine;
 };
 
 enum class SearchStatus { Complete, Unknown, Budget_Exceeded, Result_Limit };
+enum class GraphSearchMode { Indexed, Exhaustive };
 
 struct GraphMatchOptions {
     MatchOptions match      = {};
     size_t max_candidates   = 100'000;
     size_t max_results      = 1000;
     bool reverse_candidates = false; // Also useful for checking enumeration-order independence.
+    GraphSearchMode mode    = GraphSearchMode::Indexed;
 };
 
 struct GraphMatches {
@@ -105,6 +117,8 @@ struct GraphMatches {
     SearchStatus status;
     size_t steps;
     size_t candidates;
+    size_t prefilter_checks = 0;
+    size_t index_steps      = 0;
 };
 
 /// Complete means all anchor assignments were considered, including when matches is empty.

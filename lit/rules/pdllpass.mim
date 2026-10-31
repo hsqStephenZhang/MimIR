@@ -1,0 +1,29 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+axm n: [Nat, Bool] -> Nat;
+axm b: [Nat, Bool] -> Bool;
+
+// PDLL adaptation: test/mlir-pdll/CodeGen/MLIR/stmt.pdll ReplaceStmt / ReplaceStmtNested and
+// docs/PDLL.md replace with multiple existing input values. This is a Mim Rule, not PDLL.
+rule pass (x: Nat, flag: Bool, unused: Nat): (n (x, flag), b (x, flag)) when flag => (x, flag);
+
+// The first pair passes through; the second matches structurally but has a false guard.
+// The third has an unproved symbolic guard, which must not be accepted as true.
+extern lam result (x: Nat, flag: Bool, y: Nat): [Nat, Bool, Nat, Bool, Nat, Bool] =
+    (n (x, tt), b (x, tt), n (y, ff), b (y, ff), n (x, flag), b (x, flag));
+extern lam _compile (): compile.Phase =
+    compile.phases tt (compile.cleanup, compile.graph_rule_app (pass, (n, b)), compile.cleanup);
+
+// CHECK-NOT: rule pass
+// CHECK-LABEL: extern lam result
+// CHECK-SAME: [Nat, Bool, Nat, Bool, Nat, Bool]
+// CHECK-NOT: n (x, tt)
+// CHECK-NOT: b (x, tt)
+// CHECK-DAG: let [[NF:[a-zA-Z_][a-zA-Z_0-9]*]]{{(: Nat)?}} = n (y, ff);
+// CHECK-DAG: let [[BF:[a-zA-Z_][a-zA-Z_0-9]*]]{{(: Bool)?}} = b (y, ff);
+// CHECK-DAG: let [[NU:[a-zA-Z_][a-zA-Z_0-9]*]]{{(: Nat)?}} = n (x, flag);
+// CHECK-DAG: let [[BU:[a-zA-Z_][a-zA-Z_0-9]*]]{{(: Bool)?}} = b (x, flag);
+// CHECK-NOT: n (x, tt)
+// CHECK-NOT: b (x, tt)
+// CHECK: (x, tt, [[NF]], [[BF]], [[NU]], [[BU]]);

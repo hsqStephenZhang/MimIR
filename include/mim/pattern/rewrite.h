@@ -64,8 +64,14 @@ public:
     GraphRewrite& operator=(GraphRewrite&&);
     ~GraphRewrite();
     World& world() const;
-    std::span<const Def* const> roots() const { return roots_; }
-    Lam* scope() const { return scope_; }
+    std::span<const Def* const> roots() const {
+        check_live();
+        return roots_;
+    }
+    Lam* scope() const {
+        check_live();
+        return scope_;
+    }
     size_t replacements() const { return replacements_; }
     bool is_published() const { return published_; }
     /// Atomically swaps the rebuilt World into the source, invalidating this snapshot's matches/plans.
@@ -74,6 +80,7 @@ public:
     void publish(const GraphView&);
 
 private:
+    void check_live() const;
     GraphRewrite(World* source,
                  std::unique_ptr<World> target,
                  std::shared_ptr<const GraphSnapshot> snapshot,
@@ -83,6 +90,7 @@ private:
     World* source_;
     std::unique_ptr<World> target_;
     std::shared_ptr<const GraphSnapshot> snapshot_;
+    std::shared_ptr<GraphSnapshot> result_snapshot_;
     std::vector<const Def*> roots_;
     Lam* scope_;
     size_t replacements_;

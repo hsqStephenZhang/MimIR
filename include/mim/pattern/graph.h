@@ -45,11 +45,13 @@ public:
     bool is_live() const;
 
 private:
+    static std::shared_ptr<GraphSnapshot> capture(World&);
     mutable bool published_ = false;
     World* world_           = nullptr;
     std::shared_ptr<const void> generation_;
     friend class GraphRewrite;
     friend class GraphView;
+    friend class MatchEngine;
 };
 
 /// A snapshot of raw Def edges, not semantic operator inputs. Tuple/Pack are real owners here.
@@ -61,8 +63,14 @@ public:
     explicit GraphView(Defs roots, UseCoverage = UseCoverage::Open);
     GraphView(Defs roots, GraphOptions);
 
-    std::span<const Def* const> nodes() const { return nodes_; }
-    std::span<const Def* const> roots() const { return roots_; }
+    std::span<const Def* const> nodes() const {
+        check_live();
+        return nodes_;
+    }
+    std::span<const Def* const> roots() const {
+        check_live();
+        return roots_;
+    }
     std::span<const UseEdge> uses(const Def*) const;
     bool is_contained(const Def* def) const { return snapshot_->is_live() && def && indices_.contains(def); }
     /// Number of raw operand occurrences, excluding callee and type edges.
@@ -74,10 +82,16 @@ public:
     CheckResult only_used_by(const Def* producer, const Def* owner) const;
 
     World& world() const;
-    Lam* scope() const { return scope_; }
+    Lam* scope() const {
+        check_live();
+        return scope_;
+    }
     std::shared_ptr<const GraphSnapshot> snapshot() const { return snapshot_; }
     bool is_current() const;
-    std::span<const Def* const> operations() const { return operations_; }
+    std::span<const Def* const> operations() const {
+        check_live();
+        return operations_;
+    }
     const OpView* isa_operation(const Def*) const;
     bool is_pure(const Def*) const;
     bool is_pure(flags_t axm) const;
@@ -91,6 +105,7 @@ public:
     size_t data_consumer_count(const Def*) const;
 
 private:
+    void check_live() const;
     struct MutableState {
         const Def* def;
         const Def* type;

@@ -12,6 +12,17 @@ namespace mim::pattern {
 
 bool GraphSnapshot::is_live() const { return !published_ && (!world_ || world_->data_.storage_token == generation_); }
 
+std::shared_ptr<GraphSnapshot> GraphSnapshot::capture(World& world) {
+    auto result         = std::make_shared<GraphSnapshot>();
+    result->world_      = &world;
+    result->generation_ = world.data_.storage_token;
+    return result;
+}
+
+void GraphView::check_live() const {
+    if (!snapshot_->is_live()) throw std::invalid_argument("graph snapshot is stale");
+}
+
 GraphView::GraphView(Defs roots, UseCoverage coverage)
     : GraphView(roots, GraphOptions{.coverage = coverage}) {}
 

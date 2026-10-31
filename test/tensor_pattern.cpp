@@ -409,3 +409,26 @@ TEST_CASE("Tensor fusion: repeating a reduction in two slots never duplicates th
         phase = phase->recreate(); // PhaseMan recreates an RWPhase between fixed-point rounds.
     }
 }
+
+TEST_CASE("Tensor graph rewrite: selecting one triple does not require complete combinatorial enumeration") {
+    TensorIR ir;
+    auto& w                = ir.w;
+    constexpr size_t count = 24; // 2024 possible triples exceed the default 1000-result limit.
+    auto R                 = ir.ring();
+    auto input_type        = ir.matrix(w.lit_nat(2), w.lit_nat(3));
+    auto weight_type       = ir.matrix(w.lit_nat(3), w.lit_nat(4));
+    auto output_type       = ir.matrix(w.lit_nat(2), w.lit_nat(4));
+    DefVec dom{input_type};
+    for (size_t i = 0; i != count; ++i)
+        dom.push_back(weight_type);
+    auto fn = w.mut_lam(w.pi(w.sigma(dom), w.arr(count, output_type)))->set("f");
+    DefVec values;
+    auto dims = w.tuple({w.lit_nat(2), w.lit_nat(3), w.lit_nat(4)});
+    for (size_t i = 0; i != count; ++i)
+        values.push_back(ir.product(R, dims, fn->var(count + 1, 0), fn->var(count + 1, i + 1)));
+    fn->set(false, w.tuple(values))->externalize();
+    CHECK(ir.run(Combine));
+    CHECK(ir.count(Product) == count - 2);
+    CHECK(ir.count(Concat) == 1);
+    CHECK(ir.count(Slice) == 3);
+}

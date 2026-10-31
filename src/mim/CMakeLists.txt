@@ -19,6 +19,7 @@ target_sources(libmim
         union.cpp
         world.cpp
         pattern/graph.cpp
+        pattern/graph_rule.cpp
         pattern/match.cpp
         pattern/op.cpp
         pattern/pattern.cpp
@@ -43,6 +44,7 @@ target_sources(libmim
         phase/nom_erasure.cpp
         phase/ret_wrap.cpp
         phase/rule_rewrite.cpp
+        phase/graph_rule_rewrite.cpp
         phase/sccp_analysis.cpp
         phase/sccp_transform.cpp
 )

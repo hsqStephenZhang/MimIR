@@ -1,0 +1,10 @@
+// RUN: (! %mim %s -o - 2>&1) | %FileCheck %s
+plugin compile;
+axm q: Nat -> Nat;
+axm k: Nat -> Nat;
+axm v: Nat -> Nat;
+axm combined: Nat -> «3; Nat»;
+rule merge (x: Nat): (q x, k x, v x) => combined x;
+extern lam result (x: Nat): «3; Nat» = (q x, k x, v x);
+extern lam _compile (): compile.Phase = compile.graph_rule_app (merge, (q, k, v));
+// CHECK: recipe calls an operator without a purity guarantee

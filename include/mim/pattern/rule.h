@@ -12,6 +12,8 @@ class Rewriter;
 
 namespace mim::pattern {
 
+class GraphRulePattern;
+
 struct RuleMatch {
     MatchStatus status;
     /// Original Rule metavariable (Var or Extract) to matched source Def. Empty on failure.
@@ -48,12 +50,15 @@ private:
     Pattern lower(const Def*);
     bool is_meta(const Def*) const;
     bool is_bound(Defs, const Def2Def&) const;
+    MatchStatus validate_bindings(const Def2Def&) const;
 
     const Rule* rule_;
     PatternProgram program_;
     std::optional<Pattern> root_;
     DefMap<Pattern> lowered_;
     DefMap<Pattern> captures_;
+    size_t lowering_depth_ = 0;
+    friend class GraphRulePattern;
 };
 
 } // namespace mim::pattern

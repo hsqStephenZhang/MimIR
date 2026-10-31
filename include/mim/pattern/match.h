@@ -6,6 +6,8 @@
 
 namespace mim::pattern {
 
+class GraphSnapshot;
+
 enum class MatchStatus { Matched, No_Match, Unknown, Budget_Exceeded };
 
 struct MatchOptions {
@@ -19,12 +21,16 @@ public:
     const Def* isa_capture(Pattern) const;
 
 private:
-    MatchResult(const PatternProgram* program, std::vector<const Def*> captures)
+    MatchResult(const PatternProgram* program,
+                std::vector<const Def*> captures,
+                std::shared_ptr<const GraphSnapshot> snapshot)
         : program_(program)
-        , captures_(std::move(captures)) {}
+        , captures_(std::move(captures))
+        , snapshot_(std::move(snapshot)) {}
 
     const PatternProgram* program_;
     std::vector<const Def*> captures_;
+    std::shared_ptr<const GraphSnapshot> snapshot_;
     friend class MatchEngine;
 };
 

@@ -99,8 +99,10 @@ void CombineProducts::start() {
         if (!fn || !fn->is_set() || !fn->is_closed()) continue;
         Products patterns;
         GraphView view({fn->body()}, {.operators = &ops, .scope = fn});
-        auto found = find_matches(patterns.graph, view);
-        if (found.status != SearchStatus::Complete) {
+        // This optimization chooses one fully validated triple, rather than proving that all
+        // triples were enumerated. Reaching this deliberate one-result limit is success.
+        auto found = find_matches(patterns.graph, view, {.max_results = 1});
+        if (found.status != SearchStatus::Complete && found.status != SearchStatus::Result_Limit) {
             profile_count("tensor.combine.incomplete");
             log().d("combine_products skipped {}: incomplete search", fn);
             continue;

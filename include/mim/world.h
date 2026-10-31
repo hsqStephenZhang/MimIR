@@ -29,6 +29,7 @@ namespace pattern {
 class GraphView;
 class GraphSnapshot;
 class PatternProgram;
+class MatchEngine;
 } // namespace pattern
 
 template<class T>
@@ -1002,6 +1003,7 @@ private:
     friend class pattern::GraphView;
     friend class pattern::GraphSnapshot;
     friend class pattern::PatternProgram;
+    friend class pattern::MatchEngine;
 
     friend void swap(World& w1, World& w2) noexcept {
         using std::swap;

@@ -10,6 +10,7 @@
 #include <mim/phase/beta_red.h>
 #include <mim/phase/dispatch_normalize.h>
 #include <mim/phase/eta_conv.h>
+#include <mim/phase/graph_rule_rewrite.h>
 #include <mim/phase/lam_spec.h>
 #include <mim/phase/nom_erasure.h>
 #include <mim/phase/ret_wrap.h>
@@ -69,6 +70,7 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<compile::phases,             PhaseMan         >(phases);
     Phase::hook<compile::ret_wrap,           RetWrap          >(phases);
     Phase::hook<compile::rule_app,           RuleRewrite      >(phases);
+    Phase::hook<compile::graph_rule_app,     GraphRuleRewrite >(phases);
     Phase::hook<compile::scalarize,          Scalarize        >(phases);
     Phase::hook<compile::sccp,               SCCP             >(phases);
     Phase::hook<compile::single_erasure,     SingleErasure    >(phases);

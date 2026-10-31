@@ -1,0 +1,20 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+axm q: Nat -> Nat;
+axm k: Nat -> Nat;
+axm v: Nat -> Nat;
+axm combined: Nat -> «3; Nat»;
+axm sum: [Nat, Nat] -> Nat;
+
+rule skip (x: Nat): (q x, k x, v x) when ff => combined x;
+rule identity (x: Nat): (q x, k x, v x) => (q x, k x, v x);
+extern lam result (x: Nat): Nat = sum (q x, sum (k x, v x));
+extern lam _compile (): compile.Phase =
+    compile.phases tt (compile.cleanup, compile.graph_rule_app ((skip, identity), (q, k, v, combined)), compile.cleanup);
+
+// CHECK: extern lam result
+// CHECK-DAG: q x
+// CHECK-DAG: k x
+// CHECK-DAG: v x
+// CHECK-NOT: combined

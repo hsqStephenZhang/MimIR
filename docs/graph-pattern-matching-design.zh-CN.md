@@ -8,7 +8,7 @@
 
 ## 当前实施状态
 
-已加入 P0/P1 内核、P2 单根 Rule 重写通路、P3 的 C++ 语义图与多根重写，以及 P4 的首批 tensor schema、现有 fusion 接入和真实三路矩阵乘合并。单根入口位于 [pattern.h](../include/mim/pattern/pattern.h)、[match.h](../include/mim/pattern/match.h)、[pattern/rule.h](../include/mim/pattern/rule.h) 和 [phase/rule_rewrite.h](../include/mim/phase/rule_rewrite.h)；P3、P4 入口见下节。
+已加入 P0/P1 内核、P2 单根 Rule 重写通路、P3 的 C++ 语义图与多根重写、P4 的首批 tensor 接入，以及 P5 的多根 Rule 前端、原始 operand range 和索引搜索。单根入口位于 [pattern.h](../include/mim/pattern/pattern.h)、[match.h](../include/mim/pattern/match.h)、[pattern/rule.h](../include/mim/pattern/rule.h) 和 [phase/rule_rewrite.h](../include/mim/phase/rule_rewrite.h)；P3 至 P5 的接口和当前范围见下节。
 
 - `PatternProgram` 使用独立 arena 表达 Any、Exact、typed Literal、原始 Node、Capture、All、Either、Not、Type 和 Where，不通过 World 构造模式。
 - `match` 执行带后续条件回溯的单根搜索，返回 Matched、No_Match、Unknown 或 Budget_Exceeded；失败不暴露部分 captures。
@@ -60,9 +60,9 @@ extern lam _compile (): compile.Phase =
 
 该示例输出的 `result` 函数体为 `step x`。实际回归用例见 [rule_app.mim](../lit/rules/rule_app.mim)、[identity.mim](../lit/rules/identity.mim) 和 [arith.mim](../lit/rules/arith.mim)；后者将 `(x + 1) * 2` 重写为 `x * 2 + 2`。
 
-当前验证通过 138 个 CTest（其中 38 个 Pattern/Rule 测试、30 个 P3 Graph 测试、15 个 P4 Tensor 测试）、91 个相关 lit 测试，另有 1 个按现有条件跳过。lit 范围包括 tensor、btensor、rules 和相关错误用例，包含原有 14 个 fusion 回归及 I64 三路矩阵乘的 LLVM 执行测试；4 个 rules 用例与 5 个新增 tensor 用例还各自通过 Mim 和 AST roundtrip，共 18 次。P3 以及本次改动的匹配／重建内核、tensor adapter、合并 phase 和 fusion 源码另作 AddressSanitizer 与 UndefinedBehaviorSanitizer 检查；基础 IR 库和其他插件未全部插桩，当前环境无法运行 LeakSanitizer，未作泄漏检查。验证使用未加载旧版外接 runtime/torch 插件的隔离构建；根目录现有 build 的配置仍受这些插件的旧 CMake 参数阻塞。
+P4 验证基线为 138 个 CTest、91 个相关 lit 和 18 次 Mim／AST roundtrip。P5 新增的表达、索引对照和 review 复现用例见 [pattern_p5.cpp](../test/pattern_p5.cpp)，最新验证结果记录在下方 P5 节。验证使用未加载旧版外接 runtime/torch 插件的隔离构建；根目录现有 build 的配置仍受这些插件的旧 CMake 参数阻塞。
 
-尚未完成的部分包括依赖类型实例化求值、开放 closure scope 的自动环境导入、通用 tensor dtype／shape 模式库，以及 P5 的 Mim 多根描述语法和性能优化。当前 `compile.rule_app` 仍是单根入口，P3 接口可由 C++ phase 调用；真实 tensor 多根使用入口是 `tensor.combine_products`。Rule adapter 不做逆归一化，也不猜测缺少绑定的 telescope；原始 Pack 边数不代表动态读取次数。
+尚未完成的部分包括依赖类型实例化求值、开放 closure scope 的自动环境导入、通用 tensor dtype／shape 模式库、独立 PDLL 风格 parser、字节码后端和跨轮次增量索引。`compile.rule_app` 仍是单根入口，`compile.graph_rule_app` 是显式多根 Rule 入口，真实 tensor 多根优化还可调用 `tensor.combine_products`。Rule adapter 不做逆归一化，也不猜测缺少绑定的 telescope；原始 Pack 边数不代表动态读取次数。
 
 ## P3 语义图与多根重写
 
@@ -195,9 +195,124 @@ extern lam _compile (): compile.Phase =
     );
 ```
 
-目前每次调用至多重写每个闭合 external Lam 中的一组三路匹配；需要多轮时可放入 `compile.phases tt`，每次成功重写都减少两个 product 节点。搜索状态不是 Complete 时整组跳过并记录诊断，不用部分枚举结果提交。其他函数共享的旧 Def 保留原实现。尚未加入后端收益模型，因此此 phase 不放入默认 pipeline；额外 concat 和 slice 的成本可能抵消合并收益。
+目前每次调用至多重写每个闭合 external Lam 中的一组三路匹配；需要多轮时可放入 `compile.phases tt`，每次成功重写都减少两个 product 节点。P5 将该 phase 明确为首个合法匹配选择：设置 `max_results=1`，接受这一主动结果上限；返回的匹配仍须通过全部条件。Unknown 或 Budget_Exceeded 仍跳过并记录诊断。24 个共享左输入的乘法有 2024 个可能三元组，现在不必完整枚举后才能提交一组；对应回归覆盖了原来超过 1000 结果上限就整组跳过的情况。其他函数共享的旧 Def 保留原实现。尚未加入后端收益模型，因此此 phase 不放入默认 pipeline；额外 concat 和 slice 的成本可能抵消合并收益。
 
 这完成了 P4 的首批真实 tensor 接入与正确性验收，尚不等于完整的 TVM DPL：缺少通用 dtype／shape helper、浮点 QKV 合并、任意数量分支的合并、通用融合函数提取和后端分发。现有 `fuse_tensor` 继续使用原生 CPS recipe，未将其改成一套通用 native rewrite 回调注册系统。
+
+## P5 表达与索引搜索
+
+### 复用 Mim Rule 的多根前端
+
+P5 复用现有 `rule`，以显式的 `compile.graph_rule_app (rules, pure_ops)` 区分多根重写。Rule 的 LHS tuple 表示多个独立 anchor，RHS 表示对应输出；共享 metavariable 连接这些 anchor，目标程序不必有共同 tuple。实现是 [graph_rule.h](../include/mim/pattern/graph_rule.h)、[graph_rule.cpp](../src/mim/pattern/graph_rule.cpp) 和 [graph_rule_rewrite.cpp](../src/mim/phase/graph_rule_rewrite.cpp)。
+
+```mim
+plugin compile;
+axm q: Nat -> Nat;
+axm k: Nat -> Nat;
+axm v: Nat -> Nat;
+axm combined: Nat -> «3; Nat»;
+axm sum: [Nat, Nat] -> Nat;
+
+rule merge (x: Nat): (q x, k x, v x) => combined x;
+extern lam result (x: Nat): Nat = sum (q x, sum (k x, v x));
+extern lam _compile (): compile.Phase =
+    compile.phases tt (
+        compile.cleanup,
+        compile.graph_rule_app (merge, (q, k, v, combined)),
+        compile.cleanup,
+    );
+```
+
+RHS 的三个结果若已通过 η 归约合并为整个 `combined x`，前端会在 recipe 中投影三个输出，不在源 World 补建 Extract。C++ `GraphRulePattern` 与 Mim phase 均复用同一 `PatternProgram`、共享绑定、多根搜索和事务式 recipe。规则模板保存于独立 World，跨 cleanup 和 PhaseMan 重建后重新导入；每次调用至多提交每个闭合 external 函数中的一组匹配，规则按显式列表顺序尝试。
+
+`pure_ops` 是调用方对 primitive 纯性的显式断言，不由函数类型推断。列表应包含被替换的 primitive 与 RHS 新调用的 primitive；callee 为任意 Lam 的 RHS 尚不支持。前端不猜测数据参数 schema，排他使用不能因列入该列表而自动成立。RHS 支持 captures、Nat／Idx 位字面量、pure axiom call、Tuple、可静态展开的 Pack 和固定 index 的 Extract。未绑定的 metavariable、未知 guard、预算耗尽或不支持的 RHS 不能发布替换；会消除未证明纯性的内部计算的计划也会被拒绝。whole-telescope capture 不会自动导出缺少的字段 capture；tuple η 归约消除字段结构后，仍可能缺少可表示的跨根连接。这属于当前 Rule 支持子集，不进行逆归一化补全。
+
+正反例见 [graphapp.mim](../lit/rules/graphapp.mim)、[graphgrd.mim](../lit/rules/graphgrd.mim) 和 [grapure.mim](../lit/error/grapure.mim)。匹配结果的共享应检查实际 Def 身份；文本打印器可能在不同 Extract 内重复打印同一个调用，不能仅数 `combined` 字符串来判断是否复制计算。
+
+### 原始 operand range
+
+`PatternProgram::node_range(node, prefix, tail, min, max, flags)` 匹配固定 operand 前缀和指定数量的尾部 operands。它针对物理节点，不隐式解包 tensor-valued Pack，也不恢复被归一化消除的结构。尾部复用同一 capture 仍要求 Def 身份相同，并不捕获一个动态序列。例如：
+
+```cpp
+auto operands = p.node_range(mim::Node::Tuple, {p.exact(first)}, p.any(), 1, 8);
+```
+
+### 有界索引 join 与穷举对照
+
+`GraphMatchOptions::mode` 默认为 `Indexed`，也可选择 `Exhaustive`。两条路径使用同一个回溯解释器；Exhaustive 关闭结构判定缓存与动态 capture 索引，用于结果对照和性能基线。
+
+Indexed 缓存不依赖当前绑定的结构判定，并预先计算每个 anchor 必须绑定的原始 captures。AND 合并必需 captures，OR 仅保留两边共同保证的 captures；Type／NOT 中的 capture 不用于推断原始 operand 祖先。对路径固定的必需 capture，从已绑定值沿对应的反向 operand 路径寻找候选；路径不能统一时才使用保守的祖先集合。候选按原枚举顺序排列，并选择当前候选最少的未绑定 anchor。约束依赖和路径分析计入 step 预算。
+
+同一 anchor tuple 找到合法绑定后停止该 tuple 内无意义的 OR 备选，同时保留其他 tuples 所需的跨根回溯。所有 native Where 的读取范围都包含在冲突分析中，包括 Not 内部的 Where。snapshot-wide 读取列表在结果之间共享；普通结果只收集自身读取子图，避免每个结果再次扫描整个图。
+
+`GraphMatches` 除 `steps`、`candidates` 外，新增 `prefilter_checks` 和 `index_steps`。这些是计数器，不等同于总 CPU 时间；原生分析、归一化与建图仍有各自成本。基准程序 [pattern_bench.cpp](../test/pattern_bench.cpp) 单独构建：
+
+```sh
+cmake --build <build> --target mim-pattern-bench
+<build>/bin/mim-pattern-bench 160
+```
+
+输出包含 parallel、chain、diamond、spine、fanout 五类图的匹配数、状态、候选数、steps、结构检查数、索引工作、建图时间和搜索时间。耗时不用于单元测试断言；单元测试比较解集合与候选工作量。跨轮次增量缓存、共享 predicate 字节码、完整真实 workload 性能验收和峰值内存测量仍未实现。
+
+本机测量使用 Intel Core i5-14600KF、GCC 15.2、Debug／`-Og` 构建，每个尺寸运行 5 次，取计时中位数；源图建图时间单列，不计入下表搜索时间。可通过 [bench-patterns.py](../scripts/bench-patterns.py) 重复采样，完整结果在 [graph-pattern-benchmark.csv](graph-pattern-benchmark.csv)：
+
+```sh
+python3 scripts/bench-patterns.py <build>/bin/mim-pattern-bench --sizes 80,160,320 --repeats 5
+```
+
+| 图形与尺寸 | 穷举候选 | 索引候选 | 穷举搜索 ms | 索引搜索 ms |
+| --- | ---: | ---: | ---: | ---: |
+| parallel 160 | 51360 | 480 | 6.612 | 1.129 |
+| chain 160 | 160 | 160 | 0.679 | 0.578 |
+| diamond 160 | 76960 | 480 | 7.608 | 0.812 |
+| spine 160 | 51360 | 480 | 5.159 | 1.042 |
+| fanout 160 | 51360 | 480 | 5.916 | 1.036 |
+
+这组结果支持共享 capture join 的候选剪枝收益，不代表 tensor 程序的端到端加速。chain 的候选数不变，索引初始化和缓存是否获益取决于具体模式与图；不承诺所有单根查询都更快。
+
+### Copilot review 修复
+
+2026-10-31 使用 Copilot CLI 1.0.103 对 `edc772d080` 的 P0 至 P4 实现进行只读 review，运行日志确认模型为管理员配置的 `gpt-6.1-sol`。review 提出 6 项 P1、2 项 P2；复现与修复测试集中在 [pattern_p5.cpp](../test/pattern_p5.cpp)。
+
+| 问题 | 修复后的行为 |
+| --- | --- |
+| 结果与集合访问器暴露已释放的 Def | 单根结果、GraphView／GraphMatch 集合，以及 GraphRewrite 的结果访问均验证存储代次；已取得的 span 仍须由调用方遵守生命周期 |
+| Not 内 Where 未记录分析读取 | 捕获导出分析与读取分析分离；读取分析穿透 Not，批量冲突检查可见这些依赖 |
+| 包装预算只统计成功输出 | 每次包装展开访问消耗工作预算，零输出的共享包装 DAG 也会有界终止 |
+| 独立 importer 绕过重建预算 | GraphImporter 与 GraphRebuilder 共享深度与 source work 预算，保留其他 external 时也受限 |
+| 纯外层替换间接消除不纯计算 | 验证未证明纯性的内部计算仍在所选结果中可达，归一化丢掉这些输入也不能放行 |
+| 聚合类型的非法位字面量 | literal recipe 只允许 Nat／Idx scalar；聚合常量通过 Tuple／Pack 等显式构造 |
+| 同时替换误报依赖环 | 遇到已替换节点后停止扫描其旧操作数，由其新 recipe 决定后续依赖 |
+| OR 成功分支污染 Unknown 状态 | 分离成功 tuple 与继续枚举的控制；按完整 anchor tuple 记录未决状态，同一 tuple 后续成功时清除，不掩盖其他 tuple 或部分赋值的未知条件 |
+
+### TVM DPL 示例回归
+
+使用 Copilot CLI 的 `gpt-6.1-sol`，参考本地 TVM 的 [test_dataflow_pattern.py](/workspaces/ml-compiler/tvm/tests/python/relax/test_dataflow_pattern.py) 新增 [pattern_dpl.cpp](../test/pattern_dpl.cpp) 中的 18 个用例。它们将 TVM 示例的行为要求改写为 MimIR 断言，不依赖 Python 或 TVM 运行时：
+
+| TVM 示例／行为 | MimIR 回归断言 |
+| --- | --- |
+| diamond、parallel、nested diamond | 精确 anchor 组合、共享 Def 身份、重复参数位置、排他使用及输出逃逸的正反例 |
+| fake QKV、combine matmul twice | 拒绝输入不同的假三分支；两组独立替换分别共享各自的新计算 |
+| commutative、repeated pattern | 显式 OR 的不同 operand 路径、子模式身份、失败回滚、连续匹配不残留 captures |
+| variadic wildcard | 空尾部、重复尾部 capture、前缀 OR 回溯；保留 Tuple 与 Pack 的物理结构区别 |
+| no-op rewrite fallback | 实际 GraphRuleRewrite 跳过 identity 与 false guard，选择首个有效规则；无有效规则时不发布 |
+| MimIR 图表示与三值判定 | type-only／raw-or-type captures、嵌套投影与包装路径、Unknown 分支回滚及跨 tuple 状态汇总 |
+
+图匹配断言同时运行 Indexed／Exhaustive 与正序／逆序候选，比较完整解集合和 captures。新用例复现了跨根 OR 的未决状态残留：先前绑定分支得到 Unknown，后续绑定分支对同一完整 tuple 成功后，搜索仍错误返回 Unknown；现已修复，并保留另一个 tuple 未决时仍返回 Unknown 的反例。
+
+这些测试遵守现有支持边界：交换律通过显式 `either` 表达，range 不捕获动态序列，嵌套投影使用 Sigma 边界保留标量 Extract 链；尚未覆盖融合后的多维 Extract index 解码。未将自动重复重写、tensor shape／dtype 推导或任意 Python callback 作为已实现能力。
+
+后续核对了 TVM `test_dataflow_pattern.py` 的全部 58 个顶层测试函数，并在 [pattern_dpl_extended.cpp](../test/pattern_dpl_extended.cpp) 新增 26 个用例，覆盖显式无序 tuple、声明的静态／符号 shape、shape 否定、双 CBR、concat–matmul–split、attention 图、独立匹配程序的约束与两轮 checked rewrite。逐项结果为 31 项语义适配覆盖、22 项部分覆盖、5 项当前不支持；完整清单与剩余差异见[参考用例覆盖](graph-pattern-reference-tests.zh-CN.md)。该分类不表示 Python API 兼容，也不把手动执行两轮重写计作自动收敛。
+
+### MLIR PDLL 与 PDL 示例回归
+
+继续使用 Copilot CLI 的 `gpt-6.1-sol`，参考本地 `mlir/test/mlir-pdll` 与 `TestPDLL.pdll` 的声明、native constraint、结果访问和 replace 行为，在 [pattern_pdll.cpp](../test/pattern_pdll.cpp) 新增 17 个用例。PDL bytecode、PDLToPDLInterp 和 CPU 多根集成测试作为执行语义对照，来源与 PDLL 分列于[参考用例覆盖](graph-pattern-reference-tests.zh-CN.md#mlir-pdll-与-pdl)。
+
+测试覆盖 Nat／Bool 异构结果的索引、共享 producer、反向注册替换时的结果位置、原输入透传、组合与否定的只读 native constraints、部分字段类型错误和非法 index 的原子拒绝，以及实际 GraphRuleRewrite 发布。两个实际 Mim 前端输入 [pdllmix.mim](../lit/rules/pdllmix.mim) 和 [pdllpass.mim](../lit/rules/pdllpass.mim) 分别验证异构多根合并和 guard 控制的透传；不同输入、false guard 与未知 guard 保留原计算。
+
+这批用例不实现 PDLL parser／诊断、ODS、native constraint 返回新绑定、动态 ValueRange／TypeRange、benefit 调度、任意 native rewrite callback、显式零结果 erase 或结果类型推导。不可达的已证明纯性的 DAG 节点可以在重建后消失，不等同于任意 MLIR operation 的 erase。
+
+当前通过 215 个 CTest、96 个相关 lit 测试和 26 次 Mim／AST roundtrip；另有 1 个 lit 按原有 release 条件跳过。144 个 Pattern／Rule／Graph 用例与四个 Mim 多根 Rule 前端用例通过 AddressSanitizer／UndefinedBehaviorSanitizer；插桩范围为本次匹配、图重建与多根 Rule phase，基础 IR 库和其他插件未全部插桩。当前环境未运行 LeakSanitizer。数值回归继续包含 I64 矩阵乘的 LLVM 执行与标量参考。
 
 ## 源码依据
 
@@ -613,6 +728,6 @@ rewrite:
 
 ## 首个可交付版本
 
-当前已交付 P0 至 P3 的 C++ 基础及 P4 的首批 tensor 接入：C++ 构造模式、Rule 支持子集、带 Unknown 的图使用关系、连通多根搜索、作用域内批量替换，以及可诊断的单根 Once/Greedy 驱动。现有 tensor fusion 的结构筛选与单次消费检查已接入框架，真实三路整数矩阵乘也已有 LLVM 执行和数值参考验证；完整 DPL 表达层与性能优化属于后续工作。
+当前已交付 P0 至 P4 的基础与首批 tensor 接入，以及 P5 的多根 Mim Rule 前端、原始 operand range、索引 join 和穷举性能对照。现有 tensor fusion 的结构筛选与单次消费检查已接入框架，真实三路整数矩阵乘也已有 LLVM 执行和数值参考验证；独立 pattern parser、通用 tensor 模式库、字节码和增量索引仍属于后续工作。
 
 最先实现并评审的是 **GraphView 的 scope 与边界语义、失败回滚、依赖类型延迟校验和 World 提交协议**。这四项确定后，Mim 表层语法和匹配执行优化可以分别推进。

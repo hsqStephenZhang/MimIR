@@ -1,0 +1,27 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+axm q: Nat -> Nat;
+axm k: Nat -> Nat;
+axm v: Nat -> Nat;
+axm combined: Nat -> «3; Nat»;
+axm sum: [Nat, Nat] -> Nat;
+
+// The tuple describes independent anchors; the function has no tuple containing q/k/v.
+rule merge (x: Nat): (q x, k x, v x) =>
+    let shared = combined x;
+    (shared#0_3, shared#1_3, shared#2_3);
+
+extern lam result (x: Nat): Nat = sum (q x, sum (k x, v x));
+
+// Primitive purity is explicitly asserted here, rather than inferred from function types.
+extern lam _compile (): compile.Phase =
+    compile.phases tt (compile.cleanup, compile.graph_rule_app (merge, (q, k, v, combined)), compile.cleanup);
+
+// CHECK-NOT: rule merge
+// CHECK: extern lam result
+// CHECK: sum
+// CHECK: combined
+// CHECK-NOT: q x
+// CHECK-NOT: k x
+// CHECK-NOT: v x
