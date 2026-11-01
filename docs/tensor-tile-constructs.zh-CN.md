@@ -118,7 +118,37 @@ blocking，因此低于 default 和 OpenBLAS，并未宣称达到同等速度。
 后续需要并行 grid、register/vector leaf、specialization 后的 slice/read fusion、scratch
 跨 iterations reuse，以及跨调用 persistent packing；GPU scopes 和 effectful stage 未验证。
 
+## 5. Task 9 — leaf schedule 与 packing 优化
+
+### 5.1 参数化 vector leaf
+
+mark/pack 捕获 LeafSchedule callback，hand 调用传相同 callback；由实际 tile extent
+(m, cols, k) 和 vec_width 8 reflection 选择。沿用 default non-transposed dot_schedule
+的 column-vector accumulator 和四项 reduction unroll：将 K 分为 (k/kt, kt)，
+kt 在可整除且目标 width ≥4 时为4，否则为1；cols>1、width>1 时 vdim=1，
+singleton/no-SIMD 采用 sentinel。没有直接改 reduction 顺序。
+callback 而非固定 Sched literal 支持 tails 不同 k，并仍是 generic rule 的参数。
+MRP 的两条 reduction 轴映射回原 k，leading parallel output/outs maps 不变。
+default kvec 仅适用于 contraction-contiguous B；本 packing 的 lane 轴为 columns，
+故不采用该水平 reduction 路径。
+
+pgemm_exec 对 destination/reference 校验数值，pgemm_vector 检查 F32 优化 LLVM 的 vector multiply/add；
+F32 benchmark 的 native LLVM 为 <4 x float> accumulators 与 SIMD multiply/add。
+tile sizes、输入、线程、warmup/七次测量与 Task 8 相同。下表为每次独立运行的 median GFLOPS，
+default/OpenBLAS 的运行噪声不作为本改动的加速。
+
+| Item 1 shape | Rule | Hand | Default | OpenBLAS |
+| --- | ---: | ---: | ---: | ---: |
+| 256³ | 34.823 | 38.173 | 29.593 | 71.443 |
+| 512³ | 55.219 | 55.706 | 35.404 | 103.412 |
+| 1024³ | 51.902 | 51.069 | 34.619 | 101.751 |
+| 513×257×129 | 51.486 | 49.942 | 41.751 | 89.987 |
+
+数据：build/task8-bench/item1-results.csv、item1-metrics.json、item1-native.ll。
+MR=32、KR=64、NR=32 尚未调优；B crop+pack 和 acc init copy 尚保留，下一项分别消除。
+
 ## 0. Generic shape Rules
+
 
 Rule 定义期仍检查 guard 的 Bool 类型，以及两侧已经闭合的类型不一致。
 两侧类型依赖 Rule 元变量时，不能证明相等不再立即拒绝；每次 instantiation 的

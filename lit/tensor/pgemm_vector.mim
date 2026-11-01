@@ -1,0 +1,6 @@
+// RUN: python3 %S/pgemm_f32.py %mim %S/pgemm.mim %t.dir
+// RUN: clang++ -O3 -S -emit-llvm %t.dir/probe.ll -o %t.vec.ll -Wno-override-module
+// RUN: %FileCheck %s < %t.vec.ll
+// CHECK-LABEL: define {{.*}}@vector_leaf
+// CHECK: fmul fast <{{[0-9]+}} x float>
+// CHECK: fadd fast <{{[0-9]+}} x float>
