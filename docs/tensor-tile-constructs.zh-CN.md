@@ -72,9 +72,25 @@ lower_tensor 展开成 generate，fuse_tensor 不穿过 generate 合成读取；
 identity stage 也不由 normalizer 消除。`stage_barrier` 检查该边界。
 
 参考 callbacks 可以产生 tensor 分配，lower_to_mem 把其局部 fresh-memory 请求包装成
-返回式 CPS 区域。CPS 转换及 affine loop 展开后，`mem.resolve_fresh` 仅在仍有
-`mem.fresh` 时调用现有线程化逻辑；没有剩余请求的程序不再改写，既有 GPU pipeline
-保持不变。目前这些参考构造只验证 CPU LLVM，GPU scope 与 address spaces 不在此实现内。
+返回式 CPS 区域。第一次 `mem.add_mem` 前请求已经存在，不是 cps.conv 新增分配：
+`tile_fold_impl` 的 nullary `run` 包含 `next → mem.fresh(0, fresh_mem)`，
+`tiled_impl` 的 tail-dispatch `choose` 也包含 slice buffer 的同类请求。
+两者通过 `cps.cps2ds_dep` 被调用；AddMem::analyze 把该 axiom 的回调以及其传递可达
+continuations 加入 preserved_，rewrite_mut_Lam 在 preserving_ 模式原样复制它们。
+因此 next 仍为 `Cn []`，不能在那里注入 memory，fresh 也没有进入普通 resolve 分支。
+generate 的 element callback 经 btensor 的 axiom-pinned ABI 也存在同样限制。
+
+CPS 转换及 affine loop 展开移除这些调用边界后，`mem.resolve_fresh` 仅在仍有
+`mem.fresh` 时调用现有线程化逻辑。放在 affine.lower_for 之前会改变循环 callback 的
+ABI 而使调用不匹配；第一次 AddMem 直接 unpin 同样破坏 cps2ds 的 dependent type groups。
+前端分支 e76c4d05f9 / e9d856fb28 / 9d2bf7f6a7 优化的是普通 resolve 分支中
+tt continuation 的 splice、递归判断及每次请求的 binding scope；
+它们不改变 preserving_ 的入口，不能解决上述 pinned 区域。
+本实现没有搬用其不适用的旧 Rewriter mapping 逻辑；若移植该优化，仍必须保持 scoped binding。
+没有剩余请求的程序不再改写，既有 GPU pipeline 保持不变。
+`fresh_before` 正向断言第一次 AddMem 的残留请求；`fresh_after` 断言 ABI 展开后请求消失；
+`tile_constructs_exec` 验证 repeated fold/tail iterations 的数值，不把“无 fresh”当数值正确的代理。
+目前这些参考构造只验证 CPU LLVM，GPU scope 与 address spaces 不在此实现内。
 helper ABI 的识别只沿实际 metadata callbacks，不沿输入 producer 或 Var binder 回边。
 
 `tile_constructs_exec` 对照 C++ 标量参考检查 divisible/tailed/singleton/empty tiled、

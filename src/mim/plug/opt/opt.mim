@@ -63,6 +63,7 @@ extern lam _default_compile (): compile.Phase =
         compile.named "affine.lower_index",
         compile.named "cps.conv",
         compile.named "affine.lower_for",
+        // Pinned direct-style callbacks can only thread their local allocations after these ABI conversions.
         compile.cond "tensor" mem.resolve_fresh,
 
         // clos conv
