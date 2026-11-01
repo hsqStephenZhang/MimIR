@@ -64,9 +64,10 @@ const Def* splat_scalar(const Def* d) {
 
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
-    return Axm::isa<tensor::tile_fold>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app)
-        || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app)
-        || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
+    return Axm::isa<tensor::stage>(app) || Axm::isa<tensor::tile_fold>(app) || Axm::isa<tensor::tiled>(app)
+        || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app)
+        || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app)
+        || Axm::isa<tensor::scatter>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -135,6 +136,9 @@ void LowerToMem::collect_tensor_types() {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::tile_fold>(app)) {
                 add_tensor_ty(app->type());
+            } else if (Axm::isa<tensor::stage>(app)) {
+                add_tensor_ty(app->type());
+                add_tensor_ty(app->arg()->type());
             } else if (Axm::isa<tensor::generate>(app)) {
                 auto [meta, s_out] = app->callee()->as<App>()->uncurry_args<2>();
                 auto [T, r]        = meta->projs<2>();
@@ -351,6 +355,8 @@ const Def* LowerToMem::rewrite(const Def* old_def) {
     // fresh_mem). The global memo would share such a lowering with every other function that mentions the
     // same (closed) old op - where that var would dangle - so these ops are memoized per enclosing lam.
     auto app = old_def->isa<App>();
+    if (app && Axm::isa<tensor::stage>(app))
+        if (auto realized = lookup(old_def)) return realized;
     auto ins = old_def->isa<Insert>(); // allocates the copy it writes into
     if ((app && wants_fresh_mem(app)) || (ins && tensor_ty_.contains(ins->tuple()->type()))) {
         if (auto new_def = fe::lookup(fresh_memo_, old_def)) return new_def;
@@ -453,6 +459,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::splat>(app)) return lower_splat(app);
     if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app);
     if (Axm::isa<tensor::tile_fold>(app)) return lower_tile_fold(app);
+    if (Axm::isa<tensor::stage>(app)) return lower_stage(app);
     if (Axm::isa<tensor::generate>(app)) return lower_generate(app);
     if (Axm::isa<tensor::broadcast>(app)) return lower_broadcast(app);
     if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app);
@@ -890,7 +897,36 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     }
     auto output_shape = destination ? destination->shape : rewrite(shape);
     auto base         = destination ? destination->origin : zero;
-    auto [run, call]  = btensor::ds_splice(w.tuple({mem, dst}), w.sigma({mem->type(), dst->type()}), "tiled");
+    auto captures = DefVec(), stages = DefVec();
+    auto body = app->arg()->isa<Lam>();
+    if (body && body->is_set()) {
+        auto queue = fe::BFSWorklist<DefSet>();
+        queue.push(body->body());
+        while (!queue.empty()) {
+            auto def = queue.pop();
+            if (def->isa<Var>() || def->isa<Axm>()) continue;
+            if (auto stage = Axm::isa<tensor::stage>(def)) {
+                auto available = true;
+                for (auto var : stage->free_vars())
+                    available &= body->has_free_var(var);
+                if (available) {
+                    auto value = rewrite(stage);
+                    stages.push_back(stage);
+                    captures.push_back(value);
+                    continue;
+                }
+            }
+            for (auto op : def->ops())
+                if (op) queue.push(op);
+        }
+    }
+    auto [run, call]
+        = btensor::ds_splice(w.tuple({mem, dst, w.tuple(captures)}), w.sigma({mem->type(), dst->type()}), "tiled");
+    auto runtime = run->var(2, 0);
+    push();
+    bind_new(run->has_var());
+    for (size_t i = 0; i != stages.size(); ++i)
+        map(stages[i], runtime->proj(3, 2)->proj(stages.size(), i));
     DefVec offsets(*rank), extents(*rank);
     std::function<const Def*(size_t, const Def*, const Def*)> emit
         = [&](size_t d, const Def* acc, const Def* exit) -> const Def* {
@@ -921,10 +957,25 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         loop->set(true, emit(d + 1, state, yield));
         return loop_call;
     };
-    run->set(true, emit(0, run->var(2, 0), run->ret_var()));
+    run->set(true, emit(0, w.tuple({runtime->proj(3, 0), runtime->proj(3, 1)}), run->ret_var()));
+    pop();
     if (destination) return call;
     auto [out_mem, out] = call->projs<2>();
     return scalar_result(app, out_mem, out);
+}
+
+const Def* LowerToMem::lower_stage(const App* app) {
+    auto& old = old_world();
+    auto impl = old.annex<tensor::stage_impl>();
+    auto args = DefVec();
+    for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+        args.push_back(cur->arg());
+    for (auto arg : args | std::views::reverse)
+        impl = old.app(impl, arg);
+    auto generate = Axm::isa<tensor::generate>(impl);
+    if (!generate) app->blame("tensor.stage reference reindexing did not produce a generate").bail();
+    record_instance(generate);
+    return lower_generate(generate);
 }
 
 bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def* origin) {

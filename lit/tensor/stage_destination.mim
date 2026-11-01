@@ -1,0 +1,30 @@
+// RUN: %mim %s -o - > %t.out
+// RUN: %FileCheck %s --check-prefix=ALLOC --implicit-check-not=buffer.alloc < %t.out
+// RUN: %FileCheck %s --check-prefix=GRID < %t.out
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin compile;
+use tensor;
+fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+extern fun shared_stage (x: «5, 7; I64»): «5, 7; I64» =
+    let p = stage @(I64, 2, 0) (5, 7) ((), (), (0₂, 1₂), 0I64) 0 (buf x);
+    return (tiled @(I64, 2) ((5, 7), (2, 3))
+        (λ (off ext: «2; Nat»): «ext; I64» =
+            map_reduce_post @(1, 0) @(I64, I64, 2, 2, SchedT)
+                (ext, ext, mk_sched (2, 0)) @(I64, 2, (5, 7), (), (), ())
+                (add, 0I64, id @I64) (affine.id @2)
+                (λ (o: «2; affine.Index»): «2; affine.Index» =
+                    (affine.op.add (o#ff, affine.lit (off#ff)),
+                     affine.op.add (o#tt, affine.lit (off#tt))), ())
+                (p, ())));
+extern lam _compile (): compile.Phase =
+    compile.phases ff (lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);
+
+// ALLOC-COUNT-2: buffer.alloc
+// GRID: fun tiled
+// GRID-SAME: buffer.Buf (2, (5, 7), I64)
+// GRID: tileGrid
+// GRID: btensor.map_reduce_post
+// GRID: generate

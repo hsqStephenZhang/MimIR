@@ -33,6 +33,22 @@ pgemm 的完整 K-block fold 均通过证明，没有每 step 的 accumulator co
 纯 scalar fold 保留原 ordered `_impl`；reference-tiles=1 保留全部旧 reference folds，
 fresh_before/fresh_after 显式选择该路径继续测试 pinned callbacks 的 late memory threading。
 
+### 4.2 Dependency-scoped stage realization
+
+默认 stage 在 lower_to_mem 才展开其 reindexing 为一个 allocating fill loop。
+进入 tiled 前收集 body 捕获的 stage：只有其全部 free Vars 已是 body 的 captures 时
+才在该层 materialize，不能提升依赖 tile off/ext 或内层 fold 参数的 stage。
+产生的 buffer 作为显式运行时 operand 传给 tile loop，per-tile rewrite 的 scoped map
+复用这个 operand，不再为每个 row reader 重新生成 packing。
+pgemm 的 B stage 因而在每个 column/K block 下、row tile loop 上方 realization 一次。
+stage_destination 有两次 buffer.alloc：整个结果和共享 stage，无每 tile allocation。
+stage_barrier 分别检查默认 stage 边界和 reference generate 边界。
+
+`reference-tiles=1` 同时选择旧 tiled/fold/stage `_impl`，布局/padding 与 singleton tests
+在两条 pipeline 均执行验证。当前保守地交由已有 mem.free_locals 管理不逃逸 allocations；
+尚未显式实现 enclosing-loop scratch free 或同 extent 下跨 iterations 的 buffer reuse。
+不能在有其他 scope readers 时提前 free，persistent stage/resource identity 也未实现。
+
 ## 0. Generic shape Rules
 
 Rule 定义期仍检查 guard 的 Bool 类型，以及两侧已经闭合的类型不一致。

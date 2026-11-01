@@ -1,4 +1,5 @@
 // RUN: %mim %s -o - | %FileCheck %s
+// RUN: %mim -X tensor:reference-tiles=1 %s -o - | %FileCheck %s --check-prefix=REF
 plugin tensor;
 plugin core;
 plugin compile;
@@ -8,5 +9,7 @@ extern lam f (x: «2, 3; Nat»): «2, 3; Nat» =
         (stage @(Nat, 2, 0) (2, 3) ((), (), (0₂, 1₂), 0) 0 x);
 extern lam _compile (): compile.Phase =
     compile.phases ff (lower_tensor, fuse_tensor, compile.cleanup);
-// CHECK: tensor.generate
+// CHECK: tensor.stage
 // CHECK: tensor.map_reduce_post
+// REF: tensor.generate
+// REF: tensor.map_reduce_post
