@@ -1,0 +1,19 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule.out 2> %t.rule.log
+// RUN: %FileCheck %s --implicit-check-not='mark @' < %t.rule.out
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph.out 2> %t.graph.log
+// RUN: %FileCheck %s --implicit-check-not='mark @' < %t.graph.out
+// TF-RULES: expand
+// TF-PURE: mark, done
+
+plugin compile;
+plugin core;
+axm mark: {M N: Nat} → «core.nat.add (M, 1), N; Nat» → «core.nat.add (M, 1), N; Nat»;
+axm done: {M N: Nat} → «core.nat.add (M, 1), N; Nat» → «core.nat.add (M, 1), N; Nat»;
+
+rule expand (M N: Nat, x: «core.nat.add (M, 1), N; Nat»):
+    mark @(M, N) x => done @(M, N) x;
+extern lam rectangular (x: «3, 4; Nat»): «3, 4; Nat» = mark @(2, 4) x;
+extern lam homogeneous (x: «5, 5; Nat»): «5, 5; Nat» = mark @(4, 5) x;
+
+// CHECK-DAG: done @ (2, 4) x
+// CHECK-DAG: done @ (4, 5) x

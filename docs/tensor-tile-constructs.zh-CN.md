@@ -18,6 +18,20 @@ staged box 求值后才能确定的 RHS shape 仍受最终 type check 约束。
 目前 generic 指 shape/offset 的 Nat 元变量；配置中含 `T: *` 的高 universe Rule list
 仍需要显式适配配置的 universe，不等同于自动 universe polymorphism。
 
+`grimmut` / `grpack` 在两个 frontends 检查 packed GEMM 所需的两项 canonicalization：
+开放 immutable Arr/Pi 和开放 mutable 类型一样，在 captures 齐全后于隔离 World 内
+instantiate-and-alpha-check。比如源 `«3, 4; Nat»` 应匹配模板 `«M+1, N; Nat»`
+在 M=2、N=4 的实例，不能要求源的 literal 3 结构上还是 nat.add App。
+这不是允许任意 term 用 alpha-check 匹配，入口仍仅限 type-level Def；最终 replacement
+type check 保留。
+
+Tuple pattern 可以匹配同长度的 immutable homogeneous Pack；`(M,K,N)` 对
+canonical `‹3; 4›` 把三个 captures 都绑定成 4。每个 operand pattern 均必须匹配
+同一 Pack body，长度及整体类型仍检查；重复元变量 `(M,M,N)` 不会接受 `(4,5,6)`。
+非 homogeneous Tuple 沿原路径匹配，mutable Pack 不因此获得结构匹配权限。
+这使 8³ 和 1×K×1 的 dimension metadata 与非方阵使用同一 generic rule，
+没有针对特定 literal shape 的第二条规则。
+
 ## 0.1 Operand placement 的 dominance
 
 `schedule_index.mim` 不依赖 tensor：parallel body 把 I32 counter 窄化为 `Idx 3`，

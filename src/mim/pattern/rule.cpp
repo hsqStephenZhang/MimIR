@@ -207,7 +207,7 @@ Pattern RulePattern::lower(const Def* def) {
         return result;
     }
 
-    if (def->is_mutable() && def->type() && def->type()->isa<Type>() && !def->is_closed()) {
+    if (def->type() && def->type()->isa<Type>() && !def->is_closed() && !is_meta(def)) {
         DefVec pending{def}, metas;
         DefSet seen;
         for (size_t i = 0; i != pending.size(); ++i) {
@@ -264,7 +264,14 @@ Pattern RulePattern::lower(const Def* def) {
     auto operands = std::vector<Pattern>();
     for (auto op : def->ops())
         operands.push_back(lower(op));
-    auto result = program_.node(def->node(), std::move(operands), def->flags());
+    auto result = program_.node(def->node(), operands, def->flags());
+    if (def->isa<Tuple>() && !operands.empty()) {
+        auto body = operands.front();
+        for (size_t i = 1; i != operands.size(); ++i)
+            body = program_.all(body, operands[i]);
+        auto pack = program_.node(Node::Pack, {program_.literal(def->world().type_nat(), operands.size()), body});
+        result    = program_.either(result, pack);
+    }
     if (auto type = def->type()) result = program_.all(result, program_.type(lower(type)));
     lowered_.emplace(def, result);
     return result;
