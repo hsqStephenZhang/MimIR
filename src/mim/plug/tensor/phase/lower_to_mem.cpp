@@ -118,7 +118,8 @@ void LowerToMem::collect_tensor_types() {
             } else if (Axm::isa<tensor::map_reduce_post>(app)) {
                 // result and each of the `nis` inputs / `nps` epilogue inputs are tensors.
                 add_tensor_ty(app->type());
-                auto mr            = btensor::MapRedPost::of(app->callee()->as<App>());
+                auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
+                if (auto initial = tensor_init(mr)) add_tensor_ty(initial->outs->type());
                 auto [is, post_is] = app->arg()->projs<2>();
                 elem(mr.To), elem(mr.Tp);
                 if (auto nis_l = Lit::isa<u64>(mr.nis))
@@ -610,11 +611,22 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
     // reusing the (rewritten) meta. The loop generation lives in the btensor plugin (`btensor.lower_map_reduce`).
     auto& w            = new_world();
-    auto c             = rewrite(app->callee())->as<App>();
+    auto old_mr        = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto initial       = tensor_init(old_mr);
     auto args          = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
     auto [is, post_is] = args->projs<2>();
 
-    auto mr = btensor::MapRedPost::of(c);
+    auto mr = btensor::MapRedPost::decode(
+        rewrite(old_mr.nis_nps), rewrite(old_mr.meta), rewrite(old_mr.shapes), rewrite(old_mr.in_tys),
+        w.tuple({rewrite(old_mr.comb), w.bot(rewrite(old_mr.To)), rewrite(old_mr.post)}), rewrite(old_mr.map_out),
+        rewrite(old_mr.maps_all));
+    const Def* seed = nullptr;
+    if (initial) {
+        auto outs = to_buffer(rewrite(initial->outs), initial->outs);
+        seed      = w.tuple({rewrite(initial->shape), rewrite(initial->map), outs});
+    } else {
+        seed = rewrite(old_mr.init);
+    }
 
     // The generic rewrite rebuilds the argument tuple with its stale value-array type even when its
     // elements were converted to buffers, which would not be assignable to the op's
@@ -656,7 +668,8 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     op             = w.app(op, mr.meta);
     op             = w.app(op, mr.shapes);
     op             = w.app(op, mr.in_tys);
-    op             = w.app(op, w.tuple({memcomb, mr.init, mempost}));
+    op             = w.app(op, seed->type());
+    op             = w.app(op, w.tuple({memcomb, seed, mempost}));
     op             = w.app(op, mr.map_out);
     op             = w.app(op, mr.maps_all);
     auto [am, dst] = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, fresh_mem())->projs<2>();

@@ -153,7 +153,8 @@ axm map_reduce_post: {nis nps: Nat}
                    → [So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched]
                    → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
                       Tps: «nps; *», Rps: «j: nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
-                   → [f: Fn [To, «i: nis; Tis#i»] → To, init: To, post: Fn [To, «j: nps; Tps#j»] → Tp]
+                   → {Init: *}
+                   → [f: Fn [To, «i: nis; Tis#i»] → To, init: Init, post: Fn [To, «j: nps; Tps#j»] → Tp]
                    → [map_out: «Rn; affine.Index» → «Ro; affine.Index»]
                    → [     maps: «i: nis; «Rn; affine.Index» → «Ris#i; affine.Index»»,
                       post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»»]
@@ -1568,3 +1569,15 @@ axm input_box: {r: Nat}
 axm transpose_box: {T: *, r: Nat, s: «r; Nat»}
                  → [producer: «s; T», offset extent: «r; Nat»]
                  → [«r; Nat», «r; Nat»];
+///
+/// The tensor accumulator descriptor read at each full loop coordinate before reduction.
+///
+anx lam Accumulator {T: *, Ro Rn: Nat}: * = [shape: «Ro; Nat»,
+    map_init: «Rn; affine.Index» → «Ro; affine.Index», outs: «shape; T»];
+anx lam outs {T: *, Ro Rn: Nat} (shape: «Ro; Nat»)
+    (map_init: «Rn; affine.Index» → «Ro; affine.Index») (value: «shape; T»): Accumulator @(T, Ro, Rn) =
+    (shape, map_init, value);
+anx lam AccumulatorDefault {T: *, Ro: Nat}: * =
+    [shape: «Ro; Nat», outs: «shape; T»];
+anx lam outs_default {T: *, Ro: Nat} (shape: «Ro; Nat») (value: «shape; T»): AccumulatorDefault @(T, Ro) =
+    (shape, value);

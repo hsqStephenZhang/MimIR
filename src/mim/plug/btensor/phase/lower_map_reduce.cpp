@@ -53,15 +53,50 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         return RWPhase::rewrite_imm_App(app);
     }
 
-    auto impl = rewrite(old_world().annex<btensor::map_reduce_post_impl>());
-    impl      = w.app(impl, mr.nis_nps);
-    impl      = w.app(impl, {mr.To, mr.Tp, mr.Ro, w.lit_nat(ranks->rr)});
-    impl      = w.app(impl, mr.shapes);
-    impl      = w.app(impl, {mr.Tis, mr.Tps});
-    impl      = w.app(impl, {mr.comb, mr.init, mr.post});
-    impl      = w.app(impl, mr.map_out);
+    auto impl                            = rewrite(old_world().annex<btensor::map_reduce_post_impl>());
+    impl                                 = w.app(impl, mr.nis_nps);
+    impl                                 = w.app(impl, {mr.To, mr.Tp, mr.Ro, w.lit_nat(ranks->rr)});
+    impl                                 = w.app(impl, mr.shapes);
+    impl                                 = w.app(impl, {mr.Tis, mr.Tps});
+    auto init_type                       = impl->type()->as<Pi>()->dom()->proj(3, 1);
+    const Def* init_cell                 = mr.init;
+    Lam* run                             = nullptr;
+    const Def* call                      = nullptr;
+    auto [mem, dst, inputs, post_inputs] = rewrite(app->arg())->projs<4>();
+    if (Check::alpha(mr.init->type(), mr.To)) {
+        auto constant          = w.mut_lam(init_type->as<Pi>())->set("initCell");
+        auto [m, indices, ret] = constant->vars<3>();
+        constant->app(true, ret, {m, mr.init});
+        init_cell = constant;
+    } else if (!Check::alpha(mr.init->type(), init_type)) {
+        if (mr.init->num_projs() != 3)
+            app->blame("btensor.map_reduce_post init must be a scalar, accumulator descriptor or per-cell callback")
+                .bail();
+        auto [bounds, map_init, outs] = mr.init->projs<3>();
+        auto buf                      = Axm::isa<buffer::Buf>(outs->type());
+        if (!buf || !Check::alpha(buf->arg(3, 2), mr.To))
+            app->blame("btensor accumulator descriptor must hold a buffer of the accumulator element type").bail();
+        std::tie(run, call)
+            = ds_splice(w.tuple({mem, dst, inputs, post_inputs, outs}), rewrite(app->type()), "mapReduceOuts");
+        auto [data, ret]     = run->vars<2>();
+        auto runtime         = data->projs<5>();
+        mem                  = runtime[0];
+        dst                  = runtime[1];
+        inputs               = runtime[2];
+        post_inputs          = runtime[3];
+        outs                 = runtime[4];
+        auto callback        = w.mut_lam(init_type->as<Pi>())->set("initCell");
+        auto [m, pref, done] = callback->vars<3>();
+        auto rn              = ranks->nloops();
+        DefVec indices(rn, [&](size_t d) { return w.call(core::conv::u, mr.Sr->proj(rn, d), pref->proj(rn, d)); });
+        auto [mapped, coords] = op_affine_map(map_init, mr.Ro, mr.Rn, mr.Sr, bounds, w.tuple(indices), m)->projs<2>();
+        auto [read, value]    = buffer::op_read(mapped, outs, *Shape(coords).fold(bounds))->projs<2>();
+        callback->app(true, done, {read, value});
+        init_cell = callback;
+    }
+    impl = w.app(impl, {mr.comb, init_cell, mr.post});
+    impl = w.app(impl, mr.map_out);
 
-    auto [mem, dst, inputs, post_inputs]                 = rewrite(app->arg())->projs<4>();
     auto [read_inputs_ty, read_post_ty, write_output_ty] = impl->type()->as<Pi>()->dom()->projs<3>();
 
     // A `buffer.Buf` has its literal size-1 axes folded away, so the indices fold alike.
@@ -94,8 +129,13 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         write_output->app(true, ret, stored->proj(2, 0));
     }
 
-    impl = w.app(impl, {read_inputs, read_post, write_output});
-    return w.app(impl, {mem, dst});
+    impl        = w.app(impl, {read_inputs, read_post, write_output});
+    auto result = w.app(impl, {mem, dst});
+    if (run) {
+        run->app(true, run->ret_var(), result);
+        return call;
+    }
+    return result;
 }
 
 const Def* LowerMapReduce::lower_broadcast(const App* app) {

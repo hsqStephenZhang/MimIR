@@ -110,7 +110,7 @@ struct Slots {
 /// Size-1 axes collapse out of the type, so they may differ - and then their maps do not compose.
 static bool reads_as_produced(const Def* value, const Def* S) {
     if (auto mr = graph::map_reduce(value)) {
-        auto shapes = mr->uncurry_args<8>()[2];
+        auto shapes = mr->uncurry_args<9>()[2];
         return shapes->proj(3, 0) == S;
     }
     if (auto bc = graph::broadcast(value)) return bc->arg()->proj(3, 1) == S;
@@ -215,7 +215,8 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
         auto inner = graph::map_reduce(is->proj(nis_nat, k));
         if (!inner) continue;
 
-        auto im       = btensor::MapRedPost::of(inner->callee()->as<App>());
+        auto im = btensor::MapRedPost::of(inner->callee()->as<App>());
+        if (tensor_init(im)) continue;
         auto inner_is = inner->arg()->proj(2, 0);
 
         auto inner_nis_nat = Lit::isa<u64>(im.nis);
@@ -353,6 +354,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
     res      = w.app(res, mr.meta);
     res      = w.app(res, mr.shapes);
     res      = w.app(res, {new_Tis, new_Ris, new_Sis, mr.Tps, mr.Rps, mr.Sps});
+    res      = w.app(res, mr.init_type);
     res      = w.app(res, {new_comb, mr.init, mr.post});
     res      = w.app(res, mr.map_out);
     res      = w.app(res, {new_maps, mr.post_maps});
@@ -411,6 +413,7 @@ bool Fuse::sole_consumer(const Def* d) const {
 // `callee`/`arg` are new-world (already rewritten): the caller iterates this on freshly fused apps.
 const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     auto mr = btensor::MapRedPost::of(callee);
+    if (tensor_init(mr)) return nullptr;
 
     auto& w = new_world();
 
@@ -517,6 +520,7 @@ const Def* Fuse::fuse_epilogue(const App* callee, const Def* arg) {
     res      = w.app(res, {im.To, mr.Tp, im.Ro, im.Rn, im.TSched});
     res      = w.app(res, im.shapes);
     res      = w.app(res, {im.Tis, im.Ris, im.Sis, w.tuple(eps.T), w.tuple(eps.R), w.tuple(eps.S)});
+    res      = w.app(res, im.init_type);
     res      = w.app(res, {im.comb, im.init, fused_post});
     res      = w.app(res, im.map_out);
     res      = w.app(res, {im.maps, w.tuple(eps.maps)});
@@ -575,8 +579,15 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
         return slots;
     };
 
-    auto ins = rewire(nis_nat, mr.Tis, mr.Ris, mr.Sis, mr.maps, is);
-    auto eps = rewire(nps_nat, mr.Tps, mr.Rps, mr.Sps, mr.post_maps, ps);
+    auto ins  = rewire(nis_nat, mr.Tis, mr.Ris, mr.Sis, mr.maps, is);
+    auto eps  = rewire(nps_nat, mr.Tps, mr.Rps, mr.Sps, mr.post_maps, ps);
+    auto seed = mr.init;
+    if (auto initial = tensor_init(mr))
+        if (auto rt = read_through(w, initial->outs, initial->map, initial->shape); rt && rt->R == mr.Ro) {
+            seed = w.tuple({rt->S, compose_map(w, rt->map, initial->map), rt->src});
+            if (!sole_consumer(initial->outs)) shared_.insert(rt->src);
+            changed = true;
+        }
     if (!changed) return nullptr;
 
     auto res = w.annex<tensor::map_reduce_post>();
@@ -584,7 +595,8 @@ const Def* Fuse::fuse_read_through(const App* callee, const Def* arg) {
     res      = w.app(res, mr.meta);
     res      = w.app(res, mr.shapes);
     res = w.app(res, {w.tuple(ins.T), w.tuple(ins.R), w.tuple(ins.S), w.tuple(eps.T), w.tuple(eps.R), w.tuple(eps.S)});
-    res = w.app(res, mr.comb_init);
+    res = w.app(res, seed->type());
+    res = w.app(res, {mr.comb, seed, mr.post});
     res = w.app(res, mr.map_out);
     res = w.app(res, {w.tuple(ins.maps), w.tuple(eps.maps)});
     res = w.app(res, {w.tuple(ins.is), w.tuple(eps.is)});

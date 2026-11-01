@@ -30,6 +30,7 @@ const Def* normalize_map_reduce(const Def*, const Def* c, const Def* arg) {
     op      = w.app(op, {To, To, Ro, Rn, sched->type()});
     op      = w.app(op, {So, Sr, sched});
     op      = w.app(op, {Tis, Ris, Sis, unit, unit, unit});
+    op      = w.app(op, To);
     op      = w.app(op, {comb, init, post});
     op      = w.app(op, map_out);
     op      = w.app(op, {maps, unit});

@@ -190,11 +190,37 @@ TEST_CASE("Tensor pattern: map-reduce schemas handle singleton and three-input p
     REQUIRE(view->inputs.size() == 3);
     CHECK(view->complete);
     for (size_t i = 0; i != 3; ++i) {
-        CHECK(view->inputs[i].group == 7);
+        CHECK(view->inputs[i].group == 8);
         CHECK(view->inputs[i].path == std::vector<size_t>{0, i});
     }
+
     CHECK_FALSE(graph.is_pure(op));
     CHECK_FALSE(ir.ops.decode(op, 2)->complete);
+    CHECK(ir.w.curr_gid() == gid);
+}
+
+TEST_CASE("Tensor pattern: tensor accumulators are declared data inputs") {
+    TensorIR ir(false);
+    ir.parse(R"(
+            plugin tensor;
+            plugin core;
+            plugin affine;
+            use tensor;
+            fun add (acc: Nat, x: Nat)@tt: Nat = return (core.nat.add (acc, x));
+            extern lam f (x: «3; Nat», values: «3, 5; Nat»): «3; Nat» =
+                map_reduce_post @(1, 0) @(Nat, Nat, 1, 2, SchedT)
+                    (3, (3, 5), mk_sched (2, 0)) @(Nat, 2, (3, 5), (), (), ())
+                    (add, outs @(Nat, 1, 2) 3 (proj_map @(2, 1) 0) x, id @Nat)
+                    (proj_map @(2, 1) 0) (affine.id @2, ()) (values, ());
+        )");
+    auto gid  = ir.w.curr_gid();
+    auto view = ir.ops.decode(ir.f()->body(), 10);
+    REQUIRE(view);
+    CHECK(view->complete);
+    REQUIRE(view->inputs.size() == 2);
+    CHECK(view->inputs[1].value == ir.f()->var(2, 0));
+    CHECK(view->inputs[1].group == 5);
+    CHECK(view->inputs[1].path == std::vector<size_t>{1, 2});
     CHECK(ir.w.curr_gid() == gid);
 }
 
@@ -427,7 +453,7 @@ TEST_CASE("Tensor fusion: repeating a reduction in two slots never duplicates th
         size_t reductions = 0, maps = 0;
         for (auto def : view.operations()) {
             if (auto mr = tg::map_reduce(def)) {
-                auto meta = mr->uncurry_args<8>()[1];
+                auto meta = mr->uncurry_args<9>()[1];
                 auto ro = Lit::isa(tg::slot(meta, 5, 2)), rn = Lit::isa(tg::slot(meta, 5, 3));
                 REQUIRE(ro);
                 REQUIRE(rn);

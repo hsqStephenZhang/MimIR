@@ -10,10 +10,35 @@
 #include <mim/tuple.h>
 #include <mim/world.h>
 
+#include <mim/plug/btensor/btensor.h>
+
 #include "mim/plug/tensor/autogen.h"
 #include "mim/plug/tensor/pattern.h"
 
 namespace mim::plug::tensor {
+
+struct TensorInit {
+    const Def *shape, *map, *outs;
+};
+
+inline std::optional<TensorInit> tensor_init(const btensor::MapRedPost& mr) {
+    if (Check::test_alpha(mr.init->type(), mr.To)) return {};
+    auto& w         = mr.init->world();
+    auto is_default = mr.init->num_projs() == 2;
+    auto expected   = is_default ? w.app(w.annex<AccumulatorDefault>(), {mr.To, mr.Ro})
+                                 : w.app(w.annex<Accumulator>(), {mr.To, mr.Ro, mr.Rn});
+    if (!Check::coerce(expected, mr.init))
+        mr.init
+            ->blame("map_reduce_post init must be a scalar accumulator or tensor.Accumulator: {} versus {}",
+                    mr.init->type(), expected)
+            .bail();
+    if (is_default) {
+        auto [shape, outs] = mr.init->projs<2>();
+        return TensorInit{shape, mr.map_out, outs};
+    }
+    auto [shape, map, outs] = mr.init->projs<3>();
+    return TensorInit{shape, map, outs};
+}
 
 /// Is @p map the identity access map `λ x. x`?
 inline bool is_identity_map(const Def* map) {
@@ -52,7 +77,7 @@ struct PureRead {
 inline std::optional<PureRead> is_pure_read(const Def* value) {
     auto mr = graph::map_reduce(value);
     if (!mr) return {};
-    auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, is_all] = mr->uncurry_args<8>();
+    auto [nis_nps, meta, shapes, in_tys, init_type, comb_init, map_out, maps_all, is_all] = mr->uncurry_args<9>();
 
     auto [nis, nps] = nis_nps->projs<2>();
     // No reduction loops: the total loop count Rn equals the output rank Ro.

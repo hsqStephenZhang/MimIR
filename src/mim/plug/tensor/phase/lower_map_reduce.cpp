@@ -160,7 +160,11 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
 
         // Inner (reduction) loops over the trailing `Rr` bounds of `Sr`, collecting the reduction iteration
         // indices.
-        acc              = mr.init;
+        acc = mr.init;
+        if (auto initial = tensor_init(mr)) {
+            auto coords = affine_map(initial->map, Ro, n, Sr, initial->shape, w.tuple(wb_iters));
+            acc         = w.extract(initial->outs, coords);
+        }
         cont             = write_back;
         auto raw_red     = affine::counting_nest(current_mut, cont, acc, Defs(sr).subspan(ro, rr), "forIn");
         auto element_acc = acc;

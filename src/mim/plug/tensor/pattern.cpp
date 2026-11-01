@@ -27,7 +27,7 @@ namespace {
 
 struct Calls {
     pattern::PatternProgram p;
-    pattern::Pattern mr = call(p, Annex::base<map_reduce_post>(), std::vector(8, p.any()));
+    pattern::Pattern mr = call(p, Annex::base<map_reduce_post>(), std::vector(9, p.any()));
     pattern::Pattern bc = call(p, Annex::base<tensor::broadcast>(), std::vector(2, p.any()));
     pattern::Pattern mm = call(p, Annex::base<product_2d>(), std::vector(3, p.any()));
 
@@ -75,7 +75,7 @@ void inputs(pattern::OpView& view,
 }
 
 std::optional<pattern::OpView> decode_mr(const Def* def, size_t limit) {
-    auto args = groups(def, 8);
+    auto args = groups(def, 9);
     if (args.empty()) return {};
     pattern::OpView view;
     for (size_t group = 0; group != 2; ++group) {
@@ -85,7 +85,20 @@ std::optional<pattern::OpView> decode_mr(const Def* def, size_t limit) {
             view.complete = false;
             continue;
         }
-        inputs(view, slot(args[7], 2, group), *n, 7, {group}, limit);
+        inputs(view, slot(args[8], 2, group), *n, 8, {group}, limit);
+    }
+    auto initial = slot(args[5], 3, 1);
+    auto scalar  = slot(args[1], 5, 0);
+    if (initial && scalar && !Check::test_alpha(initial->type(), scalar)) {
+        auto count = initial->num_projs();
+        if (auto value = (count == 2 || count == 3) ? slot(initial, count, count - 1) : nullptr)
+            view.inputs.push_back({
+                value,
+                5,
+                {1, count - 1}
+            });
+        else
+            view.complete = false;
     }
     return view;
 }

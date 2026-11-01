@@ -1,0 +1,60 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/outs_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin compile;
+import opt;
+use tensor;
+
+fun add (acc: I64, x: I64)@tt: I64 = return (core.wrap.add 0 @0 (acc, x));
+fun post (acc: I64, _: [])@tt: I32 =
+    return (core.conv.s @0 @4294967296 (core.wrap.mul 0 @0 (acc, 3I64)));
+lam block (n off: Nat, x: «3; I64», values: «3, 5; I64»): «3; I64» =
+    map_reduce_post @(1, 0) @(I64, I64, 1, 2, SchedT)
+        (3, (3, n), mk_sched (2, 0)) @(I64, 2, (3, 5), (), (), ())
+        (add, outs_default @(I64, 1) 3 x, id @I64)
+        (proj_map @(2, 1) 0)
+        (λ (o: «2; affine.Index»): «2; affine.Index» =
+            (o#ff, affine.op.add (o#tt, affine.lit off)), ()) (values, ());
+extern fun whole (x: «3; I64», values: «3, 5; I64»): «3; I64» =
+    return (block (5, 0, buf x, buf values));
+extern fun split (x: «3; I64», values: «3, 5; I64»): «3; I64» =
+    let (x, values) = (buf x, buf values);
+    return (block (3, 2, block (2, 0, x, values), values));
+extern fun final_post (x: «3; I64», values: «3, 5; I64»): «3; I32» =
+    let (x, values) = (buf x, buf values);
+    let partial = block (2, 0, x, values);
+    return (map_reduce_post @(1, 0) @(I64, I32, 1, 2, SchedT)
+        (3, (3, 3), mk_sched (2, 0)) @(I64, 2, (3, 5), (), (), ())
+        (add, outs @(I64, 1, 2) 3 (proj_map @(2, 1) 0) partial, post)
+        (proj_map @(2, 1) 0)
+        (λ (o: «2; affine.Index»): «2; affine.Index» =
+            (o#ff, affine.op.add (o#tt, affine.lit 2)), ()) (values, ()));
+
+lam scheduled (vd unroll: Nat, x: «3; I64», values: «3, 5; I64»): «3; I64» =
+    map_reduce_post @(1, 0) @(I64, I64, 1, 2, SchedT)
+        (3, (3, 5), mk_sched (vd, unroll)) @(I64, 2, (3, 5), (), (), ())
+        (add, outs @(I64, 1, 2) 3 (proj_map @(2, 1) 0) x, id @I64)
+        (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1), ()) (values, ());
+extern fun vectorized (x: «3; I64», values: «3, 5; I64»): «3; I64» =
+    return (scheduled (0, 0, buf x, buf values));
+extern fun redvec (x: «3; I64», values: «3, 5; I64»): «3; I64» =
+    return (scheduled (1, 1, buf x, buf values));
+extern fun empty (x: «3; I64», values: «3, 5; I64»): «3; I64» =
+    return (block (0, 0, buf x, buf values));
+extern fun reversed (x: «3; I64», values: «3, 5; I64»): «3; I64» =
+    let (x, values) = (buf x, buf values);
+    return (map_reduce_post @(1, 0) @(I64, I64, 1, 2, SchedT)
+        (3, (3, 5), mk_sched (0, 0)) @(I64, 2, (3, 5), (), (), ())
+        (add, outs @(I64, 1, 2) 3
+            (λ (o: «2; affine.Index»): affine.Index = affine.op.sub (affine.lit 2, o#ff)) x, id @I64)
+        (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1), ()) (values, ()));
+extern fun blocked (x: «2, 3; I64», values: «2, 3, 5; I64»): «2, 3; I64» =
+    let (x, values) = (buf x, buf values);
+    return (map_reduce_post @(1, 0) @(I64, I64, 2, 3, SchedT)
+        ((2, 3), (2, 3, 5), mk_sched (0, 0)) @(I64, 3, (2, 3, 5), (), (), ())
+        (add, outs @(I64, 2, 3) (2, 3) (proj_map @(3, 2) (0, 1)) x, id @I64)
+        (proj_map @(3, 2) (0, 1)) (proj_map @(3, 3) (0, 1, 2), ()) (values, ()));

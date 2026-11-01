@@ -16,20 +16,33 @@
 
 namespace mim::plug::btensor {
 
-/// The curried meta arguments of a `tensor.map_reduce_post` or `btensor.map_reduce_post` callee (same layout).
+/// The curried arguments of a tensor or buffer map-reduce, including the tensor init type.
 struct MapRedPost {
     const Def *nis_nps, *meta, *shapes, *in_tys, *comb_init, *map_out, *maps_all;
     const Def *nis, *nps, *To, *Tp, *Ro, *Rn, *TSched, *So, *Sr, *sched;
     const Def *Tis, *Ris, *Sis, *Tps, *Rps, *Sps, *comb, *init, *post, *maps, *post_maps;
+    const Def* init_type = nullptr;
 
     static MapRedPost of(const App* callee) {
-        auto [nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all] = callee->uncurry_args<7>();
-        auto [nis, nps]                                                    = nis_nps->projs<2>();
-        auto [To, Tp, Ro, Rn, TSched]                                      = meta->projs<5>();
-        auto [So, Sr, sched]                                               = shapes->projs<3>();
-        auto [Tis, Ris, Sis, Tps, Rps, Sps]                                = in_tys->projs<6>();
-        auto [comb, init, post]                                            = comb_init->projs<3>();
-        auto [maps, post_maps]                                             = maps_all->projs<2>();
+        auto [nis_nps, meta, shapes, in_tys, init_type, comb_init, map_out, maps_all] = callee->uncurry_args<8>();
+        auto result      = decode(nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all);
+        result.init_type = init_type;
+        return result;
+    }
+
+    static MapRedPost decode(const Def* nis_nps,
+                             const Def* meta,
+                             const Def* shapes,
+                             const Def* in_tys,
+                             const Def* comb_init,
+                             const Def* map_out,
+                             const Def* maps_all) {
+        auto [nis, nps]                     = nis_nps->projs<2>();
+        auto [To, Tp, Ro, Rn, TSched]       = meta->projs<5>();
+        auto [So, Sr, sched]                = shapes->projs<3>();
+        auto [Tis, Ris, Sis, Tps, Rps, Sps] = in_tys->projs<6>();
+        auto [comb, init, post]             = comb_init->projs<3>();
+        auto [maps, post_maps]              = maps_all->projs<2>();
         return {nis_nps, meta, shapes, in_tys, comb_init, map_out, maps_all, nis,      nps, To,
                 Tp,      Ro,   Rn,     TSched, So,        Sr,      sched,    Tis,      Ris, Sis,
                 Tps,     Rps,  Sps,    comb,   init,      post,    maps,     post_maps};

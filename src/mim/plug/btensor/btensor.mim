@@ -104,7 +104,8 @@ axm map_reduce_post: {nis nps: Nat}
                    → [So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched]
                    → {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
                       Tps: «nps; *», Rps: «j: nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
-                   → [f: Fn [mem.M 0, To, «i: nis; Tis#i»] → [mem.M 0, To], init: To,
+                   → {Init: *}
+                   → [f: Fn [mem.M 0, To, «i: nis; Tis#i»] → [mem.M 0, To], init: Init,
                       post: Fn [mem.M 0, To, «j: nps; Tps#j»] → [mem.M 0, Tp]]
                    → [map_out: «Rn; affine.Index» → «Ro; affine.Index»]
                    → [maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»,
@@ -323,11 +324,11 @@ lam range_unroll (r: Nat, Sr: «r; Nat») (A: *) (lo hi: Nat)
 /// ### NestT
 ///
 /// The type of scheduled loop nests for a `map_reduce` over the domain `Sr` (`ro` leading parallel
-/// dims, `rr` trailing reduction dims, fold element type `To`): given the fold seed `init`, the
+/// dims, `rr` trailing reduction dims, fold element type `To`): given the per-cell fold seed `init_cell`, the
 /// per-point fold step `cell` (fold the elements at one loop vector into the accumulator) and the
 /// per-cell write-back `wb` (consume one folded value at its output coordinates), run the nest.
 anx lam NestT (ro rr: Nat, Sr: «ro + rr; Nat», To U: *): * =
-      [init: To,
+      [init_cell: Cn [mem.M 0, «ro + rr; I32», Cn [mem.M 0, To]],
        cell: Cn [mem.M 0, To, «ro + rr; I32», Cn [mem.M 0, To]],
        wb:   Cn [mem.M 0, U, To, «ro + rr; I32», Cn [mem.M 0, U]]]
     → Cn [mem.M 0, U, Cn [mem.M 0, U]];
@@ -354,7 +355,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
     // The unroll window must stay within the reduction dims.
     let u_lo = r - unroll;
     let u_lo = (ro, u_lo)#(ro <= u_lo);
-    lam nest (init: To,
+    lam nest (init_cell: Cn [mem.M 0, «r; I32», Cn [mem.M 0, To]],
               cell: Cn [mem.M 0, To, «r; I32», Cn [mem.M 0, To]],
               wb:   Cn [mem.M 0, U, To, «r; I32», Cn [mem.M 0, U]])
             : Cn [mem.M 0, U, Cn [mem.M 0, U]] =
@@ -373,7 +374,9 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
             con at_cell (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
                 con folded (m: mem.M 0, v: To) =
                     wb (m, u, v, pref, k);
-                (range_nest (r, Sr) To (affine_for @To, ro, u_lo) win) (pref, m, init, folded);
+                con seeded (m: mem.M 0, init: To) =
+                    (range_nest (r, Sr) To (affine_for @To, ro, u_lo) win) (pref, m, init, folded);
+                init_cell (m, pref, seeded);
             (range_nest (r, Sr) U (affine_for @U, 0, ro) at_cell) (‹r; 0I32›, m, u, done);
 
         // VECTORIZED: the vector dim as the innermost loop over a row of accumulators — refill the
@@ -387,8 +390,10 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
                 done (m, u);
             con at_row (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
                 con fill (pref: «r; I32», m: mem.M 0, uf: U, kf: Cn [mem.M 0, U]) =
-                    let (m, _) = buffer.write (1, Sv, To) (m, row, vi_of pref, init);
-                    kf (m, uf);
+                    con seeded (m: mem.M 0, init: To) =
+                        let (m, _) = buffer.write (1, Sv, To) (m, row, vi_of pref, init);
+                        kf (m, uf);
+                    init_cell (m, pref, seeded);
                 con at_point (pref: «r; I32», m: mem.M 0, up: U, kp: Cn [mem.M 0, U]) =
                     let (m, acc) = buffer.read (1, Sv, To) (m, row, vi_of pref);
                     con after_win (m: mem.M 0, acc: To) =
@@ -434,8 +439,10 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
                 done (m, u);
             con at_block (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
                 con fill (pref: «r; I32», m: mem.M 0, uf: U, kf: Cn [mem.M 0, U]) =
-                    let (m, _) = buffer.write (1, Np, To) (m, panel, vi_of pref, init);
-                    kf (m, uf);
+                    con seeded (m: mem.M 0, init: To) =
+                        let (m, _) = buffer.write (1, Np, To) (m, panel, vi_of pref, init);
+                        kf (m, uf);
+                    init_cell (m, pref, seeded);
                 con at_point (pref: «r; I32», m: mem.M 0, up: U, kp: Cn [mem.M 0, U]) =
                     let (m, acc) = buffer.read (1, Np, To) (m, panel, vi_of pref);
                     con after_win (m: mem.M 0, acc: To) =
@@ -496,8 +503,10 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
                 done (m, u);
             con at_block (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
                 con fill (pref: «r; I32», m: mem.M 0, uf: U, kf: Cn [mem.M 0, U]) =
-                    let (m, _) = buffer.write (1, Sb, To) (m, panel, bi_of pref, init);
-                    kf (m, uf);
+                    con seeded (m: mem.M 0, init: To) =
+                        let (m, _) = buffer.write (1, Sb, To) (m, panel, bi_of pref, init);
+                        kf (m, uf);
+                    init_cell (m, pref, seeded);
                 con at_point (pref: «r; I32», m: mem.M 0, up: U, kp: Cn [mem.M 0, U]) =
                     let (m, acc) = buffer.read (1, Sb, To) (m, panel, bi_of pref);
                     con after_cell (m: mem.M 0, acc: To) =
@@ -530,7 +539,8 @@ priv anx lam map_reduce_post_impl {nis nps: Nat}
     {To Tp: *, Ro Rr: Nat}
     (So: «Ro; Nat», Sr: «Ro + Rr; Nat», sched: SchedT)
     {Tis: «nis; *», Tps: «nps; *»}
-    (f: Fn [mem.M 0, To, «i: nis; Tis#i»] → [mem.M 0, To], init: To,
+    (f: Fn [mem.M 0, To, «i: nis; Tis#i»] → [mem.M 0, To],
+     init_cell: Cn [mem.M 0, «Ro + Rr; I32», Cn [mem.M 0, To]],
      post: Fn [mem.M 0, To, «j: nps; Tps#j»] → [mem.M 0, Tp])
     (map_out: «Ro + Rr; affine.Index» → «Ro; affine.Index»)
     (read_inputs: Fn [mem.M 0, «d: Ro + Rr; Idx (Sr#d)»] → [mem.M 0, «i: nis; Tis#i»],
@@ -555,7 +565,7 @@ priv anx lam map_reduce_post_impl {nis nps: Nat}
             con epilogue (m: mem.M 0, values: «j: nps; Tps#j»)@tt = post ((m, acc, values), write);
             read_post ((m, coords), epilogue);
         let nest = sched (NestT (Ro, Rr, Sr, To, Output)) (mr_nest (Ro, Rr, Sr, To, Output));
-        nest (init, cell, wb) (m, dst, return);
+        nest (init_cell, cell, wb) (m, dst, return);
     cps.cps2ds run (m, dst);
 ///
 /// ## Phases
