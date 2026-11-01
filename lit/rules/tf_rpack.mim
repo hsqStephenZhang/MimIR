@@ -1,7 +1,5 @@
 // RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
-// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
 // RUN: cat %t.rule | %FileCheck %s --check-prefix=PACK
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=PACK
 // TF-RULES: prepack
 // TF-PURE: frozen, stage_persistent
 

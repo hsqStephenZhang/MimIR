@@ -127,7 +127,8 @@ axm rule_app: {T: *} → T → Phase;
 ///
 /// Matches a Rule's tuple of LHS roots independently in each closed external function and replaces
 /// them with the corresponding RHS roots. Shared metavariables join roots without a common tuple.
-/// The second field explicitly asserts purity of the listed axioms; no effect analysis is inferred.
+/// The second field explicitly asserts purity of the listed axioms or qualified annex-name strings.
+/// Strings also name polymorphic axioms without embedding their higher-universe types in the list.
 /// One accepted match per function per invocation; combine with `phases tt` for bounded iteration.
 /// Bounded search skips rejected guards, Unknown plans and canonical no-ops until a changed rewrite
 /// is accepted; an incomplete enumeration does not invalidate that rewrite.

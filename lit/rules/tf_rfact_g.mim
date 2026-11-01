@@ -1,0 +1,23 @@
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=GAP
+// RUN: grep 'no accepted match visited' %t.graph.log
+// TF-RULES: exclusive
+// TF-PURE: tensor.unary, fused
+
+plugin compile;
+plugin tensor;
+axm only_used_by: [«8; Nat», «8; Nat»] → Bool;
+axm fused: [Nat → Nat, «8; Nat»] → «8; Nat»;
+rule exclusive (f: Nat → Nat, x: «8; Nat», unused: Nat):
+    tensor.unary @(Nat, Nat) f @(1, 8) x
+    when only_used_by (x, tensor.unary @(Nat, Nat) f @(1, 8) x) => fused (f, x);
+extern lam result (f: Nat → Nat, x: «8; Nat», salt: Nat): «8; Nat» =
+    tensor.unary @(Nat, Nat) f @(1, 8) x;
+
+// FACT-LABEL: extern lam result
+// FACT: fused
+
+// Flip GAP to the target CHECKs when the missing extension lands.
+// GAP-LABEL: extern lam result
+// GAP: tensor.unary
+// GAP-NOT: fused

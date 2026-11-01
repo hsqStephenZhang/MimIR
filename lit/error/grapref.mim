@@ -1,0 +1,10 @@
+// RUN: (! %mim %s -o - 2>&1) | %FileCheck %s
+
+plugin compile;
+axm q: Nat → Nat;
+rule identity (x: Nat): q x => q x;
+extern lam result (x: Nat): Nat = q x;
+extern lam _compile (): compile.Phase =
+    compile.graph_rule_app (identity, "compile.missing");
+
+// CHECK: graph_rule_app purity reference must name an axiom: compile.missing

@@ -1,6 +1,4 @@
 // RUN: %mim %s -o - | %FileCheck %s
-// XFAIL: *
-// Even a singleton polymorphic axiom fails the current pure_ops type contract.
 
 plugin compile;
 plugin tensor;
@@ -8,7 +6,7 @@ axm q: Nat → Nat;
 rule identity (x: Nat): q x => q x;
 extern lam result (x: Nat): Nat = q x;
 extern lam _compile (): compile.Phase =
-    compile.graph_rule_app (identity, tensor.slice);
+    compile.graph_rule_app (identity, ("tensor.slice", "tensor.unary"));
 
 // CHECK-LABEL: extern lam result
 // CHECK: q

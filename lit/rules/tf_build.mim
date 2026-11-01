@@ -1,10 +1,5 @@
 // RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
 // RUN: cat %t.rule | %FileCheck %s --check-prefix=BUILD
-// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: grep 'unsupported graph Rule recipe value' %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=BUILD
-// XFAIL: *
-// graph_rule_app cannot instantiate the new RHS lambdas.
 // TF-RULES: cache
 // TF-PURE: mark, mm, slice, panel, stage, tiled, fold, add
 

@@ -1,0 +1,22 @@
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=REV
+// TF-RULES: reverse
+// TF-PURE: tiled, consume, tiled_n, sink
+
+plugin compile;
+// tiled realizes disjoint producer tiles; consume is a pure pointwise reader.
+axm tiled: [Nat, Nat → Nat] → Nat;
+axm consume: Nat → Nat;
+// tiled_n realizes producer and reader together, returning both values.
+axm tiled_n: [Nat, Nat → Nat] → [Nat, Nat];
+axm sink: [Nat, Nat] → Nat;
+
+rule reverse (e: Nat, body: Nat → Nat):
+    (tiled (e, body), consume (tiled (e, body))) => tiled_n (e, body);
+extern lam result (e: Nat, body: Nat → Nat): Nat =
+    let p = tiled (e, body);
+    sink (p, consume p);
+
+// REV-LABEL: extern lam result
+// REV: tiled_n
+// REV-NOT: consume

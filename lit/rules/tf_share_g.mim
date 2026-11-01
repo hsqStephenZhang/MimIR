@@ -1,0 +1,52 @@
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=VALUE
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=MULTI
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=JOIN
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=NESTGAP
+// TF-RULES: (local, shared)
+// TF-PURE: slice, ew, whole, tiles, tiled_n, tiled, sink
+
+plugin compile;
+// Handles model pure tensors; whole reads the entire producer, tiles reads its partition.
+axm slice: [Nat, Nat, Nat] → Nat;
+axm ew: [Nat → Nat, Nat] → Nat;
+axm whole: Nat → Nat;
+axm tiles: Nat → Nat;
+axm tiled: [Nat, Nat → Nat] → Nat;
+// tiled_n returns the tiled reader and whole reader from a single shared realization.
+axm tiled_n: Nat → [Nat, Nat];
+axm sink: [Nat, Nat] → Nat;
+
+rule local (f: Nat → Nat, x o e: Nat): slice (ew (f, x), o, e) => ew (f, slice (x, o, e));
+rule shared (p: Nat): (tiles p, whole p) => tiled_n p;
+extern lam value (f: Nat → Nat, x salt: Nat): [Nat, Nat] =
+    (slice (ew (f, x), 0, 2), whole (ew (f, x)));
+extern lam multi (p: Nat): [Nat, Nat] = (tiles p, whole p);
+extern lam multi_nested (p: Nat): Nat = sink (tiles p, sink (whole p, p));
+extern lam nested (f: Nat → Nat, x salt: Nat): [Nat, Nat] =
+    let p = ew (f, x);
+    (tiled (4, λ (o: Nat): Nat = slice (p, o, 2)), whole p);
+
+// VALUE-LABEL: extern lam value
+// VALUE-SAME: ([[F:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat → Nat, [[X:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat,
+// VALUE: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = slice ([[X]], 0, 2);
+// VALUE: let [[TILE:[a-zA-Z_][a-zA-Z_0-9]*]] = ew ([[F]], [[SL]]);
+// VALUE: let [[FULL:[a-zA-Z_][a-zA-Z_0-9]*]] = ew ([[F]], [[X]]);
+// VALUE: ([[TILE]], whole [[FULL]])
+// MULTI-LABEL: extern lam multi
+// MULTI: tiled_n
+// MULTI-NOT: tiles
+// NEST-LABEL: extern lam nested
+// NEST: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = slice (x, o, 2);
+// NEST: ew (f, [[SL]])
+// NEST: whole
+// JOIN-LABEL: extern lam multi_nested
+// JOIN: tiled_n
+// JOIN-NOT: tiles
+// JOIN-NOT: whole
+// JOIN-LABEL: extern lam nested
+
+// Flip NESTGAP to NEST when region search lands.
+// NESTGAP-LABEL: extern lam nested
+// NESTGAP: ew (f, x)
+// NESTGAP: slice (

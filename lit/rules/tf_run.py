@@ -9,6 +9,9 @@ source = pathlib.Path(filename)
 text = source.read_text()
 rules = re.search(r"^// TF-RULES: (.+)$", text, re.MULTILINE).group(1)
 pure = re.search(r"^// TF-PURE: (.+)$", text, re.MULTILINE).group(1)
+pure = ", ".join(
+    f'"{op.strip()}"' if "." in op else op.strip() for op in pure.split(",")
+)
 phase = (
     f"compile.rule_app {rules}"
     if frontend == "rule"
@@ -16,7 +19,7 @@ phase = (
 )
 directory = pathlib.Path(f"{temporary}.{frontend}.dir")
 directory.mkdir()
-generated = directory / source.name
+generated = directory / "probe.mim"
 try:
     generated.write_text(
         text

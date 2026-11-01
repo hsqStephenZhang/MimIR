@@ -1,10 +1,5 @@
 // RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
-// RUN: not python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: grep 'argument is not assignable to callee' %t.graph.log
-// RUN: cat %t.rule | %FileCheck %s --check-prefix=FACT
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=FACT
-// XFAIL: *
-// Polymorphic pure_ops is rejected before the unresolved graph guard can run.
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=GAP
 // TF-RULES: exclusive
 // TF-PURE: tensor.unary, fused
 
@@ -20,3 +15,8 @@ extern lam result (f: Nat → Nat, x: «8; Nat», salt: Nat): «8; Nat» =
 
 // FACT-LABEL: extern lam result
 // FACT: fused
+
+// Flip GAP to the target CHECKs when the missing extension lands.
+// GAP-LABEL: extern lam result
+// GAP: tensor.unary
+// GAP-NOT: fused

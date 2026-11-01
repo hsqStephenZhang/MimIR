@@ -1,0 +1,31 @@
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=GAP
+// RUN: grep 'no accepted match visited' %t.graph.log
+// TF-RULES: cache
+// TF-PURE: tiled, mm, slice, stage
+
+plugin compile;
+// Handles model tensors; stage belongs outside the io loop so all row tiles reuse it.
+axm mm: [Nat, Nat] → Nat;
+axm slice: [Nat, Nat, Nat] → Nat;
+axm stage: Nat → Nat;
+axm tiled: [Nat, Nat → Nat] → Nat;
+
+rule cache (a b: Nat):
+    tiled (4, λ (jo: Nat): Nat =
+        tiled (4, λ (io: Nat): Nat = mm (slice (a, io, 2), slice (b, jo, 2)))) =>
+    tiled (4, λ (jo: Nat): Nat =
+        let bp = stage (slice (b, jo, 2));
+        tiled (4, λ (io: Nat): Nat = mm (slice (a, io, 2), bp)));
+extern lam result (a b: Nat): Nat =
+    tiled (4, λ (jo: Nat): Nat =
+        tiled (4, λ (io: Nat): Nat = mm (slice (a, io, 2), slice (b, jo, 2))));
+
+// POST-LABEL: extern lam result
+// POST: stage (slice (b, jo, 2))
+
+// Flip GAP to the target CHECKs when the missing extension lands.
+// GAP-LABEL: extern lam result
+// GAP-NOT: stage
+// GAP: tiled
+// GAP-NOT: stage

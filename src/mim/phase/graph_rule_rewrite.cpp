@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "mim/driver.h"
+
 #include "mim/pattern/graph_rule.h"
 
 namespace mim {
@@ -30,6 +32,16 @@ void GraphRuleRewrite::apply(const App* app) {
     templates_ = world().inherit();
     Rewriter importer(*templates_);
     std::function<void(const Def*, bool)> collect = [&](const Def* def, bool rules) {
+        if (!rules) {
+            auto name = tuple2str(def);
+            if (!name.empty()) {
+                auto annex = world().annex(driver().sym(name));
+                auto axm   = annex ? annex->isa<Axm>() : nullptr;
+                if (!axm) def->blame("graph_rule_app purity reference must name an axiom: {}", name).bail();
+                pure_.push_back(importer.rewrite(axm)->as<Axm>());
+                return;
+            }
+        }
         if (auto tuple = def->isa<Tuple>()) {
             for (auto op : tuple->ops())
                 collect(op, rules);

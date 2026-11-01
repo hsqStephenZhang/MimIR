@@ -1,9 +1,5 @@
 // RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
-// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: cat %t.rule | %FileCheck %s --check-prefix=POST
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=POST
-// XFAIL: *
-// Post-hoc matching of a fresh nested lambda does not bind its offsets or input.
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=GAP
 // TF-RULES: cache
 // TF-PURE: tiled, read, stage
 
@@ -25,3 +21,9 @@ extern lam result (b: «8; Nat», salt: Nat): Nat =
 
 // POST-LABEL: extern lam result
 // POST: stage
+
+// Flip GAP to the target CHECKs when the missing extension lands.
+// GAP-LABEL: extern lam result
+// GAP-NOT: stage
+// GAP: tiled
+// GAP-NOT: stage

@@ -1,10 +1,6 @@
 // RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
 // RUN: cat %t.rule | %FileCheck %s --check-prefix=VALUE
 // RUN: cat %t.rule | %FileCheck %s --check-prefix=NEST
-// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=VALUE
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=MULTI
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=JOIN
 // TF-RULES: (local, shared)
 // TF-PURE: slice, ew, whole, tiles, tiled_n, tiled, sink
 

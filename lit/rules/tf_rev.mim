@@ -1,7 +1,5 @@
 // RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
 // RUN: cat %t.rule | %FileCheck %s --check-prefix=REV
-// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=REV
 // TF-RULES: reverse
 // TF-PURE: tiled, consume, tiled_n, sink
 

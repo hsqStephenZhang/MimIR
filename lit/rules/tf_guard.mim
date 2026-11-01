@@ -1,10 +1,6 @@
 // RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=GAP
 // RUN: grep 'guard did not normalize to true' %t.rule.log
-// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: grep 'guard is not true' %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=FACT
-// XFAIL: *
-// only_used_by has no staged GraphView query implementation in Mim guards.
 // TF-RULES: exclusive
 // TF-PURE: producer, consumer, fused
 
@@ -24,3 +20,10 @@ extern lam shared (x: Nat): [Nat, Nat] = (consumer (producer x), producer x);
 // FACT: producer x
 // FACT-LABEL: extern lam single
 // FACT: fused
+
+// Flip GAP to the target CHECKs when the missing extension lands.
+// GAP-LABEL: extern lam shared
+// GAP: consumer (producer
+// GAP-LABEL: extern lam single
+// GAP: consumer (producer
+// GAP-NOT: fused

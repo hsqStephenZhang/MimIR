@@ -1,5 +1,25 @@
 # P5 tile-and-fuse 实验
 
+## Task 3：独立 frontend 回归与 annex 引用
+
+以下更新优先于后面的 Task 2 历史结果。
+每个 `tf_*.mim` 现在只运行 rule frontend，对应 `tf_*_g.mim` 只运行 graph frontend。
+可工作的路径使用目标 CHECK；尚未工作的路径使用 unchanged IR 和精确诊断的正向 GAP 检查，
+不再使用 XFAIL，避免 graph 的已知缺口掩盖 rule_app 回归。
+`tf_share_g` 分别检查 flat 多根成功和 nested 尚未重写，rule 文件独立保护 NEST 成功。
+
+`pure_ops` 新接受 qualified annex-name strings，与原有低阶 Axm 值可以混合。
+例如 `("tensor.slice", "tensor.unary")` 在构造 phase 时解析为源 World 中实际的 Axm，
+再与已有机制一样导入模板 World，重新运行时导入当前 World。
+这选择了 annex references 路线，没有引入不存在的 Level 参数多态或改变类型检查器。
+没有找到 annex、或引用非 Axm 时显式报错；没有自动推断 purity 或把未知 op 当作纯。
+`tf_poly` 已翻转为正常通过；真实 graph probes 的配置均通过，剩下 LHS/guard/recipe 缺口
+由各自 GAP 检查独立记录。`tf_run.py` 将真实 qualified op 转为这种显式引用。
+
+实验 4 的 observed IR：rule_app 输出把 `stage _5` 打印在 io body 的 mm 参数中，
+尽管 stage 只依赖 jo/ko。
+这不是 rule_app 的错误；lexical let 不是 placement 指令，模型尚无 stage lowering 合同。
+
 ## 范围与复现
 
 基线为 `cd8526dd22` 加 Task 1 的两个修复和 `031b1d7626`。
