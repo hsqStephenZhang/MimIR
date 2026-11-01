@@ -264,6 +264,67 @@ key，尚不能区分 scalar rank-3 tensor 与 vector-element rank-2 view；
 与 LLVM 移植后的基线比较，`fc_exec` 与 `attn_exec` 去掉生成 ID 后完全一致；
 `buffer/exec_conv` 的小 blocked case 则去掉 panel alloca，改为 SSA accumulator。
 
+### 6.2 BLIS-shaped Rule 与完整 benchmark
+
+`lit/tensor/blis.mim` 的 RHS 为 N/NC tiled → ordered K/KC fold →
+`stage(slice B)` → MR/NR tiled → blocked leaf；B 布局为 `(ceil(n/NR), k, NR)`。
+最后一个 K block 在 fold 后执行。线性 outs 原地更新，首块从 scalar zero seed 开始，
+不复制或清零整块 accumulator；B 每个 NC/KC box 只填一次。benchmark 没有 destination-copy fallback。
+保留 optional `pack_a`，默认关闭；没有 MC level，也没有 persistent packing。
+Rule 和 hand 的 I64、F32 小形状与 MR/NR/KC tails 都与 scalar reference、reference-tiles 路径一致。
+decimal combiner 的独立测试验证 K 的顺序。
+
+目标描述作为 selector 的显式参数输入，不声称自动发现硬件：
+本机使用 `vec_width 4`、32 vector registers、256 KiB cache budget。
+`NR = 4 * lanes`，`MR = min(lanes, (registers - 12)/4)`；
+`NC = min(4 * lanes * NR, 256)`，`KC = min(cache_bytes/(2 * NC * sizeof(T)), 256)`。
+packed B 占 cache budget 至多一半。本机得到 **MR=4、NR=16、NC=256、KC=128**。
+F32 selector 的 literal 输出由 FileCheck 验证；`Sched` 仍只有 vdim/unroll。
+
+KC=128 时，rule/hand 的所有完整 4×16 四 K 热点均有
+64 `fmla.4s`、4 A `ldr q`、8 B `ldp q`、**0 accumulator stores、0 stack accesses**，
+即每 K 16 vector FMA、4 B vectors；每行四 K 只加载一次 A vector。
+K/M/N tails 使用较小的 block 或原有 classic/vectorized 路径。
+KC=256 的 256³ code 则未合并全部 A loads，因此没有作为最终配置。
+
+重现命令：
+
+```sh
+python3 build/task8-bench.py --blis --skip-packa
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./build/task8-bench/bench
+```
+
+harness 仍在 ignored `build/`，可用 `--mr/--nr/--nc/--kc` sweep，
+以及 `--lanes/--registers/--cache-bytes` 设置 target 描述。
+Homebrew clang++ `-O3 -mcpu=native`，F32，一个线程，1 warmup + 7 runs，median；
+包含 allocation/free。所有路径在同一 thread 上；macOS 显式设为 user-interactive QoS，
+但这不是 core affinity 或锁频。没有增加额外 warmup。
+下表来自同设置的第二次完整执行，不混合不同执行的最好结果：
+
+| M×K×N | BLIS Rule | hand BLIS | 旧 Rule | plain default | OpenBLAS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 256³ | 78.45 | 81.86 | 52.41 | 31.72 | 78.00 |
+| 512³ | 96.71 | 97.06 | 56.17 | 35.46 | 99.92 |
+| 1024³ | 98.08 | 97.68 | 51.86 | 34.87 | 97.71 |
+| 2048³ | 97.47 | 93.35 | 53.27 | 28.29 | 104.14 |
+| 1000³ | 97.90 | 98.09 | 53.75 | 36.45 | 103.79 |
+| 513×257×129 | 87.41 | 90.79 | 54.16 | 41.67 | 89.42 |
+
+单位 GFLOPS。512³ 及以上 square 达到 90+；**256³ 尚未达到 90**。
+短形状有明显 machine-state 波动：同参数前一次执行为 Rule 51.26 / OpenBLAS 63.71；
+仅 QoS 不能消除这种变化。不能用长形状的成绩代替这个未达到的目标。
+剩余成本包括 packing、每 KC 的 accumulator write-back、microtile loop/地址运算，
+以及尚未实现的 prefetch/software pipelining、persistent scratch reuse 与 parallel loops。
+256³ 需要单独降低这些固定成本，并在稳定的核心/频率条件下验证。
+
+当前编译了全部六形状和 unused optional-A variants：Mim 63.73 s，
+LLVM 26,899,257 bytes / 398,290 lines，clang 9.05 s，harness executable 334,712 bytes。
+这不是单一 microkernel 的 code size。日志、两次完整原始表、assembly 与 counts 分别在
+`build/partB-blis-k128-build.log`、`build/partB-blis-k128-{results,repeat}.csv`、
+`build/partB-blis-k128.s`、`build/partB-hot-loop-counts.json`。
+`feature/default-sched` 的 read-only binary 仍因缺少
+`libabsl_raw_hash_set.2508.0.0.dylib` 而不能载入 opt plugin，故跳过该额外 baseline。
+
 ## 0. Generic shape Rules
 
 

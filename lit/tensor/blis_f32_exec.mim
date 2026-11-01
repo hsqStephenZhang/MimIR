@@ -1,0 +1,10 @@
+// RUN: python3 %S/blis_f32.py %mim %S/blis.mim %t.dir
+// RUN: %FileCheck %s --check-prefix=CONFIG < %t.dir/probe.ll
+// RUN: clang++ -O3 %S/blis_f32_aux.cpp %t.dir/probe.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: python3 %S/blis_f32.py %mim %S/blis.mim %t.ref.dir reference
+// RUN: clang++ -O3 %S/blis_f32_aux.cpp %t.ref.dir/probe.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
+
+// CONFIG-LABEL: define <4 x i64> @selected_config()
+// CONFIG: ret <4 x i64> <i64 4, i64 16, i64 256, i64 128>

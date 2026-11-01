@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 
 #include <vector>
@@ -6,6 +7,7 @@
 extern "C" float* block_full(float*, float*);
 extern "C" float* block_tail(float*, float*);
 extern "C" float* block_empty(float*);
+extern "C" int64_t* block_order(int64_t*);
 
 static void check(int m, int k, int n, float* (*compute)(float*, float*)) {
     std::vector<float> a(m * k), b(k * n);
@@ -32,4 +34,9 @@ int main() {
     for (int i = 0; i < 64; ++i)
         assert(out[i] == 1);
     std::free(out);
+    int64_t digits[5] = {1, 2, 3, 4, 5};
+    auto ordered      = block_order(digits);
+    for (int i = 0; i < 6; ++i)
+        assert(ordered[i] == 12345);
+    std::free(ordered);
 }
