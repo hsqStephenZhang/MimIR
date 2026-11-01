@@ -147,3 +147,14 @@ pinned ABI 的 preserving_ 路径不注入 memory，不改变已有 GPU callback
 第二次 pass。原实现两个文件都在 externalize 时 assertion；新实现各自在本地 memory
 上 allocation，检查输出 token，且没有残留 fresh。不是针对 alloc 的特判。
 这也修复同 module hand/rule packed GEMM 的 late-pass allocation/projection memo 泄漏。
+
+### 2.3 AddMem 兼容性检查（Task 7f）
+
+修复前后用同一 Debug build 配置及默认 `-p opt … -p ll` 生成
+`fc_exec`、`attn_exec`、`buffer/exec_conv` 的 LLVM；仅把 `_数字` 生成 ID
+统一成 `_ID` 后，三个文件完全一致，没有 placement、instruction 或 ABI 差异。
+`exec_conv_run` 对该 conv module 做实际执行并检查 exit code 63。
+完整 CTest 235/235，FULL lit 609 passed / 9 unsupported；
+包含已有 GPU/NVPTX 编译路径，unsupported 项不代表 GPU 硬件执行已经验证。
+原始 LLVM、去 ID diff 和完整日志保存在 `build/task7f-before`、
+`build/task7f-after`、`build/task7f-item1-{ctest,lit}.log`。
