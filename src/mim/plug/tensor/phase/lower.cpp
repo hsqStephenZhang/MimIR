@@ -3,6 +3,7 @@
 #include <ranges>
 
 #include <mim/def.h>
+#include <mim/driver.h>
 #include <mim/lam.h>
 
 #include "mim/plug/tensor/tensor.h"
@@ -89,7 +90,8 @@ const Def* Lower::lower_via_impl(const App* app, const Def* impl) {
 const Def* Lower::rewrite_imm_App(const App* app) {
     auto& w = new_world();
 
-    if (Axm::isa<tensor::tiled>(app)) return lower_via_impl(app, impl<tensor::tiled_impl>());
+    if (Axm::isa<tensor::tiled>(app) && driver().arg_nat("tensor", "reference-tiles").value_or(0))
+        return lower_via_impl(app, impl<tensor::tiled_impl>());
     if (Axm::isa<tensor::tile_fold>(app)) return lower_via_impl(app, impl<tensor::tile_fold_impl>());
     if (Axm::isa<tensor::stage>(app)) return lower_via_impl(app, impl<tensor::stage_impl>());
     if (Axm::isa<tensor::broadcast_in_dim>(app)) return lower_via_impl(app, impl<tensor::broadcast_in_dim_impl>());

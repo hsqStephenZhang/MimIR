@@ -1,6 +1,9 @@
 // RUN: %mim -I %S -p opt %s -p ll
 // RUN: clang++ -std=c++23 %S/pgemm_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t | %FileCheck %s
+// RUN: %mim -X tensor:reference-tiles=1 -I %S -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/pgemm_aux.cpp %{s:stem}.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref | %FileCheck %s
 // CHECK: packed GEMM rule/hand: 8x8x8, 13x7x11, 1x7x1 passed
 
 import pgemm;

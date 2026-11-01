@@ -31,6 +31,9 @@ public:
     using RWPhase::RWPhase;
 
 private:
+    struct Destination {
+        const Def *mem, *buffer, *shape, *origin, *extent;
+    };
     void start() override;
     const Def* rewrite(const Def*) override;
     const Def* rewrite_mut_Lam(Lam*) override;
@@ -48,11 +51,16 @@ private:
     const Def* lower_splat(const App*);
     const Def* lower_generate(const App*);
     const Def* lower_broadcast(const App*);
-    const Def* lower_map_reduce(const App*);
+    const Def* lower_map_reduce(const App*, const Destination* = nullptr);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
     const Def* lower_gather(const App*);
     const Def* lower_scatter(const App*);
+
+    const Def* lower_tiled(const App*, const Destination* = nullptr);
+    const Def* lower_into(const Def*, const Destination&);
+    const Def* lower_tile_body(const Def*, const Def*, const Def*, const Destination&);
+    void record_instance(const Def*);
 
     /// Adapts a call to a bufferized function: materializes value-world tensor arguments into buffers;
     /// continuation arguments pass through (their domains are converted by `rewrite_mut_Lam`).

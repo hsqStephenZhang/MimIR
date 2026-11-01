@@ -1,0 +1,25 @@
+// RUN: %mim %s -o - | %FileCheck %s --implicit-check-not=tensor.generate --implicit-check-not=tileCopy
+// RUN: %mim -X tensor:reference-tiles=1 %s -o - | %FileCheck %s --check-prefix=REF
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin compile;
+use tensor;
+fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+extern fun partition (x: «8; I64»): «8; I64» =
+    return (tiled @(I64, 1) (8, 2)
+        (λ (off ext: «1; Nat»): «ext; I64» =
+            map_reduce_post @(1, 0) @(I64, I64, 1, 1, SchedT)
+                (ext, ext, mk_sched (1, 0)) @(I64, 1, 8, (), (), ())
+                (add, 0I64, id @I64) (affine.id @1)
+                (λ (o: affine.Index): affine.Index = affine.op.add (o, affine.lit off), ())
+                (buf x, ())));
+extern lam _compile (): compile.Phase =
+    compile.phases ff (lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);
+
+// CHECK-DAG: buffer.alloc
+// CHECK-DAG: affine.For
+// CHECK-DAG: btensor.map_reduce_post
+// CHECK-DAG: tileWriteMap
+// REF: generate

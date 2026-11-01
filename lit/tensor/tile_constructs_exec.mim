@@ -1,6 +1,9 @@
 // RUN: %mim -p opt %s -p ll
 // RUN: clang++ -std=c++23 %S/tile_constructs_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
+// RUN: %mim -X tensor:reference-tiles=1 -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/tile_constructs_aux.cpp %{s:stem}.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
 
 plugin tensor;
 plugin core;

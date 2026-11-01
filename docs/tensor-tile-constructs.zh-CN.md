@@ -1,5 +1,20 @@
 # Tensor-level tiling constructs（Task 7）
 
+## 4. Destination tiled lowering（Task 8）
+
+默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；
+每维 full extent 与 tail extent 分开生成 callback，body 实例的 ext 均为 literal，
+singleton axes 仍按 logical rank 传递。outer destination 只分配一次。
+root mrp 的 map_out 加 composed origin，post read maps 减 origin 后使用原 map；
+nested tiled 使用同一 destination 并累加 origin。其他 root 先算 tile buffer，再 copy
+owned extent，warning 明确报告该 fallback，不把临时结果当作 zero-copy。
+
+`-X tensor:reference-tiles=1` 保留原 tiled_impl/generate 路径。
+tile_constructs_exec、nested_stage_exec、pgemm_exec 都分别编译执行两个路径并对照同一
+scalar reference。tiled_destination 检查一次 grid iteration 的 root mrp 不在 per-element
+generate 中，直接写 whole destination，没有 tileCopy。
+本阶段 tile_fold/stage 仍走原 `_impl`，其 accumulator/scratch 优化是后续独立项目。
+
 ## 0. Generic shape Rules
 
 Rule 定义期仍检查 guard 的 Bool 类型，以及两侧已经闭合的类型不一致。

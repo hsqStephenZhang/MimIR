@@ -4,6 +4,7 @@
 
 #include <mim/axm.h>
 #include <mim/def.h>
+#include <mim/driver.h>
 #include <mim/lam.h>
 
 #include <mim/plug/affine/affine.h>
@@ -42,9 +43,9 @@ const Def* splat_scalar(const Def* d) {
 
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
-    return Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app)
-        || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app)
-        || Axm::isa<tensor::scatter>(app);
+    return Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app)
+        || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app)
+        || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -108,6 +109,8 @@ void LowerToMem::collect_tensor_types() {
             } else if (Axm::isa<tensor::splat>(app)) {
                 auto [T, r] = app->callee()->as<App>()->args<2>();
                 elem(T);
+                add_tensor_ty(app->type());
+            } else if (Axm::isa<tensor::tiled>(app)) {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::generate>(app)) {
                 auto [meta, s_out] = app->callee()->as<App>()->uncurry_args<2>();
@@ -424,6 +427,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     // its dynamic branch.
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
     if (Axm::isa<tensor::splat>(app)) return lower_splat(app);
+    if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app);
     if (Axm::isa<tensor::generate>(app)) return lower_generate(app);
     if (Axm::isa<tensor::broadcast>(app)) return lower_broadcast(app);
     if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app);
@@ -636,7 +640,7 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     return out;
 }
 
-const Def* LowerToMem::lower_map_reduce(const App* app) {
+const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* destination) {
     // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
     // reusing the (rewritten) meta. The loop generation lives in the btensor plugin (`btensor.lower_map_reduce`).
     auto& w            = new_world();
@@ -655,6 +659,30 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
         seed      = w.tuple({rewrite(initial->shape), rewrite(initial->map), outs});
     } else {
         seed = rewrite(old_mr.init);
+    }
+    if (destination) {
+        auto ro     = Lit::as(mr.Ro);
+        auto map    = w.mut_lam(mr.map_out->type()->as<Pi>())->set("tileWriteMap");
+        auto coords = w.app(mr.map_out, map->var());
+        map->set(true, w.tuple(DefVec(ro, [&](size_t d) {
+            return w.call(affine::op::add,
+                          Defs{coords->proj(ro, d), w.call<affine::lit>(destination->origin->proj(ro, d))});
+        })));
+        mr.map_out   = map;
+        auto maps    = DefVec(Lit::as(mr.nps), [&](size_t i) -> const Def* {
+            auto old   = mr.post_maps->proj(Lit::as(mr.nps), i);
+            auto local = w.mut_lam(old->type()->as<Pi>())->set("tilePostMap");
+            auto index = w.tuple(DefVec(ro, [&](size_t d) {
+                return w.call(affine::op::sub,
+                              Defs{local->var(ro, d), w.call<affine::lit>(destination->origin->proj(ro, d))});
+            }));
+            local->set(true, w.app(old, index));
+            return local;
+        });
+        mr.post_maps = w.tuple(maps);
+        mr.maps_all  = w.tuple({mr.maps, mr.post_maps});
+        mr.So        = destination->shape;
+        mr.shapes    = w.tuple({mr.So, mr.Sr, mr.sched});
     }
 
     // The generic rewrite rebuilds the argument tuple with its stale value-array type even when its
@@ -692,18 +720,186 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     // NB: no `w.call` here — the meta groups are *forwarded* from the tensor op on purpose. Leaving them to
     // inference would re-derive `{Tis, Ris, Sis}` from the `buffer.Buf` operands, whose literal size-1 axes are
     // already folded away, so they would no longer agree with the logical shapes the loop generation iterates.
-    auto op        = w.annex<btensor::map_reduce_post>();
-    op             = w.app(op, mr.nis_nps);
-    op             = w.app(op, mr.meta);
-    op             = w.app(op, mr.shapes);
-    op             = w.app(op, mr.in_tys);
-    op             = w.app(op, seed->type());
-    op             = w.app(op, w.tuple({memcomb, seed, mempost}));
-    op             = w.app(op, mr.map_out);
-    op             = w.app(op, mr.maps_all);
-    auto [am, dst] = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, fresh_mem())->projs<2>();
-    auto [m, out]  = w.app(op, w.tuple({am, dst, is, post_is}))->projs<2>();
+    auto op = w.annex<btensor::map_reduce_post>();
+    op      = w.app(op, mr.nis_nps);
+    op      = w.app(op, mr.meta);
+    op      = w.app(op, mr.shapes);
+    op      = w.app(op, mr.in_tys);
+    op      = w.app(op, seed->type());
+    op      = w.app(op, w.tuple({memcomb, seed, mempost}));
+    op      = w.app(op, mr.map_out);
+    op      = w.app(op, mr.maps_all);
+    const Def* am;
+    const Def* dst;
+    if (destination) {
+        am  = destination->mem;
+        dst = destination->buffer;
+    } else {
+        std::tie(am, dst) = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, fresh_mem())->projs<2>();
+    }
+    auto [m, out] = w.app(op, w.tuple({am, dst, is, post_is}))->projs<2>();
+    if (destination) return w.tuple({m, out});
     return scalar_result(app, m, out);
+}
+
+void LowerToMem::record_instance(const Def* root) {
+    auto queue = fe::BFSWorklist<DefSet>();
+    queue.push(root);
+    auto record = [&](const Def* value) {
+        if (value->type()->isa<Arr>()) tensor_ty_.insert(value->type());
+    };
+    while (!queue.empty()) {
+        auto def = queue.pop();
+        if (def->isa<Var>() || def->isa<Axm>()) continue;
+        if (auto app = def->isa<App>(); app && is_tensor_op(app)) {
+            record(app);
+            if (Axm::isa<tensor::map_reduce_post>(app)) {
+                auto mr              = btensor::MapRedPost::of(app->callee()->as<App>());
+                auto [inputs, posts] = app->args<2>();
+                for (auto input : inputs->projs(Lit::as(mr.nis)))
+                    record(input);
+                for (auto input : posts->projs(Lit::as(mr.nps)))
+                    record(input);
+                if (auto init = tensor_init(mr)) record(init->outs);
+            }
+        }
+        for (auto op : def->ops())
+            if (op) queue.push(op);
+    }
+}
+
+const Def* LowerToMem::lower_into(const Def* root, const Destination& destination) {
+    for (size_t i = 0; i != 128; ++i) {
+        auto app = root->isa<App>();
+        if (!app) break;
+        auto lam = app->callee()->isa<Lam>();
+        if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
+        root = lam->reduce(app->arg()).back();
+    }
+    record_instance(root);
+    if (auto app = root->isa<App>()) {
+        if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app, &destination);
+        if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app, &destination);
+    }
+    log().w("tensor destination fallback: tile root {} uses a temporary buffer and copy", root);
+    auto& w            = new_world();
+    auto value         = rewrite(root);
+    auto rank          = Lit::as(destination.shape->arity());
+    auto source        = to_buffer(value, root);
+    auto shape         = destination.extent;
+    auto [run, call]   = btensor::ds_splice(w.tuple({destination.mem, destination.buffer, source}),
+                                            w.sigma({destination.mem->type(), destination.buffer->type()}), "tileCopy");
+    auto [m, dst, src] = run->var(2, 0)->projs<3>();
+    const Def* acc     = w.tuple({m, dst});
+    const Def* exit    = run->ret_var();
+    auto cur           = run;
+    auto iters         = affine::counting_nest(cur, exit, acc, shape->projs(rank), "tileCopy");
+    auto [loop_mem, loop_dst] = acc->projs<2>();
+    const Def* element        = src;
+    if (Axm::isa<buffer::Buf>(src->type()))
+        std::tie(loop_mem, element) = buffer::op_read(loop_mem, src, btensor::folded_idx(shape, iters))->projs<2>();
+    DefVec coords(rank);
+    for (size_t d = 0; d != rank; ++d) {
+        auto offset = destination.origin->proj(rank, d);
+        auto index  = w.call<core::bitcast>(w.type_nat(), iters[d]);
+        coords[d]   = w.call(core::nat::add, Defs{offset, index});
+    }
+    auto index = w.tuple(DefVec(
+        rank, [&](size_t d) { return w.call<core::idx>(w.lit_nat(0), destination.shape->proj(rank, d), coords[d]); }));
+    auto mem   = buffer::op_write(loop_mem, loop_dst, *Shape(index).fold(destination.shape), element)->proj(2, 0);
+    cur->app(true, exit, w.tuple({mem, loop_dst}));
+    return call;
+}
+
+const Def*
+LowerToMem::lower_tile_body(const Def* body, const Def* off, const Def* ext, const Destination& destination) {
+    auto& old           = old_world();
+    auto& w             = new_world();
+    auto rank           = Lit::as(ext->arity());
+    auto parameter      = old.mut_lam(old.pi(old.arr(rank, old.type_nat()), old.type_nat()));
+    auto origin         = parameter->var();
+    auto literal_extent = Rewriter(old).rewrite(ext);
+    const Def* root;
+    if (auto lam = body->isa<Lam>(); lam && lam->is_set())
+        root = lam->reduce(old.tuple({origin, literal_extent})).back();
+    else
+        body->blame("tensor.tiled body must be a defined lambda").bail();
+    auto pending = fe::Restore(pending_, {});
+    auto memo    = fe::Restore(fresh_memo_, {});
+    push();
+    bind_old(parameter->has_var());
+    map(origin, off);
+    auto result = lower_into(root, destination);
+    if (!pending_.empty()) {
+        auto [run, call] = btensor::ds_splice(w.tuple(), result->type(), "tileBody");
+        run->app(true, run->ret_var(), result);
+        run->set(true, wrap_fresh_mem(run->body()));
+        result = call;
+    }
+    pop();
+    return result;
+}
+
+const Def* LowerToMem::lower_tiled(const App* app, const Destination* destination) {
+    auto& w             = new_world();
+    auto [meta, shapes] = app->callee()->as<App>()->uncurry_args<2>();
+    auto [type, r]      = meta->projs<2>();
+    auto [shape, tiles] = shapes->projs<2>();
+    auto rank           = Lit::isa(r);
+    if (!rank) app->blame("tensor.tiled destination lowering requires literal rank").bail();
+    auto sizes = fe::Vector<u64>(*rank), steps = fe::Vector<u64>(*rank);
+    for (size_t d = 0; d != *rank; ++d) {
+        auto size = Lit::isa(shape->proj(*rank, d)), tile = Lit::isa(tiles->proj(*rank, d));
+        if (!size || !tile)
+            app->blame("tensor.tiled destination lowering requires literal shapes and tile sizes").bail();
+        sizes[d] = *size;
+        steps[d] = std::min(*size, *tile);
+    }
+    auto zero = w.tuple(DefVec(*rank, [&](size_t) { return w.lit_nat(0); }));
+    const Def *mem, *dst;
+    if (destination) {
+        mem = destination->mem;
+        dst = destination->buffer;
+    } else {
+        std::tie(mem, dst) = buffer::op_alloc(rewrite(r), rewrite(shape), rewrite(type), fresh_mem())->projs<2>();
+    }
+    auto output_shape = destination ? destination->shape : rewrite(shape);
+    auto base         = destination ? destination->origin : zero;
+    auto [run, call]  = btensor::ds_splice(w.tuple({mem, dst}), w.sigma({mem->type(), dst->type()}), "tiled");
+    DefVec offsets(*rank), extents(*rank);
+    std::function<const Def*(size_t, const Def*, const Def*)> emit
+        = [&](size_t d, const Def* acc, const Def* exit) -> const Def* {
+        if (d == *rank) {
+            auto off         = w.tuple(offsets);
+            auto origin      = w.tuple(DefVec(
+                *rank, [&](size_t j) { return w.call(core::nat::add, Defs{base->proj(*rank, j), offsets[j]}); }));
+            auto [m, output] = acc->projs<2>();
+            auto extent      = w.tuple(extents);
+            auto result      = lower_tile_body(app->arg(), off, extent, {m, output, output_shape, origin, extent});
+            return w.app(exit, result);
+        }
+        if (!sizes[d]) return w.app(exit, acc);
+        auto count      = sizes[d] / steps[d];
+        auto tail       = sizes[d] % steps[d];
+        const Def* next = exit;
+        if (tail) {
+            auto after = w.mut_con(acc->type())->set("tileTail");
+            offsets[d] = w.lit_nat(count * steps[d]);
+            extents[d] = w.lit_nat(tail);
+            after->set(true, emit(d + 1, after->var(), exit));
+            next = after;
+        }
+        auto [loop, loop_call]     = affine::counting_for(w.lit_i64(count), acc, next, w.sym("tileGrid"));
+        auto [index, state, yield] = loop->vars<3>();
+        offsets[d] = w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), w.lit_nat(steps[d])});
+        extents[d] = w.lit_nat(steps[d]);
+        loop->set(true, emit(d + 1, state, yield));
+        return loop_call;
+    };
+    run->set(true, emit(0, run->var(2, 0), run->ret_var()));
+    if (destination) return call;
+    auto [out_mem, out] = call->projs<2>();
+    return scalar_result(app, out_mem, out);
 }
 
 const Def* LowerToMem::lower_pad(const App* app) {
