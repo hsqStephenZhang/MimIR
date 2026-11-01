@@ -10,6 +10,8 @@ extern "C" int64_t tiled_scalar(int64_t);
 extern "C" int64_t* packed(int64_t*);
 extern "C" int64_t* packed_both(int64_t*);
 extern "C" int64_t* packed_one(int64_t*);
+extern "C" int64_t* packed_box(int64_t*);
+extern "C" int64_t* packed_box_one(int64_t*);
 extern "C" int64_t* tensor_fold(int64_t*);
 extern "C" int64_t* fold_shared_read(int64_t*);
 extern "C" int64_t* fold_extra_read(int64_t*);
@@ -23,15 +25,17 @@ int main() {
     auto tile = tiled_tail(x);
     auto one  = tiled_one(x);
     tiled_empty();
-    auto full   = tiled_full(x);
-    auto scalar = tiled_scalar(x[0]);
-    auto p      = packed(x);
-    auto q      = packed_both(x);
-    auto s      = packed_one(x);
-    auto f      = tensor_fold(x);
-    auto shared = fold_shared_read(x);
-    auto extra  = fold_extra_read(x);
-    bool ok     = ordered() == 1024 && no_blocks() == 7;
+    auto full    = tiled_full(x);
+    auto scalar  = tiled_scalar(x[0]);
+    auto p       = packed(x);
+    auto q       = packed_both(x);
+    auto s       = packed_one(x);
+    auto box     = packed_box(x);
+    auto box_one = packed_box_one(x);
+    auto f       = tensor_fold(x);
+    auto shared  = fold_shared_read(x);
+    auto extra   = fold_extra_read(x);
+    bool ok      = ordered() == 1024 && no_blocks() == 7;
     for (int i = 0; i != 35; ++i)
         ok &= tile[i] == x[i];
     for (int i = 0; i != 5; ++i)
@@ -55,6 +59,14 @@ int main() {
                 }
     for (int i = 0; i != 6; ++i)
         ok &= s[i] == (i < 5 ? x[i] : -99);
+    for (int j = 0; j != 2; ++j)
+        for (int i = 0; i != 2; ++i)
+            for (int lane = 0; lane != 2; ++lane) {
+                auto col = j * 2 + lane;
+                ok &= box[(j * 2 + i) * 2 + lane] == (col < 3 ? x[(1 + i * 2) * 7 + 1 + col * 2] : -99);
+            }
+    for (int i = 0; i != 4; ++i)
+        ok &= box_one[i] == (i < 3 ? x[2 * 7 + 1 + i * 2] : -99);
     for (int i = 0; i != 3; ++i)
         ok &= f[i] == x[i] + 6 && shared[i] == x[0] + 6 && extra[i] == x[i] * 8;
     std::free(tile);
@@ -63,6 +75,8 @@ int main() {
     std::free(p);
     std::free(q);
     std::free(s);
+    std::free(box);
+    std::free(box_one);
     std::free(f);
     std::free(shared);
     std::free(extra);

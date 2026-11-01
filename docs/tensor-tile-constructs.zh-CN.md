@@ -147,6 +147,33 @@ default/OpenBLAS 的运行噪声不作为本改动的加速。
 数据：build/task8-bench/item1-results.csv、item1-metrics.json、item1-native.ll。
 MR=32、KR=64、NR=32 尚未调优；B crop+pack 和 acc init copy 尚保留，下一项分别消除。
 
+### 5.2 stage(slice) 一次 box fill
+
+lower_tensor 在默认路径保留 stage 的直接 slice operand，不把它先展开为 copy MRP；
+lower_to_mem 将 start/step、source shape、box extent 交给 stage_box_impl 的 reindexing。
+padding 仍按 box extent 判断，只在 present branch 用 start+step×coord 读取 source，
+不在 padding lanes 构造越界 load。stage_impl 复用同一算法，以 start=0、step=1 给出原语义；
+reference 路径仍先 materialize slice，再 pack。fuse_tensor 的 stage barrier 未改变。
+其他 readers 仍可独立 materialize 保留下来的 slice，不改变其值或全局消除共享 copy。
+
+stage_destination 的裁剪 source 用例只有 output+stage 两个 allocations（原来三个）；
+tile_constructs_exec 两路径新增非零 start、step=2、padding 和 singleton-box 校验。
+GEMM 每个 full/final K block 只剩一个 packed panel fill，vector nest 的 accumulator
+allocations 与 fold init 不属于 stage crop。
+
+| Item 2 shape | Rule | Hand | Default | OpenBLAS |
+| --- | ---: | ---: | ---: | ---: |
+| 256³ | 34.735 | 40.059 | 28.035 | 70.579 |
+| 512³ | 53.291 | 54.095 | 34.709 | 100.615 |
+| 1024³ | 50.336 | 51.102 | 32.581 | 95.865 |
+| 513×257×129 | 53.860 | 53.992 | 41.442 | 89.680 |
+
+数据为 build/task8-bench/item2-results.csv / item2-metrics.json。小 shape 的噪声较明显，
+不据单次重复推断 packing 已显著提高算术吞吐。Item 1 commit 后另一次相同设置运行
+为 Rule 50.109/48.625/49.997/49.705，Hand 48.041/49.093/49.118/48.860，
+Default 33.198/33.937/33.664/40.824，OpenBLAS 76.456/94.311/96.669/88.036。
+所有运行均以相同 scalar-reference 验证结果；未选择性隐藏较慢测量。
+
 ## 0. Generic shape Rules
 
 

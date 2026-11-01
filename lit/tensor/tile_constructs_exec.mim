@@ -35,6 +35,12 @@ extern fun packed_both (x: «5, 7; I64»): «3, 3, 3, 2; I64» =
     return (stage @(I64, 2, 2) (5, 7) ((1, 0), (3, 2), (1₂, 0₂), -99I64) 0 (buf x));
 extern fun packed_one (x: «5; I64»): «3, 2; I64» =
     return (stage @(I64, 2, 1) (1, 5) (1, 2, (1₂, 0₂), -99I64) 0 (buf x));
+extern fun packed_box (x: «5, 7; I64»): «2, 2, 2; I64» =
+    return (stage @(I64, 2, 1) (2, 3) (1, 2, (1₂, 0₂), -99I64) 0
+        (slice @(I64, 2) (5, 7) ((1, 1), (2, 2), (2, 3)) (buf x)));
+extern fun packed_box_one (x: «5, 7; I64»): «2, 2; I64» =
+    return (stage @(I64, 2, 1) (1, 3) (1, 2, (1₂, 0₂), -99I64) 0
+        (slice @(I64, 2) (5, 7) ((2, 1), (1, 2), (1, 3)) (buf x)));
 
 extern fun ordered (): Nat =
     return (tile_fold (3, 2) 1 (λ (acc off: Nat): Nat = acc * 10 + off));

@@ -1648,9 +1648,9 @@ axm stage: {T: *, r k: Nat}
          → [input: «s; T»]
          → «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T», normalize_stage;
 
-priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
+priv anx lam stage_box_impl {T: *, r k: Nat} (s_source s: «r; Nat»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
-    (scope: Nat) (input: «s; T»): «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T» =
+    (start step: «r; Nat») (scope: Nat) (input: «s_source; T»): «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T» =
     let input = buf input;
     let inverse = ‹d: r; option.unwrap_unsafe (vec.first core.icmp.e (outer_perm, d))›;
     let axes = ‹j: k; core.idx2nat j›;
@@ -1668,7 +1668,13 @@ priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
             (padding, present)#valid ()
             where
                 con padding () = return pad;
-                con present () = return (input#‹d: r; core.idx 0 (s#d) (coords#d)›);
+                con present () = return (input#‹d: r; core.idx 0 (s_source#d) (start#d + step#d * coords#d)›);
             end;
         cps.cps2ds read ();
     generate (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) at;
+
+priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
+    (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
+    (scope: Nat) (input: «s; T»): «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T» =
+    stage_box_impl @(T, r, k) (s, s) (inner_dims_pos, inner_tiles, outer_perm, pad)
+        (‹r; 0›, ‹r; 1›) scope input;

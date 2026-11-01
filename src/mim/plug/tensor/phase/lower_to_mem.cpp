@@ -64,10 +64,10 @@ const Def* splat_scalar(const Def* d) {
 
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
-    return Axm::isa<tensor::stage>(app) || Axm::isa<tensor::tile_fold>(app) || Axm::isa<tensor::tiled>(app)
-        || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app)
-        || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app)
-        || Axm::isa<tensor::scatter>(app);
+    return Axm::isa<tensor::slice>(app) || Axm::isa<tensor::stage>(app) || Axm::isa<tensor::tile_fold>(app)
+        || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app)
+        || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app)
+        || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -148,6 +148,9 @@ void LowerToMem::collect_tensor_types() {
             } else if (Axm::isa<tensor::tile_fold>(app)) {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::stage>(app)) {
+                add_tensor_ty(app->type());
+                add_tensor_ty(app->arg()->type());
+            } else if (Axm::isa<tensor::slice>(app)) {
                 add_tensor_ty(app->type());
                 add_tensor_ty(app->arg()->type());
             } else if (Axm::isa<tensor::generate>(app)) {
@@ -471,6 +474,13 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app);
     if (Axm::isa<tensor::tile_fold>(app)) return lower_tile_fold(app);
     if (Axm::isa<tensor::stage>(app)) return lower_stage(app);
+    if (Axm::isa<tensor::slice>(app)) {
+        auto [meta, shape, box] = app->callee()->as<App>()->uncurry_args<3>();
+        auto& old               = old_world();
+        auto result = old.app(old.app(old.app(old.app(old.annex<tensor::slice_impl>(), meta), shape), box), app->arg());
+        record_instance(result);
+        return rewrite(result);
+    }
     if (Axm::isa<tensor::generate>(app)) return lower_generate(app);
     if (Axm::isa<tensor::broadcast>(app)) return lower_broadcast(app);
     if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app);
@@ -989,12 +999,25 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
 
 const Def* LowerToMem::lower_stage(const App* app) {
     auto& old = old_world();
-    auto impl = old.annex<tensor::stage_impl>();
-    auto args = DefVec();
-    for (auto cur = app; cur; cur = cur->callee()->isa<App>())
-        args.push_back(cur->arg());
-    for (auto arg : args | std::views::reverse)
-        impl = old.app(impl, arg);
+    const Def* impl;
+    if (auto slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(app->arg()))) {
+        auto [meta, shape, layout, scope]    = app->callee()->as<App>()->uncurry_args<4>();
+        auto [slice_meta, source_shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
+        auto [start, step, extent]           = box->projs<3>();
+        impl                                 = old.app(old.annex<tensor::stage_box_impl>(), meta);
+        impl                                 = old.app(impl, {source_shape, extent});
+        impl                                 = old.app(impl, layout);
+        impl                                 = old.app(impl, {start, step});
+        impl                                 = old.app(impl, scope);
+        impl                                 = old.app(impl, slice->arg());
+    } else {
+        impl      = old.annex<tensor::stage_impl>();
+        auto args = DefVec();
+        for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+            args.push_back(cur->arg());
+        for (auto arg : args | std::views::reverse)
+            impl = old.app(impl, arg);
+    }
     auto generate = Axm::isa<tensor::generate>(impl);
     if (!generate) app->blame("tensor.stage reference reindexing did not produce a generate").bail();
     record_instance(generate);
