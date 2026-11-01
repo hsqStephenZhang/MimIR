@@ -104,6 +104,25 @@ mutable 节点在检查 node／flags 后即视为结构不透明，不能用操�
 
 `GraphRewrite::is_changed()` 在同一目标 World 中比较 canonical 结果与不应用替换的导入结果，复用 binder 与不透明节点的映射，不对源 World 的 mutable 节点执行 α 检查。scope body 的两次构建都在共同的新 Lam stub 尚未填充时完成，避免递归自应用只在一侧展开。GraphRuleRewrite 丢弃归一化后相同的结果，继续后面的 match／Rule，不 publish 或 invalidate。该比较识别 canonical 图相同，不提供任意算术等价或通用高阶函数等价证明；显式调用 publish 的其他 driver 仍自行决定提交策略。
 
+### TVM DPL 机制对 MimIR 局部重写的启示
+
+本节根据本地 TVM Relax 源码整理优化方向；下面的 P0–P3 是**未实现提案**，不改变当前 `rewrite_graph` 的整 World 提交语义。
+
+**MimIR 当前成本。** 搜索和匹配只读 `GraphView`。每次 `rewrite_graph` 候选都会调用 `World::inherit()` 创建独立目标 World，再由 `GraphRebuilder` 导入并重建选中 scope body 或 roots；有 scope 时，为保留程序还会通过 importer 导入其他 external 函数。`inherit()` 继承的是 World `State`，Def arena/hash-cons 存储并未与源 World 共享。`GraphRewrite::publish()` 交换整个 World 并使旧快照失效。因此 scope 限定的是哪些节点接受替换，不代表只分配或提交这些节点。`GraphRuleRewrite` 对每个候选调用 `rewrite_graph`；`is_changed() == false` 能跳过 publish/invalidate，却是在目标图已经构造之后才判断，不能省掉该候选的导入和构建成本。依据：[World::inherit](../include/mim/world.h)、[World storage](../include/mim/world.h)、[rewrite_graph/GraphRebuilder](../src/mim/pattern/rewrite.cpp)、[GraphRewrite::publish](../src/mim/pattern/rewrite.cpp)、[GraphRuleRewrite::start](../src/mim/phase/graph_rule_rewrite.cpp)。
+
+**DPL 实际可借鉴什么。** Relax DPL 的 `PatternMatchingMutator` 对 `SeqExpr` 和 binding block 做局部遍历。在 `dataflow_expr_rewriter.cc` 的 block rewrite 中，整个 `DataflowBlock` 可作为候选区域；普通 `BindingBlock` 则按允许重排的 dataflow bindings 分段，在 `If` 或 impure call 等边界先处理已收集区段。仅当 bindings 实际变化时才重建 block；有新增依赖时再拓扑排序。外层仅在 block/表达式变化时返回新对象。应用到 `IRModule` 时先收集变化的函数，只有存在更新才对 module 执行 `CopyOnWrite()` 并 `Update()`。这些机制来自 [PatternMatchingMutator](</workspaces/ml-compiler/tvm/src/relax/ir/dataflow_expr_rewriter.cc>)、[block rewriter](</workspaces/ml-compiler/tvm/src/relax/ir/dataflow_block_rewriter.cc>)、[DPL Python API](</workspaces/ml-compiler/tvm/python/tvm/relax/dpl/rewrite.py>) 和 [IRModule COW/update](</workspaces/ml-compiler/tvm/src/ir/module.cc>)。
+
+DPL 适合借鉴的原则是：以可安全重排的 block/region 限定重写范围；保持未变表达式、block、function 的原对象引用；只有模块成员变化时才构建 module 更新。这利用 TVM 不可变、引用计数对象与 `same_as` 判等做结构共享。DPL 仍要遍历被处理的函数/绑定以寻找匹配，也没有提供跨轮次增量匹配索引或事务式 World merge。MimIR 的 Def 存于各自 World 的 arena/hash-cons 表中，mutable binder、external roots、gid 和快照 token 又受 World 生命周期约束；不能把 TVM 的 `CopyOnWrite` 直接等同于 MimIR World 的局部提交。DPL 的 `BlockBuilder::Normalize` 也不能直接套到 MimIR：MimIR 的 normalizer/callback 及 axiom 纯性、binder 和 use 覆盖都必须纳入安全边界。
+
+| 阶段 | 提案与安全不变量 | 收益、成本及验收 |
+| --- | --- | --- |
+| P0：测量 | 为 `rewrite_graph` 和 GraphRule 候选记录 target World 创建数、导入 Def 数、重建 Def 数、外部函数数、构建时间、publish 时间、no-op 数；加大程序中仅改一个小 scope 的基准。 | 先量化成本归属，不改变语义；固定 IR/规则/编译器配置，报告中位数、峰值内存和规模增长曲线。 |
+| P1：降低重复工作 | 缓存一次 `GraphView`/规则批次中可安全共享的只读分析和 importer 映射；用 recipe 结构、已有 RHS 和类型做保守的 cheap no-op preflight。只有能证明相同才跳过构建，未知时仍走完整验证。 | 改动较小，收益取决于候选数和共享导入量。不得跨 World/snapshot 复用裸 Def；不得因为结构相似跳过 purity、type、cycle 或 scope 检查。用多候选同一函数、no-op 在前/productive 在后验证 fallback，并测导入节点数。 |
+| P2：局部变更集与原子提交 | 让临时 World 产出经验证的变更集，再将新 Def 增量合入源 World，最终只更新选中 Lam body；或为 World arena、hash-cons 项、gid、externals/use 索引提供可回滚 transaction。提交前不得暴露新 body，失败必须回滚所有插入和 mutable 变化。 | 目标是将成本从全程序可达图导入降到变更子图及其必要依赖；实现复杂度高。需证明新 Def 最终均归属源 World、hash-cons 唯一性不破坏、递归 stub/Var 映射一致、类型和 normalizer 执行语义不变、externals/use 覆盖正确、快照只在成功提交后失效。基准比较单 scope 小改写在增长的未变函数数下，时间/内存应主要随变更区域而非整程序增长；另测失败注入后的 World 完全不变。 |
+| P3：持久化/COW World（远期） | 若 P2 仍显示瓶颈，再考虑共享不可变 Def 存储、分层 hash-cons arena 和版本化 World 根。 | 可能减少跨版本存储复制，但需要重定义 Def 所有权/回收、mutable 节点隔离、ID 与快照规则，风险和迁移面最大；在 P0/P2 数据证明必要前不建议启动。需长期版本并存、回收和跨 World 引用压力测试。 |
+
+建议借 DPL 的局部性和 unchanged identity reuse 原则，**不照搬它的对象模型**。先做 P0/P1；只有数据证明 World 重建是主成本且有明确 transaction/merge 设计后，再进入 P2。以上路线尚未实现，当前代码仍按本节开头描述的独立目标 World 构建和整体 publish 工作。
+
 ### 三路共享计算示例
 
 下面是当前 C++ API 的用法。假设 `q/k/v: Nat → Nat`、`combined: Nat → «3; Nat»`，且插件已证明四个算子纯、combined 的三个输出分别等价于原三路计算。框架检查匹配、类型和作用域，不证明这个语义等价关系。
