@@ -304,7 +304,9 @@ const Def* LowerToMem::bot_mem() {
 const Def* LowerToMem::fresh_mem() {
     auto k = mem::mut_con(new_world())->set("fresh_mem");
     pending_.push_back(k);
-    return k->var();
+    auto var = k->var();
+    bind_new(k->has_var());
+    return var;
 }
 
 const Def* LowerToMem::wrap_fresh_mem(const Def* body) {
@@ -364,11 +366,15 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     // Scope the fresh-memory bookkeeping: ops lowered while this body is rewritten mint their receiving
     // continuations into pending_, which are chained in front of the finished body. Nested lams anchor
     // their own requests (and their own per-lam op memo).
-    auto _       = fe::Restore(pending_, {});
-    auto __      = fe::Restore(fresh_memo_, {});
+    auto _  = fe::Restore(pending_, {});
+    auto __ = fe::Restore(fresh_memo_, {});
+    push();
     auto new_lam = new_world().mut_lam(conv_type(lam));
     map(lam, new_lam);
-    if (!lam->is_set()) return new_lam;
+    if (!lam->is_set()) {
+        pop();
+        return new_lam;
+    }
 
     auto ___    = enter(lam);
     auto filter = rewrite(lam->filter());
@@ -383,6 +389,7 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
         body = wrap_fresh_mem(body);
     }
     new_lam->set(filter, body);
+    pop();
     return seal(lam, new_lam);
 }
 

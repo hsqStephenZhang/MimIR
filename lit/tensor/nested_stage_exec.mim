@@ -1,0 +1,15 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/nested_stage_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin tensor;
+plugin core;
+use tensor;
+extern fun stage_share (x: «5, 7; I64»): «5, 7; I64» =
+    return (tiled @(I64, 2) ((5, 7), (5, 3))
+        (λ (off ext: «2; Nat»): «ext; I64» =
+            let p = stage @(I64, 2, 0) ext ((), (), (0₂, 1₂), 0I64) 0
+                (slice (5, 7) (off, (1, 1), ext) (buf x));
+            tiled @(I64, 2) (ext, (2, ext#tt))
+                (λ (row size: «2; Nat»): «size; I64» =
+                    slice @(I64, 2) ext (row, (1, 1), size) p)));

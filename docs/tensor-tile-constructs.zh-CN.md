@@ -101,3 +101,20 @@ helper ABI 的识别只沿实际 metadata callbacks，不沿输入 producer 或 
 每次 iteration 的 memory/accumulator、scratch scope/lifetime、outs 的线性使用检查，
 以及不能原地写时的显式 copy/report。当前 fold 的中间 heap buffers 可能保留到调用结束
 之后；不能把参考实现当作 scratch 生命周期或 persistence 契约。
+
+### 2.1 Nested closure 的 fresh-memory memo
+
+`nested_stage_exec` 的最小结构为 outer tiled → stage(slice(input, off, ext))
+→ inner tiled → slice(stage, row, size)，不需要 tile_fold、outs、combiner 或 captured access map。
+单纯 nested tiled 读取输入、单个 tiled 内的 stage、单个 tiled 内的 mrp/slice、captured combiner
+和 captured access map 均不是这次 assertion 的充分条件。
+当 inner row 和 outer column 有尾块，原 lower_to_mem 留下 stage allocation 的 fresh_mem Var。
+失败的是闭合 external `stage_share` 经 RWPhase::rewrite_external 统一 externalize，
+不是 lowering 把某个 local Lam 主动提升为 external；相同结构不经 Rule 也失败。
+
+只给 allocating App 一个 per-Lam fresh_memo_ 不够：它的 users、argument tuples、
+slice 组合仍进入 Rewriter 的全局映射，并可把另一个 closure 中的 fresh_mem Var 带回来。
+每个 Lam 现在打开 Rewriter scope，新建 fresh_mem Var 登记为该 scope 的 new_var；
+依赖它的映射只在该 Lam 内有效，其他不依赖该 Var 的映射仍可共享。
+结束时销毁这些临时映射，不改变 ordinary closures 的 environment 或 external ABI，
+也不新增第二套 loop builder。测试执行两次、每次改变输入并检查全部 tail cells。
