@@ -1,0 +1,36 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// TF-RULES: (local, arrays, mixed)
+// TF-PURE: slice, ew, tiled, pair, swapped, mix, chosen
+// TF-SCHEMAS: schema
+
+plugin compile;
+axm slice: [Nat, Nat, Nat] → Nat;
+axm ew: Nat → Nat;
+axm tiled: (Nat → Nat) → Nat;
+axm pair: [«4; Nat», «4; Nat»] → «4; Nat»;
+axm swapped: [«4; Nat», «4; Nat»] → «4; Nat»;
+axm mix: [Nat, Bool] → Nat;
+axm chosen: [Nat, Bool] → Nat;
+let schema = compile.data_op @(([Nat, Bool] → Nat), 1) (mix, 1, (0, 1));
+rule local (x o e: Nat): slice (ew x, o, e) => ew (slice (x, o, e));
+rule arrays (a b: «4; Nat»): pair (a, b) => swapped (b, a);
+rule mixed (x: Nat, b: Bool): mix (x, b)
+    when compile.used_by (x, mix (x, b)) => chosen (x, b);
+extern lam homogeneous (x: Nat): Nat =
+    tiled (λ (o: Nat): Nat = slice (ew x, o, 2));
+extern lam arrays_result (a b: «4; Nat»): «4; Nat» = pair (a, b);
+extern lam mixed_result (x: Nat): Nat = mix (x, tt);
+
+// CHECK-LABEL: extern lam arrays_result
+// CHECK: swapped
+// CHECK-NOT: pair
+// CHECK-LABEL: extern lam homogeneous
+// CHECK: slice (
+// CHECK: ew
+// CHECK-NOT: slice (ew
+// CHECK-LABEL: extern lam mixed_result
+// CHECK: chosen
+// CHECK-NOT: mix (

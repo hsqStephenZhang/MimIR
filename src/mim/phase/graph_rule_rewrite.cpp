@@ -122,6 +122,7 @@ void GraphRuleRewrite::apply(const App* app) {
             auto rule = def->isa<Rule>();
             if (!rule || !rule->is_set() || !rule->is_closed())
                 def->blame("graph_rule_app expects closed Rules").bail();
+            pattern::RulePattern(rule).check_definition();
             rules_.push_back(importer.rewrite(rule)->as<Rule>());
         } else {
             auto axm = def->isa<Axm>();

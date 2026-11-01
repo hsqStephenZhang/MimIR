@@ -8,6 +8,8 @@
 #include "mim/rewrite.h"
 #include "mim/rule.h"
 
+#include "mim/pattern/rule.h"
+
 namespace mim::pattern {
 
 namespace {
@@ -176,6 +178,7 @@ evaluate_guard(const Rule* rule, const Def2Def& bindings, Defs lhs, Defs matched
     try {
         for (auto [meta, value] : bindings)
             importer.map(meta, importer.rewrite(value));
+        RulePattern(rule).bind_derived(importer, bindings);
         auto condition = importer.rewrite(rule->guard());
         if (condition == target->lit_tt()) return {MatchStatus::Matched, {}};
         if (condition == target->lit_ff()) return {MatchStatus::No_Match, "guard is false"};

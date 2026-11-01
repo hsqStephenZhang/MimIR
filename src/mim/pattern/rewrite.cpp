@@ -5,6 +5,8 @@
 #include "mim/rewrite.h"
 #include "mim/world.h"
 
+#include "mim/pattern/rule.h"
+
 namespace mim::pattern {
 
 RewritePlan::RewritePlan(const GraphMatch& match)
@@ -474,6 +476,15 @@ private:
                     rhs.map(old, next);
                 for (auto [meta, source] : entry.bindings)
                     rhs.map(meta, importer_.rewrite(source));
+                const Rule* rule = nullptr;
+                for (auto [meta, source] : entry.bindings) {
+                    auto var = meta->isa<Var>();
+                    if (!var)
+                        if (auto ex = meta->isa<Extract>()) var = ex->tuple()->isa<Var>();
+                    if (var) rule = var->binder()->isa<Rule>();
+                    if (rule) break;
+                }
+                if (rule && rule->is_set()) RulePattern(rule).bind_derived(rhs, entry.bindings);
                 for (auto def : protected_)
                     if (auto imported = importer_.lookup(def)) retained_.insert_or_assign(def, imported);
                 value = rhs.rewrite(entry.def);

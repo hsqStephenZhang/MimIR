@@ -48,12 +48,17 @@ public:
     /// Foreign free variables in the guard/RHS must also occur in the candidate.
     RuleReplacement
     build_replacement(const Def*, Rewriter& context, MatchOptions = {}, const GuardContext* = nullptr) const;
+    void bind_derived(Rewriter&, const Def2Def&) const;
+    void check_definition() const;
 
 private:
     Pattern lower(const Def*);
     bool is_meta(const Def*) const;
     bool is_bound(Defs, const Def2Def&) const;
     MatchStatus validate_bindings(const Def2Def&) const;
+    bool can_bind(const Def*, const Def2Def&) const;
+    void complete_bindings(Def2Def&) const;
+    std::vector<const Def*> fields_;
 
     const Rule* rule_;
     PatternProgram program_;

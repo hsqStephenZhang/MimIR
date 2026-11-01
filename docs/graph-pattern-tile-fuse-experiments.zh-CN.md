@@ -1,5 +1,20 @@
 # P5 tile-and-fuse 实验
 
+## 后续修复：自然 telescope
+
+`(x o e: Nat)` 的 LHS 分别捕获字段，但 RHS 的 `(x,o,e)` 经 tuple η 归约变为
+whole-telescope Var；`(a b: «4; Nat»)` 的 LHS 则可能直接捕获 whole Var，RHS 需要其字段。
+Rule adapter 现在支持两个方向：完整字段在 target World 中组成 tuple，whole capture
+在 target 中静态投影；若源 Tuple/Pack 已有字段，绑定直接补充其现有节点。
+不制造 source Extract、Hole 或猜测 dependent-type 元变量。
+guard、rule RHS 与 graph binder recipes 使用同一 derived-binding 规则；
+source graph queries 不会将新建 target 投影误认为 source 节点。
+`grtel` 在两个 frontend 覆盖 homogeneous scalar、array-valued 与 mixed telescope，
+不需要 unused/salt 字段。真正不由 LHS 绑定的 RHS/guard 元变量在 phase 配置时，
+按 Rule 定义位置显式报错（`grunbound`），不再仅以 debug 日志静默跳过。
+fresh LHS lambda 的 alpha-matching 缺口仍独立保留；其词法元变量是已定义的，
+不能将不匹配误报成非法 Rule。
+
 ## Task 3 / 4：独立 frontend 回归与扩展
 
 ### Task 4 前置修复：深 DAG 与资源预算

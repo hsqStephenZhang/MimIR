@@ -55,6 +55,7 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
     for (auto [meta, capture] : lowered_.captures_)
         if (auto value = match.isa_capture(capture)) bindings.emplace(meta, value);
     auto rule = lowered_.rule_;
+    lowered_.complete_bindings(bindings);
     if (rule->lhs() == rule->rhs()) return {MatchStatus::No_Match, {}, "identity graph Rule"};
     auto consistency = lowered_.validate_bindings(bindings);
     if (consistency != MatchStatus::Matched)
@@ -72,6 +73,14 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
         if (auto i = built.find(def); i != built.end()) return i->second;
         auto result = [&]() -> Recipe {
             if (auto i = bindings.find(def); i != bindings.end()) return plan->import(i->second);
+            if (lowered_.is_meta(def) && lowered_.can_bind(def, bindings)) {
+                if (auto ex = def->isa<Extract>())
+                    return plan->extract(build(ex->tuple(), depth + 1), Lit::as(ex->index()));
+                std::vector<Recipe> fields;
+                for (auto field : lowered_.fields_)
+                    fields.push_back(build(field, depth + 1));
+                return plan->tuple(std::move(fields));
+            }
             if (def->isa<Lam>()) {
                 DefVec pending{def};
                 DefSet seen;

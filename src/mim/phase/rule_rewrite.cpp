@@ -15,6 +15,8 @@ void RuleRewrite::set_rules(std::vector<const Rule*> rules) {
     for (auto rule : rules)
         if (!rule || !rule->is_set() || &rule->driver() != &driver() || !rule->is_closed())
             throw std::invalid_argument("rule_app requires fully defined, closed Rules of the same Driver");
+    for (auto rule : rules)
+        pattern::RulePattern(rule).check_definition();
     template_world_ = old_world().inherit();
     Rewriter importer(*template_world_);
     templates_.clear();

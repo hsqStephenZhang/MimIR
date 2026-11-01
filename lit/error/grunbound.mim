@@ -1,0 +1,14 @@
+// RUN: python3 %S/../rules/tf_run.py %mim %s %t rule > %t.out 2> %t.log; test $? -ne 0
+// RUN: cat %t.log | %FileCheck %s
+// RUN: python3 %S/../rules/tf_run.py %mim %s %t graph > %t.out 2> %t.log; test $? -ne 0
+// RUN: cat %t.log | %FileCheck %s
+// TF-RULES: missing
+// TF-PURE: q, v
+
+plugin compile;
+axm q: Nat → Nat;
+axm v: Nat → Nat;
+rule missing (x y: Nat): q x => v y;
+extern lam result (x: Nat): Nat = q x;
+
+// CHECK: error: Rule guard or RHS requires metavariables not bound by its LHS

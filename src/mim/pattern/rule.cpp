@@ -16,7 +16,81 @@ namespace mim::pattern {
 RulePattern::RulePattern(const Rule* rule)
     : rule_(rule) {
     if (!rule || !rule->is_set()) throw std::invalid_argument("pattern requires a fully defined Rule");
+    auto count = Lit::isa(rule->dom()->arity());
+    if (count && *count <= 10000) fields_.resize(*count);
+    DefVec pending{rule->lhs(), rule->rhs(), rule->guard()};
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i >= 100000) throw std::invalid_argument("Rule metavariable discovery budget exceeded");
+        auto def = pending[i];
+        if (!seen.insert(def).second) continue;
+        if (auto ex = def->isa<Extract>(); ex && is_meta(ex)) {
+            auto index = Lit::as(ex->index());
+            if (index < fields_.size()) fields_[index] = ex;
+            continue;
+        }
+        if (def->isa<Var>() || def->isa<Axm>()) continue;
+        for (auto dep : def->deps())
+            if (dep) pending.push_back(dep);
+    }
     root_ = lower(rule->lhs());
+}
+
+bool RulePattern::can_bind(const Def* def, const Def2Def& bindings) const {
+    if (bindings.contains(def)) return true;
+    if (auto ex = def->isa<Extract>()) return bindings.contains(ex->tuple());
+    return !fields_.empty()
+        && std::ranges::all_of(fields_, [&](const Def* field) { return field && bindings.contains(field); });
+}
+
+void RulePattern::complete_bindings(Def2Def& bindings) const {
+    auto whole = rule_->has_var();
+    auto i     = whole ? bindings.find(whole) : bindings.end();
+    if (i == bindings.end()) return;
+    auto value = i->second;
+    for (size_t index = 0; index != fields_.size(); ++index) {
+        auto field = fields_[index];
+        if (!field || bindings.contains(field)) continue;
+        if (auto tuple = value->isa<Tuple>(); tuple && index < tuple->num_ops())
+            bindings.emplace(field, tuple->op(index));
+        else if (auto pack = value->isa_imm<Pack>(); pack && Lit::isa(*pack->shape()) == fields_.size())
+            bindings.emplace(field, pack->body());
+    }
+}
+
+void RulePattern::bind_derived(Rewriter& rw, const Def2Def& bindings) const {
+    auto whole = rule_->has_var();
+    if (!whole) return;
+    if (!bindings.contains(whole) && can_bind(whole, bindings)) {
+        DefVec values;
+        for (auto field : fields_)
+            values.push_back(rw.lookup(field));
+        rw.map(whole, rw.world().tuple(values));
+    }
+    if (auto value = rw.lookup(whole))
+        for (size_t i = 0; i != fields_.size(); ++i)
+            if (auto field = fields_[i]; field && !bindings.contains(field))
+                rw.map(field, rw.world().extract(value, fields_.size(), i));
+}
+
+void RulePattern::check_definition() const {
+    Def2Def available;
+    DefVec pending{rule_->lhs()};
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i >= 100000) rule_->blame("Rule metavariable discovery budget exceeded").bail();
+        auto def = pending[i];
+        if (!seen.insert(def).second) continue;
+        if (is_meta(def)) {
+            available.emplace(def, def);
+            continue;
+        }
+        if (def->isa<Var>() || def->isa<Axm>()) continue;
+        for (auto dep : def->deps())
+            if (dep) pending.push_back(dep);
+    }
+    if (!is_bound({rule_->guard(), rule_->rhs()}, available))
+        rule_->blame("Rule guard or RHS requires metavariables not bound by its LHS").bail();
 }
 
 bool RulePattern::is_meta(const Def* def) const {
@@ -84,6 +158,7 @@ RuleMatch RulePattern::match_lhs(const Def* candidate, MatchOptions options) con
     if (outcome.result)
         for (auto [meta, capture] : captures_)
             if (auto value = outcome.result->isa_capture(capture)) bindings.emplace(meta, value);
+    complete_bindings(bindings);
     auto status = validate_bindings(bindings);
     if (status != MatchStatus::Matched) return {status, {}, outcome.steps};
     return {outcome.status, std::move(bindings), outcome.steps};
@@ -123,7 +198,7 @@ bool RulePattern::is_bound(Defs roots, const Def2Def& bindings) const {
         pending.pop_back();
         if (!def || !seen.insert(def).second) continue;
         if (is_meta(def)) {
-            if (!bindings.contains(def)) return false;
+            if (!can_bind(def, bindings)) return false;
             continue;
         }
         if (def->node() == Node::Hole || !def->is_set()) return false;
@@ -170,6 +245,7 @@ RuleReplacement RulePattern::build_replacement(const Def* candidate,
         rw.map(var, context.rewrite(var));
     for (auto [meta, value] : result.bindings)
         rw.map(meta, context.rewrite(value));
+    bind_derived(rw, result.bindings);
     std::array lhs{rule_->lhs()}, matched{candidate};
     auto guard = evaluate_guard(rule_, result.bindings, lhs, matched, guards);
     if (guard.status != MatchStatus::Matched) return {guard.status, nullptr, result.steps, guard.reason};
