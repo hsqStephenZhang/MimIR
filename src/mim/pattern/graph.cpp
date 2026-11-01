@@ -29,7 +29,8 @@ GraphView::GraphView(Defs roots, UseCoverage coverage)
 GraphView::GraphView(Defs roots, GraphOptions options)
     : coverage_(options.coverage)
     , scope_(options.scope)
-    , region_path_(std::move(options.region_path)) {
+    , region_path_(std::move(options.region_path))
+    , shared_region_(options.shared_region) {
     if (options.operators) operators_ = *options.operators;
     const World* world = nullptr;
     for (auto root : roots) {

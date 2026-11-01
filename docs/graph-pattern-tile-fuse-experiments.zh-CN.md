@@ -15,6 +15,18 @@ source graph queries 不会将新建 target 投影误认为 source 节点。
 fresh LHS lambda 的 alpha-matching 缺口仍独立保留；其词法元变量是已定义的，
 不能将不匹配误报成非法 Rule。
 
+## 后续修复：共享 region 的发布模式
+
+此前所有 nested rewrite 都克隆 operand occurrence，纯等式在 fixed point 下也留下多个
+相同 mutable Lam。现在先检查 guard 是否包含 staged `used_by` / `only_used_by` 调用；
+没有 graph facts 的规则在选中 enclosing function 内按 Lam value-wide 发布，共享的
+region binder 只重建一次，所有该值的 occurrence 复用其结果。
+有 graph facts 的规则仍按 occurrence path 发布，不能把局部用途判断推广到其他位置。
+检查会遍历 guard 的嵌套 lambda；超出分析预算时保守使用 occurrence 模式。
+`grshare` 验证纯规则 ff/tt 都只留下一个 body，graph-fact 规则 ff 只改一个 occurrence，
+tt 可分别改写但保持两个 binder。`grregion` 的 occurrence 隔离用真实 graph-fact guard
+继续覆盖。这个复用限定于同一 enclosing function，不是跨函数 region/resource cache。
+
 ## Task 3 / 4：独立 frontend 回归与扩展
 
 ### Task 4 前置修复：深 DAG 与资源预算

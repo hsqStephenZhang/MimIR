@@ -30,6 +30,7 @@ struct GraphOptions {
     Lam* scope                      = nullptr; // The enclosing closed function of the selected occurrence.
     size_t max_inputs               = 4096;
     std::vector<size_t> region_path = {};
+    bool shared_region              = false;
 };
 
 struct DataEdge {
@@ -90,6 +91,7 @@ public:
     std::shared_ptr<const GraphSnapshot> snapshot() const { return snapshot_; }
     bool is_current() const;
     std::span<const size_t> region_path() const { return region_path_; }
+    bool shared_region() const { return shared_region_; }
     std::span<const Def* const> operations() const {
         check_live();
         return operations_;
@@ -124,6 +126,7 @@ private:
     World* world_ = nullptr;
     Lam* scope_   = nullptr;
     std::vector<size_t> region_path_;
+    bool shared_region_;
     std::optional<OpRegistry> operators_;
     std::vector<const Def*> operations_;
     DefMap<OpView> op_views_;

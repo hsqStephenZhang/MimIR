@@ -314,7 +314,15 @@ public:
                 original_importer.map(old, value);
             auto original = original_importer.rewrite(scope->body());
             auto body     = graph_.region_path().empty() ? rewrite(scope->body()) : rewrite_path(scope->body(), 0);
-            changed       = graph_.region_path().empty() ? body != original : region_changed_;
+            if (!graph_.region_path().empty() && graph_.shared_region() && region_changed_) {
+                GraphImporter shared(graph_, world(), budget_);
+                shared.map(scope, new_scope_);
+                if (auto var = scope->has_var()) shared.map(var, new_scope_->var());
+                for (auto [old, fresh] : region_lams_)
+                    shared.map(old, fresh);
+                body = shared.rewrite(scope->body());
+            }
+            changed = graph_.region_path().empty() ? body != original : region_changed_;
             new_scope_->set(filter, body);
             if (scope->is_external()) new_scope_->externalize();
             // Other functions use a separate map: a hash-consed value shared across scopes must
@@ -392,6 +400,7 @@ private:
                 }
                 importer_.map(lam, fresh);
                 map(lam, fresh);
+                region_lams_.emplace_back(lam, fresh);
                 frames.push_back({
                     def,
                     index,
@@ -506,6 +515,7 @@ private:
     bool region_changed_ = false;
     DefSet environment_;
     std::vector<std::pair<const Var*, const Def*>> bindings_;
+    std::vector<std::pair<const Lam*, const Lam*>> region_lams_;
     DefSet protected_;
     DefMap<const Def*> retained_;
 };

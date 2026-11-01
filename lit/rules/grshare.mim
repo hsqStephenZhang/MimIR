@@ -1,0 +1,48 @@
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s --check-prefix=PURE
+// RUN: cat %t.out | %FileCheck %s --check-prefix=FACTFF
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s --check-prefix=PURE
+// RUN: cat %t.out | %FileCheck %s --check-prefix=FACTTT
+// TF-RULES: (pure, fact)
+// TF-PURE: q, g, v, w
+// TF-SCHEMAS: schema
+
+plugin compile;
+axm q: [Nat, Nat] → Nat;
+axm g: [Nat, Nat] → Nat;
+axm v: [Nat, Nat] → Nat;
+axm w: [Nat, Nat] → Nat;
+axm left: (Nat → Nat) → Nat;
+axm right: (Nat → Nat) → Nat;
+let schema = compile.data_op @(([Nat, Nat] → Nat), 1) (g, 1, (0, 1));
+rule pure (x o: Nat): q (x, o) => v (x, o);
+rule fact (x o: Nat): g (x, o)
+    when compile.used_by (x, g (x, o)) => w (x, o);
+extern lam pure_result (x: Nat): [Nat, Nat] =
+    let body = λ (o: Nat): Nat = q (x, o);
+    (left body, right body);
+extern lam fact_result (x: Nat): [Nat, Nat] =
+    let body = λ (o: Nat): Nat = g (x, o);
+    (left body, right body);
+
+// PURE-LABEL: extern lam pure_result
+// PURE: lam [[ONE:[a-zA-Z_][a-zA-Z_0-9]*]]
+// PURE: v (
+// PURE-NOT: lam
+// PURE: (left [[ONE]], right [[ONE]])
+// PURE-NOT: lam
+// FACTFF-LABEL: extern lam fact_result
+// FACTFF: lam [[FIRST:[a-zA-Z_][a-zA-Z_0-9]*]]
+// FACTFF: w (
+// FACTFF: lam [[SECOND:[a-zA-Z_][a-zA-Z_0-9]*]]
+// FACTFF: g (
+// FACTFF: (left [[FIRST]], right [[SECOND]])
+// FACTFF-LABEL: extern lam pure_result
+// FACTTT-LABEL: extern lam fact_result
+// FACTTT: lam [[FIRST:[a-zA-Z_][a-zA-Z_0-9]*]]
+// FACTTT: w (
+// FACTTT: lam [[SECOND:[a-zA-Z_][a-zA-Z_0-9]*]]
+// FACTTT: w (
+// FACTTT: (left [[FIRST]], right [[SECOND]])
+// FACTTT-LABEL: extern lam pure_result

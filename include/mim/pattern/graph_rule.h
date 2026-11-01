@@ -13,6 +13,7 @@ struct GraphRulePlan {
 
 class GraphRulePattern {
 public:
+    bool uses_graph_facts() const;
     explicit GraphRulePattern(const Rule*, size_t max_roots = 64);
 
     GraphMatches find(const GraphView&, GraphMatchOptions = {}) const;

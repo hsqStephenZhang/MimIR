@@ -197,7 +197,10 @@ void GraphRuleRewrite::start() {
         for (auto source : rules_) {
             pattern::GraphRulePattern compiled(importer.rewrite(source)->as<Rule>());
             for (const auto& region : instances) {
-                pattern::GraphView view({region.body}, {.operators = &ops, .scope = fn, .region_path = region.path});
+                pattern::GraphView view({region.body}, {.operators     = &ops,
+                                                        .scope         = fn,
+                                                        .region_path   = region.path,
+                                                        .shared_region = !compiled.uses_graph_facts()});
                 pattern::GuardContext local_guards(view);
                 std::optional<pattern::GraphRewrite> accepted;
                 std::string reason = "no accepted match visited";

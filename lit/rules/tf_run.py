@@ -4,7 +4,9 @@ import subprocess
 import sys
 
 
-mim, filename, temporary, frontend = sys.argv[1:]
+mim, filename, temporary, frontend, *strategy = sys.argv[1:]
+fixed_point = strategy[0] if strategy else "ff"
+assert fixed_point in ("ff", "tt")
 source = pathlib.Path(filename)
 text = source.read_text()
 rules = re.search(r"^// TF-RULES: (.+)$", text, re.MULTILINE).group(1)
@@ -31,7 +33,7 @@ try:
     generated.write_text(
         text
         + "\nextern lam _compile (): compile.Phase =\n"
-        + f"    compile.phases ff ({phase}, compile.cleanup);\n"
+        + f"    compile.phases {fixed_point} ({phase}, compile.cleanup);\n"
     )
     result = subprocess.run(
         [mim, str(generated), "-V", "-V", "-V", "-V", "-o", "-"],

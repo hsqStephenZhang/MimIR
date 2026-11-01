@@ -3,6 +3,7 @@
 #include <functional>
 #include <stdexcept>
 
+#include "mim/driver.h"
 #include "mim/rewrite.h"
 #include "mim/world.h"
 
@@ -45,6 +46,26 @@ GraphRulePattern::GraphRulePattern(const Rule* rule, size_t max_roots)
 
 GraphMatches GraphRulePattern::find(const GraphView& graph, GraphMatchOptions options) const {
     return find_matches(graph_, graph, options);
+}
+
+bool GraphRulePattern::uses_graph_facts() const {
+    auto& driver = lowered_.rule_->driver();
+    DefVec pending{lowered_.rule_->guard()};
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i >= 100000) return true;
+        auto def = pending[i];
+        if (!seen.insert(def).second) continue;
+        if (auto axm = def->isa<Axm>()) {
+            if (axm->sym() == driver.sym("compile.used_by") || axm->sym() == driver.sym("compile.only_used_by"))
+                return true;
+            continue;
+        }
+        if (def->isa<Var>()) continue;
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+    return false;
 }
 
 GraphRulePlan

@@ -15,7 +15,8 @@ axm right: (Nat → Nat) → Nat;
 axm outer: (Nat → Nat) → Nat;
 rule exclusive (x o: Nat, unused: Nat): q (x, o)
     when compile.only_used_by (x, q (x, o)) => wrong (x, o);
-rule local (x o: Nat, unused: Nat): q (x, o) => v (x, o);
+rule local (x o: Nat, unused: Nat): q (x, o)
+    when compile.used_by (x, q (x, o)) => v (x, o);
 extern lam result (x salt: Nat): [Nat, Nat] =
     let body = λ (o: Nat): Nat = q (x, o);
     (left body, right body);
