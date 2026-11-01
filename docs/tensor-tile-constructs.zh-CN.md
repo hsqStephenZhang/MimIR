@@ -174,6 +174,52 @@ allocations 与 fold init 不属于 stage crop。
 Default 33.198/33.937/33.664/40.824，OpenBLAS 76.456/94.311/96.669/88.036。
 所有运行均以相同 scalar-reference 验证结果；未选择性隐藏较慢测量。
 
+### 5.3 Scalar first block，无 accumulator init copy
+
+lower_to_mem 的 tile_fold 仅在 count 为正 literal、init 为 uniform splat/Pack 且原 step
+通过 linear/pointwise proof 时 peel first step。独立 accumulator 仍只分配一次，但不填零
+也不复制 init；first step 在 off=0 用 scalar seed 完整写出该 buffer，随后执行 n−1
+次 step，offset=(i+1)×ks。最后 K block 和每步 post 的既有顺序不变。
+count=0 仍 normalizes 为原 init；未知 count、非 uniform seed、其他 acc 读或非 pointwise
+maps 保留原路径。mrp 的 uniform outs 在 leaf bufferization 转为 scalar init，不分配 seed buffer。
+
+fold_seed_destination 检查 scalar seed、foldFirst 和无 foldCopy/buffer.lit；
+tile_constructs_exec 在两条 pipeline 验证 n=0/1/3、init=3、非结合 combiner
+acc×10+off 的结果分别为3/30/3024，避免只测加法的等价代理。
+新 reference 用例发现同类型 buffer.lit 的 bottom-memory allocations 可共享：
+step 的 off fill 覆盖了初始 seed buffer（实际0/24而非30/3024）。
+splat_buffer 改为每个 lowering scope 请求 fresh_mem，使两个 fill 的 allocation memory
+不同；这是本项 scalar seed/reference 对照直接暴露并必须修复的 alias，不修改 AddMem 算法。
+
+| Item 3 shape | Rule | Hand | Default | OpenBLAS |
+| --- | ---: | ---: | ---: | ---: |
+| 256³ | 52.436 | 51.695 | 34.655 | 80.805 |
+| 512³ | 53.118 | 52.934 | 33.805 | 98.745 |
+| 1024³ | 51.261 | 53.569 | 34.065 | 99.525 |
+| 513×257×129 | 53.514 | 53.917 | 41.632 | 88.274 |
+
+数据：build/task8-bench/item3-results.csv / item3-metrics.json。1024³ LLVM 中只有一个
+131,072-byte column accumulator allocation，无旧同大小 init buffer 和 foldCopy；
+peeling 会增加一个静态 first-block stage/vector-accumulator site，但动态每 K block
+仍只 packing 一次。没有把 malloc 的静态 sites 数等同于运行时 allocation 次数。
+Item 2 commit 后 benchmark 的结果为 Rule 38.847/52.328/50.072/53.497，
+Hand 43.436/54.079/50.380/53.750，Default 31.630/34.104/33.583/40.873，
+OpenBLAS 76.645/94.545/95.165/85.608；保留于 item2-post-results.csv。
+
+### 5.4 剩余差距
+
+三项的主要提升来自 vector leaf（约7.5到50+ GFLOPS）；去掉 crop 和 init copies
+减少了确定的内存工作，但整体计算吞吐提升未超出所有 shapes 的测量噪声。
+结构 rule/hand 在大多数 shape 已超过 default，不同 implementation 的 independently
+compiled loops 仍可能有噪声，不能以小差异推断 rule 有运行时 overhead。
+OpenBLAS 仍约1.5–2倍快：当前 row 每次独立 vector nest，缺少多行 register blocking
+共享 B loads、target-specific microkernel/FMA tuning，NR/MR/KR 固定而非 cache/autotune selector。
+packed B 每 column/K block scratch 重建，尚无跨调用 packing，A 未专门 packing；
+stride、tail panels 和循环顺序也未用成本模型搜索。
+下一步应先比较不同 MR/KR/NR 和 multi-row blocked nest，检查 spill/assembly 与 bandwidth，
+再加入 scratch reuse、A packing 和 target microkernel，不能仅凭进一步去除 copies
+保证达到 OpenBLAS。parallel grid 不用于这里的单线程对比。
+
 ## 0. Generic shape Rules
 
 

@@ -17,6 +17,9 @@ extern "C" int64_t* fold_shared_read(int64_t*);
 extern "C" int64_t* fold_extra_read(int64_t*);
 extern "C" uint64_t ordered();
 extern "C" uint64_t no_blocks();
+extern "C" int64_t* seeded_zero();
+extern "C" int64_t* seeded_one();
+extern "C" int64_t* seeded_three();
 
 int main() {
     int64_t x[35];
@@ -25,17 +28,27 @@ int main() {
     auto tile = tiled_tail(x);
     auto one  = tiled_one(x);
     tiled_empty();
-    auto full    = tiled_full(x);
-    auto scalar  = tiled_scalar(x[0]);
-    auto p       = packed(x);
-    auto q       = packed_both(x);
-    auto s       = packed_one(x);
-    auto box     = packed_box(x);
-    auto box_one = packed_box_one(x);
-    auto f       = tensor_fold(x);
-    auto shared  = fold_shared_read(x);
-    auto extra   = fold_extra_read(x);
-    bool ok      = ordered() == 1024 && no_blocks() == 7;
+    auto full       = tiled_full(x);
+    auto scalar     = tiled_scalar(x[0]);
+    auto p          = packed(x);
+    auto q          = packed_both(x);
+    auto s          = packed_one(x);
+    auto box        = packed_box(x);
+    auto box_one    = packed_box_one(x);
+    auto f          = tensor_fold(x);
+    auto shared     = fold_shared_read(x);
+    auto extra      = fold_extra_read(x);
+    bool ok         = ordered() == 1024 && no_blocks() == 7;
+    auto seed_zero  = seeded_zero();
+    auto seed_one   = seeded_one();
+    auto seed_three = seeded_three();
+    for (int i = 0; i != 3; ++i) {
+        if (seed_zero[i] != 3 || seed_one[i] != 30 || seed_three[i] != 3024)
+            std::fprintf(stderr, "seed cell %d: expected 3/30/3024, got %lld/%lld/%lld\n", i,
+                         static_cast<long long>(seed_zero[i]), static_cast<long long>(seed_one[i]),
+                         static_cast<long long>(seed_three[i]));
+        ok &= seed_zero[i] == 3 && seed_one[i] == 30 && seed_three[i] == 3024;
+    }
     for (int i = 0; i != 35; ++i)
         ok &= tile[i] == x[i];
     for (int i = 0; i != 5; ++i)
@@ -80,6 +93,9 @@ int main() {
     std::free(f);
     std::free(shared);
     std::free(extra);
+    std::free(seed_zero);
+    std::free(seed_one);
+    std::free(seed_three);
     if (!ok) std::fprintf(stderr, "tiled, stage or ordered-fold reference mismatch\n");
     return ok ? 0 : 1;
 }

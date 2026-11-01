@@ -56,6 +56,8 @@ bool contains_pi(const Def* t) {
 /// (index-independent, non-array). So `‹784, 1024; 1e-3›` yields the scalar `1e-3`, while an index-dependent
 /// pack `‹i; f i›` or a genuine literal `((1, 2), (3, 4))` yields `nullptr`.
 const Def* splat_scalar(const Def* d) {
+    d = Axm::peel<tensor::buf>(d);
+    if (auto splat = Axm::isa<tensor::splat>(d)) return splat->arg(2, 1);
     if (!d->isa<Pack>()) return nullptr;
     while (auto pack = d->isa<Pack>())
         d = pack->body();
@@ -532,7 +534,7 @@ const Def* LowerToMem::splat_buffer(const Def* arr_ty, const Def* scalar) {
     // `buffer.lit` sets every element to `scalar`; `btensor.lower_map_reduce` fills it with a loop rather
     // than storing a monolithic literal array (which the LLVM backend cannot digest for large shapes).
     auto [bro, bso, boT] = Axm::isa<buffer::Buf>(buf_of(arr_ty))->args<3>();
-    auto [m, out]        = buffer::op_lit(bro, bso, boT, bot_mem(), scalar)->projs<2>();
+    auto [m, out]        = buffer::op_lit(bro, bso, boT, fresh_mem(), scalar)->projs<2>();
     return out;
 }
 
@@ -742,8 +744,12 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         rewrite(old_mr.maps_all));
     const Def* seed = nullptr;
     if (initial) {
-        auto outs = to_buffer(rewrite(initial->outs), initial->outs);
-        seed      = w.tuple({rewrite(initial->shape), rewrite(initial->map), outs});
+        if (auto scalar = splat_scalar(initial->outs)) {
+            seed = rewrite(scalar);
+        } else {
+            auto outs = to_buffer(rewrite(initial->outs), initial->outs);
+            seed      = w.tuple({rewrite(initial->shape), rewrite(initial->map), outs});
+        }
     } else {
         seed = rewrite(old_mr.init);
     }
@@ -1114,13 +1120,33 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     if (!inplace)
         log().w("tensor destination fallback: tile_fold step copies accumulator (linear pointwise use unproved)");
     record_instance(root);
-    auto initial       = make_buffer(init, w.lit_nat(rank), rewrite(shape));
+    auto literal_count = Lit::isa(count);
+    auto first_scalar  = inplace && literal_count && *literal_count != 0 && splat_scalar(init);
     auto [mem, buffer] = buffer::op_alloc(w.lit_nat(rank), rewrite(shape), rewrite(element), fresh_mem())->projs<2>();
-    mem                = copy_buffer(mem, buffer, initial, rewrite(shape));
-    auto [run, call]   = btensor::ds_splice(w.tuple({mem, buffer}), w.sigma({mem->type(), buffer->type()}), "tileFold");
-    auto state         = run->var(2, 0);
-    auto [loop, loop_call]       = affine::counting_for(w.call<core::bitcast>(w.type_i64(), rewrite(count)), state,
-                                                        run->ret_var(), w.sym("tileFoldStep"));
+    if (first_scalar) {
+        auto first_root = step->reduce(old.tuple({init, old.lit_nat(0)})).back();
+        record_instance(first_root);
+        auto [first, first_call]
+            = btensor::ds_splice(w.tuple({mem, buffer}), w.sigma({mem->type(), buffer->type()}), "foldFirst");
+        auto [first_mem, first_buffer] = first->var(2, 0)->projs<2>();
+        auto pending                   = fe::Restore(pending_, {});
+        auto memo                      = fe::Restore(fresh_memo_, {});
+        push();
+        bind_new(first->has_var());
+        first->app(true, first->ret_var(),
+                   lower_into(first_root, {first_mem, first_buffer, rewrite(shape), rewrite(zero), rewrite(shape)}));
+        first->set(true, wrap_fresh_mem(first->body()));
+        pop();
+        std::tie(mem, buffer) = first_call->projs<2>();
+    } else {
+        auto initial = make_buffer(init, w.lit_nat(rank), rewrite(shape));
+        mem          = copy_buffer(mem, buffer, initial, rewrite(shape));
+    }
+    auto [run, call] = btensor::ds_splice(w.tuple({mem, buffer}), w.sigma({mem->type(), buffer->type()}), "tileFold");
+    auto state       = run->var(2, 0);
+    auto remaining   = first_scalar ? w.lit_nat(*literal_count - 1) : rewrite(count);
+    auto [loop, loop_call] = affine::counting_for(w.call<core::bitcast>(w.type_i64(), remaining), state, run->ret_var(),
+                                                  w.sym("tileFoldStep"));
     auto [index, carried, yield] = loop->vars<3>();
     auto [loop_mem, loop_buffer] = carried->projs<2>();
     auto pending                 = fe::Restore(pending_, {});
@@ -1128,7 +1154,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     push();
     bind_old(parameter->has_var());
     map(accumulator, loop_buffer);
-    map(offset, w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), rewrite(stride)}));
+    auto iteration = w.call<core::bitcast>(w.type_nat(), index);
+    if (first_scalar) iteration = w.call(core::nat::add, Defs{iteration, w.lit_nat(1)});
+    map(offset, w.call(core::nat::mul, Defs{iteration, rewrite(stride)}));
     const Def* update;
     if (inplace) {
         update = lower_into(root, {loop_mem, loop_buffer, rewrite(shape), rewrite(zero), rewrite(shape)});
