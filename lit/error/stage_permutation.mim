@@ -1,0 +1,6 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+// CHECK: tensor.stage outer permutation must be a bijection
+
+plugin tensor;
+plugin core;
+let invalid = tensor.stage @(I64, 2, 1) (2, 2) (1, 2, (0₂, 0₂), 0I64) 0 ((1I64, 2I64), (3I64, 4I64));

@@ -1,0 +1,12 @@
+// RUN: %mim %s -o - | %FileCheck %s
+plugin tensor;
+plugin core;
+plugin compile;
+use tensor;
+extern lam f (x: «2, 3; Nat»): «2, 3; Nat» =
+    unary (λ (v: Nat): Nat = core.nat.add (v, 1))
+        (stage @(Nat, 2, 0) (2, 3) ((), (), (0₂, 1₂), 0) 0 x);
+extern lam _compile (): compile.Phase =
+    compile.phases ff (lower_tensor, fuse_tensor, compile.cleanup);
+// CHECK: tensor.generate
+// CHECK: tensor.map_reduce_post

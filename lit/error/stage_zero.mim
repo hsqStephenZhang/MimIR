@@ -1,0 +1,6 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+// CHECK: tensor.stage requires positive inner tile sizes
+
+plugin tensor;
+plugin core;
+let invalid = tensor.stage @(I64, 2, 1) (2, 2) (1, 0, (0₂, 1₂), 0I64) 0 ((1I64, 2I64), (3I64, 4I64));

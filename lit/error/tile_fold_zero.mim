@@ -1,0 +1,5 @@
+// RUN: (! %mim %s 2>&1) | %FileCheck %s
+// CHECK: tensor.tile_fold requires a positive block size
+
+plugin tensor;
+let invalid = tensor.tile_fold (1, 0) 7 (λ (acc off: Nat): Nat = acc);

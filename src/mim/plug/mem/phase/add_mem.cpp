@@ -8,6 +8,23 @@
 
 namespace mim::plug::mem::phase {
 
+void AddMem::start() {
+    if (annex() == Annex::base<mem::resolve_fresh>()) {
+        auto queue = fe::BFSWorklist<DefSet>();
+        for (auto mut : old_world().externals().muts())
+            queue.push(mut);
+        bool pending = false;
+        while (!queue.empty() && !pending) {
+            auto def = queue.pop();
+            pending  = Axm::isa<mem::fresh>(def);
+            for (auto dep : def->deps())
+                queue.push(dep);
+        }
+        if (!pending) return;
+    }
+    RWPhase::start();
+}
+
 bool AddMem::analyze() {
     // Collect the lams whose ABI is pinned: everything (transitively) reachable from an axm-app argument
     // (combiners, affine index mappings, initial accumulators of `btensor.map_reduce_post`, …).

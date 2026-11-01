@@ -15,6 +15,55 @@
 
 namespace mim::plug::tensor {
 
+const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
+    auto [meta, shapes] = c->as<App>()->uncurry_args<2>();
+    auto [s, ts]        = shapes->projs<2>();
+    if (auto rank = Lit::isa(meta->proj(2, 1))) {
+        for (size_t d = 0; d != *rank; ++d)
+            if (Lit::isa(ts->proj(*rank, d)) == 0) c->blame("tensor.tiled requires positive tile sizes").bail();
+        for (size_t d = 0; d != *rank; ++d)
+            if (Lit::isa(s->proj(*rank, d)) == 0) {
+                auto& w = c->world();
+                return w.app(w.app(w.annex<tensor::splat>(), meta), {s, w.bot(meta->proj(2, 0))});
+            }
+        if (s == ts) return c->world().app(body, {c->world().pack(*rank, c->world().lit_nat(0)), s});
+    }
+    return nullptr;
+}
+
+const Def* normalize_tile_fold(const Def*, const Def* c, const Def*) {
+    auto [meta, blocks, init] = c->as<App>()->uncurry_args<3>();
+    auto [n, ks]              = blocks->projs<2>();
+    if (Lit::isa(n) == 0) return init;
+    if (Lit::isa(ks) == 0) c->blame("tensor.tile_fold requires a positive block size").bail();
+    return nullptr;
+}
+
+const Def* normalize_stage(const Def*, const Def* c, const Def*) {
+    auto [meta, shape, layout, scope] = c->as<App>()->uncurry_args<4>();
+    auto [type, r, k]                 = meta->projs<3>();
+    auto rank = Lit::isa(r), count = Lit::isa(k);
+    if (!rank || !count) return nullptr;
+    auto [pos, tiles, perm, pad] = layout->projs<4>();
+    fe::Vector<bool> seen(*rank, false);
+    for (size_t j = 0; j != *count; ++j) {
+        auto axis = Lit::isa(pos->proj(*count, j));
+        if (Lit::isa(tiles->proj(*count, j)) == 0) c->blame("tensor.stage requires positive inner tile sizes").bail();
+        if (axis) {
+            if (*axis >= *rank || seen[*axis])
+                c->blame("tensor.stage inner dimensions must be distinct and in range").bail();
+            seen[*axis] = true;
+        }
+    }
+    std::ranges::fill(seen, false);
+    for (size_t d = 0; d != *rank; ++d)
+        if (auto axis = Lit::isa(perm->proj(*rank, d))) {
+            if (*axis >= *rank || seen[*axis]) c->blame("tensor.stage outer permutation must be a bijection").bail();
+            seen[*axis] = true;
+        }
+    return nullptr;
+}
+
 const Def* normalize_broadcast(const Def* type, const Def* c, const Def* arg) {
     auto& w = c->world();
 

@@ -196,10 +196,17 @@ void LowerToMem::collect_tensor_types() {
             // tensors of a recorded «r; I32» tensor type.
             if (is_tensor_op(app)) {
                 auto args = fe::BFSWorklist<DefSet>();
-                for (const App* a = app; a; a = a->callee()->isa<App>())
-                    args.push(a->arg());
+                if (Axm::isa<tensor::generate>(app)) args.push(app->arg());
+                if (Axm::isa<tensor::map_reduce_post>(app)) {
+                    auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
+                    for (auto helper : {mr.comb, mr.post, mr.sched, mr.map_out, mr.maps, mr.post_maps})
+                        args.push(helper);
+                    if (auto initial = tensor_init(mr)) args.push(initial->map);
+                }
                 while (!args.empty()) {
                     auto d = args.pop();
+                    if (d->isa<Var>()) continue;
+                    if (auto nested = d->isa<App>(); nested && is_tensor_op(nested)) continue;
                     if (auto k = d->isa_mut<Lam>()) op_args_.emplace(k);
                     for (auto op : d->ops())
                         if (op) args.push(op);
@@ -349,6 +356,7 @@ const Def* LowerToMem::conv_boundary(const Def* t) {
             ops[i] = conv_boundary(sig->op(i));
         return new_world().sigma(ops);
     }
+    if (auto pi = Pi::isa_cn(t)) return new_world().cn(conv_boundary(pi->dom()));
     return rewrite(t);
 }
 
@@ -364,7 +372,16 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
 
     auto ___    = enter(lam);
     auto filter = rewrite(lam->filter());
-    auto body   = wrap_fresh_mem(rewrite(lam->body()));
+    auto body   = rewrite(lam->body());
+    if (!pending_.empty() && !Pi::isa_cn(new_lam->type())) {
+        auto& w  = new_world();
+        auto run = w.mut_fun(w.tuple()->type(), body->type())->set("tensorValue");
+        run->app(true, run->ret_var(), body);
+        run->set(true, wrap_fresh_mem(run->body()));
+        body = w.app(cps::op_cps2ds_dep(run), w.tuple());
+    } else {
+        body = wrap_fresh_mem(body);
+    }
     new_lam->set(filter, body);
     return seal(lam, new_lam);
 }
@@ -394,6 +411,7 @@ const Pi* LowerToMem::conv_type(Lam* lam) {
 }
 
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
+    if (Axm::isa<cps::cps2ds_dep>(app)) return cps::op_cps2ds_dep(rewrite(app->arg()));
     if (Axm::isa<tensor::buf>(app)) return rewrite(app->arg()); // consumed: the buffer *is* the tensor now
     // A `tensor.if_static` still stuck at lowering time guards a runtime value: residualize to
     // its dynamic branch.
@@ -485,6 +503,10 @@ const Def* LowerToMem::materialize(const Def* old_ty, const Def* old_arg) {
 
 const Def* LowerToMem::to_buffer(const Def* val, const Def* old) {
     if (Axm::isa<buffer::Buf>(val->type())) return val;
+    if (!old->type()->isa<Arr>()) {
+        auto& w = new_world();
+        return buffer::op_lit(w.lit_nat_0(), w.tuple(), rewrite(old->type()), fresh_mem(), val)->proj(2, 1);
+    }
     return materialize(old->type(), old);
 }
 

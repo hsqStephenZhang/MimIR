@@ -1581,3 +1581,94 @@ anx lam AccumulatorDefault {T: *, Ro: Nat}: * =
     [shape: «Ro; Nat», outs: «shape; T»];
 anx lam outs_default {T: *, Ro: Nat} (shape: «Ro; Nat») (value: «shape; T»): AccumulatorDefault @(T, Ro) =
     (shape, value);
+
+axm tiled: {T: *, r: Nat}
+         → [s ts: «r; Nat»]
+         → [body: [off ext: «r; Nat»] → «ext; T»]
+         → «s; T», normalize_tiled;
+
+priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat»)
+    (body: [off ext: «r; Nat»] → «ext; T»): «s; T» =
+    let ts = ‹d: r; (ts#d, s#d)#(s#d < ts#d)›;
+    lam at (x: «r; I64»): T =
+        let off = ‹d: r; let i = core.bitcast Nat (x#d); i / ts#d * ts#d›;
+        let local = ‹d: r; core.bitcast Nat (x#d) - off#d›;
+        lam peel (d: Nat, ext: «r; Nat»)@core.pe.is_closed (r, s, ts): T =
+            (λ (): T = (body (off, ext))#‹j: r; core.idx 0 (ext#j) (local#j)›,
+             λ (): T =
+                let axis = core.idx 0 r d;
+                let rem = s#axis % ts#axis;
+                let tail = (ts#axis, rem)#(rem != 0);
+                let full = s#axis - rem;
+                let short = ‹j: r; (ext#j, tail)#(core.idx2nat j == d)›;
+                fun choose (): T =
+                    (short_case, full_case)#(core.bitcast Nat (x#axis) < full) ()
+                    where
+                        con short_case () = return (peel (d + 1, short));
+                        con full_case () = return (peel (d + 1, ext));
+                    end;
+                cps.cps2ds choose ()
+            )#(d < r) ();
+        peel (0, ts);
+    generate s at;
+
+axm tile_fold: {Acc: *}
+             → [n ks: Nat]
+             → [init: Acc]
+             → [step: [acc: Acc, off: Nat] → Acc]
+             → Acc, normalize_tile_fold;
+
+priv anx lam tile_fold_impl {Acc: *} (n ks: Nat) (init: Acc)
+    (step: [acc: Acc, off: Nat] → Acc): Acc =
+    fun run (): Acc =
+        loop (0, init)
+        where
+            con loop (i: Nat, acc: Acc) =
+                (done, next)#(i < n) ()
+                where
+                    con done () = return acc;
+                    con next () = loop (i + 1, step (acc, i * ks));
+                end
+        end;
+    cps.cps2ds run ();
+
+anx lam stage_shape {r k: Nat} (s: «r; Nat»)
+    (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r»): «r + k; Nat» =
+    let axes = ‹j: k; core.idx2nat j›;
+    lam extent (d: Nat) (j: Nat, size: Nat): Nat =
+        (size, (size + inner_tiles#(core.idx 0 k j) - 1) / inner_tiles#(core.idx 0 k j))
+            #(d == inner_dims_pos#(core.idx 0 k j));
+    let outer = ‹d: r; vec.fold.r @(Nat, Nat) @k (extent (core.idx2nat d)) (axes, s#d)›;
+    vec.cat @(r, k) @Nat (‹d: r; outer#(outer_perm#d)›, inner_tiles);
+
+axm stage: {T: *, r k: Nat}
+         → [s: «r; Nat»]
+         → [inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T]
+         → [scope: Nat]
+         → [input: «s; T»]
+         → «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T», normalize_stage;
+
+priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
+    (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
+    (scope: Nat) (input: «s; T»): «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T» =
+    let input = buf input;
+    let inverse = ‹d: r; option.unwrap_unsafe (vec.first core.icmp.e (outer_perm, d))›;
+    let axes = ‹j: k; core.idx2nat j›;
+    lam at (x: «r + k; I64»): T =
+        lam coordinate (d: Nat) (j: Nat, coord: Nat): Nat =
+            (coord, coord * inner_tiles#(core.idx 0 k j)
+                + core.bitcast Nat (x#(core.idx 0 (r + k) (r + j))))
+                    #(d == inner_dims_pos#(core.idx 0 k j));
+        let coords = ‹d: r;
+            vec.fold.r @(Nat, Nat) @k (coordinate (core.idx2nat d))
+                (axes, core.bitcast Nat (x#(core.idx 0 (r + k) (core.idx2nat (inverse#d)))))›;
+        let valid = vec.scan.for_all @(Idx r) @r
+            (λ (d: Idx r): Bool = coords#d < s#d) ‹d: r; d›;
+        fun read (): T =
+            (padding, present)#valid ()
+            where
+                con padding () = return pad;
+                con present () = return (input#‹d: r; core.idx 0 (s#d) (coords#d)›);
+            end;
+        cps.cps2ds read ();
+    generate (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) at;

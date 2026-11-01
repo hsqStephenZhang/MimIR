@@ -32,6 +32,7 @@ namespace mim::plug::mem::phase {
 class AddMem : public RWPhase {
 public:
     using RWPhase::RWPhase;
+    void start() final;
 
 private:
     bool analyze() final;
