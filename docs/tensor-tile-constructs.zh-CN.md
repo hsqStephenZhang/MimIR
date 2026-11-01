@@ -158,3 +158,61 @@ pinned ABI 的 preserving_ 路径不注入 memory，不改变已有 GPU callback
 包含已有 GPU/NVPTX 编译路径，unsupported 项不代表 GPU 硬件执行已经验证。
 原始 LLVM、去 ID diff 和完整日志保存在 `build/task7f-before`、
 `build/task7f-after`、`build/task7f-item1-{ctest,lit}.log`。
+
+## 3. Generic packed GEMM（Task 7f）
+
+`lit/tensor/pgemm.mim` 的同一 Rule 对 M、K、N 和 MR、KR、NR 泛化，
+把 marked real product_2d 改写成 tiled(N) → tile_fold(K, outs=acc) → tiled(M)。
+每个 K block 在 row tiles 外绑定 `bp = stage(slice(B,…))`，
+packed read map 为 `(j/NR, k, j%NR)`；A 与 accumulator 按实际 row ext 切片。
+先 fold `(K-1)/KR` 个完整 K blocks，再单独执行最后一个正长度 block。
+M/N 尾块使用 actual ext，stage 的 padding lanes 不进入逻辑结果。
+这里固定 I64 wrapping add/mul，保留 matched ring operators；plain GEMM 不含 bias/ReLU，
+不声称浮点结合性或 reduction 重排权限。
+
+`pgemm_exec` 在**同一个 LLVM module** 包含三个 Rule-generated 与三个直接调用
+`packed` 的 hand-written externals。两种路径均与 C++ scalar reference 逐 cell 比较：
+
+| Shape M×K×N | MR×KR×NR | Rule / hand |
+| --- | --- | --- |
+| 8×8×8 | 4×4×4 | 全部正确，重复两次且改变输入 |
+| 13×7×11 | 4×3×4 | M/K/N tails 全部正确，重复两次且改变输入 |
+| 1×7×1 | 2×3×4 | singleton-collapse ABI 与 K tail 正确 |
+
+`pgemm` 的 IR 测试检查 stage/mrp/tiled/fold 存在且所有 marked calls 消失；
+graph frontend 保留三个 marked roots，并正向检查 recipe builder 的拒绝诊断。
+拒绝的是 RHS `packed` local Lam call，不是缺少一个 pure-axiom 名字；没有放宽
+graph purity 合同。支持它还需要纯 closure-call recipe 或安全的 helper 展开。
+执行使用 rule_app，经现有 `_impl` 参考语义 lowering。
+最终 CTest 235/235、FULL lit 611 passed / 9 unsupported；
+同一 C++ reference 也链接 `clang -O2` object 重新执行并通过。
+
+### 3.1 编译时间与代码体积基线
+
+macOS arm64，同一 Debug Mim build，默认 `-p opt` → LLVM。
+命令为 `build/bin/mim -I lit/tensor -p opt lit/tensor/pgemm_exec.mim -p ll`，
+在独立输出目录执行，包含全部六个 externals；先 warmup 一次，再测五次。
+计时含 frontend/plugin loading 和所有 Mim phases，不含随后 clang/object 编译或运行。
+
+| 项目 | 结果 |
+| --- | --- |
+| 五次 wall time（秒） | 0.643、0.640、0.657、0.663、0.662 |
+| 中位数（秒） | 0.657 |
+| LLVM IR | 356,110 bytes / 7,942 lines |
+| clang -O0 object | 42,720 bytes；Mach-O __TEXT 39,712 bytes |
+| clang -O2 object | 19,104 bytes；Mach-O __TEXT 15,920 bytes |
+
+原始命令、计时、LLVM、objects 和 numerical executable 位于
+`build/task7f-gemm`，完整 metadata 为 `metrics.json`。
+这些不是运行速度或 allocation 数量的优化结果，也不是 per-function code size；
+对象体积不包含 C++ reference 或 linked runtime。
+
+### 3.2 性能 lowering 尚缺
+
+当前 tiled 的 generate 参考实现可为每个 output cell 重算整个 tile，
+语法上的外层 bp binding 尚不保证 stage 运行时 exactly-once realization。
+§5.4 destination passing 需要传入 outer destination 的 shape/origin、每次 iteration
+的 memory/accumulator、scratch lifetime，以及 outs 的线性 alias 检查。
+不能原地写时须显式 copy/report；fold 中间 buffers 的释放与 reuse 也需实现。
+因此本实验验证 generic Rule、closures、tail 数值与完整 lowering 通路，不是 packed GEMM
+的性能实现；GPU storage scopes 和 fused bias/ReLU epilogue 尚未在该实验验证。

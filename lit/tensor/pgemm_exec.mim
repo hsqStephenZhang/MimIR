@@ -1,0 +1,10 @@
+// RUN: %mim -I %S -p opt %s -p ll
+// RUN: clang++ -std=c++23 %S/pgemm_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t | %FileCheck %s
+// CHECK: packed GEMM rule/hand: 8x8x8, 13x7x11, 1x7x1 passed
+
+import pgemm;
+import opt;
+plugin compile;
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.rule_app pgemm.pack, opt._default_compile ());

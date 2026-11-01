@@ -1,0 +1,82 @@
+// RUN: python3 %S/../rules/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: %FileCheck %s --implicit-check-not='mark @' < %t.out
+// RUN: python3 %S/../rules/tf_run.py %mim %s %t graph > %t.graph.out 2> %t.graph.log
+// RUN: %FileCheck %s --check-prefix=GAP < %t.graph.out
+// RUN: grep 'graph Rule recipes only call explicitly pure axioms' %t.graph.log
+// TF-RULES: pack
+// TF-PURE: mark, tensor.product_2d, tensor.binary, tensor.unary, tensor.broadcast, tensor.slice, tensor.tiled, tensor.tile_fold, tensor.stage, tensor.map_reduce_post, tensor.splat, core.wrap.add, core.wrap.mul, core.icmp.sl, core.bit2.and, affine.lit, affine.semiop.floordiv, affine.semiop.rem
+
+plugin compile;
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+use core.ops.n;
+
+let Ring = (I64, 0I64, core.wrap.add 0 @0, core.wrap.mul 0 @0);
+axm mark: {M K N: Nat, ts: «3; Nat»} → «M, N; I64» → «M, N; I64»;
+lam valid (M K N MR KR NR: Nat): Bool =
+    core.bit2.and 0 (core.bit2.and 0 (M > 0, K > 0),
+        core.bit2.and 0 (core.bit2.and 0 (N > 0, MR > 0), core.bit2.and 0 (KR > 0, NR > 0)));
+
+lam packed {M K N MR KR NR: Nat}
+    (a: «M, K; I64», b: «K, N; I64», add mul: «2; I64» → I64): «M, N; I64» =
+    fun combine (acc: I64, pair: «2; I64»)@tt: I64 =
+        return (add (acc, mul pair));
+    tiled @(I64, 2) ((M, N), (M, NR))
+        (λ (off ext: «2; Nat»): «ext; I64» =
+            let j = off#tt;
+            let rows = ext#ff;
+            let n = ext#tt;
+            lam block (k ko: Nat, acc: «rows, n; I64»): «rows, n; I64» =
+                let bp = stage @(I64, 2, 1) (k, n) (1, NR, (1₂, 0₂), 0I64) 0
+                    (slice @(I64, 2) (K, N) ((ko, j), (1, 1), (k, n)) b);
+                tiled @(I64, 2) ((rows, n), (MR, n))
+                    (λ (row size: «2; Nat»): «size; I64» =
+                        let m = size#ff;
+                        let cols = size#tt;
+                        let ap = slice @(I64, 2) (M, K) ((off#ff + row#ff, ko), (1, 1), (m, k)) a;
+                        let cp = slice @(I64, 2) (rows, n) (row, (1, 1), size) acc;
+                        map_reduce_post @(2, 0) @(I64, I64, 2, 3, SchedT)
+                            (size, (m, cols, k), mk_sched (3, 0))
+                            @((I64, I64), (2, 3), ((m, k), ((n + NR - 1) / NR, k, NR)), (), (), ())
+                            (combine, outs_default @(I64, 2) size cp, id @I64)
+                            (proj_map @(3, 2) (0, 1))
+                            ((proj_map @(3, 2) (0, 2),
+                                λ (o: «3; affine.Index»): «3; affine.Index» =
+                                    let j = affine.op.add (o#1₃, affine.lit (row#tt));
+                                    (affine.semiop.floordiv (j, NR), o#2₃,
+                                     affine.semiop.rem (j, NR))),
+                             ())
+                            ((ap, bp), ()));
+            let blocks = (K - 1) / KR;
+            let acc = tile_fold (blocks, KR) (splat ((rows, n), 0I64))
+                (λ (acc: «rows, n; I64», ko: Nat): «rows, n; I64» = block (KR, ko, acc));
+            block (K - blocks * KR, blocks * KR, acc));
+
+pub rule pack (M K N: Nat, ts: «3; Nat», a: «M, K; I64», b: «K, N; I64», add mul: «2; I64» → I64):
+    mark @(M, K, N, ts) (product_2d (I64, 0I64, add, mul) @(M, K, N) (a, b))
+    when valid (M, K, N, ts#0₃, ts#1₃, ts#2₃) =>
+    packed @(M, K, N, ts#0₃, ts#1₃, ts#2₃) (a, b, add, mul);
+
+extern fun square (a b: «8, 8; I64»): «8, 8; I64» =
+    return (mark @(8, 8, 8, (4, 4, 4)) (product_2d Ring @(8, 8, 8) (buf a, buf b)));
+extern fun tailed (a: «13, 7; I64», b: «7, 11; I64»): «13, 11; I64» =
+    return (mark @(13, 7, 11, (4, 3, 4)) (product_2d Ring @(13, 7, 11) (buf a, buf b)));
+extern fun skinny (a b: «7; I64»): «1, 1; I64» =
+    return (mark @(1, 7, 1, (2, 3, 4)) (product_2d Ring @(1, 7, 1) (buf a, buf b)));
+
+extern fun hand_square (a b: «8, 8; I64»): «8, 8; I64» =
+    return (packed @(8, 8, 8, 4, 4, 4) (buf a, buf b, core.wrap.add 0 @0, core.wrap.mul 0 @0));
+extern fun hand_tailed (a: «13, 7; I64», b: «7, 11; I64»): «13, 11; I64» =
+    return (packed @(13, 7, 11, 4, 3, 4) (buf a, buf b, core.wrap.add 0 @0, core.wrap.mul 0 @0));
+extern fun hand_skinny (a b: «7; I64»): «1, 1; I64» =
+    return (packed @(1, 7, 1, 2, 3, 4) (buf a, buf b, core.wrap.add 0 @0, core.wrap.mul 0 @0));
+
+// CHECK: tensor.stage
+// CHECK: tensor.map_reduce_post
+// CHECK: tensor.tiled
+// CHECK: tensor.tile_fold
+// GAP-DAG: mark @ (8, 8, 8,
+// GAP-DAG: mark @ (13, 7, 11,
+// GAP-DAG: mark @ (1, 7, 1,
