@@ -152,6 +152,40 @@ TEST_CASE("P5 search: rejected matches do not consume the accepted result limit"
     CHECK(found.matches.empty());
 }
 
+TEST_CASE("P5 search: rejected orientation preserves alternative bindings and Unknown") {
+    IR ir;
+    auto a = ir.w.lit_nat(1), b = ir.w.lit_nat(2);
+    auto value = ir.both(a, b);
+    GraphView view({value}, {.operators = &ir.ops});
+    PatternProgram p;
+    auto x = p.capture(), y = p.capture();
+    auto pair = [&](Pattern first, Pattern second) {
+        return p.node(Node::App, {p.node(Node::App, {p.exact(ir.pair), first}), second});
+    };
+    auto unknown = p.where(pair(x, y), {x}, [](auto) { return CheckResult::Unknown; });
+    GraphPattern pattern(p);
+    pattern.anchor(p.either(unknown, p.either(pair(x, y), pair(y, x))));
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive}) {
+        size_t visits = 0;
+        GraphMatchOptions options;
+        options.mode   = mode;
+        options.accept = [&](const GraphMatch& match) {
+            ++visits;
+            return match.isa_capture(x) == b;
+        };
+        auto found = find_matches(pattern, view, options);
+        CHECK(found.status == SearchStatus::Complete);
+        CHECK(visits == 2);
+        REQUIRE(found.matches.size() == 1);
+        CHECK(found.matches[0].isa_capture(x) == b);
+        CHECK(found.matches[0].isa_capture(y) == a);
+        options.accept = [](const GraphMatch&) { return false; };
+        found          = find_matches(pattern, view, options);
+        CHECK(found.status == SearchStatus::Unknown);
+        CHECK(found.matches.empty());
+    }
+}
+
 TEST_CASE("P5 graph Rule: tuple templates match independent roots and share RHS computation") {
     IR ir;
     auto rule = ir.rule();

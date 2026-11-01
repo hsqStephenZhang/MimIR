@@ -585,8 +585,7 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
     on_match_ = [&] {
         auto status = relations(true);
         if (status != MatchStatus::Matched) return status;
-        if (!emitted.insert(assigned).second) return MatchStatus::No_Match;
-        unresolved.erase(assigned);
+        if (emitted.contains(assigned)) return MatchStatus::No_Match;
         DefSet matched;
         for (auto def : assigned)
             matched.insert(def);
@@ -617,7 +616,9 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
             reads = values;
         }
         auto match = GraphMatch(&pattern, graph, assigned, result(), std::move(reads), std::move(nodes));
-        if (options.accept && !options.accept(match)) return MatchStatus::Matched;
+        if (options.accept && !options.accept(match)) return MatchStatus::No_Match;
+        emitted.insert(assigned);
+        unresolved.erase(assigned);
         output.matches.push_back(std::move(match));
         limited = output.matches.size() >= options.max_results;
         return MatchStatus::Matched;

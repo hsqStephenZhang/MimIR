@@ -252,7 +252,7 @@ extern lam _compile (): compile.Phase =
 
 RHS 的三个结果若已通过 η 归约合并为整个 `combined x`，前端会在 recipe 中投影三个输出，不在源 World 补建 Extract。C++ `GraphRulePattern` 与 Mim phase 均复用同一 `PatternProgram`、共享绑定、多根搜索和事务式 recipe。规则模板保存于独立 World，跨 cleanup 和 PhaseMan 重建后重新导入；每次调用至多提交每个闭合 external 函数中的一组匹配，规则按显式列表顺序尝试。
 
-`GraphMatchOptions::accept` 可在只读快照上筛选已验证的匹配；拒绝的匹配不消耗 `max_results`，但搜索仍受 step、candidate 和 depth 预算约束。`graph_rule_app` 设置 `max_results=1`，在此回调中依次验证 guard、构造计划并检查 canonical no-op，保留首个有效且改变图的 prospective World；搜索返回后才发布。主动达到 `Result_Limit` 不否定这一匹配，Unknown 或预算耗尽也不否定已验证的结果。没有有效替换时不发布，并以 debug 日志报告搜索状态和原因。该回调不改变同一 anchor tuple 只导出首组合法模式绑定的约定。
+`GraphMatchOptions::accept` 可在只读快照上筛选已验证的匹配；拒绝的匹配不消耗 `max_results`，也不阻止同一 anchor tuple 的其他绑定，但搜索仍受 step、candidate 和 depth 预算约束。`graph_rule_app` 设置 `max_results=1`，在此回调中依次验证 guard、构造计划并检查 canonical no-op，保留首个有效且改变图的 prospective World；搜索返回后才发布。主动达到 `Result_Limit` 不否定这一匹配，Unknown 或预算耗尽也不否定已验证的结果。没有有效替换时不发布，并以 debug 日志报告搜索状态和原因。只有已接受的绑定会消除该 tuple 的 unresolved 状态。
 
 `pure_ops` 是调用方对 primitive 纯性的显式断言，不由函数类型推断。列表应包含被替换的 primitive 与 RHS 新调用的 primitive；callee 为任意 Lam 的 RHS 尚不支持。前端不猜测数据参数 schema，排他使用不能因列入该列表而自动成立。RHS 支持 captures、Nat／Idx 位字面量、pure axiom call、Tuple、可静态展开的 Pack 和固定 index 的 Extract。未绑定的 metavariable、未知 guard、预算耗尽或不支持的 RHS 不能发布替换；会消除未证明纯性的内部计算的计划也会被拒绝。whole-telescope capture 不会自动导出缺少的字段 capture；tuple η 归约消除字段结构后，仍可能缺少可表示的跨根连接。这属于当前 Rule 支持子集，不进行逆归一化补全。
 
