@@ -1,0 +1,10 @@
+// RUN: (! %mim %s -o - 2>&1) | %FileCheck %s
+
+plugin compile;
+axm nest: ((Nat → Nat) → Nat) → Nat;
+rule higher (x: Nat): nest (λ (f: Nat → Nat): Nat = f x) =>
+    nest (λ (f: Nat → Nat): Nat = x);
+extern lam result (x: Nat): Nat = nest (λ (f: Nat → Nat): Nat = f x);
+extern lam _compile (): compile.Phase = compile.rule_app higher;
+
+// CHECK: Rule LHS bound function application requires higher-order matching

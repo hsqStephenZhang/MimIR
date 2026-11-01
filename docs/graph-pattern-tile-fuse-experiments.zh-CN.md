@@ -1,5 +1,23 @@
 # P5 tile-and-fuse 实验
 
+## Task 6：受限 term-LHS binder matching
+
+Rule LHS 的 Lam 不再只按指针匹配：matcher 显式绑定源 Lam 和 Var，检查函数 type/filter，
+再递归匹配 body。绑定变量必须仅作为变量出现；bound-function callee 的高阶匹配显式拒绝。
+没有高阶统一、逆归一化、Hole 求解或开放 dependent Pi 推断。
+RHS 的对应 binder 按 Lam preorder 与嵌套深度配对，type 必须只读 alpha-compatible；
+同数、同深度的受限 nest 覆盖本实验的 jo/io。
+capture 若含源 bound Var，只可在 RHS 对应 binder 内使用；否则拒绝该 match。
+导入延迟到 RHS binder stub 已安装后，冻结源表达式按该映射重建，不能把源 Var 搬出 scope。
+`gralpha` 在两个 frontend 验证 binder-dependent capture 和 escaping rule 后的安全 fallback。
+不支持增删/重排 binder 后仍推断 capture 的 scope 对应关系。
+
+`tf_post` / `tf_post_g` / `tf_rpost` / `tf_rpost_g` 全部翻转为目标检查。
+真实 slice 版本生成 jo body 中的 bp，并将 io body 读取改成 read bp。
+模型 mm 版本的 stage 虽在 RHS jo 的 let 中构造，仍打印在 io 的 mm 参数里：
+它只依赖 jo 的 box，尚无 placement/lowering 合同，不能声称此模型已经执行 outer-level packing。
+graph recipes 对源 nested body 的未证明纯性计算也检查保留，不能借 binder pattern 删除 effect。
+
 ## 后续修复：自然 telescope
 
 `(x o e: Nat)` 的 LHS 分别捕获字段，但 RHS 的 `(x,o,e)` 经 tuple η 归约变为

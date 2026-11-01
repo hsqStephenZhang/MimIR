@@ -116,6 +116,16 @@ private:
                 if (def->is_mutable()) return MatchStatus::Unknown;
                 if (def->num_ops() != entry.operands.size()) return MatchStatus::No_Match;
                 return operands(entry.operands, def, 0, depth + 1, next);
+            case Kind::Binder: {
+                auto lam = def->isa<Lam>();
+                if (!lam || !lam->is_set()) return MatchStatus::No_Match;
+                const Def* variable = lam->has_var();
+                if (!variable) variable = lam;
+                return visit(entry.operands[0], variable, depth + 1, [&] {
+                    return visit(entry.operands[1], lam->filter(), depth + 1,
+                                 [&] { return visit(entry.operands[2], lam->body(), depth + 1, next); });
+                });
+            }
             case Kind::Range: {
                 if (def->node() != entry.node || (entry.flags && def->flags() != *entry.flags))
                     return MatchStatus::No_Match;

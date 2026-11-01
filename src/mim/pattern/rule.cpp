@@ -33,7 +33,76 @@ RulePattern::RulePattern(const Rule* rule)
         for (auto dep : def->deps())
             if (dep) pending.push_back(dep);
     }
-    root_ = lower(rule->lhs());
+    root_        = lower(rule->lhs());
+    auto lambdas = [](const Def* root) {
+        std::vector<std::pair<const Lam*, size_t>> result;
+        std::vector<std::pair<const Def*, size_t>> pending{
+            {root, 0}
+        };
+        DefSet seen;
+        while (!pending.empty()) {
+            auto [def, depth] = pending.back();
+            pending.pop_back();
+            if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>() || def->isa<Pi>()) continue;
+            if (auto lam = def->isa<Lam>()) {
+                result.emplace_back(lam, depth);
+                ++depth;
+            }
+            for (auto op : def->ops() | std::views::reverse)
+                if (op) pending.emplace_back(op, depth);
+        }
+        return result;
+    };
+    auto lhs = lambdas(rule->lhs()), rhs = lambdas(rule->rhs());
+    if (lhs.size() == rhs.size())
+        for (size_t i = 0; i != lhs.size(); ++i)
+            if (lhs[i].second == rhs[i].second && Check::test_alpha(lhs[i].first->type(), rhs[i].first->type()))
+                binders_.emplace_back(lhs[i].first, rhs[i].first);
+}
+
+bool RulePattern::binder_captures_safe(const Def2Def& bindings) const {
+    for (auto [meta, value] : bindings) {
+        if (!is_meta(meta)) continue;
+        for (auto [lhs, rhs] : binders_) {
+            auto i      = bindings.find(lhs);
+            auto source = i != bindings.end() ? i->second->isa<Lam>() : nullptr;
+            auto var    = source ? source->has_var() : nullptr;
+            if (!var || !value->has_free_var(var)) continue;
+            DefVec pending{rule_->rhs()};
+            DefSet seen;
+            for (size_t j = 0; j != pending.size(); ++j) {
+                auto term = pending[j];
+                if (term == rhs) continue;
+                if (term == meta) return false;
+                if (!seen.insert(term).second || term->isa<Var>() || term->isa<Axm>()) continue;
+                for (auto op : term->ops())
+                    if (op) pending.push_back(op);
+            }
+        }
+        for (auto var : value->free_vars())
+            if (std::ranges::any_of(bindings,
+                                    [&](const std::pair<const Def*, const Def*>& binding) {
+                                        return binding.first->isa<Lam>() && binding.second->isa<Lam>()
+                                            && binding.second->as<Lam>()->has_var() == var;
+                                    })
+                && !std::ranges::any_of(binders_, [&](const std::pair<const Lam*, const Lam*>& pair) {
+                       auto i = bindings.find(pair.first);
+                       return i != bindings.end() && i->second->isa<Lam>() && i->second->as<Lam>()->has_var() == var;
+                   }))
+                return false;
+    }
+    return true;
+}
+
+void RulePattern::map_binder(const Lam* source, Lam* target, Rewriter& rw, const Def2Def& bindings) const {
+    for (auto [lhs, rhs] : binders_)
+        if (rhs == source)
+            if (auto i = bindings.find(lhs); i != bindings.end())
+                if (auto matched = i->second->isa<Lam>())
+                    if (auto var = matched->has_var()) {
+                        rw.map(var, target->var());
+                        if (auto old = lhs->has_var()) rw.map(old, target->var());
+                    }
 }
 
 bool RulePattern::can_bind(const Def* def, const Def2Def& bindings) const {
@@ -110,6 +179,23 @@ Pattern RulePattern::lower(const Def* def) {
     auto depth = fe::Restore(lowering_depth_, lowering_depth_ + 1);
     if (!def) throw std::invalid_argument("incomplete node in Rule pattern");
     if (auto i = lowered_.find(def); i != lowered_.end()) return i->second;
+    if (auto app = def->isa<App>())
+        if (auto var = App::uncurry_callee(app)->isa<Var>(); var && var->binder()->isa<Lam>())
+            rule_->blame("Rule LHS bound function application requires higher-order matching").bail();
+
+    if (auto lam = def->isa<Lam>()) {
+        auto variable = program_.capture();
+        if (auto var = lam->has_var()) captures_.emplace(var, variable);
+        auto result  = program_.binder(variable, lower(lam->filter()), lower(lam->body()));
+        result       = program_.all(result, program_.type(lower(lam->type())));
+        auto capture = program_.capture(result);
+        captures_.emplace(lam, capture);
+        result = capture;
+        lowered_.emplace(def, result);
+        return result;
+    }
+    if (auto var = def->isa<Var>(); var && var->binder()->isa<Lam>())
+        if (auto i = captures_.find(var); i != captures_.end()) return i->second;
 
     if (def->is_mutable() && def->is_closed() && def->type() && def->type()->isa<Type>()) {
         auto value  = program_.capture();
@@ -159,6 +245,7 @@ RuleMatch RulePattern::match_lhs(const Def* candidate, MatchOptions options) con
         for (auto [meta, capture] : captures_)
             if (auto value = outcome.result->isa_capture(capture)) bindings.emplace(meta, value);
     complete_bindings(bindings);
+    if (!binder_captures_safe(bindings)) return {MatchStatus::Unknown, {}, outcome.steps};
     auto status = validate_bindings(bindings);
     if (status != MatchStatus::Matched) return {status, {}, outcome.steps};
     return {outcome.status, std::move(bindings), outcome.steps};
@@ -169,7 +256,7 @@ MatchStatus RulePattern::validate_bindings(const Def2Def& bindings) const {
     // Inspect existing tuple/pack nodes or projections; never construct an Extract in the source.
     const Def* whole = nullptr;
     for (auto [meta, value] : bindings)
-        if (meta->isa<Var>()) whole = value;
+        if (auto var = meta->isa<Var>(); var && var->binder() == rule_) whole = value;
     if (whole)
         for (auto [meta, value] : bindings)
             if (auto projection = meta->isa<Extract>()) {
@@ -240,12 +327,42 @@ RuleReplacement RulePattern::build_replacement(const Def* candidate,
     if (!is_bound({rule_->guard(), rule_->rhs()}, result.bindings))
         return {MatchStatus::Unknown, nullptr, result.steps, "guard or RHS contains an unbound metavariable or Hole"};
 
-    Rewriter rw(target);
+    class BinderImporter : public Rewriter {
+    public:
+        BinderImporter(World& world, const RulePattern& pattern, const Def2Def& bindings)
+            : Rewriter(world)
+            , pattern_(pattern)
+            , bindings_(bindings) {}
+        const Def* rewrite_mut_Lam(Lam* lam) override {
+            auto fresh = world().mut_lam(rewrite(lam->type())->as<Pi>());
+            pattern_.map_binder(lam, fresh, *this, bindings_);
+            return rewrite_stub(lam, fresh);
+        }
+        const Def* lookup(const Def* def) override {
+            if (auto value = Rewriter::lookup(def)) return value;
+            if (auto i = bindings_.find(def); i != bindings_.end() && pattern_.is_meta(def))
+                return map(def, rewrite(i->second));
+            return nullptr;
+        }
+
+    private:
+        const RulePattern& pattern_;
+        const Def2Def& bindings_;
+    };
+    BinderImporter rw(target, *this, result.bindings);
     for (auto var : vars)
         rw.map(var, context.rewrite(var));
     for (auto [meta, value] : result.bindings)
-        rw.map(meta, context.rewrite(value));
-    bind_derived(rw, result.bindings);
+        if (is_meta(meta) && !value->has_free_vars())
+            rw.map(meta, context.rewrite(value));
+        else if (is_meta(meta)) {
+            bool bound = std::ranges::any_of(result.bindings, [&](const std::pair<const Def*, const Def*>& binding) {
+                auto lam = binding.first->isa<Lam>() ? binding.second->isa<Lam>() : nullptr;
+                return lam && lam->has_var() && value->has_free_var(lam->has_var());
+            });
+            if (!bound) rw.map(meta, context.rewrite(value));
+        }
+    if (binders_.empty()) bind_derived(rw, result.bindings);
     std::array lhs{rule_->lhs()}, matched{candidate};
     auto guard = evaluate_guard(rule_, result.bindings, lhs, matched, guards);
     if (guard.status != MatchStatus::Matched) return {guard.status, nullptr, result.steps, guard.reason};

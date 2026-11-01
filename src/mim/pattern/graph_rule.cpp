@@ -77,6 +77,8 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
         if (auto value = match.isa_capture(capture)) bindings.emplace(meta, value);
     auto rule = lowered_.rule_;
     lowered_.complete_bindings(bindings);
+    if (!lowered_.binder_captures_safe(bindings))
+        return {MatchStatus::Unknown, {}, "Rule capture would escape its matched binder"};
     if (rule->lhs() == rule->rhs()) return {MatchStatus::No_Match, {}, "identity graph Rule"};
     auto consistency = lowered_.validate_bindings(bindings);
     if (consistency != MatchStatus::Matched)
@@ -87,6 +89,12 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
     if (guard.status != MatchStatus::Matched) return {guard.status, {}, guard.reason};
 
     auto plan = std::make_unique<RewritePlan>(match);
+    if (!lowered_.binders_.empty()) {
+        auto value = plan->instantiate(rule->rhs(), bindings);
+        for (size_t i = 0; i != lhs_.size(); ++i)
+            plan->replace(match.at(anchors_[i]), lhs_.size() == 1 ? value : plan->extract(value, i));
+        return {MatchStatus::Matched, std::move(plan), {}};
+    }
     DefMap<Recipe> built;
     size_t count                                    = 0;
     std::function<Recipe(const Def*, size_t)> build = [&](const Def* def, size_t depth) -> Recipe {

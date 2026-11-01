@@ -1,0 +1,11 @@
+// RUN: (! %mim %s -o - 2>&1) | %FileCheck %s
+
+plugin compile;
+axm nest: (Nat → Nat) → Nat;
+axm effect: [Nat, Nat] → Nat;
+rule drop (x: Nat): nest (λ (o: Nat): Nat = effect (x, o)) =>
+    nest (λ (o: Nat): Nat = x);
+extern lam result (x: Nat): Nat = nest (λ (o: Nat): Nat = effect (x, o));
+extern lam _compile (): compile.Phase = compile.graph_rule_app (drop, nest);
+
+// CHECK: replacement removes a computation without a purity proof

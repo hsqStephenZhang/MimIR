@@ -1,0 +1,25 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// TF-RULES: (escape, safe)
+// TF-PURE: q, v, s, nest, sink
+
+plugin compile;
+axm q: Nat → Nat;
+axm v: Nat → Nat;
+axm s: Nat → Nat;
+axm nest: (Nat → Nat) → Nat;
+axm sink: [Nat, Nat] → Nat;
+rule escape (p: Nat): nest (λ (o: Nat): Nat = q p) =>
+    sink (nest (λ (o: Nat): Nat = v p), p);
+rule safe (p: Nat): nest (λ (o: Nat): Nat = q p) =>
+    nest (λ (o: Nat): Nat = v p);
+extern lam result (x: Nat): Nat = nest (λ (offset: Nat): Nat = q (sink (x, s offset)));
+
+// CHECK-LABEL: extern lam result
+// CHECK: lam [[BODY:[a-zA-Z_][a-zA-Z_0-9]*]] ([[O:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat)
+// CHECK: s [[O]]
+// CHECK: v
+// CHECK: nest [[BODY]]
+// CHECK-NOT: sink

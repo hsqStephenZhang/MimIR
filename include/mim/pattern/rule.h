@@ -8,7 +8,8 @@
 
 namespace mim {
 class Rewriter;
-}
+class Lam;
+} // namespace mim
 
 namespace mim::pattern {
 
@@ -50,6 +51,9 @@ public:
     build_replacement(const Def*, Rewriter& context, MatchOptions = {}, const GuardContext* = nullptr) const;
     void bind_derived(Rewriter&, const Def2Def&) const;
     void check_definition() const;
+    bool binder_captures_safe(const Def2Def&) const;
+    void map_binder(const Lam*, Lam*, Rewriter&, const Def2Def&) const;
+    bool is_capture(const Def* def) const { return is_meta(def); }
 
 private:
     Pattern lower(const Def*);
@@ -59,6 +63,7 @@ private:
     bool can_bind(const Def*, const Def2Def&) const;
     void complete_bindings(Def2Def&) const;
     std::vector<const Def*> fields_;
+    std::vector<std::pair<const Lam*, const Lam*>> binders_;
 
     const Rule* rule_;
     PatternProgram program_;

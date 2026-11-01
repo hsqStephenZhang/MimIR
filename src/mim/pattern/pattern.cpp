@@ -49,6 +49,13 @@ Pattern PatternProgram::node(Node node, std::vector<Pattern> operands, std::opti
     return append({.kind = Kind::Node, .operands = std::move(operands), .node = node, .flags = flags});
 }
 
+Pattern PatternProgram::binder(Pattern variable, Pattern filter, Pattern body) {
+    return append({
+        .kind     = Kind::Binder,
+        .operands = {variable, filter, body}
+    });
+}
+
 Pattern PatternProgram::node_range(Node node,
                                    std::vector<Pattern> prefix,
                                    Pattern tail,

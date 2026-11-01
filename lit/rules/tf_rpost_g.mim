@@ -1,8 +1,7 @@
 // RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=GAP
-// RUN: grep 'no accepted match visited' %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=POST
 // TF-RULES: cache
-// TF-PURE: tiled, read, stage
+// TF-PURE: tiled, read, stage, tensor.slice
 
 plugin compile;
 plugin tensor;
@@ -21,10 +20,8 @@ extern lam result (b: «8; Nat», salt: Nat): Nat =
         tiled (λ (io: Nat): Nat = read (tensor.slice @(Nat, 1) 8 (jo, 1, 2) b)));
 
 // POST-LABEL: extern lam result
-// POST: stage
-
-// Flip GAP to the target CHECKs when the missing extension lands.
-// GAP-LABEL: extern lam result
-// GAP-NOT: stage
-// GAP: tiled
-// GAP-NOT: stage
+// POST: lam {{.*}} (jo: Nat)
+// POST: tensor.slice
+// POST: let [[BP:[a-zA-Z_][a-zA-Z_0-9]*]] = stage
+// POST: lam
+// POST: read [[BP]]

@@ -50,6 +50,7 @@ public:
     /// Match exactly these raw operands, optionally checking the node's semantic flags.
     /// Mutable nodes are opaque: use exact() to match one by identity.
     Pattern node(Node, std::vector<Pattern> operands, std::optional<flags_t> flags = {});
+    Pattern binder(Pattern variable, Pattern filter, Pattern body);
     /// A fixed raw operand prefix followed by min..max operands matching the same tail pattern.
     /// Captures in tail retain identity semantics; this does not bind a sequence of values.
     Pattern node_range(Node,
@@ -73,7 +74,7 @@ public:
     bool is_current() const;
 
 private:
-    enum class Kind { Any, Exact, Literal, Node, Range, Capture, All, Either, Not, Type, Where };
+    enum class Kind { Any, Exact, Literal, Node, Binder, Range, Capture, All, Either, Not, Type, Where };
 
     struct Entry {
         Kind kind;

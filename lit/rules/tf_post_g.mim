@@ -1,6 +1,5 @@
 // RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=GAP
-// RUN: grep 'no accepted match visited' %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=POST
 // TF-RULES: cache
 // TF-PURE: tiled, mm, slice, stage
 
@@ -22,10 +21,8 @@ extern lam result (a b: Nat): Nat =
         tiled (4, λ (io: Nat): Nat = mm (slice (a, io, 2), slice (b, jo, 2))));
 
 // POST-LABEL: extern lam result
-// POST: stage (slice (b, jo, 2))
-
-// Flip GAP to the target CHECKs when the missing extension lands.
-// GAP-LABEL: extern lam result
-// GAP-NOT: stage
-// GAP: tiled
-// GAP-NOT: stage
+// POST: lam {{.*}} (jo: Nat)
+// POST: let [[BOX:[a-zA-Z_][a-zA-Z_0-9]*]] = slice (b, jo, 2);
+// POST: lam {{.*}} (io: Nat)
+// POST: mm ({{.*}}, stage [[BOX]])
+// POST: tiled

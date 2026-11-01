@@ -98,6 +98,20 @@ public:
     RHSImporter(const GraphView& graph, World& target, RebuildBudget& budget)
         : GraphImporter(graph, target, budget)
         , graph_(graph) {}
+    const RulePattern* pattern = nullptr;
+    const Def2Def* captures    = nullptr;
+    const Def* rewrite_mut_Lam(Lam* lam) override {
+        auto fresh = world().mut_lam(rewrite(lam->type())->as<Pi>());
+        if (pattern && captures) pattern->map_binder(lam, fresh, *this, *captures);
+        return rewrite_stub(lam, fresh);
+    }
+    const Def* lookup(const Def* def) override {
+        if (auto value = GraphImporter::lookup(def)) return value;
+        if (captures)
+            if (auto i = captures->find(def); i != captures->end() && pattern && pattern->is_capture(def))
+                return map(def, rewrite(i->second));
+        return nullptr;
+    }
 
     const Def* rewrite_imm_App(const App* app) override {
         auto axm = App::uncurry_callee(app)->isa<Axm>();
@@ -183,7 +197,9 @@ public:
                     throw std::invalid_argument("literal recipes require a Nat or Idx scalar type");
                 if (entry.kind == RewritePlan::Kind::Instantiate) {
                     for (auto [meta, value] : entry.bindings) {
-                        if (!meta || &meta->world() != &graph.world() || !graph.is_contained(value))
+                        if (meta->isa<Lam>() || (meta->isa<Var>() && meta->as<Var>()->binder()->isa<Lam>())) continue;
+                        if (!meta || &meta->world() != &graph.world()
+                            || (!graph.is_contained(value) && !value->has_free_vars()))
                             throw std::invalid_argument("RHS instantiation has foreign capture bindings");
                         DefVec pending{value};
                         DefSet seen;
@@ -192,7 +208,12 @@ public:
                             auto source = pending[i];
                             if (!seen.insert(source).second) continue;
                             if (auto app = source->isa<App>()) {
-                                if (!graph.is_pure(app))
+                                auto axm = App::uncurry_callee(app)->isa<Axm>();
+                                DefVec args;
+                                for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+                                    args.push_back(cur->arg());
+                                std::ranges::reverse(args);
+                                if (!axm || !graph.is_pure_call(axm->flags(), args))
                                     throw InstantiationFailure("RHS binder capture includes an unproved computation");
                                 for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                                     pending.push_back(cur->arg());
@@ -268,6 +289,30 @@ public:
                 }
         for (auto def : graph.nodes())
             if (def->isa<App>() && !pure.contains(def)) protected_.insert(def);
+        DefVec pending(graph.nodes().begin(), graph.nodes().end());
+        DefSet seen;
+        for (size_t i = 0; i != pending.size(); ++i) {
+            budget_.touch();
+            auto def = pending[i];
+            if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>() || def->isa<Pi>()) continue;
+            if (auto lam = def->isa<Lam>(); lam && lam->is_external()) continue;
+            if (auto app = def->isa<App>()) {
+                auto axm = App::uncurry_callee(app)->isa<Axm>();
+                DefVec args;
+                for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+                    args.push_back(cur->arg());
+                std::ranges::reverse(args);
+                if (axm && graph.is_pure_call(axm->flags(), args))
+                    for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+                        pure.insert(cur);
+                else if (!pure.contains(def))
+                    protected_.insert(def);
+            }
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+        }
+        for (auto def : pure)
+            protected_.erase(def);
     }
 
     const Def* rewrite_ready(const Def* def) override {
@@ -364,6 +409,8 @@ public:
         }
         for (auto def : protected_) {
             auto i = retained_.find(def);
+            if (i == retained_.end())
+                if (auto value = importer_.lookup(def)) i = retained_.emplace(def, value).first;
             if (i == retained_.end() || !reachable.contains(i->second))
                 throw std::invalid_argument("replacement removes a computation without a purity proof");
         }
@@ -485,17 +532,35 @@ private:
                 RHSImporter rhs(graph_, world(), budget_);
                 for (auto [old, next] : bindings_)
                     rhs.map(old, next);
-                for (auto [meta, source] : entry.bindings)
-                    rhs.map(meta, importer_.rewrite(source));
                 const Rule* rule = nullptr;
                 for (auto [meta, source] : entry.bindings) {
+                    if (meta->isa<Lam>()) continue;
                     auto var = meta->isa<Var>();
                     if (!var)
                         if (auto ex = meta->isa<Extract>()) var = ex->tuple()->isa<Var>();
                     if (var) rule = var->binder()->isa<Rule>();
                     if (rule) break;
                 }
-                if (rule && rule->is_set()) RulePattern(rule).bind_derived(rhs, entry.bindings);
+                std::unique_ptr<RulePattern> pattern;
+                if (rule && rule->is_set()) {
+                    pattern      = std::make_unique<RulePattern>(rule);
+                    rhs.pattern  = pattern.get();
+                    rhs.captures = &entry.bindings;
+                }
+                for (auto [meta, source] : entry.bindings) {
+                    if (auto var = meta->isa<Var>(); var && var->binder()->isa<Lam>()) continue;
+                    bool local
+                        = std::ranges::any_of(entry.bindings, [&](const std::pair<const Def*, const Def*>& binding) {
+                              auto lam = binding.first->isa<Lam>() ? binding.second->isa<Lam>() : nullptr;
+                              return lam && lam->has_var() && source->has_free_var(lam->has_var());
+                          });
+                    if (!local) rhs.map(meta, importer_.rewrite(source));
+                }
+                if (pattern && std::ranges::none_of(entry.bindings, [](const std::pair<const Def*, const Def*>& pair) {
+                        return pair.first->isa<Lam>()
+                            || (pair.first->isa<Var>() && pair.first->as<Var>()->binder()->isa<Lam>());
+                    }))
+                    pattern->bind_derived(rhs, entry.bindings);
                 for (auto def : protected_)
                     if (auto imported = importer_.lookup(def)) retained_.insert_or_assign(def, imported);
                 value = rhs.rewrite(entry.def);
