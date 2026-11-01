@@ -20,6 +20,28 @@
 尽管 stage 只依赖 jo/ko。
 这不是 rule_app 的错误；lexical let 不是 placement 指令，模型尚无 stage lowering 合同。
 
+### Task 3：真实 LHS 的最小修复
+
+临时在 MatchEngine 的 Exact 失败处记录 expected/actual 后，四个真实 probe 的首个阻挡
+均是模板导入克隆后的 mutable Pi type 与源算子 type 的地址不同。
+slice 在 `{T,r}` 部分应用之后的 dependent Pi、unary 在 f 部分应用之后的 implicit shape Pi、
+product_2d 在 Ring 部分应用之后的 shape Pi 都出现此现象；不是 Pack metadata 或参数类型推断。
+把 axiom 按 flags 匹配的试验只把失败推迟到下一层 partial-App Pi，不能单独解决问题。
+最终没有保留临时日志或这个 axiom-only shortcut。
+
+Rule adapter 现在仅对**闭合 mutable type**增加只读 `Check::test_alpha` 备选，
+保留 exact 快路径、source World 跟踪、匹配预算、metavariable 的 deferred type 检查和最终
+replacement type check。开放 dependent type、Hole 推断和 term-level lambda alpha matching
+没有增加。这个修改不需要复制 tensor schema adapter，因为失败是共用 Rule 的 type identity。
+
+`tf_rmap` 的 flat、共享 whole reader 和 tiled body 内 pushdown 都已通过 rule_app；
+相应 `_g` 的 flat 已通过，但 nested 仍以 unchanged IR 检查 region 缺口。
+`tf_rrev` 两个 frontend 都已生成 together；`tf_rmm` 的 rule_app 已生成真实 product/slice nest，
+graph 仍正向检查 `unsupported graph Rule recipe value`。
+`tf_rfact_g` 已到 `guard is not true`，不再是 LHS 不匹配。
+新增 length-16 negative case 防止 length-8 rule 误匹配；C++ 测试还检查导入 dependent Pi 的
+匹配不会构造源 IR，并拒绝不同 axiom。
+
 ## 范围与复现
 
 基线为 `cd8526dd22` 加 Task 1 的两个修复和 `031b1d7626`。

@@ -1,10 +1,14 @@
-// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
-// RUN: cat %t.rule | %FileCheck %s --check-prefix=GAP
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s --check-prefix=MAP
+// RUN: cat %t.out | %FileCheck %s --check-prefix=NEG
+// RUN: cat %t.out | %FileCheck %s --check-prefix=NEST
 // TF-RULES: local
 // TF-PURE: tensor.slice, tensor.unary
 
 plugin compile;
 plugin tensor;
+// tiled calls its body at the starts of the two length-2 output tiles.
+axm tiled: (Nat → «2; Nat») → «4; Nat»;
 
 rule local (f: Nat → Nat, x: «8; Nat», o: Nat):
     tensor.slice @(Nat, 1) 8 (o, 1, 2) (tensor.unary @(Nat, Nat) f @(1, 8) x) =>
@@ -15,11 +19,19 @@ extern lam shared (f: Nat → Nat, x: «8; Nat», o salt: Nat): [«2; Nat», «8
     let p = tensor.unary @(Nat, Nat) f @(1, 8) x;
     (tensor.slice @(Nat, 1) 8 (o, 1, 2) p, p);
 
-// MAP-LABEL: extern lam result
-// MAP: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = tensor.slice @ (Nat, 1) 8 (o, 1, 2) x;
-// MAP: tensor.unary @ {{.*}} f @ (1, 2) [[SL]]
+extern lam nested (f: Nat → Nat, x: «8; Nat», salt: Nat): «4; Nat» =
+    tiled (λ (o: Nat): «2; Nat» =
+        tensor.slice @(Nat, 1) 8 (o, 1, 2) (tensor.unary @(Nat, Nat) f @(1, 8) x));
+extern lam mismatch (f: Nat → Nat, x: «16; Nat», o salt: Nat): «2; Nat» =
+    tensor.slice @(Nat, 1) 16 (o, 1, 2) (tensor.unary @(Nat, Nat) f @(1, 16) x);
 
-// Flip GAP to the target CHECKs when the missing extension lands.
-// GAP-LABEL: extern lam result
-// GAP: tensor.unary
-// GAP: tensor.slice
+// MAP-LABEL: extern lam result
+// MAP-SAME: ([[F:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat → Nat, [[X:[a-zA-Z_][a-zA-Z_0-9]*]]: «8; Nat», [[O:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat,
+// MAP: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = tensor.slice @ (Nat, 1) 8 ([[O]], 1, 2) [[X]];
+// MAP: tensor.unary @ {{.*}} [[F]] @ (1, 2) [[SL]]
+// NEG-LABEL: extern lam mismatch
+// NEG: tensor.unary @ {{.*}} @ (1, 16)
+// NEG: tensor.slice @ (Nat, 1) 16
+// NEST-LABEL: extern lam nested
+// NEST: tensor.slice @ (Nat, 1) 8 ({{[a-zA-Z_][a-zA-Z_0-9]*}}, 1, 2)
+// NEST: tensor.unary @ {{.*}} @ (1, 2)

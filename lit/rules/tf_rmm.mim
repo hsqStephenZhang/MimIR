@@ -1,5 +1,5 @@
-// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
-// RUN: cat %t.rule | %FileCheck %s --check-prefix=GAP
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s --check-prefix=BUILD
 // TF-RULES: cache
 // TF-PURE: mark, tensor.product_2d, tensor.slice, stage, tiled, rows, fold, add
 
@@ -26,12 +26,11 @@ rule cache (a b: «4, 4; Nat», unused: Nat): mark (tensor.product_2d Ring @(4, 
 extern lam result (a b: «4, 4; Nat», salt: Nat): «4, 4; Nat» =
     mark (tensor.product_2d Ring @(4, 4, 4) (a, b));
 
+
 // BUILD-LABEL: extern lam result
 // BUILD: stage
+// BUILD: tensor.product_2d {{.*}} @ {{.*}}2
+// BUILD: rows
+// BUILD: fold
+// BUILD: tiled
 // BUILD-NOT: mark
-
-// Flip GAP to the target CHECKs when the missing extension lands.
-// GAP-LABEL: extern lam result
-// GAP-NOT: stage
-// GAP: mark
-// GAP-NOT: stage

@@ -1,6 +1,6 @@
 // RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
 // RUN: cat %t.graph | %FileCheck %s --check-prefix=GAP
-// RUN: grep 'no accepted match visited' %t.graph.log
+// RUN: grep 'guard is not true' %t.graph.log
 // TF-RULES: exclusive
 // TF-PURE: tensor.unary, fused
 

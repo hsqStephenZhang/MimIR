@@ -186,6 +186,30 @@ TEST_CASE("P5 search: rejected orientation preserves alternative bindings and Un
     }
 }
 
+TEST_CASE("Rule types: imported dependent Pi binders match without inference") {
+    IR ir;
+    auto type = ir.w.mut_pi(ir.w.type());
+    type->set_dom(ir.nat);
+    type->set_codom(ir.w.arr(type->var(), ir.nat));
+    auto op   = ir.w.axm(type);
+    auto rule = ir.w.mut_rule(ir.w.reform(ir.nat));
+    auto lhs  = ir.call(op, rule->var());
+    rule->set(lhs, lhs, ir.w.lit_tt());
+    auto templates = ir.w.inherit();
+    Rewriter save(*templates);
+    auto saved = save.rewrite(rule);
+    Rewriter restore(ir.w);
+    auto copied = restore.rewrite(saved)->as<Rule>();
+    REQUIRE(copied->lhs()->as<App>()->callee()->type() != type);
+    RulePattern compiled(copied);
+    auto candidate = ir.call(op, ir.w.lit_nat(2));
+    auto gid       = ir.w.curr_gid();
+    auto matched   = compiled.match_lhs(candidate);
+    CHECK(matched.status == MatchStatus::Matched);
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(compiled.match_lhs(ir.call(ir.q, ir.w.lit_nat(2))).status == MatchStatus::No_Match);
+}
+
 TEST_CASE("P5 graph Rule: tuple templates match independent roots and share RHS computation") {
     IR ir;
     auto rule = ir.rule();

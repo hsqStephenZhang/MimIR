@@ -1,6 +1,6 @@
-// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=GAP
-// RUN: grep 'no accepted match visited' %t.graph.log
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s --check-prefix=GAP
+// RUN: grep "unsupported graph Rule recipe value" %t.log
 // TF-RULES: cache
 // TF-PURE: mark, tensor.product_2d, tensor.slice, stage, tiled, rows, fold, add
 
@@ -27,11 +27,8 @@ rule cache (a b: «4, 4; Nat», unused: Nat): mark (tensor.product_2d Ring @(4, 
 extern lam result (a b: «4, 4; Nat», salt: Nat): «4, 4; Nat» =
     mark (tensor.product_2d Ring @(4, 4, 4) (a, b));
 
-// BUILD-LABEL: extern lam result
-// BUILD: stage
-// BUILD-NOT: mark
 
-// Flip GAP to the target CHECKs when the missing extension lands.
+// Flip GAP to BUILD when RHS binder recipes land.
 // GAP-LABEL: extern lam result
 // GAP-NOT: stage
 // GAP: mark

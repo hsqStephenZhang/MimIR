@@ -1,5 +1,5 @@
-// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
-// RUN: cat %t.rule | %FileCheck %s --check-prefix=GAP
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s --check-prefix=REV
 // TF-RULES: reverse
 // TF-PURE: tensor.unary, together, sink
 
@@ -16,13 +16,7 @@ extern lam result (f g: Nat → Nat, x: «8; Nat», salt: Nat): Nat =
     let p = tensor.unary @(Nat, Nat) f @(1, 8) x;
     sink (p, tensor.unary @(Nat, Nat) g @(1, 8) p);
 
+
 // REV-LABEL: extern lam result
 // REV: together
 // REV-NOT: tensor.unary
-
-// Flip GAP to the target CHECKs when the missing extension lands.
-// GAP-LABEL: extern lam result
-// GAP: tensor.unary
-// GAP: tensor.unary
-// GAP: sink
-// GAP-NOT: together
