@@ -1,0 +1,10 @@
+// RUN: python3 %S/grlimit.py %mim %t
+// UNSUPPORTED: roundtrip
+
+plugin compile;
+axm q: Nat -> Nat;
+axm v: Nat -> Nat;
+rule replace (x: Nat): q x => v x;
+extern lam result (): Nat = q 0;
+extern lam _compile (): compile.Phase =
+    compile.phases tt (compile.graph_rule_app (replace, (q, v)), compile.cleanup);

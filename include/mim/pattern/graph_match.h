@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "mim/pattern/graph.h"
 #include "mim/pattern/match.h"
 
@@ -110,6 +112,8 @@ struct GraphMatchOptions {
     size_t max_results      = 1000;
     bool reverse_candidates = false; // Also useful for checking enumeration-order independence.
     GraphSearchMode mode    = GraphSearchMode::Indexed;
+    /// Rejected matches do not consume max_results; the callback must not mutate the source snapshot.
+    std::function<bool(const GraphMatch&)> accept = {};
 };
 
 struct GraphMatches {

@@ -616,7 +616,9 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
             }
             reads = values;
         }
-        output.matches.push_back(GraphMatch(&pattern, graph, assigned, result(), std::move(reads), std::move(nodes)));
+        auto match = GraphMatch(&pattern, graph, assigned, result(), std::move(reads), std::move(nodes));
+        if (options.accept && !options.accept(match)) return MatchStatus::Matched;
+        output.matches.push_back(std::move(match));
         limited = output.matches.size() >= options.max_results;
         return MatchStatus::Matched;
     };

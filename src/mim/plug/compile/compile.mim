@@ -129,6 +129,8 @@ axm rule_app: {T: *} → T → Phase;
 /// them with the corresponding RHS roots. Shared metavariables join roots without a common tuple.
 /// The second field explicitly asserts purity of the listed axioms; no effect analysis is inferred.
 /// One accepted match per function per invocation; combine with `phases tt` for bounded iteration.
+/// Bounded search skips rejected guards, Unknown plans and canonical no-ops until a changed rewrite
+/// is accepted; an incomplete enumeration does not invalidate that rewrite.
 /// Supported RHSs use pure axiom calls, captures, literals, tuples and fixed extracts.
 ///
 axm graph_rule_app: {R O: *} → [rules: R, pure_ops: O] → Phase;

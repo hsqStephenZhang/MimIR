@@ -3,10 +3,23 @@
 #include <array>
 #include <set>
 #include <stdexcept>
+#include <utility>
 
 #include "mim/pattern/graph_rule.h"
 
 namespace mim {
+
+namespace {
+std::string_view search_status(pattern::SearchStatus status) {
+    switch (status) {
+        case pattern::SearchStatus::Complete: return "Complete";
+        case pattern::SearchStatus::Unknown: return "Unknown";
+        case pattern::SearchStatus::Budget_Exceeded: return "Budget_Exceeded";
+        case pattern::SearchStatus::Result_Limit: return "Result_Limit";
+    }
+    std::unreachable();
+}
+} // namespace
 
 void GraphRuleRewrite::apply(const App* app) {
     if (!app) throw std::invalid_argument("graph_rule_app requires (Rules, pure axioms)");
@@ -80,34 +93,40 @@ void GraphRuleRewrite::start() {
         for (auto source : rules_) {
             pattern::GraphRulePattern compiled(importer.rewrite(source)->as<Rule>());
             pattern::GraphView view({fn->body()}, {.operators = &ops, .scope = fn});
-            auto matches = compiled.find(view);
-            if (matches.status != pattern::SearchStatus::Complete) {
-                profile_count("graph_rule.incomplete");
-                continue;
-            }
-            bool changed = false;
-            for (const auto& match : matches.matches) {
+            std::optional<pattern::GraphRewrite> accepted;
+            std::string reason = "no accepted match visited";
+            pattern::GraphMatchOptions options;
+            options.max_results = 1;
+            options.accept      = [&](const pattern::GraphMatch& match) {
                 auto candidate = compiled.plan(match, view);
                 if (!candidate.plan) {
+                    reason = candidate.reason;
                     if (candidate.status == pattern::MatchStatus::Unknown) {
                         profile_count("graph_rule.unknown");
                         log().d("graph_rule_app skipped a match in {}: {}", fn, candidate.reason);
                     }
-                    continue;
+                    return false;
                 }
                 std::array plans{candidate.plan.get()};
                 auto next = pattern::rewrite_graph(view, plans);
                 if (!next.is_changed()) {
                     profile_count("graph_rule.noop");
-                    continue;
+                    reason = "canonical no-op";
+                    return false;
                 }
-                next.publish(view);
+                accepted.emplace(std::move(next));
+                reason = "first accepted changed rewrite";
+                return true;
+            };
+            auto matches = compiled.find(view, options);
+            log().d("graph_rule_app search in {}: {} ({})", fn, search_status(matches.status), reason);
+            if (accepted) {
+                accepted->publish(view);
                 invalidate();
                 profile_count("graph_rule.rewrites");
-                changed = true;
-                break;
+                break; // The next invocation rebuilds matches and processes further groups.
             }
-            if (changed) break; // The next invocation rebuilds matches and processes further groups.
+            if (matches.status != pattern::SearchStatus::Complete) profile_count("graph_rule.incomplete");
         }
     }
 }

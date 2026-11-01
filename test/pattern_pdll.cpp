@@ -26,6 +26,14 @@ const Def* add_zero(const Def*, const Def* callee, const Def* arg) {
     return nullptr;
 }
 
+const Def* selective_guard(const Def*, const Def*, const Def* arg) {
+    if (auto value = Lit::isa(arg)) {
+        if (*value == 1) return nullptr;
+        return arg->world().lit_bool(*value != 2);
+    }
+    return nullptr;
+}
+
 struct PDLLIR {
     Driver driver;
     World& w              = driver.world();
@@ -932,4 +940,66 @@ TEST_CASE("Review graph Rule: an instantiated add-zero recipe is a canonical sco
     CHECK(fn->body() == body);
     CHECK(view.is_current());
     CHECK(found.matches[0].anchors()[0] == q);
+}
+
+TEST_CASE("P5 graph phase: a normalized no-op Rule does not hide a productive Rule") {
+    PDLLIR ir;
+    auto add  = ir.w.axm(add_zero, 1, Axm::Trip_End, ir.w.pi(ir.w.arr(2, ir.nat), ir.nat));
+    auto k    = ir.w.axm(ir.w.pi(ir.w.arr(2, ir.nat), ir.nat));
+    auto noop = ir.w.mut_rule(ir.w.reform(ir.w.sigma({ir.nat, ir.nat, ir.nat})));
+    auto x = noop->var(3, 0), y = noop->var(3, 1);
+    auto qx = ir.call(ir.n, x), kxy = ir.w.app(k, {x, y});
+    noop->set(ir.w.tuple({qx, kxy}), ir.w.tuple({ir.w.app(add, {qx, y}), kxy}), ir.w.lit_tt());
+    auto productive = ir.w.mut_rule(ir.w.reform(ir.nat));
+    auto z          = productive->var();
+    productive->set(ir.call(ir.n, z), z, ir.w.lit_tt());
+    auto fn = ir.w.mut_lam(ir.w.pi(ir.nat, ir.w.arr(2, ir.nat)))->set("phase_normalized_noop");
+    fn->set(false, ir.w.tuple({ir.call(ir.n, fn->var()), ir.w.app(k, {fn->var(), ir.w.lit_nat(0)})}))->externalize();
+    auto name          = fn->sym();
+    auto k_flags       = k->flags();
+    auto configuration = ir.w.tuple({ir.w.tuple({noop, productive}), ir.w.tuple({ir.n, k, add})});
+    auto configure     = ir.w.axm(ir.w.pi(configuration->type(), ir.nat));
+    GraphRuleRewrite phase(ir.w, "normalized_noop_fallback");
+    phase.apply(ir.call(configure, configuration)->as<App>());
+    phase.run();
+    CHECK(phase.todo());
+    auto result = ir.w.externals()[name]->as<Lam>();
+    auto fields = result->body()->as<Tuple>();
+    CHECK(fields->op(0) == result->var());
+    CHECK(fields->op(1)->as<App>()->axm()->flags() == k_flags);
+}
+
+TEST_CASE("P5 graph phase: search continues past no-op, Unknown and rejected guard candidates") {
+    PDLLIR ir;
+    auto add   = ir.w.axm(add_zero, 1, Axm::Trip_End, ir.w.pi(ir.w.arr(2, ir.nat), ir.nat));
+    auto guard = ir.w.axm(selective_guard, 1, Axm::Trip_End, ir.w.pi(ir.nat, ir.boolean));
+    auto rule  = ir.w.mut_rule(ir.w.reform(ir.nat));
+    auto x     = rule->var();
+    auto qx    = ir.call(ir.n, x);
+    rule->set(qx, ir.w.app(add, {qx, x}), ir.call(guard, x));
+    auto fn = ir.w.mut_lam(ir.w.pi(ir.w.sigma(), ir.w.arr(4, ir.nat)))->set("candidate_fallback");
+    DefVec roots;
+    for (size_t i = 0; i != 4; ++i)
+        roots.push_back(ir.call(ir.n, ir.w.lit_nat(i)));
+    fn->set(false, ir.w.tuple(roots))->externalize();
+    auto name    = fn->sym();
+    auto n_flags = ir.n->flags(), add_flags = add->flags();
+    auto configuration = ir.w.tuple({rule, ir.w.tuple({ir.n, add})});
+    auto configure     = ir.w.axm(ir.w.pi(configuration->type(), ir.nat));
+    GraphRuleRewrite phase(ir.w, "candidate_fallback");
+    phase.apply(ir.call(configure, configuration)->as<App>());
+    phase.run();
+    CHECK(phase.todo());
+    auto fields = ir.w.externals()[name]->as<Lam>()->body()->as<Tuple>();
+    for (size_t i = 0; i != 3; ++i) {
+        auto retained = fields->op(i)->as<App>();
+        CHECK(retained->axm()->flags() == n_flags);
+        CHECK(Lit::isa(retained->arg()) == i);
+    }
+    auto changed = fields->op(3)->as<App>();
+    CHECK(changed->axm()->flags() == add_flags);
+    auto [value, offset] = changed->args<2>();
+    CHECK(value->as<App>()->axm()->flags() == n_flags);
+    CHECK(Lit::isa(value->as<App>()->arg()) == 3);
+    CHECK(Lit::isa(offset) == 3);
 }

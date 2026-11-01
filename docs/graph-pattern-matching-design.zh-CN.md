@@ -252,9 +252,13 @@ extern lam _compile (): compile.Phase =
 
 RHS 的三个结果若已通过 η 归约合并为整个 `combined x`，前端会在 recipe 中投影三个输出，不在源 World 补建 Extract。C++ `GraphRulePattern` 与 Mim phase 均复用同一 `PatternProgram`、共享绑定、多根搜索和事务式 recipe。规则模板保存于独立 World，跨 cleanup 和 PhaseMan 重建后重新导入；每次调用至多提交每个闭合 external 函数中的一组匹配，规则按显式列表顺序尝试。
 
+`GraphMatchOptions::accept` 可在只读快照上筛选已验证的匹配；拒绝的匹配不消耗 `max_results`，但搜索仍受 step、candidate 和 depth 预算约束。`graph_rule_app` 设置 `max_results=1`，在此回调中依次验证 guard、构造计划并检查 canonical no-op，保留首个有效且改变图的 prospective World；搜索返回后才发布。主动达到 `Result_Limit` 不否定这一匹配，Unknown 或预算耗尽也不否定已验证的结果。没有有效替换时不发布，并以 debug 日志报告搜索状态和原因。该回调不改变同一 anchor tuple 只导出首组合法模式绑定的约定。
+
 `pure_ops` 是调用方对 primitive 纯性的显式断言，不由函数类型推断。列表应包含被替换的 primitive 与 RHS 新调用的 primitive；callee 为任意 Lam 的 RHS 尚不支持。前端不猜测数据参数 schema，排他使用不能因列入该列表而自动成立。RHS 支持 captures、Nat／Idx 位字面量、pure axiom call、Tuple、可静态展开的 Pack 和固定 index 的 Extract。未绑定的 metavariable、未知 guard、预算耗尽或不支持的 RHS 不能发布替换；会消除未证明纯性的内部计算的计划也会被拒绝。whole-telescope capture 不会自动导出缺少的字段 capture；tuple η 归约消除字段结构后，仍可能缺少可表示的跨根连接。这属于当前 Rule 支持子集，不进行逆归一化补全。
 
 正反例见 [graphapp.mim](../lit/rules/graphapp.mim)、[graphgrd.mim](../lit/rules/graphgrd.mim) 和 [grapure.mim](../lit/error/grapure.mim)。匹配结果的共享应检查实际 Def 身份；文本打印器可能在不同 Extract 内重复打印同一个调用，不能仅数 `combined` 字符串来判断是否复制计算。
+
+[grlimit.mim](../lit/rules/grlimit.mim) 生成 1001 个独立单根匹配，超过默认结果上限，检查 `phases ff` 只替换一个、`phases tt` 收敛并保留全部参数值。[pattern_pdll.cpp](../test/pattern_pdll.cpp) 另在 phase 层检查 normalized no-op 规则后仍能选择 productive 规则，以及同一规则的 no-op、Unknown 和 false guard 候选不会阻止后续有效候选。
 
 ### 原始 operand range
 
@@ -313,6 +317,8 @@ python3 scripts/bench-patterns.py <build>/bin/mim-pattern-bench --sizes 80,160,3
 | OR 成功分支污染 Unknown 状态 | 分离成功 tuple 与继续枚举的控制；按完整 anchor tuple 记录未决状态，同一 tuple 后续成功时清除，不掩盖其他 tuple 或部分赋值的未知条件 |
 
 2026-11-01 对 `860841a059` 的后续静态 review 提出四项问题。本次按源代码语义补充下列回归；遵照执行限制未运行构建或测试，运行复现和修复验证交由父会话。
+
+后续实现任务补回缺失的 `graph_rule.h` 后，Debug 构建及全部 CTest、`lit/rules`、`lit/error`、`lit/tensor` 中可运行的测试均通过，包括下列四组回归；无需进一步修改这四项修复。
 
 | 后续问题 | 修复与新增回归 |
 | --- | --- |

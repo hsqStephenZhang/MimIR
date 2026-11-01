@@ -115,6 +115,43 @@ TEST_CASE("P5 join: optional OR captures and type-only captures never imply raw 
     CHECK(ares.matches[0].isa_capture(x) == b);
 }
 
+TEST_CASE("P5 search: rejected matches do not consume the accepted result limit") {
+    IR ir;
+    DefVec roots;
+    for (size_t i = 0; i != 8; ++i)
+        roots.push_back(ir.call(ir.q, ir.w.lit_nat(i)));
+    GraphView view(roots, {.operators = &ir.ops});
+    PatternProgram p;
+    auto x = p.capture();
+    GraphPattern pattern(p);
+    auto anchor    = pattern.anchor(p.node(Node::App, {p.exact(ir.q), x}));
+    size_t visited = 0;
+    GraphMatchOptions options;
+    options.max_results = 1;
+    options.accept      = [&](const GraphMatch&) { return ++visited == roots.size(); };
+    auto found          = find_matches(pattern, view, options);
+    CHECK(found.status == SearchStatus::Result_Limit);
+    CHECK(visited == roots.size());
+    REQUIRE(found.matches.size() == 1);
+    CHECK(found.matches[0].at(anchor) == roots.back());
+    CHECK(view.is_current());
+
+    visited        = 0;
+    options.accept = [&](const GraphMatch&) {
+        ++visited;
+        return false;
+    };
+    found = find_matches(pattern, view, options);
+    CHECK(found.status == SearchStatus::Complete);
+    CHECK(found.matches.empty());
+    CHECK(visited == roots.size());
+
+    options.max_candidates = 2;
+    found                  = find_matches(pattern, view, options);
+    CHECK(found.status == SearchStatus::Budget_Exceeded);
+    CHECK(found.matches.empty());
+}
+
 TEST_CASE("P5 graph Rule: tuple templates match independent roots and share RHS computation") {
     IR ir;
     auto rule = ir.rule();
