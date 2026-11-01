@@ -92,6 +92,10 @@ const Def* RuleRewrite::rewrite_imm(const Def* old_def) {
         if (result.status == pattern::MatchStatus::Unknown) {
             profile_count("rule.unknown");
             log().d("rule_app skipped {}: {}", old_def, result.reason);
+            if (result.reason == "RHS does not preserve the matched type" || arg_flag(args(), "report-unknown")) {
+                auto report = log();
+                report.set(fe::Log::Level::Warn).w("rule_app skipped {}: {}", old_def, result.reason);
+            }
         }
         if (result.status != pattern::MatchStatus::Matched) continue;
         profile_count("rule.matches");

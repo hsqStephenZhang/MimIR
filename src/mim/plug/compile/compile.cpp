@@ -82,6 +82,7 @@ static void reg_phases(Flags2Phases& phases) {
 
 // clang-format off
 static constexpr PluginArg known_args[] = {
+    {"report-unknown", "Reports rejected Unknown Rule candidates as warnings; instantiated type failures are always reported."},
     {"aggr",    "Forces `compile.aggr` to `tt`, switching fixed-point iteration of the `opt` pipeline's `optimize` stage on (off by default)."},
     {"no-aggr", "Forces `compile.aggr` to `ff`, switching that fixed-point iteration off."},
 };

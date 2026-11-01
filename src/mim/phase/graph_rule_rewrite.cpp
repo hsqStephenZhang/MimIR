@@ -213,6 +213,11 @@ void GraphRuleRewrite::start() {
                         if (candidate.status == pattern::MatchStatus::Unknown) {
                             profile_count("graph_rule.unknown");
                             log().d("graph_rule_app skipped a match in {}: {}", fn, candidate.reason);
+                            if (arg_flag(args(), "report-unknown")) {
+                                auto report = log();
+                                report.set(fe::Log::Level::Warn)
+                                    .w("graph_rule_app skipped a match in {}: {}", fn, candidate.reason);
+                            }
                         }
                         return false;
                     }
@@ -228,6 +233,12 @@ void GraphRuleRewrite::start() {
                     } catch (const pattern::InstantiationFailure& error) {
                         reason = error.what();
                         log().d("graph_rule_app skipped RHS instantiation in {}: {}", fn, reason);
+                        if (reason == "replacement does not preserve the source type"
+                            || arg_flag(args(), "report-unknown")) {
+                            auto report = log();
+                            report.set(fe::Log::Level::Warn)
+                                .w("graph_rule_app skipped RHS instantiation in {}: {}", fn, reason);
+                        }
                         profile_count("graph_rule.unknown");
                         return false;
                     }

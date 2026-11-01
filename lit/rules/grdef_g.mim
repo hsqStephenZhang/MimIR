@@ -1,0 +1,15 @@
+// RUN: %mim %s -o - 2> %t.log | %FileCheck %s
+// RUN: cat %t.log | %FileCheck %s --check-prefix=DIAG
+
+plugin compile;
+axm source: {m n: Nat} → «m, n; Nat» → «m, n; Nat»;
+axm swapped: {m n: Nat} → «m, n; Nat» → «n, m; Nat»;
+rule r (m n: Nat, x: «m, n; Nat»): source @(m, n) x => swapped @(m, n) x;
+extern lam result (x: «2, 3; Nat»): «2, 3; Nat» = source @(2, 3) x;
+extern lam _compile (): compile.Phase = compile.graph_rule_app (r, (source, swapped));
+
+// CHECK: source @ (2, 3)
+// CHECK-NOT: swapped @ (2, 3)
+// DIAG: warning: deferred rewrite rule type check
+// DIAG: graph_rule_app skipped RHS instantiation
+// DIAG-SAME: replacement does not preserve the source type

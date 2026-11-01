@@ -555,10 +555,17 @@ const Def* Def::check() {
             auto rule = as<Rule>();
             auto t1   = rule->lhs()->unfold_type();
             auto t2   = rule->rhs()->unfold_type();
-            if (!Check::alpha(t1, t2) && t1->is_closed() && t2->is_closed())
-                type()
-                    ->blame("type mismatch between rule sides: lhs has type `{}` but rhs has type `{}`", t1, t2)
-                    .bail();
+            if (!Check::alpha(t1, t2)) {
+                if (t1->is_closed() && t2->is_closed())
+                    type()
+                        ->blame("type mismatch between rule sides: lhs has type `{}` but rhs has type `{}`", t1, t2)
+                        .bail();
+                auto report = w.log();
+                report.set(fe::Log::Level::Warn)
+                    .w("{}: warning: deferred rewrite rule type check: lhs has type `{}` but rhs has type `{}`; "
+                       "every replacement must pass the instantiation type check",
+                       rule->err_loc(), t1, t2);
+            }
             if (!Check::coerce(w.type_bool(), rule->guard()))
                 rule->guard()
                     ->blame("condition of a rewrite rule is of type `{}` but must be of type `Bool`",

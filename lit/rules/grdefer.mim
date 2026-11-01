@@ -1,0 +1,17 @@
+// RUN: %mim %s -o - 2> %t.log | %FileCheck %s
+// RUN: cat %t.log | %FileCheck %s --check-prefix=DIAG
+// RUN: %mim %s -o - -X compile:report-unknown 2> %t.report | %FileCheck %s
+// RUN: cat %t.report | %FileCheck %s --check-prefix=DIAG
+
+plugin compile;
+axm source: {m n: Nat} → «m, n; Nat» → «m, n; Nat»;
+axm swapped: {m n: Nat} → «m, n; Nat» → «n, m; Nat»;
+rule r (m n: Nat, x: «m, n; Nat»): source @(m, n) x => swapped @(m, n) x;
+extern lam result (x: «2, 3; Nat»): «2, 3; Nat» = source @(2, 3) x;
+extern lam _compile (): compile.Phase = compile.rule_app r;
+
+// CHECK: source @ (2, 3)
+// CHECK-NOT: swapped @ (2, 3)
+// DIAG: warning: deferred rewrite rule type check
+// DIAG: rule_app skipped
+// DIAG-SAME: RHS does not preserve the matched type

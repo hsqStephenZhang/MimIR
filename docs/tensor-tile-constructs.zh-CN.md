@@ -5,6 +5,8 @@
 Rule 定义期仍检查 guard 的 Bool 类型，以及两侧已经闭合的类型不一致。
 两侧类型依赖 Rule 元变量时，不能证明相等不再立即拒绝；每次 instantiation 的
 replacement type check 必须成功，否则该 candidate 为 Unknown，不发布，继续寻找其他规则。
+定义位置会发出 deferred type-check warning；实例化 type mismatch 默认以 warning 报告，
+不需要 `-V`。`-X compile:report-unknown` 也报告其他 Unknown candidates。
 这不是 cast 或 Hole 推断，也不允许非法 RHS 经配置成功后绕过最终检查。
 
 开放 mutable Pi 的类型匹配不再要求模板与源指针相等：先绑定其中的 Rule captures，
