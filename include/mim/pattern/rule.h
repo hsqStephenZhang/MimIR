@@ -32,8 +32,8 @@ struct RuleReplacement {
 
 /// Compiles a Rule's LHS to the read-only matcher. Guard and RHS are not evaluated here.
 /// Supports direct Rule variables and literal-index projections, with deferred structural type checks.
-/// Closed mutable types match without inference by alpha equivalence; other mutables match by identity.
-/// No inverse normalization or Hole filling.
+/// Closed mutable types use alpha equivalence; term Lams use restricted binder correspondence.
+/// Other mutables match by identity; there is no inverse normalization or Hole filling.
 /// The Rule and its World must remain unchanged and outlive this object.
 class RulePattern {
 public:

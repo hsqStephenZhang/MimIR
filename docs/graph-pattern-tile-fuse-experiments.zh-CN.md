@@ -18,6 +18,96 @@ capture 若含源 bound Var，只可在 RHS 对应 binder 内使用；否则拒�
 它只依赖 jo 的 box，尚无 placement/lowering 合同，不能声称此模型已经执行 outer-level packing。
 graph recipes 对源 nested body 的未证明纯性计算也检查保留，不能借 binder pattern 删除 effect。
 
+## Task 6：staged witnesses
+
+### 纯计算与源分析的边界
+
+| 计算 | 求值方式 | 依据 |
+| --- | --- | --- |
+| literal permutation 对 box 的重排、整数边界运算、显式 affine/layout 描述的组合 | 普通纯函数；native 实现可注册 normalizer | 输入是显式数据，不读 graph、mutable binder 或用途覆盖 |
+| 从 mutable map Lam body 提取 permutation、从源 producer 识别访问关系 | staged witness | 必须分析 matched source operand，不能分析已重建的 RHS |
+| consumer/exclusivity、cover/preimage、alias 或 reduction-order 证明 | staged guard/witness | schema、覆盖和可证明性必须显式；Unknown 不触发规则 |
+
+本轮没有把所有 box 计算都升级为 graph query。重排的数值运算由共享的
+`permuted_box` helper 完成；读取 mutable Lam 或源 transpose 则由 staged callback 完成。
+对于运行时 offset，可以让后续 witness 返回 literal permutation/affine 描述，
+再由纯函数在 RHS 中组合现有 capture；不能把源 Var 或可执行 App 冒充 witness data。
+
+### 注册、冻结、memo 与导入
+
+`include/mim/pattern/witness.h` 的 `Witness` 包含最终 axiom argument group 的字段数
+`num_inputs`，以及 `evaluate(const GraphView&, Defs inputs, World& result)` callback。
+隐式 type/rank groups 不传给 callback，结果仍须符合实例化后的 axiom return type。
+plugin 用 `Plugin::register_witnesses` 按 annex flags 注册；native client/test 也可用
+`Driver::register_witness`。同一 flags 不能同时注册 ordinary normalizer。
+本轮的 domain-specific axioms 放在 tensor plugin，不增加 Rule/parser 语法或 guard 输出参数。
+Plugin ABI 增加 callback 字段，binary plugins 需要与 libmim 一起重新构建。
+
+规则写普通的 witness axiom call：
+
+```mim
+let box = tensor.input_box @2 (map, (1, 4), (2, 3));
+```
+
+调用在 Rule guard/RHS 模板中发现，LHS captures 和结构对应关系将参数冻结为源 handles；
+不能对应到源的计算表达式、没有 GraphView 的调用均为 Unknown。
+显式 immutable literal data 可以直接作为分析输入。不会导入或重建 source map 后再分析。
+两个 frontend 复用每次 phase run 的 source snapshot；nested region 仍使用 Open view，
+free variables 不成为用途覆盖证明。查询用途的 callback 必须使用已有显式 data schema，
+注册 witness 不提供 purity 或 exclusivity。
+
+每个模板调用每次 match 最多执行一次；同一调用同时用于 guard 和 RHS 时共享结果。
+返回 `True + value` 才可绑定；`False` 为 No_Match，`Unknown` 为 Unknown，均不发布。
+memo 将模板表达式本身作为 synthetic capture key，没有新增未绑定的 Rule 元变量。
+结果必须在专属 result World 中，是闭合 immutable Nat/静态 Idx literals、Tuple/静态 Pack，
+并通过 declared result type 的 alpha check。错误类型、mutable/可执行结果都跳过并诊断。
+callback 的 source snapshot/gid 变化是违反 native contract 的错误，不是正常的 Unknown。
+
+GuardResult 持有 result World；graph RewritePlan 继续持有它直到 transaction 被导入或丢弃。
+两个 RHS frontend 都通过**非重写 importer**复制结果，绝不再次运行 rule 或普通 normalizer
+来求这个 witness。graph 的新 executable axiom calls 仍要求 pure_ops，最终 replacement
+type/scope checks 不变；witness data recipe 不是放宽 RHS purity 的调用通道。
+guard/RHS 中有 witness 的规则使用 occurrence-scoped publication，保守避免把局部分析
+推广到共享 closure 的其他 occurrence。
+普通程序中的 witness call 仍未求值，`tf_wbox` 的 ordinary 函数对此作正向检查。
+
+### 非 identity box 实验
+
+| 实验 | rule_app | graph_rule_app | 检查 |
+| --- | --- | --- | --- |
+| `tf_wbox` / `_g`，modeled reindex + 真实 slice/unary | 目标通过 | 目标通过 | mutable transpose map 将 offset `(1,4)` / extent `(2,3)` 变为 `(4,1)` / `(3,2)`；diagonal map 为 Unknown，源 IR 保留 |
+| `tf_rbox` / `_g`，全部使用真实 slice/transpose/unary | 目标通过 | 目标通过 | 源 transpose 提供 permutation；guard 证明 extent `(3,2)`，RHS slice 使用 witness offset `(4,1)` |
+| `grwtype`，staged extent 直接成为真实 RHS shape | 正向记录共同的定义期 gap | 同左，尚未进入 phase | `type mismatch between rule sides: lhs has type «2, 3; Nat»`，RHS shape 仍含 symbolic `box#...` |
+
+`tensor.input_box` 支持 rank 1–64、set map Lam 和 bijective projection body；
+`tensor.transpose_box` 从冻结的真实 transpose 读取 literal bijective permutation。
+两者当前都要求 literal offsets/extents，只返回 box，不宣称 in-bounds、cover、alias、
+recompute budget 或 exactly-once 已得到证明。broadcast、floordiv、affine arithmetic 和
+动态 offset 的通用 box 还没有 callback 实现，不能由这些实验推导合法性。
+
+完全真实的实验采用安全的 shape specialization：guard 和 RHS 的 witness 是同一调用，
+guard 验证两个 extent 字段后，RHS 用已声明的 literal shape，offset 仍由 witness 提供。
+这没有靠 Hole、cast 或延期检查绕过 Rule 两侧定义期 type equality。
+一般 staged-dependent RHS shape 需要 type refinement/proof 或受检查的 typed recipe 扩展；
+`grwtype` 保留精确诊断，不能把此项报告为通用 dynamic-shape compute_at 已实现。
+
+两个 C++ 回归验证 guard/RHS 只执行一次、original source handles、result World ownership、
+没有 GraphContext 时不执行，以及 Unknown/False/错误 type/mutable result 的拒绝。
+tensor C++ 回归额外检查三维非自反 permutation，防止只在二维 transpose 上混淆方向。
+以上全部是 IR/box 实验，未新增 lowering、真实 packing/persistence 或调度性能合同。
+
+### Task 6 验证
+
+| commit 项目 | CTest | lit rules/error/tensor |
+| --- | --- | --- |
+| alpha-aware term-LHS binders | 231/231 | 221 passed，4 unsupported |
+| staged witnesses 与真实/模型 box 实验 | 234/234 | 226 passed，4 unsupported |
+| 本文结果与剩余合同更新 | 234/234 | 226 passed，4 unsupported |
+
+每项 commit 前运行完整两套测试，无失败或 XFAIL。初次迭代中曾触发 deep-DAG 回归和
+实验 CHECK/定义期 shape 失败；已修复深 DAG 的 no-witness fast path、非重写结果导入
+与 CHECK 顺序，通用 shape gap 则由 `grwtype` 正向保留，没有隐藏失败。
+
 ## 后续修复：自然 telescope
 
 `(x o e: Nat)` 的 LHS 分别捕获字段，但 RHS 的 `(x,o,e)` 经 tuple η 归约变为
@@ -30,17 +120,17 @@ source graph queries 不会将新建 target 投影误认为 source 节点。
 `grtel` 在两个 frontend 覆盖 homogeneous scalar、array-valued 与 mixed telescope，
 不需要 unused/salt 字段。真正不由 LHS 绑定的 RHS/guard 元变量在 phase 配置时，
 按 Rule 定义位置显式报错（`grunbound`），不再仅以 debug 日志静默跳过。
-fresh LHS lambda 的 alpha-matching 缺口仍独立保留；其词法元变量是已定义的，
-不能将不匹配误报成非法 Rule。
+当时 fresh LHS lambda 的 alpha-matching 缺口独立保留；其词法元变量是已定义的，
+不能将不匹配误报成非法 Rule。此项现由 Task 6 的受限 binder matching 覆盖。
 
 ## 后续修复：共享 region 的发布模式
 
 此前所有 nested rewrite 都克隆 operand occurrence，纯等式在 fixed point 下也留下多个
-相同 mutable Lam。现在先检查 guard 是否包含 staged `used_by` / `only_used_by` 调用；
+相同 mutable Lam。现在检查 guard/RHS 是否包含 staged graph predicates 或 witness 调用；
 没有 graph facts 的规则在选中 enclosing function 内按 Lam value-wide 发布，共享的
 region binder 只重建一次，所有该值的 occurrence 复用其结果。
 有 graph facts 的规则仍按 occurrence path 发布，不能把局部用途判断推广到其他位置。
-检查会遍历 guard 的嵌套 lambda；超出分析预算时保守使用 occurrence 模式。
+检查会遍历模板的嵌套 lambda；超出分析预算时保守使用 occurrence 模式。
 `grshare` 验证纯规则 ff/tt 都只留下一个 body，graph-fact 规则 ff 只改一个 occurrence，
 tt 可分别改写但保持两个 binder。`grregion` 的 occurrence 隔离用真实 graph-fact guard
 继续覆盖。这个复用限定于同一 enclosing function，不是跨函数 region/resource cache。
@@ -87,8 +177,8 @@ region inputs 包括 enclosing binders 和该 body 的参数；GraphView 的 cov
 
 publication 用 fresh binder stubs 重建选中的 enclosing path，按冻结输入映射替换 leaf body；
 未选中的 operands 用非重写 importer 保留原实现。
-因此 shared Lam 被 left/right 两个不同 occurrence 引用时，本次只改 left 的 body，
-right 仍引用原实现，而不是通过 Def identity 全局替换 shared closure。
+因此在 graph-fact/witness 的 occurrence 模式中，shared Lam 的 left/right 引用只改选中
+的 body，其他 occurrence 保留原实现；纯规则的 value-wide 发布见前面的共享 region 修复。
 `grregion` 同时覆盖两层捕获 offset、共享 closure 的 occurrence 隔离，以及 Open region
 的 only_used_by 为 Unknown。immutable path 与 source DAG rebuild 都用显式栈。
 每函数每次至多一个 changed rewrite、phase-wide source snapshot 与下一轮重新发现保持不变。
@@ -129,7 +219,7 @@ Task 4 最终验证：CTest **231/231**；rules|error|tensor **214 通过、4 un
 每个 `tf_*.mim` 现在只运行 rule frontend，对应 `tf_*_g.mim` 只运行 graph frontend。
 可工作的路径使用目标 CHECK；尚未工作的路径使用 unchanged IR 和精确诊断的正向 GAP 检查，
 不再使用 XFAIL，避免 graph 的已知缺口掩盖 rule_app 回归。
-`tf_share_g` 分别检查 flat 多根成功和 nested 尚未重写，rule 文件独立保护 NEST 成功。
+`tf_share_g` 的 flat 多根和 nested NEST 均使用目标检查，rule 文件也独立保护 NEST。
 
 `pure_ops` 新接受 qualified annex-name strings，与原有低阶 Axm 值可以混合。
 例如 `("tensor.slice", "tensor.unary")` 在构造 phase 时解析为源 World 中实际的 Axm，
@@ -211,7 +301,7 @@ snapshot 保留原 consumer；不因先发布 first 就错误证明 exclusivity�
 operands/use 不能被宣称已完整覆盖。也没有新增原生 cover/preimage witness、动态
 data schema 或任意 RHS 表达式到源节点的反向推断。
 
-### 当前结果（Task 4）
+### 当前结果（Task 6）
 
 所有文件都是正常测试，GAP 是正向检查已知限制，不是 XFAIL。
 每个 frontend 独立验证，实际改写成功与“准确记录未改写”区分如下。
@@ -222,16 +312,18 @@ data schema 或任意 RHS 表达式到源节点的反向推断。
 | `tf_share`，保留 whole reader / tuple 多输出 | 目标通过，含 NEST | flat/VALUE/JOIN/NEST 通过（Task 4） |
 | `tf_rev`，modeled reverse placement | 目标通过 | 目标通过 |
 | `tf_build`，整棵 cache_read nest RHS | 目标通过 | 目标通过（Task 4） |
-| `tf_post`，后置 stage 插入 | GAP：fresh LHS binder identity | 相同 GAP，且缺跨 region 发布 |
+| `tf_post`，后置 stage 插入 | 目标通过；stage 在 inner mm 参数中打印 | 同左（Task 6） |
 | `tf_pack`，persistent marker | SSA 替换/共享通过 | SSA 替换/共享通过 |
 | `tf_guard`，source graph facts | single/used 目标通过，shared/unknown 保留 | 同左，且所有函数同一 snapshot |
 | `tf_poly`，多态 purity 引用配置 | 不适用 | 配置与目标通过 |
 | `tf_rmap`，真实 slice/unary | flat/shared/NEST 目标通过；extent mismatch 不重写 | flat/shared/NEST 通过，mismatch 不重写（Task 4） |
 | `tf_rrev`，真实 unary producer/reader | 目标通过 | 目标通过 |
 | `tf_rmm`，真实 product/slice nest RHS | 目标通过 | 目标通过（Task 4） |
-| `tf_rpost`，真实 slice 的后置 stage | GAP：LHS binder | GAP：LHS binder/regions |
+| `tf_rpost`，真实 slice 的后置 stage | 目标通过；outer jo 的 bp 被 inner read 使用 | 同左（Task 6） |
 | `tf_rpack`，真实 slice 读取 packed 值 | SSA 替换/共享通过 | SSA 替换/共享通过 |
 | `tf_rfact`，真实 unary single-consumer guard | single 目标通过，shared 保留 | 同左 |
+| `tf_wbox`，mutable map 的 producer box | 目标通过，unsupported map 保留 | 同左（Task 6） |
+| `tf_rbox`，真实 transpose 的 producer box | guard-proven shape specialization 通过 | 同左（Task 6） |
 
 R2 的 placement 观察仍然成立：`tf_build` 里的 `stage _5` 在 io body 打印出来，
 不能由任何这些 CHECK 推出每 jo/ko 只执行一次、persistent 缓存或 GEMM 性能。
@@ -240,12 +332,12 @@ R2 的 placement 观察仍然成立：`tf_build` 里的 `stage _5` 在 io body �
 
 | 顺序 | 最小扩展 | 解锁范围 |
 | --- | --- | --- |
-| 1 | Alpha-aware term-LHS binder matching + 跨 region box/map 事务 | modeled/real post-hoc cache_read；不能用无约束 lambda wildcard 代替 |
-| 2 | 原生 cover/preimage/box/layout witnesses 与更多数据 schema | 真实 compute_at/reverse placement、shared producer 和 cache_read 合法性 |
-| 3 | 真正的 tiled/tile_fold/stage/outs lowering、realization、persistent resource 合同 | 所有实验的数值、exactly-once 与性能含义 |
+| 1 | Task 7 的 map_reduce_post outs/map_init、tiled/tile_fold/stage 参考语义与 lowering | 所有实验的数值、placement、exactly-once 与 persistence 合同 |
+| 2 | 通用 cover/preimage/affine/broadcast/layout callbacks、更多 data schemas 与重算预算证明 | 真实 compute_at/reverse placement、shared producer 和 cache_read 合法性；本轮只提供 registry 与 permutation box |
+| 3 | staged-dependent shape refinement/typed recipes 与更一般的 binder 对应关系 | 非 specialization 的动态 producer box，以及超出同数/同深度 nest 的规则 |
 
-data-use schema 当前必须显式提供，native cover/preimage witnesses 仍需按具体调度补齐。
-已实现的三个小扩展不是 C++ tile_fuse 的性能替代品。
+data-use schema 当前必须显式提供，native cover/preimage callbacks 仍需按具体调度补齐。
+本轮没有实现 Task 7；P5 的这些扩展仍不是 C++ tile_fuse 的数值/性能替代品。
 
 第三个扩展最终验证：CTest **229/229**；`rules|error|tensor` **210 通过、4 unsupported**，
 无 XFAIL、无失败。unsupported 仍是两个 error fixture、Linux-only `free_temps` 和
