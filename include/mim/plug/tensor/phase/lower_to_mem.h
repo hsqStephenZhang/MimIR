@@ -58,6 +58,8 @@ private:
     const Def* lower_scatter(const App*);
 
     const Def* lower_tiled(const App*, const Destination* = nullptr);
+    const Def* lower_tile_fold(const App*);
+    bool linear_step(const Def*, const Def*, const Def*);
     const Def* lower_into(const Def*, const Destination&);
     const Def* lower_tile_body(const Def*, const Def*, const Def*, const Destination&);
     void record_instance(const Def*);

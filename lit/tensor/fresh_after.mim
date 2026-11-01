@@ -1,4 +1,4 @@
-// RUN: %mim %s -o - | %FileCheck %s --implicit-check-not=mem.fresh
+// RUN: %mim -X tensor:reference-tiles=1 %s -o - | %FileCheck %s --implicit-check-not=mem.fresh
 
 plugin tensor;
 plugin core;

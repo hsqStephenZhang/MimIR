@@ -21,6 +21,27 @@ namespace mim::plug::tensor::phase {
 
 namespace {
 
+class UnitScale : public Rewriter {
+public:
+    using Rewriter::Rewriter;
+
+    const Def* rewrite(const Def* def) override {
+        if (def->isa<Var>() || def->isa<Axm>() || def->is_mutable()) return def;
+        return Rewriter::rewrite(def);
+    }
+
+    const Def* rewrite_imm_App(const App* app) override {
+        if (Axm::isa(affine::semiop::mul, app))
+            if (Lit::isa(app->arg(2, 1)) == 1) return rewrite(app->arg(2, 0));
+        if (Axm::isa(affine::op::add, app)) {
+            auto [left, right] = app->args<2>();
+            if (auto lit = Axm::isa<affine::lit>(left); lit && Lit::isa(lit->arg()) == 0) return rewrite(right);
+            if (auto lit = Axm::isa<affine::lit>(right); lit && Lit::isa(lit->arg()) == 0) return rewrite(left);
+        }
+        return Rewriter::rewrite_imm_App(app);
+    }
+};
+
 /// Does `t` (recursively through immutable sigmas) contain a Pi?
 bool contains_pi(const Def* t) {
     if (t->isa<Pi>()) return true;
@@ -43,9 +64,9 @@ const Def* splat_scalar(const Def* d) {
 
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
-    return Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app)
-        || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app)
-        || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
+    return Axm::isa<tensor::tile_fold>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app)
+        || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app)
+        || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -111,6 +132,8 @@ void LowerToMem::collect_tensor_types() {
                 elem(T);
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::tiled>(app)) {
+                add_tensor_ty(app->type());
+            } else if (Axm::isa<tensor::tile_fold>(app)) {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::generate>(app)) {
                 auto [meta, s_out] = app->callee()->as<App>()->uncurry_args<2>();
@@ -199,7 +222,8 @@ void LowerToMem::collect_tensor_types() {
             // tensors of a recorded «r; I32» tensor type.
             if (is_tensor_op(app)) {
                 auto args = fe::BFSWorklist<DefSet>();
-                if (Axm::isa<tensor::generate>(app)) args.push(app->arg());
+                if (Axm::isa<tensor::generate>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::tile_fold>(app))
+                    args.push(app->arg());
                 if (Axm::isa<tensor::map_reduce_post>(app)) {
                     auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
                     for (auto helper : {mr.comb, mr.post, mr.sched, mr.map_out, mr.maps, mr.post_maps})
@@ -428,6 +452,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
     if (Axm::isa<tensor::splat>(app)) return lower_splat(app);
     if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app);
+    if (Axm::isa<tensor::tile_fold>(app)) return lower_tile_fold(app);
     if (Axm::isa<tensor::generate>(app)) return lower_generate(app);
     if (Axm::isa<tensor::broadcast>(app)) return lower_broadcast(app);
     if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app);
@@ -898,6 +923,126 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     };
     run->set(true, emit(0, run->var(2, 0), run->ret_var()));
     if (destination) return call;
+    auto [out_mem, out] = call->projs<2>();
+    return scalar_result(app, out_mem, out);
+}
+
+bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def* origin) {
+    auto& w = old_world();
+    for (size_t i = 0; i != 128; ++i) {
+        auto app = root->isa<App>();
+        if (!app) return false;
+        auto lam = app->callee()->isa<Lam>();
+        if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
+        root = lam->reduce(app->arg()).back();
+    }
+    auto app = root->isa<App>();
+    if (!app) return false;
+    if (Axm::isa<tensor::tiled>(app)) {
+        auto [meta, shapes] = app->callee()->as<App>()->uncurry_args<2>();
+        auto rank           = Lit::as(meta->proj(2, 1));
+        auto lam            = app->arg()->isa<Lam>();
+        if (!lam || !lam->is_set()) return false;
+        auto param = w.mut_lam(w.pi(w.arr(rank, w.type_nat()), w.type_nat()));
+        auto off   = param->var();
+        auto next  = w.tuple(DefVec(
+            rank, [&](size_t d) { return w.call(core::nat::add, Defs{origin->proj(rank, d), off->proj(rank, d)}); }));
+        return linear_step(lam->reduce(w.tuple({off, shapes->proj(2, 1)})).back(), accumulator, next);
+    }
+    if (!Axm::isa<tensor::map_reduce_post>(app)) return false;
+    auto mr      = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto initial = tensor_init(mr);
+    if (!initial || Axm::peel<tensor::buf>(initial->outs) != accumulator) return false;
+    auto rank       = Lit::as(mr.Ro);
+    auto map        = w.mut_lam(mr.map_out->type()->as<Pi>());
+    auto output_map = mr.map_out->isa<Lam>();
+    if (!output_map || !output_map->is_set()) return false;
+    auto output   = output_map->reduce(map->var()).back();
+    auto simplify = UnitScale(w);
+    for (size_t d = 0; d != rank; ++d)
+        if (!Check::test_alpha(simplify.rewrite(output->proj(rank, d)), map->var(Lit::as(mr.Rn), d))
+            || !Check::test_alpha(mr.Sr->proj(Lit::as(mr.Rn), d), mr.So->proj(rank, d)))
+            return false;
+    map->set(true, w.tuple(DefVec(rank, [&](size_t d) {
+        return w.call(affine::op::add, Defs{output->proj(rank, d), w.call<affine::lit>(origin->proj(rank, d))});
+    })));
+    auto init_map = initial->map->isa<Lam>();
+    if (!init_map || !init_map->is_set()) return false;
+    if (!Check::test_alpha(simplify.rewrite(init_map->reduce(map->var()).back()), simplify.rewrite(map->body())))
+        return false;
+    auto pending = DefVec{app->arg(), mr.comb, mr.post, mr.map_out, mr.maps_all, initial->map};
+    auto seen    = DefSet();
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto term = pending[i];
+        if (term == accumulator) return false;
+        if (!seen.insert(term).second || term->isa<Var>() || term->isa<Axm>()) continue;
+        for (auto op : term->ops())
+            if (op) pending.push_back(op);
+    }
+    return true;
+}
+
+const Def* LowerToMem::lower_tile_fold(const App* app) {
+    auto& w                   = new_world();
+    auto& old                 = old_world();
+    auto [type, blocks, init] = app->callee()->as<App>()->uncurry_args<3>();
+    auto [count, stride]      = blocks->projs<2>();
+    auto step                 = app->arg()->isa<Lam>();
+    if (!step || !step->is_set()) app->blame("tensor.tile_fold step must be a defined lambda").bail();
+    auto parameter             = old.mut_lam(old.pi(old.sigma({init->type(), old.type_nat()}), old.type_nat()));
+    auto [accumulator, offset] = parameter->var()->projs<2>();
+    auto root                  = step->reduce(parameter->var()).back();
+    auto result                = root;
+    for (size_t i = 0; i != 128; ++i) {
+        auto call = result->isa<App>();
+        if (!call) break;
+        auto lam = call->callee()->isa<Lam>();
+        if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
+        result = lam->reduce(call->arg()).back();
+    }
+    DefVec dimensions;
+    auto element = init->type();
+    while (auto arr = element->isa<Arr>()) {
+        dimensions.push_back(*arr->shape());
+        element = arr->body();
+    }
+    auto shape = old.tuple(dimensions);
+    if (auto call = result->isa<App>()) {
+        if (Axm::isa<tensor::tiled>(call)) shape = call->callee()->as<App>()->arg()->proj(2, 0);
+        if (Axm::isa<tensor::map_reduce_post>(call)) shape = btensor::MapRedPost::of(call->callee()->as<App>()).So;
+    }
+    auto rank    = Lit::as(shape->arity());
+    auto zero    = old.tuple(DefVec(rank, [&](size_t) { return old.lit_nat(0); }));
+    auto inplace = linear_step(root, accumulator, zero);
+    if (!inplace)
+        log().w("tensor destination fallback: tile_fold step copies accumulator (linear pointwise use unproved)");
+    record_instance(root);
+    auto initial       = make_buffer(init, w.lit_nat(rank), rewrite(shape));
+    auto [mem, buffer] = buffer::op_alloc(w.lit_nat(rank), rewrite(shape), rewrite(element), fresh_mem())->projs<2>();
+    mem                = buffer::op_copy(mem, buffer, initial);
+    auto [run, call]   = btensor::ds_splice(w.tuple({mem, buffer}), w.sigma({mem->type(), buffer->type()}), "tileFold");
+    auto state         = run->var(2, 0);
+    auto [loop, loop_call]       = affine::counting_for(w.call<core::bitcast>(w.type_i64(), rewrite(count)), state,
+                                                        run->ret_var(), w.sym("tileFoldStep"));
+    auto [index, carried, yield] = loop->vars<3>();
+    auto [loop_mem, loop_buffer] = carried->projs<2>();
+    auto pending                 = fe::Restore(pending_, {});
+    auto memo                    = fe::Restore(fresh_memo_, {});
+    push();
+    bind_old(parameter->has_var());
+    map(accumulator, loop_buffer);
+    map(offset, w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), rewrite(stride)}));
+    const Def* update;
+    if (inplace) {
+        update = lower_into(root, {loop_mem, loop_buffer, rewrite(shape), rewrite(zero), rewrite(shape)});
+    } else {
+        auto value = make_buffer(root, w.lit_nat(rank), rewrite(shape));
+        update     = w.tuple({buffer::op_copy(loop_mem, loop_buffer, value), loop_buffer});
+    }
+    loop->app(true, yield, update);
+    loop->set(true, wrap_fresh_mem(loop->body()));
+    pop();
+    run->set(true, loop_call);
     auto [out_mem, out] = call->projs<2>();
     return scalar_result(app, out_mem, out);
 }

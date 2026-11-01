@@ -15,6 +15,24 @@ scalar reference。tiled_destination 检查一次 grid iteration 的 root mrp �
 generate 中，直接写 whole destination，没有 tileCopy。
 本阶段 tile_fold/stage 仍走原 `_impl`，其 accumulator/scratch 优化是后续独立项目。
 
+### 4.1 Ordered destination fold
+
+tensor accumulator 的 tile_fold 在 loop 前分配一个 buffer 并复制 init，不能修改 caller
+传入的 init。每次 step 携带 `[mem, acc_buffer]`，offset 为 iteration × ks。
+root mrp 或 nested tiled 在本地证明通过后写同一 accumulator，不每步复制。
+证明要求 acc 只出现在 outs，输入/combiner/post/map 无额外读；write map 为 leading
+parallel coordinates、parallel extents 等于 local output extents，且 init map 与加 origin
+后的 write coordinates 相同。这同时排除非单射 write 和读取其他 cell 的 alias hazard，
+不能把“一个 outs use”误当作 pointwise read-before-write 证明。
+unit-stride slice 的 affine semiop.mul(x,1) 仅在证明中消去，不改生产 normalizer。
+
+未证明时整个 step 先算到临时 buffer，然后复制回 acc，并 warning 报告。
+fold_destination 检查 linear step 内无 buffer.copy；tile_constructs_exec 对额外 acc input
+和所有 cells 读取 acc#0 的两个非线性例子验证 fallback，两个 pipeline 数值相同。
+pgemm 的完整 K-block fold 均通过证明，没有每 step 的 accumulator copy。
+纯 scalar fold 保留原 ordered `_impl`；reference-tiles=1 保留全部旧 reference folds，
+fresh_before/fresh_after 显式选择该路径继续测试 pinned callbacks 的 late memory threading。
+
 ## 0. Generic shape Rules
 
 Rule 定义期仍检查 guard 的 Bool 类型，以及两侧已经闭合的类型不一致。

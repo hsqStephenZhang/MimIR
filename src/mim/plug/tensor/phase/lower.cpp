@@ -92,7 +92,9 @@ const Def* Lower::rewrite_imm_App(const App* app) {
 
     if (Axm::isa<tensor::tiled>(app) && driver().arg_nat("tensor", "reference-tiles").value_or(0))
         return lower_via_impl(app, impl<tensor::tiled_impl>());
-    if (Axm::isa<tensor::tile_fold>(app)) return lower_via_impl(app, impl<tensor::tile_fold_impl>());
+    if (Axm::isa<tensor::tile_fold>(app)
+        && (driver().arg_nat("tensor", "reference-tiles").value_or(0) || !app->type()->isa<Arr>()))
+        return lower_via_impl(app, impl<tensor::tile_fold_impl>());
     if (Axm::isa<tensor::stage>(app)) return lower_via_impl(app, impl<tensor::stage_impl>());
     if (Axm::isa<tensor::broadcast_in_dim>(app)) return lower_via_impl(app, impl<tensor::broadcast_in_dim_impl>());
     if (Axm::isa<tensor::transpose>(app)) return lower_via_impl(app, impl<tensor::transpose_impl>());
