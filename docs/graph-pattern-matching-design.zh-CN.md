@@ -82,11 +82,17 @@ P3 的可执行测试位于 [graph_pattern.cpp](../test/graph_pattern.cpp)，覆
 
 搜索先按结构缩小候选，再优先匹配候选较少的 anchor。所有根共享现有匹配器的 undo log，后续根失败时可以回溯到前一个根的 OR 分支。类型与 Where 条件在跨根绑定完成后检查。每个 anchor tuple 返回一份确定的成功绑定，不重复输出同一个 tuple。
 
+mutable 节点在检查 node／flags 后即视为结构不透明，不能用操作数数量证明不匹配。Indexed 的反向路径索引在每个缺失操作数层保留 mutable／Lam／Pi 边界以及其已知祖先；这些省略的边不能证明 capture 不可达，最终仍由结构匹配器决定 Unknown 或拒绝。边界扫描与候选扩展计入原有工作预算。
+
 `GraphMatches::status` 区分完整枚举 `Complete`、存在未知条件 `Unknown`、预算耗尽 `Budget_Exceeded` 和达到结果上限 `Result_Limit`。后面三种状态不代表“完整搜索后无匹配”；其中已返回的每个匹配仍通过了自身约束。步数、候选数、结果数、递归深度及包装展开都有边界。
 
 ### 替换与提交
 
 算子纯性默认未证明。注册可以给出无条件 pure，也可以提供基于完整 curry 参数组的只读纯性检查；源节点和 recipe 的目标参数都必须通过检查，后者在调用 normalizer 前执行。一个 recipe 可以被多个输出引用，求值只执行一次。替换的类型必须保持，导入值必须来自当前图，计划之间不能有重叠写入或读写冲突。
+
+显式 `num_groups` 注册要求 recipe 参数组数量完全相等；它不是 Axm 的 normalization curry counter。每次继续应用参数前，已归一化的 callee 必须仍是该 recipe 已验证的原始应用前缀。即使自定义 decoder 没有显式组数，normalizer 返回另一个函数也不能借原 axiom 的 pure 声明继续调用它。函数值本身可作为结果，不代表调用它也纯。
+
+所有未证明纯性的 App 都必须在重建结果中保留，包括返回 Pi 的计算和独立的部分应用。纯算子的完整已解码应用可以证明自身的 curry callee spine，但不能证明作为参数传入的函数生产计算。Lam／Var／binder 叶子不是这样的应用计算；开放函数和 continuation binder 的映射仍被保留。
 
 导入的 immutable 子图也参与替换依赖检查，因此 `a → import(b)`、`b → import(a)`，以及通过更深子表达式形成的循环都会在构建目标图前被拒绝。带排他使用条件或 native Where 的匹配保守地记录更宽的读取范围，避免批量提交使分析条件失效。
 
@@ -95,6 +101,8 @@ P3 的可执行测试位于 [graph_pattern.cpp](../test/graph_pattern.cpp)，覆
 `publish` 前检查源图的存储代次、mutable 状态和 external 集合。中间运行 cleanup、修改其他 external 或增加 external 都会使旧结果无法提交。World 的存储 token 随 IR 一起交换，token 的持有不保留旧 Def arena，也不会因内存地址复用而使旧句柄复活。含 Exact/Literal 引用的 PatternProgram 和 RulePattern 也会拒绝在 World 重建后继续使用。
 
 原子提交指校验全部通过后交换 World；调用方仍须独占 World 修改。提交后旧 Def 指针和匹配句柄失效，后续轮次应重新建立视图及引用当前 World 的模式。
+
+`GraphRewrite::is_changed()` 在同一目标 World 中比较 canonical 结果与不应用替换的导入结果，复用 binder 与不透明节点的映射，不对源 World 的 mutable 节点执行 α 检查。scope body 的两次构建都在共同的新 Lam stub 尚未填充时完成，避免递归自应用只在一侧展开。GraphRuleRewrite 丢弃归一化后相同的结果，继续后面的 match／Rule，不 publish 或 invalidate。该比较识别 canonical 图相同，不提供任意算术等价或通用高阶函数等价证明；显式调用 publish 的其他 driver 仍自行决定提交策略。
 
 ### 三路共享计算示例
 
@@ -285,6 +293,15 @@ python3 scripts/bench-patterns.py <build>/bin/mim-pattern-bench --sizes 80,160,3
 | 同时替换误报依赖环 | 遇到已替换节点后停止扫描其旧操作数，由其新 recipe 决定后续依赖 |
 | OR 成功分支污染 Unknown 状态 | 分离成功 tuple 与继续枚举的控制；按完整 anchor tuple 记录未决状态，同一 tuple 后续成功时清除，不掩盖其他 tuple 或部分赋值的未知条件 |
 
+2026-11-01 对 `860841a059` 的后续静态 review 提出四项问题。本次按源代码语义补充下列回归；遵照执行限制未运行构建或测试，运行复现和修复验证交由父会话。
+
+| 后续问题 | 修复与新增回归 |
+| --- | --- |
+| 返回函数的 App 绕过纯性可达性检查 | [graph_pattern.cpp](../test/graph_pattern.cpp) 的 `Review purity: function-valued computations` 覆盖 `sink (make 0)`、部分应用、normalizer 丢弃输入、显式 pure 正例；另有函数 binder 正例和既有 continuation 回归 |
+| overapplied recipe 借用错误的纯性声明 | 同文件的 `Review purity: overapplication` 检查组数拒绝，以及 normalizer 已执行但未证明函数调用次数仍为零；`registered group count` 覆盖合法多组应用与不同的 Axm curry counter |
+| 归一化 no-op 与递归 stub | [pattern_pdll.cpp](../test/pattern_pdll.cpp) 用 add-zero normalizer 检查 canonical no-op、源图不变；[graph_pattern.cpp](../test/graph_pattern.cpp) 另检查递归 stub 的 no-op。Rule fallback 与无有效替换不发布继续由既有 P5 回归覆盖 |
+| Indexed 将 mutable 不透明路径当作不存在 | [pattern_p5.cpp](../test/pattern_p5.cpp) 的 `Review join: skipped mutable operands` 对 `q(x)` 与 `Lam(any(), x)` 在 Indexed／Exhaustive、正序／逆序中都要求 Unknown 且零结果；`Review opacity` 覆盖 arity 先于 opacity 的回归 |
+
 ### TVM DPL 示例回归
 
 使用 Copilot CLI 的 `gpt-6.1-sol`，参考本地 TVM 的 [test_dataflow_pattern.py](/workspaces/ml-compiler/tvm/tests/python/relax/test_dataflow_pattern.py) 新增 [pattern_dpl.cpp](../test/pattern_dpl.cpp) 中的 18 个用例。它们将 TVM 示例的行为要求改写为 MimIR 断言，不依赖 Python 或 TVM 运行时：
@@ -312,7 +329,7 @@ python3 scripts/bench-patterns.py <build>/bin/mim-pattern-bench --sizes 80,160,3
 
 这批用例不实现 PDLL parser／诊断、ODS、native constraint 返回新绑定、动态 ValueRange／TypeRange、benefit 调度、任意 native rewrite callback、显式零结果 erase 或结果类型推导。不可达的已证明纯性的 DAG 节点可以在重建后消失，不等同于任意 MLIR operation 的 erase。
 
-当前通过 215 个 CTest、96 个相关 lit 测试和 26 次 Mim／AST roundtrip；另有 1 个 lit 按原有 release 条件跳过。144 个 Pattern／Rule／Graph 用例与四个 Mim 多根 Rule 前端用例通过 AddressSanitizer／UndefinedBehaviorSanitizer；插桩范围为本次匹配、图重建与多根 Rule phase，基础 IR 库和其他插件未全部插桩。当前环境未运行 LeakSanitizer。数值回归继续包含 I64 矩阵乘的 LLVM 执行与标量参考。
+`860841a059` 的修复前验证记录为 215 个 CTest、96 个相关 lit 测试和 26 次 Mim／AST roundtrip 通过；另有 1 个 lit 按原有 release 条件跳过。144 个 Pattern／Rule／Graph 用例与四个 Mim 多根 Rule 前端用例通过 AddressSanitizer／UndefinedBehaviorSanitizer；插桩范围为当时的匹配、图重建与多根 Rule phase，基础 IR 库和其他插件未全部插桩，未运行 LeakSanitizer。该记录不代表上述四项后续修复已执行验证。数值回归继续包含 I64 矩阵乘的 LLVM 执行与标量参考。
 
 ## 源码依据
 

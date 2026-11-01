@@ -17,6 +17,15 @@ using namespace mim::pattern;
 
 namespace {
 
+const Def* add_zero(const Def*, const Def* callee, const Def* arg) {
+    auto args = arg->isa<Tuple>();
+    if (callee->isa<Axm>() && args && args->num_ops() == 2) {
+        auto value = Lit::isa(args->op(1));
+        if (value && *value == 0) return args->op(0);
+    }
+    return nullptr;
+}
+
 struct PDLLIR {
     Driver driver;
     World& w              = driver.world();
@@ -870,4 +879,57 @@ TEST_CASE("PDLL adapted phase: mixed graph Rule publishes one producer and prese
     GraphView untouched({current_bad->body()}, {.operators = &current_ops});
     CHECK(operation_flags(rewritten) == std::multiset<flags_t>{wrap_flags});
     CHECK(operation_flags(untouched) == std::multiset<flags_t>{n_flags, b_flags});
+}
+
+TEST_CASE("Review graph Rule: an instantiated add-zero recipe is a canonical scoped no-op") {
+    PDLLIR ir;
+    auto add = ir.w.axm(add_zero, 1, Axm::Trip_End, ir.w.pi(ir.w.arr(2, ir.nat), ir.nat));
+    auto k   = ir.w.axm(ir.w.pi(ir.w.arr(2, ir.nat), ir.nat));
+    ir.ops.add(add->flags(), 1,
+               {
+                   {0, 1}
+    },
+               true);
+    ir.ops.add(k->flags(), 1,
+               {
+                   {0, 1}
+    },
+               true);
+    auto rule = ir.w.mut_rule(ir.w.reform(ir.w.sigma({ir.nat, ir.nat, ir.nat})));
+    auto x = rule->var(3, 0), y = rule->var(3, 1);
+    auto qx = ir.call(ir.n, x), kxy = ir.w.app(k, {x, y});
+    rule->set(ir.w.tuple({qx, kxy}), ir.w.tuple({ir.w.app(add, {qx, y}), kxy}), ir.w.lit_tt());
+    REQUIRE(rule->lhs() != rule->rhs());
+    auto fn = ir.w.mut_lam(ir.w.pi(ir.nat, ir.w.arr(2, ir.nat)))->set("normalized_noop");
+    auto q = ir.call(ir.n, fn->var()), key = ir.w.app(k, {fn->var(), ir.w.lit_nat(0)});
+    auto body = ir.w.tuple({q, key});
+    fn->set(false, body)->externalize();
+    auto name = fn->sym();
+    CHECK(ir.w.app(add, {q, ir.w.lit_nat(0)}) == q);
+    GraphRulePattern compiled(rule);
+    GraphView view({body}, ir.options(fn));
+    auto found = compiled.find(view);
+    REQUIRE(found.status == SearchStatus::Complete);
+    REQUIRE(found.matches.size() == 1);
+    auto gid     = ir.w.curr_gid();
+    auto planned = compiled.plan(found.matches[0], view);
+    REQUIRE(planned.status == MatchStatus::Matched);
+    REQUIRE(planned.plan);
+    {
+        auto result = build(view, *planned.plan);
+        CHECK_FALSE(result.is_changed());
+        CHECK_FALSE(result.is_published());
+        REQUIRE(result.scope()->body()->isa<Tuple>());
+        auto fields = result.scope()->body()->as<Tuple>();
+        CHECK(fields->op(0)->as<App>()->axm()->flags() == ir.n->flags());
+        CHECK(fields->op(0)->as<App>()->arg() == result.scope()->var());
+        auto inputs = fields->op(1)->as<App>()->arg()->as<Tuple>();
+        CHECK(inputs->op(0) == result.scope()->var());
+        CHECK(inputs->op(1) == result.world().lit_nat(0));
+    }
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(ir.w.externals()[name] == fn);
+    CHECK(fn->body() == body);
+    CHECK(view.is_current());
+    CHECK(found.matches[0].anchors()[0] == q);
 }

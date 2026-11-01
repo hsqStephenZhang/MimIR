@@ -97,6 +97,10 @@ void GraphRuleRewrite::start() {
                 }
                 std::array plans{candidate.plan.get()};
                 auto next = pattern::rewrite_graph(view, plans);
+                if (!next.is_changed()) {
+                    profile_count("graph_rule.noop");
+                    continue;
+                }
                 next.publish(view);
                 invalidate();
                 profile_count("graph_rule.rewrites");

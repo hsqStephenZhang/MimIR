@@ -351,13 +351,13 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
                 case Kind::Node:
                 case Kind::Range: {
                     if (def->node() != e.node || (e.flags && def->flags() != *e.flags)) return false;
+                    if (def->is_mutable()) return true;
                     if (e.kind == Kind::Node && def->num_ops() != e.operands.size()) return false;
                     auto prefix = e.kind == Kind::Range ? e.operands.size() - 1 : e.operands.size();
                     if (e.kind == Kind::Range
                         && (def->num_ops() < prefix || def->num_ops() - prefix < e.min
                             || def->num_ops() - prefix > e.max))
                         return false;
-                    if (def->is_mutable()) return true;
                     for (size_t i = 0; i != def->num_ops(); ++i)
                         if (!may_match(e.operands[std::min(i, e.operands.size() - 1)], def->op(i), depth + 1))
                             return false;
@@ -473,6 +473,23 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
         ++output.index_steps;
         return true;
     };
+    std::vector<const Def*> opaque;
+    if (options.mode == GraphSearchMode::Indexed)
+        for (auto def : graph.nodes()) {
+            if (!index_work()) {
+                output.status = SearchStatus::Budget_Exceeded;
+                output.steps  = budget_.steps;
+                return output;
+            }
+            if (def->is_mutable() || def->node() == Node::Lam || def->node() == Node::Pi) opaque.push_back(def);
+        }
+    auto include_opaque = [&](DefSet& set) {
+        for (auto def : opaque) {
+            if (!index_work()) return false;
+            set.insert(def);
+        }
+        return true;
+    };
     auto parents = [&](const Def* value, const std::optional<OperandPath>& path) -> std::shared_ptr<DefSet> {
         auto key = std::pair{value, path ? *path : OperandPath{size_t(-1)}};
         if (auto i = ancestors.find(key); i != ancestors.end()) return i->second;
@@ -488,10 +505,13 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
                         if (edge.kind != EdgeKind::Type && edge.index == index) next->insert(edge.owner);
                     }
                 }
+                // Missing operands at a graph boundary cannot disprove this binding path.
+                if (!include_opaque(*next)) return {};
                 result = std::move(next);
             }
         } else {
-            std::vector<const Def*> pending{value};
+            if (!include_opaque(*result)) return {};
+            std::vector<const Def*> pending(result->begin(), result->end());
             for (size_t i = 0; i != pending.size(); ++i) {
                 auto def = pending[i];
                 if (!index_work()) return {};

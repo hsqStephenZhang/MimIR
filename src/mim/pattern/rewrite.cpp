@@ -80,6 +80,8 @@ public:
     }
     const Def* lookup(const Def* def) override {
         if (auto mapped = Rewriter::lookup(def)) return mapped;
+        // Locally constructed test/client axioms use the global plugin ID, which is not an annex.
+        if (auto axm = def->isa<Axm>(); axm && axm->plugin() == Annex::Global_Plugin) return nullptr;
         if (auto flags = graph_.world().annexes().opaque(def)) return map(def, world().annex(*flags));
         return nullptr;
     }
@@ -179,9 +181,16 @@ public:
         };
         for (auto [def, replacement] : replacements_)
             visit(def, 0);
+        // A decoded pure operation proves its own curry spine, not function-valued inputs.
+        DefSet pure;
+        for (auto def : graph.operations())
+            if (graph.is_pure(def))
+                for (auto cur = def; auto app = cur->isa<App>(); cur = app->callee()) {
+                    budget_.touch();
+                    pure.insert(cur);
+                }
         for (auto def : graph.nodes())
-            if (auto app = def->isa<App>(); app && !app->type()->isa<Pi>() && !graph.is_pure(def))
-                protected_.insert(def);
+            if (def->isa<App>() && !pure.contains(def)) protected_.insert(def);
     }
 
     const Def* rewrite(const Def* def) override {
@@ -210,6 +219,7 @@ public:
     const Def* rewrite_imm_Pi(const Pi* def) override { return importer_.rewrite(def); }
 
     GraphRewrite build(std::unique_ptr<World> target) {
+        bool changed = false;
         if (auto scope = graph_.scope()) {
             auto pi    = importer_.rewrite(scope->type())->as<Pi>();
             new_scope_ = world().mut_lam(pi)->set(scope->dbg_key());
@@ -220,7 +230,10 @@ public:
                 map(var, new_scope_->var());
             }
             auto filter = importer_.rewrite(scope->filter());
-            auto body   = rewrite(scope->body());
+            // Both bodies see the same unset scope stub, so self-applications cannot unfold one side.
+            auto original = importer_.rewrite(scope->body());
+            auto body     = rewrite(scope->body());
+            changed       = body != original;
             new_scope_->set(filter, body);
             if (scope->is_external()) new_scope_->externalize();
             // Other functions use a separate map: a hash-consed value shared across scopes must
@@ -235,8 +248,12 @@ public:
                     throw std::invalid_argument("open graph rewrite requires an explicit function scope");
         }
         auto roots = std::vector<const Def*>();
-        for (auto root : graph_.roots())
-            roots.push_back(rewrite(root));
+        for (auto root : graph_.roots()) {
+            auto original = new_scope_ ? nullptr : importer_.rewrite(root);
+            auto value    = rewrite(root);
+            roots.push_back(value);
+            if (!new_scope_) changed |= value != original;
+        }
         // A pure replacement key may still enclose an unproved computation. Require that each
         // such computation survives in the selected result, including after normalization.
         DefSet reachable;
@@ -258,7 +275,7 @@ public:
         world().verify();
         if (!graph_.is_current()) throw std::invalid_argument("graph changed while building replacements");
         return GraphRewrite(&graph_.world(), std::move(target), graph_.snapshot(), std::move(roots), new_scope_,
-                            replacements_.size());
+                            replacements_.size(), changed);
     }
 
 private:
@@ -275,13 +292,29 @@ private:
         switch (entry.kind) {
             case RewritePlan::Kind::Import: value = rewrite(entry.def); break;
             case RewritePlan::Kind::Literal: value = world().lit(importer_.rewrite(entry.def), entry.bits); break;
-            case RewritePlan::Kind::Call:
+            case RewritePlan::Kind::Call: {
                 if (!graph_.is_pure_call(entry.def->flags(), {args.data(), args.size()}))
                     throw std::invalid_argument("recipe arguments do not satisfy the operator purity proof");
-                value = importer_.rewrite(entry.def);
-                for (auto arg : args)
-                    value = world().app(value, arg);
+                auto callee = importer_.rewrite(entry.def);
+                value       = callee;
+                for (size_t i = 0; i != args.size(); ++i) {
+                    budget_.touch();
+                    auto prefix = value;
+                    for (size_t j = i; j-- != 0;) {
+                        budget_.touch();
+                        auto app = prefix->isa<App>();
+                        if (!app || app->arg() != args[j]) {
+                            prefix = nullptr;
+                            break;
+                        }
+                        prefix = app->callee();
+                    }
+                    if (prefix != callee)
+                        throw std::invalid_argument("recipe normalization changed the verified application prefix");
+                    value = world().app(value, args[i]);
+                }
                 break;
+            }
             case RewritePlan::Kind::Tuple: value = world().tuple(args); break;
             case RewritePlan::Kind::Extract: {
                 auto arity = Lit::isa(args.front()->arity());
@@ -312,14 +345,16 @@ GraphRewrite::GraphRewrite(World* source,
                            std::shared_ptr<const GraphSnapshot> snapshot,
                            std::vector<const Def*> roots,
                            Lam* scope,
-                           size_t replacements)
+                           size_t replacements,
+                           bool changed)
     : source_(source)
     , target_(std::move(target))
     , snapshot_(std::move(snapshot))
     , result_snapshot_(GraphSnapshot::capture(*target_))
     , roots_(std::move(roots))
     , scope_(scope)
-    , replacements_(replacements) {}
+    , replacements_(replacements)
+    , changed_(changed) {}
 
 GraphRewrite::GraphRewrite(GraphRewrite&&)            = default;
 GraphRewrite& GraphRewrite::operator=(GraphRewrite&&) = default;

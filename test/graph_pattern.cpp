@@ -73,6 +73,19 @@ const Def* counted_combined(const Def*, const Def*, const Def* arg) {
     return arg->world().tuple({arg, arg, arg});
 }
 
+size_t identity_builds = 0, unproved_calls = 0;
+const Def* identity_function(const Def*, const Def*, const Def* arg) {
+    ++identity_builds;
+    return arg;
+}
+
+const Def* counted_unproved(const Def*, const Def*, const Def* arg) {
+    ++unproved_calls;
+    return arg->world().lit_nat(77);
+}
+
+const Def* discard_function(const Def*, const Def*, const Def* arg) { return arg->world().lit_nat(0); }
+
 } // namespace
 
 TEST_CASE("Graph pattern: semantic uses retain curried argument positions") {
@@ -739,4 +752,212 @@ TEST_CASE("Graph rewrite: existing recursive references resolve to the rebuilt s
     CHECK(self->callee() == scope);
     CHECK(self->arg() == scope->var());
     CHECK(scope->is_closed());
+}
+
+TEST_CASE("Review purity: function-valued computations cannot be erased by a pure sink") {
+    GraphIR ir;
+    auto function_type = ir.w.pi(ir.nat, ir.nat);
+    auto make          = ir.w.axm(ir.w.pi(ir.nat, function_type));
+    auto sink          = ir.w.axm(ir.w.pi(function_type, ir.nat));
+    auto discard       = ir.w.axm(discard_function, 1, Axm::Trip_End, sink->type());
+    bool proved = false, normalize = false;
+    size_t groups = 1;
+    SUBCASE("unproved function-producing application") {}
+    SUBCASE("unproved partial application") { groups = 2; }
+    SUBCASE("a normalizer drops the imported computation") { normalize = true; }
+    SUBCASE("an explicitly pure function-producing application may disappear") { proved = true; }
+    ir.ops.add(make->flags(), groups, {{0}}, proved);
+    ir.ops.add(sink->flags(), 1, {{0}}, true);
+    ir.ops.add(discard->flags(), 1, {{0}}, true);
+    auto produced = ir.w.app(make, ir.w.lit_nat(0));
+    REQUIRE(produced->isa<App>());
+    REQUIRE(produced->type() == function_type);
+    auto outer = ir.w.app(sink, produced);
+    auto fn    = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat))->set("function_computation");
+    fn->set(false, outer)->externalize();
+    auto name = fn->sym();
+    GraphView view({outer}, ir.options(fn));
+    PatternProgram p;
+    GraphPattern pattern(p);
+    pattern.anchor(p.exact(outer));
+    auto found = find_matches(pattern, view);
+    REQUIRE(found.status == SearchStatus::Complete);
+    REQUIRE(found.matches.size() == 1);
+    CHECK(view.is_pure(produced) == proved);
+    RewritePlan plan(found.matches[0]);
+    plan.replace(outer, normalize ? plan.call(discard, {plan.import(produced)}) : plan.literal(ir.nat, 0));
+    auto gid = ir.w.curr_gid();
+    if (proved) {
+        auto result = build(view, plan);
+        CHECK(result.scope()->body() == result.world().lit_nat(0));
+        CHECK(result.is_changed());
+    } else {
+        CHECK_THROWS_WITH_AS(build(view, plan), "replacement removes a computation without a purity proof",
+                             std::invalid_argument);
+    }
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(ir.w.externals()[name] == fn);
+    CHECK(fn->body() == outer);
+    CHECK(view.is_current());
+}
+
+TEST_CASE("Review purity: function-valued binder leaves are not computations") {
+    GraphIR ir;
+    auto function_type = ir.w.pi(ir.nat, ir.nat);
+    auto sink          = ir.w.axm(ir.w.pi(function_type, ir.nat));
+    ir.ops.add(sink->flags(), 1, {{0}}, true);
+    auto fn = ir.w.mut_lam(sink->type()->as<Pi>())->set("function_binder");
+    fn->set(false, ir.w.app(sink, fn->var()))->externalize();
+    GraphView view({fn->body()}, ir.options(fn));
+    PatternProgram p;
+    GraphPattern pattern(p);
+    pattern.anchor(p.exact(fn->body()));
+    auto found = find_matches(pattern, view);
+    REQUIRE(found.status == SearchStatus::Complete);
+    REQUIRE(found.matches.size() == 1);
+    RewritePlan plan(found.matches[0]);
+    plan.replace(fn->body(), plan.literal(ir.nat, 0));
+    auto gid    = ir.w.curr_gid();
+    auto result = build(view, plan);
+    CHECK(result.scope()->body() == result.world().lit_nat(0));
+    CHECK(result.scope()->is_closed());
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(view.is_current());
+}
+
+TEST_CASE("Review purity: overapplication cannot invoke a function exposed by normalization") {
+    GraphIR ir;
+    auto function_type = ir.w.pi(ir.nat, ir.nat);
+    auto fn            = ir.w.axm(counted_unproved, 1, Axm::Trip_End, function_type);
+    auto id            = ir.w.axm(identity_function, 1, Axm::Trip_End, ir.w.pi(function_type, function_type));
+    bool schema        = true;
+    SUBCASE("explicit one-group registration rejects before normalization") {}
+    SUBCASE("custom decoder still cannot authorize an exposed callee") { schema = false; }
+    if (schema)
+        ir.ops.add(id->flags(), 1, {{0}}, true);
+    else
+        ir.ops.add(
+            id->flags(),
+            [](const Def*, size_t) -> std::optional<OpView> { return OpView{.inputs = {}, .complete = false}; }, true);
+    CHECK(ir.w.app(id, fn) == fn);
+    auto source = ir.call(ir.q, ir.w.lit_nat(0));
+    auto scope  = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat))->set("overapplication");
+    scope->set(false, ir.w.app(ir.q, ir.w.app(ir.k, source)))->externalize();
+    auto body = scope->body();
+    GraphView view({scope->body(), fn}, {.operators = &ir.ops});
+    PatternProgram p;
+    GraphPattern pattern(p);
+    pattern.anchor(p.exact(source));
+    auto found = find_matches(pattern, view);
+    REQUIRE(found.status == SearchStatus::Complete);
+    REQUIRE(found.matches.size() == 1);
+    RewritePlan plan(found.matches[0]);
+    plan.replace(source, plan.call(id, {plan.import(fn), plan.literal(ir.nat, 0)}));
+    auto gid        = ir.w.curr_gid();
+    identity_builds = unproved_calls = 0;
+    if (schema)
+        CHECK_THROWS_WITH_AS(build(view, plan), "recipe arguments do not satisfy the operator purity proof",
+                             std::invalid_argument);
+    else
+        CHECK_THROWS_WITH_AS(build(view, plan), "recipe normalization changed the verified application prefix",
+                             std::invalid_argument);
+    CHECK(identity_builds == (schema ? 0 : 1));
+    CHECK(unproved_calls == 0);
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(ir.w.externals()[scope->sym()] == scope);
+    CHECK(scope->body() == body);
+    CHECK(view.is_current());
+}
+
+TEST_CASE("Review purity: a one-group identity may return an unproved function without invoking it") {
+    GraphIR ir;
+    auto function_type = ir.w.pi(ir.nat, ir.nat);
+    auto fn            = ir.w.axm(counted_unproved, 1, Axm::Trip_End, function_type);
+    auto id            = ir.w.axm(identity_function, 1, Axm::Trip_End, ir.w.pi(function_type, function_type));
+    auto make          = ir.w.axm(ir.w.pi(ir.nat, function_type));
+    ir.ops.add(id->flags(), 1, {{0}}, true);
+    ir.ops.add(make->flags(), 1, {{0}}, true);
+    auto source = ir.w.app(make, ir.w.lit_nat(0));
+    GraphView view({source, fn}, ir.options());
+    PatternProgram p;
+    GraphPattern pattern(p);
+    pattern.anchor(p.exact(source));
+    auto found = find_matches(pattern, view);
+    REQUIRE(found.status == SearchStatus::Complete);
+    REQUIRE(found.matches.size() == 1);
+    RewritePlan plan(found.matches[0]);
+    plan.replace(source, plan.call(id, {plan.import(fn)}));
+    auto gid        = ir.w.curr_gid();
+    identity_builds = unproved_calls = 0;
+    auto result                      = build(view, plan);
+    CHECK(result.roots()[0] == result.roots()[1]);
+    CHECK(result.roots()[0]->as<Axm>()->flags() == fn->flags());
+    CHECK(identity_builds == 1);
+    CHECK(unproved_calls == 0);
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(view.is_current());
+}
+
+TEST_CASE("Review graph rewrite: recursive no-op comparison keeps the shared scope stub unset") {
+    GraphIR ir;
+    auto fn        = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat))->set("recursive_noop");
+    auto recursive = ir.w.app(fn, fn->var());
+    auto body      = ir.call(ir.q, recursive);
+    fn->set(false, body)->externalize();
+    GraphView view({body}, ir.options(fn));
+    PatternProgram p;
+    GraphPattern pattern(p);
+    pattern.anchor(p.exact(body));
+    auto found = find_matches(pattern, view);
+    REQUIRE(found.status == SearchStatus::Complete);
+    REQUIRE(found.matches.size() == 1);
+    RewritePlan plan(found.matches[0]);
+    plan.replace(body, plan.call(ir.q, {plan.import(recursive)}));
+    auto gid    = ir.w.curr_gid();
+    auto result = build(view, plan);
+    CHECK_FALSE(result.is_changed());
+    auto self = result.scope()->body()->as<App>()->arg()->as<App>();
+    CHECK(self->callee() == result.scope());
+    CHECK(self->arg() == result.scope()->var());
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(fn->body() == body);
+    CHECK(view.is_current());
+}
+
+TEST_CASE("Review purity: registered group count is independent of the axiom curry counter") {
+    GraphIR ir;
+    auto curried = ir.w.axm(nullptr, 1, Axm::Trip_End, ir.w.pi(ir.nat, ir.w.pi(ir.nat, ir.nat)));
+    ir.ops.add(curried->flags(), 2, {{0}, {1}}, true);
+    auto first = ir.w.lit_nat(3), second = ir.w.lit_nat(4);
+    auto source = ir.call(ir.q, first);
+    bool erase  = false;
+    SUBCASE("valid two-group recipe") {}
+    SUBCASE("a pure complete call proves its partial callee spine") {
+        source = ir.w.app(ir.w.app(curried, first), second);
+        erase  = true;
+    }
+    GraphView view({source}, ir.options());
+    REQUIRE(view.is_pure(source));
+    PatternProgram p;
+    GraphPattern pattern(p);
+    pattern.anchor(p.exact(source));
+    auto found = find_matches(pattern, view);
+    REQUIRE(found.status == SearchStatus::Complete);
+    REQUIRE(found.matches.size() == 1);
+    RewritePlan plan(found.matches[0]);
+    plan.replace(source, erase ? plan.literal(ir.nat, 0)
+                               : plan.call(curried, {plan.literal(ir.nat, 3), plan.literal(ir.nat, 4)}));
+    auto gid    = ir.w.curr_gid();
+    auto result = build(view, plan);
+    if (erase) {
+        CHECK(result.roots()[0] == result.world().lit_nat(0));
+    } else {
+        auto call = result.roots()[0]->as<App>();
+        CHECK(call->axm()->flags() == curried->flags());
+        auto args = call->uncurry_args<2>();
+        CHECK(args[0] == result.world().lit_nat(3));
+        CHECK(args[1] == result.world().lit_nat(4));
+    }
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(view.is_current());
 }

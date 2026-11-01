@@ -146,6 +146,7 @@ TEST_CASE("P5 graph Rule: tuple templates match independent roots and share RHS 
     CHECK_THROWS_AS(rewritten.scope(), std::invalid_argument);
     CHECK_THROWS_AS(rewritten.roots(), std::invalid_argument);
     CHECK_THROWS_AS(rewritten.world(), std::invalid_argument);
+    CHECK_THROWS_AS(rewritten.is_changed(), std::invalid_argument);
 }
 
 TEST_CASE("P5 graph Rule: rejected guards and identity templates do not publish") {
@@ -384,4 +385,61 @@ TEST_CASE("Review OR: successful anchor tuples dominate unknown alternatives") {
     auto found = find_matches(partial, two);
     CHECK(found.matches.size() == 1);
     CHECK(found.status == SearchStatus::Unknown); // An unresolved different tuple stays unresolved.
+}
+
+TEST_CASE("Review join: skipped mutable operands preserve indexed and exhaustive uncertainty") {
+    IR ir;
+    auto a      = ir.w.axm(ir.nat);
+    auto qa     = ir.call(ir.q, a);
+    auto opaque = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    opaque->set(false, a);
+    const Def* second  = opaque;
+    const Axm* wrapper = nullptr;
+    SUBCASE("mutable anchor is the exact review trigger") {}
+    SUBCASE("mutable boundary under an immutable caller also stays possible") {
+        wrapper = ir.w.axm(ir.w.pi(opaque->type(), ir.nat));
+        ir.ops.add(wrapper->flags(), 1, {{0}}, true);
+        second = ir.call(wrapper, opaque);
+    }
+    GraphView view({qa, second}, {.operators = &ir.ops});
+    CHECK(view.uses(a).size() == 1);
+    PatternProgram p;
+    auto x = p.capture();
+    GraphPattern graph(p);
+    graph.anchor(p.node(Node::App, {p.exact(ir.q), x}));
+    auto lam = p.node(Node::Lam, {p.any(), x});
+    if (wrapper)
+        graph.anchor(p.node(Node::App, {p.exact(wrapper), lam}));
+    else
+        graph.anchor(lam, AnchorDomain::Nodes);
+    auto gid = ir.w.curr_gid();
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+        for (bool reverse : {false, true}) {
+            auto found = find_matches(graph, view, {.reverse_candidates = reverse, .mode = mode});
+            CHECK(found.status == SearchStatus::Unknown);
+            CHECK(found.matches.empty());
+        }
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(opaque->body() == a);
+    CHECK(view.is_current());
+}
+
+TEST_CASE("Review opacity: mutable arity never proves structural mismatch") {
+    IR ir;
+    auto opaque = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    opaque->set(false, ir.w.lit_nat(0));
+    GraphView view({opaque}, {.operators = &ir.ops});
+    PatternProgram p;
+    for (auto structural : {p.node(Node::Lam, {}), p.node_range(Node::Lam, {}, p.any(), 3, 4)}) {
+        CHECK(match(p, structural, opaque).status == MatchStatus::Unknown);
+        GraphPattern graph(p);
+        graph.anchor(structural, AnchorDomain::Nodes);
+        for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+            for (bool reverse : {false, true}) {
+                auto found = find_matches(graph, view, {.reverse_candidates = reverse, .mode = mode});
+                CHECK(found.status == SearchStatus::Unknown);
+                CHECK(found.matches.empty());
+            }
+    }
+    CHECK(view.is_current());
 }

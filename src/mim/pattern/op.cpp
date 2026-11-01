@@ -72,6 +72,7 @@ void OpRegistry::add(flags_t axm, size_t num_groups, std::vector<InputGroup> inp
             return view;
         },
         pure);
+    specs_.at(axm).num_groups = num_groups;
 }
 
 void OpRegistry::add(flags_t axm, Decoder decode, bool pure) {
@@ -104,7 +105,8 @@ bool OpRegistry::has_purity(flags_t axm) const {
 
 bool OpRegistry::is_pure_call(flags_t axm, std::span<const Def* const> args) const {
     auto i = specs_.find(axm);
-    return i != specs_.end() && (i->second.pure || (i->second.purity && i->second.purity(args)));
+    return i != specs_.end() && (!i->second.num_groups || args.size() == *i->second.num_groups)
+        && (i->second.pure || (i->second.purity && i->second.purity(args)));
 }
 
 bool OpRegistry::is_pure(const Def* def) const {

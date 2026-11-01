@@ -33,6 +33,7 @@ public:
     /// A read-only proof over the complete curried argument list, also valid in a rebuilt World.
     using Purity = std::function<bool(std::span<const Def* const> argument_groups)>;
 
+    /// Counts physical App argument groups, independently of Axm's normalization curry counter.
     void add(flags_t axm, size_t num_groups, std::vector<InputGroup>, bool pure = false);
     void add(flags_t axm, Decoder, bool pure);
     void add(flags_t axm, Decoder, Purity);
@@ -46,7 +47,8 @@ private:
     struct Spec {
         Decoder decode;
         bool pure;
-        Purity purity = {};
+        Purity purity                    = {};
+        std::optional<size_t> num_groups = {};
     };
     std::unordered_map<flags_t, Spec> specs_;
 };

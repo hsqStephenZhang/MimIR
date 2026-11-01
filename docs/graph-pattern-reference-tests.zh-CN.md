@@ -122,4 +122,13 @@ PDLL 参考范围包括 `test/mlir-pdll/CodeGen/MLIR` 的声明、表达式与�
 
 ## 验证
 
-全量 215 个 CTest 通过。图搜索集合对照、前端 lit、roundtrip 和 ASan／UBSan 的最终结果见[实现方案](graph-pattern-matching-design.zh-CN.md#p5-表达与索引搜索)。
+`860841a059` 后续 review 的四项回归位于现有测试文件，不改变 TVM／PDLL API 兼容性分类：
+
+| 问题 | 回归位置与精确要求 |
+| --- | --- |
+| 函数值计算的纯性可达性 | [graph_pattern.cpp](../test/graph_pattern.cpp)：`sink (make 0)` 的未证明 App 必须抛出纯性消除错误，normalizer 丢弃它也拒绝；明确 pure 和函数 binder 正例成功，源 gid／body／snapshot 不变 |
+| recipe overapplication | [graph_pattern.cpp](../test/graph_pattern.cpp)：一组 `idF` 的两组 recipe 拒绝；自定义 decoder 路径执行 identity normalizer 后仍拒绝，未证明函数调用计数必须为零；合法两组 curry recipe 成功 |
+| 实例化后的 no-op | [pattern_pdll.cpp](../test/pattern_pdll.cpp)：add-zero normalizer 后 `is_changed()` 为 false，源 World 不变；[graph_pattern.cpp](../test/graph_pattern.cpp) 补充递归 stub 正例。Rule fallback 和 no-op 不发布由既有 P5 用例覆盖 |
+| mutable 索引不透明边界 | [pattern_p5.cpp](../test/pattern_p5.cpp)：`q(x)`／`Lam(any(), x)` 在两种模式与两种候选顺序中均为 Unknown、零结果；Node／Range 的 mutable arity 反例同样不得变成 Complete empty |
+
+全量 215 个 CTest 通过是修复前 `860841a059` 的历史记录。图搜索集合对照、前端 lit、roundtrip 和 ASan／UBSan 的历史结果见[实现方案](graph-pattern-matching-design.zh-CN.md#p5-表达与索引搜索)。上述新增回归仅完成静态核对，本次按要求未执行构建或测试，运行结果待父会话验证。

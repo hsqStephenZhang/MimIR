@@ -74,6 +74,11 @@ public:
     }
     size_t replacements() const { return replacements_; }
     bool is_published() const { return published_; }
+    /// Compares canonical results with an unreplaced import using the same target binder mappings.
+    bool is_changed() const {
+        check_live();
+        return changed_;
+    }
     /// Atomically swaps the rebuilt World into the source, invalidating this snapshot's matches/plans.
     /// For a scoped graph all externals are preserved and only the selected function body is rewritten.
     /// An unscoped graph returns replacement roots; it cannot be published as a whole program.
@@ -86,7 +91,8 @@ private:
                  std::shared_ptr<const GraphSnapshot> snapshot,
                  std::vector<const Def*> roots,
                  Lam* scope,
-                 size_t replacements);
+                 size_t replacements,
+                 bool changed);
     World* source_;
     std::unique_ptr<World> target_;
     std::shared_ptr<const GraphSnapshot> snapshot_;
@@ -94,6 +100,7 @@ private:
     std::vector<const Def*> roots_;
     Lam* scope_;
     size_t replacements_;
+    bool changed_;
     bool published_ = false;
     friend class GraphRebuilder;
 };
