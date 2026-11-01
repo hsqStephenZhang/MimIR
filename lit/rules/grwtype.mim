@@ -1,0 +1,28 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// TF-RULES: dynamic
+// TF-PURE: tensor.slice, tensor.unary, tensor.transpose
+
+plugin compile;
+plugin tensor;
+rule dynamic (f: Nat → Nat, x: «8, 6; Nat»):
+    tensor.slice @(Nat, 2) (6, 8) ((1, 4), (1, 1), (2, 3))
+        (tensor.transpose @(Nat, 2) (tt, ff) @(8, 6)
+            (tensor.unary @(Nat, Nat) f @(2, (8, 6)) x)) =>
+    let p = tensor.transpose @(Nat, 2) (tt, ff) @(8, 6)
+        (tensor.unary @(Nat, Nat) f @(2, (8, 6)) x);
+    let box = tensor.transpose_box @(Nat, 2, (6, 8)) (p, (1, 4), (2, 3));
+    tensor.transpose @(Nat, 2) (tt, ff) @box#tt
+        (tensor.unary @(Nat, Nat) f @(2, box#tt)
+            (tensor.slice @(Nat, 2) (8, 6) (box#ff, (1, 1), box#tt) x));
+
+extern lam result (f: Nat → Nat, x: «8, 6; Nat»): «2, 3; Nat» =
+    tensor.slice @(Nat, 2) (6, 8) ((1, 4), (1, 1), (2, 3))
+        (tensor.transpose @(Nat, 2) (tt, ff) @(8, 6)
+            (tensor.unary @(Nat, Nat) f @(2, (8, 6)) x));
+
+// CHECK-LABEL: extern lam result
+// CHECK: tensor.slice @ (Nat, 2) (8, 6) ((4, 1), ‹2; 1›, (3, 2))
+// CHECK: tensor.unary @ {{.*}} @ (2, (3, 2))
+// CHECK: tensor.transpose @ (Nat, 2) (tt, ff) @ (3, 2)
+// CHECK-NOT: tensor.transpose_box

@@ -1,0 +1,27 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// TF-RULES: (wrong, local)
+// TF-PURE: tensor.slice, tensor.unary
+
+plugin compile;
+plugin tensor;
+rule wrong (f: Nat → Nat, M N: Nat, x: «M, N; Nat», o e: «2; Nat»):
+    tensor.slice @(Nat, 2) (M, N) (o, (1, 1), e)
+        (tensor.unary @(Nat, Nat) f @(2, (M, N)) x) => x;
+rule local (f: Nat → Nat, M N: Nat, x: «M, N; Nat», o e: «2; Nat»):
+    tensor.slice @(Nat, 2) (M, N) (o, (1, 1), e)
+        (tensor.unary @(Nat, Nat) f @(2, (M, N)) x) =>
+    tensor.unary @(Nat, Nat) f @(2, e) (tensor.slice @(Nat, 2) (M, N) (o, (1, 1), e) x);
+extern lam first (f: Nat → Nat, x: «8, 6; Nat», o: «2; Nat»): «2, 3; Nat» =
+    tensor.slice @(Nat, 2) (8, 6) (o, (1, 1), (2, 3))
+        (tensor.unary @(Nat, Nat) f @(2, (8, 6)) x);
+extern lam second (f: Nat → Nat, x: «5, 7; Nat», o: «2; Nat»): «3, 2; Nat» =
+    tensor.slice @(Nat, 2) (5, 7) (o, (1, 1), (3, 2))
+        (tensor.unary @(Nat, Nat) f @(2, (5, 7)) x);
+
+// CHECK-LABEL: extern lam first
+// CHECK: tensor.slice @ (Nat, 2) (8, 6)
+// CHECK: tensor.unary @ {{.*}} @ (2, (2, 3))
+// CHECK-LABEL: extern lam second
+// CHECK: tensor.slice @ (Nat, 2) (5, 7)
+// CHECK: tensor.unary @ {{.*}} @ (2, (3, 2))

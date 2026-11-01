@@ -207,6 +207,42 @@ Pattern RulePattern::lower(const Def* def) {
         return result;
     }
 
+    if (def->is_mutable() && def->type() && def->type()->isa<Type>() && !def->is_closed()) {
+        DefVec pending{def}, metas;
+        DefSet seen;
+        for (size_t i = 0; i != pending.size(); ++i) {
+            if (i >= 10000) throw std::invalid_argument("Rule dependent type traversal budget exceeded");
+            auto term = pending[i];
+            if (!seen.insert(term).second) continue;
+            if (is_meta(term)) {
+                metas.push_back(term);
+                continue;
+            }
+            if (term->isa<Var>() || term->isa<Axm>()) continue;
+            for (auto dep : term->deps())
+                if (dep) pending.push_back(dep);
+        }
+        if (!metas.empty()) {
+            auto value = program_.capture();
+            std::vector<Pattern> inputs{value};
+            for (auto meta : metas) {
+                lower(meta);
+                inputs.push_back(captures_.at(meta));
+            }
+            auto result = program_.where(value, std::move(inputs), [def, metas](std::span<const Def* const> values) {
+                auto scratch = def->world().inherit();
+                Rewriter importer(*scratch);
+                for (size_t i = 0; i != metas.size(); ++i)
+                    importer.map(metas[i], importer.rewrite(values[i + 1]));
+                auto expected = importer.rewrite(def);
+                auto actual   = importer.rewrite(values[0]);
+                return Check::test_alpha(expected, actual) ? CheckResult::True : CheckResult::False;
+            });
+            lowered_.emplace(def, result);
+            return result;
+        }
+    }
+
     if (is_meta(def)) {
         // Register the capture before its type: dependent types can refer to other captures.
         if (auto i = captures_.find(def); i != captures_.end()) return i->second;

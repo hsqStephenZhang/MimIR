@@ -1,0 +1,2 @@
+// RUN: python3 %S/tf_run.py %mim %S/grwtype.mim %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %S/grwtype.mim
