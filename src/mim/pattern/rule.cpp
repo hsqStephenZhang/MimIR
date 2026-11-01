@@ -1,5 +1,6 @@
 #include "mim/pattern/rule.h"
 
+#include <array>
 #include <stdexcept>
 
 #include <fe/restore.h>
@@ -7,6 +8,8 @@
 #include "mim/rewrite.h"
 #include "mim/tuple.h"
 #include "mim/world.h"
+
+#include "mim/pattern/guard.h"
 
 namespace mim::pattern {
 
@@ -141,7 +144,10 @@ RuleReplacement RulePattern::build_replacement(const Def* candidate, World& targ
     return build_replacement(candidate, context, options);
 }
 
-RuleReplacement RulePattern::build_replacement(const Def* candidate, Rewriter& context, MatchOptions options) const {
+RuleReplacement RulePattern::build_replacement(const Def* candidate,
+                                               Rewriter& context,
+                                               MatchOptions options,
+                                               const GuardContext* guards) const {
     if (!program_.is_current()) throw std::invalid_argument("Rule pattern references a rebuilt World");
     auto& target = context.world();
     if (&target == &rule_->world() || &target.driver() != &rule_->driver())
@@ -164,10 +170,9 @@ RuleReplacement RulePattern::build_replacement(const Def* candidate, Rewriter& c
         rw.map(var, context.rewrite(var));
     for (auto [meta, value] : result.bindings)
         rw.map(meta, context.rewrite(value));
-    auto guard = rw.rewrite(rule_->guard());
-    if (guard == target.lit_ff()) return {MatchStatus::No_Match, nullptr, result.steps, "guard is false"};
-    if (guard != target.lit_tt())
-        return {MatchStatus::Unknown, nullptr, result.steps, "guard did not normalize to true"};
+    std::array lhs{rule_->lhs()}, matched{candidate};
+    auto guard = evaluate_guard(rule_, result.bindings, lhs, matched, guards);
+    if (guard.status != MatchStatus::Matched) return {guard.status, nullptr, result.steps, guard.reason};
     auto replacement = rw.rewrite(rule_->rhs());
     auto expected    = candidate->type() ? context.rewrite(candidate->type()) : nullptr;
     auto actual      = replacement->type();

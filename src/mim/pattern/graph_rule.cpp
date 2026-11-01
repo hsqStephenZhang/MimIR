@@ -3,27 +3,14 @@
 #include <functional>
 #include <stdexcept>
 
-#include <fe/restore.h>
-
 #include "mim/rewrite.h"
 #include "mim/world.h"
+
+#include "mim/pattern/guard.h"
 
 namespace mim::pattern {
 
 namespace {
-
-class GuardImporter : public Rewriter {
-public:
-    using Rewriter::Rewriter;
-    const Def* rewrite(const Def* def) override {
-        if (++work_ > 10000 || depth_ >= 256) throw std::invalid_argument("graph Rule guard import budget exceeded");
-        auto depth = fe::Restore(depth_, depth_ + 1);
-        return Rewriter::rewrite(def);
-    }
-
-private:
-    size_t work_ = 0, depth_ = 0;
-};
 
 std::vector<const Def*> roots(const Def* value, size_t limit) {
     if (!limit) throw std::invalid_argument("graph Rule root budget is zero");
@@ -60,7 +47,8 @@ GraphMatches GraphRulePattern::find(const GraphView& graph, GraphMatchOptions op
     return find_matches(graph_, graph, options);
 }
 
-GraphRulePlan GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph) const {
+GraphRulePlan
+GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const GuardContext* guards) const {
     if (!lowered_.program_.is_current() || !graph.is_current() || match.snapshot() != graph.snapshot())
         throw std::invalid_argument("graph Rule or match snapshot is stale");
     Def2Def bindings;
@@ -73,22 +61,8 @@ GraphRulePlan GraphRulePattern::plan(const GraphMatch& match, const GraphView& g
         return {consistency, {}, "whole telescope and projection bindings do not agree"};
     if (!lowered_.is_bound({rule->guard(), rule->rhs()}, bindings))
         return {MatchStatus::Unknown, {}, "guard or RHS contains unbound metavariables"};
-    // This import/evaluation is isolated from the source and never published. Binding guards to
-    // symbolic function parameters may leave them unknown; only canonical true permits rewriting.
-    if (rule->guard() == graph.world().lit_ff()) return {MatchStatus::No_Match, {}, "guard is false"};
-    if (rule->guard() != graph.world().lit_tt()) {
-        auto scratch = graph.world().inherit();
-        GuardImporter guard(*scratch);
-        try {
-            for (auto [meta, value] : bindings)
-                guard.map(meta, guard.rewrite(value));
-            auto condition = guard.rewrite(rule->guard());
-            if (condition != scratch->lit_tt())
-                return {condition == scratch->lit_ff() ? MatchStatus::No_Match : MatchStatus::Unknown,
-                        {},
-                        "guard is not true"};
-        } catch (const std::invalid_argument& error) { return {MatchStatus::Unknown, {}, error.what()}; }
-    }
+    auto guard = evaluate_guard(rule, bindings, lhs_, match.anchors(), guards);
+    if (guard.status != MatchStatus::Matched) return {guard.status, {}, guard.reason};
 
     auto plan = std::make_unique<RewritePlan>(match);
     DefMap<Recipe> built;

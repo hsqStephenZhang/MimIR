@@ -16,7 +16,7 @@ public:
     explicit GraphRulePattern(const Rule*, size_t max_roots = 64);
 
     GraphMatches find(const GraphView&, GraphMatchOptions = {}) const;
-    GraphRulePlan plan(const GraphMatch&, const GraphView&) const;
+    GraphRulePlan plan(const GraphMatch&, const GraphView&, const GuardContext* = nullptr) const;
 
 private:
     RulePattern lowered_;

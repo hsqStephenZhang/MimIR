@@ -38,11 +38,100 @@ replacement type check。开放 dependent type、Hole 推断和 term-level lambd
 相应 `_g` 的 flat 已通过，但 nested 仍以 unchanged IR 检查 region 缺口。
 `tf_rrev` 两个 frontend 都已生成 together；`tf_rmm` 的 rule_app 已生成真实 product/slice nest，
 graph 仍正向检查 `unsupported graph Rule recipe value`。
-`tf_rfact_g` 已到 `guard is not true`，不再是 LHS 不匹配。
+第二个扩展使 `tf_rfact_g` 到达 guard；第三个扩展使它通过下述目标检查。
 新增 length-16 negative case 防止 length-8 rule 误匹配；C++ 测试还检查导入 dependent Pi 的
 匹配不会构造源 IR，并拒绝不同 axiom。
 
-## 范围与复现
+### Task 3：源 snapshot 上的 graph-fact guards
+
+`compile.used_by` / `compile.only_used_by` 是 staged predicates，没有 ordinary normalizer。
+只有 Rule guard evaluator 在有 `GuardContext` 时解释它们；普通函数内的调用仍是未求值的
+Mim term（`grfacts`）。
+数据 schema 与 purity 是两份独立的声明：
+
+```mim
+let schema = compile.data_op @((«12; I8»), 1) ("tensor.unary", 4, (3, 0));
+extern lam _compile (): compile.Phase =
+    compile.rule_app_with (exclusive, schema);
+```
+
+`data_op` 的三个字段是 op、完整物理 App group 数、`(group, tuple_depth)` 数组。
+group 从 0 开始，depth=0 把该 group 作为一个数据输入，depth=1 解开一层 tuple。
+unary 有四个 group，只将 group 3 的 tensor 输入作为 data edge，不能把 f/type/shape 当成
+tensor reader。配置的 op 可为低阶 Axm 值，或 qualified annex-name string。
+文件内的裸 `axm consumer` 并不注册为可查询的 annex，故模型使用实际的 consumer 值，
+而不是猜测打印出来的 `probe.consumer` 名称。
+静态 group 数、输入索引/深度、重复声明和遍历预算都被检查；配置错误显式报错。
+
+另一入口是 `compile.graph_rule_app_with (rules, pure_ops, schemas)`。
+schema 不授予纯性；pure_ops 不授予完整 data-use 信息。
+没有 schema 的算子、未覆盖或 opaque 的用途、无法对应到源节点的 predicate operands 都是
+Unknown，不触发规则。已知另一个 reader 或直接返回 producer 使 exclusivity 为 False；
+`used_by` 则可在存在其他 reader 时为 True。guard 的其余纯计算仍在隔离 World 求值。
+
+两个 phase 在一次 run 开始时建立一份 old-world GraphView。
+Rule metavariable bindings 加上 LHS/实际 matched roots 的结构对应关系，冻结 predicate 的
+源 operands；不通过在 source World 中重新构造 `producer x` 查找 hash-consed 值。
+如果结构对应有冲突、缺节点或超过预算，guard 为 Unknown。
+`grfrozen` 先把 producer 重写掉，再证明 parent guard 仍查询源 producer/consumer，
+不是 bottom-up 重建后且可能已归一化的 target。
+
+graph frontend 保留每函数每次至多一个 accepted changed rewrite，但先为所有函数选择
+proposal，再一次性发布到新 World。
+合并按 external symbol 重接 sibling/recursive functions，并保留其 binder；`grpub` 用
+`@ff` 排除 beta unfolding 后检查这些引用。
+`tf_guard` 的 first 删除共享常量 producer 的一个 reader，second 仍按同一次 run 的源
+snapshot 保留原 consumer；不因先发布 first 就错误证明 exclusivity。
+代价是保留各函数 prospective World 并多做一次整模块 publication。
+
+这不是完整 region 实例机制：GraphView 在 Lam/Pi 边界停止，隐藏在 nested region 内的
+operands/use 不能被宣称已完整覆盖。也没有新增原生 cover/preimage witness、动态
+data schema 或任意 RHS 表达式到源节点的反向推断。
+
+### 当前结果（Task 3）
+
+所有文件都是正常测试，GAP 是正向检查已知限制，不是 XFAIL。
+每个 frontend 独立验证，实际改写成功与“准确记录未改写”区分如下。
+
+| 实验 | rule_app | graph_rule_app |
+| --- | --- | --- |
+| `tf_local`，modeled body 内 compute_at | 目标通过 | GAP：不搜索 nested Lam body |
+| `tf_share`，保留 whole reader / tuple 多输出 | 目标通过，含 NEST | flat/VALUE/JOIN 通过；NEST GAP |
+| `tf_rev`，modeled reverse placement | 目标通过 | 目标通过 |
+| `tf_build`，整棵 cache_read nest RHS | 目标通过 | GAP：`unsupported graph Rule recipe value` |
+| `tf_post`，后置 stage 插入 | GAP：fresh LHS binder identity | 相同 GAP，且缺跨 region 发布 |
+| `tf_pack`，persistent marker | SSA 替换/共享通过 | SSA 替换/共享通过 |
+| `tf_guard`，source graph facts | single/used 目标通过，shared/unknown 保留 | 同左，且所有函数同一 snapshot |
+| `tf_poly`，多态 purity 引用配置 | 不适用 | 配置与目标通过 |
+| `tf_rmap`，真实 slice/unary | flat/shared/NEST 目标通过；extent mismatch 不重写 | flat/shared 通过，NEST GAP，mismatch 不重写 |
+| `tf_rrev`，真实 unary producer/reader | 目标通过 | 目标通过 |
+| `tf_rmm`，真实 product/slice nest RHS | 目标通过 | GAP：新的 RHS lambda recipe |
+| `tf_rpost`，真实 slice 的后置 stage | GAP：LHS binder | GAP：LHS binder/regions |
+| `tf_rpack`，真实 slice 读取 packed 值 | SSA 替换/共享通过 | SSA 替换/共享通过 |
+| `tf_rfact`，真实 unary single-consumer guard | single 目标通过，shared 保留 | 同左 |
+
+R2 的 placement 观察仍然成立：`tf_build` 里的 `stage _5` 在 io body 打印出来，
+不能由任何这些 CHECK 推出每 jo/ko 只执行一次、persistent 缓存或 GEMM 性能。
+
+### 剩余扩展的顺序
+
+| 顺序 | 最小扩展 | 解锁范围 |
+| --- | --- | --- |
+| 1 | Region-local search + closure/environment-aware publication | graph 的 nested compute_at / shared NEST；post-hoc region 部分 |
+| 2 | graph RHS binder recipes，在 prospective World 内构建与类型/纯性验证 | graph 的 modeled/real cache_read construction |
+| 3 | Alpha-aware term-LHS binder matching + 跨 region box/map 事务 | modeled/real post-hoc cache_read；不能用无约束 lambda wildcard 代替 |
+| 4 | 真正的 tiled/tile_fold/stage/outs lowering、realization、persistent resource 合同 | 所有实验的数值、exactly-once 与性能含义 |
+
+data-use schema 当前必须显式提供，native cover/preimage witnesses 仍需按具体调度补齐。
+已实现的三个小扩展不是 C++ tile_fuse 的性能替代品。
+
+第三个扩展最终验证：CTest **229/229**；`rules|error|tensor` **210 通过、4 unsupported**，
+无 XFAIL、无失败。unsupported 仍是两个 error fixture、Linux-only `free_temps` 和
+Release-only `vgg16`。
+
+## Task 2 历史记录（以下不是当前结果）
+
+### 范围与复现
 
 基线为 `cd8526dd22` 加 Task 1 的两个修复和 `031b1d7626`。
 本轮只修复拒绝绑定后的回溯；没有增加 region、lambda recipe、图 guard 或调度 lowering。

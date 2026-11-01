@@ -17,6 +17,13 @@ phase = (
     if frontend == "rule"
     else f"compile.graph_rule_app ({rules}, ({pure}))"
 )
+schemas = re.search(r"^// TF-SCHEMAS: (.+)$", text, re.MULTILINE)
+if schemas:
+    phase = (
+        f"compile.rule_app_with ({rules}, {schemas.group(1)})"
+        if frontend == "rule"
+        else f"compile.graph_rule_app_with ({rules}, ({pure}), {schemas.group(1)})"
+    )
 directory = pathlib.Path(f"{temporary}.{frontend}.dir")
 directory.mkdir()
 generated = directory / "probe.mim"

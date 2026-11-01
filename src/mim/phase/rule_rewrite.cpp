@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+#include "mim/driver.h"
+
 namespace mim {
 
 RuleRewrite::RuleRewrite(World& world, std::vector<const Rule*> rules)
@@ -21,6 +23,15 @@ void RuleRewrite::set_rules(std::vector<const Rule*> rules) {
 }
 
 void RuleRewrite::apply(const App* app) {
+    if (!app) throw std::invalid_argument("rule_app requires explicit Rules");
+    const Def* supplied = app->arg();
+    schemas_.clear();
+    if (App::uncurry_callee(app)->sym() == driver().sym("compile.rule_app_with")) {
+        auto pair = supplied->isa<Tuple>();
+        if (!pair || pair->num_ops() != 2) supplied->blame("rule_app_with requires (Rules, data_ops)").bail();
+        supplied = pair->op(0);
+        schemas_ = pattern::parse_data_ops(pair->op(1));
+    }
     auto rules   = std::vector<const Rule*>();
     auto collect = [&](this auto&& collect, const Def* def) -> void {
         if (auto rule = def->isa<Rule>())
@@ -35,8 +46,7 @@ void RuleRewrite::apply(const App* app) {
         } else
             def->blame("rule_app expects a Rule or a tuple of Rules").bail();
     };
-    if (!app) throw std::invalid_argument("rule_app requires explicit Rules");
-    collect(app->arg());
+    collect(supplied);
     set_rules(std::move(rules));
 }
 
@@ -45,6 +55,7 @@ std::unique_ptr<Phase> RuleRewrite::recreate() {
     result->name_           = name_;
     result->template_world_ = template_world_;
     result->templates_      = templates_;
+    result->schemas_        = schemas_;
     return result;
 }
 
@@ -54,7 +65,16 @@ void RuleRewrite::start() {
     Rewriter importer(old_world());
     for (auto rule : templates_)
         patterns_.push_back(std::make_unique<pattern::RulePattern>(importer.rewrite(rule)->as<Rule>()));
+    auto ops    = pattern::data_operations(schemas_);
+    auto bodies = pattern::function_bodies(old_world());
+    if (!bodies.empty()) {
+        facts_ = std::make_unique<pattern::GraphView>(
+            bodies, pattern::GraphOptions{.coverage = pattern::UseCoverage::Closed, .operators = &ops});
+        guards_ = std::make_unique<pattern::GuardContext>(*facts_);
+    }
     RWPhase::start();
+    guards_.reset();
+    facts_.reset();
     patterns_.clear();
 }
 
@@ -64,7 +84,7 @@ const Def* RuleRewrite::rewrite_imm(const Def* old_def) {
     auto baseline = Rewriter::rewrite_imm(old_def);
     if (old_def->node() == Node::Rule) return baseline;
     for (auto& compiled : patterns_) {
-        auto result = compiled->build_replacement(old_def, *this);
+        auto result = compiled->build_replacement(old_def, *this, {}, guards_.get());
         if (result.status == pattern::MatchStatus::Budget_Exceeded)
             old_def->blame("rule_app exceeded its pattern matching budget").bail();
         if (result.status == pattern::MatchStatus::Unknown) {

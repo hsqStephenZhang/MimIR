@@ -1,0 +1,16 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+axm producer: Nat → Nat;
+axm consumer: Nat → Nat;
+axm fused: Nat → Nat;
+let schema = compile.data_op @((Nat → Nat), 1) (consumer, 1, (0, 0));
+rule remove (x: Nat): producer x => x;
+rule fuse (x: Nat): consumer (producer x)
+    when compile.only_used_by (producer x, consumer (producer x)) => fused x;
+extern lam result (x: Nat): Nat = consumer (producer x);
+extern lam _compile (): compile.Phase = compile.rule_app_with ((remove, fuse), schema);
+
+// CHECK-LABEL: extern lam result
+// CHECK: fused
+// CHECK-NOT: consumer

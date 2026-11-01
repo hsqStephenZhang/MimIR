@@ -2,6 +2,8 @@
 
 #include "mim/phase.h"
 
+#include "mim/pattern/guard.h"
+
 namespace mim {
 
 /// Explicitly pure primitives and multi-root Rule templates survive intervening World rebuilds.
@@ -16,6 +18,7 @@ private:
     std::shared_ptr<World> templates_;
     std::vector<const Rule*> rules_;
     std::vector<const Axm*> pure_;
+    std::vector<pattern::DataOp> schemas_;
 };
 
 } // namespace mim

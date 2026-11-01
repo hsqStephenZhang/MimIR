@@ -20,6 +20,7 @@ target_sources(libmim
         world.cpp
         pattern/graph.cpp
         pattern/graph_rule.cpp
+        pattern/guard.cpp
         pattern/match.cpp
         pattern/op.cpp
         pattern/pattern.cpp

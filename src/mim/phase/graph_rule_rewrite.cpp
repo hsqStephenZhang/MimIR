@@ -5,6 +5,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include <fe/restore.h>
+
 #include "mim/driver.h"
 
 #include "mim/pattern/graph_rule.h"
@@ -21,12 +23,49 @@ std::string_view search_status(pattern::SearchStatus status) {
     }
     std::unreachable();
 }
+
+class FunctionPublisher : public Rewriter {
+public:
+    FunctionPublisher(World& target, const fe::SymMap<const Def*>& selected)
+        : Rewriter(target)
+        , selected_(selected) {}
+
+    const Def* rewrite(const Def* def) override {
+        if (++work_ > 100000 || depth_ >= 256) throw std::invalid_argument("graph Rule publication budget exceeded");
+        auto depth = fe::Restore(depth_, depth_ + 1);
+        return Rewriter::rewrite(def);
+    }
+
+    const Def* lookup(const Def* def) override {
+        if (auto value = Rewriter::lookup(def)) return value;
+        if (def->is_external())
+            if (auto i = selected_.find(def->sym()); i != selected_.end() && i->second != def)
+                return map(def, rewrite(i->second));
+        if (auto axm = def->isa<Axm>(); axm && axm->plugin() == Annex::Global_Plugin) return nullptr;
+        if (auto flags = def->world().annexes().opaque(def)) return map(def, world().annex(*flags));
+        return nullptr;
+    }
+
+    const Def* rewrite_mut_Lam(Lam* fn) override {
+        auto stub = world().mut_lam(rewrite(fn->type())->as<Pi>())->set(fn->dbg_key());
+        if (fn->is_external()) stub->externalize();
+        return rewrite_stub(fn, stub);
+    }
+
+private:
+    const fe::SymMap<const Def*>& selected_;
+    size_t work_ = 0, depth_ = 0;
+};
 } // namespace
 
 void GraphRuleRewrite::apply(const App* app) {
     if (!app) throw std::invalid_argument("graph_rule_app requires (Rules, pure axioms)");
-    auto pair = app->arg()->isa<Tuple>();
-    if (!pair || pair->num_ops() != 2) app->blame("graph_rule_app requires a static (Rules, pure axioms) pair").bail();
+    auto pair       = app->arg()->isa<Tuple>();
+    auto configured = App::uncurry_callee(app)->sym() == driver().sym("compile.graph_rule_app_with");
+    if (!pair || pair->num_ops() != (configured ? 3 : 2))
+        app->blame("graph_rule_app requires (Rules, pure axioms) and optional data_ops").bail();
+    schemas_.clear();
+    if (configured) schemas_ = pattern::parse_data_ops(pair->op(2));
     rules_.clear();
     pure_.clear();
     templates_ = world().inherit();
@@ -69,37 +108,50 @@ std::unique_ptr<Phase> GraphRuleRewrite::recreate() {
     result->templates_ = templates_;
     result->rules_     = rules_;
     result->pure_      = pure_;
+    result->schemas_   = schemas_;
     return result;
 }
 
 void GraphRuleRewrite::start() {
     if (rules_.empty()) return;
+    Rewriter importer(world());
+    pattern::OpRegistry ops;
+    std::set<flags_t> registered;
+    for (auto source : pure_) {
+        auto axm = importer.rewrite(source)->as<Axm>();
+        if (!registered.insert(axm->flags()).second) continue;
+        if (auto schema = std::ranges::find(schemas_, axm->flags(), &pattern::DataOp::axm); schema != schemas_.end()) {
+            ops.add(axm->flags(), schema->num_groups, schema->inputs, true);
+            continue;
+        }
+        size_t groups = 0;
+        for (auto type = axm->type(); auto pi = type->isa<Pi>(); type = pi->codom())
+            if (++groups > 64) throw std::invalid_argument("graph_rule_app axiom curry depth exceeds 64");
+        ops.add(
+            axm->flags(),
+            [groups](const Def* def, size_t) -> std::optional<pattern::OpView> {
+                size_t count = 0;
+                for (auto cur = def; auto app = cur->isa<App>(); cur = app->callee())
+                    if (++count > groups) return {};
+                if (count != groups) return {};
+                return pattern::OpView{.inputs = {}, .complete = false};
+            },
+            true);
+    }
+    for (const auto& schema : schemas_)
+        if (registered.insert(schema.axm).second) ops.add(schema.axm, schema.num_groups, schema.inputs);
+    auto bodies = pattern::function_bodies(world());
+    if (bodies.empty()) return;
+    pattern::GraphView facts(bodies, {.coverage = pattern::UseCoverage::Closed, .operators = &ops});
+    pattern::GuardContext guards(facts);
+    std::vector<pattern::GraphRewrite> proposals;
+    fe::SymMap<const Def*> selected;
+    for (auto [name, ext] : world().externals())
+        selected.emplace(name, ext);
     std::vector<Sym> names;
     for (auto [name, def] : world().externals())
         if (def->isa<Lam>()) names.push_back(name);
     for (auto name : names) {
-        Rewriter importer(world());
-        pattern::OpRegistry ops;
-        std::set<flags_t> registered;
-        for (auto source : pure_) {
-            auto axm = importer.rewrite(source)->as<Axm>();
-            if (!registered.insert(axm->flags()).second) continue;
-            size_t groups = 0;
-            for (auto type = axm->type(); auto pi = type->isa<Pi>(); type = pi->codom())
-                if (++groups > 64) throw std::invalid_argument("graph_rule_app axiom curry depth exceeds 64");
-            // Purity is a caller assertion. No data schema is inferred from raw operands, so
-            // exclusive-use queries stay Unknown rather than treating metadata as tensor inputs.
-            ops.add(
-                axm->flags(),
-                [groups](const Def* def, size_t) -> std::optional<pattern::OpView> {
-                    size_t count = 0;
-                    for (auto cur = def; auto app = cur->isa<App>(); cur = app->callee())
-                        if (++count > groups) return {};
-                    if (count != groups) return {};
-                    return pattern::OpView{.inputs = {}, .complete = false};
-                },
-                true);
-        }
         auto fn = world().externals()[name]->isa_mut<Lam>();
         if (!fn || !fn->is_set() || !fn->is_closed()) continue;
         for (auto source : rules_) {
@@ -110,7 +162,7 @@ void GraphRuleRewrite::start() {
             pattern::GraphMatchOptions options;
             options.max_results = 1;
             options.accept      = [&](const pattern::GraphMatch& match) {
-                auto candidate = compiled.plan(match, view);
+                auto candidate = compiled.plan(match, view, &guards);
                 if (!candidate.plan) {
                     reason = candidate.reason;
                     if (candidate.status == pattern::MatchStatus::Unknown) {
@@ -133,13 +185,26 @@ void GraphRuleRewrite::start() {
             auto matches = compiled.find(view, options);
             log().d("graph_rule_app search in {}: {} ({})", fn, search_status(matches.status), reason);
             if (accepted) {
-                accepted->publish(view);
-                invalidate();
+                selected[name] = accepted->scope();
+                proposals.push_back(std::move(*accepted));
                 profile_count("graph_rule.rewrites");
                 break; // The next invocation rebuilds matches and processes further groups.
             }
             if (matches.status != pattern::SearchStatus::Complete) profile_count("graph_rule.incomplete");
         }
+    }
+    if (!proposals.empty()) {
+        if (!facts.is_current()) throw std::invalid_argument("graph Rule source changed before publication");
+        auto target = world().inherit();
+        FunctionPublisher publisher(*target, selected);
+        for (auto ext : world().externals().muts()) {
+            auto copy = publisher.rewrite(ext)->isa_mut();
+            if (!copy) throw std::invalid_argument("graph Rule publication lost an external mutable");
+            if (!copy->is_external()) copy->externalize();
+        }
+        target->verify();
+        swap(world(), *target);
+        invalidate();
     }
 }
 

@@ -123,6 +123,19 @@ axm ret_wrap: Phase;
 ///
 axm rule_app: {T: *} → T → Phase;
 ///
+/// Supplies explicit data operand schemas for staged Rule guards; schemas do not assert purity.
+///
+axm DataOp: *;
+axm data_op: {O: *, m: Nat}
+           → [op: O, num_groups: Nat, inputs: «m; [group: Nat, tuple_depth: Nat]»]
+           → DataOp;
+axm rule_app_with: {R S: *} → [rules: R, data_ops: S] → Phase;
+///
+/// Snapshot queries evaluated only by Rule phases; unknown data schemas never prove exclusivity.
+///
+axm used_by: {P C: *} → [producer: P, consumer: C] → Bool;
+axm only_used_by: {P C: *} → [producer: P, consumer: C] → Bool;
+///
 /// ### graph_rule_app
 ///
 /// Matches a Rule's tuple of LHS roots independently in each closed external function and replaces
@@ -135,6 +148,7 @@ axm rule_app: {T: *} → T → Phase;
 /// Supported RHSs use pure axiom calls, captures, literals, tuples and fixed extracts.
 ///
 axm graph_rule_app: {R O: *} → [rules: R, pure_ops: O] → Phase;
+axm graph_rule_app_with: {R O S: *} → [rules: R, pure_ops: O, data_ops: S] → Phase;
 ///
 /// ### scalarize
 ///

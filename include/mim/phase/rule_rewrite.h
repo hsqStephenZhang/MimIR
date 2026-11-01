@@ -2,6 +2,7 @@
 
 #include "mim/phase.h"
 
+#include "mim/pattern/guard.h"
 #include "mim/pattern/rule.h"
 
 namespace mim {
@@ -31,6 +32,9 @@ private:
     std::shared_ptr<World> template_world_;
     std::vector<const Rule*> templates_;
     std::vector<std::unique_ptr<pattern::RulePattern>> patterns_;
+    std::vector<pattern::DataOp> schemas_;
+    std::unique_ptr<pattern::GraphView> facts_;
+    std::unique_ptr<pattern::GuardContext> guards_;
 };
 
 } // namespace mim

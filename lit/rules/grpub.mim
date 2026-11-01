@@ -1,0 +1,16 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+axm q: Nat → Nat;
+axm r: Nat → Nat;
+rule replace (x: Nat): q x => r x;
+extern lam recursive (x: Nat)@ff: Nat = q (recursive x);
+extern lam sibling (x: Nat)@ff: Nat = q (recursive x);
+extern lam _compile (): compile.Phase = compile.graph_rule_app (replace, (q, r));
+
+// CHECK-LABEL: extern lam recursive
+// CHECK: let [[REC:[[:alnum:]_]+]] = recursive
+// CHECK: r [[REC]];
+// CHECK-LABEL: extern lam sibling
+// CHECK: let [[CALL:[[:alnum:]_]+]] = recursive
+// CHECK: r [[CALL]];

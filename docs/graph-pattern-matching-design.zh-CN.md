@@ -256,6 +256,18 @@ RHS 的三个结果若已通过 η 归约合并为整个 `combined x`，前端�
 
 `pure_ops` 是调用方对 primitive 纯性的显式断言，不由函数类型推断。列表应包含被替换的 primitive 与 RHS 新调用的 primitive；callee 为任意 Lam 的 RHS 尚不支持。前端不猜测数据参数 schema，排他使用不能因列入该列表而自动成立。RHS 支持 captures、Nat／Idx 位字面量、pure axiom call、Tuple、可静态展开的 Pack 和固定 index 的 Extract。未绑定的 metavariable、未知 guard、预算耗尽或不支持的 RHS 不能发布替换；会消除未证明纯性的内部计算的计划也会被拒绝。whole-telescope capture 不会自动导出缺少的字段 capture；tuple η 归约消除字段结构后，仍可能缺少可表示的跨根连接。这属于当前 Rule 支持子集，不进行逆归一化补全。
 
+`pure_ops` 也接受 qualified annex-name strings，以引用类型参数化的高 universe 算子。
+`compile.rule_app_with (rules, data_ops)` / `compile.graph_rule_app_with (rules, pure_ops, data_ops)`
+另接受显式 `compile.data_op` 声明的物理 App groups 与数据输入位置；schema 不授予纯性。
+这两个 phase 以及原有入口可在 guard 中解释 `compile.used_by` / `compile.only_used_by`，
+对同一次 run 的 old-world GraphView 和 frozen matched-source operands 做三值查询。
+没有完整 schema 或源对应关系时为 Unknown；没有 ordinary normalizer。
+graph phase 先为各函数选择至多一个 changed proposal，再一次性合并发布，避免刷新源 facts。
+闭合 mutable type 的匹配可使用只读 alpha equivalence；开放类型推断和 term-LHS binder
+alpha matching仍不支持。
+详情、独立 frontend 回归与边界见
+[tile-and-fuse 实验](graph-pattern-tile-fuse-experiments.zh-CN.md)。
+
 正反例见 [graphapp.mim](../lit/rules/graphapp.mim)、[graphgrd.mim](../lit/rules/graphgrd.mim) 和 [grapure.mim](../lit/error/grapure.mim)。匹配结果的共享应检查实际 Def 身份；文本打印器可能在不同 Extract 内重复打印同一个调用，不能仅数 `combined` 字符串来判断是否复制计算。
 
 [grlimit.mim](../lit/rules/grlimit.mim) 生成 1001 个独立单根匹配，超过默认结果上限，检查 `phases ff` 只替换一个、`phases tt` 收敛并保留全部参数值。[pattern_pdll.cpp](../test/pattern_pdll.cpp) 另在 phase 层检查 normalized no-op 规则后仍能选择 productive 规则，以及同一规则的 no-op、Unknown 和 false guard 候选不会阻止后续有效候选。

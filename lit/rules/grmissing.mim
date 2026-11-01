@@ -1,0 +1,20 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// RUN: grep "guard is not true" %t.log
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// RUN: grep "guard is not true" %t.log
+// TF-RULES: exclusive
+// TF-PURE: producer, consumer, fused
+
+plugin compile;
+axm producer: Nat → Nat;
+axm consumer: Nat → Nat;
+axm fused: Nat → Nat;
+rule exclusive (x: Nat): consumer (producer x)
+    when compile.only_used_by (producer x, consumer (producer x)) => fused x;
+extern lam result (x: Nat): Nat = consumer (producer x);
+
+// CHECK-LABEL: extern lam result
+// CHECK: consumer (producer
+// CHECK-NOT: fused

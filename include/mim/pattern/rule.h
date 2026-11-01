@@ -13,6 +13,7 @@ class Rewriter;
 namespace mim::pattern {
 
 class GraphRulePattern;
+class GuardContext;
 
 struct RuleMatch {
     MatchStatus status;
@@ -45,7 +46,8 @@ public:
     RuleReplacement build_replacement(const Def*, World& target, MatchOptions = {}) const;
     /// Reuse an enclosing graph rebuild's variable/binder mappings for open candidates.
     /// Foreign free variables in the guard/RHS must also occur in the candidate.
-    RuleReplacement build_replacement(const Def*, Rewriter& context, MatchOptions = {}) const;
+    RuleReplacement
+    build_replacement(const Def*, Rewriter& context, MatchOptions = {}, const GuardContext* = nullptr) const;
 
 private:
     Pattern lower(const Def*);

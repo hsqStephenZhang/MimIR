@@ -70,7 +70,9 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<compile::phases,             PhaseMan         >(phases);
     Phase::hook<compile::ret_wrap,           RetWrap          >(phases);
     Phase::hook<compile::rule_app,           RuleRewrite      >(phases);
+    Phase::hook<compile::rule_app_with,      RuleRewrite      >(phases);
     Phase::hook<compile::graph_rule_app,     GraphRuleRewrite >(phases);
+    Phase::hook<compile::graph_rule_app_with,GraphRuleRewrite >(phases);
     Phase::hook<compile::scalarize,          Scalarize        >(phases);
     Phase::hook<compile::sccp,               SCCP             >(phases);
     Phase::hook<compile::single_erasure,     SingleErasure    >(phases);

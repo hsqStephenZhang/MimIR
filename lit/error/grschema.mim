@@ -1,0 +1,10 @@
+// RUN: (! %mim %s -o - 2>&1) | %FileCheck %s
+
+plugin compile;
+axm consumer: Nat → Nat;
+rule identity (x: Nat): consumer x => consumer x;
+let schema = compile.data_op @((Nat → Nat), 1) (consumer, 1, (1, 0));
+extern lam result (x: Nat): Nat = consumer x;
+extern lam _compile (): compile.Phase = compile.rule_app_with (identity, schema);
+
+// CHECK: invalid data_op input group or tuple depth

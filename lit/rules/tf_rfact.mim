@@ -1,22 +1,26 @@
-// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
-// RUN: cat %t.rule | %FileCheck %s --check-prefix=GAP
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s --check-prefix=FACT
+// RUN: cat %t.out | %FileCheck %s --check-prefix=SHARED
 // TF-RULES: exclusive
 // TF-PURE: tensor.unary, fused
+// TF-SCHEMAS: schema
 
 plugin compile;
 plugin tensor;
-axm only_used_by: [«8; Nat», «8; Nat»] → Bool;
 axm fused: [Nat → Nat, «8; Nat»] → «8; Nat»;
+let schema = compile.data_op @((«12; I8»), 1) ("tensor.unary", 4, (3, 0));
 rule exclusive (f: Nat → Nat, x: «8; Nat», unused: Nat):
     tensor.unary @(Nat, Nat) f @(1, 8) x
-    when only_used_by (x, tensor.unary @(Nat, Nat) f @(1, 8) x) => fused (f, x);
+    when compile.only_used_by (x, tensor.unary @(Nat, Nat) f @(1, 8) x) => fused (f, x);
 extern lam result (f: Nat → Nat, x: «8; Nat», salt: Nat): «8; Nat» =
     tensor.unary @(Nat, Nat) f @(1, 8) x;
+extern lam shared (f: Nat → Nat, x: «8; Nat», salt: Nat): [«8; Nat», «8; Nat»] =
+    (tensor.unary @(Nat, Nat) f @(1, 8) x, x);
 
 // FACT-LABEL: extern lam result
 // FACT: fused
-
-// Flip GAP to the target CHECKs when the missing extension lands.
-// GAP-LABEL: extern lam result
-// GAP: tensor.unary
-// GAP-NOT: fused
+// FACT-NOT: tensor.unary
+// FACT-LABEL: extern lam shared
+// SHARED-LABEL: extern lam shared
+// SHARED: tensor.unary
+// SHARED-NOT: fused

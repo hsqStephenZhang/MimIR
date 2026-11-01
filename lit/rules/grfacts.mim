@@ -1,0 +1,9 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+extern lam ordinary (p c: Nat): [Bool, Bool] =
+    (compile.used_by (p, c), compile.only_used_by (p, c));
+
+// CHECK-LABEL: extern lam ordinary
+// CHECK: compile.used_by
+// CHECK: compile.only_used_by
