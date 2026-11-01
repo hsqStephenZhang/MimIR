@@ -1,0 +1,38 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=BUILD
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: grep 'unsupported graph Rule recipe value' %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=BUILD
+// XFAIL: *
+// graph_rule_app cannot instantiate the new RHS lambdas.
+// TF-RULES: cache
+// TF-PURE: mark, mm, slice, panel, stage, tiled, fold, add
+
+plugin compile;
+// mm contracts two tensor handles; mark requests a fixed 4x4x2 schedule.
+axm mm: [Nat, Nat] → Nat;
+axm mark: Nat → Nat;
+axm slice: [Nat, Nat, Nat] → Nat;
+// panel(t, row, column, e) selects a square e-by-e matrix tile.
+axm panel: [Nat, Nat, Nat, Nat] → Nat;
+// stage materializes a packed tile in the containing region.
+axm stage: Nat → Nat;
+axm tiled: [Nat, Nat → Nat] → Nat;
+// fold threads an accumulator through ordered reduction tiles.
+axm fold: [Nat, Nat, [Nat, Nat] → Nat] → Nat;
+axm add: [Nat, Nat] → Nat;
+
+rule cache (a b unused: Nat): mark (mm (a, b)) =>
+    tiled (4, λ (jo: Nat): Nat =
+        fold (4, 0, λ (ko acc: Nat): Nat =
+            let bp = stage (panel (b, ko, jo, 2));
+            tiled (4, λ (io: Nat): Nat = add (slice (acc, io, 2), mm (panel (a, io, ko, 2), bp)))));
+extern lam result (a b salt: Nat): Nat = mark (mm (a, b));
+
+// BUILD-LABEL: extern lam result
+// BUILD: panel (b, ko, jo, 2)
+// BUILD: stage
+// BUILD: tiled (4,
+// BUILD: fold (4, 0,
+// BUILD: tiled (4,
+// BUILD-NOT: mark

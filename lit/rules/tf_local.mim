@@ -1,0 +1,24 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=LOCAL
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=LOCAL
+// XFAIL: *
+// graph_rule_app does not search a captured tiled body with free offsets.
+// TF-RULES: local
+// TF-PURE: slice, ew, tiled
+
+plugin compile;
+// Nat represents a tensor handle; slice selects [o, o+e), ew applies a pure pointwise function.
+axm slice: [Nat, Nat, Nat] → Nat;
+axm ew: [Nat → Nat, Nat] → Nat;
+// tiled assembles disjoint tiles computed by its offset body.
+axm tiled: [Nat, Nat → Nat] → Nat;
+
+rule local (f: Nat → Nat, x o e: Nat): slice (ew (f, x), o, e) => ew (f, slice (x, o, e));
+extern lam result (f: Nat → Nat, x salt: Nat): Nat =
+    tiled (4, λ (o: Nat): Nat = slice (ew (f, x), o, 2));
+
+// LOCAL-LABEL: extern lam result
+// LOCAL: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = slice (x, o, 2);
+// LOCAL: ew (f, [[SL]])
+// LOCAL-NOT: slice (ew

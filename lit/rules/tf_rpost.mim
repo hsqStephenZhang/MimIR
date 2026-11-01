@@ -1,0 +1,27 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=POST
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=POST
+// XFAIL: *
+// Post-hoc matching of a fresh nested lambda does not bind its offsets or input.
+// TF-RULES: cache
+// TF-PURE: tiled, read, stage
+
+plugin compile;
+plugin tensor;
+// tiled is a tile iterator; read uses a real sliced tensor; stage is still a modeled resource.
+axm tiled: (Nat → Nat) → Nat;
+axm read: «2; Nat» → Nat;
+axm stage: «2; Nat» → «2; Nat»;
+rule cache (b: «8; Nat»):
+    tiled (λ (jo: Nat): Nat =
+        tiled (λ (io: Nat): Nat = read (tensor.slice @(Nat, 1) 8 (jo, 1, 2) b))) =>
+    tiled (λ (jo: Nat): Nat =
+        let bp = stage (tensor.slice @(Nat, 1) 8 (jo, 1, 2) b);
+        tiled (λ (io: Nat): Nat = read bp));
+extern lam result (b: «8; Nat», salt: Nat): Nat =
+    tiled (λ (jo: Nat): Nat =
+        tiled (λ (io: Nat): Nat = read (tensor.slice @(Nat, 1) 8 (jo, 1, 2) b)));
+
+// POST-LABEL: extern lam result
+// POST: stage

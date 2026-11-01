@@ -1,0 +1,26 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: not python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: grep 'argument is not assignable to callee' %t.graph.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=REV
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=REV
+// XFAIL: *
+// Polymorphic tensor.unary cannot be placed in the current Type0 pure_ops tuple.
+// TF-RULES: reverse
+// TF-PURE: tensor.unary, together, sink
+
+plugin compile;
+plugin tensor;
+// together returns a producer and its pointwise reader; no real tiled_n exists on this branch.
+axm together: [Nat → Nat, Nat → Nat, «8; Nat»] → [«8; Nat», «8; Nat»];
+axm sink: [«8; Nat», «8; Nat»] → Nat;
+rule reverse (f g: Nat → Nat, x: «8; Nat», unused: Nat):
+    (tensor.unary @(Nat, Nat) f @(1, 8) x,
+     tensor.unary @(Nat, Nat) g @(1, 8) (tensor.unary @(Nat, Nat) f @(1, 8) x)) =>
+    together (f, g, x);
+extern lam result (f g: Nat → Nat, x: «8; Nat», salt: Nat): Nat =
+    let p = tensor.unary @(Nat, Nat) f @(1, 8) x;
+    sink (p, tensor.unary @(Nat, Nat) g @(1, 8) p);
+
+// REV-LABEL: extern lam result
+// REV: together
+// REV-NOT: tensor.unary

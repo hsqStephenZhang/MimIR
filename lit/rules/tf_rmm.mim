@@ -1,0 +1,36 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: not python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: grep 'argument is not assignable to callee' %t.graph.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=BUILD
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=BUILD
+// XFAIL: *
+// Typed array matching and new RHS lambdas block a real product_2d tile nest.
+// TF-RULES: cache
+// TF-PURE: mark, tensor.product_2d, tensor.slice, stage, tiled, rows, fold, add
+
+plugin compile;
+plugin tensor;
+plugin core;
+let Ring = (Nat, 0, core.nat.add, core.nat.mul);
+// stage packs a 2x2 panel; tiled assembles a 4x4 result from column strips.
+axm stage: «2, 2; Nat» → «2, 2; Nat»;
+axm mark: «4, 4; Nat» → «4, 4; Nat»;
+axm tiled: (Nat → «4, 2; Nat») → «4, 4; Nat»;
+axm rows: (Nat → «2, 2; Nat») → «4, 2; Nat»;
+axm fold: ([Nat, «4, 2; Nat»] → «4, 2; Nat») → «4, 2; Nat»;
+axm add: [«2, 2; Nat», «2, 2; Nat»] → «2, 2; Nat»;
+
+rule cache (a b: «4, 4; Nat», unused: Nat): mark (tensor.product_2d Ring @(4, 4, 4) (a, b)) =>
+    tiled (λ (jo: Nat): «4, 2; Nat» =
+        fold (λ (ko: Nat, acc: «4, 2; Nat»): «4, 2; Nat» =
+            let bp = stage (tensor.slice @(Nat, 2) (4, 4) ((ko, jo), (1, 1), (2, 2)) b);
+            rows (λ (io: Nat): «2, 2; Nat» =
+                let ap = tensor.slice @(Nat, 2) (4, 4) ((io, ko), (1, 1), (2, 2)) a;
+                let cp = tensor.slice @(Nat, 2) (4, 2) ((io, 0), (1, 1), (2, 2)) acc;
+                add (cp, tensor.product_2d Ring @(2, 2, 2) (ap, bp)))));
+extern lam result (a b: «4, 4; Nat», salt: Nat): «4, 4; Nat» =
+    mark (tensor.product_2d Ring @(4, 4, 4) (a, b));
+
+// BUILD-LABEL: extern lam result
+// BUILD: stage
+// BUILD-NOT: mark

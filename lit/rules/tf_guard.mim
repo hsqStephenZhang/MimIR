@@ -1,0 +1,26 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: grep 'guard did not normalize to true' %t.rule.log
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: grep 'guard is not true' %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=FACT
+// XFAIL: *
+// only_used_by has no staged GraphView query implementation in Mim guards.
+// TF-RULES: exclusive
+// TF-PURE: producer, consumer, fused
+
+plugin compile;
+// only_used_by asks whether all data uses of p are the captured consumer c in this snapshot.
+axm only_used_by: [Nat, Nat] → Bool;
+axm producer: Nat → Nat;
+axm consumer: Nat → Nat;
+axm fused: Nat → Nat;
+
+rule exclusive (x: Nat): consumer (producer x)
+    when only_used_by (producer x, consumer (producer x)) => fused x;
+extern lam single (x: Nat): Nat = consumer (producer x);
+extern lam shared (x: Nat): [Nat, Nat] = (consumer (producer x), producer x);
+
+// FACT-LABEL: extern lam shared
+// FACT: producer x
+// FACT-LABEL: extern lam single
+// FACT: fused

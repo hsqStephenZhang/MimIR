@@ -1,0 +1,22 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=PACK
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=PACK
+// TF-RULES: prepack
+// TF-PURE: frozen, stage_persistent
+
+plugin compile;
+plugin tensor;
+// The resource contract remains modeled; the downstream slice is the actual tensor op.
+axm frozen: «8; Nat» → «8; Nat»;
+axm stage_persistent: «8; Nat» → «8; Nat»;
+rule prepack (b: «8; Nat»): frozen b => stage_persistent b;
+extern lam result (b: «8; Nat», salt: Nat): [«2; Nat», «2; Nat»] =
+    let packed = frozen b;
+    (tensor.slice @(Nat, 1) 8 (0, 1, 2) packed, tensor.slice @(Nat, 1) 8 (2, 1, 2) packed);
+
+// PACK-LABEL: extern lam result
+// PACK: let [[PACKED:[a-zA-Z_][a-zA-Z_0-9]*]] = stage_persistent b;
+// PACK: tensor.slice @ (Nat, 1) 8 (0, 1, 2) [[PACKED]]
+// PACK: tensor.slice @ (Nat, 1) 8 (2, 1, 2) [[PACKED]]
+// PACK-NOT: frozen

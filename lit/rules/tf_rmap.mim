@@ -1,0 +1,25 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: not python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: grep 'argument is not assignable to callee' %t.graph.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=MAP
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=MAP
+// XFAIL: *
+// rule_app leaves the real slice-of-unary unchanged; polymorphic graph pure_ops also fails.
+// TF-RULES: local
+// TF-PURE: tensor.slice, tensor.unary
+
+plugin compile;
+plugin tensor;
+
+rule local (f: Nat → Nat, x: «8; Nat», o: Nat):
+    tensor.slice @(Nat, 1) 8 (o, 1, 2) (tensor.unary @(Nat, Nat) f @(1, 8) x) =>
+    tensor.unary @(Nat, Nat) f @(1, 2) (tensor.slice @(Nat, 1) 8 (o, 1, 2) x);
+extern lam result (f: Nat → Nat, x: «8; Nat», o salt: Nat): «2; Nat» =
+    tensor.slice @(Nat, 1) 8 (o, 1, 2) (tensor.unary @(Nat, Nat) f @(1, 8) x);
+extern lam shared (f: Nat → Nat, x: «8; Nat», o salt: Nat): [«2; Nat», «8; Nat»] =
+    let p = tensor.unary @(Nat, Nat) f @(1, 8) x;
+    (tensor.slice @(Nat, 1) 8 (o, 1, 2) p, p);
+
+// MAP-LABEL: extern lam result
+// MAP: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = tensor.slice @ (Nat, 1) 8 (o, 1, 2) x;
+// MAP: tensor.unary @ {{.*}} f @ (1, 2) [[SL]]

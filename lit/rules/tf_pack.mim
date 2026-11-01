@@ -1,0 +1,22 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.rule 2> %t.rule.log
+// RUN: cat %t.rule | %FileCheck %s --check-prefix=PACK
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=PACK
+// TF-RULES: prepack
+// TF-PURE: frozen, stage_persistent, slice, mm
+
+plugin compile;
+// frozen asserts immutability; stage_persistent is a resource-backed packed value, not a pure allocation.
+axm frozen: Nat → Nat;
+axm stage_persistent: Nat → Nat;
+axm slice: [Nat, Nat, Nat] → Nat;
+axm mm: [Nat, Nat] → Nat;
+
+rule prepack (b: Nat): frozen b => stage_persistent b;
+extern lam result (a b: Nat): [Nat, Nat] =
+    let packed = frozen b;
+    (mm (a, slice (packed, 0, 2)), mm (a, slice (packed, 2, 2)));
+
+// PACK-LABEL: extern lam result
+// PACK: stage_persistent b
+// PACK-NOT: frozen b
