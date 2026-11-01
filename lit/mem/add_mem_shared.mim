@@ -1,0 +1,21 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+plugin core;
+plugin mem;
+
+extern con first (m: mem.M 0, return: Cn [mem.M 0, mem.Ptr (I64, 0)]) =
+    let (m, p) = mem.alloc (I64, 0) ⊥:(mem.M 0);
+    return (m, p);
+extern con second (m: mem.M 0, return: Cn [mem.M 0, mem.Ptr (I64, 0)]) =
+    let (m, p) = mem.alloc (I64, 0) ⊥:(mem.M 0);
+    return (m, p);
+
+extern lam _compile (): compile.Phase = mem.add_mem;
+
+// CHECK-LABEL: extern fun first
+// CHECK-SAME: ([[FIRST:_[0-9]+]]: core.M 0)
+// CHECK: mem.alloc (I64, 0) [[FIRST]]
+// CHECK-LABEL: extern fun second
+// CHECK-SAME: ([[SECOND:_[0-9]+]]: core.M 0)
+// CHECK: mem.alloc (I64, 0) [[SECOND]]

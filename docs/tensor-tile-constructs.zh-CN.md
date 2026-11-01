@@ -132,3 +132,18 @@ slice 组合仍进入 Rewriter 的全局映射，并可把另一个 closure 中�
 依赖它的映射只在该 Lam 内有效，其他不依赖该 Var 的映射仍可共享。
 结束时销毁这些临时映射，不改变 ordinary closures 的 environment 或 external ABI，
 也不新增第二套 loop builder。测试执行两次、每次改变输入并检查全部 tail cells。
+
+### 2.2 AddMem 的 continuation-local memory memo
+
+`mem.add_mem` 和 `mem.resolve_fresh` 共用 AddMem，均在每个普通 Lam 的 body
+改写前打开 Rewriter scope，并登记该 Lam 的 memory 参数所属的 Var。
+allocation、projection、argument tuple 等结果只要依赖这个 Var，其 memo 就留在该 scope；
+离开 Lam 后删除，不把另一 continuation 的 memory token 带回来。
+不依赖该 Var 的映射仍留在 root，Lam stub 在打开 scope 前登记以保留递归与闭合共享。
+pinned ABI 的 preserving_ 路径不注入 memory，不改变已有 GPU callbacks 的签名。
+
+`add_mem_shared` 的两个 continuations 都使用同一 hash-consed
+`mem.alloc (I64,0) ⊥:(mem.M 0)`，`resolve_shared` 再通过 fresh 接收 callbacks 测试
+第二次 pass。原实现两个文件都在 externalize 时 assertion；新实现各自在本地 memory
+上 allocation，检查输出 token，且没有残留 fresh。不是针对 alloc 的特判。
+这也修复同 module hand/rule packed GEMM 的 late-pass allocation/projection memo 泄漏。

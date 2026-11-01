@@ -127,6 +127,9 @@ const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
 
     auto new_lam = new_world().mut_lam(rewrite(old_lam->type())->as<Pi>())->set(old_lam->dbg_key());
     map(old_lam, new_lam);
+    push();
+    auto mem = mem::mem_var(new_lam);
+    if (mem) bind_new(new_lam->has_var());
 
     // Map the parameters, accounting for a possibly inserted leading mem var.
     if (auto n = old_lam->num_vars(); n != 0) {
@@ -140,11 +143,15 @@ const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
                 new_world().tuple(DefVec(n, [&](size_t i) { return new_lam->var(new_n, i + offset); })));
     }
 
-    if (!old_lam->is_set()) return new_lam;
+    if (!old_lam->is_set()) {
+        pop();
+        return new_lam;
+    }
 
     // The body's current memory is this lam's (leading or grouped) mem parameter - or none for direct-style fns.
-    auto _ = fe::Restore(curr_mem_, mem::mem_var(new_lam));
+    auto _ = fe::Restore(curr_mem_, mem);
     new_lam->set(rewrite(old_lam->filter()), rewrite(old_lam->body()));
+    pop();
     return new_lam;
 }
 
