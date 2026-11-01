@@ -27,6 +27,19 @@ region binder 只重建一次，所有该值的 occurrence 复用其结果。
 tt 可分别改写但保持两个 binder。`grregion` 的 occurrence 隔离用真实 graph-fact guard
 继续覆盖。这个复用限定于同一 enclosing function，不是跨函数 region/resource cache。
 
+## 后续修复：binder debug metadata
+
+graph rebuild 手工映射 scope/region Var，绕过 Rewriter 的常规 `set(dbg_key)` 路径，
+导致原参数 x 和 offset o 被打印成匿名名字。
+现在创建 fresh binder 时同步复制 Var 的 debug key；函数、region 的 Lam debug key
+和正常重建的字段投影继续保留。
+`grnames` 覆盖 flat x、grouped x/y、nested o 和 body 名字。
+打印器仍可给重复名字加正常后缀，这不是 gid 生成名或丢失 source sym。
+
+三个修复的完整验证分别为：C1 CTest 231/231、lit 216 通过；C2 CTest 231/231、
+lit 217 通过；C3 CTest 231/231、lit 218 通过。
+lit 均为 rules|error|tensor，均有原来的 4 个 unsupported，无失败或 XFAIL。
+
 ## Task 3 / 4：独立 frontend 回归与扩展
 
 ### Task 4 前置修复：深 DAG 与资源预算

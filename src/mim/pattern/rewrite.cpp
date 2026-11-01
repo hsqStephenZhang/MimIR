@@ -301,6 +301,7 @@ public:
             importer_.map(scope, new_scope_);
             map(scope, new_scope_);
             if (auto var = scope->has_var()) {
+                new_scope_->var()->set(var->dbg_key());
                 importer_.map(var, new_scope_->var());
                 map(var, new_scope_->var());
                 environment_.insert(new_scope_->var());
@@ -393,6 +394,7 @@ private:
                 if (index != 1 || lam->is_external()) throw std::invalid_argument("unsupported region lambda path");
                 auto fresh = world().mut_lam(importer_.rewrite(lam->type())->as<Pi>())->set(lam->dbg_key());
                 if (auto var = lam->has_var()) {
+                    fresh->var()->set(var->dbg_key());
                     importer_.map(var, fresh->var());
                     map(var, fresh->var());
                     environment_.insert(fresh->var());

@@ -1,0 +1,26 @@
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// TF-RULES: local
+// TF-PURE: q, v
+
+plugin compile;
+axm q: [Nat, Nat] → Nat;
+axm v: [Nat, Nat] → Nat;
+axm tiled: (Nat → Nat) → Nat;
+rule local (x o: Nat): q (x, o) => v (x, o);
+extern lam flat (x: Nat): Nat = q (x, 0);
+extern lam nested (x: Nat): Nat =
+    let body = λ (o: Nat): Nat = q (x, o);
+    tiled body;
+extern lam grouped (x y: Nat, flag: Bool): Nat = q (x, y);
+
+// CHECK-LABEL: extern lam flat (x: Nat)
+// CHECK: v (x, 0)
+// CHECK-LABEL: extern lam grouped
+// CHECK-SAME: ([[GX:x[a-zA-Z_0-9]*]]: Nat, [[GY:y[a-zA-Z_0-9]*]]: Nat,
+// CHECK: v ([[GX]], [[GY]])
+// CHECK-LABEL: extern lam nested
+// CHECK-SAME: ([[NX:x[a-zA-Z_0-9]*]]: Nat)
+// CHECK: lam body (o: Nat)
+// CHECK: v ([[NX]], o)
+// CHECK: tiled body
