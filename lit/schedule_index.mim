@@ -1,0 +1,34 @@
+// RUN: %mim -p opt %s -p ll 2> %t.log
+// RUN: test ! -s %t.log
+// RUN: clang++ -std=c++23 %S/schedule_index_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin core;
+plugin mem;
+plugin affine;
+
+extern fun narrow (m: mem.M 0, src dst: mem.Ptr0 «3; I64»): [mem.M 0, I32] =
+    outer (m, 0I32)
+    where
+        con outer (m: mem.M 0, i: I32) =
+            (exit, body)#(core.icmp.ul (i, 3I32)) m
+            where
+                con body (m: mem.M 0) =
+                    let idx = core.conv.u 3 i;
+                    let (m, init) = mem.load (m, mem.lea (src, idx));
+                    inner (m, 0I32, init)
+                    where
+                        con inner (m: mem.M 0, k: I32, acc: I64) =
+                            (done, step)#(core.icmp.ul (k, 2I32)) m
+                            where
+                                con step (m: mem.M 0) =
+                                    let (m, value) = mem.load (m, mem.lea (src, idx));
+                                    inner (m, core.wrap.add 0 (k, 1I32), core.wrap.add 0 (acc, value));
+                                con done (m: mem.M 0) =
+                                    let m = mem.store (m, mem.lea (dst, idx), acc);
+                                    outer (m, core.wrap.add 0 (i, 1I32));
+                            end
+                    end;
+                con exit (m: mem.M 0) = return (m, 0I32);
+            end
+    end
