@@ -94,6 +94,17 @@ const Def* scalar_result(const App* app, const Def* mem, const Def* buf) {
     return buffer::op_read(mem, buf, buf->world().tuple())->proj(2, 1);
 }
 
+const Def* copy_buffer(const Def* mem, const Def* dst, const Def* src, const Def* shape) {
+    auto& w     = mem->world();
+    auto result = btensor::build_pointwise(
+        w.sigma({mem->type(), dst->type()}), mem, dst, src, shape, Lit::as(shape->arity()), "foldCopy",
+        [&](Defs iters, const Def* input, const Def* current) {
+            auto [next, value] = buffer::op_read(current, input, btensor::folded_idx(shape, iters))->projs<2>();
+            return std::pair{next, value};
+        });
+    return result->proj(2, 0);
+}
+
 } // namespace
 
 void LowerToMem::collect_tensor_types() {
@@ -355,7 +366,7 @@ const Def* LowerToMem::rewrite(const Def* old_def) {
     // fresh_mem). The global memo would share such a lowering with every other function that mentions the
     // same (closed) old op - where that var would dangle - so these ops are memoized per enclosing lam.
     auto app = old_def->isa<App>();
-    if (app && Axm::isa<tensor::stage>(app))
+    if (app && wants_fresh_mem(app))
         if (auto realized = lookup(old_def)) return realized;
     auto ins = old_def->isa<Insert>(); // allocates the copy it writes into
     if ((app && wants_fresh_mem(app)) || (ins && tensor_ty_.contains(ins->tuple()->type()))) {
@@ -619,24 +630,58 @@ const Def* LowerToMem::lower_generate(const App* app) {
     auto [T, r]        = meta->projs<2>();
     auto r_l           = Lit::isa<u64>(r);
     if (!r_l) return RWPhase::rewrite_imm_App(app);
-    auto rn   = *r_l;
-    auto body = rewrite(app->arg());
+    auto rn = *r_l;
 
     // A logical rank-zero tensor, or one consisting only of literal singleton
     // axes, is represented by its scalar element in MimIR.
     if (!app->type()->isa<Arr>()) {
         DefVec zeros(rn, [&](size_t) { return w.lit_i64(0); });
-        return w.call(body, w.tuple(zeros));
+        return w.call(rewrite(app->arg()), w.tuple(zeros));
     }
 
-    auto out_ty       = buf_of(app->type());
-    auto [br, bs, bT] = Axm::isa<buffer::Buf>(out_ty)->args<3>();
-    auto result_ty    = w.sigma({w.call<mem::M>(0), out_ty});
-    auto compute      = [&](Defs iters, const Def*, const Def* m) -> std::pair<const Def*, const Def*> {
-        return {m, w.call(body, iters)};
+    auto out_ty              = buf_of(app->type());
+    auto [br, bs, bT]        = Axm::isa<buffer::Buf>(out_ty)->args<3>();
+    auto result_ty           = w.sigma({w.call<mem::M>(0), out_ty});
+    auto [sources, captures] = capture_producers(app->arg());
+    auto compute             = [&](Defs iters, const Def* input, const Def* m) -> std::pair<const Def*, const Def*> {
+        push();
+        if (!sources.empty()) bind_new(param_of(input)->has_var());
+        for (size_t i = 0; i != sources.size(); ++i)
+            map(sources[i], input->proj(sources.size(), i));
+        auto value = w.call(rewrite(app->arg()), iters);
+        pop();
+        return {m, value};
     };
     auto [am, dst] = buffer::op_alloc(br, bs, bT, fresh_mem())->projs<2>();
-    return btensor::build_pointwise(result_ty, am, dst, w.tuple(), s_out, rn, "generate", compute)->proj(2, 1);
+    return btensor::build_pointwise(result_ty, am, dst, w.tuple(captures), s_out, rn, "generate", compute)->proj(2, 1);
+}
+
+std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function, bool destination) {
+    auto sources = DefVec(), captures = DefVec();
+    auto body = function->isa<Lam>();
+    if (!body || !body->is_set()) return {sources, captures};
+    auto queue = fe::BFSWorklist<DefSet>();
+    queue.push(body->body());
+    while (!queue.empty()) {
+        auto def = queue.pop();
+        if (def->isa<Var>() || def->isa<Axm>()) continue;
+        if (auto app = def->isa<App>(); app && wants_fresh_mem(app)) {
+            auto root      = destination && def == body->body()
+                          && (Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::map_reduce_post>(app));
+            auto available = !root;
+            for (auto var : def->free_vars())
+                available &= body->has_free_var(var);
+            if (available) {
+                auto value = rewrite(def);
+                sources.push_back(def);
+                captures.push_back(value);
+                continue;
+            }
+        }
+        for (auto op : def->ops())
+            if (op) queue.push(op);
+    }
+    return {sources, captures};
 }
 
 const Def* LowerToMem::lower_broadcast(const App* app) {
@@ -895,38 +940,16 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     } else {
         std::tie(mem, dst) = buffer::op_alloc(rewrite(r), rewrite(shape), rewrite(type), fresh_mem())->projs<2>();
     }
-    auto output_shape = destination ? destination->shape : rewrite(shape);
-    auto base         = destination ? destination->origin : zero;
-    auto captures = DefVec(), stages = DefVec();
-    auto body = app->arg()->isa<Lam>();
-    if (body && body->is_set()) {
-        auto queue = fe::BFSWorklist<DefSet>();
-        queue.push(body->body());
-        while (!queue.empty()) {
-            auto def = queue.pop();
-            if (def->isa<Var>() || def->isa<Axm>()) continue;
-            if (auto stage = Axm::isa<tensor::stage>(def)) {
-                auto available = true;
-                for (auto var : stage->free_vars())
-                    available &= body->has_free_var(var);
-                if (available) {
-                    auto value = rewrite(stage);
-                    stages.push_back(stage);
-                    captures.push_back(value);
-                    continue;
-                }
-            }
-            for (auto op : def->ops())
-                if (op) queue.push(op);
-        }
-    }
+    auto output_shape        = destination ? destination->shape : rewrite(shape);
+    auto base                = destination ? destination->origin : zero;
+    auto [sources, captures] = capture_producers(app->arg(), true);
     auto [run, call]
         = btensor::ds_splice(w.tuple({mem, dst, w.tuple(captures)}), w.sigma({mem->type(), dst->type()}), "tiled");
     auto runtime = run->var(2, 0);
     push();
     bind_new(run->has_var());
-    for (size_t i = 0; i != stages.size(); ++i)
-        map(stages[i], runtime->proj(3, 2)->proj(stages.size(), i));
+    for (size_t i = 0; i != sources.size(); ++i)
+        map(sources[i], runtime->proj(3, 2)->proj(sources.size(), i));
     DefVec offsets(*rank), extents(*rank);
     std::function<const Def*(size_t, const Def*, const Def*)> emit
         = [&](size_t d, const Def* acc, const Def* exit) -> const Def* {
@@ -1070,7 +1093,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     record_instance(root);
     auto initial       = make_buffer(init, w.lit_nat(rank), rewrite(shape));
     auto [mem, buffer] = buffer::op_alloc(w.lit_nat(rank), rewrite(shape), rewrite(element), fresh_mem())->projs<2>();
-    mem                = buffer::op_copy(mem, buffer, initial);
+    mem                = copy_buffer(mem, buffer, initial, rewrite(shape));
     auto [run, call]   = btensor::ds_splice(w.tuple({mem, buffer}), w.sigma({mem->type(), buffer->type()}), "tileFold");
     auto state         = run->var(2, 0);
     auto [loop, loop_call]       = affine::counting_for(w.call<core::bitcast>(w.type_i64(), rewrite(count)), state,
@@ -1088,7 +1111,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
         update = lower_into(root, {loop_mem, loop_buffer, rewrite(shape), rewrite(zero), rewrite(shape)});
     } else {
         auto value = make_buffer(root, w.lit_nat(rank), rewrite(shape));
-        update     = w.tuple({buffer::op_copy(loop_mem, loop_buffer, value), loop_buffer});
+        update     = w.tuple({copy_buffer(loop_mem, loop_buffer, value, rewrite(shape)), loop_buffer});
     }
     loop->app(true, yield, update);
     loop->set(true, wrap_fresh_mem(loop->body()));

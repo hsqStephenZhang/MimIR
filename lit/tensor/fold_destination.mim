@@ -18,8 +18,10 @@ extern lam _compile (): compile.Phase =
 
 // CHECK: con tileFoldStep
 // CHECK-NOT: buffer.copy
+// CHECK-NOT: foldCopy
 // CHECK: btensor.map_reduce_post
 // CHECK-NOT: buffer.copy
+// CHECK-NOT: foldCopy
 // CHECK: fun tileFold
+// CHECK: foldCopy
 // CHECK-LABEL: extern fun linear
-// CHECK: buffer.copy

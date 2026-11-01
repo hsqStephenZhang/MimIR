@@ -1,4 +1,4 @@
-# Tensor-level tiling constructs（Task 7）
+# Tensor-level tiling constructs（Task 7 / destination lowering）
 
 ## 4. Destination tiled lowering（Task 8）
 
@@ -13,7 +13,7 @@ owned extent，warning 明确报告该 fallback，不把临时结果当作 zero-
 tile_constructs_exec、nested_stage_exec、pgemm_exec 都分别编译执行两个路径并对照同一
 scalar reference。tiled_destination 检查一次 grid iteration 的 root mrp 不在 per-element
 generate 中，直接写 whole destination，没有 tileCopy。
-本阶段 tile_fold/stage 仍走原 `_impl`，其 accumulator/scratch 优化是后续独立项目。
+下面的 fold/stage 使用 destination 路径；reference option 保留三者原有语义。
 
 ### 4.1 Ordered destination fold
 
@@ -41,13 +41,16 @@ fresh_before/fresh_after 显式选择该路径继续测试 pinned callbacks 的 
 产生的 buffer 作为显式运行时 operand 传给 tile loop，per-tile rewrite 的 scoped map
 复用这个 operand，不再为每个 row reader 重新生成 packing。
 pgemm 的 B stage 因而在每个 column/K block 下、row tile loop 上方 realization 一次。
-stage_destination 有两次 buffer.alloc：整个结果和共享 stage，无每 tile allocation。
+stage_destination 有三次 buffer.alloc：整个结果、裁剪输入和共享 stage，无每 tile allocation；
+generate 的显式输入 buffer 同时保证 crop 不在 stage 每个 reader 中重算。
 stage_barrier 分别检查默认 stage 边界和 reference generate 边界。
 
 `reference-tiles=1` 同时选择旧 tiled/fold/stage `_impl`，布局/padding 与 singleton tests
-在两条 pipeline 均执行验证。当前保守地交由已有 mem.free_locals 管理不逃逸 allocations；
-尚未显式实现 enclosing-loop scratch free 或同 extent 下跨 iterations 的 buffer reuse。
-不能在有其他 scope readers 时提前 free，persistent stage/resource identity 也未实现。
+在两条 pipeline 均执行验证。已有 mem.free_locals 根据最后读和控制流边释放不逃逸 allocations，
+不再增加一套只看语法 scope 的 free 判断。GEMM LLVM 中 crop 在 packing 后释放，K-block stage
+在 row tile loop 出口释放，fold acc 在 final block 写回后释放；output 由 caller 释放。
+escaping/unknown readers 仍保守处理，没有同 extent 下跨 iterations 的 scratch buffer reuse，
+persistent stage/resource identity 也未实现。
 
 ### 4.3 Destination/reference correctness checks
 
@@ -57,6 +60,63 @@ loop 前 init copy 与无 copy 的 linear step；stage_destination 检查共享 
 pgemm_exec 同时要求 destination fallback report 为零，不可退化为 step/tile copies 后仍通过。
 非 pointwise map_init 与 acc 额外作为 data input 的两个用例强制 whole-step copy 后检查数值，
 因此 no-copy proof 的拒绝路径也不是未覆盖的性能假设。
+
+### 4.4 Captured producers 与性能验证
+
+大 shape 运行暴露了两处仅靠 root destination 不能消除的工作：
+stage fill 的 slice 输入会被 generate callback 重新算；final-block seed 的 slice callback
+会重新算其捕获的 tile_fold。现在 tiled/generate 均把不依赖自身参数的 tensor producers
+作为显式 buffer operands 捕获，并用 scoped rewrite map 传给 reader。
+依赖自身 off/ext/index 或更内层 binder 的 producer 不提升，destination root 本身不先分配
+另一个临时结果。captured_fold_destination 检查 fold buffer 被传入 generate，而非在每 cell 重算。
+这也适用于 reference generate 的纯输入共享，但 reference tiled 的 per-element tile body
+依赖 reader index，仍保留原执行方式。
+
+fold 必须进行的 init copy 及非线性 step copy 使用已有 btensor pointwise loop builder。
+没有修改所有 buffer.copy：其 lower_ptr 的整数组 load/store 在本实验会生成大量 aggregate
+extract/insert conversion。切换这两处 copy 后，12-function LLVM 从 63,967,677 bytes
+降为 351,803 bytes，再消除 reader-side captures 重算后为 285,941 bytes；
+native clang compile 从 203.94 秒降为 0.80 秒。
+消除 reader-side producer 重算后，1024³ rule 从约 0.16 提升到 7.60 GFLOPS。
+
+实验用与 pgemm 相同的 generic M/K/N/tile rule，将固定元素类型改为 math.F32，
+captured add/mul 改为 math.arith 的 fast mode；tile sizes 为 MR=32、KR=64、NR=32，
+没有添加 bias/ReLU，也没有修改原 I64 regression。四种 shape 的 rule、hand、plain
+和 cblas_sgemm 均对照完整 scalar reference，使用有限的 dyadic 输入与相对误差检查。
+graph frontend 的 local packed RHS helper 限制未改变，本实验用 rule_app。
+
+Apple M2 Pro，Homebrew clang 22.1.4，`-O3 -mcpu=native`；tile loops sequential。
+OpenBLAS 显式 `openblas_set_num_threads(1)`，同时设 OMP_NUM_THREADS=1、
+OPENBLAS_NUM_THREADS=1。每路径一次 warmup、七次测量取中位数；计时包括 output
+allocation/free，Mim 内部 scratch fill/free 也计入，OpenBLAS 输入已在内存中。
+GFLOPS 以 2×M×K×N 计算，不把 copying/packing 工作计为额外 FLOPs。
+
+| M×K×N | Rule GFLOPS | Hand GFLOPS | Default product_2d GFLOPS | OpenBLAS sgemm GFLOPS |
+| --- | ---: | ---: | ---: | ---: |
+| 256×256×256 | 7.560 | 7.654 | 35.056 | 80.082 |
+| 512×512×512 | 7.701 | 7.676 | 33.682 | 99.075 |
+| 1024×1024×1024 | 7.596 | 7.484 | 32.856 | 96.279 |
+| 513×257×129 | 7.383 | 7.356 | 41.370 | 88.880 |
+
+12-function module 的单次 Debug Mim compile 为 0.534 秒，clang compile 为 0.795 秒，
+LLVM 285,941 bytes / 6,494 lines；linked benchmark 52,936 bytes（包括 harness，不包括
+动态 OpenBLAS）。1024³ rule/hand 各 570 LLVM lines / 24,990 bytes；tailed 各
+1,254 lines / 52,760 bytes，不是 whole-module 数值冒充单函数 size。
+
+完整生成器/driver、源 module、LLVM、测量 CSV 和 metadata 保留在 build，不增加 benchmark
+到每次 lit：`python3 build/task8-bench.py` 生成/编译；随后运行
+`OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 build/task8-bench/bench`。
+driver 在 `build/task8-bench.cpp`，结果在 `build/task8-bench/results.csv` 和 `metrics.json`；
+before-copy / before-capture 记录保留为同目录的对应 JSON/CSV。
+
+本 GEMM 没有 destination fallback report，full K folds 原地累加，最后 block 写 outer
+destination。但这不等于完全没有 copy：每个 column tile 初始化独立 fold acc；
+B slice 和 stage 仍分别 materialize/fill。该 GEMM LLVM 中 A/outs slices 已融合为 read maps，
+没有 A/acc tile allocation，但尚未把 stage input 的 B crop copy 合进 packing。
+结构版本的叶子仍是经典标量 MRP nest，未接入 default C++ schedule 的 vector/register
+blocking，因此低于 default 和 OpenBLAS，并未宣称达到同等速度。
+后续需要并行 grid、register/vector leaf、specialization 后的 slice/read fusion、scratch
+跨 iterations reuse，以及跨调用 persistent packing；GPU scopes 和 effectful stage 未验证。
 
 ## 0. Generic shape Rules
 
@@ -265,9 +325,9 @@ macOS arm64，同一 Debug Mim build，默认 `-p opt` → LLVM。
 这些不是运行速度或 allocation 数量的优化结果，也不是 per-function code size；
 对象体积不包含 C++ reference 或 linked runtime。
 
-### 3.2 性能 lowering 尚缺
+### 3.2 Task 7 的 reference baseline（当前进展见 §4）
 
-当前 tiled 的 generate 参考实现可为每个 output cell 重算整个 tile，
+Task 7 的 tiled generate 参考实现可为每个 output cell 重算整个 tile，
 语法上的外层 bp binding 尚不保证 stage 运行时 exactly-once realization。
 §5.4 destination passing 需要传入 outer destination 的 shape/origin、每次 iteration
 的 memory/accumulator、scratch lifetime，以及 outs 的线性 alias 检查。
