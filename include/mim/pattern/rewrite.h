@@ -38,10 +38,12 @@ public:
     Recipe tuple(std::vector<Recipe>);
     Recipe extract(Recipe, size_t index);
     Recipe instantiate(const Def*, const Def2Def&);
+    void witness_values(std::shared_ptr<World> world) { witness_world_ = std::move(world); }
+    Recipe witness_value(const Def*);
     void replace(const Def* matched_node, Recipe);
 
 private:
-    enum class Kind { Import, Literal, Call, Tuple, Extract, Instantiate };
+    enum class Kind { Import, Literal, Call, Tuple, Extract, Instantiate, Witness };
     struct Entry {
         Kind kind;
         const Def* def           = nullptr;
@@ -56,6 +58,7 @@ private:
     DefSet matched_;
     std::vector<Entry> entries_;
     DefMap<size_t> replacements_;
+    std::shared_ptr<World> witness_world_;
     friend class GraphRebuilder;
 };
 

@@ -4,11 +4,13 @@
 
 #include <fe/restore.h>
 
+#include "mim/check.h"
 #include "mim/driver.h"
 #include "mim/rewrite.h"
 #include "mim/rule.h"
 
 #include "mim/pattern/rule.h"
+#include "mim/pattern/witness.h"
 
 namespace mim::pattern {
 
@@ -84,6 +86,13 @@ private:
     size_t work_ = 0, depth_ = 0;
 };
 
+struct WitnessFailure : std::invalid_argument {
+    WitnessFailure(CheckResult result, const std::string& reason)
+        : std::invalid_argument(reason.empty() ? "witness is not proven" : reason)
+        , status(result == CheckResult::False ? MatchStatus::No_Match : MatchStatus::Unknown) {}
+    MatchStatus status;
+};
+
 class GuardImporter : public Rewriter {
 public:
     GuardImporter(World& target, const Def2Def& frozen, const GuardContext* context)
@@ -92,12 +101,35 @@ public:
         , context_(context) {}
 
     const Def* rewrite(const Def* def) override {
+        if (auto value = lookup(def)) return value;
         if (++work_ > 10000 || depth_ >= 256) throw std::invalid_argument("Rule guard evaluation budget exceeded");
         auto depth = fe::Restore(depth_, depth_ + 1);
         if (context_)
             if (auto app = def->isa<App>())
                 if (auto axm = App::uncurry_callee(app)->isa<Axm>()) {
                     auto flags = axm->flags();
+                    if (auto witness = def->driver().witness(flags); witness && !app->type()->isa<Pi>()) {
+                        DefVec inputs;
+                        for (size_t i = 0; i != witness->num_inputs; ++i) {
+                            auto term  = slot(app->arg(), witness->num_inputs, i);
+                            auto value = term ? source(term) : nullptr;
+                            if (!value) throw std::invalid_argument("witness input is not a frozen source operand");
+                            inputs.push_back(value);
+                        }
+                        auto gid    = context_->graph.world().curr_gid();
+                        auto result = witness->evaluate(context_->graph, inputs, world());
+                        if (!context_->graph.is_current() || context_->graph.world().curr_gid() != gid)
+                            throw std::logic_error("witness modified its source snapshot");
+                        if (result.status != CheckResult::True) throw WitnessFailure(result.status, result.reason);
+                        if (!result.value || &result.value->world() != &world() || !is_witness_data(result.value))
+                            throw std::invalid_argument(
+                                "witness must return closed immutable literal data in its result World");
+                        auto expected = Rewriter::rewrite(app->type());
+                        if (!Check::test_alpha(expected, result.value->type()))
+                            throw std::invalid_argument("witness result does not preserve its declared type");
+                        values.emplace(def, result.value);
+                        return map(def, result.value);
+                    }
                     if (flags == context_->used_by || flags == context_->only_used_by) {
                         auto p = source(slot(app->arg(), 2, 0)), c = source(slot(app->arg(), 2, 1));
                         auto result = !p || !c                   ? CheckResult::Unknown
@@ -109,11 +141,13 @@ public:
         return Rewriter::rewrite(def);
     }
 
+    Def2Def values;
+
 private:
     const Def* source(const Def* def) const {
         if (!def) return nullptr;
         if (auto i = frozen_.find(def); i != frozen_.end()) return i->second;
-        return context_->graph.is_contained(def) ? def : nullptr;
+        return context_->graph.is_contained(def) || is_witness_data(def) ? def : nullptr;
     }
     const Def2Def& frozen_;
     const GuardContext* context_;
@@ -152,8 +186,24 @@ GuardContext::GuardContext(const GraphView& view)
 GuardResult
 evaluate_guard(const Rule* rule, const Def2Def& bindings, Defs lhs, Defs matched, const GuardContext* context) {
     auto& world = rule->world();
-    if (rule->guard() == world.lit_tt()) return {MatchStatus::Matched, {}};
     if (rule->guard() == world.lit_ff()) return {MatchStatus::No_Match, "guard is false"};
+    DefVec terms{rule->guard(), rule->rhs()}, witnesses;
+    DefSet seen;
+    for (size_t i = 0; i != terms.size(); ++i) {
+        if (i >= 10000) return {MatchStatus::Unknown, "witness traversal budget exceeded"};
+        auto term = terms[i];
+        if (!seen.insert(term).second || term->isa<Var>() || bindings.contains(term)) continue;
+        if (auto app = term->isa<App>())
+            if (auto axm = App::uncurry_callee(app)->isa<Axm>();
+                axm && rule->driver().witness(axm->flags()) && !app->type()->isa<Pi>()) {
+                witnesses.push_back(term);
+                continue;
+            }
+        if (term->isa<Pi>()) continue;
+        for (auto op : term->ops())
+            if (op) terms.push_back(op);
+    }
+    if (witnesses.empty() && rule->guard() == world.lit_tt()) return {MatchStatus::Matched, {}};
     if (lhs.size() != matched.size()) throw std::invalid_argument("guard source roots do not agree");
     if (context && !context->graph.is_current()) throw std::invalid_argument("guard source snapshot is stale");
     Def2Def frozen = bindings;
@@ -173,17 +223,46 @@ evaluate_guard(const Rule* rule, const Def2Def& bindings, Defs lhs, Defs matched
         for (size_t j = 0; j != term->num_ops(); ++j)
             pending.emplace_back(term->op(j), value->op(j));
     }
-    auto target = world.inherit();
+    std::shared_ptr<World> target = world.inherit();
     GuardImporter importer(*target, frozen, context);
     try {
         for (auto [meta, value] : bindings)
             importer.map(meta, importer.rewrite(value));
         RulePattern(rule).bind_derived(importer, bindings);
+        for (auto term : witnesses) {
+            if (!context) return {MatchStatus::Unknown, "witness requires a frozen graph context"};
+            importer.rewrite(term);
+        }
         auto condition = importer.rewrite(rule->guard());
-        if (condition == target->lit_tt()) return {MatchStatus::Matched, {}};
+        if (condition == target->lit_tt())
+            return {MatchStatus::Matched, {}, std::move(importer.values), std::move(target)};
         if (condition == target->lit_ff()) return {MatchStatus::No_Match, "guard is false"};
         return {MatchStatus::Unknown, "guard is not true"};
+    } catch (const WitnessFailure& error) {
+        return {error.status, error.what()};
     } catch (const std::invalid_argument& error) { return {MatchStatus::Unknown, error.what()}; }
+}
+
+bool is_witness_data(const Def* def) {
+    DefVec pending{def};
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i >= 10000) return false;
+        auto term = pending[i];
+        if (!seen.insert(term).second) continue;
+        if (auto lit = term->isa<Lit>()) {
+            if (lit->type()->node() != Node::Nat && !Lit::isa(Idx::isa(lit->type()))) return false;
+            continue;
+        }
+        if (auto tuple = term->isa<Tuple>())
+            for (auto op : tuple->ops())
+                pending.push_back(op);
+        else if (auto pack = term->isa_imm<Pack>(); pack && Lit::isa(*pack->shape()))
+            pending.push_back(pack->body());
+        else
+            return false;
+    }
+    return !def->has_free_vars();
 }
 
 } // namespace mim::pattern

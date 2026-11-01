@@ -1,0 +1,4 @@
+// RUN: python3 %S/tf_run.py %mim %S/tf_wbox.mim %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %S/tf_wbox.mim
+// RUN: cat %t.out | %FileCheck %S/tf_wbox.mim --check-prefix=ORD
+// RUN: grep "input_box supports only bijective projection maps" %t.log

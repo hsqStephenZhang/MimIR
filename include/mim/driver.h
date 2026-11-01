@@ -211,6 +211,8 @@ public:
     auto phase(flags_t flags) { return fe::lookup(phases_, flags); }
     const auto& phases() const { return phases_; }
     auto normalizer(flags_t flags) const { return fe::lookup(normalizers_, flags); }
+    auto witness(flags_t flags) const { return fe::lookup(witnesses_, flags); }
+    void register_witness(flags_t, pattern::Witness);
     auto normalizer(plugin_t d, tag_t t, sub_t s) const { return normalizer(Annex::flags(d, t, s)); }
     ///@}
 
@@ -251,6 +253,7 @@ private:
     Paths plugin_dirs_, import_dirs_, prefixes_;
     Flags2Phases phases_;
     Normalizers normalizers_;
+    pattern::Witnesses witnesses_;
     fe::StrMap<fe::Vector<std::string>> plugin_args_;
     std::vector<std::pair<std::string, fe::View<PluginArg>>> known_args_;
     std::vector<std::pair<std::string, fe::View<PluginEnv>>> known_envs_;

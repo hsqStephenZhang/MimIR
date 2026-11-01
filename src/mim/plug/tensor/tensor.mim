@@ -1556,3 +1556,15 @@ axm fuse_tensor: compile.Phase;
 /// afterwards to reach `mem.Ptr`.
 ///
 axm lower_to_mem: compile.Phase;
+///
+/// Staged Rule witness for a static permutation map: consumer box to producer box.
+///
+axm input_box: {r: Nat}
+             → [map: «r; Nat» → «r; Nat», offset extent: «r; Nat»]
+             → [«r; Nat», «r; Nat»];
+///
+/// Staged Rule witness that reads a source transpose's permutation and returns its input box.
+///
+axm transpose_box: {T: *, r: Nat, s: «r; Nat»}
+                 → [producer: «s; T», offset extent: «r; Nat»]
+                 → [«r; Nat», «r; Nat»];

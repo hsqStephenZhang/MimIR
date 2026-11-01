@@ -1,0 +1,42 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// RUN: cat %t.out | %FileCheck %s --check-prefix=ORD
+// RUN: grep "input_box supports only bijective projection maps" %t.log
+// TF-RULES: local
+// TF-PURE: reindex, tile_of, tensor.slice, tensor.unary
+
+plugin compile;
+plugin tensor;
+// reindex reads its input at map(output_coordinate), modeling a transposed access.
+axm reindex: [«2; Nat» → «2; Nat», «8, 8; Nat»] → «8, 8; Nat»;
+// tile_of reads a producer box with map(offset + local_coordinate) - box.offset.
+axm tile_of: [map: «2; Nat» → «2; Nat», offset: «2; Nat», shape: «2; Nat»,
+             box: [«2; Nat», «2; Nat»], input: «box#tt; Nat»] → «shape; Nat»;
+rule local (map: «2; Nat» → «2; Nat», f: Nat → Nat, x: «8, 8; Nat»):
+    tensor.slice @(Nat, 2) (8, 8) ((1, 4), (1, 1), (2, 3))
+        (reindex (map, tensor.unary @(Nat, Nat) f @(2, (8, 8)) x)) =>
+    let box = tensor.input_box @2 (map, (1, 4), (2, 3));
+    tile_of (map, (1, 4), (2, 3), box,
+        tensor.unary @(Nat, Nat) f @(2, box#tt)
+            (tensor.slice @(Nat, 2) (8, 8) (box#ff, (1, 1), box#tt) x));
+lam transpose (o: «2; Nat»): «2; Nat» = (o#tt, o#ff);
+lam diagonal (o: «2; Nat»): «2; Nat» = (o#ff, o#ff);
+extern lam result (f: Nat → Nat, x: «8, 8; Nat»): «2, 3; Nat» =
+    tensor.slice @(Nat, 2) (8, 8) ((1, 4), (1, 1), (2, 3))
+        (reindex (transpose, tensor.unary @(Nat, Nat) f @(2, (8, 8)) x));
+extern lam unknown (f: Nat → Nat, x: «8, 8; Nat»): «2, 3; Nat» =
+    tensor.slice @(Nat, 2) (8, 8) ((1, 4), (1, 1), (2, 3))
+        (reindex (diagonal, tensor.unary @(Nat, Nat) f @(2, (8, 8)) x));
+extern lam ordinary (map: «2; Nat» → «2; Nat»): [«2; Nat», «2; Nat»] =
+    tensor.input_box @2 (map, (1, 4), (2, 3));
+
+// CHECK-LABEL: extern lam result
+// CHECK: tensor.slice @ (Nat, 2) ‹2; 8› ((4, 1), ‹2; 1›, (3, 2))
+// CHECK: tensor.unary @ {{.*}} @ (2, (3, 2))
+// CHECK: tile_of
+// CHECK-NOT: tensor.input_box
+// CHECK-LABEL: extern lam unknown
+// CHECK: reindex
+// CHECK: tensor.slice @ (Nat, 2) ‹2; 8› ((1, 4), ‹2; 1›, (2, 3))
+// ORD-LABEL: extern lam ordinary
+// ORD: tensor.input_box @ 2

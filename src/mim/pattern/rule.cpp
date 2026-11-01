@@ -366,6 +366,9 @@ RuleReplacement RulePattern::build_replacement(const Def* candidate,
     std::array lhs{rule_->lhs()}, matched{candidate};
     auto guard = evaluate_guard(rule_, result.bindings, lhs, matched, guards);
     if (guard.status != MatchStatus::Matched) return {guard.status, nullptr, result.steps, guard.reason};
+    Rewriter witness_importer(target);
+    for (auto [term, value] : guard.values)
+        rw.map(term, witness_importer.rewrite(value));
     auto replacement = rw.rewrite(rule_->rhs());
     auto expected    = candidate->type() ? context.rewrite(candidate->type()) : nullptr;
     auto actual      = replacement->type();

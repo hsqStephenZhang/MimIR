@@ -9,11 +9,26 @@
 #include <mim/world.h>
 
 #include <mim/pattern/graph_rule.h>
+#include <mim/pattern/guard.h>
+#include <mim/pattern/rule.h>
 
 using namespace mim;
 using namespace mim::pattern;
 
 namespace {
+thread_local size_t witness_calls = 0;
+
+WitnessResult test_witness(const GraphView& graph, Defs inputs, World& target) {
+    ++witness_calls;
+    if (&inputs[0]->world() != &graph.world()) return {CheckResult::Unknown, nullptr, "input was not frozen"};
+    auto value = Lit::as(inputs[0]);
+    if (value == 8) return {CheckResult::Unknown, nullptr, "test witness is unknown"};
+    if (value == 9) return {CheckResult::False, nullptr, "test witness disproved"};
+    if (value == 10) return {CheckResult::True, target.lit_nat(0), {}};
+    if (value == 11) return {CheckResult::True, target.mut_lam(target.pi(target.type_nat(), target.type_nat())), {}};
+    return {CheckResult::True, target.lit_tt(), {}};
+}
+
 struct IR {
     Driver driver;
     World& w       = driver.world();
@@ -258,6 +273,92 @@ TEST_CASE("P5 graph Rule: rejected guards and identity templates do not publish"
     CHECK_FALSE(plan.plan);
     CHECK(plan.status == MatchStatus::No_Match);
     CHECK(view.is_current());
+}
+
+TEST_CASE("P5 witnesses: one frozen evaluation feeds the guard and both RHS frontends") {
+    Driver driver;
+    auto& w     = driver.world();
+    auto op     = w.axm(w.pi(w.type_nat(), w.type_bool()));
+    auto native = w.axm(w.pi(w.type_nat(), w.type_bool()));
+    driver.register_witness(native->flags(), {1, test_witness});
+    CHECK(driver.normalizer(native->flags()) == nullptr);
+    OpRegistry ops;
+    ops.add(op->flags(), 1, {{0}}, true);
+    auto rule    = w.mut_rule(w.reform(w.type_nat()));
+    auto witness = w.app(native, rule->var());
+    rule->set(w.app(op, rule->var()), witness, witness);
+    auto source = w.app(op, w.lit_nat(7));
+    GraphView graph({source}, {.operators = &ops});
+    GuardContext guards(graph);
+    auto gid = w.curr_gid();
+
+    auto unavailable = w.inherit();
+    witness_calls    = 0;
+    CHECK(RulePattern(rule).build_replacement(source, *unavailable).status == MatchStatus::Unknown);
+    CHECK(witness_calls == 0);
+
+    witness_calls = 0;
+    auto target   = w.inherit();
+    Rewriter importer(*target);
+    auto replacement = RulePattern(rule).build_replacement(source, importer, {}, &guards);
+    REQUIRE(replacement.status == MatchStatus::Matched);
+    CHECK(replacement.value == target->lit_tt());
+    CHECK(witness_calls == 1);
+    CHECK(w.curr_gid() == gid);
+    CHECK(graph.is_current());
+
+    witness_calls = 0;
+    GraphRulePattern pattern(rule);
+    auto found = pattern.find(graph);
+    REQUIRE(found.matches.size() == 1);
+    auto plan = pattern.plan(found.matches[0], graph, &guards);
+    REQUIRE(plan.status == MatchStatus::Matched);
+    REQUIRE(plan.plan);
+    CHECK(witness_calls == 1);
+    std::array plans{plan.plan.get()};
+    auto rebuilt = rewrite_graph(graph, plans);
+    CHECK(rebuilt.roots()[0] == rebuilt.world().lit_tt());
+    CHECK(witness_calls == 1);
+    CHECK(w.curr_gid() == gid);
+    CHECK(graph.is_current());
+}
+
+TEST_CASE("P5 witnesses: Unknown, disproved and invalid results never fire a Rule") {
+    Driver driver;
+    auto& w     = driver.world();
+    auto op     = w.axm(w.pi(w.type_nat(), w.type_bool()));
+    auto native = w.axm(w.pi(w.type_nat(), w.type_bool()));
+    driver.register_witness(native->flags(), {1, test_witness});
+    OpRegistry ops;
+    ops.add(op->flags(), 1, {{0}}, true);
+    auto rule = w.mut_rule(w.reform(w.type_nat()));
+    rule->set(w.app(op, rule->var()), w.app(native, rule->var()), w.lit_tt());
+    for (u64 value : {8, 9, 10, 11}) {
+        auto source = w.app(op, w.lit_nat(value));
+        GraphView graph({source}, {.operators = &ops});
+        GuardContext guards(graph);
+        auto gid      = w.curr_gid();
+        auto expected = value == 9 ? MatchStatus::No_Match : MatchStatus::Unknown;
+        auto target   = w.inherit();
+        Rewriter importer(*target);
+        witness_calls    = 0;
+        auto replacement = RulePattern(rule).build_replacement(source, importer, {}, &guards);
+        CHECK(replacement.status == expected);
+        CHECK_FALSE(replacement.reason.empty());
+        CHECK(replacement.value == nullptr);
+        CHECK(witness_calls == 1);
+        GraphRulePattern pattern(rule);
+        auto found = pattern.find(graph);
+        REQUIRE(found.matches.size() == 1);
+        witness_calls = 0;
+        auto plan     = pattern.plan(found.matches[0], graph, &guards);
+        CHECK(plan.status == expected);
+        CHECK_FALSE(plan.reason.empty());
+        CHECK_FALSE(plan.plan);
+        CHECK(witness_calls == 1);
+        CHECK(w.curr_gid() == gid);
+        CHECK(graph.is_current());
+    }
 }
 
 TEST_CASE("P5 graph Rule: root limits and unsupported RHSs are explicit failures") {

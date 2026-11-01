@@ -6,6 +6,7 @@
 #include "mim/world.h"
 
 #include "mim/pattern/rule.h"
+#include "mim/pattern/witness.h"
 
 namespace mim::pattern {
 
@@ -52,6 +53,12 @@ Recipe RewritePlan::extract(Recipe tuple, size_t index) {
 
 Recipe RewritePlan::instantiate(const Def* term, const Def2Def& bindings) {
     return append({.kind = Kind::Instantiate, .def = term, .bindings = bindings});
+}
+
+Recipe RewritePlan::witness_value(const Def* value) {
+    if (!witness_world_ || &value->world() != witness_world_.get() || !is_witness_data(value))
+        throw std::invalid_argument("witness recipe requires owned frozen literal data");
+    return append({.kind = Kind::Witness, .def = value});
 }
 
 void RewritePlan::replace(const Def* old, Recipe recipe) {
@@ -179,6 +186,8 @@ public:
         for (auto plan : plans) {
             if (!plan || plan->snapshot_ != graph.snapshot() || plan->replacements_.empty())
                 throw std::invalid_argument("plan does not belong to this snapshot or has no replacements");
+            if (plan->witness_world_ && &plan->witness_world_->driver() != &graph.world().driver())
+                throw std::invalid_argument("witness values belong to another Driver");
             if (plan->entries_.size() > options.max_recipes - std::min(count, options.max_recipes))
                 throw RebuildLimit("replacement recipe budget exceeded");
             count += plan->entries_.size();
@@ -187,8 +196,12 @@ public:
                 if (!graph.is_pure(def) || !replacements_.emplace(def, std::pair{plan, recipe}).second)
                     throw std::invalid_argument("replacement is impure, unsupported, or overlaps another plan");
             for (const auto& entry : plan->entries_) {
-                if (entry.def && &entry.def->world() != &graph.world())
+                if (entry.def && &entry.def->world() != &graph.world() && entry.kind != RewritePlan::Kind::Witness)
                     throw std::invalid_argument("recipe references another World");
+                if (entry.kind == RewritePlan::Kind::Witness
+                    && (!plan->witness_world_ || &entry.def->world() != plan->witness_world_.get()
+                        || !is_witness_data(entry.def)))
+                    throw std::invalid_argument("recipe has an invalid frozen witness value");
                 if (entry.kind == RewritePlan::Kind::Import && !graph.is_contained(entry.def))
                     throw std::invalid_argument("recipe imports a value outside the graph");
                 if (entry.kind == RewritePlan::Kind::Call && !graph.has_purity(entry.def->flags()))
@@ -197,9 +210,13 @@ public:
                     throw std::invalid_argument("literal recipes require a Nat or Idx scalar type");
                 if (entry.kind == RewritePlan::Kind::Instantiate) {
                     for (auto [meta, value] : entry.bindings) {
+                        if (!meta || &meta->world() != &graph.world())
+                            throw std::invalid_argument("RHS instantiation has foreign capture bindings");
                         if (meta->isa<Lam>() || (meta->isa<Var>() && meta->as<Var>()->binder()->isa<Lam>())) continue;
-                        if (!meta || &meta->world() != &graph.world()
-                            || (!graph.is_contained(value) && !value->has_free_vars()))
+                        if (plan->witness_world_ && &value->world() == plan->witness_world_.get()
+                            && is_witness_data(value))
+                            continue;
+                        if (!graph.is_contained(value) && !value->has_free_vars())
                             throw std::invalid_argument("RHS instantiation has foreign capture bindings");
                         DefVec pending{value};
                         DefSet seen;
@@ -495,6 +512,7 @@ private:
         for (auto arg : entry.args)
             args.push_back(evaluate(plan, arg.index_, depth + 1));
         switch (entry.kind) {
+            case RewritePlan::Kind::Witness: value = importer_.rewrite(entry.def); break;
             case RewritePlan::Kind::Import: value = rewrite(entry.def); break;
             case RewritePlan::Kind::Literal: value = world().lit(importer_.rewrite(entry.def), entry.bits); break;
             case RewritePlan::Kind::Call: {

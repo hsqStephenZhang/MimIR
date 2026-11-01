@@ -17,6 +17,8 @@
 #include "mim/config.h"
 #include "mim/def.h"
 
+#include "mim/pattern/witness.h"
+
 namespace mim {
 
 class Driver;
@@ -172,6 +174,7 @@ struct Plugin {
     size_t num_envs;       ///< Number of Plugin::envs.
     const PluginSym* syms; ///< The symbols other Plugin%s may look up; see PluginSym.
     size_t num_syms;       ///< Number of Plugin::syms.
+    void (*register_witnesses)(pattern::Witnesses&);
 };
 
 /// @name Plugin Interface

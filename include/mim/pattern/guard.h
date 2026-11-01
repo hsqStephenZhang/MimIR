@@ -27,6 +27,8 @@ public:
 struct GuardResult {
     MatchStatus status;
     std::string reason;
+    Def2Def values                      = {};
+    std::shared_ptr<World> values_world = {};
 };
 
 GuardResult evaluate_guard(const Rule*, const Def2Def&, Defs lhs, Defs matched, const GuardContext* = nullptr);

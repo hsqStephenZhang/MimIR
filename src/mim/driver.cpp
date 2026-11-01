@@ -205,9 +205,19 @@ void Driver::load(std::string_view spec, Loc loc) {
     // clang-format off
     if (auto reg = plugin.register_normalizers) reg(normalizers_);
     if (auto reg = plugin.register_phases)      reg(phases_);
+    if (auto reg = plugin.register_witnesses)   reg(witnesses_);
     // clang-format on
+    for (auto [flags, witness] : witnesses_)
+        if (!witness.evaluate || witness.num_inputs > 64 || normalizer(flags))
+            fe::throwf("invalid staged witness registration: {}", flags);
     if (plugin.args) known_args_.emplace_back(name, fe::View<PluginArg>(plugin.args, plugin.num_args));
     if (plugin.envs) known_envs_.emplace_back(name, fe::View<PluginEnv>(plugin.envs, plugin.num_envs));
+}
+
+void Driver::register_witness(flags_t flags, pattern::Witness witness) {
+    if (!witness.evaluate || witness.num_inputs > 64 || normalizer(flags))
+        fe::throwf("invalid staged witness registration: {}", flags);
+    fe::assert_emplace(witnesses_, flags, witness);
 }
 
 void* Driver::get_fun_ptr(std::string_view plugin, const char* name) {

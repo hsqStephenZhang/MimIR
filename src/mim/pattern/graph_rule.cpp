@@ -50,7 +50,7 @@ GraphMatches GraphRulePattern::find(const GraphView& graph, GraphMatchOptions op
 
 bool GraphRulePattern::uses_graph_facts() const {
     auto& driver = lowered_.rule_->driver();
-    DefVec pending{lowered_.rule_->guard()};
+    DefVec pending{lowered_.rule_->guard(), lowered_.rule_->rhs()};
     DefSet seen;
     for (size_t i = 0; i != pending.size(); ++i) {
         if (i >= 100000) return true;
@@ -59,6 +59,7 @@ bool GraphRulePattern::uses_graph_facts() const {
         if (auto axm = def->isa<Axm>()) {
             if (axm->sym() == driver.sym("compile.used_by") || axm->sym() == driver.sym("compile.only_used_by"))
                 return true;
+            if (driver.witness(axm->flags())) return true;
             continue;
         }
         if (def->isa<Var>()) continue;
@@ -89,6 +90,9 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
     if (guard.status != MatchStatus::Matched) return {guard.status, {}, guard.reason};
 
     auto plan = std::make_unique<RewritePlan>(match);
+    for (auto [term, value] : guard.values)
+        bindings.emplace(term, value);
+    plan->witness_values(guard.values_world);
     if (!lowered_.binders_.empty()) {
         auto value = plan->instantiate(rule->rhs(), bindings);
         for (size_t i = 0; i != lhs_.size(); ++i)
@@ -101,7 +105,10 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
         if (depth >= 256 || ++count > 10000) throw std::invalid_argument("graph Rule recipe budget exceeded");
         if (auto i = built.find(def); i != built.end()) return i->second;
         auto result = [&]() -> Recipe {
-            if (auto i = bindings.find(def); i != bindings.end()) return plan->import(i->second);
+            if (auto i = bindings.find(def); i != bindings.end()) {
+                if (guard.values.contains(def)) return plan->witness_value(i->second);
+                return plan->import(i->second);
+            }
             if (lowered_.is_meta(def) && lowered_.can_bind(def, bindings)) {
                 if (auto ex = def->isa<Extract>())
                     return plan->extract(build(ex->tuple(), depth + 1), Lit::as(ex->index()));

@@ -17,6 +17,39 @@ using namespace mim::pattern;
 using namespace mim::plug;
 namespace tg = tensor::graph;
 
+TEST_CASE("Tensor witnesses: transpose box follows source-axis permutation in three dimensions") {
+    Driver driver;
+    auto& w = driver.world();
+    ast::load_plugin(w, "tensor");
+    auto nat         = w.type_nat();
+    auto rank        = w.lit_nat(3);
+    auto dims        = w.tuple({w.lit_nat(5), w.lit_nat(7), w.lit_nat(11)});
+    auto input       = w.axm(w.arr(Defs{w.lit_nat(5), w.lit_nat(7), w.lit_nat(11)}, nat));
+    auto permutation = w.tuple({w.lit_idx(3, 1), w.lit_idx(3, 2), w.lit_idx(3, 0)});
+    auto op          = w.app(w.app(w.app(w.annex<tensor::transpose>(), {nat, rank}), permutation), dims);
+    auto source      = w.app(op, input);
+    OpRegistry ops;
+    ops.add(Annex::base<tensor::transpose>(), 4, {{3}}, true);
+    GraphView graph({source}, {.operators = &ops});
+    auto offset = w.tuple({w.lit_nat(2), w.lit_nat(1), w.lit_nat(3)});
+    auto extent = w.tuple({w.lit_nat(4), w.lit_nat(2), w.lit_nat(3)});
+    auto native = driver.witness(Annex::base<tensor::transpose_box>());
+    REQUIRE(native);
+    CHECK(driver.normalizer(Annex::base<tensor::transpose_box>()) == nullptr);
+    auto gid    = w.curr_gid();
+    auto target = w.inherit();
+    std::array inputs{source, offset, extent};
+    auto result = native->evaluate(graph, inputs, *target);
+    REQUIRE(result.status == CheckResult::True);
+    auto [starts, sizes] = result.value->projs<2>();
+    for (size_t i = 0; i != 3; ++i) {
+        CHECK(Lit::as(starts->proj(3, i)) == std::array<u64, 3>{1, 3, 2}[i]);
+        CHECK(Lit::as(sizes->proj(3, i)) == std::array<u64, 3>{2, 3, 4}[i]);
+    }
+    CHECK(w.curr_gid() == gid);
+    CHECK(graph.is_current());
+}
+
 namespace {
 
 struct TensorIR {
