@@ -3,6 +3,7 @@
 #include "mim/phase.h"
 
 #include "mim/pattern/guard.h"
+#include "mim/pattern/rewrite.h"
 
 namespace mim {
 
@@ -12,6 +13,7 @@ public:
     using Phase::Phase;
     void apply(const App*) override;
     std::unique_ptr<Phase> recreate() override;
+    void set_rewrite_options(pattern::RewriteOptions options) { rewrite_options_ = options; }
 
 private:
     void start() override;
@@ -19,6 +21,7 @@ private:
     std::vector<const Rule*> rules_;
     std::vector<const Axm*> pure_;
     std::vector<pattern::DataOp> schemas_;
+    pattern::RewriteOptions rewrite_options_;
 };
 
 } // namespace mim

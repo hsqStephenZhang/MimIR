@@ -2,6 +2,23 @@
 
 ## Task 3：独立 frontend 回归与 annex 引用
 
+### Task 4 前置修复：深 DAG 与资源预算
+
+graph rebuild、非重写 importer 与批量 FunctionPublisher 对 immutable DAG 使用显式栈，
+继续复用 Rewriter 的 mutable stub / Var 映射；普通 op chain 不再受 256 层 rebuild 限制。
+默认 work budget 按源 World 节点规模扩展，显式小预算仍可用于调用方资源限制。
+耗尽返回可识别的 RebuildLimit，phase 丢弃 candidate / publication 并写 debug 诊断，
+不把资源不足当成编译错误。recipe/dependency 的剩余深度预算同样走此拒绝路径。
+同时替换仍按新的 recipe 依赖排序，不预遍历被替换 key 的旧 operands。
+
+CTest 在真实 GraphRuleRewrite phase 上验证 400 / 5000 层 chain 全部保留且 q→v，
+并对两种深度检查小预算时源函数不变、phase 不请求迭代。
+lit 另验证 400 层源码的编译和输出。
+5000 层的 IR 结果用 C++ 逐节点检查，不依赖尚有递归展开限制的 Mim textual dumper。
+验证：CTest 230/230；rules|error|tensor 211 通过、4 unsupported。
+closed mutable type 的 native alpha Where 可能记录 snapshot-wide reads，仍会限制批量计划
+之间的兼容性；本修复没有移除保守 read tracking。
+
 以下更新优先于后面的 Task 2 历史结果。
 每个 `tf_*.mim` 现在只运行 rule frontend，对应 `tf_*_g.mim` 只运行 graph frontend。
 可工作的路径使用目标 CHECK；尚未工作的路径使用 unchanged IR 和精确诊断的正向 GAP 检查，

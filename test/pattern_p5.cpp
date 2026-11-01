@@ -384,7 +384,7 @@ TEST_CASE("Review budget: zero-output nested wrapper expansion has bounded work"
     CHECK(decoded->inputs.empty());
 }
 
-TEST_CASE("Review budget: unrelated external imports obey source and depth limits") {
+TEST_CASE("Review budget: unrelated deep external imports obey work limits without a depth cliff") {
     IR ir;
     auto f = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat))->set("review_small");
     f->set(false, ir.call(ir.q, f->var()))->externalize();
@@ -401,7 +401,7 @@ TEST_CASE("Review budget: unrelated external imports obey source and depth limit
     RewritePlan plan(found.matches[0]);
     plan.replace(found.matches[0].at(a), plan.literal(ir.nat, 0));
     std::array plans{&plan};
-    CHECK_THROWS_AS(rewrite_graph(view, plans, {.max_depth = 12}), std::invalid_argument);
+    CHECK_NOTHROW(rewrite_graph(view, plans, {.max_depth = 12}));
     CHECK_THROWS_AS(rewrite_graph(view, plans, {.max_source_nodes = 30}), std::invalid_argument);
     CHECK(view.is_current());
 }

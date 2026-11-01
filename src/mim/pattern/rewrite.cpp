@@ -60,23 +60,21 @@ namespace {
 
 struct RebuildBudget {
     RewriteOptions options;
-    size_t depth = 0, work = 0;
+    size_t work = 0;
     void touch() {
-        if (++work > options.max_source_nodes) throw std::invalid_argument("graph rebuild source work budget exceeded");
-        if (depth >= options.max_depth) throw std::invalid_argument("graph rebuild depth budget exceeded");
+        if (++work > options.max_source_nodes) throw RebuildLimit("graph rebuild source work budget exceeded");
     }
 };
 
-class GraphImporter : public Rewriter {
+class GraphImporter : public DAGRewriter {
 public:
     GraphImporter(const GraphView& graph, World& target, RebuildBudget& budget)
-        : Rewriter(target)
+        : DAGRewriter(target, budget.options.max_source_nodes)
         , graph_(graph)
         , budget_(budget) {}
     const Def* rewrite(const Def* def) override {
         budget_.touch();
-        auto depth = fe::Restore(budget_.depth, budget_.depth + 1);
-        return Rewriter::rewrite(def);
+        return DAGRewriter::rewrite(def);
     }
     const Def* lookup(const Def* def) override {
         if (auto mapped = Rewriter::lookup(def)) return mapped;
@@ -93,13 +91,14 @@ private:
 
 } // namespace
 
-class GraphRebuilder : public Rewriter {
+class GraphRebuilder : public DAGRewriter {
 public:
+    bool descend(const Def* def) const override { return !replacements_.contains(def); }
     GraphRebuilder(const GraphView& graph,
                    std::span<const RewritePlan* const> plans,
                    World& target,
                    RewriteOptions options)
-        : Rewriter(target)
+        : DAGRewriter(target, options.max_source_nodes)
         , graph_(graph)
         , budget_{options}
         , importer_(graph, target, budget_)
@@ -110,7 +109,7 @@ public:
             if (!plan || plan->snapshot_ != graph.snapshot() || plan->replacements_.empty())
                 throw std::invalid_argument("plan does not belong to this snapshot or has no replacements");
             if (plan->entries_.size() > options.max_recipes - std::min(count, options.max_recipes))
-                throw std::invalid_argument("replacement recipe budget exceeded");
+                throw RebuildLimit("replacement recipe budget exceeded");
             count += plan->entries_.size();
             memo_.emplace(plan, std::vector<const Def*>(plan->entries_.size(), nullptr));
             for (auto [def, recipe] : plan->replacements_)
@@ -155,8 +154,7 @@ public:
                 for (size_t j = 0; j != defs.size(); ++j) {
                     auto current = defs[j];
                     if (!visited.insert(current).second) continue;
-                    if (++scanned > options.max_source_nodes)
-                        throw std::invalid_argument("source dependency budget exceeded");
+                    if (++scanned > options.max_source_nodes) throw RebuildLimit("source dependency budget exceeded");
                     if (replacements_.contains(current)) {
                         dependencies[def].push_back(current);
                         continue; // Its new recipe, not its old operands, determines dependencies.
@@ -173,7 +171,7 @@ public:
         std::function<void(const Def*, size_t)> visit = [&](const Def* def, size_t depth) {
             if (state[def] == 1) throw std::invalid_argument("replacement dependency cycle");
             if (state[def] == 2) return;
-            if (depth >= options.max_depth) throw std::invalid_argument("replacement dependency depth exceeded");
+            if (depth >= options.max_depth) throw RebuildLimit("replacement dependency depth exceeded");
             state[def] = 1;
             for (auto next : dependencies[def])
                 visit(next, depth + 1);
@@ -193,9 +191,8 @@ public:
             if (def->isa<App>() && !pure.contains(def)) protected_.insert(def);
     }
 
-    const Def* rewrite(const Def* def) override {
+    const Def* rewrite_ready(const Def* def) override {
         budget_.touch();
-        auto active      = fe::Restore(budget_.depth, budget_.depth + 1);
         auto replacement = replacements_.find(def);
         if (replacement == replacements_.end()) {
             auto value = Rewriter::rewrite(def);
@@ -211,7 +208,7 @@ public:
         for (auto var : value->free_vars())
             if (var != allowed) throw std::invalid_argument("replacement escapes the selected scope");
         results_.emplace(def, value);
-        return value;
+        return map(def, value);
     }
 
     const Def* rewrite_mut(Def* def) override { return map(def, importer_.rewrite(def)); }
@@ -280,9 +277,7 @@ public:
 
 private:
     const Def* evaluate(const RewritePlan* plan, size_t index, size_t depth) {
-        if (depth >= options_.max_depth || budget_.depth >= options_.max_depth)
-            throw std::invalid_argument("recipe evaluation depth exceeded");
-        auto active = fe::Restore(budget_.depth, budget_.depth + 1);
+        if (depth >= options_.max_depth) throw RebuildLimit("recipe evaluation depth exceeded");
         auto& value = memo_.at(plan)[index];
         if (value) return value;
         const auto& entry = plan->entries_[index];
@@ -383,6 +378,8 @@ GraphRewrite rewrite_graph(const GraphView& graph, std::span<const RewritePlan* 
     if (!graph.is_current() || plans.empty())
         throw std::invalid_argument("graph rewrite requires a current snapshot and plans");
     auto target = graph.world().inherit();
+    if (!options.max_source_nodes)
+        options.max_source_nodes = 64 * (graph.world().curr_gid() + graph.nodes().size() + 1);
     GraphRebuilder rewriter(graph, plans, *target, options);
     return rewriter.build(std::move(target));
 }

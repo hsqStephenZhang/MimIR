@@ -1,0 +1,1 @@
+// RUN: python3 %S/grdeep.py %mim %t

@@ -703,8 +703,8 @@ TEST_CASE("Graph rewrite: evaluation and source dependency work have explicit bo
     REQUIRE(matches.matches.size() == 1);
     RewritePlan plan(matches.matches.front());
     plan.replace(q, plan.call(ir.k, {plan.import(ir.x)}));
-    CHECK_THROWS_AS(build(graph, plan, {.max_source_nodes = 0}), std::invalid_argument);
-    CHECK_THROWS_AS(build(graph, plan, {.max_depth = 2}), std::invalid_argument);
+    CHECK_THROWS_AS(build(graph, plan, {.max_source_nodes = 1}), RebuildLimit);
+    CHECK_NOTHROW(build(graph, plan, {.max_depth = 2}));
     CHECK(graph.is_current());
 }
 

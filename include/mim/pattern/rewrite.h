@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mim/pattern/graph_match.h"
+#include "mim/pattern/import.h"
 
 namespace mim::pattern {
 
@@ -53,7 +54,7 @@ private:
 
 struct RewriteOptions {
     size_t max_recipes      = 10'000;
-    size_t max_source_nodes = 100'000;
+    size_t max_source_nodes = 0;
     size_t max_depth        = 256;
 };
 

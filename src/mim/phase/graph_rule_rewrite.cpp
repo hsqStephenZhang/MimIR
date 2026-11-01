@@ -24,17 +24,11 @@ std::string_view search_status(pattern::SearchStatus status) {
     std::unreachable();
 }
 
-class FunctionPublisher : public Rewriter {
+class FunctionPublisher : public pattern::DAGRewriter {
 public:
     FunctionPublisher(World& target, const fe::SymMap<const Def*>& selected)
-        : Rewriter(target)
+        : DAGRewriter(target, 64 * (target.curr_gid() + 1))
         , selected_(selected) {}
-
-    const Def* rewrite(const Def* def) override {
-        if (++work_ > 100000 || depth_ >= 256) throw std::invalid_argument("graph Rule publication budget exceeded");
-        auto depth = fe::Restore(depth_, depth_ + 1);
-        return Rewriter::rewrite(def);
-    }
 
     const Def* lookup(const Def* def) override {
         if (auto value = Rewriter::lookup(def)) return value;
@@ -54,7 +48,6 @@ public:
 
 private:
     const fe::SymMap<const Def*>& selected_;
-    size_t work_ = 0, depth_ = 0;
 };
 } // namespace
 
@@ -104,11 +97,12 @@ void GraphRuleRewrite::apply(const App* app) {
 }
 
 std::unique_ptr<Phase> GraphRuleRewrite::recreate() {
-    auto result        = std::make_unique<GraphRuleRewrite>(world(), annex());
-    result->templates_ = templates_;
-    result->rules_     = rules_;
-    result->pure_      = pure_;
-    result->schemas_   = schemas_;
+    auto result              = std::make_unique<GraphRuleRewrite>(world(), annex());
+    result->templates_       = templates_;
+    result->rules_           = rules_;
+    result->pure_            = pure_;
+    result->schemas_         = schemas_;
+    result->rewrite_options_ = rewrite_options_;
     return result;
 }
 
@@ -172,7 +166,16 @@ void GraphRuleRewrite::start() {
                     return false;
                 }
                 std::array plans{candidate.plan.get()};
-                auto next = pattern::rewrite_graph(view, plans);
+                std::optional<pattern::GraphRewrite> rebuilt;
+                try {
+                    rebuilt.emplace(pattern::rewrite_graph(view, plans, rewrite_options_));
+                } catch (const pattern::RebuildLimit& error) {
+                    reason = error.what();
+                    log().d("graph_rule_app skipped a match in {}: {}", fn, reason);
+                    profile_count("graph_rule.budget");
+                    return false;
+                }
+                auto next = std::move(*rebuilt);
                 if (!next.is_changed()) {
                     profile_count("graph_rule.noop");
                     reason = "canonical no-op";
@@ -197,10 +200,16 @@ void GraphRuleRewrite::start() {
         if (!facts.is_current()) throw std::invalid_argument("graph Rule source changed before publication");
         auto target = world().inherit();
         FunctionPublisher publisher(*target, selected);
-        for (auto ext : world().externals().muts()) {
-            auto copy = publisher.rewrite(ext)->isa_mut();
-            if (!copy) throw std::invalid_argument("graph Rule publication lost an external mutable");
-            if (!copy->is_external()) copy->externalize();
+        try {
+            for (auto ext : world().externals().muts()) {
+                auto copy = publisher.rewrite(ext)->isa_mut();
+                if (!copy) throw std::invalid_argument("graph Rule publication lost an external mutable");
+                if (!copy->is_external()) copy->externalize();
+            }
+        } catch (const pattern::RebuildLimit& error) {
+            log().d("graph_rule_app skipped publication: {}", error.what());
+            profile_count("graph_rule.budget");
+            return;
         }
         target->verify();
         swap(world(), *target);

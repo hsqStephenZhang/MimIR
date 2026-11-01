@@ -969,6 +969,46 @@ TEST_CASE("P5 graph phase: a normalized no-op Rule does not hide a productive Ru
     CHECK(fields->op(1)->as<App>()->axm()->flags() == k_flags);
 }
 
+TEST_CASE("P5 graph phase: deep DAGs rebuild and exhausted resources skip without publication") {
+    for (auto count : {400, 5000}) {
+        for (auto bounded : {false, true}) {
+            PDLLIR ir;
+            auto s    = ir.w.axm(ir.w.pi(ir.nat, ir.nat));
+            auto v    = ir.w.axm(ir.w.pi(ir.nat, ir.nat));
+            auto rule = ir.w.mut_rule(ir.w.reform(ir.nat));
+            rule->set(ir.call(ir.n, rule->var()), ir.call(v, rule->var()), ir.w.lit_tt());
+            auto fn         = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat))->set("deep_dag");
+            const Def* body = fn->var();
+            for (int i = 0; i != count; ++i)
+                body = ir.call(s, body);
+            fn->set(false, ir.call(ir.n, body))->externalize();
+            auto name    = fn->sym();
+            auto s_flags = s->flags(), v_flags = v->flags();
+            auto configuration = ir.w.tuple({rule, ir.w.tuple({ir.n, v, s})});
+            auto configure     = ir.w.axm(ir.w.pi(configuration->type(), ir.nat));
+            GraphRuleRewrite phase(ir.w, "deep_dag");
+            phase.apply(ir.call(configure, configuration)->as<App>());
+            if (bounded) phase.set_rewrite_options({.max_source_nodes = 1});
+            CHECK_NOTHROW(phase.run());
+            if (bounded) {
+                CHECK(ir.w.externals()[name] == fn);
+                CHECK_FALSE(phase.todo());
+                continue;
+            }
+            auto result = ir.w.externals()[name]->as<Lam>();
+            auto root   = result->body()->as<App>();
+            CHECK(root->axm()->flags() == v_flags);
+            auto value = root->arg();
+            for (int i = 0; i != count; ++i) {
+                auto op = value->as<App>();
+                CHECK(op->axm()->flags() == s_flags);
+                value = op->arg();
+            }
+            CHECK(value == result->var());
+        }
+    }
+}
+
 TEST_CASE("P5 graph phase: search continues past no-op, Unknown and rejected guard candidates") {
     PDLLIR ir;
     auto add   = ir.w.axm(add_zero, 1, Axm::Trip_End, ir.w.pi(ir.w.arr(2, ir.nat), ir.nat));
