@@ -1,0 +1,14 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang -c %{s:stem}.ll -o %t.o -Wno-override-module
+// RUN: %FileCheck %s < %{s:stem}.ll
+
+plugin core;
+plugin mem;
+plugin math;
+
+extern fun first_row (m: mem.M 0, n: Nat, p: mem.Ptr0 «n; «16; math.F32»»): [mem.M 0, «16; math.F32»] =
+    let row = core.bitcast (mem.Ptr0 «16; math.F32») p;
+    return (mem.load (m, row));
+
+// CHECK: [0 x <16 x float>] addrspace(0)*
+// CHECK: load <16 x float>, ptr {{.*}}, align 1

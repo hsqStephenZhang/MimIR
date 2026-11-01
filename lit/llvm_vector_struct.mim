@@ -1,0 +1,39 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang -O0 %{s:stem}.ll %S/llvm_vector_struct_aux.c -o %t -Wno-override-module
+// RUN: %t
+// RUN: clang -O3 -fsanitize=address %{s:stem}.ll %S/llvm_vector_struct_aux.c -o %t -Wno-override-module
+// RUN: %t
+// RUN: %FileCheck %s < %{s:stem}.ll
+
+plugin core;
+plugin math;
+plugin mem;
+
+rec Node = [acc: «16; math.F32», next: mem.Ptr0 Node];
+rec Padded = [tag: I8, acc: «16; math.F32», next: mem.Ptr0 Padded, tail: I8];
+
+extern fun copy_node (m: mem.M 0, p: mem.Ptr0 Node): [mem.M 0, mem.Ptr0 Node] =
+    let (m, q) = mem.malloc (Node, 0) (m, core.trait.size Node);
+    let (m, x) = mem.load (m, p);
+    let m = mem.store (m, q, x);
+    let fields = core.bitcast (mem.Ptr0 [«16; math.F32», mem.Ptr0 Node]) q;
+    let v = mem.lea (fields, 0₂);
+    let (m, a) = mem.load (m, v);
+    let a = a#0₁₆ ← math.arith.add 0 (a#0₁₆, 1.0:math.F32);
+    return (mem.store (m, v, a), q);
+
+extern fun copy_padded (m: mem.M 0, p: mem.Ptr0 Padded): [mem.M 0, mem.Ptr0 Padded] =
+    let (m, q) = mem.malloc (Padded, 0) (m, core.trait.size Padded);
+    let (m, x) = mem.load (m, p);
+    let x = x#3₄ ← core.wrap.add 0 (x#3₄, 1I8);
+    let m = mem.store (m, q, x);
+    let fields = core.bitcast (mem.Ptr0 [I8, «16; math.F32», mem.Ptr0 Padded, I8]) q;
+    let v = mem.lea (fields, 1₄);
+    let (m, a) = mem.load (m, v);
+    let a = a#0₁₆ ← math.arith.add 0 (a#0₁₆, 1.0:math.F32);
+    return (mem.store (m, v, a), q);
+
+// CHECK-DAG: type<{<16 x float>, {{.*}}}>
+// CHECK-DAG: type<{i8, [3 x i8], <16 x float>, [4 x i8], {{.*}}, i8, [7 x i8]}>
+// CHECK-DAG: call i8* @malloc(i64 72)
+// CHECK-DAG: call i8* @malloc(i64 88)

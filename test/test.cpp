@@ -10,6 +10,8 @@
 #include <mim/ast/parser.h>
 
 #include <mim/plug/core/core.h>
+#include <mim/plug/ll/ll.h>
+#include <mim/plug/math/math.h>
 
 using namespace mim;
 
@@ -18,6 +20,33 @@ using namespace mim;
 static_assert(std::same_as<decltype(std::declval<const Def*>()->projs(0u)), DefVec>);
 static_assert(std::same_as<decltype(std::declval<const Lam*>()->doms(size_t(0))), DefVec>);
 using namespace mim::plug;
+
+TEST_CASE("LLVM: canonical vector pointer and erased memory pair") {
+    Driver driver;
+    auto& w = driver.world();
+    ast::load_plugin(w, "math");
+    ast::load_plugin(w, "mem");
+    auto zero        = w.lit_nat_0();
+    auto value       = math::lit_f(w, 32, 1.0);
+    auto init        = w.pack(w.lit_nat(16), value);
+    auto type        = init->type();
+    auto pointer     = w.call<mem::Ptr>(Defs{type, zero});
+    auto memory      = w.call<mem::M>(zero);
+    auto result      = w.sigma(Defs{memory, type});
+    auto fun         = w.mut_con(Defs{memory, pointer, w.cn(result)})->set("read_vector_pointer");
+    auto [m, p, ret] = fun->vars<3>();
+    auto load        = w.call<mem::load>(Defs{m, p});
+    fun->app(false, ret, load);
+    fun->externalize();
+    std::ostringstream output;
+    ll::Emitter emitter(w, "test", output);
+    emitter.run();
+    auto ir = output.str();
+    CHECK(ir.contains("load <16 x float>, ptr "));
+    CHECK(ir.contains("ret <16 x float>"));
+    CHECK_FALSE(ir.contains("[16 x float]"));
+    CHECK_FALSE(ir.contains("extractvalue <16 x float>"));
+}
 
 TEST_CASE("World: one-tuples fold away") {
     Driver driver;

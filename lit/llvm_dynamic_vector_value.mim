@@ -1,0 +1,10 @@
+// RUN: (! %mim -p opt %s -p ll 2>&1) | %FileCheck %s
+
+plugin mem;
+plugin math;
+
+extern fun copy_dynamic (m: mem.M 0, n: Nat, p q: mem.Ptr0 «n; «16; math.F32»»): mem.M 0 =
+    let (m, x) = mem.load (m, p);
+    return (mem.store (m, q, x));
+
+// CHECK: ll backend: a by-value array requires a literal extent

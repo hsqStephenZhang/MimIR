@@ -1,0 +1,9 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang -c %{s:stem}.ll -o %t.o -Wno-override-module
+// RUN: %FileCheck %s < %{s:stem}.ll
+
+plugin math;
+extern fun vector_tuple (x: math.F32): «4; math.F32» =
+    return (x, 1.0:math.F32, 2.0:math.F32, 3.0:math.F32);
+
+// CHECK: insertelement <4 x float> {{.*}}, float {{.*}}, i32 0

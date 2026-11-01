@@ -220,6 +220,24 @@ stride、tail panels 和循环顺序也未用成本模型搜索。
 再加入 scratch reuse、A packing 和 target microkernel，不能仅凭进一步去除 copies
 保证达到 OpenBLAS。parallel grid 不用于这里的单线程对比。
 
+## 6. Register accumulator 的 LLVM 前提
+
+从 `fix/ll-simd-emit` 移植最终修复，不保留其被替代的中间实现。
+CPU 的静态、二次幂 F32 数组在 SSA 和内存访问中使用相同的 vector 类型，
+load/store 使用 `align 1`，因此 loop-carried accumulator 不再需要 lane-wise repack。
+gpm 已有其他数值类型的双形式 conversion；这里保留它，仅让含 F32 vector 的类型
+共用 canonical form，避免回退该分支已有的 integer/F64 SIMD 支持。
+
+含 F32 vector 的结构体使用 packed LLVM type 加显式 padding，偏移与
+`core.trait.align/size` 一致；rec、字段 extract/insert 和 `mem.lea` 采用同一字段编号映射。
+动态 extent 的数组仍可通过指针传递，但不支持按值 load/store，改为明确诊断，
+不再静默发出 `[0 x T]` 的零字节复制。
+
+移植后的 `fc_exec`、`attn_exec` LLVM 行数不变；变化仅为 F32 内层数组的
+vector/opaque-pointer 类型拼写，循环与 scalar arithmetic 不变。
+`buffer/exec_conv` 去掉生成 ID 后完全一致。
+gpm 不再有 `Global` IR 节点，所以对应单元测试改为外部 vector pointer 与 memory-pair erasure。
+
 ## 0. Generic shape Rules
 
 

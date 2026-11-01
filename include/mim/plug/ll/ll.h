@@ -223,6 +223,8 @@ protected:
         return res;
     }
     std::string convert_ret_pi(const Pi*);
+    fe::Vector<nat_t> aggregate_padding(const Def*);
+    nat_t aggregate_index(const Def*, nat_t);
 
     /// Lane count and element type if a value of @p type is an LLVM vector.
     std::optional<std::pair<nat_t, const Def*>> vectorize(const Def* type) const;
@@ -255,6 +257,8 @@ protected:
         std::print(bb.body().emplace_back(), "{} = alloca {}", v_ptr, convert(pointee, false));
         return v_ptr;
     }
+
+    virtual bool use_simd() const { return true; }
 
     Lam* curr_lam_ = nullptr;
     std::ostream& ostream_;

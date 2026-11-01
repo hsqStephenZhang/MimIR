@@ -17,6 +17,31 @@ namespace clos = mim::plug::clos;
 namespace core = mim::plug::core;
 namespace vecp = mim::plug::vec;
 
+namespace {
+bool is_f32_vector(const Def* type) {
+    auto arr = is_simd(type);
+    return arr && math::isa_f(arr->second) == 32;
+}
+
+bool has_f32_vector(const Def* type) {
+    if (is_f32_vector(type)) return true;
+    if (auto arr = type->isa<Arr>()) return has_f32_vector(arr->elem());
+    if (auto sigma = type->isa<Sigma>())
+        return std::ranges::any_of(sigma->ops(), [](auto field) { return has_f32_vector(field); });
+    return false;
+}
+
+void require_static_array_value(const Def* type) {
+    if (auto arr = type->isa<Arr>()) {
+        if (!Lit::isa(arr->arity())) type->blame(MIM_LL_BE "a by-value array requires a literal extent").bail();
+        require_static_array_value(arr->elem());
+    } else if (auto sigma = type->isa<Sigma>()) {
+        for (auto field : sigma->ops())
+            require_static_array_value(field);
+    }
+}
+} // namespace
+
 /// Pipeline phase for `ll.emit`.
 /// Writes the LLVM IR of the fully lowered world to `<world>.ll` (or `a.ll` if the world is unnamed).
 /// The output path can be overridden via [`-X ll:o=<file>`](@ref xarg_ll) or `-X ll:output=<file>`.
@@ -121,7 +146,44 @@ static const char* fcmp_pred(math::cmp id) {
     }
 }
 
+fe::Vector<nat_t> Emitter::aggregate_padding(const Def* type) {
+    // LLVM vector alignment must not change Mim's aggregate field offsets.
+    auto sigma = type->isa<Sigma>();
+    if (!use_simd() || !sigma || !has_f32_vector(type) || detail::isa_mem_sigma_2(type)) return {};
+    fe::Vector<nat_t> padding;
+    nat_t offset = 0;
+    nat_t align  = 1;
+    for (auto field : sigma->ops()) {
+        if (Axm::isa<mem::M>(field)) {
+            padding.push_back(0);
+            continue;
+        }
+        auto a    = Lit::expect(core::op(core::trait::align, field), "a static aggregate field alignment");
+        auto size = Lit::expect(core::op(core::trait::size, field), "a static aggregate field size");
+        auto pad  = (a - offset % a) % a;
+        padding.push_back(pad);
+        offset += pad + size;
+        align = std::max(align, a);
+    }
+    padding.push_back((align - offset % align) % align);
+    return padding;
+}
+
+nat_t Emitter::aggregate_index(const Def* type, nat_t index) {
+    auto sigma = type->isa<Sigma>();
+    if (!sigma) return index;
+    auto padding = aggregate_padding(type);
+    nat_t result = 0;
+    for (nat_t i = 0; i <= index; ++i) {
+        if (!padding.empty() && padding[i]) ++result;
+        if (i < index && !Axm::isa<mem::M>(sigma->op(i))) ++result;
+    }
+    return result;
+}
+
 std::string Emitter::convert_impl(const Def* type, bool simd) {
+    if (use_simd() && simd) require_static_array_value(type);
+    if (use_simd() && has_f32_vector(type)) simd = true;
     if (auto s = fe::lookup(types_[simd], type)) return *s;
     if (simd && !has_vec(type)) return types_[simd][type] = convert_impl(type, false);
 
@@ -145,6 +207,7 @@ std::string Emitter::convert_impl(const Def* type, bool simd) {
         }
     } else if (auto ptr = Axm::isa<mem::Ptr>(type)) {
         auto [pointee, addr_space] = ptr->args<2>();
+        if (use_simd() && is_f32_vector(pointee) && Lit::isa(addr_space) == 0) return types_[simd][type] = "ptr";
         std::print(s, "{} addrspace({})*", convert(pointee, false), addr_space);
     } else if (auto arr = type->isa<Arr>()) {
         if (auto se = simd ? vectorize(arr) : std::nullopt) {
@@ -180,13 +243,21 @@ std::string Emitter::convert_impl(const Def* type, bool simd) {
             std::print(s, "{} = type", name);
         }
 
-        std::print(s, "{{");
-        for (auto sep = ""; auto t : sigma->ops()) {
+        auto padding = aggregate_padding(sigma);
+        std::print(s, "{}", padding.empty() ? "{" : "<{");
+        std::string sep;
+        for (size_t i = 0; auto t : sigma->ops()) {
+            if (!padding.empty() && padding[i]) {
+                std::print(s, "{}[{} x i8]", sep, padding[i]);
+                sep = ", ";
+            }
+            ++i;
             if (Axm::isa<mem::M>(t)) continue;
             std::print(s, "{}{}", sep, convert(t, simd));
             sep = ", ";
         }
-        std::print(s, "}}");
+        if (!padding.empty() && padding.back()) std::print(s, "{}[{} x i8]", sep, padding.back());
+        std::print(s, "{}", padding.empty() ? "}" : "}>");
     } else {
         type->blame(MIM_LL_BE "cannot convert this type to LLVM").bail();
     }
@@ -281,15 +352,12 @@ void Emitter::emit_epilogue_impl(Lam* lam) {
                     auto val_t        = convert(elem);
 
                     type = std::format("<{} x {}>", size, val_t);
-                    bool all_const
-                        = std::ranges::all_of(values, [](const std::string& v) { return !v.starts_with('%'); });
-                    if (all_const) {
+                    if (std::ranges::none_of(values, [](const auto& value) { return value.contains('%'); })) {
+                        prev = "<";
+                        std::string sep;
                         for (auto val : values) {
-                            if (prev.empty())
-                                prev = "<";
-                            else
-                                prev += ", ";
-                            prev += std::format("{} {}", val_t, val);
+                            prev += sep + std::format("{} {}", val_t, val);
+                            sep = ", ";
                         }
                         prev += ">";
                     } else {
@@ -308,7 +376,8 @@ void Emitter::emit_epilogue_impl(Lam* lam) {
                         auto v_elem = values[i];
                         auto t_elem = convert(types[i]);
                         auto namei  = id(lam, true) + ".ret_val." + std::to_string(i);
-                        bb.tail("{} = insertvalue {} {}, {} {}, {}", namei, type, prev, t_elem, v_elem, i);
+                        bb.tail("{} = insertvalue {} {}, {} {}, {}", namei, type, prev, t_elem, v_elem,
+                                aggregate_index(world().sigma(types), i));
                         prev = namei;
                     }
                 }
@@ -431,11 +500,17 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
 
     auto vec = vectorize(tuple->type()).has_value();
     if (tuple->is_closed()) {
-        bool is_array = tuple->type()->isa<Arr>();
+        auto padding    = aggregate_padding(tuple->type());
+        bool is_array   = tuple->type()->isa<Arr>();
+        auto simd_array = is_array && convert(tuple->type()).front() == '<';
         std::string s;
-        s += vec ? "<" : is_array ? "[" : "{";
+        s += simd_array ? "<" : is_array ? "[" : padding.empty() ? "{" : "<{";
         auto sep = "";
         for (size_t i = 0, n = tuple->num_projs(); i != n; ++i) {
+            if (!padding.empty() && padding[i]) {
+                s += sep + std::format("[{} x i8] zeroinitializer", padding[i]);
+                sep = ", ";
+            }
             auto e = tuple->proj(n, i);
             if (auto v_elem = emit_unsafe(e); !v_elem.empty()) {
                 auto t_elem = convert(e->type());
@@ -444,7 +519,8 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
             }
         }
 
-        return s += vec ? ">" : is_array ? "]" : "}";
+        if (!padding.empty() && padding.back()) s += sep + std::format("[{} x i8] zeroinitializer", padding.back());
+        return s += simd_array ? ">" : is_array ? "]" : padding.empty() ? "}" : "}>";
     }
 
     std::string prev = "undef";
@@ -458,7 +534,8 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
             if (vec)
                 prev = bb.assign(namei, "insertelement {} {}, {} {}, i32 {}", t, prev, elem_t, elem, dst);
             else
-                prev = bb.assign(namei, "insertvalue {} {}, {} {}, {}", t, prev, elem_t, elem, dst);
+                prev = bb.assign(namei, "insertvalue {} {}, {} {}, {}", t, prev, elem_t, elem,
+                                 aggregate_index(tuple->type(), src));
             dst++;
         }
     }
@@ -468,8 +545,9 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
 std::string Emitter::repack(BB& bb, const std::string& name, const Def* type, const std::string& v, bool simd) {
     if (!has_vec(type)) return v;
 
-    auto t_src    = convert(type, !simd);
-    auto t_dst    = convert(type, simd);
+    auto t_src = convert(type, !simd);
+    auto t_dst = convert(type, simd);
+    if (t_src == t_dst) return v;
     auto vec      = vectorize(type).has_value();
     auto src_vec  = vec && !simd;
     auto dst_vec  = vec && simd;
@@ -579,10 +657,7 @@ std::optional<std::string> Emitter::emit_builtin(BB& bb, const std::string& name
             if (detail::isa_mem_sigma_2(tuple->type())) return v_tup;
             // Adjust index: convert() drops mem.M elements from sigmas,
             // so subtract the number of mem elements preceding the index.
-            auto v_i = *li;
-            if (auto sigma = tuple->type()->isa<Sigma>())
-                for (u64 i = 0; i < *li; ++i)
-                    if (Axm::isa<mem::M>(sigma->op(i))) --v_i;
+            auto v_i = aggregate_index(tuple->type(), *li);
 
             return bb.assign(name, "extractvalue {} {}, {}", t_tup, v_tup, v_i);
         }
@@ -608,7 +683,8 @@ std::optional<std::string> Emitter::emit_builtin(BB& bb, const std::string& name
                              emit_simd_index(bb, name, insert->index()));
 
         if (auto idx = Lit::isa(insert->index()))
-            return bb.assign(name, "insertvalue {} {}, {} {}, {}", t_tup, v_tup, t_val, v_val, *idx);
+            return bb.assign(name, "insertvalue {} {}, {} {}, {}", t_tup, v_tup, t_val, v_val,
+                             aggregate_index(insert->tuple()->type(), *idx));
 
         auto t_elem     = convert(insert->value()->type());
         auto [v_i, t_i] = emit_gep_index(bb, name, insert->index());
@@ -827,7 +903,7 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         auto t_ptr     = convert(ptr->type());
         if (pointee->isa<Sigma>())
             return bb.assign(name, "getelementptr inbounds {}, {} {}, i64 0, i32 {}", t_pointee, t_ptr, v_ptr,
-                             Lit::expect(i, "a struct-field index"));
+                             aggregate_index(pointee, Lit::expect(i, "a struct-field index")));
 
         pointee->expect<Arr>("an array as `mem.lea` pointee");
         auto [v_i, t_i] = emit_gep_index(bb, name, i);
@@ -865,21 +941,26 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         bb.tail("call void @free(i8* {})", i8ptr);
         return std::string();
     } else if (auto load = Axm::isa<mem::load>(def)) {
-        auto [m, ptr] = load->args<2>();
-        emit_unsafe(m);
-        auto v_ptr     = emit(ptr);
-        auto t_ptr     = convert(ptr->type());
-        auto pointee   = Axm::expect<mem::Ptr>(ptr->type(), "a `mem.Ptr`")->arg(2, 0);
-        auto t_pointee = convert(pointee, false);
-        return repack(bb, name, pointee, bb.assign(name, "load {}, {} {}", t_pointee, t_ptr, v_ptr), true);
+        auto [mem, ptr] = load->args<2>();
+        emit_unsafe(mem);
+        auto v_ptr   = emit(ptr);
+        auto t_ptr   = convert(ptr->type());
+        auto pointee = mem::pointee(ptr);
+        if (use_simd()) require_static_array_value(pointee);
+        auto t_val = convert(pointee, false);
+        auto value = bb.assign(name, "load {}, {} {}{}", t_val, t_ptr, v_ptr,
+                               use_simd() && has_f32_vector(pointee) ? ", align 1" : "");
+        return repack(bb, name, pointee, value, true);
     } else if (auto store = Axm::isa<mem::store>(def)) {
-        auto [m, ptr, val] = store->args<3>();
-        emit_unsafe(m);
+        auto [mem, ptr, val] = store->args<3>();
+        if (use_simd()) require_static_array_value(val->type());
+        emit_unsafe(mem);
         auto v_ptr = emit(ptr);
         auto v_val = repack(bb, name, val->type(), emit(val), false);
         auto t_ptr = convert(ptr->type());
         auto t_val = convert(val->type(), false);
-        std::print(bb.body().emplace_back(), "store {} {}, {} {}", t_val, v_val, t_ptr, v_ptr);
+        std::print(bb.body().emplace_back(), "store {} {}, {} {}{}", t_val, v_val, t_ptr, v_ptr,
+                   use_simd() && has_f32_vector(val->type()) ? ", align 1" : "");
         return std::string();
     } else if (auto q = Axm::isa<clos::alloc_jmpbuf>(def)) {
         // The size of a `jmp_buf` is platform/libc-dependent, so it is computed by a C runtime

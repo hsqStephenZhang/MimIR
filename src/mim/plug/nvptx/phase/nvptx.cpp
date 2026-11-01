@@ -72,6 +72,8 @@ public:
         simd_ = false;
     }
 
+    bool use_simd() const override { return false; }
+
     void start() final;
 
     std::string prepare() override;
