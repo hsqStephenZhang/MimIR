@@ -1,0 +1,44 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -O0 %S/register_block_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: clang++ -O3 %S/register_block_aux.cpp %{s:stem}.ll -o %t.opt -Wno-override-module
+// RUN: %t.opt
+// RUN: %FileCheck %s < %{s:stem}.ll
+
+plugin tensor;
+plugin math;
+plugin core;
+plugin affine;
+import opt;
+use tensor;
+use core.ops.n;
+
+let F32 = math.F32;
+fun combine (acc: F32, pair: «2; F32»)@tt: F32 =
+    return (math.arith.add math.mode.fast (acc, math.arith.mul math.mode.fast pair));
+lam kernel {M K N: Nat} (a: «M, K; F32», b: «K, N; F32»): «M, N; F32» =
+    let kt = core.select (K / 4 * 4 == K, 4, 1);
+    map_reduce_post @(2, 0) @(F32, F32, 2, 4, SchedT)
+        ((M, N), (M, N, K / kt, kt), mk_sched (0, 1))
+        @((F32, F32), (2, 2), ((M, K), (K, N)), (), (), ())
+        (combine, 1.0:F32, id @F32) (proj_map @(4, 2) (0, 1))
+        ((λ (o: «4; affine.Index»): «2; affine.Index» =
+            (o#0₄, affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄)),
+          λ (o: «4; affine.Index»): «2; affine.Index» =
+            (affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄), o#1₄)), ()) ((buf a, buf b), ());
+
+extern fun block_full (a: «4, 24; F32», b: «24, 16; F32»): «4, 16; F32» =
+    return (kernel @(4, 24, 16) (a, b));
+extern fun block_tail (a: «3, 7; F32», b: «7, 5; F32»): «3, 5; F32» =
+    return (kernel @(3, 7, 5) (a, b));
+extern fun block_empty (a: «4, 16; F32»): «4, 16; F32» =
+    fun keep (acc: F32, _: F32)@tt: F32 = return acc;
+    return (map_reduce_post @(1, 0) @(F32, F32, 2, 3, SchedT)
+        ((4, 16), (4, 16, 0), mk_sched (0, 0)) @(F32, 2, (4, 16), (), (), ())
+        (keep, 1.0:F32, id @F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 1), ()) (buf a, ()));
+
+// CHECK-LABEL: define {{.*}}@block_full
+// CHECK-NOT: alloca
+// CHECK: phi <64 x float>
+// CHECK-NOT: alloca

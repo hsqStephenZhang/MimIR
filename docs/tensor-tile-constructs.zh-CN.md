@@ -238,6 +238,32 @@ vector/opaque-pointer 类型拼写，循环与 scalar arithmetic 不变。
 `buffer/exec_conv` 去掉生成 ID 后完全一致。
 gpm 不再有 `Global` IR 节点，所以对应单元测试改为外部 vector pointer 与 memory-pair erasure。
 
+### 6.1 小 blocked leaf 的 SSA nest
+
+`vdim = ro - 2` 且 trailing parallel block 不超过 64 cells 时，使用扁平
+`«MR * NR; To»` SSA accumulator：unrolled seed、ordered K loop、每点 value update、
+K 结束后的单次 write-back；不分配 accumulator panel，不扩展 `Sched`。
+64 cells 是限制 compile-time expansion 的保守边界，不是通用 target register budget；
+更大的 block 保留已有 buffer-backed nest。MR/NR 仍来自 leaf 的 literal extents。
+unroll 的有限 continuation wrappers 必须强制 specialize，否则 aggregate 参数会留下
+未消除的 higher-order continuation。
+
+1024³ 的 4×16 F32 / 四 K 展开热点有 64 `fmla.4s`、8 `ldp q` B loads，
+A 为 4 `ldr q`，通过 lane-indexed FMA 使用，没有 accumulator stores 或栈 spill。
+256³ 的编译版本把 A 合并为 8 `ldr s` 加 4 `ldr d`，load merging 尚受 shape 影响。
+1024³ 的一次比较为 rule 98.75、hand 99.12、旧 rule 53.27、
+plain default 33.93、OpenBLAS 100.65 GFLOPS；使用单线程、native `-O3`、1 warmup + 7 runs。
+这不是完整六形状 benchmark 的结果。
+
+并不需要显式 vector-element tensor 来得到大形状的四次 `ldr q`。普通 `reshape` 把 A 分成四元素 cells，
+并让 leaf 接收 `«4; F32»` 元素的尝试，在 `LowerToMem::collect_tensor_types` 被
+“tensor with array element type” 拒绝。该转换目前以整个 array type 作为 bufferization
+key，尚不能区分 scalar rank-3 tensor 与 vector-element rank-2 view；
+不能简单删除这个检查；该方案没有采用。尝试和错误日志保留于
+`build/partB-vector-A-attempt.patch`、`build/partB-vector-A-blocker.log`。
+与 LLVM 移植后的基线比较，`fc_exec` 与 `attn_exec` 去掉生成 ID 后完全一致；
+`buffer/exec_conv` 的小 blocked case 则去掉 panel alloca，改为 SSA accumulator。
+
 ## 0. Generic shape Rules
 
 
