@@ -72,6 +72,27 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
         if (auto i = built.find(def); i != built.end()) return i->second;
         auto result = [&]() -> Recipe {
             if (auto i = bindings.find(def); i != bindings.end()) return plan->import(i->second);
+            if (def->isa<Lam>()) {
+                DefVec pending{def};
+                DefSet seen;
+                for (size_t i = 0; i != pending.size(); ++i) {
+                    if (++count > 10000) throw std::invalid_argument("graph Rule recipe budget exceeded");
+                    auto term = pending[i];
+                    if (!seen.insert(term).second || bindings.contains(term)) continue;
+                    if (auto app = term->isa<App>()) {
+                        auto axm = App::uncurry_callee(app)->isa<Axm>();
+                        if (!axm || !graph.has_purity(axm->flags()))
+                            throw std::invalid_argument("graph Rule RHS calls an operator without a purity guarantee");
+                        for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+                            pending.push_back(cur->arg());
+                        continue;
+                    }
+                    if (term->isa<Var>() || term->isa<Axm>() || term->isa<Pi>()) continue;
+                    for (auto op : term->ops())
+                        if (op) pending.push_back(op);
+                }
+                return plan->instantiate(def, bindings);
+            }
             if (auto literal = def->isa<Lit>()) return plan->literal(literal->type(), literal->flags());
             if (auto tuple = def->isa<Tuple>()) {
                 std::vector<Recipe> args;

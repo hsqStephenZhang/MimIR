@@ -1,6 +1,6 @@
 # P5 tile-and-fuse 实验
 
-## Task 3：独立 frontend 回归与 annex 引用
+## Task 3 / 4：独立 frontend 回归与扩展
 
 ### Task 4 前置修复：深 DAG 与资源预算
 
@@ -13,7 +13,7 @@ graph rebuild、非重写 importer 与批量 FunctionPublisher 对 immutable DAG
 
 CTest 在真实 GraphRuleRewrite phase 上验证 400 / 5000 层 chain 全部保留且 q→v，
 并对两种深度检查小预算时源函数不变、phase 不请求迭代。
-lit 另验证 400 层源码的编译和输出。
+lit 另验证 400 层源码的编译和输出，以及 5000 层源码的编译和 profile rewrite counter。
 5000 层的 IR 结果用 C++ 逐节点检查，不依赖尚有递归展开限制的 Mim textual dumper。
 验证：CTest 230/230；rules|error|tensor 211 通过、4 unsupported。
 closed mutable type 的 native alpha Where 可能记录 snapshot-wide reads，仍会限制批量计划
@@ -38,6 +38,34 @@ discovery 有随程序规模扩展的 work budget，耗尽时 debug 日志并跳
 
 `tf_local_g`、`tf_share_g` 的 NEST 和 `tf_rmap_g` 的 NEST 已翻转为目标检查。
 这不是任意 mutable region、动态 Pack instance 或 alias/box witness 的通用机制。
+
+### Task 4：binder-building RHS
+
+graph Rule 的 Lam RHS 子树现在降为 instantiation recipe：在 prospective World 中，
+把匹配得到的源 operands 冻结导入，再用非重写 Rewriter 的 stub / binder maps 构建新
+Lam 及其 body。此 importer 不再次运行规则，不把新模板当成 source graph 的候选节点。
+同一 recipe 保留同一构造结果；offset/accumulator 参数和 enclosing inputs 的映射被保留。
+仍保留最终 source/replacement type check；C++ 测试同时验证 fresh Var、冻结 capture、
+源 gid 不变和错误 result type 的拒绝。
+
+所有 RHS 引入的 axiom calls，包括 nested body/filter 中的调用，都必须在 pure_ops 中；
+实例化后再检查具体 argument groups 的 purity proof。
+每层 curry prefix 也要保持为原 axiom 的应用，不能通过早期 normalization 偷换成另一个
+function 后继续调用。失败返回 Unknown 并记录 debug 诊断，不发布 prospective World。
+没有增加 arbitrary captured-function / Lam callee 调用、Hole 或依赖类型反向推断。
+未证明纯性的计算 capture 不能移入新的 binder；已有 SSA 参数可作为 region input，
+但把 effect(x) 这类计算藏进新 body 会被保守拒绝。
+`grrhs` 验证缺少 inner-op purity 后仍可选择下一条合法规则，并保留 effect capture 的源程序；
+`grdrop` 继续验证完全删除未证明纯性的 source computation 被拒绝。
+
+`tf_build_g` 和 `tf_rmm_g` 已翻转为目标检查，生成三层 modeled/real contraction nest。
+`tf_build_g` 也观察到 `stage _5` 打印在 io body 内的 mm 参数中：和 rule_app 一样，
+这不是 placement 指令或 packing once-per-ko 的证明。
+真实 `tf_rmm_g` 此输入把 bp 打印在 ko body，仍不能仅凭打印位置推断实际分配次数。
+
+Task 4 最终验证：CTest **231/231**；rules|error|tensor **214 通过、4 unsupported**，
+无失败或 XFAIL。B1 commit 为 230/230 与 211 通过；region commit 为 230/230 与 212 通过；
+每个 commit 前都运行完整的上述两套测试。
 
 以下更新优先于后面的 Task 2 历史结果。
 每个 `tf_*.mim` 现在只运行 rule frontend，对应 `tf_*_g.mim` 只运行 graph frontend。
@@ -125,7 +153,7 @@ snapshot 保留原 consumer；不因先发布 first 就错误证明 exclusivity�
 operands/use 不能被宣称已完整覆盖。也没有新增原生 cover/preimage witness、动态
 data schema 或任意 RHS 表达式到源节点的反向推断。
 
-### 当前结果（Task 3）
+### 当前结果（Task 4）
 
 所有文件都是正常测试，GAP 是正向检查已知限制，不是 XFAIL。
 每个 frontend 独立验证，实际改写成功与“准确记录未改写”区分如下。
@@ -135,14 +163,14 @@ data schema 或任意 RHS 表达式到源节点的反向推断。
 | `tf_local`，modeled body 内 compute_at | 目标通过 | 目标通过（Task 4） |
 | `tf_share`，保留 whole reader / tuple 多输出 | 目标通过，含 NEST | flat/VALUE/JOIN/NEST 通过（Task 4） |
 | `tf_rev`，modeled reverse placement | 目标通过 | 目标通过 |
-| `tf_build`，整棵 cache_read nest RHS | 目标通过 | GAP：`unsupported graph Rule recipe value` |
+| `tf_build`，整棵 cache_read nest RHS | 目标通过 | 目标通过（Task 4） |
 | `tf_post`，后置 stage 插入 | GAP：fresh LHS binder identity | 相同 GAP，且缺跨 region 发布 |
 | `tf_pack`，persistent marker | SSA 替换/共享通过 | SSA 替换/共享通过 |
 | `tf_guard`，source graph facts | single/used 目标通过，shared/unknown 保留 | 同左，且所有函数同一 snapshot |
 | `tf_poly`，多态 purity 引用配置 | 不适用 | 配置与目标通过 |
 | `tf_rmap`，真实 slice/unary | flat/shared/NEST 目标通过；extent mismatch 不重写 | flat/shared/NEST 通过，mismatch 不重写（Task 4） |
 | `tf_rrev`，真实 unary producer/reader | 目标通过 | 目标通过 |
-| `tf_rmm`，真实 product/slice nest RHS | 目标通过 | GAP：新的 RHS lambda recipe |
+| `tf_rmm`，真实 product/slice nest RHS | 目标通过 | 目标通过（Task 4） |
 | `tf_rpost`，真实 slice 的后置 stage | GAP：LHS binder | GAP：LHS binder/regions |
 | `tf_rpack`，真实 slice 读取 packed 值 | SSA 替换/共享通过 | SSA 替换/共享通过 |
 | `tf_rfact`，真实 unary single-consumer guard | single 目标通过，shared 保留 | 同左 |
@@ -154,8 +182,8 @@ R2 的 placement 观察仍然成立：`tf_build` 里的 `stage _5` 在 io body �
 
 | 顺序 | 最小扩展 | 解锁范围 |
 | --- | --- | --- |
-| 1 | graph RHS binder recipes，在 prospective World 内构建与类型/纯性验证 | graph 的 modeled/real cache_read construction |
-| 2 | Alpha-aware term-LHS binder matching + 跨 region box/map 事务 | modeled/real post-hoc cache_read；不能用无约束 lambda wildcard 代替 |
+| 1 | Alpha-aware term-LHS binder matching + 跨 region box/map 事务 | modeled/real post-hoc cache_read；不能用无约束 lambda wildcard 代替 |
+| 2 | 原生 cover/preimage/box/layout witnesses 与更多数据 schema | 真实 compute_at/reverse placement、shared producer 和 cache_read 合法性 |
 | 3 | 真正的 tiled/tile_fold/stage/outs lowering、realization、persistent resource 合同 | 所有实验的数值、exactly-once 与性能含义 |
 
 data-use schema 当前必须显式提供，native cover/preimage witnesses 仍需按具体调度补齐。

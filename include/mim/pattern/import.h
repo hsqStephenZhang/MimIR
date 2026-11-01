@@ -37,10 +37,9 @@ public:
                 continue;
             }
             pending.push_back({current, true});
-            if (auto type = current->type()) pending.push_back({type, false});
             // LIFO preserves the Rewriter's argument-before-callee application order.
-            for (auto op : current->ops())
-                if (op) pending.push_back({op, false});
+            for (auto dependency : dependencies(current))
+                pending.push_back({dependency, false});
         }
         return lookup(def);
     }
@@ -48,6 +47,13 @@ public:
 protected:
     virtual bool descend(const Def*) const { return true; }
     virtual const Def* rewrite_ready(const Def* def) { return Rewriter::rewrite(def); }
+    virtual DefVec dependencies(const Def* def) const {
+        DefVec result;
+        if (auto type = def->type()) result.push_back(type);
+        for (auto op : def->ops())
+            if (op) result.push_back(op);
+        return result;
+    }
 
 private:
     size_t remaining_;

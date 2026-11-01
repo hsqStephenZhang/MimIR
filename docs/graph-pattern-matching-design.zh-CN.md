@@ -268,6 +268,13 @@ alpha matching仍不支持。
 详情、独立 frontend 回归与边界见
 [tile-and-fuse 实验](graph-pattern-tile-fuse-experiments.zh-CN.md)。
 
+Task 4 增加闭合 function 内的 nested Lam body occurrence search；只重建被选中的 operand
+path，不改变 shared closure 的其他 occurrence，region coverage 始终 Open。
+Lam RHS 用非重写 importer 的 binder maps 实例化，嵌套 axiom calls 仍须满足显式 purity，
+result type check 保留；未证明纯性的计算 capture 不能搬进新 binder。
+immutable graph/import/publication 使用显式 DAG 栈，程序规模相关 work budget 耗尽时
+phase 跳过 transaction 并记录诊断，普通深 op chain 不再触发固定 depth cliff。
+
 正反例见 [graphapp.mim](../lit/rules/graphapp.mim)、[graphgrd.mim](../lit/rules/graphgrd.mim) 和 [grapure.mim](../lit/error/grapure.mim)。匹配结果的共享应检查实际 Def 身份；文本打印器可能在不同 Extract 内重复打印同一个调用，不能仅数 `combined` 字符串来判断是否复制计算。
 
 [grlimit.mim](../lit/rules/grlimit.mim) 生成 1001 个独立单根匹配，超过默认结果上限，检查 `phases ff` 只替换一个、`phases tt` 收敛并保留全部参数值。[pattern_pdll.cpp](../test/pattern_pdll.cpp) 另在 phase 层检查 normalized no-op 规则后仍能选择 productive 规则，以及同一规则的 no-op、Unknown 和 false guard 候选不会阻止后续有效候选。

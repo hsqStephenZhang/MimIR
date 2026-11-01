@@ -8,6 +8,11 @@ namespace mim::pattern {
 class RewritePlan;
 class GraphRebuilder;
 
+class InstantiationFailure : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
 class Recipe {
 private:
     Recipe(const RewritePlan* plan, size_t index)
@@ -32,15 +37,17 @@ public:
     Recipe call(const Axm*, std::vector<Recipe> argument_groups);
     Recipe tuple(std::vector<Recipe>);
     Recipe extract(Recipe, size_t index);
+    Recipe instantiate(const Def*, const Def2Def&);
     void replace(const Def* matched_node, Recipe);
 
 private:
-    enum class Kind { Import, Literal, Call, Tuple, Extract };
+    enum class Kind { Import, Literal, Call, Tuple, Extract, Instantiate };
     struct Entry {
         Kind kind;
         const Def* def           = nullptr;
         flags_t bits             = 0;
         std::vector<Recipe> args = {};
+        Def2Def bindings         = {};
     };
     void check(Recipe) const;
     Recipe append(Entry);
@@ -52,6 +59,7 @@ private:
     friend class GraphRebuilder;
 };
 
+/// Zero source work selects a size-relative limit; max_depth bounds recipes, not source DAGs.
 struct RewriteOptions {
     size_t max_recipes      = 10'000;
     size_t max_source_nodes = 0;

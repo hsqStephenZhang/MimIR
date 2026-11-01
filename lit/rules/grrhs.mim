@@ -1,0 +1,29 @@
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// RUN: grep "RHS calls an operator without a purity guarantee" %t.log
+// RUN: grep "RHS binder capture includes an unproved computation" %t.log
+// TF-RULES: (missing, preserve)
+// TF-PURE: mark, nest, pair
+
+plugin compile;
+axm mark: Nat → Nat;
+axm effect: Nat → Nat;
+axm unsafe: [Nat, Nat] → Nat;
+axm pair: [Nat, Nat] → Nat;
+axm nest: (Nat → Nat) → Nat;
+rule missing (p: Nat): mark p =>
+    nest (λ (o: Nat): Nat = unsafe (p, o));
+rule preserve (p: Nat): mark p =>
+    nest (λ (o: Nat): Nat = pair (p, o));
+extern lam result (x: Nat): Nat = mark x;
+extern lam retained (x: Nat): Nat = mark (effect x);
+
+// CHECK-LABEL: extern lam result
+// CHECK-SAME: ([[X:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat)
+// CHECK: lam [[BODY:[a-zA-Z_][a-zA-Z_0-9]*]] ([[O:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat)
+// CHECK: pair ([[X]], [[O]])
+// CHECK: nest [[BODY]]
+// CHECK-NOT: mark
+// CHECK-NOT: unsafe
+// CHECK-LABEL: extern lam retained
+// CHECK: mark (effect

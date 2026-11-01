@@ -67,6 +67,39 @@ GraphRewrite build(const GraphView& graph, const RewritePlan& plan, RewriteOptio
     return rewrite_graph(graph, plans, options);
 }
 
+TEST_CASE("Graph RHS binder recipes: frozen captures and fresh variables preserve the final type") {
+    GraphIR ir;
+    auto nest = ir.w.axm(ir.w.pi(ir.w.pi(ir.nat, ir.nat), ir.nat));
+    ir.ops.add(nest->flags(), 1, {{0}}, true);
+    auto rule  = ir.w.mut_rule(ir.w.reform(ir.nat));
+    auto inner = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    inner->set(false, ir.add(rule->var(), inner->var()));
+    auto source = ir.call(ir.q, ir.x);
+    GraphView view({source}, ir.options());
+    PatternProgram p;
+    GraphPattern graph(p);
+    graph.anchor(p.exact(source));
+    auto found = find_matches(graph, view);
+    REQUIRE(found.matches.size() == 1);
+    Def2Def bindings{
+        {rule->var()->as<Var>(), ir.x}
+    };
+    auto gid = ir.w.curr_gid();
+    RewritePlan bad(found.matches[0]);
+    bad.replace(source, bad.instantiate(inner, bindings));
+    CHECK_THROWS_AS(build(view, bad), InstantiationFailure);
+    RewritePlan good(found.matches[0]);
+    good.replace(source, good.call(nest, {good.instantiate(inner, bindings)}));
+    auto result               = build(view, good);
+    auto body                 = result.roots()[0]->as<App>()->arg()->as<Lam>();
+    auto [captured, variable] = body->body()->as<App>()->uncurry_args<2>();
+    CHECK(captured->as<Axm>()->flags() == ir.x->as<Axm>()->flags());
+    CHECK(variable == body->has_var());
+    CHECK(ir.w.curr_gid() == gid);
+    CHECK(view.is_current());
+    CHECK(source->as<App>()->arg() == ir.x);
+}
+
 size_t combined_builds = 0;
 const Def* counted_combined(const Def*, const Def*, const Def* arg) {
     ++combined_builds;

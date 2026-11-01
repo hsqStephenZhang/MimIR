@@ -9,22 +9,26 @@ directory = pathlib.Path(f"{temporary}.dir")
 directory.mkdir()
 source = directory / "deep.mim"
 try:
-    for count in (400,):
+    for count in (400, 5000):
         source.write_text(
             "plugin compile;\n"
             "axm q: Nat -> Nat;\n"
             "axm v: Nat -> Nat;\n"
             "axm s: Nat -> Nat;\n"
             "rule replace (x: Nat): q x => v x;\n"
-            "extern lam result (x: Nat): Nat = q ("
-            + "s (" * count + "x" + ")" * count + ");\n"
+            "extern lam result (x: Nat): Nat =\n"
+            + "let x = s x;\n" * count
+            + "q x;\n"
             "extern lam _compile (): compile.Phase = "
             "compile.graph_rule_app (replace, (q, v, s));\n"
         )
-        result = subprocess.run(
-            [mim, str(source), "-o", "-"], capture_output=True, text=True
-        )
+        options = ["-o", "-"] if count == 400 else ["--profile", "summary"]
+        result = subprocess.run([mim, str(source), *options], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
+        if count == 5000:
+            assert re.search(r"\b1\s+.*`graph_rule.rewrites`", result.stdout + result.stderr)
+            print(f"{count}: compiled, profile confirms one accepted changed rewrite")
+            continue
         body = result.stdout.split("extern lam result", 1)[1]
         assert re.search(r"\bv ", body), body[:500]
         assert not re.search(r"\bq ", body), body[:500]

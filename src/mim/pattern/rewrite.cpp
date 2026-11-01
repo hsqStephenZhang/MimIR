@@ -2,8 +2,6 @@
 
 #include <stdexcept>
 
-#include <fe/restore.h>
-
 #include "mim/rewrite.h"
 #include "mim/world.h"
 
@@ -50,6 +48,10 @@ Recipe RewritePlan::extract(Recipe tuple, size_t index) {
     return append({.kind = Kind::Extract, .bits = index, .args = {tuple}});
 }
 
+Recipe RewritePlan::instantiate(const Def* term, const Def2Def& bindings) {
+    return append({.kind = Kind::Instantiate, .def = term, .bindings = bindings});
+}
+
 void RewritePlan::replace(const Def* old, Recipe recipe) {
     check(recipe);
     if (!old || !matched_.contains(old) || !replacements_.emplace(old, recipe.index_).second)
@@ -89,6 +91,59 @@ private:
     RebuildBudget& budget_;
 };
 
+class RHSImporter : public GraphImporter {
+public:
+    RHSImporter(const GraphView& graph, World& target, RebuildBudget& budget)
+        : GraphImporter(graph, target, budget)
+        , graph_(graph) {}
+
+    const Def* rewrite_imm_App(const App* app) override {
+        auto axm = App::uncurry_callee(app)->isa<Axm>();
+        if (!axm && app->type()->isa<Type>()) return Rewriter::rewrite_imm_App(app);
+        if (!axm) throw InstantiationFailure("graph Rule RHS may only introduce axiom calls");
+        std::vector<const Def*> source;
+        for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+            source.push_back(cur->arg());
+        DefVec args;
+        for (auto arg : source | std::views::reverse)
+            args.push_back(rewrite(arg));
+        if (!graph_.is_pure_call(axm->flags(), args))
+            throw InstantiationFailure("graph Rule RHS call has no satisfied purity guarantee");
+        auto callee = rewrite(axm);
+        auto value  = callee;
+        for (size_t i = 0; i != args.size(); ++i) {
+            auto prefix = value;
+            for (size_t j = i; j-- != 0;) {
+                auto part = prefix->isa<App>();
+                if (!part || part->arg() != args[j]) {
+                    prefix = nullptr;
+                    break;
+                }
+                prefix = part->callee();
+            }
+            if (prefix != callee)
+                throw InstantiationFailure("graph Rule RHS normalization changed its application prefix");
+            value = world().app(value, args[i]);
+        }
+        return value;
+    }
+
+    DefVec dependencies(const Def* def) const override {
+        if (auto app = def->isa<App>()) {
+            if (auto axm = App::uncurry_callee(app)->isa<Axm>()) {
+                DefVec result{app->type(), axm};
+                for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+                    result.push_back(cur->arg());
+                return result;
+            }
+        }
+        return DAGRewriter::dependencies(def);
+    }
+
+private:
+    const GraphView& graph_;
+};
+
 } // namespace
 
 class GraphRebuilder : public DAGRewriter {
@@ -124,6 +179,28 @@ public:
                     throw std::invalid_argument("recipe calls an operator without a purity guarantee");
                 if (entry.kind == RewritePlan::Kind::Literal && entry.def->node() != Node::Nat && !Idx::isa(entry.def))
                     throw std::invalid_argument("literal recipes require a Nat or Idx scalar type");
+                if (entry.kind == RewritePlan::Kind::Instantiate) {
+                    for (auto [meta, value] : entry.bindings) {
+                        if (!meta || &meta->world() != &graph.world() || !graph.is_contained(value))
+                            throw std::invalid_argument("RHS instantiation has foreign capture bindings");
+                        DefVec pending{value};
+                        DefSet seen;
+                        for (size_t i = 0; i != pending.size(); ++i) {
+                            budget_.touch();
+                            auto source = pending[i];
+                            if (!seen.insert(source).second) continue;
+                            if (auto app = source->isa<App>()) {
+                                if (!graph.is_pure(app))
+                                    throw InstantiationFailure("RHS binder capture includes an unproved computation");
+                                for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+                                    pending.push_back(cur->arg());
+                            } else if (!source->is_mutable() && !source->isa<Var>() && !source->isa<Axm>()) {
+                                for (auto op : source->ops())
+                                    if (op) pending.push_back(op);
+                            }
+                        }
+                    }
+                }
             }
         }
         for (auto a : plans)
@@ -203,9 +280,9 @@ public:
         auto value    = evaluate(replacement->second.first, replacement->second.second, 0);
         auto expected = importer_.rewrite(def->type());
         if (value->type() != expected && (!value->type() || !Check::test_alpha(value->type(), expected)))
-            throw std::invalid_argument("replacement does not preserve the source type");
+            throw InstantiationFailure("replacement does not preserve the source type");
         for (auto var : value->free_vars())
-            if (!environment_.contains(var)) throw std::invalid_argument("replacement escapes the selected scope");
+            if (!environment_.contains(var)) throw InstantiationFailure("replacement escapes the selected scope");
         results_.emplace(def, value);
         return map(def, value);
     }
@@ -389,6 +466,17 @@ private:
                 if (!arity || entry.bits >= *arity)
                     throw std::invalid_argument("recipe projection has unknown or invalid arity");
                 value = world().extract(args.front(), *arity, entry.bits);
+                break;
+            }
+            case RewritePlan::Kind::Instantiate: {
+                RHSImporter rhs(graph_, world(), budget_);
+                for (auto [old, next] : bindings_)
+                    rhs.map(old, next);
+                for (auto [meta, source] : entry.bindings)
+                    rhs.map(meta, importer_.rewrite(source));
+                for (auto def : protected_)
+                    if (auto imported = importer_.lookup(def)) retained_.insert_or_assign(def, imported);
+                value = rhs.rewrite(entry.def);
                 break;
             }
         }

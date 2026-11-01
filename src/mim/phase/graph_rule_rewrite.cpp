@@ -5,8 +5,6 @@
 #include <stdexcept>
 #include <utility>
 
-#include <fe/restore.h>
-
 #include "mim/driver.h"
 
 #include "mim/pattern/graph_rule.h"
@@ -222,6 +220,11 @@ void GraphRuleRewrite::start() {
                         reason = error.what();
                         log().d("graph_rule_app skipped a match in {}: {}", fn, reason);
                         profile_count("graph_rule.budget");
+                        return false;
+                    } catch (const pattern::InstantiationFailure& error) {
+                        reason = error.what();
+                        log().d("graph_rule_app skipped RHS instantiation in {}: {}", fn, reason);
+                        profile_count("graph_rule.unknown");
                         return false;
                     }
                     auto next = std::move(*rebuilt);

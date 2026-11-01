@@ -1,6 +1,5 @@
 // RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=GAP
-// RUN: grep 'unsupported graph Rule recipe value' %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=BUILD
 // TF-RULES: cache
 // TF-PURE: mark, mm, slice, panel, stage, tiled, fold, add
 
@@ -32,9 +31,3 @@ extern lam result (a b salt: Nat): Nat = mark (mm (a, b));
 // BUILD: fold (4, 0,
 // BUILD: tiled (4,
 // BUILD-NOT: mark
-
-// Flip GAP to the target CHECKs when the missing extension lands.
-// GAP-LABEL: extern lam result
-// GAP-NOT: stage
-// GAP: mark
-// GAP-NOT: stage
