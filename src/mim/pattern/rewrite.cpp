@@ -204,9 +204,8 @@ public:
         auto expected = importer_.rewrite(def->type());
         if (value->type() != expected && (!value->type() || !Check::test_alpha(value->type(), expected)))
             throw std::invalid_argument("replacement does not preserve the source type");
-        auto allowed = new_scope_ ? new_scope_->has_var() : nullptr;
         for (auto var : value->free_vars())
-            if (var != allowed) throw std::invalid_argument("replacement escapes the selected scope");
+            if (!environment_.contains(var)) throw std::invalid_argument("replacement escapes the selected scope");
         results_.emplace(def, value);
         return map(def, value);
     }
@@ -225,19 +224,25 @@ public:
             if (auto var = scope->has_var()) {
                 importer_.map(var, new_scope_->var());
                 map(var, new_scope_->var());
+                environment_.insert(new_scope_->var());
+                bindings_.emplace_back(var, new_scope_->var());
             }
             auto filter = importer_.rewrite(scope->filter());
             // Both bodies see the same unset scope stub, so self-applications cannot unfold one side.
-            auto original = importer_.rewrite(scope->body());
-            auto body     = rewrite(scope->body());
-            changed       = body != original;
+            GraphImporter original_importer(graph_, world(), budget_);
+            original_importer.map(scope, new_scope_);
+            for (auto [old, value] : bindings_)
+                original_importer.map(old, value);
+            auto original = original_importer.rewrite(scope->body());
+            auto body     = graph_.region_path().empty() ? rewrite(scope->body()) : rewrite_path(scope->body(), 0);
+            changed       = graph_.region_path().empty() ? body != original : region_changed_;
             new_scope_->set(filter, body);
             if (scope->is_external()) new_scope_->externalize();
             // Other functions use a separate map: a hash-consed value shared across scopes must
             // retain its original implementation outside the selected function body.
             for (auto ext : graph_.world().externals().muts())
                 if (ext != scope)
-                    if (auto copy = importer_.rewrite(ext)->isa_mut(); copy && !copy->is_external())
+                    if (auto copy = original_importer.rewrite(ext)->isa_mut(); copy && !copy->is_external())
                         copy->externalize();
         } else {
             for (auto root : graph_.roots())
@@ -247,7 +252,7 @@ public:
         auto roots = std::vector<const Def*>();
         for (auto root : graph_.roots()) {
             auto original = new_scope_ ? nullptr : importer_.rewrite(root);
-            auto value    = rewrite(root);
+            auto value    = graph_.region_path().empty() ? rewrite(root) : lookup(root);
             roots.push_back(value);
             if (!new_scope_) changed |= value != original;
         }
@@ -258,8 +263,13 @@ public:
         for (size_t i = 0; i != pending.size(); ++i) {
             budget_.touch();
             auto def = pending[i];
-            if (!reachable.insert(def).second || def->is_mutable() || def->node() == Node::Lam
-                || def->node() == Node::Pi || def->node() == Node::Var || def->node() == Node::Axm)
+            if (!reachable.insert(def).second) continue;
+            if (auto lam = def->isa<Lam>(); lam && lam->is_set() && !lam->is_external()) {
+                pending.push_back(lam->body());
+                continue;
+            }
+            if (def->is_mutable() || def->node() == Node::Lam || def->node() == Node::Pi || def->node() == Node::Var
+                || def->node() == Node::Axm)
                 continue;
             for (auto op : def->ops())
                 if (op) pending.push_back(op);
@@ -276,6 +286,69 @@ public:
     }
 
 private:
+    const Def* rewrite_path(const Def* def, size_t position) {
+        struct Frame {
+            const Def* source;
+            size_t index;
+            Lam* fresh;
+            const Def* type;
+            DefVec ops;
+        };
+        std::vector<Frame> frames;
+        for (; position != graph_.region_path().size(); ++position) {
+            budget_.touch();
+            auto index = graph_.region_path()[position];
+            GraphImporter preserve(graph_, world(), budget_);
+            preserve.map(graph_.scope(), new_scope_);
+            for (auto [old, value] : bindings_)
+                preserve.map(old, value);
+            if (auto lam = def->isa<Lam>()) {
+                if (index != 1 || lam->is_external()) throw std::invalid_argument("unsupported region lambda path");
+                auto fresh = world().mut_lam(importer_.rewrite(lam->type())->as<Pi>())->set(lam->dbg_key());
+                if (auto var = lam->has_var()) {
+                    importer_.map(var, fresh->var());
+                    map(var, fresh->var());
+                    environment_.insert(fresh->var());
+                    bindings_.emplace_back(var, fresh->var());
+                }
+                importer_.map(lam, fresh);
+                map(lam, fresh);
+                frames.push_back({
+                    def,
+                    index,
+                    fresh,
+                    nullptr,
+                    {importer_.rewrite(lam->filter()), nullptr}
+                });
+            } else {
+                if (!def->isa<App>() && !def->isa<Tuple>() && !def->isa_imm<Pack>())
+                    throw std::invalid_argument("unsupported region occurrence owner");
+                DefVec ops;
+                for (size_t i = 0; i != def->num_ops(); ++i)
+                    ops.push_back(i == index ? nullptr : preserve.rewrite(def->op(i)));
+                auto type = def->isa_imm<Pack>() ? preserve.rewrite(*def->as<Pack>()->shape())
+                                                 : preserve.rewrite(def->type());
+                frames.push_back({def, index, nullptr, type, std::move(ops)});
+            }
+            def = def->op(index);
+        }
+        auto original   = importer_.rewrite(def);
+        auto value      = rewrite(def);
+        region_changed_ = value != original;
+        for (auto& frame : frames | std::views::reverse) {
+            frame.ops[frame.index] = value;
+            if (frame.fresh)
+                value = frame.fresh->set(frame.ops[0], frame.ops[1]);
+            else if (frame.source->isa<App>())
+                value = world().app(frame.ops[0], frame.ops[1]);
+            else if (frame.source->isa<Tuple>())
+                value = world().tuple(frame.type, frame.ops);
+            else
+                value = world().seq(true, frame.type, frame.ops.back());
+        }
+        return value;
+    }
+
     const Def* evaluate(const RewritePlan* plan, size_t index, size_t depth) {
         if (depth >= options_.max_depth) throw RebuildLimit("recipe evaluation depth exceeded");
         auto& value = memo_.at(plan)[index];
@@ -330,7 +403,10 @@ private:
     DefMap<std::pair<const RewritePlan*, size_t>> replacements_;
     std::unordered_map<const RewritePlan*, std::vector<const Def*>> memo_;
     DefMap<const Def*> results_;
-    Lam* new_scope_ = nullptr;
+    Lam* new_scope_      = nullptr;
+    bool region_changed_ = false;
+    DefSet environment_;
+    std::vector<std::pair<const Var*, const Def*>> bindings_;
     DefSet protected_;
     DefMap<const Def*> retained_;
 };

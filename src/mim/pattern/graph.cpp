@@ -28,7 +28,8 @@ GraphView::GraphView(Defs roots, UseCoverage coverage)
 
 GraphView::GraphView(Defs roots, GraphOptions options)
     : coverage_(options.coverage)
-    , scope_(options.scope) {
+    , scope_(options.scope)
+    , region_path_(std::move(options.region_path)) {
     if (options.operators) operators_ = *options.operators;
     const World* world = nullptr;
     for (auto root : roots) {
@@ -42,8 +43,19 @@ GraphView::GraphView(Defs roots, GraphOptions options)
         if (!scope_->is_mutable() || !scope_->is_set() || !scope_->is_closed()
             || (world_ && &scope_->world() != world_))
             throw std::invalid_argument("graph scope must be a fully defined, closed mutable Lam of the same World");
-        world_       = &scope_->world();
-        auto pending = std::vector<const Def*>{scope_->body()};
+        world_      = &scope_->world();
+        auto region = scope_->body();
+        for (auto index : region_path_) {
+            if (index >= region->num_ops()) throw std::invalid_argument("invalid region occurrence path");
+            if (auto lam = region->isa<Lam>()) {
+                if (index != 1 || !lam->is_set() || lam->is_external())
+                    throw std::invalid_argument("invalid region lambda occurrence");
+            } else if (!region->isa<App>() && !region->isa<Tuple>() && !region->isa_imm<Pack>()) {
+                throw std::invalid_argument("unsupported region occurrence owner");
+            }
+            region = region->op(index);
+        }
+        auto pending = std::vector<const Def*>{region};
         DefSet body;
         for (size_t i = 0; i != pending.size(); ++i) {
             auto def = pending[i];

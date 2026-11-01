@@ -1,6 +1,5 @@
 // RUN: python3 %S/tf_run.py %mim %s %t graph > %t.graph 2> %t.graph.log
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=GAP
-// RUN: grep 'no accepted match visited' %t.graph.log
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=LOCAL
 // TF-RULES: local
 // TF-PURE: slice, ew, tiled
 
@@ -16,11 +15,7 @@ extern lam result (f: Nat → Nat, x salt: Nat): Nat =
     tiled (4, λ (o: Nat): Nat = slice (ew (f, x), o, 2));
 
 // LOCAL-LABEL: extern lam result
-// LOCAL: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = slice (x, o, 2);
+// LOCAL: lam {{.*}} ([[O:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat)
+// LOCAL: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = slice (x, [[O]], 2);
 // LOCAL: ew (f, [[SL]])
 // LOCAL-NOT: slice (ew
-
-// Flip GAP to the target CHECKs when the missing extension lands.
-// GAP-LABEL: extern lam result
-// GAP: ew (f, x)
-// GAP: slice (

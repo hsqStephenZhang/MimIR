@@ -25,10 +25,11 @@ struct UseEdge {
 enum class UseCoverage { Open, Closed };
 
 struct GraphOptions {
-    UseCoverage coverage        = UseCoverage::Open;
-    const OpRegistry* operators = nullptr; // Copied into the snapshot.
-    Lam* scope                  = nullptr; // A fully defined, closed function; roots must belong to its body region.
-    size_t max_inputs           = 4096;
+    UseCoverage coverage            = UseCoverage::Open;
+    const OpRegistry* operators     = nullptr; // Copied into the snapshot.
+    Lam* scope                      = nullptr; // The enclosing closed function of the selected occurrence.
+    size_t max_inputs               = 4096;
+    std::vector<size_t> region_path = {};
 };
 
 struct DataEdge {
@@ -88,6 +89,7 @@ public:
     }
     std::shared_ptr<const GraphSnapshot> snapshot() const { return snapshot_; }
     bool is_current() const;
+    std::span<const size_t> region_path() const { return region_path_; }
     std::span<const Def* const> operations() const {
         check_live();
         return operations_;
@@ -121,6 +123,7 @@ private:
     UseCoverage coverage_;
     World* world_ = nullptr;
     Lam* scope_   = nullptr;
+    std::vector<size_t> region_path_;
     std::optional<OpRegistry> operators_;
     std::vector<const Def*> operations_;
     DefMap<OpView> op_views_;

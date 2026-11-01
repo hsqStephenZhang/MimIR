@@ -19,6 +19,26 @@ lit 另验证 400 层源码的编译和输出。
 closed mutable type 的 native alpha Where 可能记录 snapshot-wide reads，仍会限制批量计划
 之间的兼容性；本修复没有移除保守 read tracking。
 
+### Task 4：region occurrence search / publication
+
+graph frontend 在闭合 external function 中按 operand occurrence path 搜索 nested Lam bodies。
+目前 owner 路径限 App、Tuple、静态 immutable Pack 和 Lam body，不搜索 filter/type，
+也不跨 external function call 进入 callee。
+region inputs 包括 enclosing binders 和该 body 的参数；GraphView 的 coverage 始终 Open，
+显式 schema 可证明 known used_by edge，但 free variables 不是排他用途覆盖证明。
+
+publication 用 fresh binder stubs 重建选中的 enclosing path，按冻结输入映射替换 leaf body；
+未选中的 operands 用非重写 importer 保留原实现。
+因此 shared Lam 被 left/right 两个不同 occurrence 引用时，本次只改 left 的 body，
+right 仍引用原实现，而不是通过 Def identity 全局替换 shared closure。
+`grregion` 同时覆盖两层捕获 offset、共享 closure 的 occurrence 隔离，以及 Open region
+的 only_used_by 为 Unknown。immutable path 与 source DAG rebuild 都用显式栈。
+每函数每次至多一个 changed rewrite、phase-wide source snapshot 与下一轮重新发现保持不变。
+discovery 有随程序规模扩展的 work budget，耗尽时 debug 日志并跳过该函数。
+
+`tf_local_g`、`tf_share_g` 的 NEST 和 `tf_rmap_g` 的 NEST 已翻转为目标检查。
+这不是任意 mutable region、动态 Pack instance 或 alias/box witness 的通用机制。
+
 以下更新优先于后面的 Task 2 历史结果。
 每个 `tf_*.mim` 现在只运行 rule frontend，对应 `tf_*_g.mim` 只运行 graph frontend。
 可工作的路径使用目标 CHECK；尚未工作的路径使用 unchanged IR 和精确诊断的正向 GAP 检查，
@@ -112,15 +132,15 @@ data schema 或任意 RHS 表达式到源节点的反向推断。
 
 | 实验 | rule_app | graph_rule_app |
 | --- | --- | --- |
-| `tf_local`，modeled body 内 compute_at | 目标通过 | GAP：不搜索 nested Lam body |
-| `tf_share`，保留 whole reader / tuple 多输出 | 目标通过，含 NEST | flat/VALUE/JOIN 通过；NEST GAP |
+| `tf_local`，modeled body 内 compute_at | 目标通过 | 目标通过（Task 4） |
+| `tf_share`，保留 whole reader / tuple 多输出 | 目标通过，含 NEST | flat/VALUE/JOIN/NEST 通过（Task 4） |
 | `tf_rev`，modeled reverse placement | 目标通过 | 目标通过 |
 | `tf_build`，整棵 cache_read nest RHS | 目标通过 | GAP：`unsupported graph Rule recipe value` |
 | `tf_post`，后置 stage 插入 | GAP：fresh LHS binder identity | 相同 GAP，且缺跨 region 发布 |
 | `tf_pack`，persistent marker | SSA 替换/共享通过 | SSA 替换/共享通过 |
 | `tf_guard`，source graph facts | single/used 目标通过，shared/unknown 保留 | 同左，且所有函数同一 snapshot |
 | `tf_poly`，多态 purity 引用配置 | 不适用 | 配置与目标通过 |
-| `tf_rmap`，真实 slice/unary | flat/shared/NEST 目标通过；extent mismatch 不重写 | flat/shared 通过，NEST GAP，mismatch 不重写 |
+| `tf_rmap`，真实 slice/unary | flat/shared/NEST 目标通过；extent mismatch 不重写 | flat/shared/NEST 通过，mismatch 不重写（Task 4） |
 | `tf_rrev`，真实 unary producer/reader | 目标通过 | 目标通过 |
 | `tf_rmm`，真实 product/slice nest RHS | 目标通过 | GAP：新的 RHS lambda recipe |
 | `tf_rpost`，真实 slice 的后置 stage | GAP：LHS binder | GAP：LHS binder/regions |
@@ -134,10 +154,9 @@ R2 的 placement 观察仍然成立：`tf_build` 里的 `stage _5` 在 io body �
 
 | 顺序 | 最小扩展 | 解锁范围 |
 | --- | --- | --- |
-| 1 | Region-local search + closure/environment-aware publication | graph 的 nested compute_at / shared NEST；post-hoc region 部分 |
-| 2 | graph RHS binder recipes，在 prospective World 内构建与类型/纯性验证 | graph 的 modeled/real cache_read construction |
-| 3 | Alpha-aware term-LHS binder matching + 跨 region box/map 事务 | modeled/real post-hoc cache_read；不能用无约束 lambda wildcard 代替 |
-| 4 | 真正的 tiled/tile_fold/stage/outs lowering、realization、persistent resource 合同 | 所有实验的数值、exactly-once 与性能含义 |
+| 1 | graph RHS binder recipes，在 prospective World 内构建与类型/纯性验证 | graph 的 modeled/real cache_read construction |
+| 2 | Alpha-aware term-LHS binder matching + 跨 region box/map 事务 | modeled/real post-hoc cache_read；不能用无约束 lambda wildcard 代替 |
+| 3 | 真正的 tiled/tile_fold/stage/outs lowering、realization、persistent resource 合同 | 所有实验的数值、exactly-once 与性能含义 |
 
 data-use schema 当前必须显式提供，native cover/preimage witnesses 仍需按具体调度补齐。
 已实现的三个小扩展不是 C++ tile_fuse 的性能替代品。

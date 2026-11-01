@@ -49,6 +49,45 @@ public:
 private:
     const fe::SymMap<const Def*>& selected_;
 };
+
+struct Region {
+    const Def* body;
+    std::vector<size_t> path;
+};
+
+std::vector<Region> regions(Lam* fn) {
+    std::vector<Region> result{
+        {fn->body(), {}}
+    };
+    struct Work {
+        const Def* def;
+        size_t parent, index;
+        DefSet ancestors;
+    };
+    std::vector<Work> pending{
+        {fn->body(), size_t(-1), 0, {fn}}
+    };
+    size_t limit = 64 * (fn->world().curr_gid() + 1);
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i >= limit) throw pattern::RebuildLimit("graph region discovery work budget exceeded");
+        auto [def, parent, index, ancestors] = pending[i];
+        if (auto lam = def->isa<Lam>()) {
+            if (!lam->is_set() || lam->is_external() || !ancestors.insert(lam).second) continue;
+            std::vector<size_t> path;
+            for (size_t cursor = i; pending[cursor].parent != size_t(-1); cursor = pending[cursor].parent)
+                path.push_back(pending[cursor].index);
+            std::ranges::reverse(path);
+            path.push_back(1);
+            result.push_back({lam->body(), path});
+            pending.push_back({lam->body(), i, 1, std::move(ancestors)});
+            continue;
+        }
+        if (!def->isa<App>() && !def->isa<Tuple>() && !def->isa_imm<Pack>()) continue;
+        for (size_t j = 0; j != def->num_ops(); ++j)
+            pending.push_back({def->op(j), i, j, ancestors});
+    }
+    return result;
+}
 } // namespace
 
 void GraphRuleRewrite::apply(const App* app) {
@@ -148,52 +187,65 @@ void GraphRuleRewrite::start() {
     for (auto name : names) {
         auto fn = world().externals()[name]->isa_mut<Lam>();
         if (!fn || !fn->is_set() || !fn->is_closed()) continue;
+        std::vector<Region> instances;
+        try {
+            instances = regions(fn);
+        } catch (const pattern::RebuildLimit& error) {
+            log().d("graph_rule_app skipped region discovery in {}: {}", fn, error.what());
+            continue;
+        }
+        bool changed = false;
         for (auto source : rules_) {
             pattern::GraphRulePattern compiled(importer.rewrite(source)->as<Rule>());
-            pattern::GraphView view({fn->body()}, {.operators = &ops, .scope = fn});
-            std::optional<pattern::GraphRewrite> accepted;
-            std::string reason = "no accepted match visited";
-            pattern::GraphMatchOptions options;
-            options.max_results = 1;
-            options.accept      = [&](const pattern::GraphMatch& match) {
-                auto candidate = compiled.plan(match, view, &guards);
-                if (!candidate.plan) {
-                    reason = candidate.reason;
-                    if (candidate.status == pattern::MatchStatus::Unknown) {
-                        profile_count("graph_rule.unknown");
-                        log().d("graph_rule_app skipped a match in {}: {}", fn, candidate.reason);
+            for (const auto& region : instances) {
+                pattern::GraphView view({region.body}, {.operators = &ops, .scope = fn, .region_path = region.path});
+                pattern::GuardContext local_guards(view);
+                std::optional<pattern::GraphRewrite> accepted;
+                std::string reason = "no accepted match visited";
+                pattern::GraphMatchOptions options;
+                options.max_results = 1;
+                options.accept      = [&](const pattern::GraphMatch& match) {
+                    auto candidate = compiled.plan(match, view, region.path.empty() ? &guards : &local_guards);
+                    if (!candidate.plan) {
+                        reason = candidate.reason;
+                        if (candidate.status == pattern::MatchStatus::Unknown) {
+                            profile_count("graph_rule.unknown");
+                            log().d("graph_rule_app skipped a match in {}: {}", fn, candidate.reason);
+                        }
+                        return false;
                     }
-                    return false;
+                    std::array plans{candidate.plan.get()};
+                    std::optional<pattern::GraphRewrite> rebuilt;
+                    try {
+                        rebuilt.emplace(pattern::rewrite_graph(view, plans, rewrite_options_));
+                    } catch (const pattern::RebuildLimit& error) {
+                        reason = error.what();
+                        log().d("graph_rule_app skipped a match in {}: {}", fn, reason);
+                        profile_count("graph_rule.budget");
+                        return false;
+                    }
+                    auto next = std::move(*rebuilt);
+                    if (!next.is_changed()) {
+                        profile_count("graph_rule.noop");
+                        reason = "canonical no-op";
+                        return false;
+                    }
+                    accepted.emplace(std::move(next));
+                    reason = "first accepted changed rewrite";
+                    return true;
+                };
+                auto matches = compiled.find(view, options);
+                log().d("graph_rule_app search in {}: {} ({})", fn, search_status(matches.status), reason);
+                if (accepted) {
+                    selected[name] = accepted->scope();
+                    proposals.push_back(std::move(*accepted));
+                    profile_count("graph_rule.rewrites");
+                    changed = true;
+                    break; // The next invocation rebuilds matches and processes further groups.
                 }
-                std::array plans{candidate.plan.get()};
-                std::optional<pattern::GraphRewrite> rebuilt;
-                try {
-                    rebuilt.emplace(pattern::rewrite_graph(view, plans, rewrite_options_));
-                } catch (const pattern::RebuildLimit& error) {
-                    reason = error.what();
-                    log().d("graph_rule_app skipped a match in {}: {}", fn, reason);
-                    profile_count("graph_rule.budget");
-                    return false;
-                }
-                auto next = std::move(*rebuilt);
-                if (!next.is_changed()) {
-                    profile_count("graph_rule.noop");
-                    reason = "canonical no-op";
-                    return false;
-                }
-                accepted.emplace(std::move(next));
-                reason = "first accepted changed rewrite";
-                return true;
-            };
-            auto matches = compiled.find(view, options);
-            log().d("graph_rule_app search in {}: {} ({})", fn, search_status(matches.status), reason);
-            if (accepted) {
-                selected[name] = accepted->scope();
-                proposals.push_back(std::move(*accepted));
-                profile_count("graph_rule.rewrites");
-                break; // The next invocation rebuilds matches and processes further groups.
+                if (matches.status != pattern::SearchStatus::Complete) profile_count("graph_rule.incomplete");
             }
-            if (matches.status != pattern::SearchStatus::Complete) profile_count("graph_rule.incomplete");
+            if (changed) break;
         }
     }
     if (!proposals.empty()) {

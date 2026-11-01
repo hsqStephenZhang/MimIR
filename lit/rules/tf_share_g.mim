@@ -2,7 +2,7 @@
 // RUN: cat %t.graph | %FileCheck %s --check-prefix=VALUE
 // RUN: cat %t.graph | %FileCheck %s --check-prefix=MULTI
 // RUN: cat %t.graph | %FileCheck %s --check-prefix=JOIN
-// RUN: cat %t.graph | %FileCheck %s --check-prefix=NESTGAP
+// RUN: cat %t.graph | %FileCheck %s --check-prefix=NEST
 // TF-RULES: (local, shared)
 // TF-PURE: slice, ew, whole, tiles, tiled_n, tiled, sink
 
@@ -37,7 +37,8 @@ extern lam nested (f: Nat → Nat, x salt: Nat): [Nat, Nat] =
 // MULTI: tiled_n
 // MULTI-NOT: tiles
 // NEST-LABEL: extern lam nested
-// NEST: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = slice (x, o, 2);
+// NEST: lam {{.*}} ([[O:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat)
+// NEST: let [[SL:[a-zA-Z_][a-zA-Z_0-9]*]] = slice (x, [[O]], 2);
 // NEST: ew (f, [[SL]])
 // NEST: whole
 // JOIN-LABEL: extern lam multi_nested
@@ -45,8 +46,3 @@ extern lam nested (f: Nat → Nat, x salt: Nat): [Nat, Nat] =
 // JOIN-NOT: tiles
 // JOIN-NOT: whole
 // JOIN-LABEL: extern lam nested
-
-// Flip NESTGAP to NEST when region search lands.
-// NESTGAP-LABEL: extern lam nested
-// NESTGAP: ew (f, x)
-// NESTGAP: slice (
