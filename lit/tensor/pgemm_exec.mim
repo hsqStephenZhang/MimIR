@@ -1,4 +1,5 @@
-// RUN: %mim -I %S -p opt %s -p ll
+// RUN: %mim -I %S -p opt %s -p ll 2> %t.log
+// RUN: test "$(grep -c 'tensor destination fallback:' %t.log || true)" = 0
 // RUN: clang++ -std=c++23 %S/pgemm_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t | %FileCheck %s
 // RUN: %mim -X tensor:reference-tiles=1 -I %S -p opt %s -p ll

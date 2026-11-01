@@ -49,6 +49,15 @@ stage_barrier 分别检查默认 stage 边界和 reference generate 边界。
 尚未显式实现 enclosing-loop scratch free 或同 extent 下跨 iterations 的 buffer reuse。
 不能在有其他 scope readers 时提前 free，persistent stage/resource identity 也未实现。
 
+### 4.3 Destination/reference correctness checks
+
+tile_constructs_exec、nested_stage_exec、pgemm_exec 和 outs_exec 都执行两条 pipeline。
+tiled_destination 检查 grid 内的 MRP，不经每 element generate；fold_destination 区分
+loop 前 init copy 与无 copy 的 linear step；stage_destination 检查共享 fill buffer operand。
+pgemm_exec 同时要求 destination fallback report 为零，不可退化为 step/tile copies 后仍通过。
+非 pointwise map_init 与 acc 额外作为 data input 的两个用例强制 whole-step copy 后检查数值，
+因此 no-copy proof 的拒绝路径也不是未覆盖的性能假设。
+
 ## 0. Generic shape Rules
 
 Rule 定义期仍检查 guard 的 Bool 类型，以及两侧已经闭合的类型不一致。
