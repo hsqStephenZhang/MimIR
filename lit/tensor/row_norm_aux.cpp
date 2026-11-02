@@ -16,6 +16,8 @@ DECLARE(0, 7)
 
 static uint64_t exponentials = 0;
 extern "C" void record_exp(uint64_t lanes) { exponentials += lanes; }
+static uint64_t centered = 0;
+extern "C" void record_center(uint64_t lanes) { centered += lanes; }
 
 int main() {
     struct Case {
@@ -39,7 +41,11 @@ int main() {
 #ifdef REALIZATION_COUNT
             if (c.n != 1) assert(exponentials == uint64_t(c.m * c.n));
 #endif
+            centered   = 0;
             auto layer = c.layer(x.data());
+#ifdef CENTER_COUNT
+            assert(centered == uint64_t(c.m * c.n));
+#endif
             for (int i = 0; i != c.m; ++i) {
                 double mean = 0, variance = 0, sum = 0;
                 auto maximum = *std::max_element(x.begin() + i * c.n, x.begin() + (i + 1) * c.n);

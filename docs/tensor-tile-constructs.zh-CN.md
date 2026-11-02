@@ -417,6 +417,21 @@ generic tiled body 的返回类型仍是依赖 extent 的 value array，
 singleton-column 可化简为 1 而没有 exp。分别在 LLVM 优化前、优化后插入动态计数，
 防止优化器掩盖 producer 重算。count callback 只存在于测试产物。
 
+### 9.3 Layernorm 的 shared centered tile（Task 14A.2）
+
+同一 row tile 内先求 mean，再写 `centered = x - mean` 的 stage，
+variance 与最终 normalize 都读取这一份 centered buffer。
+§9.2 的 nest-entry binding 同时保证该路径的 realization 不被带进 reader 的 cell loop；
+不需要第二套 key、额外 schedule 字段或新的 callback 规则。
+
+`row_norm` 在 LLVM 优化前对 F32 `fsub` 插入动态计数；
+layernorm kernel 中唯一的减法是 centered tile 的逐 cell fill。
+5×7、1×11、7×1、0×7 的计数分别严格为 35、11、7、0，
+包括 tail tile，并在三次改变输入后重复检查。
+这验证每个 centered cell 只计算一次，而不是仅检查同一静态 stage 节点存在。
+mean/variance 使用完整 row reduction，epsilon=1e−5，scalar reference 用 double 累加；
+destination 与 reference-tiles 两条路径均对照有限、大幅度及常量输入。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；
