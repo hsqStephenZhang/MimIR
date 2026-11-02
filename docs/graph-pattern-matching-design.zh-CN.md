@@ -856,3 +856,27 @@ C++ continuation 只保留在跨 graph-anchor 搜索、类型完成和隔离 Not
 规则均成功改写为 `x`。
 另一个 2048-operand 例子交错 Type/Where/Not，消耗 20,473 steps，
 峰值 active_depth=3、probe 栈跨度 3,312 bytes，宽度也不保留 native frame。
+
+### 回归验证
+
+`test/pattern_depth.cpp` 新增六个 doctest：
+32/256/2048-operand 结构匹配同时验证精确的 step 消耗与截断后不暴露 captures；
+512 层 App 链在默认深度处以 511 steps 干净失败；
+2048 个 operands 中的 1024 个 Either 必须因后续 sibling 绑定冲突而回溯；
+2048-operand Range 交错 Type/Where/Not；
+256 个 Binder 的 siblings；
+以及 2048-operand 图模式在 Indexed/Exhaustive 两种搜索模式下得到同一唯一匹配。
+其中宽结构、Binder 和图搜索只给 max_depth=3，Either 和 Range 只给 8。
+
+`lit/rules/pattern_depth.mim` 通过生成器构造 32/256/2048 个 `x+i` 的完整
+Mim Rule 模块，检查输出函数确实变为 `x`，不只检查编译退出码或未报错。
+默认 max_steps 下，最大的规则仍在 32,767 steps 内完成。
+现有 capture 回滚、下游 predicate 选择 OR 分支、Unknown/Not、预算 witness、
+闭合 lambda 常量和多 anchor 枚举回归均保留。
+
+完整 CTest 为 249/249；`mim-tensor-pattern-test` 单独运行 21 cases、
+232 assertions 通过；完整 lit 为 675 passed / 9 unsupported，其中
+`lit/rules` 为 69 passed。
+当前分支没有独立 `lit/pattern` 目录，底层 pattern 回归由 C++ suites 覆盖。
+所有重构建限制四个并行任务，测试使用 `ctest -j4` / `lit -j4`，
+重任务串行启动并使用 `nice -n 10`，未运行计时 benchmark。
