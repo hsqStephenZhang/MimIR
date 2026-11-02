@@ -26,7 +26,7 @@ struct ProducerTile {
     std::string reason;
 };
 
-ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext);
+ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* box_cap = nullptr);
 
 struct MultiTilePlan {
     const Def *types, *ranks, *shapes, *grid, *boxes, *body;

@@ -112,7 +112,7 @@ const Def* normalize_group_root(const Def*, const Def*, const Def* producer) {
     return w.lit_ff();
 }
 
-ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) {
+ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* box_cap) {
     auto app = graph::map_reduce(producer);
     if (!app) return {nullptr, "producer is not a map_reduce_post"};
     auto mr  = btensor::MapRedPost::of(app->callee()->as<App>());
@@ -156,7 +156,17 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) 
             return {nullptr, "write preimage cuts a reduction dimension"};
 
     auto output_cap = ext;
-    if (!lit_projs(ext, ro) || !lit_projs(size, rn)) {
+    if (box_cap) {
+        for (u64 d = 0; d != ro; ++d)
+            if (auto requested = Lit::isa(ext->proj(ro, d)), bound = Lit::isa(box_cap->proj(ro, d));
+                requested && bound && *requested > *bound)
+                return {nullptr, "tile extent exceeds its storage cap"};
+        auto bound = w.app(w.app(w.annex<affine::preimage>(), {mr.Rn, mr.Ro}), mr.map_out);
+        bound      = w.app(bound, {off, box_cap, source_loop_cap});
+        if (bound->proj(4, 3) != w.lit_tt()) return {nullptr, "capped write preimage is not proven exact"};
+        cap        = bound->proj(4, 2);
+        output_cap = box_cap;
+    } else if (!lit_projs(ext, ro) || !lit_projs(size, rn)) {
         cap        = w.tuple(DefVec(rn, [&](size_t d) {
             auto bound = cap->proj(rn, d);
             return Lit::isa(bound) ? bound : source_loop_cap->proj(rn, d);
@@ -173,9 +183,10 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) 
     auto [values, post_values] = app->args<2>();
     auto shapes = DefVec(), maps = DefVec(), inputs = DefVec();
     auto post_shapes = DefVec(), post_maps = DefVec(), post_inputs = DefVec();
-    auto boxes = [&](u64 count, const Def* ranks, const Def* source_shapes, const Def* source_maps,
-                     const Def* source_types, const Def* source_values, const Def* n, const Def* origin,
-                     const Def* domain, DefVec& result_shapes, DefVec& result_maps, DefVec& result_values) -> bool {
+    auto boxes
+        = [&](u64 count, const Def* ranks, const Def* source_shapes, const Def* source_maps, const Def* source_types,
+              const Def* source_values, const Def* n, const Def* origin, const Def* domain, const Def* domain_cap,
+              DefVec& result_shapes, DefVec& result_maps, DefVec& result_values) -> bool {
         for (u64 i = 0; i != count; ++i) {
             auto rank = ranks->proj(count, i);
             if (!Lit::isa(rank)) return false;
@@ -194,15 +205,22 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) 
             result_shapes.push_back(extent);
             result_maps.push_back(shift(map, n, rank, origin, start));
             auto value = source_values->proj(count, i);
-            result_values.push_back(empty ? value
-                                          : slice(source_types->proj(count, i), rank, shape, value, start, extent));
+            if (!empty && box_cap) {
+                auto storage = image(map, n, rank, origin, domain_cap, shape);
+                if (Axm::isa<affine::image>(storage)) return false;
+                auto view = w.app(w.app(w.annex<slice_box>(), {source_types->proj(count, i), rank}), shape);
+                result_values.push_back(w.app(w.app(view, {start, extent, storage->proj(4, 2)}), value));
+            } else {
+                result_values.push_back(empty ? value
+                                              : slice(source_types->proj(count, i), rank, shape, value, start, extent));
+            }
         }
         return true;
     };
-    if (!boxes(rks->nis, mr.Ris, mr.Sis, mr.maps, mr.Tis, values, mr.Rn, lo, size, shapes, maps, inputs))
+    if (!boxes(rks->nis, mr.Ris, mr.Sis, mr.maps, mr.Tis, values, mr.Rn, lo, size, cap, shapes, maps, inputs))
         return {nullptr, "input map does not beta-reduce or has symbolic rank"};
-    if (!boxes(rks->nps, mr.Rps, mr.Sps, mr.post_maps, mr.Tps, post_values, mr.Ro, off, ext, post_shapes, post_maps,
-               post_inputs))
+    if (!boxes(rks->nps, mr.Rps, mr.Sps, mr.post_maps, mr.Tps, post_values, mr.Ro, off, ext, output_cap, post_shapes,
+               post_maps, post_inputs))
         return {nullptr, "post map does not beta-reduce or has symbolic rank"};
     auto init = mr.init;
     if (auto outs = tensor_init(mr)) {
@@ -231,6 +249,11 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) 
 const Def* normalize_tile_of(const Def*, const Def*, const Def* arg) {
     auto [producer, off, ext] = arg->projs<3>();
     return producer_tile(producer, off, ext).value;
+}
+
+const Def* normalize_tile_of_box(const Def*, const Def*, const Def* arg) {
+    auto [producer, off, ext, cap] = arg->projs<4>();
+    return producer_tile(producer, off, ext, cap).value;
 }
 
 const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {

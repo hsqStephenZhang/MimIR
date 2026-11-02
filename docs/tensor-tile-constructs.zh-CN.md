@@ -106,7 +106,7 @@ outer axis 是 canonical nest 的第零 parallel 轴；它本身是 vector loop 
 
 没有照搬 reference 分支的 action/prepack/cache/placement bits：本分支没有这些 record
 字段，stage 是显式 barrier，custom chooser 保守作为 root。
-不支持 reference 的 reverse placement、halo 和跨调用 prepack；
+不支持 reference 的 reverse placement 和跨调用 prepack；halo 的显式 opt-in 路径见 §7.7；
 也没有把其支持的任意 loop order 推广到本分支的 canonical outer-axis strategy。
 reference 会先标记每个 eligible op；此处先选择 terminal group，再在后续快照处理剩余
 whole producer，避免既给 producer 独立分组又在消费者中重建它。
@@ -206,6 +206,93 @@ benchmark 使用未插桩的可执行文件；乘法计数只用于归因，不�
 没有消除重复计算，该尝试未保留。
 本任务不实现 diamond realization cache，因此这里明确保留限制，
 不把“两个 contraction 都匹配了 BLIS Rule”称为两个 GEMM 间的高效融合。
+
+### 7.7 Task 13B：convolution halo
+
+保留原来的 `tile_of` / `fuse_producer` exact 路径和 budget=1 策略。
+halo 使用带 box witness 的 `tile_of_box (p, off, ext, cap)`；
+其值仍是 `tile_of_ref (p, off, ext)`，`cap` 不是逻辑 shape。
+调用者须证明逐轴 `ext ≤ cap`，并保证 producer 在所计算的 over-box 上纯且有定义。
+已知 literal extent 超过 cap 时不重建 producer，lowering 明确诊断后回退 reference slice。
+最终实例的 cap 必须为 literal，否则仍由现有 storage-cap 检查报错。
+
+例如按输出行分块时，外层仍是普通 `tiled`，body 写：
+
+```mim
+λ (off ext: «4; Nat»): «ext; I64» = tensor.tile_of_box (p, off, ext, ext)
+```
+
+producer 的 write preimage 仍须 exact，reduction dims 仍须完整保留。
+这里放宽的是 **input read image**，不是任意 inexact write map：
+`oh * stride + kh * dilation` 的 bounding box 可包含没有实际读取的空隙，
+相邻 output tiles 的 input boxes 也可重叠；producer 在整个有效 over-box 上重算。
+单轴未裁剪 cap 为 `(tile_rows − 1) * stride + (kernel_rows − 1) * dilation + 1`，
+再取 producer 域的上界；不把实际读取点数冒充 box 体积。
+
+逻辑 input box 用实际 clipped loop extent 求 `affine.image`；
+物理 cap 另用 loop cap 求 image 的第三字段，不能用前者的 runtime extent 推导。
+两个域共享同一 read map 和 origin。盒子通过
+`slice_box (shape, (off, ext, cap), p)` 保留到递归 Rule：
+它在值上只是 unit-stride slice，但不丢失 literal-cap witness。
+`tile_of_box` 将该 witness 沿 write preimage 传到 `btensor.clip_sched`，
+buffer 和循环使用 cap；依赖 runtime offset 的有效部分只在叶子执行 init/read/combine/post/write。
+消费者的 read map 仍减去实际 box origin，不能用 cap 替代逻辑坐标。
+未融合的 `slice_box` 走普通 view lowering，不穿过 `stage`。
+
+决策是显式 Rule factory `fuse_halo (T, rank, budget)`，匹配 `slice_box`，
+以同一个 staged `within_budget` witness 决定是否改写成 `tile_of_box`。
+它允许纯 canonical contraction producer 被重算，因而不复用 exact 策略的 contraction-root veto；
+这不会自动放开 `group_outer` 或默认 pipeline。
+`within_budget` 对每个 occurrence 累加实际 over-box cells，包含重叠与 dilation 空隙；
+同一 producer 的 reduction 域完整不变，因此重复 output cell 也重复其整段 reduction。
+whole reader、nested tiled/fold、Unknown/overflow 和 65536 次枚举上限沿用原合同。
+graph frontend 仍须显式声明本负载的 MRP、pad、schedule 和 affine expression 的纯性。
+
+**Padding 选择保留 whole `tensor.pad`，只切片其 consumer。**
+padding 不通过饱和减法伪装成 affine input index，也不把域外位置当作可读取的 producer cell。
+验收负载先对 NCHW input 做 whole zero-pad，再计算保持零值的 elementwise scale；
+因此 scale 可以在每个 conv tile 的 halo 内重算，pad 本身只 materialize 一次。
+这与标量 reference 中先 scale 再 zero-pad 相等。
+若 elementwise producer 位于 pad 之前，或两层 conv 之间有 pad，本规则不跨过该 pad；
+producer 留 whole，不声称已实现局部 padding 或一般带条件的 map。
+
+| 回归 | 覆盖 |
+| --- | --- |
+| `tf_halo_exec` | NCHW conv → bias → ReLU，stride 1/2、padding 1、dilation 2、不整除两行 tile、一行 tile；valid conv → ReLU → conv 的两行 grouping |
+| `tf_halo_budget_one` | 长度 7 的 producer，三点 window、两行 tile，over-box cells 为 `4+4+3=11`，budget 1 拒绝 |
+| `tf_halo_budget` | 同一请求 budget 2 接受；一行 tile 的 `3*5=15 > 2*7` 拒绝；whole reader 的 `11+7` 和未知 fold count 拒绝 |
+| `tile_of_box_exec` | runtime origin 对应有效长度 3/2/1、固定 cap=3；七元素域按三元素 tile 分块 |
+| `Tensor halo` unit | symbolic valid extent 与 literal image cap=4 分离；递归 producer 的 output/loop caps 均为 4；原 exact path 仍使用普通 slice |
+
+两个 Rule frontends 均做 IR 决策检查；五个 conv 负载各在 rule/graph destination 路径和
+rule reference-tiles 路径对照独立标量实现，辅助程序启用 ASan。
+同一组负载还以 budget=0 执行 whole-producer fallback；
+`slice_box` 保留到 bufferization，避免 L1 先把 scale 融进丢失 cap 的 symbolic-shape slice。
+bias/ReLU 在 reduction 完成后执行一次，不改变 MAC 顺序。
+pad、weights 和 bias 留 whole；IR 检查 scale 和第一层 conv 没有 whole-size MRP。
+本任务不运行执行时间 benchmark，也不实现共享 realization cache。
+
+限制仍包括自定义 schedule chooser、切断 reduction 的请求、非 exact write preimage、
+没有最终 literal cap 的动态 shape，以及 producer 在 over-box 上未定义或有副作用的情况。
+负载直接使用与 `tensor.conv` 相同的 NCHW/read/write maps 和完整七维 reduction，
+但显式选择 canonical scalar nest；没有改写 `conv_schedule` 的 packed/vector heuristics。
+该实现不是对任意已调度 conv 的自动 regrouping，也不是通用 inexact preimage 求解器。
+
+本地 Debug 验证为 CTest **241/241**，完整 lit **644 passed、9 unsupported**
+（共 653；没有失败或 XFAIL），新增五个 lit 与一个 unit case。
+首次构建所要求的六个 targets 用时 **62.21 s**（wall）。
+下表为同一文件的五个 external 负载从 Mim 到 LLVM 的单次编译 wall time，
+不包含 clang 编译/链接、执行或计时循环；共享机器上的单次数字不作为性能结论。
+
+| 编译模式 | wall time |
+| --- | ---: |
+| rule、budget=0，producer 留 whole | 0.564 s |
+| rule、budget=3，halo destination | 0.533 s |
+| graph、budget=3，halo destination | 0.577 s |
+| rule、budget=3，reference-tiles | 0.574 s |
+
+原始编译输入、日志和结果保留在 `build/whole-rule.*`、`build/halo-{rule,graph,reference}.*`
+及 `build/halo-compile-results.json`；脚本为 `build/halo-compile.py`。
 
 ## 8. Multi-result tiles（Task 13A.1）
 

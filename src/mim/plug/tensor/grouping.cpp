@@ -76,6 +76,11 @@ private:
 
     std::optional<u64> region(const pattern::DataOccurrence& occurrence, const Def* reader, u64 whole, size_t i) {
         if (i == occurrence.regions.size()) {
+            if (auto slice = Axm::isa<slice_box>(reader)) {
+                auto [meta, shape, params, value] = slice->uncurry_args<4>();
+                auto rank                         = Lit::isa(meta->proj(2, 1));
+                return rank ? cells(params->proj(3, 1), *rank) : std::nullopt;
+            }
             if (auto slice = Axm::isa<tensor::slice>(reader)) {
                 auto [meta, shape, params, value] = slice->uncurry_args<4>();
                 auto rank                         = Lit::isa(meta->proj(2, 1));
@@ -182,7 +187,7 @@ public:
         grouped_[producer] = false;
         if (!outer_axis(producer, importer_)) return false;
         for (auto use : source_.data_uses(producer))
-            if (Axm::isa<tensor::slice>(use.consumer))
+            if (Axm::isa<tensor::slice>(use.consumer) || Axm::isa<slice_box>(use.consumer))
                 for (const auto& occurrence : source_.occurrences(use.consumer))
                     if (!occurrence.regions.empty()) return false;
         for (auto op : source_.operations())

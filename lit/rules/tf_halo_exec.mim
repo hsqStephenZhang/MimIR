@@ -1,0 +1,105 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule tt > %t.rule 2> %t.rule.log
+// RUN: %FileCheck %s < %t.rule
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt > %t.graph 2> %t.graph.log
+// RUN: %FileCheck %s < %t.graph
+// RUN: python3 %S/tf_run.py %mim %s %t rule tt lower > %t.rule.out 2> %t.rule.exec.log
+// RUN: clang++ -O3 -fsanitize=address %S/tf_halo_aux.cpp %t.rule.ll -o %t.rule.exec -Wno-override-module
+// RUN: %t.rule.exec
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt lower > %t.graph.out 2> %t.graph.exec.log
+// RUN: clang++ -O3 -fsanitize=address %S/tf_halo_aux.cpp %t.graph.ll -o %t.graph.exec -Wno-override-module
+// RUN: %t.graph.exec
+// RUN: python3 %S/tf_run.py %mim %s %t.ref rule tt lower reference > %t.ref.out 2> %t.ref.log
+// RUN: clang++ -O3 -fsanitize=address %S/tf_halo_aux.cpp %t.ref.rule.ll -o %t.ref.exec -Wno-override-module
+// RUN: %t.ref.exec
+// RUN: sed 's/tensor.fuse_halo (I64, 4, 3)/tensor.fuse_halo (I64, 4, 0)/' %s > %t.whole.mim
+// RUN: python3 %S/tf_run.py %mim %t.whole.mim %t.whole rule tt lower > %t.whole.out 2> %t.whole.log
+// RUN: clang++ -O3 -fsanitize=address %S/tf_halo_aux.cpp %t.whole.rule.ll -o %t.whole.exec -Wno-override-module
+// RUN: %t.whole.exec
+// TF-RULES: (tensor.fuse_halo (I64, 4, 3))
+// TF-PURE: tensor.tile_of_box, tensor.slice_box, tensor.map_reduce_post, tensor.pad, btensor.clip_sched, affine.op.add, affine.op.sub, affine.semiop.mul, affine.lit
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin compile;
+use tensor;
+
+fun scale (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+fun mac (acc: I64, (x w: I64))@tt: I64 =
+    return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, w)));
+fun bias_relu (acc bias: I64)@tt: I64 =
+    let x = core.wrap.add 0 (acc, bias);
+    return (core.select (core.icmp.sl (x, 0I64), 0I64, x));
+
+lam input_map (stride dilation: «2; Nat») (n _ oh ow ci kh kw: affine.Index): «4; affine.Index» =
+    (n, ci,
+     affine.op.add (affine.semiop.mul (oh, stride#0_2), affine.semiop.mul (kh, dilation#0_2)),
+     affine.op.add (affine.semiop.mul (ow, stride#1_2), affine.semiop.mul (kw, dilation#1_2)));
+
+lam convolution {n cin cout h w: Nat} (stride dilation: «2; Nat»)
+                (input: «n, cin, h, w; I64», weight: «cout, cin, 3, 3; I64», bias: «cout; I64»)
+              : «conv_shape (n, cout, (h, w), (3, 3), stride, dilation, (0, 0)); I64» =
+    let s = conv_shape (n, cout, (h, w), (3, 3), stride, dilation, (0, 0));
+    let (_, _, oh, ow) = s;
+    map_reduce_post @(2, 1) @(I64, I64, 4, 7, SchedT)
+        (s, (n, cout, oh, ow, cin, 3, 3), mk_sched (7, 0))
+        @((I64, I64), (4, 4), ((n, cin, h, w), (cout, cin, 3, 3)), I64, 1, cout)
+        (mac, 0I64, bias_relu) (proj_map @(7, 4) (0, 1, 2, 3))
+        ((input_map (stride, dilation), proj_map @(7, 4) (1, 4, 5, 6)),
+         (proj_map @(4, 1) 1,)) ((input, weight), bias);
+
+lam prepared (input: «2, 2, 5, 6; I64»): «2, 2, 7, 8; I64» =
+    let padded = pad @(I64, 4) (2, 2, 5, 6) (0, (0, 0, 1, 1), (0, 0, 1, 1)) (buf input, 0I64);
+    map_reduce ((2, 2, 7, 8), (2, 2, 7, 8)) (scale, 0I64)
+        (affine.id @4) (affine.id @4,) padded;
+
+extern fun stride_one (input: «2, 2, 5, 6; I64», weight: «3, 2, 3, 3; I64», bias: «3; I64»): «2, 3, 5, 6; I64» =
+    let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias);
+    return (tiled @(I64, 4) ((2, 3, 5, 6), (2, 3, 2, 6))
+        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+
+extern fun stride_two (input: «2, 2, 5, 6; I64», weight: «3, 2, 3, 3; I64», bias: «3; I64»): «2, 3, 3, 3; I64» =
+    let p = convolution ((2, 2), (1, 1)) (prepared input, buf weight, buf bias);
+    return (tiled @(I64, 4) ((2, 3, 3, 3), (2, 3, 2, 3))
+        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+
+extern fun one_row (input: «2, 2, 5, 6; I64», weight: «3, 2, 3, 3; I64», bias: «3; I64»): «2, 3, 5, 6; I64» =
+    let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias);
+    return (tiled @(I64, 4) ((2, 3, 5, 6), (2, 3, 1, 6))
+        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+
+extern fun dilated (input: «2, 2, 5, 6; I64», weight: «3, 2, 3, 3; I64», bias: «3; I64»): «2, 3, 3, 4; I64» =
+    let p = convolution ((1, 1), (2, 2)) (prepared input, buf weight, buf bias);
+    return (tiled @(I64, 4) ((2, 3, 3, 4), (2, 3, 2, 4))
+        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+
+extern fun chain (input: «2, 2, 9, 8; I64», first: «3, 2, 3, 3; I64», second: «2, 3, 3, 3; I64»): «2, 2, 5, 4; I64» =
+    let p = convolution ((1, 1), (1, 1)) (buf input, buf first, splat (3, 0I64));
+    let p = convolution ((1, 1), (1, 1)) (p, buf second, splat (2, 0I64));
+    return (tiled @(I64, 4) ((2, 2, 5, 4), (2, 2, 2, 4))
+        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+
+// CHECK-LABEL: extern fun chain
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 3, 7, 6),
+// CHECK: btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 3, 7, 6),
+// CHECK: tensor.tiled
+// CHECK-LABEL: extern fun dilated
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: btensor.clip_sched
+// CHECK: tensor.tiled
+// CHECK-LABEL: extern fun one_row
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: tensor.tiled
+// CHECK-LABEL: extern fun stride_one
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: tensor.tiled
+// CHECK-LABEL: extern fun stride_two
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: tensor.tiled

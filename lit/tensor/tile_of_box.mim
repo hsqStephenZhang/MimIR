@@ -1,0 +1,27 @@
+// RUN: %mim %s -o - 2> %t.log | %FileCheck %s --implicit-check-not=tensor.tile_of_box
+// RUN: %FileCheck %s --check-prefix=REPORT < %t.log
+
+plugin tensor;
+plugin affine;
+plugin core;
+plugin compile;
+use tensor;
+
+fun scale (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+extern fun invalid_cap (a: «7; I64»): «3; I64» =
+    let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf a);
+    return (tile_of_box (p, 1, 3, 2));
+
+extern fun pad_whole (a: «5; I64»): «3; I64» =
+    let p = pad @(I64, 1) 5 (0, 1, 1) (buf a, 0I64);
+    return (tile_of_box (p, 0, 3, 3));
+
+// CHECK-LABEL: extern fun invalid_cap
+// CHECK: tensor.map_reduce_post {{.*}} (7,
+// CHECK-LABEL: extern fun pad_whole
+// CHECK: tensor.pad
+// REPORT-DAG: tensor.tile_of_box fallback: tile extent exceeds its storage cap
+// REPORT-DAG: tensor.tile_of_box fallback: producer is not a map_reduce_post
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (lower_tensor, compile.cleanup);
