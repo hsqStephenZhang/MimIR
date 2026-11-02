@@ -1,5 +1,18 @@
 # Tensor-level tiling constructs（Task 7 / destination lowering）
 
+## 7. Cross-op grouping
+
+### 7.1 Pure affine boxes
+
+从 `feature/default-sched` 移植 `affine.image/cover/preimage` normalizers，
+保留 symbolic origin、literal cap、clamp、exactness 与不 β-reduce 时的 residual axiom。
+它们只依赖参数与 World，不读取 schedule、uses 或 placement。
+`btensor::falling` 复用 image 的单点差分判断反向读取轴。
+`lit/affine/image.mim` 检查静态结果与 opaque-map residual；
+`image_exec.mim` 对运行时 origins 枚举实际 domain，验证 image/cover 包含、
+exact axis 的覆盖，以及 preimage 的包含和 exact box 的反向包含。
+本次不移植 default-sched 的 Sched 字段或 C++ placement。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

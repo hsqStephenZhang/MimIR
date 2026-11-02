@@ -107,6 +107,25 @@ axm linearize: {n: Nat} → [idxs: «n; Index», s: «n; Nat»] → Index;
 ///
 axm delinearize: {m: Nat} → [lin: Index, s: «m; Nat»] → «m; Index»;
 ///
+/// ## Region Inference
+///
+/// Boxes use an origin and positive extents; cap bounds the extent independently of symbolic origins.
+/// image and cover report exactness per result axis; preimage reports exactness for the domain box.
+/// Maps that do not β-reduce leave these operations unnormalized.
+///
+axm image: {n m: Nat}
+         → [f: «n; Index» → «m; Index»]
+         → [lo ext: «n; Nat», s: «m; Nat»]
+         → [lo: «m; Nat», ext: «m; Nat», cap: «m; Nat», exact: «m; Bool»], normalize_image;
+axm cover: {k n m: Nat}
+         → [fs: «k; «n; Index» → «m; Index»»]
+         → [lo ext: «n; Nat», s: «m; Nat»]
+         → [lo: «m; Nat», ext: «m; Nat», cap: «m; Nat», exact: «m; Bool»], normalize_cover;
+axm preimage: {n m: Nat}
+            → [f: «n; Index» → «m; Index»]
+            → [lo ext: «m; Nat», S: «n; Nat»]
+            → [lo: «n; Nat», ext: «n; Nat», cap: «n; Nat», exact: Bool], normalize_preimage;
+///
 /// ## Phases
 ///
 /// ### lower_for
