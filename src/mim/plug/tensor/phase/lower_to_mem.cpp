@@ -66,10 +66,10 @@ const Def* splat_scalar(const Def* d) {
 
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
-    return Axm::isa<tensor::slice>(app) || Axm::isa<tensor::stage>(app) || Axm::isa<tensor::tile_fold>(app)
-        || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app)
-        || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app)
-        || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
+    return Axm::isa<tensor::tile_of>(app) || Axm::isa<tensor::slice>(app) || Axm::isa<tensor::stage>(app)
+        || Axm::isa<tensor::tile_fold>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app)
+        || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app)
+        || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -93,7 +93,11 @@ bool holds_buf(const Def* d) {
 /// @p buf, or its sole element if @p app's result has been folded to a scalar.
 const Def* scalar_result(const App* app, const Def* mem, const Def* buf) {
     if (app->type()->isa<Arr>()) return buf;
-    return buffer::op_read(mem, buf, buf->world().tuple())->proj(2, 1);
+    auto& w                  = buf->world();
+    auto [rank, shape, type] = Axm::isa<buffer::Buf>(buf->type())->args<3>();
+    auto zero                = w.tuple(
+        DefVec(Lit::as(rank), [&](size_t d) { return w.lit_idx(Lit::as(shape->proj(Lit::as(rank), d)), 0); }));
+    return buffer::op_read(mem, buf, zero)->proj(2, 1);
 }
 
 const Def* copy_buffer(const Def* mem, const Def* dst, const Def* src, const Def* shape) {
@@ -147,6 +151,9 @@ void LowerToMem::collect_tensor_types() {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::tiled>(app)) {
                 add_tensor_ty(app->type());
+            } else if (Axm::isa<tensor::tile_of>(app)) {
+                add_tensor_ty(app->type());
+                add_tensor_ty(app->arg(3, 0)->type());
             } else if (Axm::isa<tensor::tile_fold>(app)) {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::stage>(app)) {
@@ -415,8 +422,9 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     // Scope the fresh-memory bookkeeping: ops lowered while this body is rewritten mint their receiving
     // continuations into pending_, which are chained in front of the finished body. Nested lams anchor
     // their own requests (and their own per-lam op memo).
-    auto _  = fe::Restore(pending_, {});
-    auto __ = fe::Restore(fresh_memo_, {});
+    auto _       = fe::Restore(pending_, {});
+    auto __      = fe::Restore(fresh_memo_, {});
+    auto storage = fe::Restore(storage_shapes_, {});
     push();
     auto new_lam = new_world().mut_lam(conv_type(lam));
     map(lam, new_lam);
@@ -468,7 +476,11 @@ const Pi* LowerToMem::conv_type(Lam* lam) {
 
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<cps::cps2ds_dep>(app)) return cps::op_cps2ds_dep(rewrite(app->arg()));
-    if (Axm::isa<tensor::buf>(app)) return rewrite(app->arg()); // consumed: the buffer *is* the tensor now
+    if (Axm::isa<tensor::buf>(app)) {
+        auto value = rewrite(app->arg());
+        if (auto shape = fe::lookup(storage_shapes_, app->arg())) storage_shapes_[app] = shape;
+        return value;
+    }
     // A `tensor.if_static` still stuck at lowering time guards a runtime value: residualize to
     // its dynamic branch.
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
@@ -605,6 +617,25 @@ const Def* LowerToMem::rewrite_imm_Extract(const Extract* extract) {
     // value tuple whose type merely coincides with some tensor's.
     auto arr = rewrite(old_arr);
     if (!Axm::isa<buffer::Buf>(arr->type())) return RWPhase::rewrite_imm_Extract(extract);
+    if (auto bounds = fe::lookup(storage_shapes_, old_arr)) {
+        auto source = graph::map_reduce(old_arr);
+        if (!source) extract->blame("tensor capped read lacks its logical shape").bail();
+        auto mr          = btensor::MapRedPost::of(source->callee()->as<App>());
+        auto n           = Lit::as(mr.Ro);
+        auto logical     = rewrite(mr.So);
+        auto coordinates = Shape(index);
+        size_t used      = 0;
+        auto full        = new_world().tuple(DefVec(n, [&](size_t d) {
+            const Def* coordinate = new_world().lit_idx_1_0();
+            if (Lit::isa(logical->proj(n, d)) != 1) {
+                if (!coordinates.rank() || used == *coordinates.rank())
+                    extract->blame("tensor capped read has incompatible logical and physical ranks").bail();
+                coordinate = coordinates[used++];
+            }
+            return new_world().call(core::conv::u, bounds->proj(n, d), coordinate);
+        }));
+        index            = *Shape(full).fold(bounds);
+    }
 
     return buffer::op_read(bot_mem(), arr, index)->proj(2, 1); // the loaded value
 }
@@ -732,8 +763,74 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
 const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* destination) {
     // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
     // reusing the (rewritten) meta. The loop generation lives in the btensor plugin (`btensor.lower_map_reduce`).
-    auto& w            = new_world();
-    auto old_mr        = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto& w        = new_world();
+    auto old_mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto& old      = old_world();
+    auto changed   = false;
+    auto peel_read = [&](const Def* value) -> std::optional<PureRead> {
+        value = Axm::peel<tensor::buf>(value);
+        if (auto slice = Axm::isa<tensor::slice>(value)) {
+            auto [meta, shape, box]    = slice->callee()->as<App>()->uncurry_args<3>();
+            auto [start, step, extent] = box->projs<3>();
+            auto [type, rank]          = meta->projs<2>();
+            auto map                   = old.app(old.app(old.annex<tensor::slice_map>(), rank), {start, step});
+            return PureRead{slice->arg(), map, type, rank, shape};
+        }
+        return is_pure_read(value);
+    };
+    auto compose = [&](const Def* inner, const Def* outer) {
+        auto pi  = outer->type()->as<Pi>();
+        auto map = old.mut_lam(pi->dom(), inner->type()->as<Pi>()->codom());
+        return map->set(true, old.app(inner, old.app(outer, map->var())));
+    };
+    auto group = [&](const Def* values, const Def* ranks, const Def* shapes, const Def* maps, u64 n) {
+        auto sources = DefVec(), source_ranks = DefVec(), source_shapes = DefVec(), reads = DefVec();
+        for (u64 i = 0; i != n; ++i) {
+            auto value = values->proj(n, i), rank = ranks->proj(n, i), shape = shapes->proj(n, i),
+                 map = maps->proj(n, i);
+            while (auto read = peel_read(value)) {
+                if (!read->src->type()->isa<Arr>()) break;
+                value   = read->src;
+                rank    = read->R;
+                shape   = read->S;
+                map     = compose(read->map, map);
+                changed = true;
+            }
+            sources.push_back(value);
+            source_ranks.push_back(rank);
+            source_shapes.push_back(shape);
+            reads.push_back(map);
+        }
+        return std::tuple{old.tuple(sources), old.tuple(source_ranks), old.tuple(source_shapes), old.tuple(reads)};
+    };
+    auto [values, posts]               = app->args<2>();
+    auto [inputs, ranks, bounds, maps] = group(values, old_mr.Ris, old_mr.Sis, old_mr.maps, Lit::as(old_mr.nis));
+    auto [post_values, post_ranks, post_bounds, post_maps]
+        = group(posts, old_mr.Rps, old_mr.Sps, old_mr.post_maps, Lit::as(old_mr.nps));
+    auto init = old_mr.init;
+    if (auto initial = tensor_init(old_mr)) {
+        auto value = initial->outs, shape = initial->shape, map = initial->map;
+        while (auto read = peel_read(value)) {
+            if (read->R != old_mr.Ro || !read->src->type()->isa<Arr>()) break;
+            value   = read->src;
+            shape   = read->S;
+            map     = compose(read->map, map);
+            changed = true;
+        }
+        init = old.tuple({shape, map, value});
+    }
+    if (changed) {
+        const Def* result = old.annex<tensor::map_reduce_post>();
+        for (auto arg : {old_mr.nis_nps, old_mr.meta, old_mr.shapes,
+                         old.tuple({old_mr.Tis, ranks, bounds, old_mr.Tps, post_ranks, post_bounds}), init->type(),
+                         old.tuple({old_mr.comb, init, old_mr.post}), old_mr.map_out, old.tuple({maps, post_maps}),
+                         old.tuple({inputs, post_values})})
+            result = old.app(result, arg);
+        record_instance(result);
+        auto value = lower_map_reduce(result->as<App>(), destination);
+        if (auto shape = fe::lookup(storage_shapes_, result)) storage_shapes_[app] = shape;
+        return value;
+    }
     auto initial       = tensor_init(old_mr);
     auto args          = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
     auto [is, post_is] = args->projs<2>();
@@ -742,13 +839,23 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         rewrite(old_mr.nis_nps), rewrite(old_mr.meta), rewrite(old_mr.shapes), rewrite(old_mr.in_tys),
         w.tuple({rewrite(old_mr.comb), w.bot(rewrite(old_mr.To)), rewrite(old_mr.post)}), rewrite(old_mr.map_out),
         rewrite(old_mr.maps_all));
+    if (auto clipped = Axm::isa<btensor::clip_sched>(mr.sched)) {
+        auto [valid, output_cap, loop_cap, schedule] = clipped->args<4>();
+        if (!lit_projs(output_cap, Lit::as(mr.Ro)) || !lit_projs(loop_cap, Lit::as(mr.Rn)))
+            app->blame("tensor tile storage and loop caps must be literal").bail();
+        mr.So                = output_cap;
+        mr.Sr                = loop_cap;
+        mr.shapes            = w.tuple({mr.So, mr.Sr, mr.sched});
+        storage_shapes_[app] = output_cap;
+    }
     const Def* seed = nullptr;
     if (initial) {
         if (auto scalar = splat_scalar(initial->outs)) {
             seed = rewrite(scalar);
         } else {
-            auto outs = to_buffer(rewrite(initial->outs), initial->outs);
-            seed      = w.tuple({rewrite(initial->shape), rewrite(initial->map), outs});
+            auto outs  = to_buffer(rewrite(initial->outs), initial->outs);
+            auto shape = fe::lookup(storage_shapes_, initial->outs);
+            seed       = w.tuple({shape ? shape : rewrite(initial->shape), rewrite(initial->map), outs});
         }
     } else {
         seed = rewrite(old_mr.init);
@@ -785,6 +892,17 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     is                         = buffer_list(is, old_is, mr.nis);
     post_is                    = buffer_list(post_is, old_post_is, mr.nps);
     if (!is || !post_is) return RWPhase::rewrite_imm_App(app); // leave it alone
+    auto shapes = [&](const Def* values, const Def* logical, u64 n) {
+        return w.tuple(DefVec(n, [&](size_t i) {
+            auto source = values->proj(n, i);
+            if (auto shape = fe::lookup(storage_shapes_, source)) return shape;
+            return logical->proj(n, i);
+        }));
+    };
+    auto nis = Lit::as(mr.nis), nps = Lit::as(mr.nps);
+    mr.Sis    = shapes(old_is, mr.Sis, nis);
+    mr.Sps    = shapes(old_post_is, mr.Sps, nps);
+    mr.in_tys = w.tuple({mr.Tis, mr.Ris, mr.Sis, mr.Tps, mr.Rps, mr.Sps});
 
     // Wrap the pure tensor combiner `Fn [To, «nis; Tis»] → To` into the mem-threaded combiner
     // `Fn [mem.M 0, To, «nis; Tis»] → [mem.M 0, To]` that `btensor.map_reduce_post` expects.
@@ -919,6 +1037,7 @@ LowerToMem::lower_tile_body(const Def* body, const Def* off, const Def* ext, con
         body->blame("tensor.tiled body must be a defined lambda").bail();
     auto pending = fe::Restore(pending_, {});
     auto memo    = fe::Restore(fresh_memo_, {});
+    auto storage = fe::Restore(storage_shapes_, {});
     push();
     bind_old(parameter->has_var());
     map(origin, off);

@@ -22,8 +22,10 @@ const Def* normalize_group_root(const Def*, const Def*, const Def* producer) {
     auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
     auto ranks = mr.ranks();
     if (!ranks || !Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>())) return w.lit_tt();
-    auto record = w.app(w.annex<tile_sched>(), mr.sched);
-    if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), record))) return w.lit_tt();
+    auto schedule = mr.sched;
+    if (auto clipped = Axm::isa<btensor::clip_sched>(schedule)) schedule = clipped->arg(4, 3);
+    auto record = w.app(w.annex<tile_sched>(), schedule);
+    if (!Check::test_alpha(schedule, w.app(w.annex<btensor::mk_sched>(), record))) return w.lit_tt();
     if (!ranks->rr) return w.lit_ff();
     for (u64 k = 0; k != ranks->nis; ++k) {
         auto map  = mr.maps->proj(ranks->nis, k);
@@ -51,8 +53,14 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) 
     auto rn = rks->nloops();
     if (!Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>()))
         return {nullptr, "producer has a custom schedule type"};
-    auto record = w.app(w.annex<tile_sched>(), mr.sched);
-    if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), record)))
+    auto schedule = mr.sched, source_loop_cap = mr.Sr, source_output_cap = mr.So;
+    if (auto clipped = Axm::isa<btensor::clip_sched>(schedule)) {
+        source_output_cap = clipped->arg(4, 1);
+        source_loop_cap   = clipped->arg(4, 2);
+        schedule          = clipped->arg(4, 3);
+    }
+    auto record = w.app(w.annex<tile_sched>(), schedule);
+    if (!Check::test_alpha(schedule, w.app(w.annex<btensor::mk_sched>(), record)))
         return {nullptr, "producer schedule is not a canonical nest"};
     auto slice
         = [&](const Def* type, const Def* rank, const Def* shape, const Def* value, const Def* lo, const Def* size) {
@@ -72,10 +80,25 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) 
     auto pre = w.app(w.app(w.annex<affine::preimage>(), {mr.Rn, mr.Ro}), mr.map_out);
     pre      = w.app(pre, {off, ext, mr.Sr});
     if (pre->proj(4, 3) != w.lit_tt()) return {nullptr, "write preimage is not proven exact"};
-    auto lo = pre->proj(4, 0), size = pre->proj(4, 1);
+    auto lo = pre->proj(4, 0), size = pre->proj(4, 1), cap = pre->proj(4, 2);
     for (u64 d = ro; d != rn; ++d)
         if (Lit::isa(lo->proj(rn, d)) != 0 || size->proj(rn, d) != mr.Sr->proj(rn, d))
             return {nullptr, "write preimage cuts a reduction dimension"};
+
+    auto output_cap = ext;
+    if (!lit_projs(ext, ro) || !lit_projs(size, rn)) {
+        cap        = w.tuple(DefVec(rn, [&](size_t d) {
+            auto bound = cap->proj(rn, d);
+            return Lit::isa(bound) ? bound : source_loop_cap->proj(rn, d);
+        }));
+        output_cap = w.tuple(DefVec(ro, [&](size_t d) {
+            if (auto requested = ext->proj(ro, d); Lit::isa(requested)) return requested;
+            return source_output_cap->proj(ro, d);
+        }));
+    } else {
+        cap        = size;
+        output_cap = ext;
+    }
 
     auto [values, post_values] = app->args<2>();
     auto shapes = DefVec(), maps = DefVec(), inputs = DefVec();
@@ -120,12 +143,17 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) 
         auto value = slice(mr.To, mr.Ro, outs->shape, outs->outs, start, extent);
         init       = w.tuple({extent, shift(outs->map, mr.Rn, mr.Ro, lo, start), value});
     }
-    auto ins          = w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), mr.Tps, mr.Rps, w.tuple(post_shapes)});
-    auto write        = shift(mr.map_out, mr.Rn, mr.Ro, lo, off);
+    auto ins   = w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), mr.Tps, mr.Rps, w.tuple(post_shapes)});
+    auto write = shift(mr.map_out, mr.Rn, mr.Ro, lo, off);
+    auto sched = schedule;
+    if (cap != size || output_cap != ext) {
+        auto parallel = w.tuple(DefVec(ro, [&](size_t d) { return size->proj(rn, d); }));
+        sched = w.app(w.app(w.annex<btensor::clip_sched>(), {mr.Ro, mr.Rn}), {parallel, output_cap, cap, sched});
+    }
     const Def* result = w.annex<map_reduce_post>();
     for (auto arg :
-         {mr.nis_nps, mr.meta, w.tuple({ext, size, mr.sched}), ins, init->type(), w.tuple({mr.comb, init, mr.post}),
-          write, w.tuple({w.tuple(maps), w.tuple(post_maps)}), w.tuple({w.tuple(inputs), w.tuple(post_inputs)})})
+         {mr.nis_nps, mr.meta, w.tuple({ext, size, sched}), ins, init->type(), w.tuple({mr.comb, init, mr.post}), write,
+          w.tuple({w.tuple(maps), w.tuple(post_maps)}), w.tuple({w.tuple(inputs), w.tuple(post_inputs)})})
         result = w.app(result, arg);
     return {result, {}};
 }

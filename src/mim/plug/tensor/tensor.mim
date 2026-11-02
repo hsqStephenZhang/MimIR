@@ -1437,7 +1437,7 @@ priv anx lam scatter_step_impl {T: *, r: Nat}
 /// ### slice_map
 ///
 /// `o ↦ (start#d + step#d · o#d)_d`: the strided read map.
-lam slice_map {r: Nat} (start step: «r; Nat») (o: «r; affine.Index»): «r; affine.Index» =
+anx lam slice_map {r: Nat} (start step: «r; Nat») (o: «r; affine.Index»): «r; affine.Index» =
     ‹d: r; affine.op.add (affine.semiop.mul (o#d, step#d), affine.lit (start#d))›;
 
 priv anx lam tile_shift {n m: Nat} (f: «n; affine.Index» → «m; affine.Index»)

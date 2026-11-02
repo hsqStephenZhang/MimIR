@@ -30,6 +30,29 @@ tensor outs 有独立 box/map；init 在 reduction index 为零处读取，
 shifted write、带 post input 的 row reduction、空 reduction/tensor outs，以及 tailed tiled
 分别检查 scalar/reference 结果；IR 测试检查正常重建与 inexact/reduction-cut 的拒绝。
 
+#### Literal-cap storage
+
+逻辑 `tile_of` 仍具有 `«ext; T»` 的 slice 类型，不能把裁剪后的有效 extent 当成物理 stride。
+重建的 MRP 通过 `btensor.clip_sched` 携带有效 parallel 范围和 output/loop caps；
+这是 box witness，不扩展两字段 `Sched`，也不改变 canonical chooser 的 root 判定。
+实例化后 bufferization 使用 literal caps 构造结果 buffer 与循环域，
+有效范围只控制叶子的 init、input read/combine、post read/write。
+空 reduction 仍执行有效 cell 的 init/post，不把 reduction extent 纳入有效性判断。
+未裁剪的 nest 使用常真谓词，partial evaluation 消去 wrappers。
+
+若 symbolic extent 使 affine cap 也未成为 literal，以源域的 literal cap 作保守上界；
+最终仍无 literal 上界则明确报错，不向 LLVM 传递未知 inner stride。
+input/post/outs 的 box slices 保留给 recursive fusion Rule 匹配；
+bufferization 在读取时合成这些纯 view 的 maps，不分配裁剪后形状的中间数组，
+且不穿过 stage。消费者的 buffer bounds 和元素 index 使用物理 cap，而非逻辑 extent。
+reference tiled 的逐元素读取也做相同的 bound conversion。
+
+`tile_cap_exec` 保留原始 column-sum 复现，检查结果 `42, -84, -54, 54`，
+并覆盖不整除尾块、同一 capped tensor 同时作为 input/outs/post，以及两条 tiled pipeline。
+辅助程序用 ASan 构建；existing tile_of 和两种 Rule frontend 的递归融合检查不变。
+该复现还触发 SEO 对 universe 的空 type 解引用；先检查 closedness 后才查询 memory type，
+避免在无法拥有 free variables 的 universe 上调用 `isa_mem`。
+
 ### 7.3 Closure-aware use index 与预算 witness
 
 每次 Rule phase 在改写前建立一个只读 program GraphView；

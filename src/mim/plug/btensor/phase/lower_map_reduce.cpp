@@ -53,6 +53,16 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         return RWPhase::rewrite_imm_App(app);
     }
 
+    auto valid = w.mut_lam(w.arr(mr.Rn, w.type_i32()), w.type_bool());
+    valid->set(true, w.lit_tt());
+    if (auto clipped = Axm::isa<btensor::clip_sched>(mr.sched)) {
+        auto [extent, output_cap, loop_cap, schedule] = clipped->args<4>();
+        auto check                                    = w.app(w.annex<btensor::clip_valid>(), {mr.Ro, mr.Rn, extent});
+        valid->set(true, w.app(check, valid->var()));
+        mr.sched  = schedule;
+        mr.shapes = w.tuple({mr.So, mr.Sr, mr.sched});
+    }
+
     auto impl                            = rewrite(old_world().annex<btensor::map_reduce_post_impl>());
     impl                                 = w.app(impl, mr.nis_nps);
     impl                                 = w.app(impl, {mr.To, mr.Tp, mr.Ro, w.lit_nat(ranks->rr)});
@@ -96,6 +106,7 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     }
     impl = w.app(impl, {mr.comb, init_cell, mr.post});
     impl = w.app(impl, mr.map_out);
+    impl = w.app(impl, valid);
 
     auto [read_inputs_ty, read_post_ty, write_output_ty] = impl->type()->as<Pi>()->dom()->projs<3>();
 

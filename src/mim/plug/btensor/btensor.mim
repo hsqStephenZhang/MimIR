@@ -138,6 +138,14 @@ anx let SchedT = [N: *] → (Sched → N) → N;
 ///
 /// The canonical chooser: it hands the builder `s` itself.
 anx lam mk_sched (s: Sched) (N: *) (mk: Sched → N): N = mk s;
+
+axm clip_sched: {ro rn: Nat}
+    → [valid: «ro; Nat», output_cap: «ro; Nat», loop_cap: «rn; Nat», sched: SchedT] → SchedT, 2;
+
+priv anx lam clip_valid (ro rn: Nat, extent: «ro; Nat») (ivs: «rn; I32»): Bool =
+    vec.scan.for_all @(Idx ro) @ro
+        (λ (d: Idx ro): Bool = core.bitcast Nat (core.conv.u 0 (ivs#(core.idx 0 rn (core.idx2nat d)))) < extent#d)
+        ‹d: ro; d›;
 ///
 /// ### proj_map
 ///
@@ -578,6 +586,7 @@ priv anx lam map_reduce_post_impl {nis nps: Nat}
      init_cell: Cn [mem.M 0, «Ro + Rr; I32», Cn [mem.M 0, To]],
      post: Fn [mem.M 0, To, «j: nps; Tps#j»] → [mem.M 0, Tp])
     (map_out: «Ro + Rr; affine.Index» → «Ro; affine.Index»)
+    (valid: «Ro + Rr; I32» → Bool)
     (read_inputs: Fn [mem.M 0, «d: Ro + Rr; Idx (Sr#d)»] → [mem.M 0, «i: nis; Tis#i»],
      read_post: Fn [mem.M 0, «d: Ro; Idx (So#d)»] → [mem.M 0, «j: nps; Tps#j»],
      write_output: Fn [mem.M 0, buffer.Buf (Ro, So, Tp), «d: Ro; Idx (So#d)», Tp]
@@ -599,8 +608,20 @@ priv anx lam map_reduce_post_impl {nis nps: Nat}
                 write_output ((m, output, coords, value), written);
             con epilogue (m: mem.M 0, values: «j: nps; Tps#j»)@tt = post ((m, acc, values), write);
             read_post ((m, coords), epilogue);
+        con clipped_init (m: mem.M 0, ivs: «Rn; I32», k: Cn [mem.M 0, To])@tt =
+            con skip () = k (m, ⊥:To);
+            con present () = init_cell (m, ivs, k);
+            (skip, present)#(valid ivs) ();
+        con clipped_cell (m: mem.M 0, acc: To, ivs: «Rn; I32», k: Cn [mem.M 0, To])@tt =
+            con skip () = k (m, acc);
+            con present () = cell (m, acc, ivs, k);
+            (skip, present)#(valid ivs) ();
+        con clipped_wb (m: mem.M 0, output: Output, acc: To, ivs: «Rn; I32», k: Cn [mem.M 0, Output])@tt =
+            con skip () = k (m, output);
+            con present () = wb (m, output, acc, ivs, k);
+            (skip, present)#(valid ivs) ();
         let nest = sched (NestT (Ro, Rr, Sr, To, Output)) (mr_nest (Ro, Rr, Sr, To, Output));
-        nest (init_cell, cell, wb) (m, dst, return);
+        nest (clipped_init, clipped_cell, clipped_wb) (m, dst, return);
     cps.cps2ds run (m, dst);
 ///
 /// ## Phases
