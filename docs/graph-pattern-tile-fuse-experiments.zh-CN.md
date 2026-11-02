@@ -1,5 +1,67 @@
 # P5 tile-and-fuse 实验
 
+## Task 17A：默认流水线的显式开启验收
+
+默认仍为 OFF；本节仅对 `-X tensor:group=1` 与 `group=0` 比较。
+`lit/tensor/group_default.mim` 不含 Rule、marker 或 `_compile`，
+GEMM+bias+ReLU、MLP、softmax、layernorm、两层 conv 均走 `opt._default_compile`。
+group=0 仍保留原来的 L1 producer/epilogue fusion，不等同于完全禁止融合。
+两个模式均通过 scalar reference 与 ASan；GEMM/MLP 输入为有正负值的非整除小形状，
+row normalization 为 5×7，conv 为 NCHW 两层 3×3。
+
+小形状 profiler 共 7 个请求、3 次 Rule rewrite、4 个残余报告，bufferization 没有接收 marker。
+3 个 kind 1 分别为 GEMM 和 MLP 的两层，bias/ReLU 在末 K block 执行；
+2 个 row kind 2 未匹配 live consumers，按合同报告并回退；
+2 个 conv kind 1 不满足 BLIS 的两 parallel axes/two inputs 前提，报告后保留原 schedule。
+没有把这四个回退记录为实现成功。
+
+### 计时设置与结果
+
+`scripts/bench-default-groups.py` 从同一 helper 源生成无规则的 group=0/1 模块，
+统一链接到 `group_default_bench.cpp`。
+Apple M2 Pro，Homebrew LLVM 22.1.4，F32、单线程、`-O3 -mcpu=native`，
+每项 1 warmup + 7 runs 取中位数，轮换各模式的执行顺序；时间包含返回值 allocation/free。
+计时前与结束后检查均没有其它 mim/clang/cmake/ninja build。
+矩阵 benchmark 先检查两种输出与 OpenBLAS 结果一致；
+OpenBLAS 也是单线程，包含独立 bias/ReLU loop、MLP 中间值与输出的 allocation/free。
+row/conv benchmark 在 warmup 时逐项与 scalar reference 比较。
+
+下表单位均为 ms；OpenBLAS 列包含独立 elementwise loop。
+
+| 工作负载 | shape | group=1 | group=0 | OpenBLAS + loop | group0/group1 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| GEMM+bias+ReLU | 256³ | 0.924333 | 1.211625 | 0.586833 | 1.311 |
+| MLP | 256³ × 2 | 1.575667 | 2.102416 | 0.910709 | 1.334 |
+| GEMM+bias+ReLU | 512³ | 5.882292 | 7.862708 | 2.868250 | 1.337 |
+| MLP | 512³ × 2 | 11.214250 | 15.578333 | 5.334166 | 1.389 |
+| GEMM+bias+ReLU | 1024³ | 47.232875 | 65.309583 | 24.201208 | 1.383 |
+| MLP | 1024³ × 2 | 92.699375 | 131.129125 | 46.035167 | 1.415 |
+| GEMM+bias+ReLU | 2048³ | 358.387167 | 611.626875 | 166.904667 | 1.707 |
+| MLP | 2048³ × 2 | 1038.103833 | 2298.454416 | 382.704958 | 2.214 |
+| softmax | 1024×1024 | 3.518125 | 3.595916 | — | 1.022 |
+| layernorm | 1024×1024 | 0.210208 | 0.200958 | — | 0.956 |
+| softmax | 4096×1024 | 18.790542 | 15.727583 | — | 0.837 |
+| layernorm | 4096×1024 | 1.126792 | 1.145125 | — | 1.016 |
+| softmax | 1024×4096 | 18.585166 | 19.101958 | — | 1.028 |
+| layernorm | 1024×4096 | 1.176917 | 1.143666 | — | 0.972 |
+| conv chain | N=2、Cin=Cout=8、32²→30²→28² | 0.080917 | 0.082542 | — | 1.020 |
+
+benchmark profiler 共 14 个请求、12 次 Rule rewrite，只有两个 conv residual warnings。
+矩阵 4 个尺寸的 12 个 contraction 实现 BLIS；默认 F32 selector 为 `(MR,NR,KC,NC)=(5,32,16,256)`。
+这里不是早前手写 BLIS benchmark 的 256-KC 配置，不能沿用其 94–96 GFLOPS 结论。
+大形状 row normalization 没有发请求：
+256-grid-point cost-sampling 上限与 32 KiB scratch cap 的组合没有找到可接受候选。
+因此表中的 row/conv 差别不构成融合收益，softmax 4096×1024 的下降也照实保留。
+自动 GEMM/MLP 虽比原默认路径快，仍明显落后 OpenBLAS；
+本项没有修改成本模型、放宽 legality 或把回退冒充已实现的 row/conv grouping。
+
+可重复入口为 `python3 scripts/bench-default-groups.py`；
+`--build-only` 只生成可执行文件，默认入口会等待其它 compiler build 退出后才计时，
+超过 5 分钟仍繁忙则报错而不输出计时。
+本次原始输出位于 `build/task17-default-bench/results.csv`，
+完整请求计数位于同目录 `profile.txt`。
+`reduce_exec` 的 closure lowering 问题由并行会话处理，本任务没有修改该路径或默认开关。
+
 ## Task 16B：先分组，再实现 Rule
 
 `tensor.group_req` 的共享接口先独立提交为 `97dfe96fad`。
