@@ -432,6 +432,38 @@ layernorm kernel 中唯一的减法是 centered tile 的逐 cell fill。
 mean/variance 使用完整 row reduction，epsilon=1e−5，scalar reference 用 double 累加；
 destination 与 reference-tiles 两条路径均对照有限、大幅度及常量输入。
 
+### 9.4 Row normalization benchmark（Task 14A.3）
+
+复现：`python3 scripts/bench-row-norm.py` 生成
+`build/task14-row-bench/bench`，确认机器没有 mim/clang/cmake/ninja build 后单独运行。
+M2 Pro，F32，Homebrew clang++ `-O3 -mcpu=native`，单线程，
+1 warmup + 7 runs 中位数，包含 allocation/free。
+每个路径在 warmup 时与 double scalar reference 对照全部输出。
+unfused 是四个独立导出的 Mim kernel，由 C++ 顺序调用：
+softmax 为 rowmax/exp/rowsum/div，layernorm 为 mean/center/variance/normalize；
+各步之间有完整 tensor，不允许跨函数的 tensor fusion。
+grouped 使用相同 combiner、schedule 和计算定义，在一个 row region 内共享 exp/centered。
+row tile 为 `max(1, min(16, 32768 / (cols * 4)))`，不是按结果挑选最快 tile。
+
+确认轮结果（ms，`build/task14-row-bench/confirm.csv`）：
+
+| Rows×Cols | row tile | softmax grouped / unfused | speedup | layernorm grouped / unfused | speedup |
+| --- | --- | --- | --- | --- | --- |
+| 1024×1024 | 8 | 2.365 / 1.814 | 0.767× | 0.458 / 0.295 | 0.644× |
+| 4096×1024 | 8 | 8.279 / 8.119 | 0.981× | 2.351 / 1.527 | 0.649× |
+| 1024×4096 | 2 | 8.024 / 8.481 | 1.057× | 1.564 / 1.491 | 0.953× |
+
+首轮保留在 `results.csv`：softmax speedup 为 0.745/0.904/0.941×，
+layernorm 为 0.756/0.734/0.973×。两轮前及确认轮后均未发现 compiler/build 进程；
+不把最后一个 softmax shape 的胜负反转解释为稳定加速。
+exactly-once 已解决，但 grouping 在这些尺寸通常仍慢于 unfused。
+生成汇编 `probe.s` 显示 grouped layernorm 的每个 row tile
+仍有两次 32KiB malloc、center stage 的逐行 memcpy 和两次 free，
+而独立 kernel 的 transform 输出直接交给后两步，不需要这个 identity-layout stage copy。
+这些开销及小 tile 的固定控制开销没有被 realization 去重消除；
+softmax 还保留 scalar `expf` 调用。这里没有声称 grouping 已获得性能收益，
+也没有为计时删除用于检验共享的 stage 边界。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

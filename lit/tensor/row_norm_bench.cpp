@@ -1,0 +1,88 @@
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+#include <algorithm>
+#include <vector>
+
+#include <pthread.h>
+
+struct Case {
+    int m, n, rows;
+    bool layer;
+    float* (*grouped)(float*);
+    float* (*first)(float*);
+    float* (*transform)(float*, float*);
+    float* (*reduce)(float*);
+    float* (*finish)(float*, float*);
+};
+#include "cases.h"
+
+static float* unfused(const Case& c, float* x) {
+    auto first = c.first(x);
+    auto tile  = c.transform(x, first);
+    std::free(first);
+    auto reduced = c.reduce(tile);
+    auto result  = c.finish(tile, reduced);
+    std::free(reduced);
+    std::free(tile);
+    return result;
+}
+
+static void check(const Case& c, const std::vector<float>& x, const float* actual) {
+    for (int i = 0; i != c.m; ++i) {
+        double mean = 0, variance = 0, sum = 0;
+        auto maximum = *std::max_element(x.begin() + i * c.n, x.begin() + (i + 1) * c.n);
+        for (int j = 0; j != c.n; ++j) {
+            mean += x[i * c.n + j] / double(c.n);
+            sum += std::exp(double(x[i * c.n + j]) - maximum);
+        }
+        for (int j = 0; j != c.n; ++j) {
+            auto centered = x[i * c.n + j] - mean;
+            variance += centered * centered / c.n;
+        }
+        for (int j = 0; j != c.n; ++j) {
+            auto expected = c.layer ? (x[i * c.n + j] - mean) / std::sqrt(variance + 0.00001)
+                                    : std::exp(double(x[i * c.n + j]) - maximum) / sum;
+            if (!std::isfinite(actual[i * c.n + j]) || std::abs(actual[i * c.n + j] - expected) > 0.0001) {
+                std::fprintf(stderr, "%s %dx%d mismatch (%d,%d): %g != %g\n", c.layer ? "layer" : "soft", c.m, c.n, i,
+                             j, actual[i * c.n + j], expected);
+                std::exit(1);
+            }
+        }
+    }
+}
+
+int main() {
+    if (pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) != 0) {
+        std::fputs("failed to set benchmark QoS\n", stderr);
+        return 1;
+    }
+    std::puts("M,N,row_tile,workload,grouped_ms,unfused_ms,speedup");
+    for (const auto& c : cases) {
+        std::vector<float> x(c.m * c.n);
+        for (size_t i = 0; i != x.size(); ++i)
+            x[i] = float(int(i % 23) - 11) / 8;
+        double medians[2];
+        for (int kind = 0; kind != 2; ++kind) {
+            auto execute = [&] { return kind == 0 ? c.grouped(x.data()) : unfused(c, x.data()); };
+            auto result  = execute();
+            check(c, x, result);
+            std::free(result);
+            std::vector<double> times;
+            for (int run = 0; run != 7; ++run) {
+                auto start = std::chrono::steady_clock::now();
+                result     = execute();
+                std::free(result);
+                times.push_back(
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            }
+            std::sort(times.begin(), times.end());
+            medians[kind] = times[3];
+        }
+        std::printf("%d,%d,%d,%s,%.6f,%.6f,%.3f\n", c.m, c.n, c.rows, c.layer ? "layernorm" : "softmax", medians[0],
+                    medians[1], medians[1] / medians[0]);
+        std::fflush(stdout);
+    }
+}
