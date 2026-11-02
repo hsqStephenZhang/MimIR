@@ -818,6 +818,9 @@ native test 检查 identity、provenance 和 params 不计为 data read。
 `group → group_rules → fuse_views → lower_to_mem`。
 `fuse_views` 只组合纯 reindexing reads，不执行 producer fusion 或 epilogue sinking。
 默认开启；显式 `-X tensor:group=0` 不运行这三个阶段，保留原流水线。
+kind 0 对闭合、无外部 reader 的 row-separable reduction DAG 优先使用 rows=1 的完整顺序 region，
+而非只对前半段做 reverse placement；合法性、共享计数和统一基准见
+[row pipeline 基准](row-pipeline-benchmark.zh-CN.md)。
 `reduce_exec` 的自动 outer grouping 仍触发 closure lowering 类型错误，修复前不默认开启。
 
 加载 `gpu` plugin 时，`group_default`、`group` 和 `group_rules` 均不运行；

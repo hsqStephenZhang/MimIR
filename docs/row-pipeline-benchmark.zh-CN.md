@@ -106,3 +106,50 @@ heap 是返回输出，stack 是循环外 row scratch；模块内部 free=0，
 输出由 harness 在计时范围内释放。
 softmax 的 exp 恰好 M×N，layernorm 为 0，两个输入分布及全部三个 shape 均相同。
 自动 LLVM 从原先约 3.6 MiB 降至约 46 KiB，不再枚举整组 tiled_n 的 grid points。
+
+## Task 21A.3：最终统一表
+
+确认轮：`python3.14 scripts/bench-row-pipeline.py build/task21-confirm-bench`，
+完整命令未指定 group=1 给 automatic/API，实际验证默认开关。
+计时前、后无其它 compiler build；每列使用同样的 compile flags、thread/QoS、输入、校验和计时入口。
+不是从多轮中逐项挑最快值，下表完整采用第二轮 CSV，单位 ms。
+第一轮 `build/task21-final-bench/` 同样保留：
+其第一项 1024² softmax 的 auto/explicit 为 2.347541/2.005000 ms，
+有明显首项波动；不能据此宣称每次运行都严格等速。
+第二个输入分布及其余大 shape 在两轮中均显示接近手写版的性能。
+
+| 输入 | workload | shape | group=0 | automatic | explicit rows=1 | tensor API |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Task 15A | softmax | 1024×1024 | 1.874250 | 1.829958 | 1.844666 | 1.851042 |
+| Task 15A | softmax | 4096×1024 | 7.572000 | 7.389917 | 7.492459 | 7.359792 |
+| Task 15A | softmax | 1024×4096 | 7.582250 | 7.465166 | 7.384542 | 7.439750 |
+| Task 15A | layernorm | 1024×1024 | 0.256667 | 0.248208 | 0.250334 | 0.254292 |
+| Task 15A | layernorm | 4096×1024 | 1.375000 | 1.005250 | 0.983167 | 0.983166 |
+| Task 15A | layernorm | 1024×4096 | 1.384958 | 0.919667 | 0.927541 | 0.927709 |
+| Task 20A | softmax | 1024×1024 | 1.800209 | 1.802791 | 1.799041 | 1.799292 |
+| Task 20A | softmax | 4096×1024 | 7.343375 | 7.221250 | 7.212125 | 7.205833 |
+| Task 20A | softmax | 1024×4096 | 7.366583 | 7.286292 | 7.256708 | 7.240875 |
+| Task 20A | layernorm | 1024×1024 | 0.262791 | 0.241209 | 0.244417 | 0.240291 |
+| Task 20A | layernorm | 4096×1024 | 1.355708 | 1.008125 | 0.983208 | 0.976041 |
+| Task 20A | layernorm | 1024×4096 | 1.390375 | 0.918500 | 0.926667 | 0.928375 |
+
+确认轮 automatic 与 explicit 的差距在约 2.6% 内。
+softmax 相比保留单次 exp 的 unfused baseline 只有小幅改善；
+大 shape layernorm 比同程序 group=0 快约 1.34–1.51 倍。
+这与 Task 15A 的结论一致，而不是拿计算两次 exp 的 baseline 来声称 2× 融合收益。
+修复后的 `legacy_default` 也只计算一次 exp，其 softmax baseline 已回到约 7.3–7.6 ms；
+旧 13–14 ms 不能继续作为优化后的 unfused baseline。
+
+`counts.csv` 的 automatic、explicit、API 三列在两种输入下完全一致：
+
+| shape | softmax exp/call | layernorm exp/call | heap/call | stack/call | 模块内 free/call |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1024×1024 | 1048576 | 0 | 1 | 1 | 0 |
+| 4096×1024 | 4194304 | 0 | 1 | 1 | 0 |
+| 1024×4096 | 4194304 | 0 | 1 | 1 | 0 |
+
+counter binary 对上述三列强制检查 exp 恰好 M×N/0、
+总 allocation 不超过 2、heap/free 的差恰好为一个输出。
+automatic 和 API 各 6 个请求、6 次 Rule rewrite，无未实现请求。
+完整 CTest 243/243，full lit 665 passed、9 unsupported；
+其中新加的 row closure scope 测试与 strict API execution/count 检查均通过。
