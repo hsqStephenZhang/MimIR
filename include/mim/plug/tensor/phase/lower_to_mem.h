@@ -67,6 +67,7 @@ private:
     const Def* lower_tile_body(const Def*, const Def*, const Def*, const Destination&);
     void record_instance(const Def*);
     void record_helpers(const App*);
+    void prepare_realizations(const Def*);
 
     /// Adapts a call to a bufferized function: materializes value-world tensor arguments into buffers;
     /// continuation arguments pass through (their domains are converted by `rewrite_mut_Lam`).

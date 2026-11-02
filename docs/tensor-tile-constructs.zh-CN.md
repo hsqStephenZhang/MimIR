@@ -242,6 +242,32 @@ graph registry 把 body 登记为 region 并提供 literal trip count；
 尚无 tiled_n 专用 cost witness 时，fusion budget 保留 Unknown。
 没有修改 tile_of 的 normalizer。
 
+## 9. Exact realization cache（Task 13A.2）
+
+`lower_to_mem` 在每个实际 lowering scope 建立只读请求计划。
+同一 producer 的完整表达式按 `Check::test_alpha` 分组：内部 binder 可以 α-renaming，
+自由变量必须相同，element type、stage layout、box offset/extent、clip predicate 和 schedule
+都是 key 的一部分。只共享完全相同的请求，不合并不同 boxes，也不推断两个算法数值等价。
+这也覆盖 fold specialization 克隆出的等价 producer，而不只依赖节点指针。
+
+计划只穿过已定义的 tiled/tiled_n/tile_fold/generate region，且跨越的 region
+必须有正的 literal trip count；未知、空 region 和 opaque callback 不提供 hoist 证据。
+每组在包围全部 readers 且 producer 自由变量全部可用的 dependency scope 请求 realization；
+不依赖内层 tile index 的 producer 可以提到外层，避免每个 microtile 重填整个 producer。
+未达到该 dependency scope 的请求由内层 lowering 再规划。
+依赖 tile origin 或 fold offset 的值因此在对应 iteration 内重新 fill，不跨 iteration 缓存。
+
+选中的 buffer 在该 scope 的 fresh-memory continuation 中完整 fill 后才绑定给所有 aliases。
+reader 共享只读 buffer，不向它写回；每次 realization 使用独立 allocation，没有循环复用
+同一 scratch 的覆盖风险。共享值仍交给现有 `mem.free_locals` 做 last-reader lifetime，
+不能逃逸的 allocation 可继续由 heap2stack 转为局部 storage；没有新增全局缓存或永久存活的 storage。
+physical cap metadata 随 enclosing scope 继承，避免 clipped tensor 的逻辑 shape 被误当作存储 stride。
+
+`realization_exec` 对 sibling readers、嵌套 tile iteration、不同 boxes、相依 producer、
+多次改变输入分别执行 destination/reference 校验；另对优化 LLVM 插入动态乘法计数，
+检查 shared/nested 各 8 次，而不是把静态 allocation sites 当运行次数。
+不同 boxes/producer 的拒绝共享由数值对照检查，不锁定 LLVM 可继续化简的算术次数。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

@@ -3,6 +3,7 @@
 #include <fe/worklist.h>
 
 #include <mim/axm.h>
+#include <mim/check.h>
 #include <mim/def.h>
 #include <mim/driver.h>
 #include <mim/lam.h>
@@ -75,6 +76,109 @@ bool wants_fresh_mem(const App* app) {
 
 /// Is `app` one of the tensor ops this phase bufferizes?
 bool is_tensor_op(const App* app) { return Axm::isa<tensor::splat>(app) || wants_fresh_mem(app); }
+
+class RealizationRequests {
+public:
+    explicit RealizationRequests(const Def* root)
+        : root_(root) {
+        scan(root, root);
+    }
+
+    fe::Vector<DefVec> shared() {
+        fe::Vector<DefVec> groups;
+        for (auto value : order_) {
+            if (!value->type()->isa<Arr>()) continue;
+            bool available = true;
+            for (auto var : value->free_vars())
+                available &= root_->has_free_var(var);
+            if (!available || !pure(value)) continue;
+            auto group = std::ranges::find_if(
+                groups, [&](const DefVec& group) { return Check::test_alpha(group.front(), value); });
+            if (group == groups.end())
+                groups.push_back({value});
+            else
+                group->push_back(value);
+        }
+        std::erase_if(groups, [&](const DefVec& group) {
+            DefSet sites;
+            for (auto value : group)
+                for (auto site : sites_[value])
+                    sites.insert(site);
+            return sites.size() < 2 && group.size() < 2;
+        });
+        return groups;
+    }
+
+private:
+    bool positive(const Def* shape) {
+        auto rank = Lit::isa(shape->arity());
+        if (!rank) return false;
+        for (size_t d = 0; d != *rank; ++d)
+            if (auto extent = Lit::isa(shape->proj(*rank, d)); !extent || !*extent) return false;
+        return true;
+    }
+
+    void region(const Def* fn) {
+        if (auto body = fn->isa<Lam>(); body && body->is_set()) scan(body->body(), fn);
+    }
+
+    void scan(const Def* def, const Def* site) {
+        if (!seen_[site].insert(def).second || def->is_mutable() || def->isa<Var>() || def->isa<Axm>()) return;
+        auto app = def->isa<App>();
+        if (app && wants_fresh_mem(app)) sites_[app].insert(site);
+        if (app && Axm::isa<tensor::tiled>(app)) {
+            if (positive(app->callee()->as<App>()->arg(2, 0))) region(app->arg());
+        } else if (app && Axm::isa<tensor::tiled_n>(app)) {
+            auto [meta, shapes_grid, boxes, body] = app->uncurry_args<4>();
+            if (positive(shapes_grid->proj(2, 1))) region(body);
+        } else if (app && Axm::isa<tensor::tile_fold>(app)) {
+            auto count = Lit::isa(app->callee()->as<App>()->callee()->as<App>()->arg(2, 0));
+            if (count && *count) region(app->arg());
+        } else if (app && Axm::isa<tensor::generate>(app)) {
+            if (positive(app->callee()->as<App>()->arg())) region(app->arg());
+        }
+        for (auto op : def->ops())
+            if (op) scan(op, site);
+        if (app && wants_fresh_mem(app) && ordered_.insert(app).second) order_.push_back(app);
+    }
+
+    bool pure(const Def* value) {
+        if (auto known = pure_.find(value); known != pure_.end()) return known->second;
+        DefVec pending{value};
+        DefSet seen;
+        for (size_t i = 0; i != pending.size(); ++i) {
+            auto def = pending[i];
+            if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>()) continue;
+            if (auto fn = def->isa<Lam>(); fn && (!fn->is_set() || fn->is_external())) return pure_[value] = false;
+            if (auto app = def->isa<App>()) {
+                if (auto axm = App::uncurry_callee(app)->isa<Axm>()) {
+                    auto name = axm->sym().str();
+                    if (!(name.starts_with("tensor.") || name.starts_with("core.") || name.starts_with("math.")
+                          || name.starts_with("affine.") || name.starts_with("vec.") || name.starts_with("tuple.")
+                          || name.starts_with("cps.cps2ds"))
+                        || name == "core.abs")
+                        return pure_[value] = false;
+                } else {
+                    auto callee = App::uncurry_callee(app);
+                    while (auto ex = callee->isa<Extract>())
+                        callee = ex->tuple();
+                    if (auto var = callee->isa<Var>())
+                        if (auto binder = var->binder()->isa<Lam>(); !binder || binder->is_external())
+                            return pure_[value] = false;
+                }
+            }
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+        }
+        return pure_[value] = true;
+    }
+
+    const Def* root_;
+    DefMap<DefSet> seen_, sites_;
+    DefSet ordered_;
+    DefVec order_;
+    DefMap<bool> pure_;
+};
 
 /// The Lam a - possibly projected - parameter belongs to; `nullptr` for anything else.
 Lam* param_of(const Def* d) {
@@ -411,7 +515,7 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     // their own requests (and their own per-lam op memo).
     auto _       = fe::Restore(pending_, {});
     auto __      = fe::Restore(fresh_memo_, {});
-    auto storage = fe::Restore(storage_shapes_, {});
+    auto storage = fe::Restore(storage_shapes_, storage_shapes_);
     push();
     auto new_lam = new_world().mut_lam(conv_type(lam));
     map(lam, new_lam);
@@ -422,7 +526,8 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
 
     auto ___    = enter(lam);
     auto filter = rewrite(lam->filter());
-    auto body   = rewrite(lam->body());
+    prepare_realizations(lam->body());
+    auto body = rewrite(lam->body());
     if (!pending_.empty() && !Pi::isa_cn(new_lam->type())) {
         auto& w  = new_world();
         auto run = w.mut_fun(w.tuple()->type(), body->type())->set("tensorValue");
@@ -435,6 +540,19 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     new_lam->set(filter, body);
     pop();
     return seal(lam, new_lam);
+}
+
+void LowerToMem::prepare_realizations(const Def* root) {
+    for (auto group : RealizationRequests(root).shared()) {
+        auto value    = group.front();
+        auto realized = lookup(value);
+        if (!realized) realized = rewrite(value);
+        for (auto request : group) {
+            map(request, realized);
+            if (auto shape = fe::lookup(storage_shapes_, value)) storage_shapes_[request] = shape;
+        }
+        profile_count("tensor.realizations.shared");
+    }
 }
 
 const Pi* LowerToMem::conv_type(Lam* lam) {
@@ -1047,10 +1165,11 @@ LowerToMem::lower_tile_body(const Def* body, const Def* off, const Def* ext, con
         body->blame("tensor.tiled body must be a defined lambda").bail();
     auto pending = fe::Restore(pending_, {});
     auto memo    = fe::Restore(fresh_memo_, {});
-    auto storage = fe::Restore(storage_shapes_, {});
+    auto storage = fe::Restore(storage_shapes_, storage_shapes_);
     push();
     bind_old(parameter->has_var());
     map(origin, off);
+    prepare_realizations(root);
     auto result = lower_into(root, destination);
     if (!pending_.empty()) {
         auto [run, call] = btensor::ds_splice(w.tuple(), result->type(), "tileBody");
@@ -1152,7 +1271,7 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
     bind_new(run->has_var());
     for (size_t t = 0; t != plan.points.size(); ++t) {
         auto memo    = fe::Restore(fresh_memo_, {});
-        auto storage = fe::Restore(storage_shapes_, {});
+        auto storage = fe::Restore(storage_shapes_, storage_shapes_);
         auto roots   = old.app(plan.body, plan.points[t]);
         Rewriter substitutions(old);
         for (auto var : roots->free_vars())
@@ -1338,6 +1457,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
         auto memo                      = fe::Restore(fresh_memo_, {});
         push();
         bind_new(first->has_var());
+        prepare_realizations(first_root);
         first->app(true, first->ret_var(),
                    lower_into(first_root, {first_mem, first_buffer, rewrite(shape), rewrite(zero), rewrite(shape)}));
         first->set(true, wrap_fresh_mem(first->body()));
@@ -1362,6 +1482,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     auto iteration = w.call<core::bitcast>(w.type_nat(), index);
     if (first_scalar) iteration = w.call(core::nat::add, Defs{iteration, w.lit_nat(1)});
     map(offset, w.call(core::nat::mul, Defs{iteration, rewrite(stride)}));
+    prepare_realizations(root);
     const Def* update;
     if (inplace) {
         update = lower_into(root, {loop_mem, loop_buffer, rewrite(shape), rewrite(zero), rewrite(shape)});
