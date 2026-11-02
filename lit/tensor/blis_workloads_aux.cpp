@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 
 #include <algorithm>
@@ -7,10 +8,14 @@
 #include <vector>
 
 extern "C" float* mlp(float*, float*, float*);
+extern "C" float* mlp_fold(float*, float*, float*);
 extern "C" float* ew_a(float*, float*);
 extern "C" float* ew_a_fused(float*, float*);
 extern "C" float* row_sum(float*, float*);
 extern "C" float* row_max(float*, float*);
+
+static uint64_t multiplications = 0;
+extern "C" void record_multiply(uint64_t lanes) { multiplications += lanes; }
 
 static std::vector<float> input(int n, int period) {
     std::vector<float> result(n);
@@ -21,23 +26,32 @@ static std::vector<float> input(int n, int period) {
 
 int main() {
     auto a = input(13 * 7, 11), b = input(7 * 11, 13), w = input(11 * 5, 7);
-    float hidden[13 * 11];
-    for (int i = 0; i != 13; ++i)
-        for (int j = 0; j != 11; ++j) {
-            float value = 0;
-            for (int k = 0; k != 7; ++k)
-                value += a[i * 7 + k] * b[k * 11 + j];
-            hidden[i * 11 + j] = std::max(0.0f, value);
-        }
-    auto out = mlp(a.data(), b.data(), w.data());
-    for (int i = 0; i != 13; ++i)
-        for (int j = 0; j != 5; ++j) {
-            float expected = 0;
-            for (int k = 0; k != 11; ++k)
-                expected += hidden[i * 11 + k] * w[k * 5 + j];
-            assert(out[i * 5 + j] == expected);
-        }
-    std::free(out);
+    float* out;
+    for (auto k_extent : {7, 13}) {
+        a = input(13 * k_extent, 11);
+        b = input(k_extent * 11, 13);
+        float hidden[13 * 11];
+        for (int i = 0; i != 13; ++i)
+            for (int j = 0; j != 11; ++j) {
+                float value = 0;
+                for (int k = 0; k != k_extent; ++k)
+                    value += a[i * k_extent + k] * b[k * 11 + j];
+                hidden[i * 11 + j] = std::max(0.0f, value);
+            }
+        multiplications = 0;
+        out             = (k_extent == 7 ? mlp : mlp_fold)(a.data(), b.data(), w.data());
+#ifdef REALIZATION_COUNT
+        assert(multiplications == uint64_t(13 * k_extent * 11 + 13 * 11 * 5));
+#endif
+        for (int i = 0; i != 13; ++i)
+            for (int j = 0; j != 5; ++j) {
+                float expected = 0;
+                for (int k = 0; k != 11; ++k)
+                    expected += hidden[i * 11 + k] * w[k * 5 + j];
+                assert(out[i * 5 + j] == expected);
+            }
+        std::free(out);
+    }
     a   = input(5 * 9, 11);
     b   = input(9 * 19, 13);
     out = ew_a(a.data(), b.data());

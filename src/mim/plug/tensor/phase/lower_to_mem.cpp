@@ -109,6 +109,8 @@ public:
         return groups;
     }
 
+    bool shareable(const Def* value) { return value->type()->isa<Arr>() && pure(value); }
+
 private:
     bool positive(const Def* shape) {
         auto rank = Lit::isa(shape->arity());
@@ -469,11 +471,19 @@ const Def* LowerToMem::rewrite(const Def* old_def) {
     // fresh_mem). The global memo would share such a lowering with every other function that mentions the
     // same (closed) old op - where that var would dangle - so these ops are memoized per enclosing lam.
     auto app = old_def->isa<App>();
-    if (app && wants_fresh_mem(app))
+    if (app && wants_fresh_mem(app)) {
         if (auto realized = lookup(old_def)) return realized;
+        if (old_def->type()->isa<Arr>())
+            for (auto [request, realized] : realizations_)
+                if (Check::test_alpha(request, old_def)) {
+                    if (auto shape = fe::lookup(storage_shapes_, request)) storage_shapes_[old_def] = shape;
+                    return realized;
+                }
+    }
     auto ins = old_def->isa<Insert>(); // allocates the copy it writes into
     if ((app && wants_fresh_mem(app)) || (ins && tensor_ty_.contains(ins->tuple()->type()))) {
         if (auto new_def = fe::lookup(fresh_memo_, old_def)) return new_def;
+        if (app) prepare_realizations(app);
         auto new_def = app ? rewrite_imm_App(app) : rewrite_imm_Insert(ins);
         fresh_memo_.emplace(old_def, new_def);
         return new_def;
@@ -516,6 +526,7 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     auto _       = fe::Restore(pending_, {});
     auto __      = fe::Restore(fresh_memo_, {});
     auto storage = fe::Restore(storage_shapes_, storage_shapes_);
+    auto cache   = fe::Restore(realizations_, realizations_);
     push();
     auto new_lam = new_world().mut_lam(conv_type(lam));
     map(lam, new_lam);
@@ -547,6 +558,7 @@ void LowerToMem::prepare_realizations(const Def* root) {
         auto value    = group.front();
         auto realized = lookup(value);
         if (!realized) realized = rewrite(value);
+        realizations_[value] = realized;
         for (auto request : group) {
             map(request, realized);
             if (auto shape = fe::lookup(storage_shapes_, value)) storage_shapes_[request] = shape;
@@ -806,9 +818,11 @@ const Def* LowerToMem::lower_generate(const App* app) {
 }
 
 std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function, bool destination) {
+    if (auto body = function->isa<Lam>(); body && body->is_set()) prepare_realizations(body->body());
     auto sources = DefVec(), captures = DefVec();
     auto body = function->isa<Lam>();
     if (!body || !body->is_set()) return {sources, captures};
+    RealizationRequests requests(body->body());
     auto queue = fe::BFSWorklist<DefSet>();
     queue.push(body->body());
     while (!queue.empty()) {
@@ -822,6 +836,10 @@ std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function, boo
                 available &= body->has_free_var(var);
             if (available) {
                 auto value = rewrite(def);
+                if (requests.shareable(def)) {
+                    realizations_[def] = value;
+                    map(def, value);
+                }
                 sources.push_back(def);
                 captures.push_back(value);
                 continue;
@@ -1116,6 +1134,7 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
         root = lam->reduce(app->arg()).back();
     }
     record_instance(root);
+    prepare_realizations(root);
     if (auto app = root->isa<App>()) {
         if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app, &destination);
         if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app, &destination);
@@ -1166,6 +1185,7 @@ LowerToMem::lower_tile_body(const Def* body, const Def* off, const Def* ext, con
     auto pending = fe::Restore(pending_, {});
     auto memo    = fe::Restore(fresh_memo_, {});
     auto storage = fe::Restore(storage_shapes_, storage_shapes_);
+    auto cache   = fe::Restore(realizations_, realizations_);
     push();
     bind_old(parameter->has_var());
     map(origin, off);
@@ -1272,6 +1292,7 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
     for (size_t t = 0; t != plan.points.size(); ++t) {
         auto memo    = fe::Restore(fresh_memo_, {});
         auto storage = fe::Restore(storage_shapes_, storage_shapes_);
+        auto cache   = fe::Restore(realizations_, realizations_);
         auto roots   = old.app(plan.body, plan.points[t]);
         Rewriter substitutions(old);
         for (auto var : roots->free_vars())
@@ -1455,6 +1476,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
         auto [first_mem, first_buffer] = first->var(2, 0)->projs<2>();
         auto pending                   = fe::Restore(pending_, {});
         auto memo                      = fe::Restore(fresh_memo_, {});
+        auto cache                     = fe::Restore(realizations_, realizations_);
         push();
         bind_new(first->has_var());
         prepare_realizations(first_root);
@@ -1476,6 +1498,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     auto [loop_mem, loop_buffer] = carried->projs<2>();
     auto pending                 = fe::Restore(pending_, {});
     auto memo                    = fe::Restore(fresh_memo_, {});
+    auto cache                   = fe::Restore(realizations_, realizations_);
     push();
     bind_old(parameter->has_var());
     map(accumulator, loop_buffer);

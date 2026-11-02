@@ -268,6 +268,40 @@ physical cap metadata 随 enclosing scope 继承，避免 clipped tensor 的逻�
 检查 shared/nested 各 8 次，而不是把静态 allocation sites 当运行次数。
 不同 boxes/producer 的拒绝共享由数值对照检查，不锁定 LLVM 可继续化简的算术次数。
 
+### 9.1 MLP：specialization 与 eager capture（Task 13A.3）
+
+只合并原始 region 中的相同节点还不够：fold 的 first/remaining step 会克隆闭包，
+且 outer tiled body 的 inner shape 在 β-reduction 前依赖其 extent 参数。
+已有 capture_producers 会先于该 reduction materialize invariant producers。
+现在这些已经发生的 pure captures 也登记到 scope-local template cache；
+后续 specialization 以严格 α-equivalence 查询，继承外层只读 storage，
+退出 region 时恢复 cache，不把不同 iteration 的 scratch 留给下一次 iteration。
+没有借此新增对未知 trip count region 的 speculative fill。
+
+256³ 的动态 scalar-equivalent 乘法数为 33,554,432；512³ 为 268,435,456，
+都恰为两个 GEMM。后者覆盖 first peel 后仍有 remaining iterations 的情形；
+只验证 256³ 会遗漏旧实现仍多计算 100,663,296 次的情况。
+`blis_workloads` 的两种 K extent 在优化 LLVM 插入动态计数，并与 scalar/reference path 对照。
+
+M2 Pro，F32，Homebrew clang++ `-O3 -mcpu=native`，单线程，
+1 warmup + 7 runs 取中位数，含 allocation/free。两轮计时前均检查无 mim/clang build。
+复测结果（GFLOPS，`build/task13-mlp-confirm.csv`）：
+
+| Shape | bias+ReLU / separate / OpenBLAS | MLP / separate / OpenBLAS |
+| --- | --- | --- |
+| 256³ | 89.033 / 87.581 / 75.644 | 90.205 / 90.601 / 78.697 |
+| 512³ | 94.975 / 88.600 / 99.553 | 93.789 / 90.429 / 98.995 |
+| 1024³ | 91.445 / 93.367 / 93.777 | 90.048 / 90.648 / 95.568 |
+| 2048³ | 89.889 / 90.127 / 98.517 | 89.902 / 90.044 / 98.809 |
+| 1000³ | 91.109 / 92.711 / 100.433 | 89.332 / 89.356 / 97.886 |
+| 513×257×129 | 85.322 / 83.807 / 87.088 | 85.737 / 85.528 / 87.312 |
+
+首轮保留在 `build/task13-mlp-final.csv`：MLP 为 86.957 / 88.410 / 94.154 /
+89.376 / 89.188 / 86.505，separate 为 88.798 / 92.801 / 91.958 / 89.991 /
+89.376 / 85.124。两轮的胜负有反转，不声称每个 shape 都稳定快于 separate；
+消除重复工作后整体达到 separate 的吞吐级别，复测差值约 −0.7%..+3.7%。
+这里仍 materialize 第一层的完整 hidden tensor，不是消除 hidden storage 的 streaming MLP。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；
