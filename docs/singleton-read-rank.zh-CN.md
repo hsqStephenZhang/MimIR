@@ -30,3 +30,20 @@ dot_product_impl 的 reshape 只是模型中留下的 source blame，不是 dot 
 再 compose producer 的读取 map；不能把 type equality 当作 rank equality。
 此处的临时处理将由 mimir/mimir#641 的 nominal tensor 表示取代；
 本任务不进行 nominal-tensor 迁移。
+
+## 短期修复
+
+仅修改 `lower_to_mem.cpp` 的 tensor_read：
+读取纯 read MRP、slice/slice_box 时同时接收 consumer 声明的 shape，
+若与 producer 的显式 output shape 不同，先构造
+`reshape_map(producer_shape, consumer_shape)` 将 consumer 坐标转回 producer 坐标，
+再复用原有 compose_read_map。
+combiner/post 输入、tensor-init 以及 linear-step accumulator 分析
+全部使用同一个 helper，避免分析与真正读取发生分歧。
+不改变 normalize_reshape 的既有折叠行为，不改 dot/conv 调度，
+不以跳过类型检查、放宽 affine proof 或强制 materialization 绕过错误。
+
+回归 `lit/tensor/singleton_reshape.mim` 仅含两个 transpose 和一个 reshape，
+以 I64 序列对 group=0/1 都执行 ASan 数值检查，
+输出应逐元素等于输入，并保持独立返回 storage 的所有权。
+保留原有 normalize.mim 中 singleton reshape 的 structural identity 检查。

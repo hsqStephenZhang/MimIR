@@ -66,31 +66,41 @@ const Def* splat_scalar(const Def* d) {
     return (d->is_closed() && !d->type()->isa<Arr>()) ? d : nullptr;
 }
 
-std::optional<PureRead> tensor_read(const Def* value) {
-    value   = Axm::peel<tensor::buf>(value);
-    auto& w = value->world();
+const Def* compose_read_map(const Def* inner, const Def* outer) {
+    auto& w  = outer->world();
+    auto pi  = outer->type()->as<Pi>();
+    auto map = w.mut_lam(pi->dom(), inner->type()->as<Pi>()->codom());
+    return map->set(true, w.app(inner, w.app(outer, map->var())));
+}
+
+std::optional<PureRead> tensor_read(const Def* value, const Def* shape) {
+    value      = Axm::peel<tensor::buf>(value);
+    auto& w    = value->world();
+    auto adapt = [&](std::optional<PureRead> read, const Def* produced) {
+        if (read && produced != shape) {
+            auto rank   = shape->arity();
+            auto bridge = w.app(w.annex<tensor::reshape_map>(), {produced->arity(), rank});
+            bridge      = w.app(bridge, {produced, shape});
+            read->map   = compose_read_map(read->map, bridge);
+        }
+        return read;
+    };
     if (auto slice = Axm::isa<tensor::slice>(value)) {
         auto [meta, shape, box]    = slice->callee()->as<App>()->uncurry_args<3>();
         auto [start, step, extent] = box->projs<3>();
         auto [type, rank]          = meta->projs<2>();
         auto map                   = w.app(w.app(w.annex<tensor::slice_map>(), rank), {start, step});
-        return PureRead{slice->arg(), map, type, rank, shape};
+        return adapt(PureRead{slice->arg(), map, type, rank, shape}, extent);
     }
     if (auto slice = Axm::isa<tensor::slice_box>(value)) {
         auto [meta, shape, box]   = slice->callee()->as<App>()->uncurry_args<3>();
         auto [start, extent, cap] = box->projs<3>();
         auto [type, rank]         = meta->projs<2>();
         auto map = w.app(w.app(w.annex<tensor::slice_map>(), rank), {start, w.pack(rank, w.lit_nat_1())});
-        return PureRead{slice->arg(), map, type, rank, shape};
+        return adapt(PureRead{slice->arg(), map, type, rank, shape}, cap);
     }
-    return is_pure_read(value);
-}
-
-const Def* compose_read_map(const Def* inner, const Def* outer) {
-    auto& w  = outer->world();
-    auto pi  = outer->type()->as<Pi>();
-    auto map = w.mut_lam(pi->dom(), inner->type()->as<Pi>()->codom());
-    return map->set(true, w.app(inner, w.app(outer, map->var())));
+    auto read = is_pure_read(value);
+    return read ? adapt(read, btensor::MapRedPost::of(value->as<App>()->callee()->as<App>()).So) : read;
 }
 
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
@@ -1013,7 +1023,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         for (u64 i = 0; i != n; ++i) {
             auto value = values->proj(n, i), rank = ranks->proj(n, i), shape = shapes->proj(n, i),
                  map = maps->proj(n, i);
-            while (auto read = tensor_read(value)) {
+            while (auto read = tensor_read(value, shape)) {
                 if (!read->src->type()->isa<Arr>()) break;
                 value   = read->src;
                 rank    = read->R;
@@ -1035,7 +1045,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     auto init = old_mr.init;
     if (auto initial = tensor_init(old_mr)) {
         auto value = initial->outs, shape = initial->shape, map = initial->map;
-        while (auto read = tensor_read(value)) {
+        while (auto read = tensor_read(value, shape)) {
             if (read->R != old_mr.Ro || !read->src->type()->isa<Arr>()) break;
             value   = read->src;
             shape   = read->S;
@@ -1543,7 +1553,7 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
     auto mr      = btensor::MapRedPost::of(app->callee()->as<App>());
     auto initial = tensor_init(mr);
     if (!initial) return false;
-    while (auto read = tensor_read(initial->outs)) {
+    while (auto read = tensor_read(initial->outs, initial->shape)) {
         if (read->R != mr.Ro || !read->src->type()->isa<Arr>()) break;
         initial = TensorInit{read->S, compose_read_map(read->map, initial->map), read->src};
     }
