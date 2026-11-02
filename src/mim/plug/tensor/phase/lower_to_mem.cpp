@@ -1518,12 +1518,22 @@ const Def* LowerToMem::lower_stage(const App* app) {
     if (auto slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(app->arg()))) {
         auto [slice_meta, source_shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
         auto [start, step, extent]           = box->projs<3>();
-        impl                                 = old.app(old.annex<tensor::stage_box_impl>(), meta);
-        impl                                 = old.app(impl, {source_shape, extent});
-        impl                                 = old.app(impl, layout);
-        impl                                 = old.app(impl, {start, step});
-        impl                                 = old.app(impl, scope);
-        impl                                 = old.app(impl, slice->arg());
+        auto source = slice->arg(), physical_shape = source_shape, physical_rank = rank;
+        const Def* read = old.app(old.annex<affine::id>(), rank);
+        while (auto view = tensor_read(source, physical_shape)) {
+            if (!view->src->type()->isa<Arr>()) break;
+            read           = compose_read_map(view->map, read);
+            source         = view->src;
+            physical_shape = view->S;
+            physical_rank  = view->R;
+        }
+        impl = old.app(old.annex<tensor::stage_read_impl>(), {type, rank, split, physical_rank});
+        impl = old.app(impl, {source_shape, extent, physical_shape});
+        impl = old.app(impl, read);
+        impl = old.app(impl, layout);
+        impl = old.app(impl, {start, step});
+        impl = old.app(impl, scope);
+        impl = old.app(impl, source);
     } else {
         impl      = old.annex<tensor::stage_impl>();
         auto args = DefVec();

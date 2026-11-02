@@ -16,6 +16,28 @@
 
 namespace mim::plug::tensor {
 
+const Def* normalize_blis_candidate(const Def*, const Def*, const Def* producer) {
+    auto& w = producer->world();
+    if (w.driver().is_loaded("gpu") || !w.driver().arg_nat("tensor", "group").value_or(1)) return w.lit_ff();
+    auto app = graph::map_reduce(producer);
+    if (!app) return nullptr;
+    auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks = mr.ranks();
+    if (!ranks || !lit_projs(mr.So, ranks->ro) || !lit_projs(mr.Sr, ranks->nloops())) return nullptr;
+    auto scratch = w.inherit();
+    Rewriter importer(*scratch);
+    auto imported = importer.rewrite(producer);
+    auto size     = scratch->app(scratch->annex(core::trait::size), importer.rewrite(mr.To));
+    if (!Lit::isa(size)) return mr.To->is_closed() ? w.lit_ff() : nullptr;
+    auto config = scratch->app(scratch->annex<group_blocks>(),
+                               {size, scratch->app(scratch->annex<vec_width>(), scratch->lit_nat(4)),
+                                scratch->lit_nat(w.driver().arg_nat("tensor", "group-registers").value_or(32)),
+                                scratch->lit_nat(w.driver().arg_nat("tensor", "group-cache").value_or(262144))});
+    auto [rows, cols, kc, nc] = config->projs<4>();
+    if (!Lit::isa(rows).value_or(0) || !Lit::isa(kc).value_or(0)) return w.lit_ff();
+    return w.lit_bool(bool(blis_group(imported, rows, scratch->tuple({cols, kc, nc})).value));
+}
+
 MultiTilePlan multi_tile_plan(const App* app) {
     auto [meta, shapes_grid, boxes, body] = app->uncurry_args<4>();
     auto [n, g, types, ranks]             = meta->projs<4>();

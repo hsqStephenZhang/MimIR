@@ -1,0 +1,33 @@
+// RUN: %mim -p opt -p ll -X tensor:strict=1 -VVVV %s -X ll:o=%t.ll 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: clang++ -O3 -fsanitize=address %S/blis_transpose_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -p opt -p ll -X tensor:group=0 %s -X ll:o=%t.off.ll
+// RUN: clang++ -O3 -fsanitize=address %S/blis_transpose_aux.cpp %t.off.ll -o %t.off -Wno-override-module
+// RUN: %t.off
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let mode = math.mode.contract;
+let add = math.arith.add mode;
+let R: tensor.Ring = (F32, 0:F32, add, math.arith.mul mode);
+
+lam finish (x: «13, 11; F32», b: «11; F32»): «13, 11; F32» =
+    let x = tensor.binary add (x, tensor.broadcast @ (F32, 2) ((1, 11), (13, 11), b));
+    tensor.unary (λ x: F32: F32 = math.extrema.fmax mode (x, 0:F32)) x;
+
+extern fun nn (a: «13, 7; F32», b: «7, 11; F32», c: «11; F32»): «13, 11; F32» =
+    return (finish (tensor.dot_product R @(2, 2) @(1, 0) (1₂, 0₂, (), ()) (tensor.buf a, tensor.buf b), tensor.buf c));
+extern fun nt (a: «13, 7; F32», b: «11, 7; F32», c: «11; F32»): «13, 11; F32» =
+    return (finish (tensor.dot_product R @(2, 2) @(1, 0) (1₂, 1₂, (), ()) (tensor.buf a, tensor.buf b), tensor.buf c));
+extern fun tn (a: «7, 13; F32», b: «7, 11; F32», c: «11; F32»): «13, 11; F32» =
+    return (finish (tensor.dot_product R @(2, 2) @(1, 0) (0₂, 0₂, (), ()) (tensor.buf a, tensor.buf b), tensor.buf c));
+extern fun both (a: «7, 13; F32», b: «11, 7; F32», c: «11; F32»): «13, 11; F32» =
+    return (finish (tensor.dot_product R @(2, 2) @(1, 0) (0₂, 1₂, (), ()) (tensor.buf a, tensor.buf b), tensor.buf c));
+
+// CHECK-COUNT-4: tensor.group contraction {{.*}}: MR=
+// CHECK-NOT: tensor.group contraction
+// CHECK-NOT: not realized

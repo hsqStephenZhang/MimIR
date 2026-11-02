@@ -76,11 +76,14 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     auto output = w.app(mr.map_out, fn->var());
     auto maps   = mr.maps->projs<2>();
     auto shapes = mr.Sis->projs<2>();
-    if (output != w.tuple({vars[0], vars[1]}) || w.app(maps[0], fn->var()) != w.tuple({vars[0], red})
-        || w.app(maps[1], fn->var()) != w.tuple({red, vars[1]})
-        || lit_projs(shapes[0], 2) != std::optional(fe::Vector<u64>{m, k})
-        || lit_projs(shapes[1], 2) != std::optional(fe::Vector<u64>{k, n}))
-        return {nullptr, "BLIS access maps are not the canonical (m,k),(k,n) contraction"};
+    auto a_read = w.app(maps[0], fn->var()), b_read = w.app(maps[1], fn->var());
+    auto trans_a = a_read == w.tuple({red, vars[0]}), trans_b = b_read == w.tuple({vars[1], red});
+    if (output != w.tuple({vars[0], vars[1]}) || a_read != (trans_a ? w.tuple({red, vars[0]}) : w.tuple({vars[0], red}))
+        || b_read != (trans_b ? w.tuple({vars[1], red}) : w.tuple({red, vars[1]})))
+        return {nullptr, "BLIS access maps are not a matrix contraction"};
+    if (lit_projs(shapes[0], 2) != std::optional(trans_a ? fe::Vector<u64>{k, m} : fe::Vector<u64>{m, k})
+        || lit_projs(shapes[1], 2) != std::optional(trans_b ? fe::Vector<u64>{n, k} : fe::Vector<u64>{k, n}))
+        return {nullptr, "BLIS operand shapes do not match their contraction maps"};
     auto blocks = lit_projs(params, 3);
     auto rows   = Lit::isa(tile);
     if (!blocks || !rows) return {nullptr, "BLIS block parameters must be literal"};
@@ -100,11 +103,20 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     auto types   = mr.Tis->projs<2>();
     auto builder = w.app(w.annex<group_blis_impl>(), {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps});
     builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
-                                   w.lit_nat(nc), w.lit_nat(kc)});
+                                   w.lit_nat(nc), w.lit_nat(kc), w.lit_bool(trans_a)});
     builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps});
     auto inputs  = app->arg()->projs<2>();
     auto data    = inputs[0]->projs<2>();
-    return {w.app(builder, {data[0], data[1], inputs[1]}), {}};
+    auto operand = [&](size_t i, bool transpose, u64 rows, u64 cols) {
+        if (!transpose) return data[i];
+        auto view   = w.app(w.annex<blis_operand>(), {types[i], w.lit_nat(2)});
+        view        = w.app(view, shapes[i]);
+        auto read   = w.mut_lam(w.arr(2, w.annex<affine::Index>()), w.arr(2, w.annex<affine::Index>()));
+        auto [x, y] = read->vars<2>();
+        read->set(true, w.tuple({y, x}));
+        return w.app(w.app(view, {w.tuple({w.lit_nat(rows), w.lit_nat(cols)}), read}), data[i]);
+    };
+    return {w.app(builder, {operand(0, trans_a, m, k), operand(1, trans_b, k, n), inputs[1]}), {}};
 }
 
 namespace {
@@ -362,6 +374,8 @@ pattern::WitnessResult group_fusion_witness(const pattern::GraphView& source, De
     auto producer = importer.rewrite(inputs[0]);
     auto app      = graph::map_reduce(producer);
     if (!app) return {pattern::CheckResult::False, nullptr, "fusion producer is not a map_reduce_post"};
+    if (is_pure_read(producer))
+        return {pattern::CheckResult::False, nullptr, "a view is composed by its reader rather than tiled"};
     auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
     if (!Check::test_alpha(mr.TSched, scratch->annex<btensor::SchedT>())
         || !Check::test_alpha(mr.sched, scratch->app(scratch->annex<btensor::mk_sched>(),

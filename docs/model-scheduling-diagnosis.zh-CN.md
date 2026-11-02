@@ -135,3 +135,33 @@ scalar bias/ReLU epilogue 已由既有 BLIS post 测试覆盖，也不是首个�
 本次修复实际影响独立 LayerNorm；复测只选择该模型，并使用提交的完整 SHA。
 延迟和完整命令保留在指定 scratchpad 的 `p5_work/seq512_<sha>`，
 不把并发构建期间的小幅延迟差异写成调度收益。
+
+## Task 25A：先识别 contraction，再选择面板布局
+
+BLIS 的入口放在 `dot_schedule_kvec` 之前，而不是再识别一个已经 packed 的
+rank-4 特例。`blis_candidate` 与 planner 共用 `blis_group` 的合法性检查和
+`group_blocks` 的目标参数；不支持的 contraction、关闭 grouping 或 GPU
+仍走原来的 dot 调度。结构请求仍由 group planner 生成、由作用域内的规则实现，
+入口判断本身不安装调度。
+
+这一顺序与本地源码中的做法一致：
+
+- TVM `src/s_tir/meta_schedule/schedule_rule/multi_level_tiling.cc` 在原始 block
+  上分块，再通过 `CacheRead` / `ComputeAt` 建立读取复用；
+  `postproc/rewrite_layout.cc` 根据读取方布局插入 weight-layout rewrite block。
+- IREE `DispatchCreation/AnnotateDataTilingHints.cpp` 先识别 contraction 的
+  batch/M/N/K，再选择 `Mmt4DOp` / `BatchMmt4DOp`；
+  `CPUPropagateDataLayout.cpp` 向上冒泡 pack、折叠 reshape。
+- OpenBLAS `driver/level3/level3.c` 用布局相关的 `INCOPY` / `ITCOPY` 与
+  `ONCOPY` / `OTCOPY` 读取面板，后面调用相同的 GEMM kernel。
+
+因此转置不是另一种微内核。A 的 `(k,m)` 和 B 的 `(n,k)` 读取被表达成逻辑
+operand view，面板 stage 组合这个读取映射，直接从原始存储复制到原有连续面板。
+转置 A 也在 leaf 前 stage；B 的 NR 面板和已有微内核不变。
+pure-read view 不再先被 slice 规则当成算术 producer 分块，
+避免为裁剪后的 view 建立内层 stride 为运行时值的临时数组。
+stage 的读取组合是通用的，不依赖 Linear、权重名称或模型尺寸。
+
+`blis_transpose.mim` 覆盖 NN/NT/TN/TT、非整块的 M/N/K、bias/ReLU epilogue，
+并在 grouping 开启和关闭时与标量结果比较；开启时要求四个 kind-1 请求。
+已有 `hlo_train.mim` 同时覆盖共享 forward/backward contraction 的转置路径。

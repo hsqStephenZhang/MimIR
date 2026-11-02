@@ -1358,6 +1358,8 @@ pub lam dot_general_pick {n: Nat} {na nb nc: Nat} (a: «na; Idx n», b: «nb; Id
 ///   identity for the neutral split, and absorbed into the consumers' access maps by `fuse_tensor`'s
 ///   read-through in a fused graph.
 ///
+axm blis_candidate: {T: *} → T → Bool, normalize_blis_candidate;
+
 priv anx lam dot_product_impl
     (fastest_2: Nat)
     (R: Ring) (r1 r2: Nat) {nc nb: Nat}
@@ -1402,7 +1404,10 @@ priv anx lam dot_product_impl
       lam go_kvec (u: []): «s_out; R#T» =
           let sched = dot_schedule_kvec r_out t;
           reshape (sched#3_8) s_out (materialize sched);
-      (go_n, go_kvec)#kvec ();
+      let canonical = materialize t;
+      let blis = blis_candidate canonical;
+      (λ (): «s_out; R#T» = (go_n, go_kvec)#kvec (),
+       λ (): «s_out; R#T» = canonical)#(if_static (core.idx2nat blis, blis, ff)) ();
 ///
 /// ### bmm_impl
 ///
@@ -1816,9 +1821,10 @@ axm stage: {T: *, r k: Nat}
          → [input: «s; T»]
          → «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T», normalize_stage;
 
-priv anx lam stage_box_impl {T: *, r k: Nat} (s_source s: «r; Nat»)
+priv anx lam stage_read_impl {T: *, r k ri: Nat} (s_source s: «r; Nat», si: «ri; Nat»)
+    (map: «r; affine.Index» → «ri; affine.Index»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
-    (start step: «r; Nat») (scope: Nat) (input: «s_source; T»): «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T» =
+    (start step: «r; Nat») (scope: Nat) (input: «si; T»): «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T» =
     let input = buf input;
     let inverse = ‹d: r; option.unwrap_unsafe (vec.first core.icmp.e (outer_perm, d))›;
     let axes = ‹j: k; core.idx2nat j›;
@@ -1836,10 +1842,19 @@ priv anx lam stage_box_impl {T: *, r k: Nat} (s_source s: «r; Nat»)
             (padding, present)#valid ()
             where
                 con padding () = return pad;
-                con present () = return (input#‹d: r; core.idx 0 (s_source#d) (start#d + step#d * coords#d)›);
+                con present () =
+                    let indices = ‹d: r; core.idx 0 (s_source#d) (start#d + step#d * coords#d)›;
+                    let (_, indices) = affine.map @(ri, r) @(s_source, si) map indices @0 (⊥:(core.M 0));
+                    return (input#indices);
             end;
         cps.cps2ds read ();
     generate (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) at;
+
+priv anx lam stage_box_impl {T: *, r k: Nat} (s_source s: «r; Nat»)
+    (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
+    (start step: «r; Nat») (scope: Nat) (input: «s_source; T»): «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T» =
+    stage_read_impl @(T, r, k, r) (s_source, s, s_source) (affine.id @r)
+        (inner_dims_pos, inner_tiles, outer_perm, pad) (start, step) scope input;
 
 priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
@@ -1847,8 +1862,16 @@ priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
     stage_box_impl @(T, r, k) (s, s) (inner_dims_pos, inner_tiles, outer_perm, pad)
         (‹r; 0›, ‹r; 1›) scope input;
 
+priv anx lam blis_operand {T: *, r: Nat} (source_shape: «r; Nat»)
+    (shape: «2; Nat», read: «2; affine.Index» → «r; affine.Index»)
+    (source: «source_shape; T»): «shape; T» =
+    fun copy (_ x: T)@tt: T = return x;
+    map_reduce_post @(1, 0) @(T, T, 2, 2, SchedT) (shape, shape, mk_sched (2, 0))
+        @(T, r, source_shape, (), (), ())
+        (copy, ⊥:T, id @T) (affine.id @2) (read, ()) (source, ());
+
 priv anx lam group_blis_impl {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «i: nps; «Rps#i; Nat»»}
-    (M K N: Nat, mr nr nc kc: Nat)
+    (M K N: Nat, mr nr nc kc: Nat, pack_a: Bool)
     (combine: Fn [T, [Ta, Tb]] → T, init: T, post: Fn [T, «i: nps; Tps#i»] → T,
      post_maps: «i: nps; «2; affine.Index» → «Rps#i; affine.Index»»)
     (a: «M, K; Ta», b: «K, N; Tb», extras: «i: nps; «Sps#i; Tps#i»»): «M, N; T» =
@@ -1866,7 +1889,12 @@ priv anx lam group_blis_impl {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps;
                         let kt = core.select (core.ncmp.e (k / 4 * 4, k), 4, 1);
                         let vd = core.select (core.bit2.and 0 (1 < m, 1 < cols), 0,
                             core.select (1 < cols, 1, 4));
-                        let ap = slice @(Ta, 2) (M, K) ((off#ff + row#ff, ko), (1, 1), (m, k)) a;
+                        let source = slice @(Ta, 2) (M, K) ((off#ff + row#ff, ko), (1, 1), (m, k)) a;
+                        let ap = (λ (): «m, k; Ta» = source,
+                                  λ (): «m, k; Ta» =
+                                      let shape = stage_shape @(2, 1) (m, k) (0, 1, (ff, tt));
+                                      reshape_impl shape (m, k)
+                                          (stage @(Ta, 2, 1) (m, k) (0, 1, (ff, tt), ⊥:Ta) 0 source))#pack_a ();
                         let cp = slice @(T, 2) (rows, n) (row, (1, 1), size) acc;
                         lam leaf {q: Nat, Tqs: «q; *», Rqs: «q; Nat», Sqs: «i: q; «Rqs#i; Nat»»}
                             (finish: Fn [T, «i: q; Tqs#i»] → T,
