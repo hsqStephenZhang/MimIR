@@ -67,11 +67,11 @@ void RuleRewrite::start() {
     Rewriter importer(old_world());
     for (auto rule : templates_)
         patterns_.push_back(std::make_unique<pattern::RulePattern>(importer.rewrite(rule)->as<Rule>()));
-    auto ops    = pattern::data_operations(schemas_);
+    auto ops = driver().graph_operations();
+    ops.overlay(pattern::data_operations(schemas_));
     auto bodies = pattern::function_bodies(old_world());
     if (!bodies.empty()) {
-        facts_ = std::make_unique<pattern::GraphView>(
-            bodies, pattern::GraphOptions{.coverage = pattern::UseCoverage::Closed, .operators = &ops});
+        facts_  = std::make_unique<pattern::GraphView>(old_world(), ops);
         guards_ = std::make_unique<pattern::GuardContext>(*facts_);
     }
     RWPhase::start();

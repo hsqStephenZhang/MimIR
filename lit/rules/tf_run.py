@@ -7,6 +7,7 @@ import sys
 mim, filename, temporary, frontend, *strategy = sys.argv[1:]
 fixed_point = strategy[0] if strategy else "ff"
 assert fixed_point in ("ff", "tt")
+lower = len(strategy) > 1 and strategy[1] == "lower"
 source = pathlib.Path(filename)
 text = source.read_text()
 rules = re.search(r"^// TF-RULES: (.+)$", text, re.MULTILINE).group(1)
@@ -30,13 +31,20 @@ directory = pathlib.Path(f"{temporary}.{frontend}.dir")
 directory.mkdir()
 generated = directory / "probe.mim"
 try:
+    pipeline = f"compile.phases {fixed_point} ({phase}, compile.cleanup)"
+    if lower:
+        pipeline = f"compile.phases ff ({pipeline}, opt._default_compile ())"
     generated.write_text(
         text
+        + ("\nplugin opt;\n" if lower else "")
         + "\nextern lam _compile (): compile.Phase =\n"
-        + f"    compile.phases {fixed_point} ({phase}, compile.cleanup);\n"
+        + f"    {pipeline};\n"
     )
+    arguments = [mim, str(generated), "-V", "-V", "-V", "-V", "-o", "-"]
+    if lower:
+        arguments += ["-p", "ll", "-X", f"ll:o={temporary}.{frontend}.ll"]
     result = subprocess.run(
-        [mim, str(generated), "-V", "-V", "-V", "-V", "-o", "-"],
+        arguments,
         capture_output=True,
         text=True,
     )

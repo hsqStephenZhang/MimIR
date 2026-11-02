@@ -42,6 +42,12 @@ struct DataEdge {
     std::vector<size_t> result_path;
 };
 
+struct DataOccurrence {
+    const Def* consumer;
+    std::optional<u64> trips;
+    std::vector<const Def*> regions;
+};
+
 class GraphSnapshot {
 public:
     bool is_live() const;
@@ -64,6 +70,7 @@ class GraphView {
 public:
     explicit GraphView(Defs roots, UseCoverage = UseCoverage::Open);
     GraphView(Defs roots, GraphOptions);
+    GraphView(World&, const OpRegistry&);
 
     std::span<const Def* const> nodes() const {
         check_live();
@@ -107,6 +114,9 @@ public:
     CheckResult no_external_users(Defs nodes, Defs outputs) const;
     size_t data_use_count(const Def*) const;
     size_t data_consumer_count(const Def*) const;
+    bool is_program() const { return program_; }
+    CheckResult complete_data_uses(const Def*) const;
+    std::span<const DataOccurrence> occurrences(const Def*) const;
 
 private:
     void check_live() const;
@@ -116,6 +126,7 @@ private:
         std::vector<const Def*> ops;
     };
     void build_semantics(size_t);
+    void index_occurrences();
     CheckResult data_boundary(const Def*) const;
     std::vector<const Def*> roots_;
     DefSet outputs_;
@@ -133,6 +144,8 @@ private:
     DefMap<std::vector<DataEdge>> data_uses_;
     DefSet curry_prefixes_;
     DefSet unknown_uses_;
+    bool program_ = false;
+    DefMap<std::vector<DataOccurrence>> occurrences_;
     std::vector<MutableState> mutables_;
     std::vector<std::pair<Sym, const Def*>> externals_;
     std::shared_ptr<GraphSnapshot> snapshot_ = std::make_shared<GraphSnapshot>();

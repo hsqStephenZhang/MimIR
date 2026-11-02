@@ -213,6 +213,7 @@ public:
     auto normalizer(flags_t flags) const { return fe::lookup(normalizers_, flags); }
     auto witness(flags_t flags) const { return fe::lookup(witnesses_, flags); }
     void register_witness(flags_t, pattern::Witness);
+    const pattern::OpRegistry& graph_operations() const { return graph_operations_; }
     auto normalizer(plugin_t d, tag_t t, sub_t s) const { return normalizer(Annex::flags(d, t, s)); }
     ///@}
 
@@ -254,6 +255,7 @@ private:
     Flags2Phases phases_;
     Normalizers normalizers_;
     pattern::Witnesses witnesses_;
+    pattern::OpRegistry graph_operations_;
     fe::StrMap<fe::Vector<std::string>> plugin_args_;
     std::vector<std::pair<std::string, fe::View<PluginArg>>> known_args_;
     std::vector<std::pair<std::string, fe::View<PluginEnv>>> known_envs_;

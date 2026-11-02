@@ -1,6 +1,7 @@
 add_mim_plugin(tensor
     SOURCES
         tensor.cpp
+        grouping.cpp
         normalizers.cpp
         pattern.cpp
         phase/combine_products.cpp

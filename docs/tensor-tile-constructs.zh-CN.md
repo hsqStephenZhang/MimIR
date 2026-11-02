@@ -30,6 +30,37 @@ tensor outs 有独立 box/map；init 在 reduction index 为零处读取，
 shifted write、带 post input 的 row reduction、空 reduction/tensor outs，以及 tailed tiled
 分别检查 scalar/reference 结果；IR 测试检查正常重建与 inexact/reduction-cut 的拒绝。
 
+### 7.3 Closure-aware use index 与预算 witness
+
+每次 Rule phase 在改写前建立一个只读 program GraphView；
+从全部 externals 追踪可达 mutables，把所有函数 body 纳入同一快照。
+单纯捕获 producer 不记为 data read，callback body 内的实际读取仍被索引。
+`only_used_by` 保持三值证明；未注册操作、opaque callback、直接返回 producer 等
+无法完整描述的边界仍为 Unknown，不把缺失的 consumer 数量当成零。
+`rule_app_with` 与 `graph_rule_app_with` 的 guards 使用同一类 program facts，
+graph frontend 的局部 view 只负责匹配与发布。
+
+插件声明 semantic data operands 和 region callbacks；tiled 记录 grid trip count，
+tile_fold 记录 block count。occurrence 保留整个 region 路径和乘法后的动态次数；
+未知 count、乘法溢出或递归 callback 不会变成有限次数证明。
+`within_budget` 在 scratch World 逐轴枚举 full/tail extent 组合，精确累加
+每个 slice 的 cells×trips，并给完整 producer reader 收取 whole-size 成本。
+sum 不超过 budget×whole-size 才返回 true；literal rank/shape/count 不足时拒绝融合。
+没有 diamond realization cache，也没有把静态 consumer 数直接当作执行次数。
+
+`tensor.fuse_producer (T, rank)` 生成低 universe 的专用 Rule，
+避免修改已有 compile phase 的类型接口；rank specialization 同时消去 singleton Pack。
+Rule 保留 contraction/custom-schedule roots，并只接受已证明纯的 scalar combiner/post。
+对 tiled callback 重复应用 Rule 和 cleanup，直到没有新的 input slices 可继续融合。
+graph frontend 的显式 purity 声明仍是调用方的证明责任；
+native tiled/fold decoder 不因拥有 region metadata 就默认承诺 callback 纯。
+
+`tf_group_budget` 在两个前端检查 tails、nested tiled、重复 fold、未知 count、
+完整 reader、直接返回和两个独立 slice 的累计预算。
+`tf_group_exec` 检查两级 producer chain 与 nested tails 的实际数值，
+并与未分块的完整 producer 对照；IR 另检查 chain 中没有 whole-size MRP。
+unit tests 检查跨 callback 独占性、opaque callback、递归、未知次数和溢出。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

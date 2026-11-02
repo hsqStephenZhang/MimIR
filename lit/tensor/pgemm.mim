@@ -2,7 +2,7 @@
 // RUN: %FileCheck %s --implicit-check-not='mark @' < %t.out
 // RUN: python3 %S/../rules/tf_run.py %mim %s %t graph > %t.graph.out 2> %t.graph.log
 // RUN: %FileCheck %s --check-prefix=GAP < %t.graph.out
-// RUN: grep 'graph Rule recipes only call explicitly pure axioms' %t.graph.log
+// RUN: grep 'graph Rule RHS calls an operator without a purity guarantee' %t.graph.log
 // TF-RULES: pack
 // TF-PURE: mark, tensor.product_2d, tensor.binary, tensor.unary, tensor.broadcast, tensor.slice, tensor.tiled, tensor.tile_fold, tensor.stage, tensor.map_reduce_post, tensor.splat, core.wrap.add, core.wrap.mul, core.icmp.sl, core.bit2.and, affine.lit, affine.semiop.floordiv, affine.semiop.rem
 

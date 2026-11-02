@@ -170,9 +170,18 @@ OpRegistry data_operations(std::span<const DataOp> schemas) {
 }
 
 DefVec function_bodies(World& world) {
-    DefVec result;
+    DefVec pending, result;
     for (auto ext : world.externals().muts())
-        if (auto fn = ext->isa<Lam>(); fn && fn->is_set()) result.push_back(fn->body());
+        pending.push_back(ext);
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (!seen.insert(def).second) continue;
+        if (auto fn = def->isa<Lam>(); fn && fn->is_set()) result.push_back(fn->body());
+        if (def->isa<Var>()) continue;
+        for (auto dep : def->deps())
+            if (dep) pending.push_back(dep);
+    }
     return result;
 }
 

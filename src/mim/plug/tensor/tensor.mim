@@ -1583,6 +1583,17 @@ axm input_box: {r: Nat}
 axm transpose_box: {T: *, r: Nat, s: «r; Nat»}
                  → [producer: «s; T», offset extent: «r; Nat»]
                  → [«r; Nat», «r; Nat»];
+
+axm group_root: {T: *} → T → Bool, normalize_group_root;
+axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
+
+pub lam fuse_producer (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», off ext: «r; Nat»] =
+    rule fuse (s: «r; Nat», p: «s; T», off ext: «r; Nat»):
+        slice @(T, r) s (off, ‹r; 1›, ext) p
+        when core.bit2.and 0 (core.bit2.xor 0 (group_root p, tt),
+            within_budget (p, slice @(T, r) s (off, ‹r; 1›, ext) p, 1)) =>
+        tile_of (p, off, ext);
+    fuse;
 ///
 /// The tensor accumulator descriptor read at each full loop coordinate before reduction.
 ///

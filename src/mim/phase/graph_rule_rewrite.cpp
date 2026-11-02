@@ -147,11 +147,15 @@ std::unique_ptr<Phase> GraphRuleRewrite::recreate() {
 void GraphRuleRewrite::start() {
     if (rules_.empty()) return;
     Rewriter importer(world());
-    pattern::OpRegistry ops;
+    auto ops = driver().graph_operations();
     std::set<flags_t> registered;
     for (auto source : pure_) {
         auto axm = importer.rewrite(source)->as<Axm>();
         if (!registered.insert(axm->flags()).second) continue;
+        if (ops.contains(axm->flags())) {
+            ops.assert_pure(axm->flags());
+            continue;
+        }
         if (auto schema = std::ranges::find(schemas_, axm->flags(), &pattern::DataOp::axm); schema != schemas_.end()) {
             ops.add(axm->flags(), schema->num_groups, schema->inputs, true);
             continue;
@@ -171,10 +175,14 @@ void GraphRuleRewrite::start() {
             true);
     }
     for (const auto& schema : schemas_)
-        if (registered.insert(schema.axm).second) ops.add(schema.axm, schema.num_groups, schema.inputs);
+        if (registered.insert(schema.axm).second) {
+            pattern::OpRegistry explicit_ops;
+            explicit_ops.add(schema.axm, schema.num_groups, schema.inputs);
+            ops.overlay(explicit_ops);
+        }
     auto bodies = pattern::function_bodies(world());
     if (bodies.empty()) return;
-    pattern::GraphView facts(bodies, {.coverage = pattern::UseCoverage::Closed, .operators = &ops});
+    pattern::GraphView facts(world(), ops);
     pattern::GuardContext guards(facts);
     std::vector<pattern::GraphRewrite> proposals;
     fe::SymMap<const Def*> selected;
@@ -201,13 +209,12 @@ void GraphRuleRewrite::start() {
                                                         .scope         = fn,
                                                         .region_path   = region.path,
                                                         .shared_region = !compiled.uses_graph_facts()});
-                pattern::GuardContext local_guards(view);
                 std::optional<pattern::GraphRewrite> accepted;
                 std::string reason = "no accepted match visited";
                 pattern::GraphMatchOptions options;
                 options.max_results = 1;
                 options.accept      = [&](const pattern::GraphMatch& match) {
-                    auto candidate = compiled.plan(match, view, region.path.empty() ? &guards : &local_guards);
+                    auto candidate = compiled.plan(match, view, &guards);
                     if (!candidate.plan) {
                         reason = candidate.reason;
                         if (candidate.status == pattern::MatchStatus::Unknown) {

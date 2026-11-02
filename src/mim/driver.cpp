@@ -206,6 +206,7 @@ void Driver::load(std::string_view spec, Loc loc) {
     if (auto reg = plugin.register_normalizers) reg(normalizers_);
     if (auto reg = plugin.register_phases)      reg(phases_);
     if (auto reg = plugin.register_witnesses)   reg(witnesses_);
+    if (auto reg = plugin.register_graph_operations) reg(graph_operations_);
     // clang-format on
     for (auto [flags, witness] : witnesses_)
         if (!witness.evaluate || witness.num_inputs > 64 || normalizer(flags))

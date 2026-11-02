@@ -40,6 +40,109 @@ struct GraphIR {
     }
 };
 
+TEST_CASE("Program use index: nested region occurrences have complete uses and multiplied trips") {
+    GraphIR ir;
+    auto loop = ir.w.axm(ir.w.pi(ir.w.pi(ir.nat, ir.nat), ir.nat));
+    ir.ops.add(
+        loop->flags(),
+        [](const Def* def, size_t) -> std::optional<OpView> {
+            return OpView{.inputs = {}, .regions = {{def->as<App>()->arg(), 4}}};
+        },
+        true);
+    auto producer = ir.call(ir.q, ir.x);
+    auto inner    = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    auto use      = ir.call(ir.k, producer);
+    inner->set(false, use);
+    auto outer = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    outer->set(false, ir.w.app(loop, inner));
+    auto main = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat))->set("main");
+    main->set(false, ir.w.app(loop, outer))->externalize();
+    auto gid = ir.w.curr_gid();
+    GraphView view(ir.w, ir.ops);
+    CHECK(view.is_program());
+    CHECK(view.complete_data_uses(producer) == CheckResult::True);
+    CHECK(view.data_only_used_by(producer, use) == CheckResult::True);
+    REQUIRE(view.occurrences(use).size() == 1);
+    CHECK(view.occurrences(use)[0].trips == 16);
+    CHECK(view.occurrences(use)[0].regions.size() == 2);
+    CHECK(ir.w.curr_gid() == gid);
+    inner->set(false, producer);
+    CHECK_FALSE(view.is_current());
+    GraphView escaped(ir.w, ir.ops);
+    CHECK(escaped.complete_data_uses(producer) == CheckResult::Unknown);
+}
+
+TEST_CASE("Program use index: opaque callbacks cannot borrow a registered region's multiplicity") {
+    GraphIR ir;
+    auto loop   = ir.w.axm(ir.w.pi(ir.w.pi(ir.nat, ir.nat), ir.nat));
+    auto opaque = ir.w.axm(ir.w.pi(ir.w.pi(ir.nat, ir.nat), ir.nat));
+    ir.ops.add(
+        loop->flags(),
+        [](const Def* def, size_t) -> std::optional<OpView> {
+            return OpView{.inputs = {}, .regions = {{def->as<App>()->arg(), 4}}};
+        },
+        true);
+    auto producer = ir.call(ir.q, ir.x);
+    auto body     = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    auto use      = ir.call(ir.k, producer);
+    body->set(false, use);
+    auto main = ir.w.mut_lam(ir.w.pi(ir.nat, ir.w.sigma({ir.nat, ir.nat})))->set("main");
+    main->set(false, ir.w.tuple({ir.w.app(loop, body), ir.w.app(opaque, body)}))->externalize();
+    GraphView view(ir.w, ir.ops);
+    auto occurrences = view.occurrences(use);
+    REQUIRE(occurrences.size() == 2);
+    CHECK(occurrences[0].trips == 4);
+    CHECK_FALSE(occurrences[1].trips);
+    CHECK(view.complete_data_uses(producer) == CheckResult::Unknown);
+    CHECK(view.data_only_used_by(producer, use) == CheckResult::Unknown);
+}
+
+TEST_CASE("Program use index: unknown and overflowing region trips remain unknown") {
+    GraphIR ir;
+    auto loop = ir.w.axm(ir.w.pi(ir.w.pi(ir.nat, ir.nat), ir.nat));
+    std::optional<u64> trips;
+    SUBCASE("unknown count") {}
+    SUBCASE("overflowing nested counts") { trips = u64(-1); }
+    ir.ops.add(
+        loop->flags(),
+        [trips](const Def* def, size_t) -> std::optional<OpView> {
+            return OpView{.inputs = {}, .regions = {{def->as<App>()->arg(), trips}}};
+        },
+        true);
+    auto producer = ir.call(ir.q, ir.x);
+    auto inner    = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    auto use      = ir.call(ir.k, producer);
+    inner->set(false, use);
+    auto outer = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    outer->set(false, ir.w.app(loop, inner));
+    auto main = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat))->set("main");
+    main->set(false, ir.w.app(loop, outer))->externalize();
+    GraphView view(ir.w, ir.ops);
+    REQUIRE(view.occurrences(use).size() == 1);
+    CHECK_FALSE(view.occurrences(use)[0].trips);
+}
+
+TEST_CASE("Program use index: recursive registered regions cannot prove a finite multiplicity") {
+    GraphIR ir;
+    auto loop = ir.w.axm(ir.w.pi(ir.w.pi(ir.nat, ir.nat), ir.nat));
+    ir.ops.add(
+        loop->flags(),
+        [](const Def* def, size_t) -> std::optional<OpView> {
+            return OpView{.inputs = {}, .regions = {{def->as<App>()->arg(), 1}}};
+        },
+        true);
+    auto producer = ir.call(ir.q, ir.x);
+    auto body     = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat));
+    auto use      = ir.call(ir.k, producer);
+    body->set(false, ir.add(use, ir.w.app(loop, body)));
+    auto main = ir.w.mut_lam(ir.w.pi(ir.nat, ir.nat))->set("main");
+    main->set(false, ir.w.app(loop, body))->externalize();
+    GraphView view(ir.w, ir.ops);
+    auto occurrences = view.occurrences(use);
+    REQUIRE(occurrences.size() == 2);
+    CHECK_FALSE(occurrences[1].trips);
+}
+
 Pattern app(PatternProgram& p, Pattern callee, Pattern arg) { return p.node(Node::App, {callee, arg}); }
 Pattern call(PatternProgram& p, const Def* callee, Pattern arg) { return app(p, p.exact(callee), arg); }
 Pattern pair(PatternProgram& p, const Def* callee, Pattern a, Pattern b) { return app(p, call(p, callee, a), b); }

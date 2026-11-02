@@ -1,5 +1,7 @@
 #include "mim/plug/tensor/pattern.h"
 
+#include <limits>
+
 #include <mim/pattern/match.h>
 
 #include <mim/plug/core/core.h>
@@ -136,6 +138,39 @@ std::optional<pattern::OpView> decode_broadcast(const Def* def, size_t limit) {
     return view;
 }
 
+std::optional<pattern::OpView> decode_tiled(const Def* def, size_t) {
+    auto args = groups(def, 3);
+    if (args.empty()) return {};
+    auto rank  = Lit::isa(slot(args[0], 2, 1));
+    auto shape = slot(args[1], 2, 0), tile = slot(args[1], 2, 1);
+    std::optional<u64> trips = 1;
+    if (!rank || !shape || !tile)
+        trips.reset();
+    else
+        for (u64 d = 0; d != *rank; ++d) {
+            auto s = slot(shape, *rank, d), t = slot(tile, *rank, d);
+            auto n = s ? Lit::isa(s) : std::nullopt, k = t ? Lit::isa(t) : std::nullopt;
+            if (!n || !k || !*k) {
+                trips.reset();
+                break;
+            }
+            auto count = *n / *k + (*n % *k != 0);
+            if (count && *trips > std::numeric_limits<u64>::max() / count) {
+                trips.reset();
+                break;
+            }
+            *trips *= count;
+        }
+    return pattern::OpView{.inputs = {}, .regions = {{args[2], trips}}};
+}
+
+std::optional<pattern::OpView> decode_fold(const Def* def, size_t) {
+    auto args = groups(def, 4);
+    if (args.empty()) return {};
+    auto n = slot(args[1], 2, 0);
+    return pattern::OpView{.inputs = {{args[2], 2, {}}}, .regions = {{args[3], n ? Lit::isa(n) : std::nullopt}}};
+}
+
 } // namespace
 
 const App* map_reduce(const Def* def) { return calls().match(calls().mr, def); }
@@ -166,6 +201,10 @@ void register_operations(pattern::OpRegistry& ops) {
     ops.add(Annex::base<tensor::broadcast>(), decode_broadcast, true);
     ops.add(Annex::base<concat>(), decode_concat, true);
     ops.add(Annex::base<slice>(), 4, {{3}}, true);
+    ops.add(Annex::base<tiled>(), decode_tiled, false);
+    ops.add(Annex::base<tile_fold>(), decode_fold, false);
+    ops.add(Annex::base<stage>(), 5, {{4}}, true);
+    ops.add(Annex::base<buf>(), 2, {{1}}, true);
 }
 
 } // namespace mim::plug::tensor::graph

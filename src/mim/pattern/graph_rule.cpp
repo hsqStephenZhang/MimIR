@@ -158,6 +158,8 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
                 if (!index) throw std::invalid_argument("graph Rule needs a fixed result index");
                 return plan->extract(build(extract->tuple(), depth + 1), *index);
             }
+            if (auto app = def->isa<App>(); app && app->callee()->isa<Idx>() && def->is_closed())
+                return plan->import(def);
             if (auto app = def->isa<App>()) {
                 auto callee = App::uncurry_callee(app)->isa<Axm>();
                 if (!callee) throw std::invalid_argument("graph Rule recipes only call explicitly pure axioms");

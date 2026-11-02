@@ -8,6 +8,17 @@
 
 namespace mim::pattern {
 
+void OpRegistry::overlay(const OpRegistry& other) {
+    for (const auto& [flags, spec] : other.specs_)
+        specs_.insert_or_assign(flags, spec);
+}
+
+void OpRegistry::assert_pure(flags_t flags) {
+    auto i = specs_.find(flags);
+    if (i == specs_.end()) throw std::invalid_argument("purity assertion requires an operator decoder");
+    i->second.pure = true;
+}
+
 void OpRegistry::add(flags_t axm, size_t num_groups, std::vector<InputGroup> inputs, bool pure) {
     auto seen = std::vector<bool>(num_groups, false);
     for (auto input : inputs) {

@@ -16,6 +16,7 @@ using namespace mim;
 using namespace mim::plug;
 
 namespace mim::plug::tensor {
+pattern::WitnessResult fusion_budget(const pattern::GraphView&, Defs, World&);
 static pattern::WitnessResult permuted_box(Defs inputs, std::span<const u64> axes, World& target) {
     DefVec offset, extent;
     for (auto axis : axes) {
@@ -78,6 +79,7 @@ static pattern::WitnessResult transpose_box_witness(const pattern::GraphView& so
 static void reg_witnesses(pattern::Witnesses& witnesses) {
     witnesses.emplace(Annex::base<input_box>(), pattern::Witness{3, input_box_witness});
     witnesses.emplace(Annex::base<transpose_box>(), pattern::Witness{3, transpose_box_witness});
+    witnesses.emplace(Annex::base<within_budget>(), pattern::Witness{3, fusion_budget});
 }
 
 static void reg_phases(Flags2Phases& phases) {
@@ -98,9 +100,10 @@ static constexpr PluginArg known_args[] = {
 // clang-format on
 
 MIM_PLUGIN_ENTRY(tensor) {
-    plugin.register_normalizers = tensor::register_normalizers;
-    plugin.register_phases      = tensor::reg_phases;
-    plugin.register_witnesses   = tensor::reg_witnesses;
-    plugin.args                 = known_args;
-    plugin.num_args             = std::size(known_args);
+    plugin.register_normalizers      = tensor::register_normalizers;
+    plugin.register_phases           = tensor::reg_phases;
+    plugin.register_witnesses        = tensor::reg_witnesses;
+    plugin.register_graph_operations = tensor::graph::register_operations;
+    plugin.args                      = known_args;
+    plugin.num_args                  = std::size(known_args);
 }

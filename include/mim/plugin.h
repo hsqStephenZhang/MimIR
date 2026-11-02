@@ -175,6 +175,7 @@ struct Plugin {
     const PluginSym* syms; ///< The symbols other Plugin%s may look up; see PluginSym.
     size_t num_syms;       ///< Number of Plugin::syms.
     void (*register_witnesses)(pattern::Witnesses&);
+    void (*register_graph_operations)(pattern::OpRegistry&);
 };
 
 /// @name Plugin Interface

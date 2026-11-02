@@ -13,9 +13,15 @@ struct OpInput {
     std::vector<size_t> path;
 };
 
+struct OpRegion {
+    const Def* body;
+    std::optional<u64> trips;
+};
+
 struct OpView {
     std::vector<OpInput> inputs;
-    bool complete = true;
+    bool complete                 = true;
+    std::vector<OpRegion> regions = {};
 };
 
 struct InputGroup {
@@ -42,6 +48,9 @@ public:
     bool has_purity(flags_t) const;
     bool is_pure_call(flags_t, std::span<const Def* const> argument_groups) const;
     bool is_pure(const Def*) const;
+    bool contains(flags_t axm) const { return specs_.contains(axm); }
+    void overlay(const OpRegistry&);
+    void assert_pure(flags_t);
 
 private:
     struct Spec {

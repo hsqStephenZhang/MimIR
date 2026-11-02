@@ -1,14 +1,122 @@
 #include "mim/pattern/graph.h"
 
 #include <algorithm>
+#include <limits>
 #include <stdexcept>
 
 #include "mim/axm.h"
+#include "mim/driver.h"
 #include "mim/lam.h"
 #include "mim/tuple.h"
 #include "mim/world.h"
 
 namespace mim::pattern {
+
+namespace {
+DefVec program_bodies(World& world) {
+    DefVec pending, result;
+    for (auto ext : world.externals().muts())
+        pending.push_back(ext);
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (!seen.insert(def).second) continue;
+        if (auto lam = def->isa<Lam>(); lam && lam->is_set())
+            result.push_back(lam->body());
+        else if (def->is_mutable() && !def->isa<Pi>() && !def->isa<Rule>())
+            for (auto op : def->ops())
+                if (op) result.push_back(op);
+        if (def->isa<Var>()) continue;
+        for (auto dep : def->deps())
+            if (dep) pending.push_back(dep);
+    }
+    return result;
+}
+
+std::optional<u64> multiply(std::optional<u64> a, std::optional<u64> b) {
+    if (!a || !b || (*b && *a > std::numeric_limits<u64>::max() / *b)) return {};
+    return *a * *b;
+}
+} // namespace
+
+GraphView::GraphView(World& world, const OpRegistry& ops)
+    : GraphView(program_bodies(world), {.coverage = UseCoverage::Closed, .operators = &ops}) {
+    program_ = true;
+    world_   = &world;
+    unknown_uses_.clear();
+    for (const auto& state : mutables_)
+        for (auto op : state.ops)
+            if (op && indices_.contains(op)) {
+                auto fn = state.def->isa<Lam>();
+                if (!fn || op != fn->body()) unknown_uses_.insert(op);
+            }
+    index_occurrences();
+}
+
+void GraphView::index_occurrences() {
+    DefSet entered, recursive;
+    DefMap<DefSet> region_owners;
+    for (auto def : operations_)
+        for (auto region : isa_operation(def)->regions)
+            region_owners[region.body].insert(def);
+    auto visit = [&](this auto&& visit, const Def* body, std::optional<u64> trips, std::vector<const Def*> regions,
+                     DefSet active, bool opaque) -> void {
+        DefVec pending{body};
+        DefSet seen;
+        for (size_t i = 0; i != pending.size(); ++i) {
+            if (i > 64 * (world_->curr_gid() + 1))
+                throw std::invalid_argument("program occurrence traversal budget exceeded");
+            auto def = pending[i];
+            if (!seen.insert(def).second) continue;
+            if (def->is_mutable() || def->isa<Var>() || def->isa<Axm>()) continue;
+            if (auto op = isa_operation(def)) {
+                occurrences_[def].push_back({def, trips, regions});
+                if (opaque)
+                    for (auto input : op->inputs)
+                        unknown_uses_.insert(input.value);
+                for (auto region : op->regions) {
+                    auto fn = region.body->isa<Lam>();
+                    if (!fn || !fn->is_set()) continue;
+                    if (active.contains(fn)) {
+                        recursive.insert(fn);
+                        continue;
+                    }
+                    entered.insert(fn);
+                    auto nested = regions;
+                    nested.push_back(def);
+                    auto next = active;
+                    next.insert(fn);
+                    visit(fn->body(), multiply(trips, region.trips), std::move(nested), std::move(next), opaque);
+                }
+            }
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+        }
+    };
+    for (auto ext : world_->externals().muts())
+        if (auto fn = ext->isa<Lam>(); fn && fn->is_set()) {
+            entered.insert(fn);
+            visit(fn->body(), 1, {}, {fn}, false);
+        }
+    for (const auto& state : mutables_)
+        if (auto fn = state.def->isa<Lam>(); fn && fn->is_set()) {
+            auto opaque = !entered.contains(fn) || recursive.contains(fn);
+            for (auto edge : uses(fn))
+                if (edge.kind != EdgeKind::Type && !region_owners[fn].contains(edge.owner)) opaque = true;
+            if (opaque) visit(fn->body(), {}, {}, {fn}, true);
+        }
+}
+
+std::span<const DataOccurrence> GraphView::occurrences(const Def* consumer) const {
+    check_live();
+    auto i = occurrences_.find(consumer);
+    return i == occurrences_.end() ? std::span<const DataOccurrence>() : std::span<const DataOccurrence>(i->second);
+}
+
+CheckResult GraphView::complete_data_uses(const Def* producer) const {
+    if (!program_ || !is_contained(producer)) return CheckResult::Unknown;
+    return data_boundary(producer) == CheckResult::True ? CheckResult::True : CheckResult::Unknown;
+}
 
 bool GraphSnapshot::is_live() const { return !published_ && (!world_ || world_->data_.storage_token == generation_); }
 

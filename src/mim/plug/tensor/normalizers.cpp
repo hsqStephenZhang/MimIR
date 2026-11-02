@@ -15,6 +15,31 @@
 
 namespace mim::plug::tensor {
 
+const Def* normalize_group_root(const Def*, const Def*, const Def* producer) {
+    auto& w  = producer->world();
+    auto app = graph::map_reduce(producer);
+    if (!app) return nullptr;
+    auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks = mr.ranks();
+    if (!ranks || !Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>())) return w.lit_tt();
+    auto record = w.app(w.annex<tile_sched>(), mr.sched);
+    if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), record))) return w.lit_tt();
+    if (!ranks->rr) return w.lit_ff();
+    for (u64 k = 0; k != ranks->nis; ++k) {
+        auto map  = mr.maps->proj(ranks->nis, k);
+        auto pi   = map->type()->as<Pi>();
+        auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
+        auto read = w.app(map, var);
+        for (u64 d = 0; d != ranks->ro; ++d) {
+            auto at = w.tuple(DefVec(ranks->nloops(), [&](size_t e) {
+                return e == d ? w.call<affine::lit>(w.lit_nat_0()) : var->proj(ranks->nloops(), e);
+            }));
+            if (w.app(map, at) == read) return w.lit_tt();
+        }
+    }
+    return w.lit_ff();
+}
+
 ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) {
     auto app = graph::map_reduce(producer);
     if (!app) return {nullptr, "producer is not a map_reduce_post"};
