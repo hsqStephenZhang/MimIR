@@ -47,16 +47,18 @@ public:
 
     const Def* rewrite(const Def* def) override {
         if (auto value = lookup(def)) return value;
-        if (def->isa<Var>()) return map(def, world().bot(Rewriter::rewrite(def->type())));
+        if (auto var = def->isa<Var>(); var && !lookup(var->binder()))
+            return map(def, world().bot(Rewriter::rewrite(def->type())));
         return Rewriter::rewrite(def);
     }
 };
 
 class TileCost {
 public:
-    TileCost(World& w)
+    TileCost(World& w, bool enumerate = false)
         : world_(w)
-        , importer_(w) {}
+        , importer_(w)
+        , enumerate_(enumerate) {}
 
     std::optional<u64> count(const pattern::DataOccurrence& occurrence, const Def* reader, u64 whole) {
         if (occurrence.regions.empty() && !occurrence.trips) return {};
@@ -100,13 +102,14 @@ private:
         if (!rank || *rank > 8 || !fn || !fn->is_set()) return {};
         auto [shape, tile] = shapes->projs<2>();
         DefVec extents(*rank);
+        DefVec origins(*rank, world_.bot(world_.type_nat()));
         auto axis = [&](this auto&& axis, size_t d) -> std::optional<u64> {
             if (d == *rank) {
+                if (++work_ > 65536) return {};
                 importer_.push();
                 if (auto var = fn->has_var()) {
                     importer_.bind_old(var);
-                    importer_.map(
-                        var, world_.tuple({world_.bot(world_.arr(*rank, world_.type_nat())), world_.tuple(extents)}));
+                    importer_.map(var, world_.tuple({world_.tuple(origins), world_.tuple(extents)}));
                 }
                 auto result = region(occurrence, reader, whole, i + 1);
                 importer_.pop();
@@ -117,6 +120,19 @@ private:
             if (!s || !t || !*t) return {};
             auto k = std::min(*s, *t);
             if (!k) return 0;
+            if (enumerate_) {
+                u64 total = 0;
+                for (u64 off = 0; off < *s;) {
+                    auto extent = std::min(k, *s - off);
+                    origins[d]  = world_.lit_nat(off);
+                    extents[d]  = world_.lit_nat(extent);
+                    auto part   = axis(d + 1);
+                    if (!part || total > std::numeric_limits<u64>::max() - *part) return {};
+                    total += *part;
+                    off += extent;
+                }
+                return total;
+            }
             extents[d] = world_.lit_nat(k);
             auto full  = mul(*s / k, axis(d + 1));
             if (*s % k == 0) return full;
@@ -130,9 +146,119 @@ private:
 
     World& world_;
     CostImporter importer_;
+    bool enumerate_;
+    size_t work_ = 0;
+};
+
+std::optional<u64> outer_axis(const Def* producer, Rewriter& importer) {
+    auto app = graph::map_reduce(producer);
+    if (!app) return {};
+    auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks = mr.ranks();
+    if (!ranks || !ranks->ro || ranks->ro > 8) return {};
+    auto& w    = importer.world();
+    auto value = importer.rewrite(producer);
+    auto root  = w.app(w.app(w.annex<group_root>(), value->type()), value);
+    if (root != w.lit_ff()) return {};
+    auto record = w.app(w.annex<tile_sched>(), importer.rewrite(mr.sched));
+    auto vdim   = Lit::isa(record->proj(2, 0));
+    if (!vdim || !*vdim) return {};
+    auto shape = importer.rewrite(mr.So);
+    for (u64 d = 0; d != ranks->ro; ++d) {
+        auto extent = Lit::isa(shape->proj(ranks->ro, d));
+        if (!extent || !*extent) return {};
+    }
+    return 0;
+}
+
+class GroupPolicy {
+public:
+    GroupPolicy(const pattern::GraphView& source, Rewriter& importer)
+        : source_(source)
+        , importer_(importer) {}
+
+    bool grouped(const Def* producer) {
+        if (auto i = grouped_.find(producer); i != grouped_.end()) return i->second;
+        grouped_[producer] = false;
+        if (!outer_axis(producer, importer_)) return false;
+        for (auto use : source_.data_uses(producer))
+            if (Axm::isa<tensor::slice>(use.consumer))
+                for (const auto& occurrence : source_.occurrences(use.consumer))
+                    if (!occurrence.regions.empty()) return false;
+        for (auto op : source_.operations())
+            for (auto region : source_.isa_operation(op)->regions)
+                if (auto var = region.body->has_var(); var && producer->has_free_var(var)) return false;
+        auto inputs               = producers(producer);
+        auto eligible             = !inputs.empty() && std::ranges::none_of(inputs, [&](auto p) { return reaches(p); });
+        return grouped_[producer] = eligible;
+    }
+
+    bool terminal(const Def* producer) {
+        for (auto use : source_.data_uses(producer))
+            if (graph::map_reduce(use.consumer) && grouped(use.consumer)) return false;
+        return true;
+    }
+
+private:
+    DefVec producers(const Def* producer) const {
+        DefVec result;
+        if (auto op = source_.isa_operation(producer))
+            for (auto input : op->inputs)
+                if (graph::map_reduce(input.value)) result.push_back(input.value);
+        return result;
+    }
+
+    bool reaches(const Def* producer) {
+        if (auto i = reaches_.find(producer); i != reaches_.end()) return i->second;
+        reaches_[producer] = true;
+        auto& w            = importer_.world();
+        auto value         = importer_.rewrite(producer);
+        if (w.app(w.app(w.annex<group_root>(), value->type()), value) != w.lit_ff()) return true;
+        if (grouped(producer)) return reaches_[producer] = false;
+        auto inputs               = producers(producer);
+        return reaches_[producer] = std::ranges::any_of(inputs, [&](auto p) { return reaches(p); });
+    }
+
+    const pattern::GraphView& source_;
+    Rewriter& importer_;
+    DefMap<bool> grouped_, reaches_;
 };
 
 } // namespace
+
+const Def* normalize_group_build(const Def*, const Def*, const Def* arg) {
+    auto [producer, size] = arg->projs<2>();
+    auto cap              = Lit::isa(size);
+    if (!cap || !*cap) return nullptr;
+    auto& w = arg->world();
+    Rewriter identity(w);
+    identity.map(producer, producer);
+    auto axis = outer_axis(producer, identity);
+    if (!axis) return nullptr;
+    auto mr   = btensor::MapRedPost::of(producer->as<App>()->callee()->as<App>());
+    auto rank = *Lit::isa(mr.Ro);
+    DefVec tile(rank, [&](size_t d) {
+        auto n = *Lit::isa(mr.So->proj(rank, d));
+        return w.lit_nat(d == *axis ? std::min(n, *cap) : n);
+    });
+    auto builder = w.app(w.annex<group_impl>(), {mr.Tp, mr.Ro, mr.So});
+    return w.app(builder, {producer, w.tuple(tile)});
+}
+
+pattern::WitnessResult grouping_candidate(const pattern::GraphView& source, Defs inputs, World& target) {
+    using pattern::CheckResult;
+    auto app = graph::map_reduce(inputs[0]);
+    if (!app) return {CheckResult::False, nullptr, {}};
+    auto cap = Lit::isa(inputs[1]);
+    auto mr  = btensor::MapRedPost::of(app->callee()->as<App>());
+    if (!cap || !*cap || !source.is_program() || !pure_scalar(mr.comb) || !pure_scalar(mr.post))
+        return {CheckResult::Unknown, nullptr, "grouping needs a literal tile size and pure scalar callbacks"};
+    auto scratch = target.inherit();
+    Rewriter importer(*scratch);
+    GroupPolicy policy(source, importer);
+    auto selected = policy.grouped(app) && policy.terminal(app);
+    return {CheckResult::True, target.lit_bool(selected), {}};
+}
 
 pattern::WitnessResult fusion_budget(const pattern::GraphView& source, Defs inputs, World& target) {
     using pattern::CheckResult;
@@ -164,6 +290,10 @@ pattern::WitnessResult fusion_budget(const pattern::GraphView& source, Defs inpu
         for (const auto& occurrence : occurrences) {
             TileCost cost(*scratch);
             auto value = cost.count(occurrence, use.consumer, *whole);
+            if (!value) {
+                TileCost exact(*scratch, true);
+                value = exact.count(occurrence, use.consumer, *whole);
+            }
             if (!value || total > std::numeric_limits<u64>::max() - *value)
                 return {CheckResult::Unknown, nullptr, "fusion occurrence has unknown trips, extents or overflow"};
             total += *value;

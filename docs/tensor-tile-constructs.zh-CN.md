@@ -84,6 +84,39 @@ native tiled/fold decoder 不因拥有 region metadata 就默认承诺 callback 
 并与未分块的完整 producer 对照；IR 另检查 chain 中没有 whole-size MRP。
 unit tests 检查跨 callback 独占性、opaque callback、递归、未知次数和溢出。
 
+### 7.4 Grouping strategy
+
+`group_outer (P, tile_size)` 是按结果类型专用的 Rule factory：
+native `group_candidate` 从同一 program snapshot 计算 grouped/reaches，
+纯 `group_build` 根据 literal output shape 构造 outer-axis tiled 和 `tile_of`。
+策略依次运行 contraction 的结构 Rule（例如 BLIS pack）与 group_outer，
+再把 fuse_producer 和 cleanup 运行到 fixed point；不新增 pipeline 或 Sched 字段。
+outer axis 是 canonical nest 的第零 parallel 轴；它本身是 vector loop 时不分组。
+输入已被 tiled/fold 内的 slice 接管时，不先把该 producer 独立分组。
+未知 shape、空 output、自定义 chooser 和 region-local producer 保持原状。
+
+`tf_group_strategy` 对两个 frontends 同时检查 IR 和数值：
+
+| default-sched 用例 | 此处的决策 |
+| --- | --- |
+| group_exec 的 row reduction → column reduction | 相同：每 column 融合 producer，无 whole `6×4` MRP |
+| group_exec 的 contraction → column reduction | 相同：contraction 保留 whole；结构 root 由自己的 BLIS Rule 处理 |
+| group_exec 的 Q → B → D，D 重复读取 B 四次 | 相同：budget 拒绝 B→D；B 自己分组 Q，无 whole `6×5×3` MRP |
+| compute_at 的 nested chain / tailed placement | tf_group_exec、tile_cap_exec：recursive fusion 和 tail 的数值一致 |
+
+没有照搬 reference 分支的 action/prepack/cache/placement bits：本分支没有这些 record
+字段，stage 是显式 barrier，custom chooser 保守作为 root。
+不支持 reference 的 reverse placement、halo 和跨调用 prepack；
+也没有把其支持的任意 loop order 推广到本分支的 canonical outer-axis strategy。
+reference 会先标记每个 eligible op；此处先选择 terminal group，再在后续快照处理剩余
+whole producer，避免既给 producer 独立分组又在消费者中重建它。
+具体 IR 容器不同（reference 为 placement fields，此处为 tiled/tile_of），上述表比较的是
+动态 producer realization 和数值，不声称 LLVM 文本或 scratch allocation 个数逐字相同。
+
+source clipping 依赖 symbolic origin 时，预算先尝试 full/tail 组合；
+仅在其不能求值时枚举 literal origins，工作量上限为 65536 个叶子，超限仍为 Unknown。
+此处的 importer 只替换未绑定的 free variables，不用 bottom 覆盖 dependent lambda 的 binder。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

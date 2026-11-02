@@ -1594,6 +1594,13 @@ pub lam fuse_producer (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», off ext:
             within_budget (p, slice @(T, r) s (off, ‹r; 1›, ext) p, 1)) =>
         tile_of (p, off, ext);
     fuse;
+
+axm group_candidate: {P: *} → [producer: P, tile_size: Nat] → Bool;
+axm group_build: {P: *} → [producer: P, tile_size: Nat] → P, normalize_group_build;
+
+pub lam group_outer (P: *, tile_size: Nat): Rule P =
+    rule group (p: P): p when group_candidate (p, tile_size) => group_build (p, tile_size);
+    group;
 ///
 /// The tensor accumulator descriptor read at each full loop coordinate before reduction.
 ///
@@ -1611,6 +1618,9 @@ axm tiled: {T: *, r: Nat}
          → [s ts: «r; Nat»]
          → [body: [off ext: «r; Nat»] → «ext; T»]
          → «s; T», normalize_tiled;
+
+priv anx lam group_impl {T: *, r: Nat, s: «r; Nat»} (p: «s; T», ts: «r; Nat»): «s; T» =
+    tiled @(T, r) (s, ts) (λ (off ext: «r; Nat»): «ext; T» = tile_of (p, off, ext));
 
 priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat»)
     (body: [off ext: «r; Nat»] → «ext; T»): «s; T» =

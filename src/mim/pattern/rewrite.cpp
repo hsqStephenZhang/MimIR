@@ -225,6 +225,7 @@ public:
                             auto source = pending[i];
                             if (!seen.insert(source).second) continue;
                             if (auto app = source->isa<App>()) {
+                                if (app->callee()->isa<Idx>()) continue;
                                 auto axm = App::uncurry_callee(app)->isa<Axm>();
                                 DefVec args;
                                 for (auto cur = app; cur; cur = cur->callee()->isa<App>())

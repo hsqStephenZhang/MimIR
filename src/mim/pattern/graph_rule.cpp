@@ -13,6 +13,14 @@ namespace mim::pattern {
 
 namespace {
 
+bool literal_shape(const Def* shape) {
+    if (shape->isa<Lit>()) return true;
+    if (auto tuple = shape->isa<Tuple>())
+        return std::ranges::all_of(tuple->ops(), [](auto d) { return d->template isa<Lit>(); });
+    if (auto pack = shape->isa_imm<Pack>()) return Lit::isa(*pack->shape()) && pack->body()->isa<Lit>();
+    return false;
+}
+
 std::vector<const Def*> roots(const Def* value, size_t limit) {
     if (!limit) throw std::invalid_argument("graph Rule root budget is zero");
     if (auto tuple = value->isa<Tuple>()) {
@@ -107,6 +115,7 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
         auto result = [&]() -> Recipe {
             if (auto i = bindings.find(def); i != bindings.end()) {
                 if (guard.values.contains(def)) return plan->witness_value(i->second);
+                if (def == rule->lhs() && lowered_.is_meta(def)) return plan->instantiate(def, bindings);
                 return plan->import(i->second);
             }
             if (lowered_.is_meta(def) && lowered_.can_bind(def, bindings)) {
@@ -160,6 +169,14 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
             }
             if (auto app = def->isa<App>(); app && app->callee()->isa<Idx>() && def->is_closed())
                 return plan->import(def);
+            if (def->isa<Arr>() && def->is_closed()) {
+                auto element = def;
+                while (auto arr = element->isa<Arr>()) {
+                    if (!literal_shape(*arr->shape())) break;
+                    element = arr->body();
+                }
+                if (element->isa<Nat>() || element->isa<Axm>() || Idx::isa(element)) return plan->instantiate(def, {});
+            }
             if (auto app = def->isa<App>()) {
                 auto callee = App::uncurry_callee(app)->isa<Axm>();
                 if (!callee) throw std::invalid_argument("graph Rule recipes only call explicitly pure axioms");

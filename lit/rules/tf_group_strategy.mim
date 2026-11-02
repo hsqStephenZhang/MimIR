@@ -1,0 +1,55 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule tt > %t.rule 2> %t.rule.log
+// RUN: %FileCheck %s < %t.rule
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt > %t.graph 2> %t.graph.log
+// RUN: %FileCheck %s < %t.graph
+// RUN: python3 %S/tf_run.py %mim %s %t rule tt lower > %t.rule.out 2> %t.rule.exec.log
+// RUN: clang++ -O3 %S/tf_group_strategy_aux.cpp %t.rule.ll -o %t.rule.exec -Wno-override-module
+// RUN: %t.rule.exec
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt lower > %t.graph.out 2> %t.graph.exec.log
+// RUN: clang++ -O3 %S/tf_group_strategy_aux.cpp %t.graph.ll -o %t.graph.exec -Wno-override-module
+// RUN: %t.graph.exec
+// TF-RULES: (tensor.group_outer («4; I64», 1), tensor.group_outer («6, 5; I64», 1), tensor.fuse_producer (I64, 2), tensor.fuse_producer (I64, 3))
+// TF-PURE: tensor.group_build, tensor.tile_of, tensor.slice, tensor.map_reduce_post
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin compile;
+use tensor;
+
+fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+fun twice (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, core.wrap.add 0 (x, x)));
+fun mac (acc: I64, (a b: I64))@tt: I64 = return (core.wrap.add 0 (acc, core.wrap.mul 0 (a, b)));
+lam first2 (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam first3 (i j k _: affine.Index): «3; affine.Index» = (i, j, k);
+lam first (i _: affine.Index): affine.Index = i;
+lam transposed (j i: affine.Index): «2; affine.Index» = (i, j);
+
+extern fun rows (a: «6, 4, 3; I64»): «4; I64» =
+    let p = map_reduce ((6, 4), (6, 4, 3)) (add, 0I64) first2 (affine.id @3,) (buf a);
+    return (map_reduce (4, (4, 6)) (twice, 0I64) first (transposed,) p);
+
+extern fun contraction (a: «5, 3; I64», b: «3, 4; I64»): «4; I64» =
+    let p = map_reduce ((5, 4), (5, 4, 3)) (mac, 0I64) first2
+        ((λ (i _ k: affine.Index): «2; affine.Index» = (i, k)),
+         (λ (_ j k: affine.Index): «2; affine.Index» = (k, j))) (buf a, buf b);
+    return (map_reduce (4, (4, 5)) (add, 0I64) first (transposed,) p);
+
+extern fun repeated (a: «6, 5, 3, 2; I64»): «4, 5; I64» =
+    let q = map_reduce ((6, 5, 3), (6, 5, 3, 2)) (add, 0I64) first3 (affine.id @4,) (buf a);
+    let p = map_reduce ((6, 5), (6, 5, 3)) (add, 0I64) first2 (affine.id @3,) q;
+    return (map_reduce ((4, 5), (4, 5, 6)) (add, 0I64) first2
+        ((λ (_ j i: affine.Index): «2; affine.Index» = (i, j)),) p);
+
+// CHECK-LABEL: extern fun contraction
+// CHECK: tensor.map_reduce_post {{.*}} ((5, 4),
+// CHECK-NOT: tensor.tiled
+// CHECK-LABEL: extern fun repeated
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((6, 5, 3),
+// CHECK: tensor.tiled
+// CHECK: tensor.map_reduce_post {{.*}} ((4, 5),
+// CHECK-LABEL: extern fun rows
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((6, 4),
+// CHECK: tensor.map_reduce_post
+// CHECK: tensor.tiled
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((6, 4),
