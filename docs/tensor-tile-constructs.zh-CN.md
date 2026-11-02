@@ -145,6 +145,68 @@ unfused 为同一 BLIS GEMM 后的独立 bias/ReLU loops；OpenBLAS 也运行同
 首次执行的 256³/512³ 三种实现均较慢，原始数据保留在 epilogue-results.csv；
 不把小形状的执行间波动解释为融合本身的收益。
 
+### 7.6 验收负载与 MLP 的 realization 边界
+
+`blis_workloads` 在 destination/reference 两条 pipeline 上做标量结果对照，
+并在仅运行 Rule 的 IR 上检查实际 grouping 决策：
+
+| 负载 | 决策 |
+| --- | --- |
+| 13×7×11 GEMM → ReLU → 13×11×5 GEMM | 两个 contraction 都保留 root；第一个的最后 K block 执行 ReLU |
+| elementwise A(5×3) → GEMM(5×3×11) | producer 融入 A slices，消除 whole A 的 elementwise MRP |
+| elementwise A(5×9) → GEMM(5×9×19) | 多个 NR/K regions 的预算拒绝融合，保留 whole producer |
+| row sum / row max(5×7) → consumer(5×11) | consumer 按两行分块；每个块内计算对应 reduction，原 seven-element reduction 顺序不变 |
+
+`math.extrema.*` 与已有的 core extrema 一样，是纯 scalar callback，
+因此 native purity witness 接受 fmax；没有放宽未知 axiom 或 effectful callback。
+row consumer 计算 `b[i,j] - reduction(a[i,:])`，覆盖 softmax 的减 row-max 步骤，
+不是完整的 exp/normalize softmax。
+多 K-block 的 elementwise A 仍可能被预算保守拒绝；未通过提高 budget 或忽略 capture 来强制融合。
+
+`build/task8-bench.py --grouping` 生成六种 shape 的 GEMM+bias+ReLU 与 MLP。
+MLP 第一层为 M×K 乘 K×N，第二层为 M×N 乘 N×N；bias 置零。
+单线程、native `-O3`、1 次 warmup/数值检查 + 7 次计时取 median，包含 allocation/free，
+GFLOPS 只计两次 GEMM 的预期 FLOPs。所有实现先与 OpenBLAS 结果逐元素比较。
+
+| M×K×N | Rule post | BLIS + loops | OpenBLAS + loops |
+| --- | ---: | ---: | ---: |
+| 256³ | 84.618 | 85.625 | 76.073 |
+| 512³ | 79.726 | 91.990 | 96.228 |
+| 1024³ | 94.176 | 95.679 | 96.434 |
+| 2048³ | 95.113 | 94.848 | 101.718 |
+| 1000³ | 95.845 | 96.466 | 100.829 |
+| 513×257×129 | 86.396 | 88.513 | 90.405 |
+
+| M×K×N | Rule MLP | 独立 BLIS GEMM + ReLU + GEMM | OpenBLAS + ReLU + GEMM |
+| --- | ---: | ---: | ---: |
+| 256³ | 61.373 | 93.212 | 75.340 |
+| 512³ | 61.984 | 95.919 | 102.217 |
+| 1024³ | 64.358 | 93.577 | 95.065 |
+| 2048³ | 61.425 | 91.520 | 103.652 |
+| 1000³ | 62.336 | 92.630 | 102.359 |
+| 513×257×129 | 53.554 | 85.677 | 85.647 |
+
+整表为 `build/task12-bench/workload-final-confirm.csv`，此前完整运行保留在
+`workload-final-first.csv`、`workload-final.csv`；未逐项选择最快值。
+小形状的 post 数据有明显执行间波动，不能概括为稳定收益。
+
+MLP 算对，但没有实现跨 contraction 的 realization 共享，也没有获得性能收益。
+首个 GEMM 的结果 h 同时被第二层的 tile_fold 和显式最后 K block 捕获；
+`lower_tile_fold`、`lower_tile_body` 各自重置 fresh-memory memo，两个 scope 分别 materialize h。
+256³ 的优化 LLVM 中，独立 GEMM 各有 8 个 `fmul` sites，MLP 有 24 个；
+这还不足以证明动态重算，因此 `build/task12-count-work.py` 对 optimized LLVM 的
+每条浮点乘法按 vector lane 数插桩计数，并再次检查输出：
+两次独立 GEMM 分别为 16,777,216 次 scalar multiplies，
+合并 MLP 为 50,331,648 次，而预期为 33,554,432 次。
+证据保留在 `build/task12-bench/multiply-counts.log`。
+benchmark 使用未插桩的可执行文件；乘法计数只用于归因，不用于计时。
+
+消除该差距需要把 h 的 realization 置于两个使用 scope 的共同 dominator，
+并给出 lifetime / memory sequencing 证明；仅为 fold 加一组 invariant captures
+没有消除重复计算，该尝试未保留。
+本任务不实现 diamond realization cache，因此这里明确保留限制，
+不把“两个 contraction 都匹配了 BLIS Rule”称为两个 GEMM 间的高效融合。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

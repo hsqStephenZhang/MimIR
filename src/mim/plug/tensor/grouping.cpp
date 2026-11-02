@@ -31,7 +31,7 @@ bool pure_scalar(const Def* fn) {
             if (!(name.starts_with("core.wrap.") || name.starts_with("core.nat.") || name.starts_with("core.icmp.")
                   || name.starts_with("core.ncmp.") || name.starts_with("core.conv.") || name.starts_with("core.bit")
                   || name.starts_with("core.extrema.") || name == "core.select" || name.starts_with("math.arith.")
-                  || name.starts_with("math.cmp.")))
+                  || name.starts_with("math.cmp.") || name.starts_with("math.extrema.")))
                 return false;
         }
         if (def->is_mutable()) return false;

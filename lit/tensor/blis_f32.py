@@ -5,6 +5,7 @@ import sys
 
 mim, source, output, *reference = sys.argv[1:]
 post = "post" in reference
+workloads = "workloads" in reference
 text = pathlib.Path(source).read_text().split("extern fun square")[0]
 text = text.replace("plugin core;", "plugin core;\nplugin math;\nlet F32 = math.F32;")
 text = text.replace("I64", "F32").replace("0F32", "0.0:F32")
@@ -15,6 +16,9 @@ text = text.replace("core.icmp.sl", "math.cmp.l math.mode.fast")
 shapes = [("full", 8, 8, 8), ("tail", 13, 7, 11), ("skinny", 1, 7, 1), ("register_tail", 5, 9, 19)]
 if post:
     shapes.append(("nc_tail", 5, 11, 21))
+if workloads:
+    shapes = []
+    text += pathlib.Path(source).with_name("blis_workloads.mim").read_text()
 for name, m, k, n in shapes:
     for kind in ("rule", "hand"):
         config = "(4, 16, 16, 4, ff)"
@@ -45,9 +49,18 @@ import opt;
 extern lam _compile (): compile.Phase =
     compile.phases ff (compile.rule_app (pack, pack_post), opt._default_compile ());
 """
+if workloads:
+    text = text.replace(
+        "compile.rule_app (pack, pack_post)",
+        "compile.phases tt (compile.rule_app (pack_post, pack, tensor.group_outer («5, 11; F32», 2), "
+        "tensor.fuse_producer (F32, 1), tensor.fuse_producer (F32, 2)), compile.cleanup)",
+    )
+if "schedule" in reference:
+    text = text.replace("opt._default_compile ()", "compile.null")
 directory = pathlib.Path(output)
 directory.mkdir(exist_ok=True)
 generated = directory / "probe.mim"
 generated.write_text(text)
 flags = ["-X", "tensor:reference-tiles=1"] if "reference" in reference else []
-subprocess.run([mim, *flags, "-p", "opt", str(generated), "-p", "ll"], cwd=directory, check=True)
+backend = ["-o", "-"] if "schedule" in reference else ["-p", "ll"]
+subprocess.run([mim, *flags, "-p", "opt", str(generated), *backend], cwd=directory, check=True)
