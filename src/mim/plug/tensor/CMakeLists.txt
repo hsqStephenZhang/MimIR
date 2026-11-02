@@ -12,5 +12,6 @@ add_mim_plugin(tensor
         phase/lower_to_mem.cpp
         phase/fuse.cpp
         phase/group_rules.cpp
+        phase/group.cpp
         phase/reassoc.cpp
 )

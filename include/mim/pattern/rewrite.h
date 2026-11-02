@@ -13,6 +13,11 @@ public:
     using std::invalid_argument::invalid_argument;
 };
 
+class PurityFailure : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
+
 class Recipe {
 private:
     Recipe(const RewritePlan* plan, size_t index)

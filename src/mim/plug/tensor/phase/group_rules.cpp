@@ -353,6 +353,13 @@ pattern::WitnessResult group_reverse_witness(const pattern::GraphView& source, D
 namespace phase {
 
 void GroupRules::start() {
+    {
+        pattern::GraphView source(world(), driver().graph_operations());
+        for (auto def : source.operations())
+            if (auto request = Axm::isa<group_req>(def))
+                if (Axm::isa<group_req>(request->arg(5, 0)))
+                    request->blame("tensor.group phase bug: stacked structural requests on one op").bail();
+    }
     CanonicalizeRequests canonicalize(world(), "tensor.group_rules.canonicalize");
     canonicalize.run();
     pattern::GraphView source(world(), driver().graph_operations());
@@ -391,7 +398,7 @@ void GroupRules::start() {
         std::vector<const Rule*> graph_rules;
         for (auto rule : reverse)
             graph_rules.push_back(rule->as<Rule>());
-        stages.push_back(std::make_unique<GraphRuleRewrite>(world(), std::move(graph_rules), std::move(pure)));
+        stages.push_back(std::make_unique<GraphRuleRewrite>(world(), std::move(graph_rules), std::move(pure), true));
     }
     stages.push_back(std::make_unique<RuleRewrite>(world(), std::move(compiled)));
     PhaseMan pipeline(world(), "tensor.group_rules.fixed_point");

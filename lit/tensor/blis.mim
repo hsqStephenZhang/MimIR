@@ -17,14 +17,7 @@ lam valid (M K N MR KR NR: Nat): Bool =
     core.bit2.and 0 (core.bit2.and 0 (M > 0, K > 0),
         core.bit2.and 0 (core.bit2.and 0 (N > 0, MR > 0), core.bit2.and 0 (KR > 0, NR > 0)));
 lam select_config (lanes registers cache_bytes: Nat, pack_a: Bool): Config =
-    let nr = lanes * 4;
-    let mr_budget = (registers - 12) / 4;
-    let mr = core.select (mr_budget < lanes, mr_budget, lanes);
-    let bytes = core.trait.size I64;
-    let nc_budget = nr * lanes * 4;
-    let nc = core.select (nc_budget < 256, nc_budget, 256);
-    let kc_budget = cache_bytes / (nc * bytes * 2);
-    let kc = core.select (kc_budget < 256, kc_budget, 256);
+    let (mr, nr, kc, nc) = group_blocks (core.trait.size I64, lanes, registers, cache_bytes);
     (mr, nr, nc, kc, pack_a);
 lam blocked_leaf (m n k: Nat): [kt: Nat, sched: Sched] =
     let kt = core.select (k / 4 * 4 == k, 4, 1);

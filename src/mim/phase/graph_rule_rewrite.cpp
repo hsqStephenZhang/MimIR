@@ -88,8 +88,12 @@ std::vector<Region> regions(Lam* fn) {
 }
 } // namespace
 
-GraphRuleRewrite::GraphRuleRewrite(World& world, std::vector<const Rule*> rules, std::vector<const Axm*> pure)
-    : Phase(world, "graph_rule_app") {
+GraphRuleRewrite::GraphRuleRewrite(World& world,
+                                   std::vector<const Rule*> rules,
+                                   std::vector<const Axm*> pure,
+                                   bool skip_unproved)
+    : Phase(world, "graph_rule_app")
+    , skip_unproved_(skip_unproved) {
     templates_ = world.inherit();
     Rewriter importer(*templates_);
     for (auto rule : rules) {
@@ -159,6 +163,7 @@ std::unique_ptr<Phase> GraphRuleRewrite::recreate() {
     result->pure_            = pure_;
     result->schemas_         = schemas_;
     result->rewrite_options_ = rewrite_options_;
+    result->skip_unproved_   = skip_unproved_;
     return result;
 }
 
@@ -254,6 +259,17 @@ void GraphRuleRewrite::start() {
                         reason = error.what();
                         log().d("graph_rule_app skipped a match in {}: {}", fn, reason);
                         profile_count("graph_rule.budget");
+                        return false;
+                    } catch (const pattern::PurityFailure& error) {
+                        if (!skip_unproved_) throw;
+                        reason = error.what();
+                        log().d("graph_rule_app skipped unproved replacement in {}: {}", fn, reason);
+                        if (arg_flag(args(), "report-unknown")) {
+                            auto report = log();
+                            report.set(fe::Log::Level::Warn)
+                                .w("graph_rule_app skipped unproved replacement in {}: {}", fn, reason);
+                        }
+                        profile_count("graph_rule.unknown");
                         return false;
                     } catch (const pattern::InstantiationFailure& error) {
                         reason = error.what();

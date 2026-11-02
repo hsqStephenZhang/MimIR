@@ -1,5 +1,41 @@
 # P5 tile-and-fuse 实验
 
+## Task 16B：先分组，再实现 Rule
+
+`tensor.group_req` 的共享接口先独立提交为 `97dfe96fad`。
+后续 `tensor.group` 在 L1 后自动生成 kind 0/1/2 请求：
+复用已有 grouping 根策略、共享 BLIS 目标 selector、自动发现合法 reverse consumers。
+本阶段不改默认 pipeline、不运行组内 Rule；测试通过显式 phase pipeline 检查 marker。
+详细字段、嵌套请求、成本和诊断合同见 `tensor-tile-constructs.zh-CN.md` §11。
+
+| 用例 | 本阶段选择 | 与手写 TF-RULES / default-sched 的差异及原因 |
+| --- | --- | --- |
+| row reduction → column reduction | kind 0，dim=0、tile=4 | 根一致；小图完整工作集在预算内，取代手写 tile=2 |
+| contraction → column reduction | contraction 保留 kind 1 | 延续 contraction boundary，不把它当普通 producer 重算 |
+| 重复 reader 链 | 保留根策略及重算预算检查 | 不按 reader 静态数量代替执行次数 |
+| rowsum reverse，5 行尾块 | kind 2，dim=0、tile=2，P 在 C 前 | 与显式 reverse Rule 相同，不再需要 common-root marker |
+| two / swapped consumers | kind 2，按源 gid 排列 consumers | 保留一份 P；与显式 tuple 的 slot 顺序可能不同，但消费关系不变 |
+| 小 cache 的 `4×1024` producer/consumer | cache=4096 时 dim=1、tile=64、scratch=3072 | 不固定 outermost；axis 0 的 whole-width 工作集超预算 |
+| GEMM + epilogue | kind 1，I64 默认 `(MR,NR,KC,NC)=(5,32,8,256)` | 与抽取前 BLIS selector 相同；epilogue 留在 L1 合并后的 contraction 内 |
+| 两层 MLP | 两个 kind 1，并在层间选择 row reverse | 手写结构 Rule 外增加自动的跨层请求；不将 contraction 误作普通 outer root |
+| SwiGLU | 两个 kind 1，无 kind 2 | L1 将 G⊙U 融到 G 的 post；U→H 仅是 post reader，现有 reverse 需要 ordinary input，不能照搬 pre-L1 的显式选择 |
+| softmax / layernorm | row helper 上生成请求，保留已有 stage barriers | 不穿过 retained-stage 分组，也不删除稳定性所需的中间值 |
+| 已显式 tiled 的 halo conv 链 | 保留 tiled 及 callback-local placement | 不对已归组 region 再分组；不重复执行手写 halo Rule |
+| 未显式分块的 conv 链 | contraction kind 1 | 仅请求目标结构分块，不声称 conv 几何已满足 BLIS GEMM recipe |
+| 7 元素 producer、五个 width=3 windows | cache=80、budget=2：kind 0、tile=2、factor=11/7 | 自动成本包含 halo overlap；budget=1 拒绝 |
+| consumer 跨 P 的 tile 轴 reduction | 不发 kind 2，日志要求 ordered fold | 不改变 reduction 次序，不以完整轴 tile 规避拒绝 |
+
+`feature/default-sched` 的 group.cpp 选择 contraction/placement roots 和非 vector 的
+outermost parallel axis；本分支没有其 schedule actions、prepack/cache 字段，
+因此沿用本地 `GroupPolicy` 的边界，并显式搜索多轴工作集。
+精确 boxes 优先于重算比，再选 cache 内最大候选 tile；
+source/uses/count 不完整、动态 storage、自定义 chooser 和分析上限均保守拒绝。
+请求携带 source debug key；未实现请求由 `report_groups` 或 lowering 发 warning，
+strict 模式报错。后续组内 Rule 和默认 pipeline 集成由配套任务负责。
+没有执行时间 benchmark，也不把 marker 检查当作 realization 的数值正确性证明。
+提交前完整验证：CTest **243/243**；FULL lit **655 passed、9 unsupported**
+（共 664，无失败或 XFAIL），包含已有 BLIS selector/execution 回归。
+
 ## Task 14B：reverse_compute_at common-root Rule
 
 `reverse_at (P, C, dim, tile_size)` 显式选择 producer 和一个/多个 consumer，

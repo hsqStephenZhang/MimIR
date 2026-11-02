@@ -701,14 +701,116 @@ staged witness 再证明它确实是请求中 consumer 对 producer marker 的 r
 `group_rules_scope` 检查递归 fusion、whole-reader 预算与嵌套边界；
 `group_rules_exec` 不含手写 Rule，检查三种 kind 的 destination/reference 数值并启用 ASan。
 
-尚未接入默认 pipeline。
-`feat/gpm-group` 的 `485f1b55ed` 允许同一 contraction 同时获得 kind 1 和 kind 2，
-形成 `group_req (group_req (P, 1, ...), 2, ..., consumers)`。
-当前 reverse witness 要求 producer 仍是 map_reduce_post，而 kind 1 的结果已是 tiled/fold；
-因此该组合会明确报告 `producer is not a map_reduce_post`，strict 模式失败，
-普通模式保留已实现的 BLIS 并回退 reverse placement。
-不能通过丢弃其中一个请求或把失败标作已实现来开启默认 grouping。
-最小复现与两种模式日志保留在 `build/task16-stacked*`。
+Task 17A 合并后，每个 op 至多有一个结构请求。
+contraction 优先 kind 1，并从 reverse producer/consumer 候选中保留；
+BLIS 的 outer N-panel loop 在全部 panels 结束前不完成整行，不能承载 row-consuming reverse。
+其它 producer 仍可在 ownership/cost 证明通过后选择 kind 2，否则考虑 kind 0。
+`group_rules` 对嵌套结构请求在普通和 strict 模式都报告 phase bug，
+不以丢弃请求或错误标记已实现来绕过结构冲突。
+`group_stacked` 保留两种模式的诊断回归。
+
+合并前后 `group_root/group_candidate` 的分类没有变化；
+`group_requests` 的 outer 根仍为 kind 0、dim 0、tile 4，
+contraction 仍由相同 selector 选择 MR 5。
+REPORT 中先出现 kind 1 是请求遍历顺序变化，不是 outer 决策消失；
+tensor.mim:1276/162 是 conv、map 展开保留的库内 provenance，不是新产生的 helper group。
+报告用 order-independent 检查同时验证 probe.mim 的 outer 请求和库内 contraction 请求。
+
+自动 reverse 的部分重建会复制 scalar callback，原 callback 的 continuation call 因而不再可达。
+图重写仍要求逐个保留未证明纯净的 computation，不以 tensor callback 的外部纯度证明替代它。
+这种 RHS 不能通过保留检查时返回 `PurityFailure`，自动组内阶段选择 Unknown 路径拒绝，
+剩余请求按普通模式报告回退、strict 报错；不再直接中断普通模式编译。
+显式 `graph_rule_app` 仍将未证明纯净的删除视为错误。
+`group_requests` 还串行执行自动规划与组内 Rules，检查所有 marker 均被实现或报告并去除。
+
+## 12. 自动分组请求（Task 16B）
+
+`tensor.group` 是独立 `RWPhase`，放在 `lower_tensor`、L1 `fuse_tensor` 之后，
+在后续组内 Rule 和 bufferization 之前运行。此提交不改默认 pipeline，也不实现请求的 realization。
+它从冻结的 program `GraphView` 选择根和成员，在继承的 scratch World 中计算 affine boxes，
+最后仅在新 World 中添加无 normalizer 的 identity marker：
+
+```mim
+axm group_req: {P C: *} → [op: P, kind dim tile: Nat, params: C] → P;
+```
+
+| kind | op 与字段含义 | params |
+| --- | --- | --- |
+| 0 | 根操作；按结果轴 `dim`、块长 `tile` 分组 | `Nat` 重算预算 |
+| 1 | contraction；`tile = MR`，`dim` 暂为 0 | `(NR, KC, NC): «3; Nat»` |
+| 2 | producer；canonical loop 轴 `dim`、块长 `tile` | consumer 或按源 gid 排序的 consumer tuple |
+
+kind 1 的零 block 表示 realization stage 的目标默认值；本阶段在可求值时填入非零 literal。
+`group_blocks (bytes, lanes, registers, cache_bytes)` 返回 `(MR, NR, KC, NC)`，
+由已有 BLIS selector 提取，手写 BLIS Rule 与本阶段共用同一函数；
+默认 lanes=8、registers=32、cache=32768，I64 得到 `(5, 32, 8, 256)`。
+改变 `tensor:vec-width` 会同步改变两边的选择。
+contraction 请求只表达调度意图，不证明任意 conv/read map 可以套用 GEMM recipe；
+组内 Rule 必须另做结构匹配，未实现的请求不能静默消失。
+
+### 12.1 根、reverse 与元数据
+
+根分类和普通 outer grouping 的候选资格复用现有 `group_root/group_candidate`。
+canonical contraction 先获得 kind 1；已有 tiled/fold region、已有请求负责的操作不重新分组。
+reverse 不再需要显式 `reverse_at` common root：
+从 producer 的普通 semantic data readers 中选择同一依赖 scope 的 MRP consumers，
+调用与 `reverse_legal` 相同的纯 box proof 和 `tiled_n` ownership planner。
+先尝试所有 consumers，不兼容时尝试单个 consumer；成功后声明该 producer/consumers 已归组。
+跨 placement 轴的 consumer reduction 保留 whole，日志说明需要 ordered fold；
+side/post/outs 的超 tile 间接依赖、非精确或非唯一 write、未覆盖结果等同样拒绝。
+该版本仍沿用 §10 的 P-first、whole-P slot 语义，不做 dead-P slot 消除。
+
+同一个 P 只能携带一个结构请求；canonical contraction 优先 kind 1，
+不再叠加 kind 2，理由与组内阶段的检查见 §11。
+params 是 consumer 模板，不是 runtime read；registry 只把字段 `op` 登记为 data input。
+模板引用内部 P，不引用外层 kind 2 marker，避免构造递归 IR。
+组内 Rule 需要忽略 identity 请求包装匹配模板，并把真正的 C uses 重定向到对应结果 slot。
+操作原有的 source debug key 保留在 marker 上；L1 已内联的操作可能只保留库内源位置。
+请求本身就是跨 World swap 的 provenance 记录，不依赖易失的 Driver side table。
+
+### 12.2 有界成本模型
+
+默认 `-X tensor:group-cache=32768`、`group-budget=1`、`group-registers=32`；
+`group=0` 完全禁止选择，非正 cache/budget 或 registers<16 明确报错。
+不是固定选择 outermost 轴：普通分组检查全部 parallel output axes，
+reverse 检查 placement 允许的 canonical parallel prefix。
+每轴枚举 1..64、较大的二次幂和上限；普通上限是完整轴长，
+reverse 上限是轴长的一半，防止用不分块的 whole tile 冒充 reverse。
+每个候选最多 256 grid points、4096 次递归访问、32 层；超限或 symbolic storage 拒绝。
+
+每 point 通过 `affine.preimage/image` 递归建立纯 producer 的输出/input/post boxes，
+要求 write preimage exact、完整 reduction 和 literal cap。
+scratch 保守累加这些 boxes 的存储量，以所有 points 的峰值对比 cache；
+不同 accumulator 类型和 tensor outs 另计，cap 大于有效 extent 时额外保留 cap 成本。
+这是 working-set 上界估计，不是 register allocation 或 buffer lifetime 的精确模拟。
+stage、非 MRP operands 和 budget=1 时的 contraction 是边界；
+budget>1 才递归考虑 contraction halo。
+
+work 按每个成员的有效输出 cells 跨 points 累加，halo overlap 不去重，
+再加入已证明的组外 whole readers 的动态次数。
+未知 data-use 完整性、未知 trips 或算术溢出均拒绝。
+factor 取所有成员的 `work / whole-result-cells` 的最大值，至少为 1；
+这是 box 重算估计，不是 FLOP 或吞吐量模型。
+候选排序依次为 input image 逐轴 exact、较低 factor、较大 tile、较低轴号。
+debug 日志列出每个候选的拒绝原因或 scratch/exact/factor，
+以及最终选择和成员；目标是可解释的有限搜索，不声称全局最优。
+
+### 12.3 报告与回归
+
+`tensor.report_groups` 对剩余可达请求发 warning，包含 kind/dim/tile/source 和原因，
+然后恢复原 op；`-X tensor:strict=1` 改为 error。
+`lower_tensor` 保留 marker 并 lowering 其 operands，允许手写请求经过前置 L1；
+直接 `lower_to_mem` 检查 residual marker，防止遗漏报告。
+future Rule stage 可共用 `report_group_request`，只删除已实现的请求。
+`group_requests` 检查 marker 字段、非 outermost 选择、目标参数、重复运行幂等、
+禁用、source provenance、strict、两条 lowering fallback，
+并逐字比较禁用阶段与报告后恢复的 IR。
+`group_existing` 检查已有 grouping/reverse/halo/normalization 程序；
+`group_halo_cost` 在 cache=80 时验证长度 7、五个 width=3 windows 的重叠：
+budget=1 拒绝，budget=2 选择 tile=2，scratch=80，factor=`11/7`。
+native test 检查 identity、provenance 和 params 不计为 data read。
+与手写 TF-RULES、default-sched 的决策差异表见
+`graph-pattern-tile-fuse-experiments.zh-CN.md` 的 Task 16B。
 
 ## 4. Destination tiled lowering（Task 8）
 

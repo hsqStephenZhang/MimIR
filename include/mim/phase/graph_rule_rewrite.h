@@ -11,7 +11,7 @@ namespace mim {
 class GraphRuleRewrite : public Phase {
 public:
     using Phase::Phase;
-    GraphRuleRewrite(World&, std::vector<const Rule*>, std::vector<const Axm*> pure);
+    GraphRuleRewrite(World&, std::vector<const Rule*>, std::vector<const Axm*> pure, bool skip_unproved = false);
     void apply(const App*) override;
     std::unique_ptr<Phase> recreate() override;
     void set_rewrite_options(pattern::RewriteOptions options) { rewrite_options_ = options; }
@@ -23,6 +23,7 @@ private:
     std::vector<const Axm*> pure_;
     std::vector<pattern::DataOp> schemas_;
     pattern::RewriteOptions rewrite_options_;
+    bool skip_unproved_ = false;
 };
 
 } // namespace mim

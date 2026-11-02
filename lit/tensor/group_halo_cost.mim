@@ -1,0 +1,28 @@
+// RUN: python3 %S/group_run.py %mim %s %t -Xtensor:group-cache=80 > %t.out 2> %t.log
+// RUN: %FileCheck %s --check-prefix=BASE < %t.out
+// RUN: %FileCheck %s --check-prefix=REJECT < %t.log
+// RUN: python3 %S/group_run.py %mim %s %t.halo -Xtensor:group-cache=80 -Xtensor:group-budget=2 > %t.halo.out 2> %t.halo.log
+// RUN: %FileCheck %s --check-prefix=HALO < %t.halo.out
+// RUN: %FileCheck %s --check-prefix=COST < %t.halo.log
+// RUN: not python3 %S/group_run.py %mim %s %t.invalid -Xtensor:group-cache=0 > %t.invalid.out 2> %t.invalid.log
+// RUN: %FileCheck %s --check-prefix=INVALID < %t.invalid.log
+
+plugin tensor;
+plugin affine;
+plugin core;
+plugin compile;
+use tensor;
+fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
+fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+lam first (i _: affine.Index): affine.Index = i;
+lam window (i k: affine.Index): affine.Index = affine.op.add (i, k);
+
+extern fun sliding (x: «7; I64»): «5; I64» =
+    let p = map_reduce (7, 7) (inc, 0I64) (affine.id @1) (affine.id @1,) (buf x);
+    return (map_reduce (5, (5, 3)) (add, 0I64) first (window,) p);
+
+// BASE-NOT: tensor.group_req
+// REJECT: producer recomputation exceeds budget
+// HALO: tensor.group_req {{.*}} ({{.*}}, 0, 0, 2, 2)
+// COST: tensor.group choose {{.*}} kind=0 dim=0 tile=2 scratch=80 exact=true factor=1.571
+// INVALID: tensor.group requires positive cache/budget and at least 16 registers

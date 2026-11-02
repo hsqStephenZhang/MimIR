@@ -1614,6 +1614,19 @@ priv axm group_schedule: {P C: *} → [op: P, kind dim tile: Nat, params: C] →
 priv axm group_fusion: {P C: *} → [producer: P, reader: C] → Bool;
 priv axm group_reverse_supported: {P C A: *}
     → [fields: [op: P, kind dim tile: Nat, params: C], actual: A, slot: Nat] → Bool;
+axm group: compile.Phase;
+axm report_groups: compile.Phase;
+
+anx lam group_blocks (bytes lanes registers cache_bytes: Nat): «4; Nat» =
+    let nr = lanes * 4;
+    let mr_budget = (registers - 12) / 4;
+    let mr = core.select (mr_budget < lanes, mr_budget, lanes);
+    let nc_budget = nr * lanes * 4;
+    let nc = core.select (nc_budget < 256, nc_budget, 256);
+    let kc_budget = cache_bytes / (nc * bytes * 2);
+    let kc = core.select (kc_budget < 256, kc_budget, 256);
+    (mr, nr, kc, nc);
+
 axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
 
 priv anx lam group_request_rule (P C: *): Rule [p: P, kind dim tile: Nat, params: C] =

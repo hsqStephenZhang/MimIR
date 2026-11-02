@@ -430,7 +430,7 @@ public:
             if (i == retained_.end())
                 if (auto value = importer_.lookup(def)) i = retained_.emplace(def, value).first;
             if (i == retained_.end() || !reachable.contains(i->second))
-                throw std::invalid_argument("replacement removes a computation without a purity proof");
+                throw PurityFailure("replacement removes a computation without a purity proof");
         }
         world().verify();
         if (!graph_.is_current()) throw std::invalid_argument("graph changed while building replacements");

@@ -1,0 +1,33 @@
+// RUN: python3 %S/group_run.py %mim %S/../rules/tf_group_strategy.mim %t.strategy > %t.strategy.out 2> %t.strategy.log
+// RUN: %FileCheck %s --check-prefix=STRATEGY < %t.strategy.out
+// RUN: python3 %S/group_run.py %mim %S/../rules/tf_reverse_exec.mim %t.reverse > %t.reverse.out 2> %t.reverse.log
+// RUN: %FileCheck %s --check-prefix=REVERSE < %t.reverse.out
+// RUN: python3 %S/group_run.py %mim %S/../rules/tf_halo_exec.mim %t.halo -Xtensor:group-budget=3 > %t.halo.out 2> %t.halo.log
+// RUN: %FileCheck %s --check-prefix=HALO < %t.halo.out
+// RUN: python3 %S/group_run.py %mim %S/row_norm.mim %t.norm normalization > %t.norm.out 2> %t.norm.log
+// RUN: %FileCheck %s --check-prefix=NORM < %t.norm.out
+
+// STRATEGY-LABEL: extern fun contraction
+// STRATEGY: tensor.group_req {{.*}} 1, 0, 5,
+// STRATEGY-LABEL: extern fun repeated
+// STRATEGY: tensor.group_req
+// STRATEGY-LABEL: extern fun rows
+// STRATEGY: tensor.group_req {{.*}} 0, 0, 4, 1
+// REVERSE-LABEL: extern fun rowsum
+// REVERSE: tensor.group_req {{.*}} 1, 0, 5,
+// REVERSE-NOT: tensor.group_req {{.*}} 2,
+// REVERSE-LABEL: extern fun swapped
+// REVERSE: tensor.group_req {{.*}} 1, 0, 5,
+// REVERSE-NOT: tensor.group_req {{.*}} 2,
+// REVERSE-LABEL: extern fun swiglu
+// REVERSE: tensor.group_req {{.*}} 1, 0, 5,
+// REVERSE-NOT: tensor.group_req {{.*}} 2,
+// REVERSE-LABEL: extern fun two
+// REVERSE: tensor.group_req {{.*}} 1, 0, 5,
+// REVERSE-NOT: tensor.group_req {{.*}} 2,
+// HALO-LABEL: extern fun chain
+// HALO: tensor.tiled
+// NORM-LABEL: extern fun grouped_layernorm
+// NORM: tensor.group_req
+// NORM-LABEL: extern fun grouped_softmax
+// NORM: tensor.group_req

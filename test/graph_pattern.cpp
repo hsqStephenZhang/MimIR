@@ -929,7 +929,7 @@ TEST_CASE("Review purity: function-valued computations cannot be erased by a pur
         CHECK(result.is_changed());
     } else {
         CHECK_THROWS_WITH_AS(build(view, plan), "replacement removes a computation without a purity proof",
-                             std::invalid_argument);
+                             PurityFailure);
     }
     CHECK(ir.w.curr_gid() == gid);
     CHECK(ir.w.externals()[name] == fn);
