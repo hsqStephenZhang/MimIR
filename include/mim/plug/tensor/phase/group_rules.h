@@ -4,6 +4,14 @@
 
 namespace mim::plug::tensor::phase {
 
+class AttentionRaise : public Phase {
+public:
+    using Phase::Phase;
+
+private:
+    void start() override;
+};
+
 class GroupRules : public Phase {
 public:
     using Phase::Phase;

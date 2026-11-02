@@ -240,6 +240,9 @@ bool is_standard_ring(const Def* ring) {
 }
 
 void register_operations(pattern::OpRegistry& ops) {
+    ops.add(Annex::base<dot_product>(), 6, {{5, 1}}, false);
+    ops.add(Annex::base<unary>(), 4, {{3}}, false);
+    ops.add(Annex::base<binary>(), 4, {{3, 1}}, false);
     ops.add(Annex::base<map_reduce_post>(), decode_mr, false);
     ops.add(Annex::base<product_2d>(), decode_product,
             pattern::OpRegistry::Purity([](auto args) { return args.size() == 3 && is_standard_ring(args[0]); }));

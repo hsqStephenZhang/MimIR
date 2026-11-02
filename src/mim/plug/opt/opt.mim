@@ -38,6 +38,7 @@ extern lam _default_compile (): compile.Phase =
         compile.named "regex.lower_regex",
 
         // tensor
+        compile.named "tensor.raise_attention",
         compile.named "tensor.reassoc",
         compile.named "tensor.lower_tensor",
         compile.named "tensor.fuse_tensor",

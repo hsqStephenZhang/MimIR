@@ -183,8 +183,10 @@ anx lam map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
                    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
                    (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
                    (is: «i: nis; «Sis#i; Tis#i»»): «So; To» =
-    map_reduce_post
+    map_reduce_post @(nis, 0)
+        @(To, To, Ro, Rn, SchedT)
         (So, Sr, mk_sched (Rn, 0))
+        @(Tis, Ris, Sis, (), (), ())
         (f, init, id @To) map_out (maps, ()) (is, ());
 ///
 /// ### proj_map
@@ -1168,6 +1170,57 @@ pub lam softmax (m: Nat) {pe: «2; Nat»} {r: Nat} (ax: Idx r) {s: «r; Nat»} (
     let mx = reduce (math.extrema.fmax m, math.neg_inf pe) ax input;
     let e  = binary_ax (λ (x y: F): F = math.exp.exp m (math.arith.sub m (x, y))) ax (input, mx);
     binary_ax (math.arith.div m) ax (e, reduce (math.arith.add m, 0:F) ax e);
+
+axm sdpa: [mode: Nat] → {H M S K N: Nat}
+    → [scale: math.F32, q: «H, M, K; math.F32», k: «H, S, K; math.F32»,
+       v: «H, S, N; math.F32»] → «H, M, N; math.F32»;
+
+priv anx lam attention_impl (mode: Nat) {H M S K N: Nat}
+    (scale: math.F32, q: «H, M, K; math.F32», k: «H, S, K; math.F32»,
+     v: «H, S, N; math.F32»): «H, M, N; math.F32» =
+    let R: Ring = (math.F32, 0:math.F32, math.arith.add mode, math.arith.mul mode);
+    let scores = dot_product R @(3, 3) @(1, 1) (2₃, 2₃, 0₃, 0₃)
+        @((H, M, K), (H, S, K)) (q, k);
+    let scores = unary (λ x: math.F32: math.F32 = math.arith.mul mode (x, scale)) @(3, (H, M, S)) scores;
+    let probabilities = softmax mode @math.f32 @3 2₃ @(H, M, S) scores;
+    dot_product R @(3, 3) @(1, 1) (2₃, 1₃, 0₃, 0₃)
+        @((H, M, S), (H, S, N)) (probabilities, v);
+
+pub anx lam attention_rule (mode: Nat): Rule [
+    H M S K N: Nat, scale: math.F32, q: «H, M, K; math.F32»,
+    k: «H, S, K; math.F32», v: «H, S, N; math.F32»] =
+    rule raise (H M S K N: Nat, scale: math.F32, q: «H, M, K; math.F32»,
+                k: «H, S, K; math.F32», v: «H, S, N; math.F32»):
+        attention_impl mode @(H, M, S, K, N) (scale, q, k, v) =>
+        sdpa mode @(H, M, S, K, N) (scale, q, k, v);
+    raise;
+
+axm raise_attention: compile.Phase;
+
+axm sdpa_masked: [mode: Nat] → {H M S K N: Nat}
+    → [scale: math.F32, q: «H, M, K; math.F32», k: «H, S, K; math.F32»,
+       v: «H, S, N; math.F32», mask: «H, M, S; math.F32»] → «H, M, N; math.F32»;
+
+priv anx lam attention_masked_impl (mode: Nat) {H M S K N: Nat}
+    (scale: math.F32, q: «H, M, K; math.F32», k: «H, S, K; math.F32»,
+     v: «H, S, N; math.F32», mask: «H, M, S; math.F32»): «H, M, N; math.F32» =
+    let R: Ring = (math.F32, 0:math.F32, math.arith.add mode, math.arith.mul mode);
+    let scores = dot_product R @(3, 3) @(1, 1) (2₃, 2₃, 0₃, 0₃)
+        @((H, M, K), (H, S, K)) (q, k);
+    let scores = unary (λ x: math.F32: math.F32 = math.arith.mul mode (x, scale)) @(3, (H, M, S)) scores;
+    let scores = binary (math.arith.add mode) @(3, (H, M, S)) (scores, mask);
+    let probabilities = softmax mode @math.f32 @3 2₃ @(H, M, S) scores;
+    dot_product R @(3, 3) @(1, 1) (2₃, 1₃, 0₃, 0₃)
+        @((H, M, S), (H, S, N)) (probabilities, v);
+
+pub anx lam attention_masked_rule (mode: Nat): Rule [
+    H M S K N: Nat, scale: math.F32, q: «H, M, K; math.F32»,
+    k: «H, S, K; math.F32», v: «H, S, N; math.F32», mask: «H, M, S; math.F32»] =
+    rule raise (H M S K N: Nat, scale: math.F32, q: «H, M, K; math.F32»,
+                k: «H, S, K; math.F32», v: «H, S, N; math.F32», mask: «H, M, S; math.F32»):
+        attention_masked_impl mode @(H, M, S, K, N) (scale, q, k, v, mask) =>
+        sdpa_masked mode @(H, M, S, K, N) (scale, q, k, v, mask);
+    raise;
 ///
 /// ### pool2d_in_map
 ///

@@ -95,6 +95,7 @@ static void reg_witnesses(pattern::Witnesses& witnesses) {
 }
 
 static void reg_phases(Flags2Phases& phases) {
+    Phase::hook<raise_attention, phase::AttentionRaise>(phases);
     Phase::hook<combine_products, phase::CombineProducts>(phases);
     Phase::hook<reassoc, phase::Reassoc>(phases);
     Phase::hook<lower_tensor, phase::Lower>(phases);
@@ -111,6 +112,7 @@ static void reg_phases(Flags2Phases& phases) {
 
 // clang-format off
 static constexpr PluginArg known_args[] = {
+    {"attention=<n>", "Enable attention raising before tensor lowering (default 1; grouping must also be enabled)."},
     {"group=<n>", "Enable automatic grouping and in-group rules in the default pipeline (default 1; disabled for GPU)."},
     {"group-cache=<bytes>", "Scratch working-set budget for tensor.group and BLIS block selection (default 262144)."},
     {"group-registers=<n>", "Register count passed to the shared BLIS selector (default 32, at least 16)."},

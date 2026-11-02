@@ -453,6 +453,25 @@ pattern::WitnessResult group_reverse_witness(const pattern::GraphView& source, D
 
 namespace phase {
 
+void AttentionRaise::start() {
+    if (driver().is_loaded("gpu") || !driver().arg_nat("tensor", "group").value_or(1)
+        || !driver().arg_nat("tensor", "attention").value_or(1))
+        return;
+    auto& w          = world();
+    auto rule        = w.app(w.annex<attention_rule>(), w.lit_nat(16))->as<Rule>();
+    auto masked_rule = w.app(w.annex<attention_masked_rule>(), w.lit_nat(16))->as<Rule>();
+    std::vector<const Axm*> pure;
+    for (auto name : {"tensor.dot_product", "tensor.unary", "tensor.binary", "tensor.map_reduce_post", "tensor.sdpa",
+                      "tensor.sdpa_masked", "math.arith.add", "math.arith.mul", "math.arith.sub", "math.arith.div",
+                      "math.extrema.iM", "math.exp.lbb"})
+        pure.push_back(w.annex(driver().sym(name))->as<Axm>());
+    Phases stages;
+    stages.push_back(std::make_unique<GraphRuleRewrite>(w, std::vector{masked_rule, rule}, std::move(pure), true));
+    PhaseMan pipeline(w, "tensor.raise_attention.rules");
+    pipeline.apply(true, std::move(stages));
+    pipeline.run();
+}
+
 void GroupDefault::start() {
     if (driver().is_loaded("gpu") || !driver().arg_nat("tensor", "group").value_or(1)) return;
     Phases stages;

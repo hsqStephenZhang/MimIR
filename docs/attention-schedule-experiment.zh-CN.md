@@ -554,3 +554,46 @@ lit 681 passed / 9 unsupported / 1 failed，唯一失败是 attention_raise WIP�
 
 补充提交前完整验证：CTest 250/250，lit 682 passed / 9 unsupported，
 无失败，见 `proj-parametric-ctest.log`、`proj-parametric-full-lit.log`。
+
+补充机制提交为 `2461b052ab`。
+
+## 步骤 1 结果：P5 raising 与普通分解
+
+实现选择 tensor-level `sdpa` / `sdpa_masked` axiom，而不是 native attention matcher：
+Mim 中的参数化 Rule 展开完整 dot/scale/稳定 softmax/PV diamond，
+P5 负责匹配、依赖 shape 检查和发布，C++ phase 只配置规则、纯性和固定点。
+mask 采用原始 score 上的逐点 FP32 加性 bias，支持 causal 的 0/-inf mask；
+不把任意非加性 mask 猜成这一语义。
+当前自动识别 FP32、mode.contract；其他 mode/精度保留原始图。
+lower_tensor 的普通分解逐项恢复原计算，尚未实现 online。
+`tensor:attention=0` 或 group=0 关闭新增选择，GPU 不使用 CPU raising。
+
+真实 seq512 attention 和 transformer 的原始 kernel 已各改写一处，
+不是根据模型名或变量名匹配：
+`model_attention_raised.mim`、`model_transformer_raised.mim` 各含一个 sdpa。
+两份输入只追加显式 beta_red/raise/cleanup pipeline 以观察 tensor-level 结果，
+保留原始 packed QKV 的 slice/reshape/transpose、bias/residual/LN/MLP 图；
+不是完整运行时测量。
+`attention_views.mim` 覆盖同构 per-head views 和 residual 使用场景，
+`attention_raise.mim` 覆盖普通、mask、错误 axis、late scale、不稳定 softmax。
+额外可观察 probabilities reader 被保留，不因替换最终 PV 而丢掉；
+该场景可能重复 score 计算，不能据此宣称存储/性能优化。
+
+`sdpa_exec.mim` 对 H=2、M=5、S=7、K=3、N=4，
+以确定性输入比较普通分解与标量稳定 softmax 参考：
+non-causal 和 causal 都满足 atol=rtol=2e-4。
+这里未计时、未插桩；结构验证表明 score/probability 仍是完整张量，
+故只确认“raising 保留语义、普通分解仍为二次方中间量”，
+步骤 1 的 0.8–1.25 时间预测留待步骤 4，不先报 confirmed。
+
+| 预测 | 当前证据 | 判定 |
+|---|---|---|
+| 真实 attention/transformer 各 raising 一处 | 两份 seq512 tensor dump 各一处 sdpa | confirmed |
+| 普通/加性 causal mask 语义保持 | 标量数值回归，2e-4 容差 | confirmed（小型形状） |
+| 普通分解不消除整个 score/probability | 仍恢复标准 dot/softmax/dot | confirmed（结构） |
+| FLOP/exp、分配与时间范围不变 | 尚无动态插桩/时间测量 | 尚未测量 |
+
+步骤 1 提交前完整验证：CTest 250/250，lit 684 passed / 9 unsupported，
+无失败，见 `step1-ctest-final.log`、`step1-full-lit-final.log`。
+前一轮 all build 没有更新 lit staged copy，读到了修改前的 FileCheck 顺序；
+显式构建 mim_lit_tests 后重跑完整套件，不以源文件的定向通过代替 staged 验证。
