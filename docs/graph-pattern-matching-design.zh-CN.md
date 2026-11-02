@@ -62,7 +62,7 @@ extern lam _compile (): compile.Phase =
 
 P4 验证基线为 138 个 CTest、91 个相关 lit 和 18 次 Mim／AST roundtrip。P5 新增的表达、索引对照和 review 复现用例见 [pattern_p5.cpp](../test/pattern_p5.cpp)，最新验证结果记录在下方 P5 节。验证使用未加载旧版外接 runtime/torch 插件的隔离构建；根目录现有 build 的配置仍受这些插件的旧 CMake 参数阻塞。
 
-尚未完成的部分包括依赖类型实例化求值、开放 closure scope 的自动环境导入、通用 tensor dtype／shape 模式库、独立 PDLL 风格 parser、字节码后端和跨轮次增量索引。`compile.rule_app` 仍是单根入口，`compile.graph_rule_app` 是显式多根 Rule 入口，真实 tensor 多根优化还可调用 `tensor.combine_products`。Rule adapter 不做逆归一化，也不猜测缺少绑定的 telescope；原始 Pack 边数不代表动态读取次数。
+尚未完成的部分包括通用依赖类型实例化求值、基于类型路径的候选索引与提前 join、开放 closure scope 的自动环境导入、通用 tensor dtype／shape 模式库、独立 PDLL 风格 parser、字节码后端和跨轮次增量索引。`compile.rule_app` 仍是单根入口，`compile.graph_rule_app` 是显式多根 Rule 入口；新增的 `rule_app1`／`graph_rule_app1` 接收 universe-1 参数，复用相同实现。真实 tensor 多根优化还可调用 `tensor.combine_products`。Rule adapter 不做逆归一化，也不猜测缺少绑定的 telescope；原始 Pack 边数不代表动态读取次数。
 
 ## P3 语义图与多根重写
 
@@ -88,7 +88,7 @@ mutable 节点在检查 node／flags 后即视为结构不透明，不能用操�
 
 ### 替换与提交
 
-算子纯性默认未证明。注册可以给出无条件 pure，也可以提供基于完整 curry 参数组的只读纯性检查；源节点和 recipe 的目标参数都必须通过检查，后者在调用 normalizer 前执行。一个 recipe 可以被多个输出引用，求值只执行一次。替换的类型必须保持，导入值必须来自当前图，计划之间不能有重叠写入或读写冲突。
+算子纯性默认未证明。注册可以给出无条件 pure，也可以提供基于完整 curry 参数组的只读纯性检查；源节点和 recipe 的目标参数都必须通过检查，后者在调用 normalizer 前执行。一个 recipe 可以被多个输出引用，求值只执行一次。替换的类型必须保持，导入值必须来自当前图或本次匹配显式捕获的依赖，并属于同一源 World；类型边捕获不必属于原始数据节点集合。计划之间不能有重叠写入或读写冲突。
 
 显式 `num_groups` 注册要求 recipe 参数组数量完全相等；它不是 Axm 的 normalization curry counter。每次继续应用参数前，已归一化的 callee 必须仍是该 recipe 已验证的原始应用前缀。即使自定义 decoder 没有显式组数，normalizer 返回另一个函数也不能借原 axiom 的 pure 声明继续调用它。函数值本身可作为结果，不代表调用它也纯。
 
@@ -583,6 +583,61 @@ undo log 必须覆盖 capture 写入、约束状态、range bindings 和访问�
 类型条件不是一律放到最后：不依赖未绑定 capture 的廉价检查应尽早执行，以便剪枝。
 
 匹配不得改写源 World、设置 Hole 或修改 mutable。需要实例化类型或 guard 时，在拥有显式源目标映射的临时 World 中导入闭包和 binder 环境，使用有 fuel 的求值。图分析谓词直接读取原快照中的 capture handles，不能对临时副本重新计算消费者关系。
+
+#### 类型约束关联与提前 join
+
+当前已验证两个独立根通过类型中的共享参数关联：`A: «m,k;T»`、`B: «k,n;T»` 不必共享数据输入，匹配仍能捕获 `m/k/n/T`，并在 RHS 中构造 `summary(T,m,k,n)`。常量维度、符号维度和 Nat／Bool 元素类型见 [typejoin.mim](../lit/rules/typejoin.mim) 及 [pattern_p5.cpp](../test/pattern_p5.cpp)。原始图之外的类型 captures 可以进入 recipe；未捕获的图外节点仍被拒绝。
+
+这只是**语义上的 type-edge join**，不是已经实现的类型索引优化。当前多根搜索先选择完整 anchor tuple，再完成延迟类型匹配；共享 `k/T` 的绑定会排除不满足约束的组合。现有 required-capture 路径索引跳过 Type／Not，不能由类型绑定缩小后续根的候选集合。因此，当前结果不能证明避免了大量根组合的枚举，也没有类型 join 的性能收益数据。
+
+后续可优先参考 portmatching 的通用索引与约束抽象：`required_bindings` 描述先绑定 A 才能提取其类型参数，`bind_options` 根据已绑定的 `k/T` 查询 B 的候选。需要实现 MimIR 自己的只读类型访问和反向类型索引；仅增加 `kA == kB` 谓词，或只编译共享约束自动机而仍枚举所有 B，都不能自动消除组合搜索。类型路径不可解码时必须保留保守候选，不能误剪。
+
+GHL／VF3 更直接对应另一种候选生成：A 已匹配后，沿 A 的邻接边寻找 B，例如从 A 的语义用户中筛选消费者。它也可对显式建图的类型节点搜索，但不会自动提供 dependent type 参数提取。当前“类型参数关联与候选查询”优先参考 portmatching；“沿已知图连接扩展候选”参考 GHL。
+
+#### Nominal 类型中的参数捕获
+
+下列定义已通过 Mim Rule 的匹配和替换实验：
+
+```mim
+nom Tensor (r: Nat) (s: «r; Nat») (T: *) =
+    [indices: «(r, s, ⊥:T)», data: «s; T»];
+
+rule type_join (T: *, m: Nat, k: Nat, n: Nat,
+                a: Tensor 2 (m, k) T, b: Tensor 2 (k, n) T):
+    (a, b) => summary (T, m, k, n);
+```
+
+Matcher 保留 Nom 的 key，再沿参数化表示匹配；另一个底层表示完全相同的 `nom Other` 不会匹配成 Tensor。[nomjoin.mim](../lit/rules/nomjoin.mim) 验证 `summary(Nat,2,3,4)` 和不同 nominal 身份的反例；[nomrank.mim](../lit/rules/nomrank.mim) 验证捕获整个 rank／shape，得到 `summary(Nat,3,(2,3,4),(5,6,7))`。这不是从任意 opaque／递归 nominal 中反射构造器实参；mutable 边界仍不透明。Dependent nominal 在 axiom 签名中的文本打印另有内部类型名未声明的问题，这两个用例验证匹配与替换，不代表输出 roundtrip 已通过。
+
+含 `T: *` 的 Rule telescope 自身处于更高 universe。`graph_rule_app1` 要求 Rule 列表与 pure-axiom 列表的类型均处于 `□`；原 `graph_rule_app` 接收 `*`，两者不能视为任意 universe 多态的同一入口。
+
+#### 待实现的有限归一化适配
+
+模式中的 metavariable 尚未绑定时，其物理结构可能不同于代入绑定后的 normal form。应考虑匹配满足 `normalize(substitute(pattern, bindings))` 的目标，而不能只比较代入前的 Node。构建模式时已经完成、且不依赖未来绑定的归一化，不需要重复增加适配分支。
+
+以下为候选适配清单，**尚未实现完整的 matching modulo normalization**。底层 `PatternProgram::node` 继续表示原始结构；适配宜放在 Rule adapter 或显式启用的类型／aggregate view 中。
+
+| 归一化 | 例子 | 适配范围与限制 |
+| --- | --- | --- |
+| Tuple／Pack | `(v,v) → ‹2;v›` | 静态长度的重复元素 Pack 可按相应数量的逻辑元素匹配；不能盲目展开依赖索引的 body |
+| Sigma／Arr | `[T,T] → «2;T»` | 类型侧的对应规则；保留 dependent telescope 和 mutable Sigma 的身份／绑定约束 |
+| 单元素聚合消除 | `(v) → v`、`[T] → T` | 核对已有 normal form；mutable 单字段 Sigma 是例外，不能一律擦除 |
+| 大小为 1 的轴消除 | `«1;T» → T` | 在已有 rank／shape 约束下处理折叠轴，不默认猜测原始 rank |
+| 嵌套 shape 融合 | `«a;«b;T»» → «a,b;T»` | 统一 shape 视图；内层 extent 依赖外层 index 时不能直接融合 |
+| Extract 融合 | `t#i#j → t#(i,j)` | 按合法的逻辑投影路径匹配，区分仍在自身 shape 内与已进入 element type 的索引 |
+| Tuple 的 η 化简 | `(t#0,t#1) → t` | 需要已知 arity 和一致的 ascribed type；不能重建并不存在的源码中间节点 |
+
+规则语义来自 [MimIR normalizations](langref.md#normalization)。复用这些等价规则，不等于直接调用会设置 Hole 或构造源 IR 的类型检查路径；matcher 仍须只读、有预算，并在失败时回滚 captures。
+
+#### 方阵漏匹配与信息丢失
+
+`A: Tensor 2 (3,3) Nat`、`B: Tensor 2 (3,4) Nat` 逻辑上满足上述模式，期望 `m=3,k=3,n=4,T=Nat`。当前实现却会保留原调用：模式 `(m,k)` 是 Tuple，而目标 `(3,3)` 已压缩成 Pack。不同 capture 本来允许绑定到同一节点，失败来自表示差异，不是 `m != k` 约束。对此可有界匹配 `Tuple(p0,p1)` 与 `Pack(2,v)`，分别匹配 `p0/v`、`p1/v`，无需算术等式求解。
+
+需要区分表示变化与信息真正消失。`«0;T» → []` 会丢失 T，`(x,y)#0 → x` 会丢失 y；不能为了构造 RHS 任意补出这些绑定。应从其他数据／类型边、显式参数或插件元信息取得它们，否则不发布依赖缺失绑定的替换。归一化适配不扩展为任意算术求解、交换结合律搜索或不受限的逆 β-reduction／axiom normalizer 执行。
+
+Nominal Tensor 的 `indices: «(r,s,⊥:T)»` 将 rank、完整 shape 与元素类型标记保留在类型中。即使 `data: «s;T»` 因大小为 1 或 0 的轴而简化，标记仍可能提供绑定来源；标记中的 Tuple 自身也可能压缩成 Pack，仍需要上述表示适配。不得为匹配方便擦除 Nom 的身份。
+
+首批验收应包括方阵与非方阵、Tuple／Pack 的双向视图、重复 capture 冲突、不同 nominal key、零／一维度、融合 shape 和投影路径，以及源 World 不变、预算耗尽与 Indexed／Exhaustive 结果一致性。类型索引优化还应单独对照候选数量与耗时，不能以匹配成功代替性能验证。
 
 ## 约束接口与语义分析
 

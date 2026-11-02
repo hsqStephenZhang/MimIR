@@ -46,6 +46,7 @@ private:
     std::shared_ptr<const GraphSnapshot> snapshot_;
     std::vector<const Def*> reads_;
     DefSet matched_;
+    DefSet captured_; ///< Includes values reached through type edges, outside the raw graph view.
     std::vector<Entry> entries_;
     DefMap<size_t> replacements_;
     friend class GraphRebuilder;

@@ -50,6 +50,7 @@ add_mim_test(mim-test
         pattern_dpl_extended.cpp
         pattern_pdll.cpp
         pattern_p5.cpp
+        pattern_portgraph.cpp
         level.cpp
         lexer.cpp
         nom.cpp
@@ -68,6 +69,9 @@ add_mim_test(mim-regex-test
 
 add_executable(mim-pattern-bench EXCLUDE_FROM_ALL pattern_bench.cpp)
 target_link_libraries(mim-pattern-bench PRIVATE libmim)
+
+add_executable(mim-portgraph-bench EXCLUDE_FROM_ALL ../bench/graph_matching/mimir.cpp)
+target_link_libraries(mim-portgraph-bench PRIVATE libmim)
 
 add_mim_test(mim-tensor-pattern-test
     SOURCES

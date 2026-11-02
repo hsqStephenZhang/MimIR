@@ -1,0 +1,7 @@
+case,engine,matches,semantics
+extra-internal-edge,mimir-indexed,1,positive
+extra-internal-edge,mimir-flat-indexed,1,positive
+extra-internal-edge,ghl-vf2,0,induced
+extra-internal-edge,ghl-vf3,0,induced
+extra-internal-edge,portmatching-naive,1,positive
+extra-internal-edge,portmatching-many,1,positive

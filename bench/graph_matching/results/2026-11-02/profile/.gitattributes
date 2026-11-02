@@ -1,0 +1,2 @@
+# Unified-diff context markers intentionally include space-only lines.
+diagnostic-instrumentation.diff -whitespace

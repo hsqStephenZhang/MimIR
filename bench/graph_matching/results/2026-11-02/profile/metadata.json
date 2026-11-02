@@ -1,0 +1,21 @@
+{
+  "purpose": "Diagnosis only; production matcher unchanged. Ablations run only in an isolated LD_PRELOAD library and never publish rewrites.",
+  "source_sha256": "c26d4aa874dd5bff0e306f56aec96a0df2018a4a0973fb893375f1141aeb02ef",
+  "profile_library_sha256": "1aa98f66f1d79b8e23d7bcc24749889387c4591b8148c2c8ebe2ba161d51b1ff",
+  "baseline_library_sha256": "686012c543f030b6f3e2cd3f72d4d10168bfcc1d61d0f0ac17ab66441ec6fe7a",
+  "cpu_affinity": [
+    2
+  ],
+  "cpp_flags": "Original release compile command plus -g1 and -shared for the isolated matcher",
+  "repeats": 7,
+  "native_chain_repeats": 3,
+  "units": "ns; bytes are cumulative requested payload, not live/peak memory",
+  "allocation_counters": "MimIR: malloc; Rust: malloc/calloc/realloc. Standard C++ containers here use malloc through operator new; raw allocation requests during search, excluding decoding and search-result destruction.",
+  "temporary_directory": "/tmp/mimir-pattern-profile",
+  "verification": "All four variants preserve the complete ordered vertex mapping set of the original benchmark for every measured input. All searches Complete.",
+  "baseline_and_instrumented_ms": {
+    "many_chain_original": 103.947518,
+    "many_chain_instrumented": 113.979168
+  },
+  "perf": "Original uninstrumented binaries, perf record -e cycles:u -c 100000 (MimIR) / 20000 (portmatching naive), --call-graph dwarf,16384. Report uses cpu_core/cycles/u; CPU 2. No lost samples."
+}

@@ -115,6 +115,108 @@ TEST_CASE("P5 join: optional OR captures and type-only captures never imply raw 
     CHECK(ares.matches[0].isa_capture(x) == b);
 }
 
+TEST_CASE("Graph Rule: type-only dimensions and element type construct a shared RHS") {
+    Driver driver;
+    auto& w            = driver.world();
+    const Def* nat     = w.type_nat();
+    const Def* boolean = w.type_bool();
+    bool symbolic      = false;
+    SUBCASE("literal dimensions") {}
+    SUBCASE("symbolic dimensions without equation solving") { symbolic = true; }
+
+    auto dimension
+        = [&](u64 value) -> const Def* { return symbolic ? static_cast<const Def*>(w.axm(nat)) : w.lit_nat(value); };
+    auto m = dimension(2), k = dimension(3), n = dimension(4);
+    for (auto element : {nat, boolean}) {
+        auto matrix
+            = [&](const Def* rows, const Def* columns, const Def* type) { return w.arr(Defs{rows, columns}, type); };
+        auto at = matrix(m, k, element), bt = matrix(k, n, element);
+        auto make_a = w.axm(w.pi(nat, at)), make_b = w.axm(w.pi(w.type_bool(), bt));
+        // Distinct inputs; the only joins are k and T in the result types.
+        auto a = w.app(make_a, w.axm(nat)), b = w.app(make_b, w.axm(w.type_bool()));
+
+        auto signature = w.mut_pi(w.type<1>());
+        signature->set_dom(w.sigma({w.type(), nat, nat, nat}));
+        auto mt = signature->var(4, 0), mm = signature->var(4, 1);
+        auto mk = signature->var(4, 2), mn = signature->var(4, 3);
+        signature->set_codom(w.sigma({matrix(mm, mk, mt), matrix(mk, mn, mt)}));
+        auto summary = w.axm(signature);
+
+        auto parameters = w.mut_sigma<1>(6);
+        parameters->set(0, w.type())->set(1, nat)->set(2, nat)->set(3, nat);
+        auto pt = parameters->var(6, 0), pm = parameters->var(6, 1);
+        auto pk = parameters->var(6, 2), pn = parameters->var(6, 3);
+        parameters->set(4, matrix(pm, pk, pt))->set(5, matrix(pk, pn, pt));
+        auto rule = w.mut_rule(w.reform(parameters));
+        auto rt = rule->var(6, 0), rm = rule->var(6, 1);
+        auto rk = rule->var(6, 2), rn = rule->var(6, 3);
+        rule->set(w.tuple({rule->var(6, 4), rule->var(6, 5)}), w.app(summary, w.tuple({rt, rm, rk, rn})), w.lit_tt());
+
+        RulePattern single(rule);
+        auto candidate  = w.tuple({a, b});
+        auto uncaptured = w.lit_nat(99);
+        auto gid        = w.curr_gid();
+        auto matched    = single.match_lhs(candidate);
+        REQUIRE(matched.status == MatchStatus::Matched);
+        CHECK(matched.bindings.at(rt) == element);
+        CHECK(matched.bindings.at(rm) == m);
+        CHECK(matched.bindings.at(rk) == k);
+        CHECK(matched.bindings.at(rn) == n);
+        CHECK(w.curr_gid() == gid);
+
+        OpRegistry ops;
+        ops.add(make_a->flags(), 1, {{0}}, true);
+        ops.add(make_b->flags(), 1, {{0}}, true);
+        ops.add(summary->flags(), 1, {}, true);
+        GraphView view({a, b}, {.operators = &ops});
+        for (auto capture : {element, m, k, n})
+            CHECK_FALSE(view.is_contained(capture));
+        GraphRulePattern graph(rule);
+        for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+            for (bool reverse : {false, true}) {
+                auto found = graph.find(view, {.reverse_candidates = reverse, .mode = mode});
+                REQUIRE(found.status == SearchStatus::Complete);
+                REQUIRE(found.matches.size() == 1);
+                auto planned = graph.plan(found.matches.front(), view);
+                REQUIRE(planned.status == MatchStatus::Matched);
+                REQUIRE(planned.plan);
+                std::array plans{planned.plan.get()};
+                auto rebuilt = rewrite_graph(view, plans);
+                REQUIRE(rebuilt.roots().size() == 2);
+                auto first = rebuilt.roots()[0]->as<Extract>(), second = rebuilt.roots()[1]->as<Extract>();
+                CHECK(first->tuple() == second->tuple());
+                auto args = first->tuple()->as<App>()->arg()->as<Tuple>();
+                CHECK(args->op(0) == (element == nat ? rebuilt.world().type_nat() : rebuilt.world().type_bool()));
+                std::array dimensions{m, k, n};
+                for (size_t i = 0; i != dimensions.size(); ++i) {
+                    CHECK(args->op(i + 1)->node() == dimensions[i]->node());
+                    CHECK(args->op(i + 1)->flags() == dimensions[i]->flags());
+                    CHECK(args->op(i + 1)->type() == rebuilt.world().type_nat());
+                }
+                CHECK(rebuilt.is_changed());
+                CHECK(view.is_current());
+                CHECK(w.curr_gid() == gid);
+
+                // Captured type dependencies are allowed; unrelated graph-external values are not.
+                RewritePlan bad(found.matches.front());
+                auto metadata = bad.tuple({bad.import(element), bad.import(m), bad.import(k), bad.import(uncaptured)});
+                bad.replace(a, bad.extract(bad.call(summary, {metadata}), 0));
+                std::array rejected{&bad};
+                CHECK_THROWS_AS(rewrite_graph(view, rejected), std::invalid_argument);
+                CHECK(w.curr_gid() == gid);
+            }
+
+        auto other_k = dimension(5);
+        for (auto bad_type : {matrix(other_k, n, element), matrix(k, n, element == nat ? boolean : nat)}) {
+            auto bad_op = w.axm(w.pi(w.type_bool(), bad_type));
+            ops.add(bad_op->flags(), 1, {{0}}, true);
+            GraphView bad({a, w.app(bad_op, w.axm(w.type_bool()))}, {.operators = &ops});
+            CHECK(graph.find(bad).matches.empty());
+            CHECK(graph.find(bad, {.mode = GraphSearchMode::Exhaustive}).matches.empty());
+        }
+    }
+}
+
 TEST_CASE("P5 graph Rule: tuple templates match independent roots and share RHS computation") {
     IR ir;
     auto rule = ir.rule();

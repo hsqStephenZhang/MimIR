@@ -47,12 +47,7 @@ public:
     MatchStatus run(Pattern p, const Def* def) {
         if (!program_.is_current()) throw std::invalid_argument("pattern references a rebuilt World");
         program_.check(p);
-        if (def) {
-            auto snapshot         = std::make_shared<GraphSnapshot>();
-            snapshot->world_      = &def->world();
-            snapshot->generation_ = def->world().data_.storage_token;
-            snapshot_             = std::move(snapshot);
-        }
+        if (def) snapshot_ = GraphSnapshot::capture(def->world());
         return visit(p, def, 0, [&] { return complete_types(0, 0); });
     }
 
@@ -115,7 +110,7 @@ private:
                 if (entry.flags && def->flags() != *entry.flags) return MatchStatus::No_Match;
                 if (def->is_mutable()) return MatchStatus::Unknown;
                 if (def->num_ops() != entry.operands.size()) return MatchStatus::No_Match;
-                return operands(entry.operands, def, 0, depth + 1, next);
+                return operands(entry, def, 0, depth + 1, next);
             case Kind::Range: {
                 if (def->node() != entry.node || (entry.flags && def->flags() != *entry.flags))
                     return MatchStatus::No_Match;
@@ -124,7 +119,7 @@ private:
                 if (def->num_ops() < prefix || def->num_ops() - prefix < entry.min
                     || def->num_ops() - prefix > entry.max)
                     return MatchStatus::No_Match;
-                return range_operands(entry, def, 0, depth + 1, next);
+                return operands(entry, def, 0, depth + 1, next);
             }
             case Kind::Capture:
                 if (auto bound = captures_[p.index_]; bound && bound != def) return MatchStatus::No_Match;
@@ -154,20 +149,10 @@ private:
     }
 
     MatchStatus
-    operands(const std::vector<Pattern>& patterns, const Def* def, size_t index, size_t depth, const Continue& next) {
-        if (index == patterns.size()) return next();
-        return visit(patterns[index], def->op(index), depth,
-                     [&] { return operands(patterns, def, index + 1, depth + 1, next); });
-    }
-
-    MatchStatus range_operands(const PatternProgram::Entry& entry,
-                               const Def* def,
-                               size_t index,
-                               size_t depth,
-                               const Continue& next) {
+    operands(const PatternProgram::Entry& entry, const Def* def, size_t index, size_t depth, const Continue& next) {
         if (index == def->num_ops()) return next();
         auto p = entry.operands[std::min(index, entry.operands.size() - 1)];
-        return visit(p, def->op(index), depth, [&] { return range_operands(entry, def, index + 1, depth + 1, next); });
+        return visit(p, def->op(index), depth, [&] { return operands(entry, def, index + 1, depth + 1, next); });
     }
 
     MatchStatus complete_types(size_t index, size_t depth) {
@@ -602,7 +587,10 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
         } else {
             DefSet read;
             auto pending = assigned;
-            auto values  = std::make_shared<std::vector<const Def*>>();
+            // Type captures can refer back to data nodes without a raw path from an anchor.
+            for (auto def : captures_)
+                if (def) pending.push_back(def);
+            auto values = std::make_shared<std::vector<const Def*>>();
             for (size_t i = 0; i != pending.size(); ++i) {
                 if (is_exhausted(0)) return MatchStatus::Budget_Exceeded;
                 auto def = pending[i];

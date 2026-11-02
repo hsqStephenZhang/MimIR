@@ -1,0 +1,212 @@
+--- a/src/mim/pattern/match.cpp
++++ b/src/mim/pattern/match.cpp
+@@ -9,6 +9,81 @@
+ #include "mim/world.h"
+ 
+ #include "mim/pattern/graph_match.h"
++
++
++#include <chrono>
++#include <cstdlib>
++#include <fstream>
++#include <iomanip>
++namespace match_profile {
++using Clock = std::chrono::steady_clock;
++enum Stage { Analysis, Prefilter, Index, Enumerate, Narrow, Output, Cleanup, Count };
++constexpr const char* names[] = {"analysis", "prefilter", "index_setup", "enumerate", "narrow", "output", "cleanup"};
++struct Stats {
++    Stage stage = Analysis;
++    Clock::time_point last = Clock::now();
++    uint64_t ns[Count]{}, allocations[Count]{}, bytes[Count]{}, frees[Count]{};
++    uint64_t visits=0, bound_captures=0, new_captures=0, narrow_calls=0, parent_calls=0, parent_hits=0;
++    uint64_t read_pops=0, read_nodes=0, capture_slots=0, copied_slots=0, filter_states=0;
++    uint64_t filter_calls=0, filter_hits=0, enumerate_48=0;
++    bool no_cache = std::getenv("MIM_PROFILE_NO_CACHE");
++    bool no_metadata = std::getenv("MIM_PROFILE_NO_METADATA");
++    void set(Stage next) {
++        auto now=Clock::now(); ns[stage] += std::chrono::duration_cast<std::chrono::nanoseconds>(now-last).count();
++        stage=next; last=now;
++    }
++};
++thread_local Stats* active __attribute__((tls_model("initial-exec"))) = nullptr;
++struct Scope {
++    Stats& stats; Stage saved;
++    Scope(Stage next):stats(*active),saved(stats.stage){ stats.set(next); }
++    ~Scope(){ stats.set(saved); }
++};
++struct Session {
++    Stats stats;
++    size_t anchors=0, entries=0, nodes=0, ops=0, matches=0, candidates=0, steps=0;
++    bool complete=false;
++    Session(){ active=&stats; }
++    void finish(size_t a, size_t e, size_t n, size_t o, size_t m, size_t c, size_t s) {
++        anchors=a;entries=e;nodes=n;ops=o;matches=m;candidates=c;steps=s;complete=true;
++        stats.set(Cleanup);
++    }
++    ~Session() {
++        stats.set(stats.stage); active=nullptr;
++        if (auto path=std::getenv("MIM_PROFILE_JSON"); path && complete) {
++            std::ofstream out(path,std::ios::app);
++            out << "{\"anchors\":" << anchors << ",\"entries\":" << entries << ",\"nodes\":" << nodes
++                << ",\"operations\":" << ops << ",\"matches\":" << matches << ",\"candidates\":" << candidates
++                << ",\"steps\":" << steps << ",\"no_cache\":" << stats.no_cache << ",\"no_metadata\":" << stats.no_metadata;
++            uint64_t total=0;
++            for (int i=0;i<Count;++i) {
++                total+=stats.ns[i];
++                out << ",\"" << names[i] << "_ns\":" << stats.ns[i]
++                    << ",\"" << names[i] << "_allocations\":" << stats.allocations[i]
++                    << ",\"" << names[i] << "_bytes\":" << stats.bytes[i];
++            }
++            out << ",\"total_ns\":" << total << ",\"visits\":" << stats.visits
++                << ",\"bound_captures\":" << stats.bound_captures << ",\"new_captures\":" << stats.new_captures
++                << ",\"narrow_calls\":" << stats.narrow_calls << ",\"parent_calls\":" << stats.parent_calls
++                << ",\"parent_hits\":" << stats.parent_hits << ",\"read_pops\":" << stats.read_pops
++                << ",\"read_nodes\":" << stats.read_nodes << ",\"capture_slots\":" << stats.capture_slots
++                << ",\"filter_calls\":" << stats.filter_calls << ",\"filter_hits\":" << stats.filter_hits << ",\"enumerate_48\":" << stats.enumerate_48
++                << ",\"copied_slots\":" << stats.copied_slots << ",\"filter_states\":" << stats.filter_states << "}\n";
++        }
++    }
++};
++}
++extern "C" void* __libc_malloc(size_t);
++extern "C" void __libc_free(void*);
++extern "C" void* malloc(size_t n) noexcept {
++    auto value=__libc_malloc(n);
++    if (auto p=match_profile::active) {++p->allocations[p->stage];p->bytes[p->stage]+=n;if(p->stage==match_profile::Enumerate && n==48) ++p->enumerate_48;}
++    return value;
++}
++extern "C" void free(void* p) noexcept {
++    if (auto stats=match_profile::active) ++stats->frees[stats->stage];
++    __libc_free(p);
++}
+ 
+ namespace mim::pattern {
+ 
+@@ -97,6 +172,7 @@
+     }
+ 
+     MatchStatus visit_entry(Pattern p, const Def* def, size_t depth, const Continue& next) {
++        if (match_profile::active) ++match_profile::active->visits;
+         const auto& entry = program_.entries_[p.index_];
+         switch (entry.kind) {
+             case Kind::Any: return next();
+@@ -122,6 +198,7 @@
+                 return operands(entry, def, 0, depth + 1, next);
+             }
+             case Kind::Capture:
++                if (auto stats=match_profile::active) {if(captures_[p.index_]) ++stats->bound_captures;else ++stats->new_captures;}
+                 if (auto bound = captures_[p.index_]; bound && bound != def) return MatchStatus::No_Match;
+                 if (!captures_[p.index_]) {
+                     captures_[p.index_] = def;
+@@ -246,6 +323,7 @@
+ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& graph, GraphMatchOptions options) {
+     if (!program_.is_current()) throw std::invalid_argument("pattern references a rebuilt World");
+     if (!graph.is_current()) throw std::invalid_argument("graph snapshot is stale");
++    match_profile::Session profile;
+     snapshot_ = graph.snapshot();
+     if (pattern.anchors_.empty()) throw std::invalid_argument("graph pattern needs an anchor");
+     const auto n = pattern.anchors_.size();
+@@ -313,6 +391,7 @@
+     if (std::ranges::find(connected, false) != connected.end())
+         throw std::invalid_argument("multi-root pattern must be connected by captures or data-use relations");
+ 
++    profile.stats.set(match_profile::Prefilter);
+     GraphMatches output{{}, SearchStatus::Complete, 0, 0};
+     auto candidates        = std::vector<std::vector<const Def*>>(n);
+     bool prefilter_limited = false;
+@@ -324,9 +403,10 @@
+             return false;
+         }
+         if (!def) return false;
++        ++profile.stats.filter_calls;
+         auto key = std::pair{p.index_, def};
+-        if (options.mode == GraphSearchMode::Indexed)
+-            if (auto i = filtered.find(key); i != filtered.end()) return i->second;
++        if (options.mode == GraphSearchMode::Indexed && !profile.stats.no_cache)
++            if (auto i = filtered.find(key); i != filtered.end()) {++profile.stats.filter_hits; return i->second;}
+         ++output.prefilter_checks;
+         auto check = [&]() -> bool {
+             const auto& e = program_.entries_[p.index_];
+@@ -358,7 +438,7 @@
+             }
+         };
+         auto result = check();
+-        if (!prefilter_limited && options.mode == GraphSearchMode::Indexed) filtered.emplace(key, result);
++        if (!prefilter_limited && options.mode == GraphSearchMode::Indexed && !profile.stats.no_cache) filtered.emplace(key, result);
+         return result;
+     };
+     for (size_t i = 0; i != n; ++i) {
+@@ -375,6 +455,8 @@
+     }
+     if (!options.max_results) return {{}, SearchStatus::Result_Limit, budget_.steps, 0};
+ 
++    profile.stats.filter_states = filtered.size();
++    profile.stats.set(match_profile::Index);
+     // Required raw captures occur on every successful structural branch. Type/Not captures
+     // cannot imply raw ancestry; an OR only retains captures guaranteed by both alternatives.
+     std::vector<std::vector<size_t>> required(program_.entries_.size());
+@@ -476,8 +558,9 @@
+         return true;
+     };
+     auto parents = [&](const Def* value, const std::optional<OperandPath>& path) -> std::shared_ptr<DefSet> {
++        ++profile.stats.parent_calls;
+         auto key = std::pair{value, path ? *path : OperandPath{size_t(-1)}};
+-        if (auto i = ancestors.find(key); i != ancestors.end()) return i->second;
++        if (auto i = ancestors.find(key); i != ancestors.end()) {++profile.stats.parent_hits; return i->second;}
+         auto result = std::make_shared<DefSet>();
+         result->insert(value);
+         if (path) {
+@@ -510,6 +593,8 @@
+         return result;
+     };
+     auto narrow = [&](size_t anchor) -> std::optional<std::vector<const Def*>> {
++        match_profile::Scope measured(match_profile::Narrow);
++        ++profile.stats.narrow_calls;
+         if (options.mode == GraphSearchMode::Exhaustive) return {};
+         std::vector<std::shared_ptr<DefSet>> constraints;
+         for (auto index : required[pattern.anchors_[anchor].pattern.index_])
+@@ -568,10 +653,18 @@
+     std::set<std::vector<const Def*>> emitted, unresolved;
+     std::shared_ptr<const std::vector<const Def*>> broad;
+     on_match_ = [&] {
++        match_profile::Scope measured(match_profile::Output);
+         auto status = relations(true);
+         if (status != MatchStatus::Matched) return status;
+         if (!emitted.insert(assigned).second) return MatchStatus::No_Match;
+         unresolved.erase(assigned);
++        profile.stats.copied_slots += captures_.size();
++        for (auto value:captures_) if (value) ++profile.stats.capture_slots;
++        if (profile.stats.no_metadata) {
++            output.matches.push_back(GraphMatch(&pattern,graph,assigned,result(),{},{}));
++            limited=output.matches.size()>=options.max_results;
++            return MatchStatus::Matched;
++        }
+         DefSet matched;
+         for (auto def : assigned)
+             matched.insert(def);
+@@ -593,8 +686,10 @@
+             auto values  = std::make_shared<std::vector<const Def*>>();
+             for (size_t i = 0; i != pending.size(); ++i) {
+                 if (is_exhausted(0)) return MatchStatus::Budget_Exceeded;
++                ++profile.stats.read_pops;
+                 auto def = pending[i];
+                 if (!read.insert(def).second) continue;
++                ++profile.stats.read_nodes;
+                 if (graph.is_contained(def)) values->push_back(def);
+                 if (def->is_mutable() || def->node() == Node::Var || def->node() == Node::Axm
+                     || def->node() == Node::Lam || def->node() == Node::Pi)
+@@ -659,12 +754,14 @@
+         // Continue earlier alternatives, but a successful complete tuple stops its own OR.
+         return status == MatchStatus::Matched ? MatchStatus::No_Match : status;
+     };
++    profile.stats.set(match_profile::Enumerate);
+     auto status   = enumerate(0);
+     output.status = limited                                               ? SearchStatus::Result_Limit
+                   : status == MatchStatus::Budget_Exceeded                ? SearchStatus::Budget_Exceeded
+                   : status == MatchStatus::Unknown || !unresolved.empty() ? SearchStatus::Unknown
+                                                                           : SearchStatus::Complete;
+     output.steps  = budget_.steps;
++    profile.finish(n, program_.entries_.size(), graph.nodes().size(), graph.operations().size(),output.matches.size(),output.candidates,output.steps);
+     if (!graph.is_current()) throw std::invalid_argument("graph snapshot changed during matching");
+     return output;
+ }

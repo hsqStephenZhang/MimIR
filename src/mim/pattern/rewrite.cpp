@@ -15,6 +15,8 @@ RewritePlan::RewritePlan(const GraphMatch& match)
     if (!snapshot_->is_live()) throw std::invalid_argument("match snapshot has already been published");
     for (auto def : match.nodes())
         matched_.insert(def);
+    for (auto def : match.captures_.captures_)
+        if (def) captured_.insert(def);
 }
 
 void RewritePlan::check(Recipe recipe) const {
@@ -85,10 +87,26 @@ public:
         if (auto flags = graph_.world().annexes().opaque(def)) return map(def, world().annex(*flags));
         return nullptr;
     }
+    const Def* rewrite_imm_Axm(const Axm* axm) override {
+        auto value = Rewriter::rewrite_imm_Axm(axm)->as<Axm>();
+        if (axm->plugin() == Annex::Global_Plugin || !axm->is_closed()) return value;
+        // Rule templates and other functions may hold separate copies of a named polymorphic
+        // axiom. Its dependent Pi is not hash-consed, so share equivalent closed imports here.
+        auto& copies = axioms_[axm->flags()];
+        for (auto existing : copies) {
+            budget_.touch();
+            if (existing->normalizer() == value->normalizer() && existing->curry() == value->curry()
+                && existing->trip() == value->trip() && Check::test_alpha(existing->type(), value->type()))
+                return existing;
+        }
+        copies.push_back(value);
+        return value;
+    }
 
 private:
     const GraphView& graph_;
     RebuildBudget& budget_;
+    std::unordered_map<flags_t, std::vector<const Axm*>> axioms_;
 };
 
 } // namespace
@@ -102,8 +120,7 @@ public:
         : Rewriter(target)
         , graph_(graph)
         , budget_{options}
-        , importer_(graph, target, budget_)
-        , options_(options) {
+        , importer_(graph, target, budget_) {
         if (!graph.is_current()) throw std::invalid_argument("graph snapshot is stale");
         size_t count = 0;
         for (auto plan : plans) {
@@ -119,7 +136,8 @@ public:
             for (const auto& entry : plan->entries_) {
                 if (entry.def && &entry.def->world() != &graph.world())
                     throw std::invalid_argument("recipe references another World");
-                if (entry.kind == RewritePlan::Kind::Import && !graph.is_contained(entry.def))
+                if (entry.kind == RewritePlan::Kind::Import && !graph.is_contained(entry.def)
+                    && !plan->captured_.contains(entry.def))
                     throw std::invalid_argument("recipe imports a value outside the graph");
                 if (entry.kind == RewritePlan::Kind::Call && !graph.has_purity(entry.def->flags()))
                     throw std::invalid_argument("recipe calls an operator without a purity guarantee");
@@ -215,6 +233,7 @@ public:
     }
 
     const Def* rewrite_mut(Def* def) override { return map(def, importer_.rewrite(def)); }
+    const Def* rewrite_imm_Axm(const Axm* def) override { return importer_.rewrite(def); }
     const Def* rewrite_imm_Lam(const Lam* def) override { return importer_.rewrite(def); }
     const Def* rewrite_imm_Pi(const Pi* def) override { return importer_.rewrite(def); }
 
@@ -280,7 +299,7 @@ public:
 
 private:
     const Def* evaluate(const RewritePlan* plan, size_t index, size_t depth) {
-        if (depth >= options_.max_depth || budget_.depth >= options_.max_depth)
+        if (depth >= budget_.options.max_depth || budget_.depth >= budget_.options.max_depth)
             throw std::invalid_argument("recipe evaluation depth exceeded");
         auto active = fe::Restore(budget_.depth, budget_.depth + 1);
         auto& value = memo_.at(plan)[index];
@@ -331,7 +350,6 @@ private:
     const GraphView& graph_;
     RebuildBudget budget_;
     GraphImporter importer_;
-    RewriteOptions options_;
     DefMap<std::pair<const RewritePlan*, size_t>> replacements_;
     std::unordered_map<const RewritePlan*, std::vector<const Def*>> memo_;
     DefMap<const Def*> results_;

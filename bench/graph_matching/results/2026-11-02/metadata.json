@@ -1,0 +1,65 @@
+{
+  "date": "2026-11-02",
+  "mimir_head": "cd8526dd2213b5d4528b41646eb4c1c7ecc37e3b",
+  "mimir_dirty": true,
+  "portmatching_head": "e943a40a09c66bbe14043b00ec8f0169b3340cf0",
+  "ghl_head": "a147c1a0039710030987dde73c4128a31f68d8f3",
+  "cpu": "Intel Core i5-14600KF",
+  "affinity": [
+    2
+  ],
+  "compiler": "c++ (GCC) 15.2.1 20260209",
+  "rustc": "rustc 1.99.0-nightly (12c36e253 2026-08-10)",
+  "boost": "1.91",
+  "cpp_flags": "-O3 -DNDEBUG -std=c++23",
+  "rust_profile": "release (Cargo default opt-level=3)",
+  "repeats": 7,
+  "units": "nanoseconds",
+  "warmup": "none; fresh process for each sample",
+  "layout_variants": [
+    "nested",
+    "flat"
+  ],
+  "search_limits": {
+    "max_steps_per_pattern": 100000000,
+    "max_candidates_per_pattern": 100000000,
+    "max_depth": 4096,
+    "max_results_per_pattern": 1000000
+  },
+  "source_sha256": {
+    "bench/graph_matching/common.h": "4818ae16d416831556ec925cf87522ff59330df0c1aa1d15a2908c6f6f30ff21",
+    "bench/graph_matching/ghl.cpp": "42b75fa3feb235cfd415742314bfcb2a80c36bda48887eca01912f8808cb5247",
+    "bench/graph_matching/mimir.cpp": "880e8900de605bc635597e25b16a3f4360b5b7f490a1873c1c401c9b8dd2ad14",
+    "include/mim/pattern/graph.h": "4955ad9015a930ddcf82c64dd5a89cf4d4bd900442da2f5224130375982da54e",
+    "include/mim/pattern/graph_match.h": "b482c055c55c2d511320aa4bdf30ce48ac6916f557439efee71bafd2f2814a40",
+    "include/mim/pattern/graph_rule.h": "8983ea4982662f76cfc1a764f13b642857c6b36583d38285188df5024d144763",
+    "include/mim/pattern/match.h": "ad423457f92bf3b19242bf6a53a8c66c9bf370e982990ab91160a70104b6c369",
+    "include/mim/pattern/op.h": "9f2afd8c8dc57c03695b2714d9c22291956f3cf1d50ff8fb16bb01f3b8658f43",
+    "include/mim/pattern/pattern.h": "e7a956f74d1d63d001f02b356af16053bc3fb6eb516e5db92010150b0b279979",
+    "include/mim/pattern/rewrite.h": "ada2c7ab0b1296904543192cf8a430fba855080ada9bf685b54bc4a0ad3f9370",
+    "include/mim/pattern/rule.h": "0c96bac4301ace8be80840a7b1d741acd3da6242bcb14fb9d5911d3aaddb3c66",
+    "src/mim/pattern/graph.cpp": "f58e71db8351387824db296dcdec0cecfa686473a3cd6536a74f80a6d5f7fc2b",
+    "src/mim/pattern/graph_rule.cpp": "b3eaebd4328766b679387137b3f48c4193738d175b2b3a8959df2af03859cbcc",
+    "src/mim/pattern/match.cpp": "c26d4aa874dd5bff0e306f56aec96a0df2018a4a0973fb893375f1141aeb02ef",
+    "src/mim/pattern/op.cpp": "d8426de9b931ebc9509aa889f7a2c0fdead0f51723d8b68b33f0a37b449a5671",
+    "src/mim/pattern/pattern.cpp": "f2bd00a9bbbbb11ce8af27455d725889edb70a689bb11c405fbc3ec2dbbaf397",
+    "src/mim/pattern/rewrite.cpp": "6a879550c05de9cab30bf18cfcd697f847299c73f132c56b4a9941fd211cc9ae",
+    "src/mim/pattern/rule.cpp": "dfae8949a2ef0bdf6bb02497dbd8716bd596f30e05e9f90f3394a5b633805f0d",
+    "test/pattern_portgraph.h": "8c431d0516683c4e7844bf5796fb58367d520280ff0061b2c5157e59f1ea5117"
+  },
+  "corpus_sha256": {
+    "chain-128.txt": "006343834c0a2e7616a38ed6b90dded29c030d926ed04f1568b3fcbefedd9ac5",
+    "chain-32.txt": "575df2ab3a32ad23585d38edb58a048eb4de277ce6c0ed0bc1eae9521cd44711",
+    "chain-8.txt": "412c121fefa7baa0835ab3bae799b61c40b4b1c700670c535537583e23eb1ea3",
+    "many-chain-128.txt": "4b5576646f1659b25ed5ac513e87dad273bc55e70145c33fd01f9c9e5b57a1cc",
+    "many-chain-32.txt": "186547b15c5e31b7bc5207fdae3d15fe418361900272eb1b902b07ff012d405f",
+    "many-chain-8.txt": "1782d528a450ec033cfe1e9d63d3ed7531a5b5f4e5467234c7d23ba27a26644a",
+    "overlap-1.txt": "dfd8146e28e131a75a4bda5ea90d5c27cecf9830e07cb7b1296c40f3a0889f92",
+    "shared-dag-128.txt": "d662936ee2d9439d0d0cea6bf9d00b1b449b344b49033a1367ee2690ffb04c14",
+    "shared-dag-32.txt": "e30bd4f2e3fb6764d538d812a0b0736bb8255948512262356f32b6b6207c03fe",
+    "shared-dag-8.txt": "975cf54e19198fb40a88d9e1f50fb815d93e3b5dcc558739f3fa222d0e0664cd",
+    "wrong-port-128.txt": "f5b8569f90f93be00ab8f9d069184ba5fd443b7667236691453fc531eb0892af",
+    "wrong-port-32.txt": "ec0b5c1b76f7d29b6844c79e5f80d0fb3d91440e02a3fee41bceda9d0b955be4",
+    "wrong-port-8.txt": "10a2fd148758ecff9f6b4640bf03bde6527964df80155af998e3e5bbed413010"
+  }
+}
