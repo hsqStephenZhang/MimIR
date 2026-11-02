@@ -33,15 +33,15 @@ lam blocked_leaf (m n k: Nat): [kt: Nat, sched: Sched] =
     (kt, (vd, 1));
 axm mark: {M K N: Nat} → [config: Config, «M, N; I64»] → «M, N; I64»;
 
-lam packed {M K N: Nat} (config: Config, a: «M, K; I64», b: «K, N; I64»,
-    add mul: «2; I64» → I64): «M, N; I64» =
+lam packed_with_post {M K N: Nat} (config: Config, a: «M, K; I64», b: «K, N; I64»,
+    add mul: «2; I64» → I64, bias: «N; I64», epilogue: Fn [I64, I64] → I64, apply_post: Bool): «M, N; I64» =
     let (MR, NR, NC, KC, pack_a) = config;
     fun combine (acc: I64, pair: «2; I64»)@tt: I64 = return (add (acc, mul pair));
     tiled @(I64, 2) ((M, N), (M, NC))
         (λ (off ext: «2; Nat»): «ext; I64» =
             let rows = ext#ff;
             let n = ext#tt;
-            lam block (k ko: Nat, acc: «rows, n; I64»): «rows, n; I64» =
+            lam block (k ko: Nat, acc: «rows, n; I64», last: Bool): «rows, n; I64» =
                 let bp = stage @(I64, 2, 1) (k, n) (1, NR, (1₂, 0₂), 0I64) 0
                     (slice @(I64, 2) (K, N) ((ko, off#tt), (1, 1), (k, n)) b);
                 tiled @(I64, 2) ((rows, n), (MR, NR))
@@ -52,23 +52,42 @@ lam packed {M K N: Nat} (config: Config, a: «M, K; I64», b: «K, N; I64»,
                         let ap = slice @(I64, 2) (M, K) ((off#ff + row#ff, ko), (1, 1), (m, k)) a;
                         let ap = (ap, stage @(I64, 2, 0) (m, k) ((), (), (0₂, 1₂), 0I64) 0 ap)#pack_a;
                         let cp = slice @(I64, 2) (rows, n) (row, (1, 1), size) acc;
-                        map_reduce_post @(2, 0) @(I64, I64, 2, 4, SchedT)
-                            (size, (m, cols, k / kt, kt), mk_sched sched)
-                            @((I64, I64), (2, 3), ((m, k), ((n + NR - 1) / NR, k, NR)), (), (), ())
-                            (combine, outs_default @(I64, 2) size cp, id @I64)
-                            (proj_map @(4, 2) (0, 1))
-                            ((λ (o: «4; affine.Index»): «2; affine.Index» =
-                                (o#0₄, affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄)),
-                              λ (o: «4; affine.Index»): «3; affine.Index» =
-                                let j = affine.op.add (o#1₄, affine.lit (row#tt));
-                                (affine.semiop.floordiv (j, NR),
-                                 affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄),
-                                 affine.semiop.rem (j, NR))), ())
-                            ((ap, bp), ()));
+                        lam leaf {nps: Nat} (post: Fn [I64, «nps; I64»] → I64, extras: «nps; «N; I64»»): «size; I64» =
+                            map_reduce_post @(2, nps) @(I64, I64, 2, 4, SchedT)
+                                (size, (m, cols, k / kt, kt), mk_sched sched)
+                                @((I64, I64), (2, 3), ((m, k), ((n + NR - 1) / NR, k, NR)), ‹nps; I64›, ‹nps; 1›, ‹nps; N›)
+                                (combine, outs_default @(I64, 2) size cp, post)
+                                (proj_map @(4, 2) (0, 1))
+                                ((λ (o: «4; affine.Index»): «2; affine.Index» =
+                                    (o#0₄, affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄)),
+                                  λ (o: «4; affine.Index»): «3; affine.Index» =
+                                    let j = affine.op.add (o#1₄, affine.lit (row#tt));
+                                    (affine.semiop.floordiv (j, NR),
+                                     affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄),
+                                     affine.semiop.rem (j, NR))), ‹nps;
+                                     λ (_ j: affine.Index): affine.Index = affine.op.add (j, affine.lit (off#tt + row#tt))›)
+                                ((ap, bp), extras);
+                        (λ (): «size; I64» = leaf @0 (id @I64, ()),
+                         λ (): «size; I64» = leaf @1 (epilogue, (bias,)))#last ());
             let blocks = (K - 1) / KC;
             let acc = tile_fold (blocks, KC) (splat ((rows, n), 0I64))
-                (λ (acc: «rows, n; I64», ko: Nat): «rows, n; I64» = block (KC, ko, acc));
-            block (K - blocks * KC, blocks * KC, acc));
+                (λ (acc: «rows, n; I64», ko: Nat): «rows, n; I64» = block (KC, ko, acc, ff));
+            block (K - blocks * KC, blocks * KC, acc, apply_post));
+
+lam packed {M K N: Nat} (config: Config, a: «M, K; I64», b: «K, N; I64»,
+    add mul: «2; I64» → I64): «M, N; I64» =
+    fun identity (value _: I64)@tt: I64 = return value;
+    packed_with_post @(M, K, N) (config, a, b, add, mul, splat (N, 0I64), identity, ff);
+
+axm mark_post: {M K N: Nat} → [config: Config, «M, N; I64», bias: «N; I64»] → «M, N; I64»;
+fun bias_relu (value bias: I64)@tt: I64 =
+    let value = core.wrap.add 0 (value, bias);
+    return (core.select (core.icmp.sl (value, 0I64), 0I64, value));
+
+pub rule pack_post (M K N: Nat, config: Config, a: «M, K; I64», b: «K, N; I64», bias: «N; I64», add mul: «2; I64» → I64):
+    mark_post @(M, K, N) (config, product_2d (I64, 0I64, add, mul) @(M, K, N) (a, b), bias)
+    when core.bit2.and 0 (valid (M, K, N, config#mr, config#kc, config#nr), 0 < config#nc) =>
+    packed_with_post @(M, K, N) (config, a, b, add, mul, bias, bias_relu, tt);
 
 pub rule pack (M K N: Nat, config: Config, a: «M, K; I64», b: «K, N; I64», add mul: «2; I64» → I64):
     mark @(M, K, N) (config, product_2d (I64, 0I64, add, mul) @(M, K, N) (a, b))

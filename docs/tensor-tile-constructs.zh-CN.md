@@ -117,6 +117,34 @@ source clipping 依赖 symbolic origin 时，预算先尝试 full/tail 组合；
 仅在其不能求值时枚举 literal origins，工作量上限为 65536 个叶子，超限仍为 Unknown。
 此处的 importer 只替换未绑定的 free variables，不用 bottom 覆盖 dependent lambda 的 binder。
 
+### 7.5 BLIS 的 structured epilogue
+
+`blis.mim` 的 `pack_post` Rule 把 product+bias+ReLU marker 改写为
+`packed_with_post`；普通 `pack` 通过关闭 epilogue 的 wrapper 保持原接口。
+fold 中所有完整 K blocks 的 `nps=0`，不读 bias，也不运行 ReLU；
+fold 后显式的最后一个 block 才选择 `nps=1` 的 post。
+bias map 使用全局 `NC off + NR row + local column`，不是 panel-local column。
+MR/NR/NC/KC 均可有 tail；bias 在写回之前只加一次，不改变 ordered K fold。
+
+`blis_post_exec` 对 rule/hand、destination/reference 两条 pipeline 验证
+8³、13×7×11、1×7×1、5×9×19、5×11×21；输入包含负值和多 K blocks，
+因此逐 block ReLU 或重复 bias 不能通过检查。
+benchmark 使用 `build/task8-bench.py --epilogue`，target 与 task11 相同，
+F32、单线程、native `-O3`、1 次 warmup/数值检查 + 7 次计时取 median，含 allocation/free。
+unfused 为同一 BLIS GEMM 后的独立 bias/ReLU loops；OpenBLAS 也运行同一 loops。
+
+| M×K×N | BLIS fused post | BLIS + loops | OpenBLAS + loops |
+| --- | ---: | ---: | ---: |
+| 256³ | 90.718 | 92.172 | 80.154 |
+| 512³ | 97.543 | 96.587 | 100.197 |
+| 1024³ | 96.865 | 95.896 | 98.354 |
+| 513×257×129 | 87.302 | 86.141 | 88.046 |
+
+单位 GFLOPS，只计 GEMM FLOPs。整表来自第二次完整执行
+`build/task12-bench/epilogue-confirm.csv`，不是逐项挑最好值。
+首次执行的 256³/512³ 三种实现均较慢，原始数据保留在 epilogue-results.csv；
+不把小形状的执行间波动解释为融合本身的收益。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

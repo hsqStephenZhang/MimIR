@@ -1,0 +1,6 @@
+// RUN: python3 %S/blis_f32.py %mim %S/blis.mim %t.dir post
+// RUN: clang++ -O3 %S/blis_post_aux.cpp %t.dir/probe.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: python3 %S/blis_f32.py %mim %S/blis.mim %t.ref.dir post reference
+// RUN: clang++ -O3 %S/blis_post_aux.cpp %t.ref.dir/probe.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
