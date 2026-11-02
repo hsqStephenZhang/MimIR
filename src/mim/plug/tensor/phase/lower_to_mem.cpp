@@ -1456,10 +1456,25 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
 }
 
 const Def* LowerToMem::lower_stage(const App* app) {
-    auto& old = old_world();
+    auto& old                         = old_world();
+    auto [meta, shape, layout, scope] = app->callee()->as<App>()->uncurry_args<4>();
+    auto [type, rank, split]          = meta->projs<3>();
+    if (scratch_ && Lit::isa(split) == 0) {
+        auto r        = Lit::isa(rank);
+        auto identity = r.has_value();
+        if (r)
+            for (size_t d = 0; d != *r; ++d)
+                identity &= Lit::isa(layout->proj(4, 2)->proj(*r, d)) == d;
+        if (identity) {
+            auto source = rewrite(app->arg());
+            if (Axm::isa<buffer::Buf>(source->type()) && Check::alpha(source->type(), buf_of(app->type()))) {
+                if (auto cap = fe::lookup(storage_shapes_, app->arg())) storage_shapes_[app] = cap;
+                return source;
+            }
+        }
+    }
     const Def* impl;
     if (auto slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(app->arg()))) {
-        auto [meta, shape, layout, scope]    = app->callee()->as<App>()->uncurry_args<4>();
         auto [slice_meta, source_shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
         auto [start, step, extent]           = box->projs<3>();
         impl                                 = old.app(old.annex<tensor::stage_box_impl>(), meta);

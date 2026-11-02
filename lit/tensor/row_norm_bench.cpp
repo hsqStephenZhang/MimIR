@@ -90,7 +90,7 @@ int main() {
                              static_cast<unsigned long long>(heap_allocations),
                              static_cast<unsigned long long>(stack_allocations),
                              static_cast<unsigned long long>(frees));
-                if (heap_allocations + stack_allocations > 5 || heap_allocations != frees + 1) std::abort();
+                if (heap_allocations + stack_allocations > 4 || heap_allocations != frees + 1) std::abort();
             }
 #endif
             std::free(result);

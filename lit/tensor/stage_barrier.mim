@@ -7,9 +7,16 @@ use tensor;
 extern lam f (x: «2, 3; Nat»): «2, 3; Nat» =
     unary (λ (v: Nat): Nat = core.nat.add (v, 1))
         (stage @(Nat, 2, 0) (2, 3) ((), (), (0₂, 1₂), 0) 0 x);
+extern lam g (x: «2, 3; Nat»): «3, 2; Nat» =
+    unary (λ (v: Nat): Nat = core.nat.add (v, 1))
+        (stage @(Nat, 2, 0) (2, 3) ((), (), (1₂, 0₂), 0) 0 x);
 extern lam _compile (): compile.Phase =
     compile.phases ff (lower_tensor, fuse_tensor, compile.cleanup);
 // CHECK: tensor.stage
 // CHECK: tensor.map_reduce_post
+// CHECK: tensor.stage
+// CHECK: tensor.map_reduce_post
+// REF: tensor.generate
+// REF: tensor.map_reduce_post
 // REF: tensor.generate
 // REF: tensor.map_reduce_post

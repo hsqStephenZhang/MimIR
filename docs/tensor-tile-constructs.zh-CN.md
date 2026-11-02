@@ -506,6 +506,33 @@ singleton-column 仍作数值/算术计数回归，不把其 scalar callback fal
 
 单独移出 allocation 尚未消除 stage copy 或 scalar exp，不声称已达到所有 shape 不慢的目标。
 
+### 9.6 Identity stage alias（Task 15A.2）
+
+只在 §9.5 已证明的只读 tile region 内，在 destination lowering 判断
+`k=0`、outer_perm 为逐轴 identity、source 已是同类型 buffer；
+符合时直接使用 source handle，并保留 physical-cap metadata。
+不在 tensor normalizer 中删除 stage：`fuse_tensor` 仍看见 boundary，
+不能重新把 shared producer 的读取 compose 到两个 consumers 内。
+这里不把 external return 的 owned-result ABI 改成 borrowed-input alias。
+split/padded/permuted layout 和不同 buffer shape 继续走原 reindexing 路径。
+
+`stage_alias_exec` 用 tail、三轮不同输入、identity stage 和两次真实 transpose
+对照 destination/reference；`stage_barrier` 同时锁定 identity/non-identity 的 fusion barrier。
+row exp/centered 原始计数保持不变，allocation regression 上界从 9 收紧到 5。
+三个 benchmark shape 每次调用均剩 **1 output heap + 1 scratch heap + 2 scratch stack**，
+return 前 free 唯一的 heap scratch。优化汇编没有 `memcpy`，不只是删掉 allocation 名称。
+
+`build/task15-identity-bench/results.csv`，条件同 §9.4，计时前后无 compiler/build 进程：
+
+| Rows×Cols | softmax grouped / unfused (ms) | layernorm grouped / unfused (ms) |
+| --- | --- | --- |
+| 1024×1024 | 2.613 / 1.942 | 0.337 / 0.298 |
+| 4096×1024 | 8.035 / 7.431 | 1.710 / 1.386 |
+| 1024×4096 | 7.430 / 7.454 | 1.152 / 1.431 |
+
+4096 列的 layernorm 已快于 unfused，但 1024 列仍慢；
+复用 storage 和去掉 stage copy 并不保证小 row tile 的 loop shape 已最优。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

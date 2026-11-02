@@ -1,0 +1,27 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -O3 -fsanitize=address %S/stage_alias_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -X tensor:reference-tiles=1 -p opt %s -p ll
+// RUN: clang++ -O3 -fsanitize=address %S/stage_alias_aux.cpp %{s:stem}.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
+
+plugin tensor;
+plugin core;
+use tensor;
+lam increment (x: I64): I64 = core.wrap.add 0 (x, 1I64);
+
+extern fun identity_stage (x: «5, 7; I64»): «5, 7; I64» =
+    return (tiled ((5, 7), (2, 7))
+        (λ (off ext: «2; Nat»): «ext; I64» =
+            let p = unary increment (slice (5, 7) (off, (1, 1), ext) (buf x));
+            let p = stage @(I64, 2, 0) ext ((), (), (ff, tt), 0I64) 0 p;
+            unary increment p));
+
+extern fun permuted_stage (x: «5, 7; I64»): «5, 7; I64» =
+    return (tiled ((5, 7), (2, 7))
+        (λ (off ext: «2; Nat»): «ext; I64» =
+            let p = unary increment (slice (5, 7) (off, (1, 1), ext) (buf x));
+            let p = stage @(I64, 2, 0) ext ((), (), (tt, ff), 0I64) 0 p;
+            let p = unary increment p;
+            let p = stage @(I64, 2, 0) (ext#tt, ext#ff) ((), (), (tt, ff), 0I64) 0 p;
+            unary increment p));
