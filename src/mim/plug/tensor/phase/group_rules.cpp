@@ -1,0 +1,405 @@
+#include "mim/plug/tensor/phase/group_rules.h"
+
+#include <algorithm>
+#include <limits>
+
+#include <mim/pattern/witness.h>
+#include <mim/phase/graph_rule_rewrite.h>
+#include <mim/phase/rule_rewrite.h>
+
+#include "mim/plug/tensor/tensor.h"
+
+namespace mim::plug::tensor {
+
+pattern::WitnessResult fusion_budget(const pattern::GraphView&, Defs, World&);
+
+namespace {
+
+class LocalRewriter : public Rewriter {
+public:
+    using Rewriter::Rewriter;
+
+    const Def* rewrite(const Def* def) override {
+        if (auto value = lookup(def)) return value;
+        if (def->is_closed()) {
+            bool substituted = false;
+            for (auto mut : def->local_muts())
+                if (auto value = lookup(mut); value && value != mut) substituted = true;
+            if (!substituted) return map(def, def);
+        }
+        return Rewriter::rewrite(def);
+    }
+};
+
+ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params) {
+    auto app = graph::map_reduce(producer);
+    if (!app) return {nullptr, "BLIS needs a map_reduce_post"};
+    auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks = mr.ranks();
+    if (!ranks || ranks->ro != 2 || !ranks->rr || ranks->nis != 2)
+        return {nullptr, "BLIS needs two parallel axes and two inputs"};
+    auto& w = producer->world();
+    auto nr = lit_projs(mr.Ris, 2);
+    if (!nr || (*nr)[0] != 2 || (*nr)[1] != 2 || !Check::test_alpha(mr.To, mr.Tp)
+        || !Check::test_alpha(mr.init->type(), mr.To))
+        return {nullptr, "BLIS needs rank-two inputs and a scalar accumulator of the result type"};
+    auto sizes = lit_projs(mr.Sr, ranks->nloops());
+    auto shape = lit_projs(mr.So, 2);
+    if (!sizes || !shape || (*shape)[0] != (*sizes)[0] || (*shape)[1] != (*sizes)[1])
+        return {nullptr, "BLIS needs literal, untransformed parallel extents"};
+    auto m = (*shape)[0], n = (*shape)[1], k = u64(1);
+    for (u64 d = 2; d != ranks->nloops(); ++d) {
+        auto extent = (*sizes)[d];
+        if (!extent || k > std::numeric_limits<u64>::max() / extent)
+            return {nullptr, "BLIS needs a nonempty literal reduction with a representable size"};
+        k *= extent;
+    }
+    if (!m || !n) return {nullptr, "BLIS needs nonempty output axes"};
+    if (!Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>()))
+        return {nullptr, "BLIS cannot replace a custom schedule"};
+    auto sched = w.app(w.annex<tile_sched>(), mr.sched);
+    if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), sched)))
+        return {nullptr, "BLIS cannot replace a clipped or placed schedule"};
+    if (!pure_scalar(mr.comb) || !pure_scalar(mr.post))
+        return {nullptr, "BLIS needs pure scalar combiner and epilogue"};
+    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
+    auto fn     = w.mut_lam(domain, domain);
+    auto vars   = fn->var()->projs(ranks->nloops());
+    auto red    = vars[2];
+    for (u64 d = 3; d != ranks->nloops(); ++d)
+        red = w.call(affine::op::add,
+                     Defs{w.call(affine::semiop::mul, Defs{red, mr.Sr->proj(ranks->nloops(), d)}), vars[d]});
+    auto output = w.app(mr.map_out, fn->var());
+    auto maps   = mr.maps->projs<2>();
+    auto shapes = mr.Sis->projs<2>();
+    if (output != w.tuple({vars[0], vars[1]}) || w.app(maps[0], fn->var()) != w.tuple({vars[0], red})
+        || w.app(maps[1], fn->var()) != w.tuple({red, vars[1]})
+        || lit_projs(shapes[0], 2) != std::optional(fe::Vector<u64>{m, k})
+        || lit_projs(shapes[1], 2) != std::optional(fe::Vector<u64>{k, n}))
+        return {nullptr, "BLIS access maps are not the canonical (m,k),(k,n) contraction"};
+    auto blocks = lit_projs(params, 3);
+    auto rows   = Lit::isa(tile);
+    if (!blocks || !rows) return {nullptr, "BLIS block parameters must be literal"};
+    auto lanes   = Lit::as(w.app(w.annex<vec_width>(), w.lit_nat(4)));
+    auto mr_tile = *rows ? *rows : std::min(u64(5), lanes);
+    auto nr_tile = (*blocks)[0] ? (*blocks)[0] : lanes * 4;
+    auto nc      = (*blocks)[2] ? (*blocks)[2] : (nr_tile > 256 / (lanes * 4) ? 256 : nr_tile * lanes * 4);
+    auto bytes   = Lit::isa(w.app(w.annex(core::trait::size), mr.To));
+    if (!bytes || !*bytes || !nc || nc > std::numeric_limits<u64>::max() / 2 / *bytes)
+        return {nullptr, "BLIS needs a literal element size and representable block storage"};
+    auto kc = (*blocks)[1] ? (*blocks)[1] : std::min(u64(262144) / (nc * *bytes * 2), u64(256));
+    if (!mr_tile || !nr_tile || !nc || !kc)
+        return {nullptr, "BLIS block parameters must be positive after target selection"};
+    if (n > std::numeric_limits<u64>::max() - (nr_tile - 1)
+        || (n + nr_tile - 1) / nr_tile > std::numeric_limits<u64>::max() / nr_tile / k)
+        return {nullptr, "BLIS packed panel size is not representable"};
+    auto types   = mr.Tis->projs<2>();
+    auto builder = w.app(w.annex<group_blis_impl>(), {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps});
+    builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
+                                   w.lit_nat(nc), w.lit_nat(kc)});
+    builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps});
+    auto inputs  = app->arg()->projs<2>();
+    auto data    = inputs[0]->projs<2>();
+    return {w.app(builder, {data[0], data[1], inputs[1]}), {}};
+}
+
+ProducerTile schedule_group(const Def* arg) {
+    auto [producer, kind, dim, tile, params] = arg->projs<5>();
+    auto k = Lit::isa(kind), axis = Lit::isa(dim), size = Lit::isa(tile);
+    if (!k || !axis || !size) return {nullptr, "group kind, axis and tile size must be literal"};
+    if (*k == 1) return blis_group(producer, tile, params);
+    if (*k == 2) {
+        auto plan = reverse_tiles(producer, params, dim, tile);
+        return {nullptr, plan.value ? "reverse multi-root rule did not match the live consumers" : plan.reason};
+    }
+    if (*k != 0) return {nullptr, "unsupported group request kind"};
+    auto app = graph::map_reduce(producer);
+    if (!app) return {nullptr, "outer grouping needs a map_reduce_post"};
+    auto mr     = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks  = mr.ranks();
+    auto budget = Lit::isa(params);
+    if (!ranks || *axis >= ranks->ro || !*size || !budget)
+        return {nullptr, "outer grouping needs a parallel axis, a positive tile and a literal budget"};
+    if (!pure_scalar(mr.comb) || !pure_scalar(mr.post))
+        return {nullptr, "outer grouping needs pure scalar combiner and epilogue"};
+    auto shape = lit_projs(mr.So, ranks->ro);
+    if (!shape) return {nullptr, "outer grouping needs literal output extents"};
+    auto& w = arg->world();
+    DefVec tiles(ranks->ro,
+                 [&](size_t d) { return w.lit_nat(d == *axis ? std::min((*shape)[d], *size) : (*shape)[d]); });
+    for (auto extent : *shape)
+        if (!extent) return {nullptr, "outer grouping needs nonempty output extents"};
+    auto builder = w.app(w.annex<group_impl>(), {mr.Tp, mr.Ro, mr.So});
+    return {w.app(builder, {producer, w.tuple(tiles)}), {}};
+}
+
+const Rule* reverse_group_rule(const App* req, const pattern::GraphView& source) {
+    auto& w                                     = req->world();
+    auto [producer, kind, dim, tile, consumers] = req->args<5>();
+    auto originals                              = graph::map_reduce(consumers) ? DefVec{consumers} : consumers->projs();
+    DefVec actual;
+    LocalRewriter rebase(w);
+    for (auto var : req->free_vars())
+        rebase.map(var, var);
+    rebase.map(producer, req);
+    for (auto consumer : originals) {
+        auto expected    = rebase.rewrite(consumer);
+        const Def* found = nullptr;
+        for (auto edge : source.data_uses(req))
+            if (Check::test_alpha(expected, edge.consumer)) {
+                if (found && found != edge.consumer) return nullptr;
+                found = edge.consumer;
+            }
+        if (!found) return nullptr;
+        actual.push_back(found);
+    }
+    DefVec vars{req->arg()}, pending;
+    for (auto value : actual) {
+        auto call = value->as<App>();
+        vars.push_back(call->callee());
+        pending.push_back(call->arg());
+    }
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (def == req || !seen.insert(def).second) continue;
+        if (def->isa<Tuple>() || def->isa_imm<Pack>()) {
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+        } else
+            vars.push_back(def);
+    }
+    DefVec types;
+    for (auto var : vars) {
+        if (!var->type()->is_closed()) return nullptr;
+        types.push_back(var->type());
+    }
+    auto rule = w.mut_rule(w.reform(w.sigma(types)));
+    LocalRewriter importer(w);
+    for (size_t i = 0; i != vars.size(); ++i)
+        importer.map(vars[i], rule->var()->proj(vars.size(), i));
+    auto meta                  = req->callee()->as<App>()->arg();
+    auto fields                = rule->var()->proj(vars.size(), 0);
+    auto [p, unused, d, t, cs] = fields->projs<5>();
+    auto marker                = w.app(w.app(w.annex<group_req>(), meta), fields);
+    importer.map(req, marker);
+    auto build           = w.app(w.app(w.annex<reverse_build>(), meta), {p, cs, d, t});
+    const Def* condition = w.lit_tt();
+    DefVec lhs{marker}, rhs{build->proj(2, 0)};
+    for (size_t i = 0; i != actual.size(); ++i) {
+        auto value = importer.rewrite(actual[i]);
+        lhs.push_back(value);
+        auto check = w.app(w.app(w.annex<group_reverse_supported>(), {p->type(), cs->type(), value->type()}),
+                           {fields, value, w.lit_nat(i)});
+        condition  = w.call(core::bit2::and_, w.lit_nat(2), w.tuple({condition, check}));
+        rhs.push_back(graph::map_reduce(consumers) ? build->proj(2, 1) : build->proj(2, 1)->proj(actual.size(), i));
+    }
+    return rule->set(w.tuple(lhs), w.tuple(rhs), condition);
+}
+
+std::optional<u64> scope_budget(const pattern::GraphView& source, const Def* reader) {
+    struct Visit {
+        const Def* def;
+        std::optional<u64> budget;
+    };
+    fe::Vector<Visit> pending;
+    for (auto ext : source.world().externals().muts())
+        if (auto fn = ext->isa<Lam>(); fn && fn->is_set()) pending.push_back({fn->body(), {}});
+    DefMap<fe::Vector<std::optional<u64>>> seen;
+    std::optional<u64> result;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i > 64 * (source.world().curr_gid() + 1)) return {};
+        auto [def, budget] = pending[i];
+        auto& visits       = seen[def];
+        if (std::ranges::find(visits, budget) != visits.end()) continue;
+        visits.push_back(budget);
+        if (def == reader) {
+            if (!budget) return {};
+            result = result ? std::min(*result, *budget) : budget;
+        }
+        if (auto scope = Axm::isa<group_region>(def)) {
+            auto [body, cap] = scope->args<2>();
+            pending.push_back({body, Lit::isa(cap)});
+        } else if (Axm::isa<group_req>(def)) {
+            continue;
+        } else if (auto fn = def->isa<Lam>()) {
+            if (fn->is_set() && !fn->is_external()) pending.push_back({fn->body(), budget});
+        } else if (!def->is_mutable() && !def->isa<Var>() && !def->isa<Axm>() && !def->isa<Pi>()) {
+            for (auto op : def->ops())
+                if (op) pending.push_back({op, budget});
+        }
+    }
+    return result;
+}
+
+class CanonicalizeRequests : public RWPhase {
+public:
+    using RWPhase::RWPhase;
+
+private:
+    const Def* rewrite_imm_App(const App* app) override {
+        if (auto mrp = graph::map_reduce(app)) {
+            auto mr = btensor::MapRedPost::of(mrp->callee()->as<App>());
+            if (Lit::isa(mr.nps) == 0) {
+                auto args         = app->uncurry_args<9>();
+                auto& w           = new_world();
+                const Def* result = rewrite(App::uncurry_callee(app));
+                for (size_t i = 0; i != args.size(); ++i) {
+                    auto arg = i == 3 ? w.tuple({rewrite(mr.Tis), rewrite(mr.Ris), rewrite(mr.Sis), w.tuple(),
+                                                 w.tuple(), w.tuple()})
+                                      : rewrite(args[i]);
+                    result   = w.app(result, arg);
+                }
+                return result;
+            }
+        }
+        return RWPhase::rewrite_imm_App(app);
+    }
+};
+
+class RemoveRegions : public RWPhase {
+public:
+    using RWPhase::RWPhase;
+
+private:
+    const Def* rewrite_imm_App(const App* app) override {
+        if (Axm::isa<group_region>(app)) return rewrite(app->arg(2, 0));
+        if (Axm::isa<group_req>(app)) {
+            Rewriter importer(new_world());
+            auto fields = importer.rewrite(app->arg());
+            auto result = schedule_group(fields);
+            auto reason = result.value ? "group rule did not consume the request" : result.reason;
+            if (driver().arg_nat("tensor", "strict").value_or(0))
+                app->blame("tensor.group_req not realized: {}", reason).bail();
+            auto report = log();
+            report.set(fe::Log::Level::Warn).w("tensor.group_req at {} not realized: {}", app->err_loc(), reason);
+            return rewrite(app->arg(5, 0));
+        }
+        return RWPhase::rewrite_imm_App(app);
+    }
+};
+
+} // namespace
+
+const Def* normalize_group_schedule(const Def*, const Def*, const Def* arg) {
+    auto result = schedule_group(arg);
+    if (!result.value) return nullptr;
+    auto& w                            = arg->world();
+    auto [op, kind, dim, tile, params] = arg->projs<5>();
+    auto budget                        = Lit::isa(kind) == 0 ? params : w.lit_nat_1();
+    return w.app(w.app(w.annex<group_region>(), result.value->type()), {result.value, budget});
+}
+
+pattern::WitnessResult group_support_witness(const pattern::GraphView&, Defs inputs, World& target) {
+    auto scratch = target.inherit();
+    Rewriter importer(*scratch);
+    auto result = schedule_group(importer.rewrite(inputs[0]));
+    return result.value ? pattern::WitnessResult{pattern::CheckResult::True, target.lit_tt(), {}}
+                        : pattern::WitnessResult{pattern::CheckResult::Unknown, nullptr, result.reason};
+}
+
+pattern::WitnessResult group_fusion_witness(const pattern::GraphView& source, Defs inputs, World& target) {
+    auto budget = scope_budget(source, inputs[1]);
+    if (!budget) return {pattern::CheckResult::False, nullptr, "reader is not confined to requested groups"};
+    auto scratch = target.inherit();
+    Rewriter importer(*scratch);
+    auto producer = importer.rewrite(inputs[0]);
+    if (Lit::isa(scratch->app(scratch->app(scratch->annex<group_root>(), producer->type()), producer)) != 0)
+        return {pattern::CheckResult::False, nullptr, "fusion cannot cross a contraction or placed root"};
+    return fusion_budget(source, {inputs[0], inputs[1], target.lit_nat(*budget)}, target);
+}
+
+pattern::WitnessResult group_reverse_witness(const pattern::GraphView& source, Defs inputs, World& target) {
+    auto fields = inputs[0];
+    auto kind   = graph::slot(fields, 5, 1);
+    if (!kind || Lit::isa(kind) != 2) return {pattern::CheckResult::False, nullptr, "not a reverse request"};
+    auto producer  = graph::slot(fields, 5, 0);
+    auto consumers = graph::slot(fields, 5, 4);
+    auto dim = graph::slot(fields, 5, 2), tile = graph::slot(fields, 5, 3);
+    if (!producer || !consumers || !dim || !tile)
+        return {pattern::CheckResult::Unknown, nullptr, "reverse group fields are not frozen"};
+    auto reads = graph::map_reduce(consumers) ? DefVec{consumers} : consumers->projs();
+    auto index = Lit::isa(inputs[2]);
+    if (!index || *index >= reads.size())
+        return {pattern::CheckResult::Unknown, nullptr, "reverse group slot is not literal"};
+    for (auto consumer : reads)
+        if (source.data_used_by(producer, consumer) != pattern::CheckResult::True)
+            return {pattern::CheckResult::Unknown, nullptr, "reverse group needs a proven producer-consumer edge"};
+    auto scratch = target.inherit();
+    Rewriter importer(*scratch);
+    const App* request = nullptr;
+    for (auto def : source.nodes())
+        if (auto req = Axm::isa<group_req>(def); req && req->arg() == fields) {
+            if (request && request != req)
+                return {pattern::CheckResult::Unknown, nullptr, "reverse group request is ambiguous"};
+            request = req;
+        }
+    if (!request) return {pattern::CheckResult::Unknown, nullptr, "reverse group request is absent"};
+    auto marker   = importer.rewrite(request);
+    auto original = importer.rewrite(reads[*index]);
+    auto actual   = importer.rewrite(inputs[1]);
+    LocalRewriter rebase(*scratch);
+    for (auto var : original->free_vars())
+        rebase.map(var, var);
+    rebase.map(importer.rewrite(producer), marker);
+    if (!Check::test_alpha(rebase.rewrite(original), actual))
+        return {pattern::CheckResult::Unknown, nullptr, "reverse group consumer is not the requested rebasing"};
+    auto plan = reverse_tiles(importer.rewrite(producer), importer.rewrite(consumers), importer.rewrite(dim),
+                              importer.rewrite(tile));
+    return plan.value ? pattern::WitnessResult{pattern::CheckResult::True, target.lit_tt(), {}}
+                      : pattern::WitnessResult{pattern::CheckResult::Unknown, nullptr, plan.reason};
+}
+
+namespace phase {
+
+void GroupRules::start() {
+    CanonicalizeRequests canonicalize(world(), "tensor.group_rules.canonicalize");
+    canonicalize.run();
+    pattern::GraphView source(world(), driver().graph_operations());
+    DefVec rules, reverse;
+    DefSet types, elements;
+    for (auto def : source.nodes()) {
+        if (auto req = Axm::isa<group_req>(def)) {
+            auto meta = req->callee()->as<App>()->arg();
+            if (Lit::isa(req->arg(5, 1)) == 2) {
+                if (auto rule = reverse_group_rule(req, source)) reverse.push_back(rule);
+                types.insert(meta);
+                continue;
+            }
+            if (!meta->is_closed()) continue;
+            if (types.insert(meta).second) rules.push_back(world().app(world().annex<group_request_rule>(), meta));
+        }
+        if (auto app = graph::map_reduce(def)) {
+            auto mr   = btensor::MapRedPost::of(app->callee()->as<App>());
+            auto meta = world().tuple({mr.Tp, mr.Ro});
+            if (elements.insert(meta).second) {
+                rules.push_back(world().app(world().annex<group_slice_rule>(), meta));
+                rules.push_back(world().app(world().annex<group_box_rule>(), meta));
+            }
+        }
+    }
+    if (types.empty()) return;
+    std::vector<const Rule*> compiled;
+    for (auto rule : rules)
+        compiled.push_back(rule->as<Rule>());
+    Phases stages;
+    if (!reverse.empty()) {
+        std::vector<const Axm*> pure;
+        for (auto name : {"tensor.group_req", "tensor.reverse_build", "tensor.tiled_n", "tensor.tile_of",
+                          "tensor.map_reduce_post", "tensor.slice", "affine.op.add", "affine.op.sub", "affine.lit"})
+            pure.push_back(world().annex(driver().sym(name))->as<Axm>());
+        std::vector<const Rule*> graph_rules;
+        for (auto rule : reverse)
+            graph_rules.push_back(rule->as<Rule>());
+        stages.push_back(std::make_unique<GraphRuleRewrite>(world(), std::move(graph_rules), std::move(pure)));
+    }
+    stages.push_back(std::make_unique<RuleRewrite>(world(), std::move(compiled)));
+    PhaseMan pipeline(world(), "tensor.group_rules.fixed_point");
+    pipeline.apply(true, std::move(stages));
+    pipeline.run();
+    RemoveRegions cleanup(world(), "tensor.group_rules.outcomes");
+    cleanup.run();
+}
+
+} // namespace phase
+} // namespace mim::plug::tensor

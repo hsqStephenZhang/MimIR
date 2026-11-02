@@ -1,0 +1,45 @@
+// RUN: %mim -p opt -X tensor:strict=1 %s -o - | %FileCheck %s
+
+plugin tensor;
+plugin affine;
+plugin core;
+import compile;
+use tensor;
+
+fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
+fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+lam first (x: «5, 7; I64»): «5, 7; I64» =
+    map_reduce ((5, 7), (5, 7)) (inc, 0I64) (affine.id @2) (affine.id @2,) x;
+lam second (x: «5, 7; I64»): «5, 7; I64» =
+    map_reduce ((5, 7), (5, 7)) (twice, 0I64) (affine.id @2) (affine.id @2,) x;
+
+extern fun fused (x: «5, 7; I64»): «5, 7; I64» =
+    return (group_req (second (first (buf x)), 0, 0, 2, 1));
+
+extern fun shared (x: «5, 7; I64»): [«5, 7; I64», «5, 7; I64»] =
+    let p = first (buf x);
+    return (group_req (second p, 0, 0, 2, 1), p);
+
+extern fun boundary (x: «5, 7; I64»): «5, 7; I64» =
+    let p = group_req (first (buf x), 0, 0, 2, 1);
+    return (group_req (second p, 0, 0, 2, 1));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (lower_tensor, group_rules);
+
+// CHECK-LABEL: extern fun boundary
+// CHECK: tensor.tiled
+// CHECK: tensor.slice
+// CHECK: tensor.tiled
+// CHECK-NOT: tensor.group_req
+// CHECK-NOT: tensor.group_region
+// CHECK-LABEL: extern fun fused
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((5, 7), (5, 7),
+// CHECK: tensor.tiled
+// CHECK-NOT: tensor.group_req
+// CHECK-NOT: tensor.group_region
+// CHECK-LABEL: extern fun shared
+// CHECK: tensor.map_reduce_post {{.*}} ((5, 7), (5, 7),
+// CHECK: tensor.tiled
+// CHECK-NOT: tensor.group_req
+// CHECK-NOT: tensor.group_region

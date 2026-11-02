@@ -671,6 +671,45 @@ rowsum、two、swapped、SwiGLU-shaped gating、whole reader、transpose/inner p
 unit test 检查冻结源、literal selectors、18-point permutation grid、
 P-before-C slot、尾块 boxes 和 C 对 P tile 的实际 data edge。
 
+## 11. 请求驱动的组内 Rules（Task 16A.1）
+
+`tensor.group_rules` 从当前程序的 `group_req` 收集具体类型、element type 和 rank，
+实例化 shape-generic Rules，并用 `PhaseMan` 的 fixed-point 协议运行。
+调用方不再枚举 `group_outer`、`fuse_producer` 或逐 shape 的 BLIS Rules。
+请求布局沿用共享 marker commit `97dfe96fad`，没有增加 `Sched` 字段。
+
+kind 0 用指定 parallel axis 的 literal tile 建立 `tiled`；
+kind 1 验证 `(m,k),(k,n)` contraction equations，建立 packed BLIS grid，
+保留 combiner 的 reduction 次序，仅在最后 K block 执行原 post 和全局坐标 post maps。
+支持 canonical reduction 的多维 mixed-radix 展开，拒绝 clipped/custom schedules、
+symbolic extents、tensor init 和不同 accumulator/result types。
+kind 2 生成 multi-root graph Rule，同时替换 producer marker 与实际读取该 marker 的 consumers，
+复用 `reverse_build` 和 `tiled_n` 的 slot-order 证明。
+
+reverse 模板捕获 consumer 的完整 curried callee，只在最后一组 data inputs 上做结构匹配；
+staged witness 再证明它确实是请求中 consumer 对 producer marker 的 rebasing。
+这样不需要匹配 scalar callback 内的 continuation applications，
+也不会把 callback 的执行语义当作任意 higher-order matching。
+零 post-input 的 metadata 先规范化为 unit，避免 singleton metadata 的旧 Holes
+与模板重建后的 unit 发生假不匹配。
+
+临时 `group_region` 限制 producer/halo fusion 的作用域，结束后删除。
+一个 reader 只要也出现在组外就不能被全局共享-node rewrite 改写；
+嵌套请求保留独立边界，contraction/placed roots 也不能穿透。
+预算继续读取每轮完整程序的 closure-aware frozen GraphView，
+统计 tile trips、tail cells 和 whole readers，不把局部缺失的 reader count 当零。
+`group_rules_scope` 检查递归 fusion、whole-reader 预算与嵌套边界；
+`group_rules_exec` 不含手写 Rule，检查三种 kind 的 destination/reference 数值并启用 ASan。
+
+尚未接入默认 pipeline。
+`feat/gpm-group` 的 `485f1b55ed` 允许同一 contraction 同时获得 kind 1 和 kind 2，
+形成 `group_req (group_req (P, 1, ...), 2, ..., consumers)`。
+当前 reverse witness 要求 producer 仍是 map_reduce_post，而 kind 1 的结果已是 tiled/fold；
+因此该组合会明确报告 `producer is not a map_reduce_post`，strict 模式失败，
+普通模式保留已实现的 BLIS 并回退 reverse placement。
+不能通过丢弃其中一个请求或把失败标作已实现来开启默认 grouping。
+最小复现与两种模式日志保留在 `build/task16-stacked*`。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

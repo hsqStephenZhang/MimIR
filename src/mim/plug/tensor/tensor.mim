@@ -1607,7 +1607,35 @@ axm group_root: {T: *} → T → Bool, normalize_group_root;
 /// The rule stage removes realized requests and reports residual requests, failing under `tensor:strict=1`.
 ///
 axm group_req: {P C: *} → [op: P, kind dim tile: Nat, params: C] → P;
+axm group_rules: compile.Phase;
+priv axm group_region: {P: *} → [value: P, budget: Nat] → P;
+priv axm group_supported: {P C: *} → [op: P, kind dim tile: Nat, params: C] → Bool;
+priv axm group_schedule: {P C: *} → [op: P, kind dim tile: Nat, params: C] → P, normalize_group_schedule;
+priv axm group_fusion: {P C: *} → [producer: P, reader: C] → Bool;
+priv axm group_reverse_supported: {P C A: *}
+    → [fields: [op: P, kind dim tile: Nat, params: C], actual: A, slot: Nat] → Bool;
 axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
+
+priv anx lam group_request_rule (P C: *): Rule [p: P, kind dim tile: Nat, params: C] =
+    rule request (p: P, kind dim tile: Nat, params: C):
+        group_req (p, kind, dim, tile, params)
+        when group_supported (p, kind, dim, tile, params) =>
+        group_schedule (p, kind, dim, tile, params);
+    request;
+
+priv anx lam group_slice_rule (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», off ext: «r; Nat»] =
+    rule fuse (s: «r; Nat», p: «s; T», off ext: «r; Nat»):
+        slice s (off, ‹r; 1›, ext) p
+        when group_fusion (p, slice s (off, ‹r; 1›, ext) p) =>
+        tile_of (p, off, ext);
+    fuse;
+
+priv anx lam group_box_rule (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», off ext cap: «r; Nat»] =
+    rule fuse (s: «r; Nat», p: «s; T», off ext cap: «r; Nat»):
+        slice_box s (off, ext, cap) p
+        when group_fusion (p, slice_box s (off, ext, cap) p) =>
+        tile_of_box (p, off, ext, cap);
+    fuse;
 
 pub lam fuse_producer (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», off ext: «r; Nat»] =
     rule fuse (s: «r; Nat», p: «s; T», off ext: «r; Nat»):
@@ -1801,3 +1829,53 @@ priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
     (scope: Nat) (input: «s; T»): «stage_shape s (inner_dims_pos, inner_tiles, outer_perm); T» =
     stage_box_impl @(T, r, k) (s, s) (inner_dims_pos, inner_tiles, outer_perm, pad)
         (‹r; 0›, ‹r; 1›) scope input;
+
+priv anx lam group_blis_impl {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «i: nps; «Rps#i; Nat»»}
+    (M K N: Nat, mr nr nc kc: Nat)
+    (combine: Fn [T, [Ta, Tb]] → T, init: T, post: Fn [T, «i: nps; Tps#i»] → T,
+     post_maps: «i: nps; «2; affine.Index» → «Rps#i; affine.Index»»)
+    (a: «M, K; Ta», b: «K, N; Tb», extras: «i: nps; «Sps#i; Tps#i»»): «M, N; T» =
+    tiled ((M, N), (M, nc))
+        (λ (off ext: «2; Nat»): «ext; T» =
+            let rows = ext#ff;
+            let n = ext#tt;
+            lam block (k ko: Nat, acc: «rows, n; T», last: Bool): «rows, n; T» =
+                let bp = stage @(Tb, 2, 1) (k, n) (1, nr, (tt, ff), ⊥:Tb) 0
+                    (slice @(Tb, 2) (K, N) ((ko, off#tt), (1, 1), (k, n)) b);
+                tiled ((rows, n), (mr, nr))
+                    (λ (row size: «2; Nat»): «size; T» =
+                        let m = size#ff;
+                        let cols = size#tt;
+                        let kt = core.select (core.ncmp.e (k / 4 * 4, k), 4, 1);
+                        let vd = core.select (core.bit2.and 0 (1 < m, 1 < cols), 0,
+                            core.select (1 < cols, 1, 4));
+                        let ap = slice @(Ta, 2) (M, K) ((off#ff + row#ff, ko), (1, 1), (m, k)) a;
+                        let cp = slice @(T, 2) (rows, n) (row, (1, 1), size) acc;
+                        lam leaf {q: Nat, Tqs: «q; *», Rqs: «q; Nat», Sqs: «i: q; «Rqs#i; Nat»»}
+                            (finish: Fn [T, «i: q; Tqs#i»] → T,
+                             reads: «i: q; «2; affine.Index» → «Rqs#i; affine.Index»»,
+                             values: «i: q; «Sqs#i; Tqs#i»»): «size; T» =
+                            map_reduce_post @(2, q) @(T, T, 2, 4, SchedT)
+                                (size, (m, cols, k / kt, kt), mk_sched (vd, 1))
+                                @((Ta, Tb), (2, 3), ((m, k), ((n + nr - 1) / nr, k, nr)), Tqs, Rqs, Sqs)
+                                (combine, outs_default @(T, 2) size cp, finish)
+                                (proj_map @(4, 2) (0, 1))
+                                ((λ (o: «4; affine.Index»): «2; affine.Index» =
+                                    (o#0₄, affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄)),
+                                  λ (o: «4; affine.Index»): «3; affine.Index» =
+                                    let j = affine.op.add (o#1₄, affine.lit (row#tt));
+                                    (affine.semiop.floordiv (j, nr),
+                                     affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄),
+                                     affine.semiop.rem (j, nr))), reads)
+                                ((ap, bp), values);
+                        (λ (): «size; T» = leaf @(0, (), (), ()) (id @T, (), ()),
+                         λ (): «size; T» =
+                             leaf @(nps, Tps, Rps, Sps) (post,
+                                 ‹i: nps; λ (o: «2; affine.Index»): «Rps#i; affine.Index» =
+                                     post_maps#i (affine.op.add (o#ff, affine.lit (off#ff + row#ff)),
+                                                  affine.op.add (o#tt, affine.lit (off#tt + row#tt)))›,
+                                 extras))#last ());
+            let blocks = (K - 1) / kc;
+            let acc = tile_fold (blocks, kc) (splat ((rows, n), init))
+                (λ (acc: «rows, n; T», ko: Nat): «rows, n; T» = block (kc, ko, acc, ff));
+            block (K - blocks * kc, blocks * kc, acc, tt));

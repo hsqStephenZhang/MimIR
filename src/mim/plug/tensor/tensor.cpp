@@ -7,6 +7,7 @@
 #include "mim/plug/tensor/pattern.h"
 #include "mim/plug/tensor/phase/combine_products.h"
 #include "mim/plug/tensor/phase/fuse.h"
+#include "mim/plug/tensor/phase/group_rules.h"
 #include "mim/plug/tensor/phase/lower.h"
 #include "mim/plug/tensor/phase/lower_map_reduce.h"
 #include "mim/plug/tensor/phase/lower_to_mem.h"
@@ -19,6 +20,9 @@ namespace mim::plug::tensor {
 pattern::WitnessResult fusion_budget(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult grouping_candidate(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult reverse_candidate(const pattern::GraphView&, Defs, World&);
+pattern::WitnessResult group_support_witness(const pattern::GraphView&, Defs, World&);
+pattern::WitnessResult group_fusion_witness(const pattern::GraphView&, Defs, World&);
+pattern::WitnessResult group_reverse_witness(const pattern::GraphView&, Defs, World&);
 static pattern::WitnessResult permuted_box(Defs inputs, std::span<const u64> axes, World& target) {
     DefVec offset, extent;
     for (auto axis : axes) {
@@ -84,6 +88,9 @@ static void reg_witnesses(pattern::Witnesses& witnesses) {
     witnesses.emplace(Annex::base<within_budget>(), pattern::Witness{3, fusion_budget});
     witnesses.emplace(Annex::base<group_candidate>(), pattern::Witness{2, grouping_candidate});
     witnesses.emplace(Annex::base<reverse_legal>(), pattern::Witness{1, reverse_candidate});
+    witnesses.emplace(Annex::base<group_supported>(), pattern::Witness{1, group_support_witness});
+    witnesses.emplace(Annex::base<group_fusion>(), pattern::Witness{2, group_fusion_witness});
+    witnesses.emplace(Annex::base<group_reverse_supported>(), pattern::Witness{3, group_reverse_witness});
 }
 
 static void reg_phases(Flags2Phases& phases) {
@@ -92,6 +99,7 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<lower_tensor, phase::Lower>(phases);
     Phase::hook<lower_map_reduce, phase::LowerMapReduce>(phases);
     Phase::hook<fuse_tensor, phase::Fuse>(phases);
+    Phase::hook<group_rules, phase::GroupRules>(phases);
     Phase::hook<lower_to_mem, phase::LowerToMem>(phases);
 }
 } // namespace mim::plug::tensor

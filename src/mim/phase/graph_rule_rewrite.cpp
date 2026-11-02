@@ -88,6 +88,23 @@ std::vector<Region> regions(Lam* fn) {
 }
 } // namespace
 
+GraphRuleRewrite::GraphRuleRewrite(World& world, std::vector<const Rule*> rules, std::vector<const Axm*> pure)
+    : Phase(world, "graph_rule_app") {
+    templates_ = world.inherit();
+    Rewriter importer(*templates_);
+    for (auto rule : rules) {
+        if (!rule || !rule->is_set() || !rule->is_closed() || &rule->driver() != &driver())
+            throw std::invalid_argument("graph_rule_app expects closed Rules of the same Driver");
+        pattern::RulePattern(rule).check_definition();
+        rules_.push_back(importer.rewrite(rule)->as<Rule>());
+    }
+    for (auto axm : pure) {
+        if (!axm || &axm->driver() != &driver())
+            throw std::invalid_argument("graph_rule_app expects pure axioms of the same Driver");
+        pure_.push_back(importer.rewrite(axm)->as<Axm>());
+    }
+}
+
 void GraphRuleRewrite::apply(const App* app) {
     if (!app) throw std::invalid_argument("graph_rule_app requires (Rules, pure axioms)");
     auto pair       = app->arg()->isa<Tuple>();
@@ -135,7 +152,8 @@ void GraphRuleRewrite::apply(const App* app) {
 }
 
 std::unique_ptr<Phase> GraphRuleRewrite::recreate() {
-    auto result              = std::make_unique<GraphRuleRewrite>(world(), annex());
+    auto result              = annex() ? std::make_unique<GraphRuleRewrite>(world(), annex())
+                                       : std::make_unique<GraphRuleRewrite>(world(), std::string(name()));
     result->templates_       = templates_;
     result->rules_           = rules_;
     result->pure_            = pure_;

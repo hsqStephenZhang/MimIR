@@ -11,6 +11,7 @@ namespace mim {
 class GraphRuleRewrite : public Phase {
 public:
     using Phase::Phase;
+    GraphRuleRewrite(World&, std::vector<const Rule*>, std::vector<const Axm*> pure);
     void apply(const App*) override;
     std::unique_ptr<Phase> recreate() override;
     void set_rewrite_options(pattern::RewriteOptions options) { rewrite_options_ = options; }
