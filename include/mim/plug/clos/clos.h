@@ -133,10 +133,8 @@ const Def* clos_remove_env(size_t ep, size_t i, std::function<const Def*(size_t)
 inline const Def* clos_remove_env(size_t ep, size_t i, const Def* def) {
     return clos_remove_env(ep, i, [&, n = def->num_projs()](auto i) { return def->proj(n, i); });
 }
-inline const Def* clos_remove_env(size_t ep, const Def* tup_or_sig) {
-    auto& w      = tup_or_sig->world();
-    auto new_ops = DefVec(tup_or_sig->num_projs() - 1, [&](auto i) { return clos_remove_env(ep, i, tup_or_sig); });
-    return (tup_or_sig->isa<Sigma>()) ? w.sigma(new_ops) : w.tuple(new_ops);
+inline DefVec clos_remove_env(size_t ep, const Def* tup_or_sig) {
+    return DefVec(tup_or_sig->num_projs() - 1, [&](auto i) { return clos_remove_env(ep, i, tup_or_sig); });
 }
 
 inline const Def* clos_sub_env(size_t ep, const Def* tup_or_sig, const Def* new_env) {

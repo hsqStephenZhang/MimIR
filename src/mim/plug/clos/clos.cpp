@@ -102,11 +102,11 @@ Sigma* clos_type(const Pi* pi) {
 
 const Pi* clos_type_to_pi(const Def* ct, const Def* new_env_type) {
     assert(isa_clos_type(ct));
-    auto& w      = ct->world();
-    auto pi      = ct->op(1_u64)->as<Pi>();
-    auto ep      = env_param(pi);
-    auto new_dom = new_env_type ? clos_sub_env(ep, pi->dom(), new_env_type) : clos_remove_env(ep, pi->dom());
-    return w.cn(new_dom);
+    auto& w = ct->world();
+    auto pi = ct->op(1_u64)->as<Pi>();
+    auto ep = env_param(pi);
+    if (new_env_type) return w.cn(clos_sub_env(ep, pi->dom(), new_env_type));
+    return w.cn(clos_remove_env(ep, pi->dom()));
 }
 
 /*

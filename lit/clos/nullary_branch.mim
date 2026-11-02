@@ -1,0 +1,21 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin clos;
+plugin compile;
+
+extern con choose (condition: Bool, return: Cn I32) =
+    con zero () = return 0I32;
+    con one () = return 1I32;
+    (zero, one)#condition ();
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (clos.clos_conv_prep, clos.clos_conv, clos.branch_clos, compile.cleanup);
+
+// CHECK: con choose{{.*}}
+// CHECK: con zero () =
+// CHECK: 0I32
+// CHECK: con one () =
+// CHECK: 1I32
+// CHECK: (zero, one)#{{.*}} ()
+// CHECK: extern fun choose
