@@ -141,7 +141,8 @@ struct Cost {
                 exact &= axes->proj(*r, d) == w.lit_tt();
             auto input = values->proj(*num, i);
             auto p     = graph::map_reduce(input);
-            if (p && !boundaries.contains(p) && (budget > 1 || !root(p))) {
+            if (p && !boundaries.contains(p)
+                && (!root(p) || !blis_group(p, w.lit_nat_0(), w.pack(3, w.lit_nat_0())).value)) {
                 if (cap != extent && !storage(types->proj(*num, i), cap, *r)) return false;
                 if (!visit(p, start, extent, depth + 1)) return false;
             } else if (!storage(types->proj(*num, i), cap, *r)) {
@@ -234,6 +235,7 @@ private:
         auto ranks = *mr.ranks();
         auto shape = *lit_projs(mr.So, ranks.ro);
         u64 trips  = shape[dim] / tile + (shape[dim] % tile != 0);
+        if (!consumers && trips == 1 && root(op)) return reject("outer contraction would not create a tile region");
         std::optional<MultiTilePlan> reverse;
         if (consumers) {
             auto domain = *lit_projs(mr.Sr, ranks.nloops());
@@ -372,7 +374,12 @@ void Group::start() {
                 log().d("tensor.group skip contraction {}: cache is too small for target BLIS blocks", op);
                 continue;
             }
-            requests_.emplace(op, Request{1, 0, Lit::as(mr_block), scratch->tuple({nr, kc, nc}), {}});
+            auto params = scratch->tuple({nr, kc, nc});
+            if (auto blis = blis_group(imported, mr_block, params); !blis.value) {
+                log().d("tensor.group contraction {} uses outer recipe: {}", op, blis.reason);
+                continue;
+            }
+            requests_.emplace(op, Request{1, 0, Lit::as(mr_block), params, {}});
             claimed.insert(op);
             log().d("tensor.group contraction {}: MR={} NR={} KC={} NC={}", op, mr_block, nr, kc, nc);
         }
@@ -413,7 +420,15 @@ void Group::start() {
     for (auto op : source.operations()) {
         if (!graph::map_reduce(op) || claimed.contains(op) || requests_.contains(op)) continue;
         auto selected = grouping_candidate(source, DefVec{op, scratch->lit_nat_1()}, *scratch);
-        if (selected.status != pattern::CheckResult::True || selected.value != scratch->lit_tt()) continue;
+        if (selected.status != pattern::CheckResult::True || selected.value != scratch->lit_tt()) {
+            auto imported = planner.import(op);
+            auto mr       = btensor::MapRedPost::of(imported->as<App>()->callee()->as<App>());
+            if (!root(imported) || !canonical(mr) || !pure_scalar(mr.comb) || !pure_scalar(mr.post)) continue;
+            bool terminal = true;
+            for (auto use : source.data_uses(op))
+                if (graph::map_reduce(use.consumer) && !is_pure_read(use.consumer)) terminal = false;
+            if (!terminal) continue;
+        }
         if (auto choice = planner.choose(op))
             requests_.emplace(op, Request{0, choice->dim, choice->tile, scratch->lit_nat(budget), {}});
     }

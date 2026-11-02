@@ -79,8 +79,8 @@ extern fun conv_chain (a: «2, 2, 9, 8; I64», w: «3, 2, 3, 3; I64», v: «2, 3
     return (conv ring ((1, 1), (1, 1), (0, 0)) (p, buf v));
 
 // CHECK-LABEL: extern fun conv_chain
-// CHECK: tensor.group_req {{.*}} 1, 0, 4,
-// CHECK: tensor.group_req {{.*}} 1, 0, 4,
+// CHECK-NOT: tensor.group_req {{.*}} 1, 0, 4,
+// CHECK: tensor.group_req {{.*}} 0, 0, 1, 1
 // CHECK-LABEL: extern fun gemm_epilogue
 // CHECK: tensor.group_req {{.*}} 1, 0, 4,
 // CHECK-LABEL: extern fun inner
@@ -104,7 +104,7 @@ extern fun conv_chain (a: «2, 2, 9, 8; I64», w: «3, 2, 3, 3; I64», v: «2, 3
 // REDUCTION-NOT: tensor.group choose {{.*}} kind=2 dim=0
 // OFF-NOT: tensor.group_req
 // REPORT-DAG: unrealized tensor.group_req kind=0 dim=0 tile=4 at {{.*}}probe.mim
-// REPORT-DAG: unrealized tensor.group_req kind=1 dim=0 tile=4 at {{.*}}tensor.mim
+// REPORT-DAG: unrealized tensor.group_req kind=0 dim=0 tile=1 at {{.*}}tensor.mim
 // STRICT: error: unrealized tensor.group_req kind=
 // LANES: tensor.group_req {{.*}} 1, 0, 1, (4, i8, 16)
 // BUFFER: unrealized tensor.group_req kind=

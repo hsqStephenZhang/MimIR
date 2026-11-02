@@ -7,11 +7,19 @@
 // RUN: %mim -p opt -p ll -X tensor:group=0 %s -X ll:o=%t.off.ll
 // RUN: clang++ -O3 -fsanitize=address %S/group_default_aux.cpp %t.off.ll -o %t.off -Wno-override-module
 // RUN: %t.off
+// RUN: %mim -p opt -p ll -X tensor:group=1 -X tensor:group-budget=3 -X tensor:strict=1 %s -X ll:o=%t.halo.ll --profile summary --output-profile %t.halo.profile -V -V -V -V 2> %t.halo.log
+// RUN: %FileCheck %s --check-prefix=HALO < %t.halo.profile
+// RUN: %FileCheck %s --check-prefix=CLEAN < %t.halo.log
+// RUN: clang++ -O3 -fsanitize=address %S/group_default_aux.cpp %t.halo.ll -o %t.halo -Wno-override-module
+// RUN: %t.halo
+// RUN: python3 %S/group_run.py %mim %s %t.structure realize -Xtensor:group-budget=3 > %t.structure.out 2> %t.structure.log
+// RUN: %FileCheck %s --check-prefix=STRUCTURE < %t.structure.out
 
 plugin tensor;
 plugin affine;
 plugin math;
 plugin core;
+plugin compile;
 use tensor;
 let F32 = math.F32;
 let mode = math.mode.fast;
@@ -78,12 +86,19 @@ extern fun conv_chain (a: «1, 2, 7, 8; F32», w: «3, 2, 3, 3; F32», v: «2, 3
     return (conv Ring @(1, 3, 2, 5, 6, 3, 3) ((1, 1), (1, 1), (0, 0)) (hidden, buf v));
 
 // OUTCOME: tensor.group_default.pipeline
-// OUTCOME-DAG: not realized: BLIS needs two parallel axes and two inputs
+// OUTCOME-DAG: rejected: producer recomputation exceeds budget
 // OUTCOME: finish phase `tensor.group_rules.outcomes`
 // OUTCOME: finish phase `tensor.lower_to_mem`
 // PROFILE-DAG: 3  `rule_app`: `rule.rewrites`
 // PROFILE-DAG: 2  `graph_rule_app`: `graph_rule.rewrites`
-// PROFILE-DAG: 7  `tensor.group`: `tensor.group.requests`
+// PROFILE-DAG: 5  `tensor.group`: `tensor.group.requests`
 // REPORTED-NOT: replacement removes a computation without a purity proof
-// REPORTED-COUNT-2: not realized:
 // REPORTED-NOT: not realized:
+// HALO-DAG: 6  `rule_app`: `rule.rewrites`
+// HALO-DAG: 6  `tensor.group`: `tensor.group.requests`
+// CLEAN-NOT: not realized:
+// CLEAN-NOT: tensor destination fallback
+// STRUCTURE-LABEL: extern fun conv_chain
+// STRUCTURE: tensor.tile_of_box
+// STRUCTURE: tensor.tiled_n
+// STRUCTURE-NOT: tensor.group_req

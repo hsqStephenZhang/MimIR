@@ -8,6 +8,38 @@ graph publication 的原有 purity 保留检查无需放宽。
 5×7 softmax/layernorm 的两个 reverse 请求均实现；
 `group_default.mim` 保留 scalar reference、ASan 和两次 graph rewrite 的计数检查。
 
+## Task 19A.2b：packed conv 的 origin 与 scoped halo
+
+packed conv 不再获得必然失败的 kind 1 请求；planner 先复用 BLIS recipe 的完整前提检查，
+不适用时搜索 generic outer recipe。已有请求的 producer 不会在第二次 group 时被重新标记。
+预算仍默认为 **1**，即不接受额外 producer cell 重算；
+单 batch 的 3×3 halo 分块重叠因此拒绝，不能把整轴恒等 tile 冒充成功分块。
+多 batch 若按 batch 分块无重叠，预算 1 仍可合法实现。
+显式 `group-budget=3` 时，5×7×8 小 conv 链选择 width tile=3、重算比 2，
+不是改变默认预算来掩盖成本。
+
+destination lowering 将已知为 0 的 origin 分量在 body 实例化前保留为 literal；
+循环及非零尾块 origin 仍用各自的参数绑定，ext 沿用原有逐尾块 literal 特化。
+group_impl 同样将只有一个 tile 的轴 origin 固定为 0。
+packed contraction 的 recipe 进一步把 full/tail 分成已有的单结果 `tiled_n` 区域，
+每个区域 callback 的 ext 是 literal，活动轴 origin 是 `point * tile + base`，
+其余 origin 是 literal 0；两段用 concat 连接。
+这让特化后的 slice_box 在进入 bufferization **之前**就能被原有 group_box_rule 匹配。
+不是在 memory lowering 中直接强制 producer fusion。
+预算 witness 在 scratch world 枚举 tiled_n 的 point，沿用同一 closure-aware use index 和求和上限。
+运行时 point 特化才可化简的 boxed producer 模板继续保留，不先物化其 whole result。
+
+`Region::dim` 的修复仍需要：conv 的 neutral split 在 map_out 中保留 `i*1 + j`，
+其中 j 的 domain 为 `[0,1)`，原来的 lin 仍给 j 系数 1，无法证明 preimage。
+只有 lo=0、extent=1 的维度改成线性常数 0；
+`affine/box_singleton.mim` 同时检查 singleton 的 exact=true 与非 singleton 的保守 false。
+没有弱化 preimage、alias 或 purity 前提。
+
+`group_default.mim` 在预算 1 和预算 3 下都做 scalar-reference/ASan 执行；
+预算 3 为 6 个请求、2 次 reverse rewrite、6 次普通 Rule rewrite
+（3 个 BLIS、1 个 outer、2 个 full/tail halo），无未实现请求或 destination fallback。
+旧的 explicit group/BLIS、非整除 tile-cap 用例仍保留验证。
+
 ## Task 19A.1：自动 BLIS 与显式 Rule 对齐
 
 自动 selector 曾用 `vec_width 8` 和 32 KiB cache，显式 Rule 用 `vec_width 4` 和

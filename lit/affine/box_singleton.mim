@@ -1,0 +1,18 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin affine;
+plugin core;
+plugin compile;
+lam packed (i j k: affine.Index): «3; affine.Index» =
+    let merged = affine.op.add (affine.semiop.mul (i, 1), j);
+    (affine.semiop.floordiv (merged, 1), affine.semiop.rem (merged, 1), k);
+extern lam neutral (): [«3; Nat», «3; Nat», «3; Nat», Bool] =
+    affine.preimage @(3, 3) packed ((0, 0, 1), (4, 1, 2), (4, 1, 5));
+extern lam nonunit (): [«3; Nat», «3; Nat», «3; Nat», Bool] =
+    affine.preimage @(3, 3) packed ((0, 0, 1), (4, 1, 2), (4, 2, 5));
+
+// CHECK-LABEL: extern lam neutral
+// CHECK: ((0, 0, 1), (4, 1, 2), (4, 1, 2), tt)
+// CHECK-LABEL: extern lam nonunit
+// CHECK: ff
+extern lam _compile (): compile.Phase = compile.cleanup;

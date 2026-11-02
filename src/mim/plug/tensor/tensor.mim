@@ -1757,7 +1757,9 @@ priv anx lam tiled_n_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
     run (0, init);
 
 priv anx lam group_impl {T: *, r: Nat, s: «r; Nat»} (p: «s; T», ts: «r; Nat»): «s; T» =
-    tiled @(T, r) (s, ts) (λ (off ext: «r; Nat»): «ext; T» = tile_of (p, off, ext));
+    tiled @(T, r) (s, ts) (λ (off ext: «r; Nat»): «ext; T» =
+        let origin = ‹d: r; (off#d, 0)#(s#d <= ts#d)›;
+        tile_of (p, origin, ext));
 
 priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat»)
     (body: [off ext: «r; Nat»] → «ext; T»): «s; T» =

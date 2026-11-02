@@ -33,6 +33,8 @@ public:
     }
 };
 
+} // namespace
+
 ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params) {
     auto app = graph::map_reduce(producer);
     if (!app) return {nullptr, "BLIS needs a map_reduce_post"};
@@ -105,6 +107,42 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     return {w.app(builder, {data[0], data[1], inputs[1]}), {}};
 }
 
+namespace {
+
+const Def* outer_parts(const Def* producer, const btensor::MapRedPost& mr, u64 axis, u64 tile) {
+    auto& w    = producer->world();
+    auto rank  = Lit::as(mr.Ro);
+    auto shape = *lit_projs(mr.So, rank);
+    auto full = shape[axis] / tile, tail = shape[axis] % tile;
+    DefVec parts, shapes;
+    for (auto remainder : {false, true}) {
+        auto trips = remainder ? u64(tail != 0) : full;
+        if (!trips) continue;
+        auto extent     = mr.So->projs(rank);
+        extent[axis]    = w.lit_nat(remainder ? tail : tile);
+        auto ext        = w.tuple(extent);
+        auto storage    = extent;
+        storage[axis]   = w.lit_nat(remainder ? tail : full * tile);
+        auto part_shape = w.tuple(storage);
+        auto boxes      = w.mut_lam(w.type_nat(), w.app(w.annex<TileBox>(), mr.Ro));
+        auto off        = DefVec(rank, w.lit_nat_0());
+        off[axis]       = w.call(core::nat::mul, Defs{boxes->var(), w.lit_nat(tile)});
+        boxes->set(true, w.tuple({w.tuple(off), ext}));
+        auto body = w.mut_lam(w.type_nat(), w.arr(ext, mr.Tp));
+        off[axis] = w.call(core::nat::add, Defs{w.call(core::nat::mul, Defs{body->var(), w.lit_nat(tile)}),
+                                                w.lit_nat(remainder ? full * tile : 0)});
+        auto read = w.app(w.app(w.annex<tile_of_box>(), {mr.Tp, mr.Ro}), mr.So);
+        body->set(true, w.app(read, {producer, w.tuple(off), ext, ext}));
+        auto tiled = w.app(w.annex<tiled_n>(), {w.lit_nat_1(), w.lit_nat_1(), mr.Tp, mr.Ro});
+        tiled      = w.app(w.app(w.app(tiled, {part_shape, w.lit_nat(trips)}), boxes), body);
+        parts.push_back(tiled);
+        shapes.push_back(part_shape);
+    }
+    if (parts.size() == 1) return parts.front();
+    auto join = w.app(w.annex<concat>(), {mr.Tp, w.lit_nat(parts.size()), mr.Ro});
+    return w.app(w.app(w.app(join, w.lit_idx(rank, axis)), w.tuple(shapes)), w.tuple(parts));
+}
+
 ProducerTile schedule_group(const Def* arg) {
     auto [producer, kind, dim, tile, params] = arg->projs<5>();
     auto k = Lit::isa(kind), axis = Lit::isa(dim), size = Lit::isa(tile);
@@ -126,11 +164,13 @@ ProducerTile schedule_group(const Def* arg) {
         return {nullptr, "outer grouping needs pure scalar combiner and epilogue"};
     auto shape = lit_projs(mr.So, ranks->ro);
     if (!shape) return {nullptr, "outer grouping needs literal output extents"};
-    auto& w = arg->world();
-    DefVec tiles(ranks->ro,
-                 [&](size_t d) { return w.lit_nat(d == *axis ? std::min((*shape)[d], *size) : (*shape)[d]); });
     for (auto extent : *shape)
         if (!extent) return {nullptr, "outer grouping needs nonempty output extents"};
+    auto& w = arg->world();
+    if (Lit::isa(w.app(w.app(w.annex<group_root>(), producer->type()), producer)) != 0)
+        return {outer_parts(producer, mr, *axis, std::min((*shape)[*axis], *size)), {}};
+    DefVec tiles(ranks->ro,
+                 [&](size_t d) { return w.lit_nat(d == *axis ? std::min((*shape)[d], *size) : (*shape)[d]); });
     auto builder = w.app(w.annex<group_impl>(), {mr.Tp, mr.Ro, mr.So});
     return {w.app(builder, {producer, w.tuple(tiles)}), {}};
 }
@@ -306,8 +346,14 @@ pattern::WitnessResult group_fusion_witness(const pattern::GraphView& source, De
     auto scratch = target.inherit();
     Rewriter importer(*scratch);
     auto producer = importer.rewrite(inputs[0]);
-    if (Lit::isa(scratch->app(scratch->app(scratch->annex<group_root>(), producer->type()), producer)) != 0)
-        return {pattern::CheckResult::False, nullptr, "fusion cannot cross a contraction or placed root"};
+    auto app      = graph::map_reduce(producer);
+    if (!app) return {pattern::CheckResult::False, nullptr, "fusion producer is not a map_reduce_post"};
+    auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    if (!Check::test_alpha(mr.TSched, scratch->annex<btensor::SchedT>())
+        || !Check::test_alpha(mr.sched, scratch->app(scratch->annex<btensor::mk_sched>(),
+                                                     scratch->app(scratch->annex<tile_sched>(), mr.sched)))
+        || blis_group(producer, scratch->lit_nat_0(), scratch->pack(3, scratch->lit_nat_0())).value)
+        return {pattern::CheckResult::False, nullptr, "fusion cannot cross a BLIS or placed root"};
     return fusion_budget(source, {inputs[0], inputs[1], target.lit_nat(*budget)}, target);
 }
 

@@ -1280,10 +1280,14 @@ const Def* LowerToMem::lower_tile_body(const Def* body,
     auto rank           = Lit::as(ext->arity());
     auto parameter      = old.mut_lam(old.pi(old.arr(rank, old.type_nat()), old.type_nat()));
     auto origin         = parameter->var();
+    auto specialized    = old.tuple(DefVec(rank, [&](size_t d) {
+        auto component = off->proj(rank, d);
+        return Lit::isa(component) == 0 ? old.lit_nat_0() : origin->proj(rank, d);
+    }));
     auto literal_extent = Rewriter(old).rewrite(ext);
     const Def* root;
     if (auto lam = body->isa<Lam>(); lam && lam->is_set())
-        root = lam->reduce(old.tuple({origin, literal_extent})).back();
+        root = lam->reduce(old.tuple({specialized, literal_extent})).back();
     else
         body->blame("tensor.tiled body must be a defined lambda").bail();
     auto pending = fe::Restore(pending_, {});

@@ -28,6 +28,7 @@ struct ProducerTile {
 
 ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* box_cap = nullptr);
 ProducerTile reverse_tiles(const Def* producer, const Def* consumers, const Def* dim, const Def* tile_size);
+ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params);
 bool pure_scalar(const Def*);
 
 struct MultiTilePlan {

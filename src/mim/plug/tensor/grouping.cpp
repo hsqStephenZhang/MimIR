@@ -99,6 +99,26 @@ private:
             return whole;
         }
         auto call = occurrence.regions[i];
+        if (auto tiled = Axm::isa<tiled_n>(call)) {
+            Rewriter geometry(world_);
+            auto plan = multi_tile_plan(geometry.rewrite(tiled)->as<App>());
+            auto body = tiled->arg()->isa<Lam>();
+            if (!body || !body->is_set()) return {};
+            u64 total = 0;
+            for (auto point : plan.points) {
+                if (++work_ > 65536) return {};
+                importer_.push();
+                if (auto var = body->has_var()) {
+                    importer_.bind_old(var);
+                    importer_.map(var, importer_.rewrite(point));
+                }
+                auto part = region(occurrence, reader, whole, i + 1);
+                importer_.pop();
+                if (!part || total > std::numeric_limits<u64>::max() - *part) return {};
+                total += *part;
+            }
+            return total;
+        }
         if (auto fold = Axm::isa<tile_fold>(call)) {
             auto [type, blocks, init, body] = fold->uncurry_args<4>();
             auto n                          = Lit::isa(importer_.rewrite(blocks->proj(2, 0)));

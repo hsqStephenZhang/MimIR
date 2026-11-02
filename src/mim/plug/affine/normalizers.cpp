@@ -218,9 +218,10 @@ private:
 
     /// A dim of extent 1 is a single value, which any number of uses may share.
     Itv dim(u64 i) {
-        auto lo   = lo_->proj(n_, i);
-        auto ex   = ext_->proj(n_, i);
-        auto l    = Lin{std::vector<int64_t>(n_)};
+        auto lo = lo_->proj(n_, i);
+        auto ex = ext_->proj(n_, i);
+        auto l  = Lin{std::vector<int64_t>(n_)};
+        if (Lit::isa(lo) == 0 && Lit::isa(ex) == 1) return Itv{lo, lo, ex, w_.lit_tt(), 0, l};
         l.c[i]    = 1;
         auto unit = Lit::isa(ex) == 1;
         return Itv{lo, unit ? lo : add(lo, sub(ex, one())), ex, w_.lit_tt(), unit ? 0 : u64(1) << i, l};
