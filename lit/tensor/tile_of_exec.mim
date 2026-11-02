@@ -1,0 +1,50 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -O3 %S/tile_of_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -X tensor:reference-tiles=1 -p opt %s -p ll
+// RUN: clang++ -O3 %S/tile_of_aux.cpp %{s:stem}.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
+
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+
+fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+fun post (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+lam rows (a: «6, 5; I64», b: «6; I64»): «6; I64» =
+    map_reduce_post @(1, 1) @(I64, I64, 1, 2, SchedT)
+        (6, (6, 5), mk_sched (2, 0)) @(I64, 2, (6, 5), I64, 1, 6)
+        (add, 1I64, post) (proj_map @(2, 1) 0)
+        (affine.id, affine.id) (a, b);
+
+extern fun tile (a: «6, 5; I64», b: «6; I64»): «3; I64» =
+    return (tile_of (rows (buf a, buf b), 2, 3));
+extern fun reference (a: «6, 5; I64», b: «6; I64»): «3; I64» =
+    return (tile_of_ref (rows (buf a, buf b), 2, 3));
+extern fun runtime_tile (a: «6, 5; I64», b: «6; I64», off: Nat): «3; I64» =
+    return (tile_of (rows (buf a, buf b), off, 3));
+
+extern fun permuted (a: «6, 5; I64»): «2, 3; I64» =
+    fun keep (_ x: I64)@tt: I64 = return x;
+    let p = map_reduce ((5, 6), (6, 5)) (keep, 0I64)
+        (λ (i j: affine.Index): «2; affine.Index» = (j, i)) (affine.id @2,) (buf a);
+    return (tile_of (p, (1, 2), (2, 3)));
+
+extern fun seeded_empty (a: «6, 5; I64», b: «6; I64»): «3; I64» =
+    let p = map_reduce_post @(1, 0) @(I64, I64, 1, 2, SchedT)
+        (6, (6, 0), mk_sched (2, 0)) @(I64, 2, (6, 5), (), (), ())
+        (add, outs_default @(I64, 1) 6 (buf b), id @I64)
+        (proj_map @(2, 1) 0) (affine.id, ()) (buf a, ());
+    return (tile_of (p, 2, 3));
+
+extern fun partition (a: «6, 5; I64», b: «6; I64»): «6; I64» =
+    return (tiled @(I64, 1) (6, 4)
+        (λ (off ext: «1; Nat»): «ext; I64» = tile_of (rows (buf a, buf b), off, ext)));
+
+extern fun shifted (a: «6; I64»): «3; I64» =
+    fun keep (_ x: I64)@tt: I64 = return x;
+    let p = map_reduce (8, 6) (keep, 0I64)
+        (λ (i: affine.Index): affine.Index = affine.op.add (i, affine.lit 1))
+        (affine.id @1,) (buf a);
+    return (tile_of (p, 2, 3));

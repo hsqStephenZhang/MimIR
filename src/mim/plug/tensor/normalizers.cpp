@@ -15,6 +15,101 @@
 
 namespace mim::plug::tensor {
 
+ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext) {
+    auto app = graph::map_reduce(producer);
+    if (!app) return {nullptr, "producer is not a map_reduce_post"};
+    auto mr  = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto rks = mr.ranks();
+    if (!rks) return {nullptr, "producer ranks are not literal"};
+    auto& w = producer->world();
+    auto ro = rks->ro;
+    auto rn = rks->nloops();
+    if (!Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>()))
+        return {nullptr, "producer has a custom schedule type"};
+    auto record = w.app(w.annex<tile_sched>(), mr.sched);
+    if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), record)))
+        return {nullptr, "producer schedule is not a canonical nest"};
+    auto slice
+        = [&](const Def* type, const Def* rank, const Def* shape, const Def* value, const Def* lo, const Def* size) {
+              auto call = w.app(w.annex<tensor::slice>(), {type, rank});
+              call      = w.app(call, shape);
+              call      = w.app(call, {lo, w.pack(rank, w.lit_nat_1()), size});
+              return w.app(call, value);
+          };
+    auto shift = [&](const Def* map, const Def* n, const Def* m, const Def* lo, const Def* origin) {
+        auto call = w.app(w.annex<tile_shift>(), {n, m});
+        return w.app(w.app(call, map), {lo, origin});
+    };
+    auto image = [&](const Def* map, const Def* n, const Def* m, const Def* lo, const Def* size, const Def* shape) {
+        auto call = w.app(w.app(w.annex<affine::image>(), {n, m}), map);
+        return w.app(call, {lo, size, shape});
+    };
+    auto pre = w.app(w.app(w.annex<affine::preimage>(), {mr.Rn, mr.Ro}), mr.map_out);
+    pre      = w.app(pre, {off, ext, mr.Sr});
+    if (pre->proj(4, 3) != w.lit_tt()) return {nullptr, "write preimage is not proven exact"};
+    auto lo = pre->proj(4, 0), size = pre->proj(4, 1);
+    for (u64 d = ro; d != rn; ++d)
+        if (Lit::isa(lo->proj(rn, d)) != 0 || size->proj(rn, d) != mr.Sr->proj(rn, d))
+            return {nullptr, "write preimage cuts a reduction dimension"};
+
+    auto [values, post_values] = app->args<2>();
+    auto shapes = DefVec(), maps = DefVec(), inputs = DefVec();
+    auto post_shapes = DefVec(), post_maps = DefVec(), post_inputs = DefVec();
+    auto boxes = [&](u64 count, const Def* ranks, const Def* source_shapes, const Def* source_maps,
+                     const Def* source_types, const Def* source_values, const Def* n, const Def* origin,
+                     const Def* domain, DefVec& result_shapes, DefVec& result_maps, DefVec& result_values) -> bool {
+        for (u64 i = 0; i != count; ++i) {
+            auto rank = ranks->proj(count, i);
+            if (!Lit::isa(rank)) return false;
+            auto shape = source_shapes->proj(count, i), map = source_maps->proj(count, i);
+            auto box = image(map, n, rank, origin, domain, shape);
+            if (Axm::isa<affine::image>(box)) return false;
+            auto start = box->proj(4, 0), extent = box->proj(4, 1);
+            auto empty = false;
+            auto r     = *Lit::isa(rank);
+            for (u64 d = 0; d != r; ++d)
+                empty |= Lit::isa(extent->proj(r, d)) == 0;
+            if (empty) {
+                start  = w.pack(rank, w.lit_nat_0());
+                extent = shape;
+            }
+            result_shapes.push_back(extent);
+            result_maps.push_back(shift(map, n, rank, origin, start));
+            auto value = source_values->proj(count, i);
+            result_values.push_back(empty ? value
+                                          : slice(source_types->proj(count, i), rank, shape, value, start, extent));
+        }
+        return true;
+    };
+    if (!boxes(rks->nis, mr.Ris, mr.Sis, mr.maps, mr.Tis, values, mr.Rn, lo, size, shapes, maps, inputs))
+        return {nullptr, "input map does not beta-reduce or has symbolic rank"};
+    if (!boxes(rks->nps, mr.Rps, mr.Sps, mr.post_maps, mr.Tps, post_values, mr.Ro, off, ext, post_shapes, post_maps,
+               post_inputs))
+        return {nullptr, "post map does not beta-reduce or has symbolic rank"};
+    auto init = mr.init;
+    if (auto outs = tensor_init(mr)) {
+        auto cells = w.tuple(DefVec(rn, [&](size_t d) { return d < ro ? size->proj(rn, d) : w.lit_nat_1(); }));
+        auto box   = image(outs->map, mr.Rn, mr.Ro, lo, cells, outs->shape);
+        if (Axm::isa<affine::image>(box)) return {nullptr, "outs map does not beta-reduce"};
+        auto start = box->proj(4, 0), extent = box->proj(4, 1);
+        auto value = slice(mr.To, mr.Ro, outs->shape, outs->outs, start, extent);
+        init       = w.tuple({extent, shift(outs->map, mr.Rn, mr.Ro, lo, start), value});
+    }
+    auto ins          = w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), mr.Tps, mr.Rps, w.tuple(post_shapes)});
+    auto write        = shift(mr.map_out, mr.Rn, mr.Ro, lo, off);
+    const Def* result = w.annex<map_reduce_post>();
+    for (auto arg :
+         {mr.nis_nps, mr.meta, w.tuple({ext, size, mr.sched}), ins, init->type(), w.tuple({mr.comb, init, mr.post}),
+          write, w.tuple({w.tuple(maps), w.tuple(post_maps)}), w.tuple({w.tuple(inputs), w.tuple(post_inputs)})})
+        result = w.app(result, arg);
+    return {result, {}};
+}
+
+const Def* normalize_tile_of(const Def*, const Def*, const Def* arg) {
+    auto [producer, off, ext] = arg->projs<3>();
+    return producer_tile(producer, off, ext).value;
+}
+
 const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
     auto [meta, shapes] = c->as<App>()->uncurry_args<2>();
     auto [s, ts]        = shapes->projs<2>();

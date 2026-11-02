@@ -1439,6 +1439,20 @@ priv anx lam scatter_step_impl {T: *, r: Nat}
 /// `o ↦ (start#d + step#d · o#d)_d`: the strided read map.
 lam slice_map {r: Nat} (start step: «r; Nat») (o: «r; affine.Index»): «r; affine.Index» =
     ‹d: r; affine.op.add (affine.semiop.mul (o#d, step#d), affine.lit (start#d))›;
+
+priv anx lam tile_shift {n m: Nat} (f: «n; affine.Index» → «m; affine.Index»)
+                       (lo: «n; Nat», origin: «m; Nat») (o: «n; affine.Index»): «m; affine.Index» =
+    let y = f ‹d: n; affine.op.add (o#d, affine.lit (lo#d))›;
+    ‹d: m; affine.op.sub (y#d, affine.lit (origin#d))›;
+
+priv anx lam tile_sched (s: SchedT): Sched = s Sched (λ (record: Sched): Sched = record);
+
+axm tile_of: {T: *, r: Nat} → {s: «r; Nat»}
+           → [producer: «s; T», off ext: «r; Nat»] → «ext; T», normalize_tile_of;
+
+anx lam tile_of_ref {T: *, r: Nat} {s: «r; Nat»}
+                   (producer: «s; T», off ext: «r; Nat»): «ext; T» =
+    slice @(T, r) s (off, ‹r; 1›, ext) producer;
 ///
 /// ### slice_impl
 ///

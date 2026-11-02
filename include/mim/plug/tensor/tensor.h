@@ -21,6 +21,13 @@ struct TensorInit {
     const Def *shape, *map, *outs;
 };
 
+struct ProducerTile {
+    const Def* value;
+    std::string reason;
+};
+
+ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext);
+
 inline std::optional<TensorInit> tensor_init(const btensor::MapRedPost& mr) {
     if (Check::test_alpha(mr.init->type(), mr.To)) return {};
     auto& w         = mr.init->world();

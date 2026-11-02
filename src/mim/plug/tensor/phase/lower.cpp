@@ -90,6 +90,14 @@ const Def* Lower::lower_via_impl(const App* app, const Def* impl) {
 const Def* Lower::rewrite_imm_App(const App* app) {
     auto& w = new_world();
 
+    if (Axm::isa<tensor::tile_of>(app)) {
+        auto [producer, off, ext] = app->args<3>();
+        auto tiled                = producer_tile(rewrite(producer), rewrite(off), rewrite(ext));
+        if (tiled.value) return tiled.value;
+        auto report = w.log();
+        report.set(fe::Log::Level::Warn).w("tensor.tile_of fallback: {}", tiled.reason);
+        return lower_via_impl(app, impl<tensor::tile_of_ref>());
+    }
     if (Axm::isa<tensor::tiled>(app) && driver().arg_nat("tensor", "reference-tiles").value_or(0))
         return lower_via_impl(app, impl<tensor::tiled_impl>());
     if (Axm::isa<tensor::tile_fold>(app)

@@ -13,6 +13,23 @@
 exact axis 的覆盖，以及 preimage 的包含和 exact box 的反向包含。
 本次不移植 default-sched 的 Sched 字段或 C++ placement。
 
+### 7.2 Producer tile equation
+
+`tile_of (producer, off, ext)` 的 reference 为 `tile_of_ref`，即 unit-stride slice。
+normalizer 仅从 MRP operands 计算 write preimage，要求 exact 且所有 reduction dims 保留；
+随后用 image 计算每个 input box，slice operands 并平移 read/write maps。
+post input 的 image 与平移使用 output box `off/ext`，不使用 loop-domain origin。
+tensor outs 有独立 box/map；init 在 reduction index 为零处读取，
+因此空 reduction 仍读取 outs seed，而不是对空 reduction domain 求 init image。
+无 input reads 的空 box 保留原 operand，避免产生无意义的零形状 slice。
+只接受可还原为 `mk_sched` 的 canonical chooser，不猜测自定义 nest 的执行域。
+
+实现不读取 graph uses 或盈利信息；原始 slice 与重建 MRP 的等式独立于预算。
+不满足前提时保留 axiom，`lower_tensor` 发出原因并执行 reference slice，
+不会把未证明的 box 当作精确 tile。`tile_of_exec` 对 runtime origin、permutation、
+shifted write、带 post input 的 row reduction、空 reduction/tensor outs，以及 tailed tiled
+分别检查 scalar/reference 结果；IR 测试检查正常重建与 inexact/reduction-cut 的拒绝。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；
