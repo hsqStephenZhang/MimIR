@@ -969,7 +969,7 @@ std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function, boo
                 }
                 sources.push_back(def);
                 captures.push_back(value);
-                continue;
+                if (!destination) continue;
             }
         }
         for (auto op : def->ops())

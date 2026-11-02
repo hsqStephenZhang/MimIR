@@ -7,7 +7,8 @@ import sys
 source, destination = map(pathlib.Path, sys.argv[1:3])
 exponentials = "--exp" in sys.argv[3:]
 centered = "--center" in sys.argv[3:]
-callback = "record_exp" if exponentials else "record_center" if centered else "record_multiply"
+additions = "--add" in sys.argv[3:]
+callback = "record_exp" if exponentials else "record_center" if centered else "record_add" if additions else "record_multiply"
 optimization = "-O0" if "--unoptimized" in sys.argv[3:] else "-O3"
 optimized = subprocess.run(
     ["clang", optimization, "-S", "-emit-llvm", "-Wno-override-module", str(source), "-o", "-"],
@@ -32,6 +33,8 @@ for line in optimized.splitlines():
         if exponentials
         else " fsub " in line
         if centered
+        else " fadd " in line
+        if additions
         else " fmul " in line
     )
     if operation:

@@ -1,0 +1,39 @@
+// RUN: %mim -p opt -p ll -X tensor:group-cache=256 -X tensor:strict=1 %s -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: python3 %S/realization_count.py %t.ll %t.count.ll --add --unoptimized
+// RUN: clang++ -O3 -fsanitize=address %S/reverse_capture_aux.cpp %t.count.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -p opt -p ll -X tensor:group=0 %s -X ll:o=%t.off.ll
+// RUN: python3 %S/realization_count.py %t.off.ll %t.off.count.ll --add --unoptimized
+// RUN: clang++ -O3 -fsanitize=address %S/reverse_capture_aux.cpp %t.off.count.ll -o %t.off -Wno-override-module
+// RUN: %t.off
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let mode = math.mode.contract;
+let add = math.arith.add mode;
+
+lam normalize {M N: Nat} (x: «M, N; F32», w b: «N; F32»): «M, N; F32» =
+    let count = math.conv.u2f math.f32 (core.bitcast I64 N);
+    let mean = tensor.unary (λ x: F32: F32 = math.arith.div mode (x, count))
+        (tensor.reduce (add, 0:F32) 1₂ x);
+    let centered = tensor.binary_ax (math.arith.sub mode) 1₂ (x, mean);
+    let squared = tensor.unary (λ x: F32: F32 = math.arith.mul mode (x, x)) centered;
+    let variance = tensor.reduce (add, 0:F32) 1₂ squared;
+    let denom = tensor.unary (λ x: F32: F32 =
+        math.rt.sq mode (add (math.arith.div mode (x, count), 0.00001:F32))) variance;
+    let normalized = tensor.binary_ax (math.arith.div mode) 1₂ (centered, denom);
+    let weights = tensor.broadcast @ (F32, 2) ((1, N), (M, N), w);
+    let bias = tensor.broadcast @ (F32, 2) ((1, N), (M, N), b);
+    tensor.binary add (tensor.binary (math.arith.mul mode) (normalized, weights), bias);
+
+extern fun rows_17 (x: «17, 8; F32», w b: «8; F32»): «17, 8; F32» =
+    return (normalize (tensor.buf x, tensor.buf w, tensor.buf b));
+extern fun rows_33 (x: «33, 8; F32», w b: «8; F32»): «33, 8; F32» =
+    return (normalize (tensor.buf x, tensor.buf w, tensor.buf b));
+
+// CHECK-DAG: kind=2 dim=0
+// CHECK-NOT: not realized
