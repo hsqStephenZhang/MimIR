@@ -57,6 +57,7 @@ private:
     std::vector<Relation> relations_;
     bool distinct_ = true;
     friend class MatchEngine;
+    friend class ConstraintMatcher;
 };
 
 class GraphMatch {
@@ -99,11 +100,12 @@ private:
     std::shared_ptr<const std::vector<const Def*>> reads_;
     std::vector<const Def*> matched_;
     friend class MatchEngine;
+    friend class ConstraintMatcher;
     friend class RewritePlan;
 };
 
 enum class SearchStatus { Complete, Unknown, Budget_Exceeded, Result_Limit };
-enum class GraphSearchMode { Indexed, Exhaustive };
+enum class GraphSearchMode { Indexed, Exhaustive, Compiled };
 
 struct GraphMatchOptions {
     MatchOptions match      = {};
@@ -120,6 +122,24 @@ struct GraphMatches {
     size_t candidates;
     size_t prefilter_checks = 0;
     size_t index_steps      = 0;
+    bool used_compiled      = false; // False when the experimental backend falls back to Indexed.
+};
+
+/// Experimental straight-line constraints and indexed joins over shared captures (including types).
+/// The pattern/program must outlive this plan; append/mutation and World rebuilds invalidate it.
+/// Unsupported alternatives, negation and ranges use the existing Indexed interpreter.
+class CompiledGraphPattern {
+public:
+    explicit CompiledGraphPattern(const GraphPattern&);
+    ~CompiledGraphPattern();
+    CompiledGraphPattern(const CompiledGraphPattern&)            = delete;
+    CompiledGraphPattern& operator=(const CompiledGraphPattern&) = delete;
+    bool is_compiled() const;
+    /// Uses the compiled backend regardless of options.mode, or Indexed for unsupported cases.
+    GraphMatches find(const GraphView&, GraphMatchOptions = {}) const;
+
+private:
+    std::unique_ptr<ConstraintMatcher> matcher_;
 };
 
 /// Complete means all anchor assignments were considered, including when matches is empty.

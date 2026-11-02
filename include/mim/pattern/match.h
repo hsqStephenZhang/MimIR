@@ -32,6 +32,7 @@ private:
     std::vector<const Def*> captures_;
     std::shared_ptr<const GraphSnapshot> snapshot_;
     friend class MatchEngine;
+    friend class ConstraintMatcher;
     friend class RewritePlan;
 };
 

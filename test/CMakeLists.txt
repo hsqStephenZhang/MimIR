@@ -51,6 +51,7 @@ add_mim_test(mim-test
         pattern_pdll.cpp
         pattern_p5.cpp
         pattern_portgraph.cpp
+        pattern_constraints.cpp
         level.cpp
         lexer.cpp
         nom.cpp

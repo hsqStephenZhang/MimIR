@@ -69,7 +69,7 @@ Tuples tuples(const GraphMatches& found) {
 
 template<class Find, class Inspect>
 void check_search(Find find, const Tuples& expected, Inspect inspect) {
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
         for (bool reverse : {false, true}) {
             auto found = find(GraphMatchOptions{.reverse_candidates = reverse, .mode = mode});
             REQUIRE(found.status == SearchStatus::Complete);

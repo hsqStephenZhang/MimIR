@@ -11,6 +11,7 @@ namespace mim::pattern {
 
 class PatternProgram;
 class MatchEngine;
+class ConstraintMatcher;
 
 /// A handle into a non-moving PatternProgram. Only explicit captures bind values.
 class Pattern {
@@ -27,6 +28,7 @@ private:
 
     friend class PatternProgram;
     friend class MatchEngine;
+    friend class ConstraintMatcher;
     friend class MatchResult;
     friend class GraphPattern;
 };
@@ -97,6 +99,7 @@ private:
     std::vector<Reference> references_;
 
     friend class MatchEngine;
+    friend class ConstraintMatcher;
     friend class GraphPattern;
 };
 

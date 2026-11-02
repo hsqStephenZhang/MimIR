@@ -4,6 +4,8 @@
 
 后续阶段计时、分配统计和采样见 [搜索开销排查](PROFILE.zh-CN.md)。
 
+独立实验分支的约束执行后端及修改前后对照见 [编译约束实验](COMPILED.zh-CN.md)。
+
 在下面这批固定端口 DAG 上，当前 MimIR 的搜索耗时高于 portmatching 和 GHL；MimIR 原生多根用例中，Indexed 相对 Exhaustive 仍有明显收益。两项结论适用的工作负载不同。
 
 ## 语义与机制

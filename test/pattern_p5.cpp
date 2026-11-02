@@ -172,7 +172,7 @@ TEST_CASE("Graph Rule: type-only dimensions and element type construct a shared 
         for (auto capture : {element, m, k, n})
             CHECK_FALSE(view.is_contained(capture));
         GraphRulePattern graph(rule);
-        for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+        for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
             for (bool reverse : {false, true}) {
                 auto found = graph.find(view, {.reverse_candidates = reverse, .mode = mode});
                 REQUIRE(found.status == SearchStatus::Complete);
@@ -475,7 +475,7 @@ TEST_CASE("Review OR: successful anchor tuples dominate unknown alternatives") {
     GraphPattern graph(p);
     auto unknown = p.where(p.any(), {}, [](auto) { return CheckResult::Unknown; });
     graph.anchor(p.either(p.any(), unknown));
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive}) {
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled}) {
         auto found = find_matches(graph, view, {.mode = mode});
         CHECK(found.status == SearchStatus::Complete);
         CHECK(found.matches.size() == 1);
@@ -515,7 +515,7 @@ TEST_CASE("Review join: skipped mutable operands preserve indexed and exhaustive
     else
         graph.anchor(lam, AnchorDomain::Nodes);
     auto gid = ir.w.curr_gid();
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
         for (bool reverse : {false, true}) {
             auto found = find_matches(graph, view, {.reverse_candidates = reverse, .mode = mode});
             CHECK(found.status == SearchStatus::Unknown);
@@ -536,7 +536,7 @@ TEST_CASE("Review opacity: mutable arity never proves structural mismatch") {
         CHECK(match(p, structural, opaque).status == MatchStatus::Unknown);
         GraphPattern graph(p);
         graph.anchor(structural, AnchorDomain::Nodes);
-        for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+        for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
             for (bool reverse : {false, true}) {
                 auto found = find_matches(graph, view, {.reverse_candidates = reverse, .mode = mode});
                 CHECK(found.status == SearchStatus::Unknown);

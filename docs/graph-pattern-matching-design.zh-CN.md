@@ -8,6 +8,8 @@
 
 ## 当前实施状态
 
+实验分支 `exp/portmatching-constraints` 另加入了可选 Compiled 后端：将结构/类型检查降低为顺序指令，通过 capture 索引连接多个根；该分支的 `graph_rule_app` 已接入。范围、回退行为和修改前后性能见 [实验记录](../bench/graph_matching/COMPILED.zh-CN.md)。下文 Indexed 的实现状态仍描述原解释器路径，特别是其类型约束尚未进入候选索引这一限制。
+
 已加入 P0/P1 内核、P2 单根 Rule 重写通路、P3 的 C++ 语义图与多根重写、P4 的首批 tensor 接入，以及 P5 的多根 Rule 前端、原始 operand range 和索引搜索。单根入口位于 [pattern.h](../include/mim/pattern/pattern.h)、[match.h](../include/mim/pattern/match.h)、[pattern/rule.h](../include/mim/pattern/rule.h) 和 [phase/rule_rewrite.h](../include/mim/phase/rule_rewrite.h)；P3 至 P5 的接口和当前范围见下节。
 
 - `PatternProgram` 使用独立 arena 表达 Any、Exact、typed Literal、原始 Node、Capture、All、Either、Not、Type 和 Where，不通过 World 构造模式。

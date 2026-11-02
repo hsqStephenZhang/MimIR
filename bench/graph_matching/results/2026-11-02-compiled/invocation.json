@@ -1,0 +1,10 @@
+{
+  "mimir": "/tmp/mimir-reference-bench/mim-release/bin/mim-portgraph-bench",
+  "ghl": "/tmp/mimir-reference-bench/ghl-bench",
+  "portmatching": "/tmp/mimir-reference-bench/port/target/release/mimir-port-bench",
+  "output": "/tmp/mimir-portmatching-experiment/results",
+  "components": "8,32,128",
+  "repeats": 7,
+  "mimir_modes": "indexed,compiled",
+  "baseline": "/tmp/mimir-portmatching-experiment/baseline/run"
+}

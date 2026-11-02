@@ -72,7 +72,7 @@ void check_matches(const GraphPattern& pattern,
                    const Tuples& expected,
                    std::vector<std::pair<Pattern, const Def*>> captures = {},
                    SearchStatus status                                  = SearchStatus::Complete) {
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive}) {
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled}) {
         for (bool reverse : {false, true}) {
             auto found = find_matches(pattern, view, {.reverse_candidates = reverse, .mode = mode});
             CHECK(found.status == status);

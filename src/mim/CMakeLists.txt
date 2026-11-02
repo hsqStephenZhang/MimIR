@@ -19,6 +19,7 @@ target_sources(libmim
         union.cpp
         world.cpp
         pattern/graph.cpp
+        pattern/constraint_match.cpp
         pattern/graph_rule.cpp
         pattern/match.cpp
         pattern/op.cpp

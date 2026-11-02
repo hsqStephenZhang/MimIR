@@ -670,6 +670,7 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
 }
 
 GraphMatches find_matches(const GraphPattern& pattern, const GraphView& graph, GraphMatchOptions options) {
+    if (options.mode == GraphSearchMode::Compiled) return CompiledGraphPattern(pattern).find(graph, options);
     // GraphPattern exposes its program only to the shared matcher engine.
     return MatchEngine::find(pattern, graph, options);
 }

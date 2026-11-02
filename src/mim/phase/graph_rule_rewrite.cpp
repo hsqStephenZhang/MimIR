@@ -80,7 +80,9 @@ void GraphRuleRewrite::start() {
         for (auto source : rules_) {
             pattern::GraphRulePattern compiled(importer.rewrite(source)->as<Rule>());
             pattern::GraphView view({fn->body()}, {.operators = &ops, .scope = fn});
-            auto matches = compiled.find(view);
+            // Experimental branch: straight-line constraints and capture-indexed joins,
+            // with the existing interpreter handling unsupported pattern constructs.
+            auto matches = compiled.find(view, {.mode = pattern::GraphSearchMode::Compiled});
             if (matches.status != pattern::SearchStatus::Complete) {
                 profile_count("graph_rule.incomplete");
                 continue;

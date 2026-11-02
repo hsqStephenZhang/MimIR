@@ -1,0 +1,41 @@
+{
+  "branch": "exp/portmatching-constraints",
+  "base_head": "cd8526dd2213b5d4528b41646eb4c1c7ecc37e3b",
+  "measurement_worktree_committed": false,
+  "baseline": "Frozen binaries and libmim.so copied BEFORE experiment edits, using LD_LIBRARY_PATH baseline directory; not a feature toggle in the new library.",
+  "baseline_directory": "/tmp/mimir-portmatching-experiment/baseline",
+  "baseline_sha256": {
+    "mim-pattern-bench": "9e347643c9cccc0be1d8c244575ffa807acdbc23d5695d5adb7b754cd9d074de",
+    "mim-portgraph-bench": "402c3145b29ced879279150e190b8f2c1a8ac52cfa82265e486b1e1cb6129d1b",
+    "libmim.so": "686012c543f030b6f3e2cd3f72d4d10168bfcc1d61d0f0ac17ab66441ec6fe7a"
+  },
+  "source_sha256": {
+    "include/mim/pattern/pattern.h": "d6a77ed35adc9f4c659d22d06253301ab5469251a0ef13ab3cce1d4df9438c8e",
+    "include/mim/pattern/match.h": "517db24bd669076702cd1c7fd5684d28d16ce50d16035ac4ebca79c02cc344b8",
+    "include/mim/pattern/graph_match.h": "99d16a60224d325788c7720e04d279eec0b02b7e5b87b5bf4e0ddaf845ab94e6",
+    "src/mim/pattern/constraint_match.cpp": "e3a7cce0ebba8a291e8663c6504a2dd1acb051b9fc842ceaf45e8f02acd7039d",
+    "src/mim/pattern/match.cpp": "1f2de1ca010963e129ad022cbf81d22a4c685d4d1a1aff69df589f1a01b92cf8",
+    "src/mim/phase/graph_rule_rewrite.cpp": "54fe501dbcaa2e643097fbc58facf1c6a7d126ef0c96e083e1d42408de97cbec",
+    "test/pattern_constraints.cpp": "8bd22328b2473bb6434f6dd934d52e366eb8ecd3b5cd7e4d1017a293b4c1896d",
+    "bench/graph_matching/mimir.cpp": "b6518df320114eb3c78b2a6a6f8d2da49a62dec6575094e286fe8aa3f76ae6c3",
+    "bench/graph_matching/run.py": "0357060b85069675cb95a1c72fbd88a5c85427fb9ed89f2de2d542293842228c"
+  },
+  "binary_sha256": {
+    "/tmp/mimir-reference-bench/mim-release/lib/libmim.so": "72cd7c6398bc0a2d372b84632c9b434c281ef448d8f668e8ecf8d96db32802b5",
+    "/tmp/mimir-reference-bench/mim-release/bin/mim-portgraph-bench": "0f316e44df193ad216bbc96a174588d7c53cf4f8523d819ed7c21937ad7f2d10"
+  },
+  "cpu": "Intel Core i5-14600KF",
+  "cpu_affinity": [
+    2
+  ],
+  "build": "Release GCC 15.2.1, -O3 -DNDEBUG, same source/dependencies/configuration as frozen baseline; Rust release",
+  "repeats": 7,
+  "units": "nanoseconds",
+  "cases": 13,
+  "engines": 7,
+  "samples": 637,
+  "verification": "Every sample compared against independent Python oracle using full ordered vertex mappings; compiled runner rejects all fallbacks.",
+  "backend_scope": "Single GraphPattern; conjunction, exact/raw node/literal/capture/type/predicate/use relations. Either/Not/Range and opaque runtime structure use Indexed fallback. No shared multi-pattern automaton.",
+  "sanitizer": "New backend and differential test TUs instrumented with address,undefined; existing libmim not rebuilt with sanitizers. detect_leaks=0 (LSan blocked by environment); 13 tests pass.",
+  "unknown_precision": "Earlier type rejection can prove Complete/no-match where the interpreter returns Unknown before deferred type checks; covered by a regression."
+}

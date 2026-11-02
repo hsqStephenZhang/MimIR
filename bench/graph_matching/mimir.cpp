@@ -21,6 +21,11 @@ int main(int argc, char** argv) {
     for (size_t i = 1; i < corpus.size(); ++i)
         patterns.push_back(
             std::make_unique<port_test::Compiled>(convert(corpus[i]), ir, std::string(argv[3]).starts_with("flat-")));
+    bool compiled = std::string(argv[3]) == "compiled";
+    std::vector<std::unique_ptr<mim::pattern::CompiledGraphPattern>> plans;
+    if (compiled)
+        for (auto& pattern : patterns)
+            plans.push_back(std::make_unique<mim::pattern::CompiledGraphPattern>(pattern->graph));
     auto prepare_ns = common::ns(begin);
     // Identity decoding is outside the timed search, as it is for GHL/portmatching.
     mim::DefMap<size_t> vertex_ids;
@@ -32,8 +37,11 @@ int main(int argc, char** argv) {
     options.match.max_depth = 4096; // Multi-anchor continuations exceed the default at chain length eight.
     std::vector<mim::pattern::GraphMatches> results;
     begin = common::Clock::now();
-    for (auto& pattern : patterns)
-        results.push_back(mim::pattern::find_matches(pattern->graph, view, options));
+    for (size_t i = 0; i < patterns.size(); ++i) {
+        results.push_back(compiled ? plans[i]->find(view, options)
+                                   : mim::pattern::find_matches(patterns[i]->graph, view, options));
+        if (compiled && !results.back().used_compiled) return 3; // Never label a fallback as compiled performance.
+    }
     auto search_ns = common::ns(begin);
     common::Mappings mappings;
     size_t steps = 0, candidates = 0;

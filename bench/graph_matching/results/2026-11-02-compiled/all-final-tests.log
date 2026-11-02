@@ -1,0 +1,13 @@
+[doctest] doctest version is "2.5.3"
+[doctest] run with "--help" for options
+I:/tmp/mimir-pattern-source/src/mim/driver.cpp:152: 💾 load plugin `core`
+V:/tmp/mimir-pattern-source/src/mim/ast/parser.cpp:37: 📥 import `core`
+V:/tmp/mimir-pattern-source/src/mim/ast/parser.cpp:99: 📄 read `/tmp/mimir-pattern-build/lib/mim/core.mim`
+I:/tmp/mimir-pattern-source/src/mim/driver.cpp:152: 💾 load plugin `core`
+V:/tmp/mimir-pattern-source/src/mim/ast/parser.cpp:37: 📥 import `core`
+V:/tmp/mimir-pattern-source/src/mim/ast/parser.cpp:99: 📄 read `/tmp/mimir-pattern-build/lib/mim/core.mim`
+W:/tmp/mimir-pattern-source/src/mim/def.cpp:547: commute check resorts to an unstable gid-based compare
+===============================================================================
+[doctest] test cases:  223 |  223 passed | 0 failed | 0 skipped
+[doctest] assertions: 6949 | 6949 passed | 0 failed |
+[doctest] Status: SUCCESS!

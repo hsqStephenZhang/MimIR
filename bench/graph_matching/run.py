@@ -74,6 +74,8 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--components', default='8,32,128')
     parser.add_argument('--repeats', default=5, type=int)
+    parser.add_argument('--mimir-modes', default='indexed,exhaustive,flat-indexed,flat-exhaustive')
+    parser.add_argument('--baseline', type=Path, help='optional frozen original MimIR runner (indexed mode)')
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error('repeats must be positive')
@@ -91,9 +93,10 @@ def main():
             ('wrong-port', count, copies(broken, count), [complex_pattern]),
             ('many-chain', count, copies(chain(12), count), [chain(n) for n in range(2, 9)]),
         ])
-    engines = [(args.mimir, 'indexed'), (args.mimir, 'exhaustive'),
-               (args.mimir, 'flat-indexed'), (args.mimir, 'flat-exhaustive'),
-               (args.ghl, 'vf2'), (args.ghl, 'vf3'),
+    engines = [(args.mimir, mode) for mode in args.mimir_modes.split(',')]
+    if args.baseline:
+        engines.insert(0, (args.baseline, 'indexed'))
+    engines += [(args.ghl, 'vf2'), (args.ghl, 'vf3'),
                (args.portmatching, 'naive'), (args.portmatching, 'many')]
     samples = []
     for workload, count, host, patterns in cases:
@@ -117,6 +120,8 @@ def main():
                 if len(fields) != 7:
                     raise RuntimeError(output)
                 engine = fields[0]
+                if args.baseline and binary == args.baseline:
+                    engine = 'baseline-' + engine
                 host_ns, prepare_ns, search_ns, matches, candidates, steps = map(int, fields[1:])
                 actual = [tuple(map(int, line.split())) for line in mappings.read_text().splitlines()]
                 if len(actual) != matches or len(set(actual)) != matches or set(actual) != expected:

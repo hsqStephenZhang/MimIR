@@ -1,0 +1,175 @@
+[doctest] doctest version is "2.5.3"
+[doctest] run with "--help" for options
+===============================================================================
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:122:
+TEST CASE:  Compiled graph: type keys prune root pairs before joining
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:147: SUCCESS: REQUIRE( indexed.status == SearchStatus::Complete ) is correct!
+  values: REQUIRE( 0 == 0 )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:148: SUCCESS: REQUIRE( compiled.status == SearchStatus::Complete ) is correct!
+  values: REQUIRE( 0 == 0 )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:149: SUCCESS: CHECK( compiled.used_compiled ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:26: SUCCESS: CHECK( result.emplace(Key(match.anchors().begin(), match.anchors().end()), std::move(record)).second ) is correct!
+  values: CHECK( true )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:150: SUCCESS: CHECK( records(compiled, std::array{k}) == records(indexed, std::array{k}) ) is correct!
+  values: CHECK( {{{0x7f8d2ad00a58, 0x7f8d2ad00ab0}, {?}}, {{0x7f8d2ad00da8, 0x7f8d2ad00e00}, {?}}, {{0x7f8d2ad010f8, 0x7f8d2ad01150}, {?}}, {{0x7f8d2ad01448, 0x7f8d2ad014a0}, {?}}, {{0x7f8d2ad01798, 0x7f8d2ad017f0}, {?}}, {{0x7f8d2ad01ae8, 0x7f8d2ad01b40}, {?}}, {{0x7f8d2ad01e38, 0x7f8d2ad01e90}, {?}}, {{0x7f8d2ad02188, 0x7f8d2ad021e0}, {?}}, {{0x7f8d2ad024d8, 0x7f8d2ad02530}, {?}}, {{0x7f8d2ad02828, 0x7f8d2ad02880}, {?}}, {{0x7f8d2ad02b78, 0x7f8d2ad02bd0}, {?}}, {{0x7f8d2ad02ec8, 0x7f8d2ad02f20}, {?}}, {{0x7f8d2ad03218, 0x7f8d2ad03270}, {?}}, {{0x7f8d2ad03568, 0x7f8d2ad035c0}, {?}}, {{0x7f8d2ad038b8, 0x7f8d2ad03910}, {?}}, {{0x7f8d2ad03c08, 0x7f8d2ad03c60}, {?}}, {{0x7f8d2ad03f58, 0x7f8d2ad03fb0}, {?}}, {{0x7f8d2ad042a8, 0x7f8d2ad04300}, {?}}, {{0x7f8d2ad045f8, 0x7f8d2ad04650}, {?}}, {{0x7f8d2ad04948, 0x7f8d2ad049a0}, {?}}, {{0x7f8d2ad04c98, 0x7f8d2ad04cf0}, {?}}, {{0x7f8d2ad04fe8, 0x7f8d2ad05040}, {?}}, {{0x7f8d2ad05338, 0x7f8d2ad05390}, {?}}, {{0x7f8d2ad05688, 0x7f8d2ad056e0}, {?}}} == {{{0x7f8d2ad00a58, 0x7f8d2ad00ab0}, {?}}, {{0x7f8d2ad00da8, 0x7f8d2ad00e00}, {?}}, {{0x7f8d2ad010f8, 0x7f8d2ad01150}, {?}}, {{0x7f8d2ad01448, 0x7f8d2ad014a0}, {?}}, {{0x7f8d2ad01798, 0x7f8d2ad017f0}, {?}}, {{0x7f8d2ad01ae8, 0x7f8d2ad01b40}, {?}}, {{0x7f8d2ad01e38, 0x7f8d2ad01e90}, {?}}, {{0x7f8d2ad02188, 0x7f8d2ad021e0}, {?}}, {{0x7f8d2ad024d8, 0x7f8d2ad02530}, {?}}, {{0x7f8d2ad02828, 0x7f8d2ad02880}, {?}}, {{0x7f8d2ad02b78, 0x7f8d2ad02bd0}, {?}}, {{0x7f8d2ad02ec8, 0x7f8d2ad02f20}, {?}}, {{0x7f8d2ad03218, 0x7f8d2ad03270}, {?}}, {{0x7f8d2ad03568, 0x7f8d2ad035c0}, {?}}, {{0x7f8d2ad038b8, 0x7f8d2ad03910}, {?}}, {{0x7f8d2ad03c08, 0x7f8d2ad03c60}, {?}}, {{0x7f8d2ad03f58, 0x7f8d2ad03fb0}, {?}}, {{0x7f8d2ad042a8, 0x7f8d2ad04300}, {?}}, {{0x7f8d2ad045f8, 0x7f8d2ad04650}, {?}}, {{0x7f8d2ad04948, 0x7f8d2ad049a0}, {?}}, {{0x7f8d2ad04c98, 0x7f8d2ad04cf0}, {?}}, {{0x7f8d2ad04fe8, 0x7f8d2ad05040}, {?}}, {{0x7f8d2ad05338, 0x7f8d2ad05390}, {?}}, {{0x7f8d2ad05688, 0x7f8d2ad056e0}, {?}}} )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:151: SUCCESS: CHECK( compiled.matches.size() == count ) is correct!
+  values: CHECK( 24 == 24 )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:152: SUCCESS: CHECK( compiled.candidates == 2 * count ) is correct!
+  values: CHECK( 48 == 48 )
+
+/tmp/mimir-pattern-source/test/pattern_constraints.cpp:153: SUCCESS: CHECK( indexed.candidates >= count * count ) is correct!
+  values: CHECK( 600 >= 576 )
+
+===============================================================================
+[doctest] test cases:  1 |  1 passed | 0 failed | 221 skipped
+[doctest] assertions: 55 | 55 passed | 0 failed |
+[doctest] Status: SUCCESS!

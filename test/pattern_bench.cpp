@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
         GraphPattern pattern(p);
         for (auto op : std::string(workload) == "chain" ? std::vector{q} : std::vector{q, k, v})
             pattern.anchor(p.node(Node::App, {fanout ? p.node(Node::App, {p.exact(op), tag}) : p.exact(op), input}));
-        for (auto mode : {GraphSearchMode::Exhaustive, GraphSearchMode::Indexed}) {
+        for (auto mode : {GraphSearchMode::Exhaustive, GraphSearchMode::Indexed, GraphSearchMode::Compiled}) {
             GraphMatchOptions options;
             options.match.max_steps = 100000000;
             options.max_candidates  = 100000000;
@@ -65,11 +65,14 @@ int main(int argc, char** argv) {
             options.mode            = mode;
             auto start              = Clock::now();
             auto found              = find_matches(pattern, view, options);
-            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
-            std::cout << workload << ',' << size << ',' << (mode == GraphSearchMode::Indexed ? "indexed" : "exhaustive")
-                      << ',' << found.matches.size() << ',' << int(found.status) << ',' << found.candidates << ','
-                      << found.steps << ',' << found.prefilter_checks << ',' << found.index_steps << ',' << build_ns
-                      << ',' << elapsed << '\n';
+            auto elapsed   = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
+            auto mode_name = mode == GraphSearchMode::Compiled ? "compiled"
+                           : mode == GraphSearchMode::Indexed  ? "indexed"
+                                                               : "exhaustive";
+            std::cout << workload << ',' << size << ',' << mode_name << ',' << found.matches.size() << ','
+                      << int(found.status) << ',' << found.candidates << ',' << found.steps << ','
+                      << found.prefilter_checks << ',' << found.index_steps << ',' << build_ns << ',' << elapsed
+                      << '\n';
             if (found.status != SearchStatus::Complete) return 1;
         }
     }

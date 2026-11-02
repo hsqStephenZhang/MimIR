@@ -46,7 +46,7 @@ TEST_CASE("Portmatching: overlapping four-vertex port patterns retain exact mapp
         { 3, 12, 23, 44},
         {12, 55, 98, 99}
     };
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
         for (bool reverse : {false, true})
             for (bool flat : {false, true})
                 CHECK(search(host, pattern, mode, reverse, flat) == expected);
@@ -54,7 +54,7 @@ TEST_CASE("Portmatching: overlapping four-vertex port patterns retain exact mapp
 
 TEST_CASE("Portmatching: both endpoint port offsets and shared vertex identity matter") {
     auto pattern = complex_pattern();
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
         for (bool flat : {false, true}) {
             CHECK(search(pattern, pattern, mode, false, flat)
                   == Mappings{
@@ -89,7 +89,7 @@ TEST_CASE("Portmatching: vertex injectivity and unconstrained boundary ports") {
         4,
         {{0, 0, 1, 0}, {0, 1, 2, 1}, {1, 2, 3, 2}}
     };
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
         for (bool flat : {false, true}) {
             CHECK(search(collapsed, fork, mode, false, flat).empty());
             CHECK(search(extended, fork, mode, false, flat)
@@ -112,7 +112,7 @@ TEST_CASE("Portmatching: factored vertex constraints match long chains within th
             mapping.push_back(start + i);
         expected.insert(mapping);
     }
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
         for (bool reverse : {false, true})
             CHECK(search(host, pattern, mode, reverse, true) == expected);
 }
@@ -126,7 +126,7 @@ TEST_CASE("GHL: positive-edge matching permits extra internal links unlike induc
         3,
         {{0, 0, 1, 0}, {1, 0, 2, 0}, {0, 1, 2, 1}}
     };
-    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive})
+    for (auto mode : {GraphSearchMode::Indexed, GraphSearchMode::Exhaustive, GraphSearchMode::Compiled})
         for (bool flat : {false, true})
             CHECK(search(host, pattern, mode, false, flat)
                   == Mappings{
