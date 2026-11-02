@@ -1599,6 +1599,14 @@ axm transpose_box: {T: *, r: Nat, s: «r; Nat»}
                  → [«r; Nat», «r; Nat»];
 
 axm group_root: {T: *} → T → Bool, normalize_group_root;
+///
+/// Identity request: `op` supplies source provenance; `kind`, `dim`, and `tile` are literal Nats.
+/// Kind 0 tiles parallel axis `dim` by `tile`; `params: Nat` is the producer recomputation budget.
+/// Kind 1 requests BLIS with `tile = MR`, `params: «3; Nat» = (NR, KC, NC)`; zero blocks select target defaults.
+/// Kind 2 places `params` (one consumer or a slot-ordered tuple) after producer `op` at `dim` with size `tile`.
+/// The rule stage removes realized requests and reports residual requests, failing under `tensor:strict=1`.
+///
+axm group_req: {P C: *} → [op: P, kind dim tile: Nat, params: C] → P;
 axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
 
 pub lam fuse_producer (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», off ext: «r; Nat»] =
