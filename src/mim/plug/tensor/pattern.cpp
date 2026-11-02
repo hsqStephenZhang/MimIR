@@ -201,6 +201,7 @@ void register_operations(pattern::OpRegistry& ops) {
     ops.add(Annex::base<tensor::broadcast>(), decode_broadcast, true);
     ops.add(Annex::base<concat>(), decode_concat, true);
     ops.add(Annex::base<slice>(), 4, {{3}}, true);
+    ops.add(Annex::base<slice_box>(), 4, {{3}}, true);
     ops.add(Annex::base<tiled>(), decode_tiled, false);
     ops.add(Annex::base<tile_fold>(), decode_fold, false);
     ops.add(Annex::base<stage>(), 5, {{4}}, true);

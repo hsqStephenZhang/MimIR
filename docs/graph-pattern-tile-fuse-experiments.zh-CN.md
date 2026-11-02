@@ -1,5 +1,25 @@
 # P5 tile-and-fuse 实验
 
+## Task 13B：显式 halo Rule
+
+`tensor.fuse_halo (T, rank, budget)` 将保留 image-cap witness 的 `slice_box`
+改写为 `tile_of_box`；native `within_budget` 从冻结 program snapshot 累加每次
+over-box 的有效 cells，重叠不去重、dilation 空隙不扣除。
+budget=1 拒绝 `11/7` 的 window 重算，budget=2 接受；
+`15/7`、whole reader 的 `18/7` 和未知 fold count 均拒绝。
+该 opt-in Rule 可递归计算 canonical conv producer，不改变 `fuse_producer` 的 contraction roots。
+
+`tf_halo_exec` 对两个 frontend 检查 IR，并执行 stride 1/2 + padding 1、
+dilation 2、一行/不整除 tile，以及 conv → ReLU → conv；
+destination 与 reference-tiles 路径均与标量实现比较。
+padding 留 whole，scale 放在 zero-pad 后再按 halo 计算；
+不跨越 pad 融合其内部 producer，也不改动默认 conv schedule。
+box-cap 方程、纯性责任与支持边界见
+`tensor-tile-constructs.zh-CN.md` §7.7。
+提交前完整验证：CTest 241/241；lit 644 passed、9 unsupported，无失败或 XFAIL。
+五个负载一起编译到 LLVM：whole-producer/rule halo/graph halo/reference-tiles
+分别为 0.564/0.533/0.577/0.574 s；未测执行时间。
+
 ## Task 6：受限 term-LHS binder matching
 
 Rule LHS 的 Lam 不再只按指针匹配：matcher 显式绑定源 Lam 和 Var，检查函数 type/filter，

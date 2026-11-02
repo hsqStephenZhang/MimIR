@@ -43,6 +43,8 @@ try:
     arguments = [mim, str(generated), "-V", "-V", "-V", "-V", "-o", "-"]
     if lower:
         arguments += ["-p", "ll", "-X", f"ll:o={temporary}.{frontend}.ll"]
+        if len(strategy) > 2 and strategy[2] == "reference":
+            arguments += ["-X", "tensor:reference-tiles=1"]
     result = subprocess.run(
         arguments,
         capture_output=True,

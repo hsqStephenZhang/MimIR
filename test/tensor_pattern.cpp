@@ -224,6 +224,65 @@ TEST_CASE("Tensor pattern: tensor accumulators are declared data inputs") {
     CHECK(ir.w.curr_gid() == gid);
 }
 
+TEST_CASE("Tensor halo: image caps survive runtime clipping and recursive producer tiling") {
+    TensorIR ir(false);
+    ir.parse(R"(
+        plugin tensor;
+        plugin core;
+        plugin affine;
+        use tensor;
+        fun scale (_ x: Nat)@tt: Nat = return (core.nat.mul (x, 2));
+        fun add (acc x: Nat)@tt: Nat = return (core.nat.add (acc, x));
+        extern lam f (a: «7; Nat», off: Nat): «5; Nat» =
+            let p = map_reduce (7, 7) (scale, 0) (affine.id @1) (affine.id @1,) a;
+            map_reduce (5, (5, 3)) (add, 0) (proj_map @(2, 1) 0)
+                ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
+    )");
+    auto& w   = ir.w;
+    auto f    = ir.f();
+    auto off  = f->var(2, 1);
+    auto two  = w.lit_nat(2);
+    auto tile = [&](const Def* source, const Def* shape, const Def* start, const Def* size, const Def* cap) {
+        auto call = w.app(w.app(w.annex<tensor::tile_of_box>(), {w.type_nat(), w.lit_nat_1()}), shape);
+        return w.app(call, {source, start, size, cap});
+    };
+    auto outer = tg::map_reduce(tile(f->body(), w.lit_nat(5), off, two, two));
+    REQUIRE(outer);
+    auto view = Axm::isa<tensor::slice_box>(outer->arg(2, 0));
+    REQUIRE(view);
+    auto [meta, shape, params, value] = view->uncurry_args<4>();
+    auto [start, extent, cap]         = params->projs<3>();
+    CHECK(Lit::isa(cap) == 4);
+    CHECK_FALSE(Lit::isa(extent));
+    auto gid    = w.curr_gid();
+    auto schema = ir.ops.decode(view, 10);
+    REQUIRE(schema);
+    REQUIRE(schema->inputs.size() == 1);
+    CHECK(schema->inputs[0].value == view->arg());
+    CHECK(w.curr_gid() == gid);
+    auto inner = tg::map_reduce(tile(value, shape, start, extent, cap));
+    REQUIRE(inner);
+    auto producer = btensor::MapRedPost::of(inner->callee()->as<App>());
+    auto clipped  = Axm::isa<btensor::clip_sched>(producer.sched);
+    REQUIRE(clipped);
+    auto [valid, output_cap, loop_cap, schedule] = clipped->args<4>();
+    CHECK_FALSE(Lit::isa(valid));
+    CHECK(Lit::isa(output_cap) == 4);
+    CHECK(Lit::isa(loop_cap) == 4);
+    auto retiled = tg::map_reduce(tile(inner, extent, w.lit_nat_0(), w.lit_nat_1(), w.lit_nat_1()));
+    REQUIRE(retiled);
+    auto nested = btensor::MapRedPost::of(retiled->callee()->as<App>());
+    auto bounds = Axm::isa<btensor::clip_sched>(nested.sched);
+    REQUIRE(bounds);
+    CHECK(Lit::isa(bounds->arg(4, 1)) == 1);
+    CHECK(Lit::isa(bounds->arg(4, 2)) == 1);
+    auto exact_call = w.app(w.app(w.annex<tensor::tile_of>(), {w.type_nat(), w.lit_nat_1()}), w.lit_nat(5));
+    auto exact      = tg::map_reduce(w.app(exact_call, {f->body(), off, two}));
+    REQUIRE(exact);
+    CHECK(Axm::isa<tensor::slice>(exact->arg(2, 0)));
+    CHECK(Axm::isa<tensor::tile_of_box>(tile(f->body(), w.lit_nat(5), off, two, w.lit_nat_1())));
+}
+
 TEST_CASE("Tensor graph rewrite: three real products share a concat and a single product") {
     TensorIR ir;
     ir.function({ir.w.lit_nat(4), ir.w.lit_nat(5), ir.w.lit_nat(6)});

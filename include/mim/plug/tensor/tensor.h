@@ -26,7 +26,7 @@ struct ProducerTile {
     std::string reason;
 };
 
-ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext);
+ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* box_cap = nullptr);
 
 inline std::optional<TensorInit> tensor_init(const btensor::MapRedPost& mr) {
     if (Check::test_alpha(mr.init->type(), mr.To)) return {};

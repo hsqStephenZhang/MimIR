@@ -66,10 +66,11 @@ const Def* splat_scalar(const Def* d) {
 
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
-    return Axm::isa<tensor::tile_of>(app) || Axm::isa<tensor::slice>(app) || Axm::isa<tensor::stage>(app)
-        || Axm::isa<tensor::tile_fold>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app)
-        || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app)
-        || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
+    return Axm::isa<tensor::tile_of>(app) || Axm::isa<tensor::tile_of_box>(app) || Axm::isa<tensor::slice>(app)
+        || Axm::isa<tensor::slice_box>(app) || Axm::isa<tensor::stage>(app) || Axm::isa<tensor::tile_fold>(app)
+        || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app)
+        || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app)
+        || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -154,12 +155,15 @@ void LowerToMem::collect_tensor_types() {
             } else if (Axm::isa<tensor::tile_of>(app)) {
                 add_tensor_ty(app->type());
                 add_tensor_ty(app->arg(3, 0)->type());
+            } else if (Axm::isa<tensor::tile_of_box>(app)) {
+                add_tensor_ty(app->type());
+                add_tensor_ty(app->arg(4, 0)->type());
             } else if (Axm::isa<tensor::tile_fold>(app)) {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::stage>(app)) {
                 add_tensor_ty(app->type());
                 add_tensor_ty(app->arg()->type());
-            } else if (Axm::isa<tensor::slice>(app)) {
+            } else if (Axm::isa<tensor::slice>(app) || Axm::isa<tensor::slice_box>(app)) {
                 add_tensor_ty(app->type());
                 add_tensor_ty(app->arg()->type());
             } else if (Axm::isa<tensor::generate>(app)) {
@@ -488,10 +492,12 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app);
     if (Axm::isa<tensor::tile_fold>(app)) return lower_tile_fold(app);
     if (Axm::isa<tensor::stage>(app)) return lower_stage(app);
-    if (Axm::isa<tensor::slice>(app)) {
+    if (Axm::isa<tensor::slice>(app) || Axm::isa<tensor::slice_box>(app)) {
         auto [meta, shape, box] = app->callee()->as<App>()->uncurry_args<3>();
         auto& old               = old_world();
-        auto result = old.app(old.app(old.app(old.app(old.annex<tensor::slice_impl>(), meta), shape), box), app->arg());
+        auto impl
+            = Axm::isa<tensor::slice_box>(app) ? old.annex<tensor::slice_box_impl>() : old.annex<tensor::slice_impl>();
+        auto result = old.app(old.app(old.app(old.app(impl, meta), shape), box), app->arg());
         record_instance(result);
         return rewrite(result);
     }
@@ -774,6 +780,13 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
             auto [start, step, extent] = box->projs<3>();
             auto [type, rank]          = meta->projs<2>();
             auto map                   = old.app(old.app(old.annex<tensor::slice_map>(), rank), {start, step});
+            return PureRead{slice->arg(), map, type, rank, shape};
+        }
+        if (auto slice = Axm::isa<tensor::slice_box>(value)) {
+            auto [meta, shape, box]   = slice->callee()->as<App>()->uncurry_args<3>();
+            auto [start, extent, cap] = box->projs<3>();
+            auto [type, rank]         = meta->projs<2>();
+            auto map = old.app(old.app(old.annex<tensor::slice_map>(), rank), {start, old.pack(rank, old.lit_nat_1())});
             return PureRead{slice->arg(), map, type, rank, shape};
         }
         return is_pure_read(value);
