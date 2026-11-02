@@ -389,6 +389,34 @@ M2 Pro，F32，Homebrew clang++ `-O3 -mcpu=native`，单线程，
 消除重复工作后整体达到 separate 的吞吐级别，复测差值约 −0.7%..+3.7%。
 这里仍 materialize 第一层的完整 hidden tensor，不是消除 hidden storage 的 streaming MLP。
 
+### 9.2 单个 row region 的 realization placement（Task 14A.1）
+
+5×7、row tile=2 的 softmax 复现中，lower_to_mem 的 exp MRP 和 stage 请求分别是
+同一个节点，第二次查询命中同一 scope 的 memo；并不存在两个需要合并的不同 box key。
+bufferization 后仍只有一个 exp MRP。重复发生在 btensor lowering：
+scalar-init MRP 的 `readInputs` 直接捕获 producer 的 direct-style 表达式，
+CPS 展开时 producer 被带到 consumer 的 cell loop 内，LLVM 优化后仍执行 63 次 exp。
+原始 LLVM 的重复更严重，不能只依赖 LLVM 的循环外提判断 exactly-once。
+
+scalar-init 和 callback-init 路径现在与已有 accumulator-descriptor 路径一样，
+在 nest 入口用 `ds_splice` 绑定 memory、destination、inputs 和 post_inputs；
+reader 闭包只捕获 runtime parameters，不再捕获可重执行的 producer 表达式。
+这保留现有 exact/α-equivalent cache key，没有放宽任何 callback 的 purity/region 识别，
+也没有把不等 box、layout 或 boundary predicate 当作相同请求。
+
+此前扩大 request 扫描触发的类型错误被避免而非放宽类型系统：
+generic tiled body 的返回类型仍是依赖 extent 的 value array，
+`conv_type` 不把这种 direct-style callback 改成 buffer ABI；
+在其 body 上提前安装 array→Buf 的 realization mapping 会让函数返回 Buf、
+声明却仍为 array。现有 `lower_tile_body` 在 literal tail specialization 后再 bufferize，
+本修复不改变这条边界，也不提前 rewrite generic callback。
+
+`row_norm` 保留该复现，destination/reference 均与 scalar softmax/layernorm 对照，
+包含不整除 row tile、singleton 轴、空 rows、常量输入和大幅度有限输入。
+5×7 softmax 的 exp 计数为 35，1×11 为 11，空 rows 为 0；
+singleton-column 可化简为 1 而没有 exp。分别在 LLVM 优化前、优化后插入动态计数，
+防止优化器掩盖 producer 重算。count callback 只存在于测试产物。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

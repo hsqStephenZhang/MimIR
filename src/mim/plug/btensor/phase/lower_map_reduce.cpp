@@ -109,6 +109,14 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     impl = w.app(impl, valid);
 
     auto [read_inputs_ty, read_post_ty, write_output_ty] = impl->type()->as<Pi>()->dom()->projs<3>();
+    if (!run) {
+        std::tie(run, call) = ds_splice(w.tuple({mem, dst, inputs, post_inputs}), rewrite(app->type()), "mapReduce");
+        auto runtime        = run->var(2, 0)->projs<4>();
+        mem                 = runtime[0];
+        dst                 = runtime[1];
+        inputs              = runtime[2];
+        post_inputs         = runtime[3];
+    }
 
     // A `buffer.Buf` has its literal size-1 axes folded away, so the indices fold alike.
     auto reader = [&](const Def* type, const char* name, u64 num, const Def* rank, const Def* bounds, const Def* rs,
@@ -142,11 +150,8 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
 
     impl        = w.app(impl, {read_inputs, read_post, write_output});
     auto result = w.app(impl, {mem, dst});
-    if (run) {
-        run->app(true, run->ret_var(), result);
-        return call;
-    }
-    return result;
+    run->app(true, run->ret_var(), result);
+    return call;
 }
 
 const Def* LowerMapReduce::lower_broadcast(const App* app) {
