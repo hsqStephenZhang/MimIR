@@ -29,7 +29,7 @@ public:
     struct Chain {
         const App* tail;
         fe::Vector<const App*> ops; ///< The ops threading the memory from the Lam's Var to its tail, in program order.
-        DefMap<size_t> last;        ///< Per allocation the ops mention: the index of the last op that does so.
+        DefMap<size_t> last;        ///< Last op use per allocation, or ops.size() for a captured load in the tail.
         DefVec targets;             ///< The continuations the tail transfers control to.
     };
 

@@ -1,0 +1,27 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin mem;
+plugin compile;
+
+extern lam _compile (): compile.Phase = mem.free_locals;
+
+// CHECK-LABEL: extern fun borrowed
+// CHECK: let [[P:[a-z_0-9]+]] = mem.alloc (I64, 0)
+// CHECK: con consumer
+// CHECK: let [[L:[a-z_0-9]+]] = mem.load
+// CHECK-NEXT: let [[F:[a-z_0-9]+]] = mem.free @ (I64, 0) ([[L]]#ff, [[P]]#tt)
+// CHECK: con yes
+// CHECK-NEXT: return ([[F]], [[L]]#tt)
+// CHECK: let [[M:[a-z_0-9]+]] = mem.store
+// CHECK-NEXT: consumer [[M]]
+extern fun borrowed (m: mem.M 0, c: Bool): [mem.M 0, I64] =
+    let (m, p) = mem.alloc (I64, 0) m;
+    let m = mem.store (m, p, 42I64);
+    con consumer (m: mem.M 0) =
+        con yes () =
+            let (m, v) = mem.load (m, p);
+            return (m, v);
+        con no () = return (m, 0I64);
+        (no, yes)#c ();
+    consumer m;

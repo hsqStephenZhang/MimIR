@@ -1,0 +1,28 @@
+// RUN: %mim -p opt %s -p ll --max-fp-iters 128
+// RUN: clang++ -O2 %S/tiled_n_captures_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin tensor;
+plugin core;
+use core.ops.n;
+
+lam twice (x: I64): I64 = core.wrap.mul 0 (x, 2I64);
+lam boxes (point: Nat): [tensor.TileBox 1, tensor.TileBox 1] =
+    ((point * 2, 2), (point * 2, 2));
+
+lam step (x: «4; I64»): «4; I64» =
+    let (_, q) = tensor.tiled_n @(2, 1, (I64, I64), (1, 1)) ((4, 4), 2) boxes
+        (λ (point: Nat): [«2; I64», «2; I64»] =
+            let p = tensor.slice 4 (point * 2, 1, 2) x;
+            (p, tensor.unary twice p));
+    q;
+
+extern fun kernel (x: «4; I64»): «4; I64» =
+    let x = step (tensor.buf x);
+    let x = step x;
+    let x = step x;
+    let x = step x;
+    let x = step x;
+    let x = step x;
+    let x = step x;
+    return (step x);
