@@ -1,0 +1,18 @@
+// RUN: %mim -p opt -p ll -X tensor:strict=1 --max-fp-iters 128 %s -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: clang++ -O3 -fsanitize=address %S/blis_batch_seo_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -p opt -p ll -X tensor:group=0 %s -X ll:o=%t.off.ll
+// RUN: clang++ -O3 -fsanitize=address %S/blis_batch_seo_aux.cpp %t.off.ll -o %t.off -Wno-override-module
+// RUN: %t.off
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let R: tensor.Ring = (math.F32, 0:math.F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+extern fun dot (a: «256, 2, 2; math.F32», b: «256, 2, 2; math.F32»): «256, 2, 2; math.F32» =
+    return (tensor.bmm R @(256, 2, 2, 2) (tensor.buf a, tensor.buf b));
+
+// CHECK: tensor.group contraction
+// CHECK-NOT: not realized
