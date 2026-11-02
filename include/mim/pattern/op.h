@@ -3,6 +3,8 @@
 #include <functional>
 #include <unordered_map>
 
+#include <ankerl/unordered_dense.h>
+
 #include "mim/pattern/pattern.h"
 
 namespace mim::pattern {
@@ -51,6 +53,8 @@ public:
     bool contains(flags_t axm) const { return specs_.contains(axm); }
     void overlay(const OpRegistry&);
     void assert_pure(flags_t);
+    void declare_commutative(flags_t flags) { commutative_.insert(flags); }
+    bool is_commutative(flags_t flags) const { return commutative_.contains(flags); }
 
 private:
     struct Spec {
@@ -60,6 +64,7 @@ private:
         std::optional<size_t> num_groups = {};
     };
     std::unordered_map<flags_t, Spec> specs_;
+    ankerl::unordered_dense::set<flags_t> commutative_;
 };
 
 } // namespace mim::pattern

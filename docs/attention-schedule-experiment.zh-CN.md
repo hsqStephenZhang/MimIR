@@ -153,3 +153,305 @@ online 全局活动存储的 L 依赖只来自输入/输出的线性项，
 bufferization、向量 legalization、exp2 选择和 CPU 分布中哪些不能由当前规则表达。
 无法表达时给出最小缺口和失败诊断，不把 IREE 的全部底层 pipeline 冒充为一条规则。
 每步独立提交，提交前运行 CTest 与完整 lit；遇阻按约定停止并报告。
+
+## 重启后的实验状态：步骤 1 阻塞，尚未测量
+
+计划提交为 `8618a6bd808e9d5c975881efca09624051efd653`。
+该提交之前 CTest 243/243 通过，完整 lit 673 通过、9 unsupported。
+机器重启后按四核上限重新构建成功；所有新日志和复现保存到
+`/Users/zc/courses/compiler/products/tile-fuse/results/task28a/`，
+不依赖临时目录或旧 scratchpad。
+后续重任务限定 `nice -n 10`、最多四核且串行，计时仍为单线程。
+
+当前未提交的实现尝试用一个 tensor attention axiom 保存复合语义，
+用 P5 graph rule 匹配由 `attention_impl` 展开的原始 diamond，
+普通 lowering 则重新分解它，尚未引入 online 算法。
+但是 raising 尚未进入匹配或替换，规则自身编译就失败：
+
+```text
+Rule LHS bound function application requires higher-order matching
+```
+
+`raising.log` 保存完整诊断。LLDB 在 `src/mim/pattern/rule.cpp:184`
+截获实际被拒绝的表达式为 `mk (3, 0)`，
+见 `raising-expression.log`。
+它来自展开后 softmax 的 `map_reduce_post` 默认调度：
+`SchedT` 以 `λ T. λ mk. mk (3,0)` 编码。
+`RulePattern::lower` 遍历 LHS 的 lambda body 时，
+会拒绝所有 callee 为 lambda-bound Var 的 application，
+即使外面的整个 schedule 是闭合、固定的值。
+因此当前这种直接展开 diamond 的结构规则不能编译；
+此处不是 shape mismatch、未命中模型或 online 数值误差。
+
+独立最小复现 `schedpat.mim` 只包含一个接受闭合 schedule 的 `mark` axiom、
+`λ T. λ mk. mk 3` 和删除 mark 的规则，不包含 attention 或 tensor。
+运行以下命令同样以状态 1 报上述诊断：
+
+```sh
+cd /Users/zc/courses/compiler/mimir-gpm
+nice -n 10 build/bin/mim \
+  /Users/zc/courses/compiler/products/tile-fuse/results/task28a/schedpat.mim \
+  -o /Users/zc/courses/compiler/products/tile-fuse/results/task28a/schedpat-output.mim
+```
+
+这是一项具体的表达方式限制，不证明所有 P5 raising 方案均不可能。
+可研究的替代是把 schedule 作为有语义 guard 的 opaque capture，
+或让 pattern compiler 安全比较闭合 schedule 而不递归解释其 binder 应用；
+尚未实现或验证这些方案，不能将 witness 内隐藏整个识别器当成已经解决。
+当前 WIP 还未覆盖 mask、真实 attention/transformer 命中或完整 near-miss 集合，
+且已接入默认流水线，不能视为可用版本。
+按任务的遇阻停止约定保留 WIP、不提交步骤 1。
+步骤 2–5 和计数/时间测量均未进行，因此没有 predicted-vs-measured 的成功结论。
+
+### 闭合 schedule 的修复与后续复现
+
+上述编译阻塞已由 `4d8abc29db` 修复：
+`RulePattern::lower` 在结构化 lambda 之前识别闭合 lambda，
+以 exact 或 alpha-equivalence 比较常量；`lit/rules/closedlm.mim` 覆盖该情况。
+这是机制层面的实质发现：调度虽然是函数编码，但闭合调度在 LHS 中应作为常量，
+不需要求解 `mk` 的高阶应用。
+本轮确认 attention 规则已不再报原来的高阶匹配错误。
+
+新 op 的导出名称改为 `tensor.sdpa`，避免与已有 `use tensor` 程序中的
+局部 `attention` 定义冲突。`tensor/attn_exec.mim` 已重新通过。
+raising 仍未匹配；即使诊断时把全部形状和 scale 固定成字面量，
+正确 diamond 的直接 `RulePattern::match_lhs` 也返回 No_Match。
+诊断用固定尺寸、源代码路径和 dump 调用已经撤掉，WIP 恢复通用参数。
+
+进一步缩小后发现闭合 lambda 常量的重复出现仍附带节点身份约束。
+最小复现为结果目录的 `clrep.mim`：
+
+```mim
+lam expected (x: Nat): Nat = core.nat.add (x, 1);
+lam first (x: Nat): Nat = core.nat.add (x, 1);
+lam second (x: Nat): Nat = core.nat.add (x, 1);
+rule remove (x: Nat): mark (expected, expected, x) => x;
+```
+
+使用 `compile.graph_rule_app`，并显式声明 mark 与 core.nat.add 的纯性后：
+
+| 目标 | 预期（闭合常量按 alpha 比较） | 实际 |
+|---|---|---|
+| `mark(first, first, x)` | `x` | `x` |
+| `mark(first, second, x)` | `x` | 未替换 |
+
+`clrep-graph-output.mim` 和 `clrep-graph.log` 保存输出及匹配日志。
+同样的现象也已在 `compile.rule_app` 中复现。
+原因是闭合 lambda 分支的 alpha predicate 使用一个 capture；
+`lowered_` 复用该 pattern 时也复用 capture，
+而 `match.cpp` 的 Capture 分支要求后续绑定与已有绑定指针相同。
+因此“一个固定函数常量出现两次”被额外解释为“目标两次必须共享同一个 mutable”。
+这与 alpha 常量比较不同，会影响展开 diamond 中重复的默认 schedule、
+identity post 和访问映射；尚不能宣称修复该点后整个 raising 一定通过。
+
+执行最小复现：
+
+```sh
+cd /Users/zc/courses/compiler/mimir-gpm
+nice -n 10 build/bin/mim \
+  /Users/zc/courses/compiler/products/tile-fuse/results/task28a/clrep.mim \
+  -o /Users/zc/courses/compiler/products/tile-fuse/results/task28a/clrep-graph-output.mim \
+  -VVVV
+```
+
+暂停状态：已重建，定向 lit 为 attn_exec 通过、attention_raise 失败；
+记录于 `paused-build.log`、`paused-targeted.log`。
+没有新提交，没有模型测量，也没有 online 实现。
+按任务要求遇到新的、独立可复现的机制阻塞后停止，保留步骤 1 WIP。
+
+### 重复闭合常量修复与匹配预算阻塞
+
+第二个阻塞由 `3f7ebc465b` 修复：闭合常量 pattern 不再被 memoize，
+每次出现使用独立的 alpha predicate/capture。
+本轮重跑 `clrep.mim`，`shared` 与 `distinct` 都返回原参数，
+输出保存在 `clrep-fixed-output.mim`；`rules/closedlm.mim` 也通过。
+因此前两项机制修复均已验证，不应再将后续未命中归因于它们。
+
+用户指出 op 内嵌 schedule closure 是设计异味：
+计算应与调度解耦，调度由规则施加。
+此项重构已记录，但不在本任务启动；当前实验继续使用现有 op。
+
+本轮还识别到 `map_reduce` wrapper 没有显式给出零个 post 输入的类型/秩/形状，
+默认推导会留下互不相同的 Hole。直接结构匹配会把这些 Hole 按身份比较，
+即使它们表示的是同一空 tuple。
+WIP 已将 wrapper 的 `(nis,0)`、完整类型组和 `(Tis,Ris,Sis,(),(),())`
+写明；未修改 P5 matcher，也没有给不确定 Hole 增加宽松匹配。
+该变更尚未全量验收或提交。
+
+排除上述问题后，诊断用的全字面量形状与 scale 规则实例，
+对正确 attention 根直接调用 `RulePattern::match_lhs`：
+结果为 `Budget_Exceeded`，steps=660，见 `explicit-metadata.log`。
+默认 max_steps 为 100000、max_depth 为 256；
+当前 `match.cpp` 同时将结构 depth 和 continuation 的 active_depth 计入该深度预算。
+因此这不是总 steps 用尽，而是深度限制。
+扁平 tuple 的兄弟分支也通过 continuation 嵌套执行，预算并不只衡量源表达式的树高。
+未擅自提高默认上限，也未把诊断中的固定形状留在生产代码。
+
+独立复现为结果目录的 `pdepth.mim`：
+规则把 `mark(x,x+1,…,x+31)` 改写为 x，目标正是同一表达式，
+没有 tensor、softmax、schedule 或闭合函数常量。
+16 元素的同构对照能改写；32 元素版本报
+`rule_app exceeded its pattern matching budget`。
+干净 core（已撤掉所有临时 dump）仍报错，见 `pdepth-final.log`。
+
+```sh
+cd /Users/zc/courses/compiler/mimir-gpm
+nice -n 10 build/bin/mim \
+  /Users/zc/courses/compiler/products/tile-fuse/results/task28a/pdepth.mim \
+  -o /Users/zc/courses/compiler/products/tile-fuse/results/task28a/pdepth-final-output.mim
+```
+
+当前定向 lit 为 closedlm、attn_exec 通过，attention_raise 失败，
+见 `depth-targeted.log`；完整重建成功，见 `depth-paused-build.log`。
+按任务约定在此停止，保留通用 raising WIP；没有新提交，没有模型计数或计时。
+下一步需要决定 matcher 的 continuation 深度预算应如何计量，
+或将单个 diamond 拆成更小的有语义 guard 的规则，
+但不能在尚未匹配成功时声称调度机制已兑现预测。
+
+### 显式匹配任务链的验证与 FP32 字面量 recipe 限制
+
+第三个阻塞由 `983ba77b0f` 修复，已合入本 worktree 的 `eaac5398de`。
+确定性匹配改用显式任务链，只有 Either 分支保存回溯选择，
+不再让兄弟节点的数量增加 native continuation 深度；默认 max_depth 仍为 256。
+本轮重跑 `pdepth.mim`，输出为 `result(x)=x`，
+见 `pdepth-taskchain.mim` 与 `pdepth-taskchain.log`。
+至此，首个大型真实 pattern 暴露的三个 P5 问题及其修复均已记录：
+闭合调度常量的 alpha 匹配、重复常量出现的独立匹配、兄弟节点与实际嵌套深度的区分。
+
+进一步诊断时，将规则的形状与 scale 临时实例化为测试中的字面量，
+正确 attention 根直接匹配返回 Matched、1490 steps，
+没有提高预算；见 `taskchain-direct.log`。
+图层还补充了高层 dot_product 和 unary 的数据操作 schema，
+分别将第六组 tuple 和第四组值声明为输入，未声明全局纯性。
+然而 graph rewrite 在构造替换时抛出：
+`literal recipes require a Nat or Idx scalar type`。
+这与已经修复的匹配深度问题不同。
+
+独立最小复现为结果目录的 `fplit.mim`：
+
+```mim
+axm mark: math.F32 → math.F32;
+rule replace (x: math.F32): mark x => 0.5:math.F32;
+extern lam result (x: math.F32): math.F32 = mark x;
+```
+
+使用 `compile.graph_rule_app (replace, mark)` 即退出 1，
+见 `fplit.log`；无需 tensor、attention 或 schedule。
+`src/mim/pattern/rewrite.cpp` 的 recipe 验证明确只接受 Nat/Idx 的 Literal。
+对照 `natlit.mim` 的 Nat 字面量替换成功，
+`fpcap.mim` 从目标捕获 FP32 值再返回也成功。
+因此限制是 RHS 创建 FP32 字面量，不是所有 FP32 规则均不可用；
+捕获已有浮点值是一条已验证的可行路径，不能由此断言所有 attention raising 方案不可表达。
+
+```sh
+cd /Users/zc/courses/compiler/mimir-gpm
+nice -n 10 build/bin/mim \
+  /Users/zc/courses/compiler/products/tile-fuse/results/task28a/fplit.mim \
+  -o /Users/zc/courses/compiler/products/tile-fuse/results/task28a/fplit-output.mim -VVVV
+```
+
+所有固定形状/scale、core 与 tensor 中的诊断日志均已撤除。
+恢复后的通用规则仍未命中，编译本身退出 0，
+不能将具体实例的成功匹配等同于通用 raising 已完成。
+重建成功；定向 lit 为 closedlm、attn_exec 通过，attention_raise 失败，
+见 `restored-generic-build.log`、`restored-generic-targeted.log`、
+`restored-generic.log`。
+按任务遇阻停止要求保留步骤 1 WIP，不提交、不推送，
+未进入 online 规则与模型测量；本轮没有可报告的预测兑现结论。
+
+### FP32 recipe 修复验证与 scale 捕获的归一化边界
+
+第四个阻塞由 `758042d197` 修复：
+graph-rule Literal recipe 接受任意闭合标量类型，
+回归位于 `lit/rules/fplit.mim`。
+本轮重跑独立的 `fplit.mim`，`result` 正确返回 FP32 的 0.5，
+见 `fplit-fixed.mim`；没有继续沿用 Nat/Idx 限制的诊断结论。
+
+通用 attention 规则未命中的原因现已隔离到 scalar scale，
+不是必须固定所有形状才能匹配：
+仅将 scale 参数实例化为 0.5，保留 H/M/S/K/N 五个形状 metavariable，
+正确 diamond 的直接匹配为 Matched、2446 steps，
+见 `scale-fixed.log`。
+该诊断仍有独立的 graph publication 纯性拒绝，
+因此不能把直接匹配成功说成完整 raising 成功。
+普通依赖形状捕获的独立程序 `generic.mim` 也正确返回输入。
+
+失败来自归一化后的乘法操作数顺序：
+`src/mim/plug/math/normalizers.cpp` 的 `fold` 对交换运算使用
+`Def::greater` 排序；常量 0.5 在目标中被排到 binder 变量 y 之前，
+但规则中尚未绑定的 scale 是 Extract，不是 Lit，
+其规范化次序与目标不同。
+在当前 attention 诊断中，规则 lambda 的 body 是 `mul(y,scale)`，
+目标是 `mul(0.5,y)`；binder 已绑定 y，再拿它匹配 0.5 会失败。
+此处没有发生 shape 元变量不一致，也不是依赖类型预算耗尽。
+
+独立复现 `mulcap.mim` 不含 tensor、形状或 QKV view：
+
+```mim
+axm mark: [math.F32 → math.F32, math.F32] → math.F32;
+rule remove (scale x: math.F32):
+    mark (λ y: math.F32: math.F32 =
+        math.arith.mul math.mode.contract (y, scale), x) => x;
+```
+
+目标将 scale 换为 0.5，保留 mark，不发生替换。
+`mulctrl.mim` 将规则和目标的乘法都反写为 `(scale,y)`，
+仍被 normalizer 排序回不同方向，仍不替换；
+同构的非交换减法 `(y,scale)` 则成功返回 x。
+日志与输出分别在 `mulcap.log` / `mulcap-out.mim`、
+`mulctrl.log` / `mulctrl-out.mim`。
+这说明仅交换 Mim 源代码中的 operand 不是有效修复。
+
+现有设计文档 `graph-pattern-matching-design.zh-CN.md` 与
+`graph-pattern-reference-tests.zh-CN.md` 已明确：
+native PatternProgram 支持显式 OR 方向，但不提供自动交换律匹配。
+直接让 RulePattern 对 math.mul 尝试交换，或对归一化后的任意调用增加其他方向，
+会扩展现有 Rule 的匹配语义，不是缺失 capture/budget 等局部实现修复。
+另一个选择是通过显式 pattern/规则构造接口表达两个方向；
+这同样需要确定接口和归一化交互，不能假装两条反写的源规则已经表达了 OR。
+本轮未引入上述设计，也未将整个 attention 识别器藏入 native witness。
+
+所有 scale 固定值、匹配 dump 和 core 调试修改已经撤除；
+保留原来的通用 WIP。
+重建成功，定向 lit 为 fplit、closedlm、attn_exec 通过，
+attention_raise 失败，见 `scale-restored-build.log`、
+`scale-restored-targeted.log`。
+按新协议仅因涉及规则匹配语义的设计决定而暂停；
+没有新提交，没有模型测量，步骤 1–5 仍未完成。
+
+### 用户选定交换律匹配后的机制实现
+
+用户已选定 option A：注册二元算子的 Rule 匹配模交换律进行，
+不支持结合律。
+机制提交 `fix(pattern): match registered binary operators modulo commutativity`
+解决 scale 由 metavariable 变成 Lit 后，normalizer 改变 mul 操作数次序的症状；
+根因与修复是将插件现有 `is_commutative` 信息注册到 Driver 的 OpRegistry，
+由共享 Rule lowering 生成原顺序优先的 Either，复用任务链回滚与预算。
+libmim 不知道 core/math 的具体 axiom，未改变 mode、类型参数或 pipeline 默认值。
+独立的 `mulcap.mim` 已正确改写为 x。
+`commute.mim`、`grcomm.mim`、`cchoice.mim` 覆盖两个 phase、
+嵌套交换、重复捕获、非交换算子、无结合律及原顺序优先/回滚。
+
+继续 attention 时还识别到一个独立的局部 recipe 问题：
+从 scalar lambda body 捕获的 Lit 不一定在所选 graph region 的 node 集合中；
+graph Rule 把它当作 import，报 `recipe imports a value outside the graph`。
+闭合标量 Lit 已可通过第四项修复的 Literal recipe 精确重建，
+因此 captured Lit 改用 Literal recipe，不扩大 graph import 的范围。
+独立回归 `grlitcap.mim` 使用非交换 sub，避免依赖交换律修复。
+此修复与交换律分开提交。
+
+交换律与 captured-Lit 修复后，通用 attention 已进入 graph replacement 验证，
+不再停在 shape/scale 的结构匹配阶段。
+后续拒绝为 `replacement removes a computation without a purity proof`：
+诊断定位到闭合 Church schedule 内部的 `mk(3,0)`。
+当前保护逻辑递归检查函数值的 body，
+而 tensor.map_reduce_post 的纯性断言只证明其调用，不证明所有函数值参数；
+`mk` 是 bound variable，无法作为已知纯 axiom 声明。
+诊断 dump 已撤除，尚未放宽该保护条件。
+
+本轮提交前按资源限制串行执行 CTest 与完整 lit：
+CTest 249/249；lit 680 passed / 9 unsupported / 1 failed，
+唯一失败仍为原有未提交步骤 1 的 `tensor/attention_raise.mim`。
+所有新机制回归及已有 pattern suites 通过，未把该 WIP 失败标为 unsupported
+或删除检查；步骤 1 仍不作为完成提交。
+结果见 `comm-commit-ctest.log`、`comm-commit-full-lit.log`。

@@ -5,6 +5,7 @@
 
 #include <fe/restore.h>
 
+#include "mim/driver.h"
 #include "mim/rewrite.h"
 #include "mim/tuple.h"
 #include "mim/world.h"
@@ -180,8 +181,8 @@ Pattern RulePattern::lower(const Def* def) {
     if (!def) throw std::invalid_argument("incomplete node in Rule pattern");
     if (auto i = lowered_.find(def); i != lowered_.end()) return i->second;
     if (def->is_closed() && (def->isa<Lam>() || (def->is_mutable() && def->type() && def->type()->isa<Type>()))) {
-        auto value  = program_.capture();
-        auto alpha  = program_.where(value, {value}, [def](std::span<const Def* const> values) {
+        auto value = program_.capture();
+        auto alpha = program_.where(value, {value}, [def](std::span<const Def* const> values) {
             return Check::test_alpha(def, values[0]) ? CheckResult::True : CheckResult::False;
         });
         return program_.either(program_.exact(def), alpha);
@@ -261,6 +262,13 @@ Pattern RulePattern::lower(const Def* def) {
     auto operands = std::vector<Pattern>();
     for (auto op : def->ops())
         operands.push_back(lower(op));
+    if (auto app = def->isa<App>();
+        app && app->axm() && app->curry() == 0 && def->driver().graph_operations().is_commutative(app->axm()->flags()))
+        if (auto pair = app->arg()->isa<Tuple>(); pair && pair->num_ops() == 2) {
+            auto swapped = program_.node(Node::Tuple, {lower(pair->op(1)), lower(pair->op(0))}, pair->flags());
+            swapped      = program_.all(swapped, program_.type(lower(pair->type())));
+            operands[1]  = program_.either(operands[1], swapped);
+        }
     auto result = program_.node(def->node(), operands, def->flags());
     if (def->isa<Tuple>() && !operands.empty()) {
         auto body = operands.front();

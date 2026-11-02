@@ -1,0 +1,29 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+plugin math;
+plugin core;
+
+let F = math.F32;
+let mode = math.mode.contract;
+axm mark: [F, F] → F;
+axm select: F → F;
+axm nat_mark: [Nat, Nat] → Nat;
+rule choose (x y unused: F): mark (math.arith.mul mode (x, y), y) => x;
+rule first (x y unused: F): select (math.arith.mul mode (x, y)) => x;
+rule nat_choose (x y unused: Nat): nat_mark (core.nat.add (x, y), y) => x;
+extern lam rollback (a b: F, _: Nat): F = mark (math.arith.mul mode (a, b), a);
+extern lam priority (a b: F, _: Nat): F = select (math.arith.mul mode (a, b));
+extern lam nat_rollback (a b: Nat, _: F): Nat = nat_mark (core.nat.add (a, b), a);
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.rule_app (choose, first, nat_choose), compile.cleanup);
+
+// CHECK-LABEL: extern lam nat_rollback
+// CHECK-SAME: (_: Nat, [[NSECOND:[a-zA-Z0-9_]+]]: Nat,
+// CHECK-NEXT: [[NSECOND]];
+// CHECK-LABEL: extern lam priority
+// CHECK-SAME: ([[FIRST:[a-zA-Z0-9_]+]]:
+// CHECK-NEXT: [[FIRST]];
+// CHECK-LABEL: extern lam rollback
+// CHECK-SAME: (_: math.F (23, 8), [[SECOND:[a-zA-Z0-9_]+]]:
+// CHECK-NEXT: [[SECOND]];

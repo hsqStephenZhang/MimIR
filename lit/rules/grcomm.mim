@@ -1,0 +1,45 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+plugin math;
+
+let F = math.F32;
+let mode = math.mode.contract;
+axm mark: [F → F, F] → F;
+axm pair: [F, F] → F;
+
+rule mul (scale x: F):
+    mark (λ y: F: F = math.arith.mul mode (y, scale), x) => x;
+rule nested (a b x: F):
+    mark (λ y: F: F = math.arith.add mode (math.arith.mul mode (y, a), b), x) => x;
+rule square (x: F): pair (math.arith.mul mode (x, x), x) => x;
+rule sub (scale x: F):
+    mark (λ y: F: F = math.arith.sub mode (scale, y), x) => x;
+rule div (scale x: F):
+    mark (λ y: F: F = math.arith.div mode (scale, y), x) => x;
+
+extern lam multiply (x: F): F = mark (λ y: F: F = math.arith.mul mode (y, 0.5:F), x);
+extern lam nested_swap (x: F): F =
+    mark (λ y: F: F = math.arith.add mode (math.arith.mul mode (y, 0.5:F), 0.25:F), x);
+extern lam square_hit (x: F): F = pair (math.arith.mul mode (x, x), x);
+extern lam square_miss (x y: F): F = pair (math.arith.mul mode (x, y), x);
+extern lam subtract (x: F): F = mark (λ y: F: F = math.arith.sub mode (y, 0.5:F), x);
+extern lam divide (x: F): F = mark (λ y: F: F = math.arith.div mode (y, 0.5:F), x);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.graph_rule_app
+        ((nested, mul, square, sub, div), (mark, pair, math.arith.mul, math.arith.add,
+                                         math.arith.sub, math.arith.div)), compile.cleanup);
+
+// CHECK-LABEL: extern lam divide
+// CHECK: mark
+// CHECK-LABEL: extern lam multiply
+// CHECK-NOT: mark
+// CHECK-LABEL: extern lam nested_swap
+// CHECK-NOT: mark
+// CHECK-LABEL: extern lam square_hit
+// CHECK-NOT: pair
+// CHECK-LABEL: extern lam square_miss
+// CHECK: pair
+// CHECK-LABEL: extern lam subtract
+// CHECK: mark

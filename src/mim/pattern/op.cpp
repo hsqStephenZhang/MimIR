@@ -9,6 +9,7 @@
 namespace mim::pattern {
 
 void OpRegistry::overlay(const OpRegistry& other) {
+    commutative_.insert(other.commutative_.begin(), other.commutative_.end());
     for (const auto& [flags, spec] : other.specs_)
         specs_.insert_or_assign(flags, spec);
 }

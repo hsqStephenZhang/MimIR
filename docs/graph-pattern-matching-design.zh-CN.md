@@ -354,7 +354,7 @@ python3 scripts/bench-patterns.py <build>/bin/mim-pattern-bench --sizes 80,160,3
 | --- | --- |
 | diamond、parallel、nested diamond | 精确 anchor 组合、共享 Def 身份、重复参数位置、排他使用及输出逃逸的正反例 |
 | fake QKV、combine matmul twice | 拒绝输入不同的假三分支；两组独立替换分别共享各自的新计算 |
-| commutative、repeated pattern | 显式 OR 的不同 operand 路径、子模式身份、失败回滚、连续匹配不残留 captures |
+| commutative、repeated pattern | 注册算子的二元 operand 交换、显式 OR 路径、子模式身份、失败回滚、连续匹配不残留 captures |
 | variadic wildcard | 空尾部、重复尾部 capture、前缀 OR 回溯；保留 Tuple 与 Pack 的物理结构区别 |
 | no-op rewrite fallback | 实际 GraphRuleRewrite 跳过 identity 与 false guard，选择首个有效规则；无有效规则时不发布 |
 | MimIR 图表示与三值判定 | type-only／raw-or-type captures、嵌套投影与包装路径、Unknown 分支回滚及跨 tuple 状态汇总 |
@@ -880,3 +880,29 @@ Mim Rule 模块，检查输出函数确实变为 `x`，不只检查编译退出�
 当前分支没有独立 `lit/pattern` 目录，底层 pattern 回归由 C++ suites 覆盖。
 所有重构建限制四个并行任务，测试使用 `ctest -j4` / `lit -j4`，
 重任务串行启动并使用 `nice -n 10`，未运行计时 benchmark。
+
+### 注册二元算子的交换律匹配
+
+P5 的 Rule adapter 对插件注册的二元算子按交换律匹配；
+不执行结合律匹配，也不把 `a*(b*c)` 重结合为 `(a*b)*c`。
+Driver 持有的 `pattern::OpRegistry` 保存交换律 axiom flags，
+core 与 math 在 plugin 注册入口枚举对应 axiom family，
+使用现有 `is_commutative` 判定，不在 libmim 中硬编码插件或算子名称。
+交换律声明不提供纯性声明，也不增加图数据 operand decoder。
+
+只有完整 axiom application 的实参为显式二元 Tuple 时，
+`RulePattern::lower` 才将该 operand 模式降低为
+`Either(原顺序,交换顺序)`；math 的 mode、浮点格式等 curry 参数保持原样。
+先尝试原顺序，包括后续 sibling、类型和 predicate；
+原分支失败才尝试交换分支。
+现有显式任务链负责恢复 captures、待定类型与检查义务，
+新增选择与匹配工作计入原有 step/depth 预算，默认预算不变。
+`compile.rule_app` 与 `compile.graph_rule_app` 共用此 lowering；
+原始 PatternProgram::node 仍表示精确的物理操作数顺序。
+被 tuple η 归约消去的 operand 结构仍不做逆归一化重建。
+
+`commute.mim`、`grcomm.mim` 覆盖 scalar closure 的 scale 捕获、
+嵌套 add/mul 的两个交换、重复 capture 一致性、sub/div 不交换、
+mode 不交换及不重结合；
+`cchoice.mim` 检查原方向优先和后续 sibling 失败后的回滚，
+并覆盖 core.nat.add 的插件注册。
