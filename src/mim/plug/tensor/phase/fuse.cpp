@@ -611,6 +611,7 @@ bool is_mr(const Def* d) { return static_cast<bool>(graph::map_reduce(d)); }
 } // namespace
 
 void Fuse::start() {
+    views_only_ = annex() == Annex::base<fuse_views>();
     // Include every reachable binder body, including closures. GraphView itself stops at binders;
     // these roots establish closed coverage over all users in the whole program.
     DefVec roots;
@@ -648,10 +649,11 @@ void Fuse::start() {
 const Def* Fuse::rewrite_imm_App(const App* app) {
     if (graph::map_reduce(app)) {
         const App* cur = nullptr;
-        if (auto res = fuse_map_reduce(app)) {
-            log().d("fused map_reduce {} → {}", app, res);
-            cur = res->as<App>();
-        }
+        if (!views_only_)
+            if (auto res = fuse_map_reduce(app)) {
+                log().d("fused map_reduce {} → {}", app, res);
+                cur = res->as<App>();
+            }
         // Read-throughs and the epilogue direction, to a fixpoint: each round may absorb pure
         // re-indexed reads into access maps or sink the current map — first the plainly rewritten
         // one, then the producer-fused result, then each fused result — into the producer of one
@@ -662,7 +664,7 @@ const Def* Fuse::rewrite_imm_App(const App* app) {
         for (bool progress = true; progress;) {
             progress       = false;
             const Def* res = fuse_read_through(callee, arg);
-            if (!res) {
+            if (!res && !views_only_) {
                 res = fuse_epilogue(callee, arg);
                 if (res) log().d("fused trailing map {} into its producer's epilogue → {}", app, res);
             }

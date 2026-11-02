@@ -1573,6 +1573,7 @@ axm lower_map_reduce: compile.Phase;
 ///   consumer.
 ///
 axm fuse_tensor: compile.Phase;
+axm fuse_views: compile.Phase;
 ///
 /// ### lower_to_mem
 ///
@@ -1608,6 +1609,7 @@ axm group_root: {T: *} → T → Bool, normalize_group_root;
 ///
 axm group_req: {P C: *} → [op: P, kind dim tile: Nat, params: C] → P;
 axm group_rules: compile.Phase;
+axm group_default: compile.Phase;
 priv axm group_region: {P: *} → [value: P, budget: Nat] → P;
 priv axm group_supported: {P C: *} → [op: P, kind dim tile: Nat, params: C] → Bool;
 priv axm group_schedule: {P C: *} → [op: P, kind dim tile: Nat, params: C] → P, normalize_group_schedule;

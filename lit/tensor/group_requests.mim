@@ -23,6 +23,9 @@
 // RUN: python3 %S/group_run.py %mim %s %t.realize realize > %t.realize.out 2> %t.realize.log
 // RUN: %FileCheck %s --check-prefix=REALIZED < %t.realize.out
 // RUN: %FileCheck %s --check-prefix=REALIZE-LOG < %t.realize.log
+// RUN: python3 %S/group_run.py %mim %s %t.gpu gpu -Xtensor:group=1 > %t.gpu.out 2> %t.gpu.log
+// RUN: python3 %S/group_run.py %mim %s %t.gpu.off gpu -Xtensor:group=0 > %t.gpu.off.out 2> %t.gpu.off.log
+// RUN: diff %t.gpu.off.out %t.gpu.out
 
 plugin tensor;
 plugin affine;

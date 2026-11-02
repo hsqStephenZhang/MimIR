@@ -322,6 +322,7 @@ private:
 } // namespace
 
 void Group::start() {
+    if (driver().is_loaded("gpu")) return;
     if (!driver().arg_nat("tensor", "group").value_or(1)) return RWPhase::start();
     auto cache     = driver().arg_nat("tensor", "group-cache").value_or(32768);
     auto registers = driver().arg_nat("tensor", "group-registers").value_or(32);
@@ -334,9 +335,12 @@ void Group::start() {
     auto scratch = old_world().inherit();
     Planner planner(source, *scratch, cache, budget, log());
     DefSet claimed;
-    for (auto op : source.operations())
-        for (auto occurrence : source.occurrences(op))
-            if (!occurrence.regions.empty()) claimed.insert(op);
+    for (auto op : source.operations()) {
+        auto occurrences = source.occurrences(op);
+        if (occurrences.empty()) claimed.insert(op);
+        for (auto occurrence : occurrences)
+            if (!occurrence.trips || !occurrence.regions.empty()) claimed.insert(op);
+    }
     for (auto op : source.operations())
         if (auto request = Axm::isa<group_req>(op)) {
             auto [value, kind, dim, tile, params] = request->args<5>();

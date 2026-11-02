@@ -812,6 +812,20 @@ native test 检查 identity、provenance 和 params 不计为 data read。
 与手写 TF-RULES、default-sched 的决策差异表见
 `graph-pattern-tile-fuse-experiments.zh-CN.md` 的 Task 16B。
 
+### 12.4 默认流水线接入
+
+`opt._default_compile` 在 L1 `fuse_tensor` 后调用 `tensor.group_default`：
+`group → group_rules → fuse_views → lower_to_mem`。
+`fuse_views` 只组合纯 reindexing reads，不执行 producer fusion 或 epilogue sinking。
+默认关闭，显式 `-X tensor:group=1` 开启；`group=0` 不运行这三个阶段，保留原流水线。
+`reduce_exec` 的自动 outer grouping 仍触发 closure lowering 类型错误，修复前不默认开启。
+
+加载 `gpu` plugin 时，`group_default`、`group` 和 `group_rules` 均不运行；
+CPU tiled/fold/stage destination lowering 不能替代 GPU grid/block 和 shared-memory 调度。
+该路径不因自动 grouping 引入 boxed views。
+`nvptx/group_disabled` 对 HLO、HLO execution 和 training 逐字比较 group=0/1 的 host/device LLVM，
+`group_requests` 还比较显式 group/rule 阶段的 GPU 输出与禁用输出。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

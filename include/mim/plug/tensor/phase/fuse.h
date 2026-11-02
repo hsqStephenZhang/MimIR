@@ -26,6 +26,7 @@ private:
     /// Rewritten/fused `map_reduce_post` app → the old-world app it replaces, to look up the
     /// consumer count of new-world fusion candidates.
     DefMap<const Def*> new2old_;
+    bool views_only_ = false;
 };
 
 } // namespace mim::plug::tensor::phase

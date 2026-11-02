@@ -7,6 +7,8 @@
 #include <mim/phase/graph_rule_rewrite.h>
 #include <mim/phase/rule_rewrite.h>
 
+#include "mim/plug/tensor/phase/fuse.h"
+#include "mim/plug/tensor/phase/group.h"
 #include "mim/plug/tensor/tensor.h"
 
 namespace mim::plug::tensor {
@@ -352,7 +354,19 @@ pattern::WitnessResult group_reverse_witness(const pattern::GraphView& source, D
 
 namespace phase {
 
+void GroupDefault::start() {
+    if (driver().is_loaded("gpu") || !driver().arg_nat("tensor", "group").value_or(0)) return;
+    Phases stages;
+    stages.push_back(std::make_unique<Group>(world(), Annex::base<group>()));
+    stages.push_back(std::make_unique<GroupRules>(world(), Annex::base<group_rules>()));
+    stages.push_back(std::make_unique<Fuse>(world(), Annex::base<fuse_views>()));
+    PhaseMan pipeline(world(), "tensor.group_default.pipeline");
+    pipeline.apply(false, std::move(stages));
+    pipeline.run();
+}
+
 void GroupRules::start() {
+    if (driver().is_loaded("gpu")) return;
     {
         pattern::GraphView source(world(), driver().graph_operations());
         for (auto def : source.operations())

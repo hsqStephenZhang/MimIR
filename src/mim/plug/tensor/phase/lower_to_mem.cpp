@@ -826,7 +826,7 @@ const Def* LowerToMem::rewrite_imm_Extract(const Extract* extract) {
     auto arr = rewrite(old_arr);
     if (!Axm::isa<buffer::Buf>(arr->type())) return RWPhase::rewrite_imm_Extract(extract);
     if (auto bounds = fe::lookup(storage_shapes_, old_arr)) {
-        auto source = graph::map_reduce(old_arr);
+        auto source = graph::map_reduce(Axm::peel<tensor::buf>(old_arr));
         if (!source) extract->blame("tensor capped read lacks its logical shape").bail();
         auto mr          = btensor::MapRedPost::of(source->callee()->as<App>());
         auto n           = Lit::as(mr.Ro);

@@ -20,6 +20,9 @@ if "report" in options:
     phases += ", tensor.report_groups"
 if "realize" in options:
     phases += ", tensor.group_rules"
+if "gpu" in options:
+    text += "\nplugin gpu;\n"
+    phases += ", tensor.group_rules"
 if "buffer" in options:
     phases += ", tensor.lower_to_mem"
 if "lower" in options:

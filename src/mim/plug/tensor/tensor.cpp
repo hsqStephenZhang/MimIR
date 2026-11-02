@@ -100,7 +100,9 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<lower_tensor, phase::Lower>(phases);
     Phase::hook<lower_map_reduce, phase::LowerMapReduce>(phases);
     Phase::hook<fuse_tensor, phase::Fuse>(phases);
+    Phase::hook<fuse_views, phase::Fuse>(phases);
     Phase::hook<group_rules, phase::GroupRules>(phases);
+    Phase::hook<group_default, phase::GroupDefault>(phases);
     Phase::hook<lower_to_mem, phase::LowerToMem>(phases);
     Phase::hook<group, phase::Group>(phases);
     Phase::hook<report_groups, phase::ReportGroups>(phases);
@@ -109,7 +111,7 @@ static void reg_phases(Flags2Phases& phases) {
 
 // clang-format off
 static constexpr PluginArg known_args[] = {
-    {"group=<n>", "Enable tensor.group request selection (default 1; 0 preserves the input program)."},
+    {"group=<n>", "Enable automatic grouping and in-group rules in the default pipeline (default 0 while integration is unvalidated)."},
     {"group-cache=<bytes>", "Scratch working-set budget for tensor.group and BLIS block selection (default 32768)."},
     {"group-registers=<n>", "Register count passed to the shared BLIS selector (default 32, at least 16)."},
     {"group-budget=<n>", "Maximum producer box recomputation factor for grouping (default 1; values above 1 permit halo requests)."},

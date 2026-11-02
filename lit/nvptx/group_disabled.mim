@@ -1,0 +1,3 @@
+// RUN: python3 %S/group_disabled.py %mim %S/../tensor/hlo.mim %t.hlo
+// RUN: python3 %S/group_disabled.py %mim %S/../tensor/hlo_exec.mim %t.exec
+// RUN: python3 %S/group_disabled.py %mim %S/../tensor/hlo_train.mim %t.train
