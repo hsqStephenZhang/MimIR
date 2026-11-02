@@ -15,6 +15,7 @@ struct Case {
     int m, n;
     float* (*grouped)(float*, float*, float*);
     float* (*unfused)(float*, float*, float*);
+    float* (*explicit_blis)(float*, float*, float*);
 };
 #include "cases.h"
 
@@ -83,9 +84,9 @@ convolution(const std::vector<float>& a, const std::vector<float>& weights, int 
 int main() {
     if (pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) != 0) return 1;
     openblas_set_num_threads(1);
-    std::puts("workload,M,N,group1_ms,group0_ms,openblas_loop_ms");
+    std::puts("workload,M,N,group1_ms,group0_ms,openblas_loop_ms,explicit_blis_ms");
     for (const auto& c : cases) {
-        bool matrix = c.kind == "gemm" || c.kind == "mlp";
+        bool matrix = c.kind == "plain" || c.kind == "gemm" || c.kind == "mlp";
         bool conv   = c.kind == "conv";
         auto a      = input(conv ? 2 * c.n * c.m * c.m : c.m * c.n, 11);
         auto b      = input(conv ? c.n * c.n * 9 : c.n * c.n, 13);
@@ -93,9 +94,10 @@ int main() {
         auto blas   = [&]() {
             auto hidden = allocate(c.m * c.n);
             product(a.data(), b.data(), hidden, c.m, c.n, c.n);
-            for (int i = 0; i != c.m * c.n; ++i)
-                hidden[i] = std::max(0.0f, hidden[i] + (c.kind == "gemm" ? w[i % c.n] : 0));
-            if (c.kind == "gemm") return hidden;
+            if (c.kind != "plain")
+                for (int i = 0; i != c.m * c.n; ++i)
+                    hidden[i] = std::max(0.0f, hidden[i] + (c.kind == "gemm" ? w[i % c.n] : 0));
+            if (c.kind != "mlp") return hidden;
             auto out = allocate(c.m * c.n);
             product(hidden, w.data(), out, c.m, c.n, c.n);
             std::free(hidden);
@@ -112,10 +114,13 @@ int main() {
             expected = rows(c, a);
         }
         auto execute = [&](int kind) {
-            return kind == 2 ? blas() : (kind == 0 ? c.grouped : c.unfused)(a.data(), b.data(), w.data());
+            return kind == 2 ? blas()
+                             : (kind == 0   ? c.grouped
+                                : kind == 1 ? c.unfused
+                                            : c.explicit_blis)(a.data(), b.data(), w.data());
         };
-        auto count = matrix ? 3 : 2;
-        std::vector<double> times[3];
+        auto count = c.explicit_blis ? 4 : matrix ? 3 : 2;
+        std::vector<double> times[4];
         for (int kind = 0; kind != count; ++kind) {
             auto result = execute(kind);
             check(result, expected.data(), expected.size());
@@ -130,7 +135,7 @@ int main() {
                 times[kind].push_back(
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
             }
-        double medians[3] = {0, 0, 0};
+        double medians[4] = {0, 0, 0, 0};
         for (int kind = 0; kind != count; ++kind) {
             std::sort(times[kind].begin(), times[kind].end());
             medians[kind] = times[kind][3];
@@ -138,6 +143,11 @@ int main() {
         std::printf("%.*s,%d,%d,%.6f,%.6f,", int(c.kind.size()), c.kind.data(), c.m, c.n, medians[0], medians[1]);
         if (matrix)
             std::printf("%.6f", medians[2]);
+        else
+            std::fputs("NA", stdout);
+        std::putchar(',');
+        if (c.explicit_blis)
+            std::printf("%.6f", medians[3]);
         else
             std::fputs("NA", stdout);
         std::putchar('\n');

@@ -324,7 +324,7 @@ private:
 void Group::start() {
     if (driver().is_loaded("gpu")) return;
     if (!driver().arg_nat("tensor", "group").value_or(1)) return RWPhase::start();
-    auto cache     = driver().arg_nat("tensor", "group-cache").value_or(32768);
+    auto cache     = driver().arg_nat("tensor", "group-cache").value_or(262144);
     auto registers = driver().arg_nat("tensor", "group-registers").value_or(32);
     auto budget    = driver().arg_nat("tensor", "group-budget").value_or(1);
     if (!cache || registers < 16 || !budget)
@@ -362,7 +362,7 @@ void Group::start() {
         if (auto ranks = mr.ranks();
             ranks && ranks->rr && canonical(mr) && root(imported) && pure_scalar(mr.comb) && pure_scalar(mr.post)) {
             auto size  = bytes(mr.To);
-            auto lanes = scratch->app(scratch->annex<vec_width>(), scratch->lit_nat(8));
+            auto lanes = scratch->app(scratch->annex<vec_width>(), scratch->lit_nat(4));
             if (!size || !*size) continue;
             auto config
                 = scratch->app(scratch->annex<group_blocks>(),

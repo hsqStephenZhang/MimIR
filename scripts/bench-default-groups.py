@@ -12,6 +12,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("directory", nargs="?", type=pathlib.Path, default=root / "build/task17-default-bench")
 parser.add_argument("--build-only", action="store_true")
+parser.add_argument("--compare-blis", action="store_true")
 args = parser.parse_args()
 directory = args.directory.resolve()
 directory.mkdir(parents=True, exist_ok=True)
@@ -19,20 +20,31 @@ template = (root / "lit/tensor/group_default.mim").read_text().split("extern fun
 header, cases = [], []
 workloads = []
 for size in (256, 512, 1024, 2048):
-    for kind in ("gemm", "mlp"):
+    for kind in ("plain", "gemm", "mlp"):
         workloads.append((kind, size, size))
 for m, n in ((1024, 1024), (4096, 1024), (1024, 4096)):
     for kind in ("soft", "layer"):
         workloads.append((kind, m, n))
 workloads.append(("conv", 32, 8))
+explicit = ""
+if args.compare_blis:
+    explicit = (root / "lit/tensor/blis.mim").read_text().split("extern fun square")[0]
+    explicit = explicit.replace("plugin core;", "plugin core;\nplugin math;\nlet F32 = math.F32;")
+    explicit = explicit.replace("I64", "F32").replace("0F32", "0.0:F32")
+    explicit = explicit.replace("core.wrap.add 0 @0", "math.arith.add math.mode.fast")
+    explicit = explicit.replace("core.wrap.mul 0 @0", "math.arith.mul math.mode.fast")
+    explicit = explicit.replace("core.wrap.add 0 (", "math.arith.add math.mode.fast (")
+    explicit = explicit.replace("core.icmp.sl", "math.cmp.l math.mode.fast")
 for group in (0, 1):
     text = template
     for index, (kind, m, n) in enumerate(workloads):
         name = f"g{group}_{index}"
-        if kind in ("gemm", "mlp"):
-            third = f"«{n}; F32»" if kind == "gemm" else f"«{n}, {n}; F32»"
+        if kind in ("plain", "gemm", "mlp"):
+            third = f"«{n}, {n}; F32»" if kind == "mlp" else f"«{n}; F32»"
             signature = f"a: «{m}, {n}; F32», b: «{n}, {n}; F32», c: {third}"
             expression = f"{'gemm_relu' if kind == 'gemm' else 'mlp_chain'} (buf a, buf b, buf c)"
+            if kind == "plain":
+                expression = "product_2d Ring (buf a, buf b)"
             shape = f"({m}, {n})"
         elif kind in ("soft", "layer"):
             signature = f"a: «{m}, {n}; F32», b c: F32"
@@ -51,6 +63,24 @@ for group in (0, 1):
             header.append(f'extern "C" float* {name}(float*, float, float);')
         else:
             header.append(f'extern "C" float* {name}(float*, float*, float*);')
+        if args.compare_blis and group == 0 and kind in ("plain", "gemm", "mlp"):
+            config = "(4, 16, 256, 128, ff)"
+            hidden = (
+                f"packed_with_post @({m}, {n}, {n}) ({config}, buf a, buf b, "
+                "math.arith.add math.mode.fast, math.arith.mul math.mode.fast, "
+                f"{'buf c' if kind == 'gemm' else f'splat ({n}, 0.0:F32)'}, bias_relu, tt)"
+            )
+            value = hidden if kind == "gemm" else (
+                f"packed @({m}, {n}, {n}) ({config}, {hidden}, buf c, "
+                "math.arith.add math.mode.fast, math.arith.mul math.mode.fast)"
+            )
+            if kind == "plain":
+                value = (
+                    f"packed @({m}, {n}, {n}) ({config}, buf a, buf b, "
+                    "math.arith.add math.mode.fast, math.arith.mul math.mode.fast)"
+                )
+            explicit += f"extern fun explicit_{index} ({signature}): «{shape}; F32» = return ({value});\n"
+            header.append(f'extern "C" float* explicit_{index}(float*, float*, float*);')
     source = directory / f"group{group}.mim"
     source.write_text(text)
     with (directory / f"group{group}.log").open("w") as log:
@@ -63,15 +93,27 @@ for index, (kind, m, n) in enumerate(workloads):
     functions = [f"g{group}_{index}" for group in (1, 0)]
     if kind in ("soft", "layer"):
         functions = [f"[](float* a, float*, float*) {{ return {fn}(a, 0, 0); }}" for fn in functions]
+    functions.append(f"explicit_{index}" if args.compare_blis and kind in ("plain", "gemm", "mlp") else "nullptr")
     cases.append(f'{{"{kind}", {m}, {n}, ' + ", ".join(functions) + "}")
 (directory / "cases.h").write_text(
     "\n".join(header) + "\nstatic const Case cases[] = {\n" + ",\n".join(cases) + "\n};\n"
 )
+extra = []
+if args.compare_blis:
+    source = directory / "explicit.mim"
+    source.write_text(explicit)
+    with (directory / "explicit.log").open("w") as log:
+        subprocess.run(
+            [str(root / "build/bin/mim"), "-p", "opt", "-p", "ll", "-X", "tensor:group=0",
+             "-X", f"ll:o={directory / 'explicit.ll'}", str(source)],
+            stdout=log, stderr=log, check=True,
+        )
+    extra.append(str(directory / "explicit.ll"))
 subprocess.run(
     ["/opt/homebrew/opt/llvm/bin/clang++", "-std=c++23", "-O3", "-mcpu=native", "-Wno-override-module",
      "-I", str(directory), "-I/opt/homebrew/opt/openblas/include", "-L/opt/homebrew/opt/openblas/lib",
      str(root / "lit/tensor/group_default_bench.cpp"), str(directory / "group0.ll"),
-     str(directory / "group1.ll"), "-lopenblas", "-o", str(directory / "bench")],
+     str(directory / "group1.ll"), *extra, "-lopenblas", "-o", str(directory / "bench")],
     check=True,
 )
 if args.build_only:

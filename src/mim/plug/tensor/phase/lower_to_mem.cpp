@@ -66,6 +66,33 @@ const Def* splat_scalar(const Def* d) {
     return (d->is_closed() && !d->type()->isa<Arr>()) ? d : nullptr;
 }
 
+std::optional<PureRead> tensor_read(const Def* value) {
+    value   = Axm::peel<tensor::buf>(value);
+    auto& w = value->world();
+    if (auto slice = Axm::isa<tensor::slice>(value)) {
+        auto [meta, shape, box]    = slice->callee()->as<App>()->uncurry_args<3>();
+        auto [start, step, extent] = box->projs<3>();
+        auto [type, rank]          = meta->projs<2>();
+        auto map                   = w.app(w.app(w.annex<tensor::slice_map>(), rank), {start, step});
+        return PureRead{slice->arg(), map, type, rank, shape};
+    }
+    if (auto slice = Axm::isa<tensor::slice_box>(value)) {
+        auto [meta, shape, box]   = slice->callee()->as<App>()->uncurry_args<3>();
+        auto [start, extent, cap] = box->projs<3>();
+        auto [type, rank]         = meta->projs<2>();
+        auto map = w.app(w.app(w.annex<tensor::slice_map>(), rank), {start, w.pack(rank, w.lit_nat_1())});
+        return PureRead{slice->arg(), map, type, rank, shape};
+    }
+    return is_pure_read(value);
+}
+
+const Def* compose_read_map(const Def* inner, const Def* outer) {
+    auto& w  = outer->world();
+    auto pi  = outer->type()->as<Pi>();
+    auto map = w.mut_lam(pi->dom(), inner->type()->as<Pi>()->codom());
+    return map->set(true, w.app(inner, w.app(outer, map->var())));
+}
+
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
     return Axm::isa<tensor::tile_of>(app) || Axm::isa<tensor::tile_of_box>(app) || Axm::isa<tensor::slice>(app)
@@ -977,44 +1004,21 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
 const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* destination) {
     // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
     // reusing the (rewritten) meta. The loop generation lives in the btensor plugin (`btensor.lower_map_reduce`).
-    auto& w        = new_world();
-    auto old_mr    = btensor::MapRedPost::of(app->callee()->as<App>());
-    auto& old      = old_world();
-    auto changed   = false;
-    auto peel_read = [&](const Def* value) -> std::optional<PureRead> {
-        value = Axm::peel<tensor::buf>(value);
-        if (auto slice = Axm::isa<tensor::slice>(value)) {
-            auto [meta, shape, box]    = slice->callee()->as<App>()->uncurry_args<3>();
-            auto [start, step, extent] = box->projs<3>();
-            auto [type, rank]          = meta->projs<2>();
-            auto map                   = old.app(old.app(old.annex<tensor::slice_map>(), rank), {start, step});
-            return PureRead{slice->arg(), map, type, rank, shape};
-        }
-        if (auto slice = Axm::isa<tensor::slice_box>(value)) {
-            auto [meta, shape, box]   = slice->callee()->as<App>()->uncurry_args<3>();
-            auto [start, extent, cap] = box->projs<3>();
-            auto [type, rank]         = meta->projs<2>();
-            auto map = old.app(old.app(old.annex<tensor::slice_map>(), rank), {start, old.pack(rank, old.lit_nat_1())});
-            return PureRead{slice->arg(), map, type, rank, shape};
-        }
-        return is_pure_read(value);
-    };
-    auto compose = [&](const Def* inner, const Def* outer) {
-        auto pi  = outer->type()->as<Pi>();
-        auto map = old.mut_lam(pi->dom(), inner->type()->as<Pi>()->codom());
-        return map->set(true, old.app(inner, old.app(outer, map->var())));
-    };
-    auto group = [&](const Def* values, const Def* ranks, const Def* shapes, const Def* maps, u64 n) {
+    auto& w      = new_world();
+    auto old_mr  = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto& old    = old_world();
+    auto changed = false;
+    auto group   = [&](const Def* values, const Def* ranks, const Def* shapes, const Def* maps, u64 n) {
         auto sources = DefVec(), source_ranks = DefVec(), source_shapes = DefVec(), reads = DefVec();
         for (u64 i = 0; i != n; ++i) {
             auto value = values->proj(n, i), rank = ranks->proj(n, i), shape = shapes->proj(n, i),
                  map = maps->proj(n, i);
-            while (auto read = peel_read(value)) {
+            while (auto read = tensor_read(value)) {
                 if (!read->src->type()->isa<Arr>()) break;
                 value   = read->src;
                 rank    = read->R;
                 shape   = read->S;
-                map     = compose(read->map, map);
+                map     = compose_read_map(read->map, map);
                 changed = true;
             }
             sources.push_back(value);
@@ -1031,11 +1035,11 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     auto init = old_mr.init;
     if (auto initial = tensor_init(old_mr)) {
         auto value = initial->outs, shape = initial->shape, map = initial->map;
-        while (auto read = peel_read(value)) {
+        while (auto read = tensor_read(value)) {
             if (read->R != old_mr.Ro || !read->src->type()->isa<Arr>()) break;
             value   = read->src;
             shape   = read->S;
-            map     = compose(read->map, map);
+            map     = compose_read_map(read->map, map);
             changed = true;
         }
         init = old.tuple({shape, map, value});
@@ -1531,7 +1535,12 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
     if (!Axm::isa<tensor::map_reduce_post>(app)) return false;
     auto mr      = btensor::MapRedPost::of(app->callee()->as<App>());
     auto initial = tensor_init(mr);
-    if (!initial || Axm::peel<tensor::buf>(initial->outs) != accumulator) return false;
+    if (!initial) return false;
+    while (auto read = tensor_read(initial->outs)) {
+        if (read->R != mr.Ro || !read->src->type()->isa<Arr>()) break;
+        initial = TensorInit{read->S, compose_read_map(read->map, initial->map), read->src};
+    }
+    if (Axm::peel<tensor::buf>(initial->outs) != accumulator) return false;
     auto rank       = Lit::as(mr.Ro);
     auto map        = w.mut_lam(mr.map_out->type()->as<Pi>());
     auto output_map = mr.map_out->isa<Lam>();

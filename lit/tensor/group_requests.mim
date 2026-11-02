@@ -79,23 +79,23 @@ extern fun conv_chain (a: «2, 2, 9, 8; I64», w: «3, 2, 3, 3; I64», v: «2, 3
     return (conv ring ((1, 1), (1, 1), (0, 0)) (p, buf v));
 
 // CHECK-LABEL: extern fun conv_chain
-// CHECK: tensor.group_req {{.*}} 1, 0, 5,
-// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK: tensor.group_req {{.*}} 1, 0, 4,
+// CHECK: tensor.group_req {{.*}} 1, 0, 4,
 // CHECK-LABEL: extern fun gemm_epilogue
-// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK: tensor.group_req {{.*}} 1, 0, 4,
 // CHECK-LABEL: extern fun inner
 // CHECK: tensor.group_req
 // CHECK-LABEL: extern fun mlp
-// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK: tensor.group_req {{.*}} 1, 0, 4,
 // CHECK-NOT: tensor.group_req {{.*}} 2,
-// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK: tensor.group_req {{.*}} 1, 0, 4,
 // CHECK-LABEL: extern fun outer
 // CHECK: tensor.group_req {{.*}} ({{.*}}, 0, 0, 4, 1)
 // CHECK-LABEL: extern fun reduction
-// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK: tensor.group_req {{.*}} 1, 0, 4,
 // CHECK-NOT: tensor.group_req {{.*}} 2,
 // CHECK-LABEL: extern fun reverse
-// CHECK: tensor.group_req {{.*}} ({{.*}}, 1, 0, 5, (32, 8, i8))
+// CHECK: tensor.group_req {{.*}} ({{.*}}, 1, 0, 4, (16, 64, i8))
 // CHECK-NOT: tensor.group_req {{.*}} ({{.*}}, 2,
 // SMALL-LABEL: extern fun inner
 // SMALL: tensor.group_req {{.*}} ({{.*}}, 2, 1, 64,
@@ -104,9 +104,9 @@ extern fun conv_chain (a: «2, 2, 9, 8; I64», w: «3, 2, 3, 3; I64», v: «2, 3
 // REDUCTION-NOT: tensor.group choose {{.*}} kind=2 dim=0
 // OFF-NOT: tensor.group_req
 // REPORT-DAG: unrealized tensor.group_req kind=0 dim=0 tile=4 at {{.*}}probe.mim
-// REPORT-DAG: unrealized tensor.group_req kind=1 dim=0 tile=5 at {{.*}}tensor.mim
+// REPORT-DAG: unrealized tensor.group_req kind=1 dim=0 tile=4 at {{.*}}tensor.mim
 // STRICT: error: unrealized tensor.group_req kind=
-// LANES: tensor.group_req {{.*}} 1, 0, 1, (4, 128, 16)
+// LANES: tensor.group_req {{.*}} 1, 0, 1, (4, i8, 16)
 // BUFFER: unrealized tensor.group_req kind=
 // BUFFER-SAME: request reached bufferization without realization
 // DIRECT: unrealized tensor.group_req kind=

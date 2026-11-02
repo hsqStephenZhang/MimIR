@@ -1,0 +1,28 @@
+// RUN: %mim -p opt -p ll -X tensor:group=1 -X tensor:strict=1 -X ll:o=%t.ll %s -V -V -V -V 2> %t.log
+// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: clang++ -O3 -fsanitize=address %S/group_fold_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: clang++ -O3 -S -emit-llvm %t.ll -o %t.opt.ll -Wno-override-module
+// RUN: %FileCheck %s --check-prefix=IR < %t.opt.ll
+
+plugin tensor;
+plugin core;
+plugin math;
+use tensor;
+let F32 = math.F32;
+let Ring = (F32, 0.0:F32, math.arith.add math.mode.fast, math.arith.mul math.mode.fast);
+extern fun folded (a: «13, 257; F32», b: «257, 35; F32»): «13, 35; F32» =
+    return (product_2d Ring (buf a, buf b));
+extern fun aligned (a: «8, 256; F32», b: «256, 32; F32»): «8, 32; F32» =
+    return (product_2d Ring (buf a, buf b));
+
+// LOG: tensor.group contraction
+// LOG-SAME: MR=4 NR=16 KC=128 NC=i8
+// LOG-NOT: tensor destination fallback
+// LOG: finish phase `tensor.lower_to_mem`
+// IR-LABEL: define {{.*}} @aligned(
+// IR-COUNT-4: call {{.*}}ptr @malloc(
+// IR-NOT: @malloc(
+// IR-NOT: @calloc(
+// IR-NOT: @llvm.memcpy
+// IR: ret ptr

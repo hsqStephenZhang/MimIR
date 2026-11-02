@@ -1,5 +1,51 @@
 # P5 tile-and-fuse 实验
 
+## Task 19A.1：自动 BLIS 与显式 Rule 对齐
+
+自动 selector 曾用 `vec_width 8` 和 32 KiB cache，显式 Rule 用 `vec_width 4` 和
+256 KiB；这不是目标探测的差异，而是两个调用者的 fallback 不一致。
+统一后 F32 的 `(MR,NR,KC,NC)=(4,16,128,256)`，CLI override 仍生效。
+
+只改 blocks 仍慢 7–20%。自动结构在 `lower_tensor` 之后生成，fold 的初值仍是原生
+`tensor.slice`；显式 Rule 的同一 slice 已变成 pure-read MRP。
+bufferization 的 `linear_step` 未沿前者找到 accumulator，导致每个 K block 复制旧 accumulator。
+现在与实际 read lowering 共用 slice/slice_box/pure-read 的 map 组合，
+仍要求同 rank、同 accumulator、逐点输出、完全相同的全局 init map，且其它操作数不能再读 accumulator。
+没有放宽别名或 purity 检查。`group_fold.mim` 覆盖非整除 M/N/K 的执行及 ASan，
+另检查整除输出的多 K-block kernel 不生成 accumulator memcpy；
+非整除输出边界仍允许必要的 clipped-tile copy。
+
+LLVM 22.1.4、Apple M2 Pro 的自动/显式主循环相同：
+每 4 个 k 为 64 个 `fmla.4s`、4 个 A `ldr q`、8 个 B `ldp q`，
+即每 k 16 FMLA、1 个 A vector load、4 个 B vector loads；内循环无 store 或 stack spill。
+512³+bias+ReLU 两者均 5 个静态 malloc/calloc site、0 个 memcpy；修复前自动为 6 和 2。
+epilogue 仍只在最后 K block 执行。
+
+`python3 scripts/bench-default-groups.py build/task19-final --compare-blis`
+同时生成纯 GEMM、bias/ReLU、MLP 的固定显式 Rule 对照。
+F32、单线程、native O3、1 warmup+7 medians、轮换四种执行顺序；
+所有模式先与 OpenBLAS 检查数值，计时前等待其它 compiler build 退出。
+下表为 ms，OpenBLAS 列包括独立 epilogue：
+
+| 工作负载 | shape | 自动 | 显式 BLIS | group=0 | OpenBLAS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| GEMM | 256³ | 0.490000 | 0.487458 | 1.283083 | 0.554042 |
+| GEMM+bias+ReLU | 256³ | 0.422542 | 0.431708 | 1.100334 | 0.521792 |
+| MLP | 256³ × 2 | 0.758833 | 0.758625 | 1.975000 | 0.860500 |
+| GEMM | 512³ | 2.814250 | 2.836125 | 7.772334 | 2.686542 |
+| GEMM+bias+ReLU | 512³ | 2.817208 | 2.831667 | 7.764083 | 2.840708 |
+| MLP | 512³ × 2 | 5.829083 | 5.887291 | 15.858875 | 5.552416 |
+| GEMM | 1024³ | 22.537541 | 22.458958 | 63.168834 | 21.582750 |
+| GEMM+bias+ReLU | 1024³ | 23.387625 | 23.112958 | 64.938833 | 23.017042 |
+| MLP | 1024³ × 2 | 45.802541 | 46.170042 | 127.935167 | 43.681542 |
+| GEMM | 2048³ | 180.820750 | 182.280958 | 597.916583 | 164.007083 |
+| GEMM+bias+ReLU | 2048³ | 181.289208 | 181.951291 | 598.292584 | 166.768000 |
+| MLP | 2048³ × 2 | 364.154667 | 364.214458 | 1205.759583 | 327.634542 |
+
+自动与显式差距均在约 2.2% 内；512³+bias+ReLU 约 95.3 GFLOPS。
+大形状仍落后 OpenBLAS，不将“达到显式 Rule”表述为超过 OpenBLAS。
+row/conv 的 realization 留给下一项；默认开关仍为 OFF。
+
 ## Task 17A：默认流水线的显式开启验收
 
 默认仍为 OFF；本节仅对 `-X tensor:group=1` 与 `group=0` 比较。

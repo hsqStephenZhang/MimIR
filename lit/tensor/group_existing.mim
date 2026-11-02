@@ -8,22 +8,22 @@
 // RUN: %FileCheck %s --check-prefix=NORM < %t.norm.out
 
 // STRATEGY-LABEL: extern fun contraction
-// STRATEGY: tensor.group_req {{.*}} 1, 0, 5,
+// STRATEGY: tensor.group_req {{.*}} 1, 0, 4,
 // STRATEGY-LABEL: extern fun repeated
 // STRATEGY: tensor.group_req
 // STRATEGY-LABEL: extern fun rows
 // STRATEGY: tensor.group_req {{.*}} 0, 0, 4, 1
 // REVERSE-LABEL: extern fun rowsum
-// REVERSE: tensor.group_req {{.*}} 1, 0, 5,
+// REVERSE: tensor.group_req {{.*}} 1, 0, 4,
 // REVERSE-NOT: tensor.group_req {{.*}} 2,
 // REVERSE-LABEL: extern fun swapped
-// REVERSE: tensor.group_req {{.*}} 1, 0, 5,
+// REVERSE: tensor.group_req {{.*}} 1, 0, 4,
 // REVERSE-NOT: tensor.group_req {{.*}} 2,
 // REVERSE-LABEL: extern fun swiglu
-// REVERSE: tensor.group_req {{.*}} 1, 0, 5,
+// REVERSE: tensor.group_req {{.*}} 1, 0, 4,
 // REVERSE-NOT: tensor.group_req {{.*}} 2,
 // REVERSE-LABEL: extern fun two
-// REVERSE: tensor.group_req {{.*}} 1, 0, 5,
+// REVERSE: tensor.group_req {{.*}} 1, 0, 4,
 // REVERSE-NOT: tensor.group_req {{.*}} 2,
 // HALO-LABEL: extern fun chain
 // HALO: tensor.tiled
