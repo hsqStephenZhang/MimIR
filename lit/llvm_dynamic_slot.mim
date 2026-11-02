@@ -1,0 +1,15 @@
+// RUN: (! %mim %s -p ll 2>&1) | %FileCheck %s
+
+plugin core;
+plugin mem;
+plugin compile;
+plugin ll;
+
+extern con allocate (m: mem.M 0, n: Nat, return: Cn [mem.M 0, mem.Ptr0 «n; I64»]) =
+    con done (m: mem.M 0, p: mem.Ptr0 «n; I64») = return (m, p);
+    mem.mslot («n; I64», 0) ((m, n), done);
+
+extern lam _compile (): compile.Phase =
+    ll.emit;
+
+// CHECK: ll backend: a by-value array requires a literal extent

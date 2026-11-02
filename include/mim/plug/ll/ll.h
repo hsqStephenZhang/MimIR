@@ -223,6 +223,7 @@ protected:
         return res;
     }
     std::string convert_ret_pi(const Pi*);
+    std::string convert_pointee(const Def*);
     fe::Vector<nat_t> aggregate_padding(const Def*);
     nat_t aggregate_index(const Def*, nat_t);
 

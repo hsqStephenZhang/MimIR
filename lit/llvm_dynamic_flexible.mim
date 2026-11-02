@@ -1,0 +1,14 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang -c %{s:stem}.ll -o %t.o -Wno-override-module
+// RUN: %FileCheck %s < %{s:stem}.ll
+
+plugin core;
+plugin mem;
+
+extern fun read (m: mem.M 0, n: Nat, p: mem.Ptr0 «n, 6; I64», i: Idx n, j: Idx 6): [mem.M 0, I64] =
+    let row = mem.lea (p, i);
+    return (mem.load (m, mem.lea (row, j)));
+
+// CHECK: [0 x [6 x i64]] addrspace(0)*
+// CHECK: getelementptr inbounds [0 x [6 x i64]]
+// CHECK: getelementptr inbounds [6 x i64]

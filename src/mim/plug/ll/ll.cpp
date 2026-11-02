@@ -31,10 +31,20 @@ bool has_f32_vector(const Def* type) {
     return false;
 }
 
-void require_static_array_value(const Def* type) {
+bool has_symbolic_array(const Def* type) {
+    if (auto arr = type->isa<Arr>()) return !Lit::isa(arr->arity()) || has_symbolic_array(arr->elem());
+    if (auto sigma = type->isa<Sigma>())
+        return std::ranges::any_of(sigma->ops(), [](auto field) { return has_symbolic_array(field); });
+    return false;
+}
+
+void require_static_array_value(const Def* type, bool inner = false) {
     if (auto arr = type->isa<Arr>()) {
-        if (!Lit::isa(arr->arity())) type->blame(MIM_LL_BE "a by-value array requires a literal extent").bail();
-        require_static_array_value(arr->elem());
+        if (!Lit::isa(arr->arity())) {
+            if (inner) type->blame(MIM_LL_BE "an inner array requires a literal extent for its stride").bail();
+            type->blame(MIM_LL_BE "a by-value array requires a literal extent").bail();
+        }
+        require_static_array_value(arr->elem(), true);
     } else if (auto sigma = type->isa<Sigma>()) {
         for (auto field : sigma->ops())
             require_static_array_value(field);
@@ -182,7 +192,7 @@ nat_t Emitter::aggregate_index(const Def* type, nat_t index) {
 }
 
 std::string Emitter::convert_impl(const Def* type, bool simd) {
-    if (use_simd() && simd) require_static_array_value(type);
+    require_static_array_value(type);
     if (use_simd() && has_f32_vector(type)) simd = true;
     if (auto s = fe::lookup(types_[simd], type)) return *s;
     if (simd && !has_vec(type)) return types_[simd][type] = convert_impl(type, false);
@@ -207,15 +217,16 @@ std::string Emitter::convert_impl(const Def* type, bool simd) {
         }
     } else if (auto ptr = Axm::isa<mem::Ptr>(type)) {
         auto [pointee, addr_space] = ptr->args<2>();
+        if (auto arr = pointee->isa<Arr>(); arr && !Lit::isa(arr->arity()) && has_symbolic_array(arr->elem()))
+            return types_[simd][type] = std::format("ptr addrspace({})", addr_space);
         if (use_simd() && is_f32_vector(pointee) && Lit::isa(addr_space) == 0) return types_[simd][type] = "ptr";
-        std::print(s, "{} addrspace({})*", convert(pointee, false), addr_space);
+        std::print(s, "{} addrspace({})*", convert_pointee(pointee), addr_space);
     } else if (auto arr = type->isa<Arr>()) {
         if (auto se = simd ? vectorize(arr) : std::nullopt) {
             auto [size, elem] = *se;
             std::print(s, "<{} x {}>", size, convert(elem));
         } else {
-            u64 size = 0;
-            if (auto arity = Lit::isa(arr->arity())) size = *arity;
+            auto size = Lit::expect(arr->arity(), "a static array extent");
             // One LLVM array level per axis, so a fused Arr nests: `«3, 4; i32»` is `[3 x [4 x i32]]`.
             std::print(s, "[{} x {}]", size, convert(arr->elem(), simd));
         }
@@ -267,6 +278,14 @@ std::string Emitter::convert_impl(const Def* type, bool simd) {
     if (s.str().empty()) type->blame(MIM_LL_BE "empty type declaration").bail();
     std::println(type_decls_, "{}", s.str());
     return types_[simd][type] = name;
+}
+
+std::string Emitter::convert_pointee(const Def* type) {
+    if (auto arr = type->isa<Arr>(); arr && !Lit::isa(arr->arity())) {
+        require_static_array_value(arr->elem(), true);
+        return std::format("[0 x {}]", convert(arr->elem(), false));
+    }
+    return convert(type, false);
 }
 
 void Emitter::finalize_impl() {
@@ -899,7 +918,7 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         auto [ptr, i]  = lea->args<2>();
         auto pointee   = Axm::expect<mem::Ptr>(ptr->type(), "a `mem.Ptr`")->arg(2, 0);
         auto v_ptr     = emit(ptr);
-        auto t_pointee = convert(pointee, false);
+        auto t_pointee = convert_pointee(pointee);
         auto t_ptr     = convert(ptr->type());
         if (pointee->isa<Sigma>())
             return bb.assign(name, "getelementptr inbounds {}, {} {}, i64 0, i32 {}", t_pointee, t_ptr, v_ptr,

@@ -10,6 +10,10 @@
 /// The output path can be overridden via [`-X ll:o=<file>`](@ref xarg_ll).
 /// Some intrinsics are lowered to calls into a small C [runtime](@ref plugin_runtime) (`rt/mim_rt.c`) whose LLVM IR is embedded into or linked with the output, controlled via `-X ll:rt=embed`/`extern`.
 ///
+/// 数组值、栈分配和元素步长要求 literal extent，无法证明的 inner extent 会报错。
+/// 指针最外层允许 flexible array；纯 opaque ABI 可传递多维动态指针，但不能据此生成未知步长的 GEP。
+/// 显式 byte count 的 malloc 不依赖 LLVM pointee size，仍允许运行时大小。
+///
 /// ## Dependencies
 ///
 plugin opt;

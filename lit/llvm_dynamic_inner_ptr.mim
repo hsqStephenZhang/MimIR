@@ -1,0 +1,10 @@
+// RUN: (! %mim -p opt %s -p ll 2>&1) | %FileCheck %s
+
+plugin core;
+plugin mem;
+
+extern fun identity (n: Nat, p: mem.Ptr0 «6, n; I64»): mem.Ptr0 «6, n; I64» =
+    return p;
+
+// CHECK: llvm_dynamic_inner_ptr.mim:
+// CHECK: ll backend: an inner array requires a literal extent for its stride

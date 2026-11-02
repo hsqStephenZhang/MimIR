@@ -1,0 +1,10 @@
+// RUN: (! %mim -p opt %s -p ll 2>&1) | %FileCheck %s
+
+plugin core;
+plugin mem;
+
+extern fun read (m: mem.M 0, rows cols: Nat, p: mem.Ptr0 «rows, cols; I64», i: Idx rows, j: Idx cols): [mem.M 0, I64] =
+    let row = mem.lea (p, i);
+    return (mem.load (m, mem.lea (row, j)));
+
+// CHECK: ll backend: an inner array requires a literal extent for its stride
