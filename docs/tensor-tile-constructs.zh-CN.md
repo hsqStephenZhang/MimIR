@@ -533,6 +533,34 @@ return 前 free 唯一的 heap scratch。优化汇编没有 `memcpy`，不只是
 4096 列的 layernorm 已快于 unfused，但 1024 列仍慢；
 复用 storage 和去掉 stage copy 并不保证小 row tile 的 loop shape 已最优。
 
+### 9.7 Vector exp 检查（Task 15A.3）
+
+只把 softmax exp MRP 的 vdim 从 sentinel=2 改为列轴=1，
+其余 kernels、row tile 和编译选项不变，作为未保留的候选。
+`mr_nest::vectorized` 可以提供 vector-loop hint，优化 LLVM 确实出现
+`llvm.exp.v4f32`；但这不等于目标机器具有 vector exp 实现。
+独立的四 lane LLVM intrinsic probe 在相同 `-O3 -mcpu=native` 下
+展开成 **4 次 `bl _expf`**，并产生跨调用的 vector spill/reload。
+完整 softmax 的汇编也是 scalar expf，而非 SIMD library 调用。
+当前 `math.exp` 只有 scalar 浮点签名，vec.zip 的 native emission 没有 unary exp case，
+math/vec 内也没有现成 exp 多项式或 CPU SIMD-math runtime。
+
+候选仍与 scalar reference 对照全部输出。
+`build/task15-exp-probe/results.csv`，条件同 §9.4，计时前后无 compiler/build 进程：
+
+| Rows×Cols | softmax grouped / unfused (ms) | layernorm grouped / unfused (ms) |
+| --- | --- | --- |
+| 1024×1024 | 2.137 / 1.906 | 0.276 / 0.264 |
+| 4096×1024 | 8.785 / 7.736 | 1.863 / 1.418 |
+| 1024×4096 | 8.072 / 7.514 | 1.200 / 1.454 |
+
+layernorm 没有改动，仅作为同轮 baseline；不同轮时间波动不当作该候选的收益。
+候选没有解决 native vector math，vectorized nest 还引入 accumulator row panel，
+因此按任务要求不改变 production exp schedule，不添加新的近似算法或外部库依赖。
+源码 probe、优化 LLVM、汇编分别在 `build/task15-exp-probe.py`、
+`build/task15-exp-probe/optimized.ll` 和 `probe.s`；
+独立 intrinsic probe 在 `build/task15-vector-exp.ll` / `.s`。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；
