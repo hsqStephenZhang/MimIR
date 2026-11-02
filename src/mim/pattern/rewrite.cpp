@@ -299,7 +299,7 @@ public:
         };
         for (auto [def, replacement] : replacements_)
             visit(def, 0);
-        // A decoded pure operation proves its own curry spine, not function-valued inputs.
+        // A decoded pure operation proves its own curry spine, not evaluated input applications.
         DefSet pure;
         for (auto def : graph.operations())
             if (graph.is_pure(def))
@@ -311,25 +311,38 @@ public:
             if (def->isa<App>() && !pure.contains(def)) protected_.insert(def);
         DefVec pending(graph.nodes().begin(), graph.nodes().end());
         DefSet seen;
+        DefSet local_lambdas;
+        for (size_t i = 0; i != pending.size(); ++i) {
+            budget_.touch();
+            auto def = pending[i];
+            if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>() || def->isa<Pi>()) continue;
+            if (auto lam = def->isa<Lam>()) {
+                if (lam->is_external()) continue;
+                local_lambdas.insert(lam);
+            }
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+        }
+        seen.clear();
         for (size_t i = 0; i != pending.size(); ++i) {
             budget_.touch();
             auto def = pending[i];
             if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>() || def->isa<Pi>()) continue;
             if (auto lam = def->isa<Lam>(); lam && lam->is_external()) continue;
             if (auto app = def->isa<App>()) {
-                auto axm = App::uncurry_callee(app)->isa<Axm>();
+                auto callee = App::uncurry_callee(app);
+                auto axm    = callee->isa<Axm>();
+                auto var    = callee->isa<Var>();
                 DefVec args;
                 for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                     args.push_back(cur->arg());
                 std::ranges::reverse(args);
-                if (axm && graph.is_pure_call(axm->flags(), args))
+                if ((axm && graph.is_pure_call(axm->flags(), args)) || (var && local_lambdas.contains(var->binder())))
                     for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                         pure.insert(cur);
                 else if (!pure.contains(def))
                     protected_.insert(def);
             }
-            for (auto op : def->ops())
-                if (op) pending.push_back(op);
         }
         for (auto def : pure)
             protected_.erase(def);

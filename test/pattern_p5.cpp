@@ -542,6 +542,77 @@ TEST_CASE("Review literals: equal result types do not legalize aggregate bit lit
     CHECK(view.is_current());
 }
 
+TEST_CASE("Graph purity: local lambda parameters are parametric but free calls remain protected") {
+    IR ir;
+    auto callback = ir.w.pi(ir.nat, ir.nat);
+    auto closure  = ir.w.mut_lam(ir.w.pi(callback, ir.nat));
+    closure->set(false, ir.w.app(closure->var(), ir.w.lit_nat(3)));
+    auto scope    = ir.w.mut_lam(ir.w.pi(ir.w.sigma({ir.nat, callback}), ir.nat));
+    auto captured = ir.w.mut_lam(closure->type());
+    captured->set(false, ir.w.app(captured->var(), scope->var(2, 0)));
+    const Def* input = closure;
+    bool allowed     = true;
+    SUBCASE("closed closure value") {}
+    SUBCASE("open closure value") { input = captured; }
+    SUBCASE("nested closure calls outer parameter") {
+        auto outer = ir.w.mut_lam(ir.w.pi(callback, callback));
+        auto inner = ir.w.mut_lam(callback);
+        inner->set(false, ir.w.app(outer->var(), inner->var()));
+        outer->set(false, inner);
+        input = outer;
+    }
+    SUBCASE("closure calls free unknown function") {
+        auto free = ir.w.mut_lam(callback);
+        free->set(false, ir.w.app(scope->var(2, 1), free->var()));
+        input   = free;
+        allowed = false;
+    }
+    SUBCASE("closure calls unregistered axiom") {
+        auto effect    = ir.w.axm(callback);
+        auto effectful = ir.w.mut_lam(callback);
+        effectful->set(false, ir.w.app(effect, effectful->var()));
+        input   = effectful;
+        allowed = false;
+    }
+    SUBCASE("evaluated unknown variable application") {
+        input   = ir.w.app(scope->var(2, 1), ir.w.lit_nat(3));
+        allowed = false;
+    }
+    SUBCASE("evaluated closure calls unknown function") {
+        auto unknown = ir.w.axm(callback);
+        input        = ir.w.app(closure, unknown);
+        allowed      = false;
+    }
+    SUBCASE("closure passed to unregistered axiom") {
+        auto unknown = ir.w.axm(ir.w.pi(closure->type(), ir.nat));
+        input        = ir.w.app(unknown, closure);
+        allowed      = false;
+    }
+    SUBCASE("closure passed to registered impure axiom") {
+        auto impure = ir.w.axm(ir.w.pi(closure->type(), ir.nat));
+        ir.ops.add(impure->flags(), 1, {{0}}, false);
+        input   = ir.w.app(impure, closure);
+        allowed = false;
+    }
+    auto parent = ir.w.axm(ir.w.pi(input->type(), ir.nat));
+    ir.ops.add(parent->flags(), 1, {{0}}, true);
+    auto outer = ir.w.app(parent, input);
+    scope->set(false, outer);
+    GraphView view({outer}, {.operators = &ir.ops, .scope = scope});
+    PatternProgram p;
+    GraphPattern graph(p);
+    graph.anchor(p.exact(outer));
+    auto found = find_matches(graph, view);
+    REQUIRE(found.matches.size() == 1);
+    RewritePlan plan(found.matches[0]);
+    plan.replace(outer, plan.literal(ir.nat, 0));
+    std::array plans{&plan};
+    if (allowed)
+        CHECK_NOTHROW(rewrite_graph(view, plans));
+    else
+        CHECK_THROWS_AS(rewrite_graph(view, plans), PurityFailure);
+}
+
 TEST_CASE("Review dependencies: simultaneous replacement cuts old operand dependencies") {
     IR ir;
     auto first = ir.call(ir.q, ir.w.axm(ir.nat)), second = ir.call(ir.k, first);

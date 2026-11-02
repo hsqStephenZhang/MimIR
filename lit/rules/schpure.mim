@@ -1,0 +1,15 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+
+let Schedule = («2; Nat» → Nat) → Nat;
+axm mark: [Schedule, Nat] → Nat;
+lam schedule (mk: «2; Nat» → Nat): Nat = mk (3, 0);
+rule remove (x: Nat): mark (schedule, x) => x;
+extern lam result (x: Nat): Nat = mark (schedule, x);
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.graph_rule_app (remove, mark), compile.cleanup);
+
+// CHECK-LABEL: extern lam result
+// CHECK-SAME: ([[X:[a-zA-Z0-9_]+]]: Nat)
+// CHECK-NEXT: [[X]];

@@ -496,3 +496,49 @@ captured-Lit 提交前再次运行 CTest 与完整 lit：
 249/249、680 passed / 9 unsupported / 1 failed，
 唯一失败仍为未提交的 attention_raise WIP；
 见 `litcap-commit-ctest.log`、`litcap-commit-full-lit.log`。
+
+### lambda 值的纯性边界修复
+
+用户决定 graph-rule 的纯性检查把 lambda 视为值：
+移除闭包不执行 body，扫描在所有 Lam 处停止，包括开放闭包。
+症状是纯 map_reduce_post 的闭合 schedule 值被当作会执行 `mk(3,0)`；
+根因是保护扫描额外递归进入函数值，修复删除该递归边，
+不放宽实际求值的未知函数或非纯 axiom App。
+机制提交主题为 `fix(pattern): treat lambda values as opaque in purity checks`；
+`lit/rules/schpure.mim` 和独立 doctest 的六个子场景覆盖正反例。
+定向回归全部通过，通用 `tensor/attention_raise.mim` 首次通过；
+这只验证小型非 causal diamond，不代表真实模型、mask 和 online 已完成。
+
+完整验证：CTest 250/250，lit 681 passed / 9 unsupported / 1 failed，
+见 `lambda-commit-ctest.log`、`lambda-commit-full-lit.log`。
+唯一失败是未经修改的 `lit/error/grbimp.mim`，不是新增回归：
+它显式把 nest 注册为 pure，规则把
+`nest(λ o.effect(x,o))` 换为 `nest(λ o.x)`，
+期望因被删除 lambda body 内的 effect 而报错。
+按本轮选定的函数值语义，两个 lambda 都是未执行的值，
+该替换成功且退出 0，见 `grbimp-lambda-value.mim`。
+因此“所有 lambda body 不参与该检查”和“现有纯性测试保持不变且通过”
+在这个具体测试上不能同时满足。
+没有为通过旧测试添加特殊例外，也没有修改/跳过旧测试。
+机制改动和回归暂未提交；需要决定将该旧测试更新为新语义的成功用例，
+并继续用新增的实际执行未知/非纯 App 反例保护效果边界，
+或明确一个不同的 lambda 替换语义。
+本轮按涉及语义/验收冲突的停止协议暂停，尚未继续步骤 1–5。
+
+### 参数化调用的精确边界
+
+用户澄清前一版跳过所有 lambda body 的语义过宽，撤回该未提交实现：
+pure 高阶 axiom 仍可能调用闭包，`grbimp.mim` 暴露的 effect 不能删除。
+当前机制提交主题为 `fix(pattern): allow region-local parametric calls in purity checks`：
+仍递归扫描 body，只将区域内非 external lambda 绑定参数的调用视为参数化，
+不沿 Var/type 边把外部 binder 引入局部集合。
+闭合 Church schedule 的 mk 调用因此通过；自由函数和 impure/unregistered axiom
+的调用仍拒绝，包括闭包内部调用。
+原 `lit/error/grbimp.mim` 未修改；
+新增 schpure 与九个 doctest 子场景覆盖 nested/outer 参数、自由参数及纯性负例。
+定向结果为 schpure、grbimp 通过，attention_raise 仍有后续纯性拒绝，
+不再将上一版跳过 body 后的通过作为当前实现结果。
+
+提交前完整验证：CTest 250/250；
+lit 681 passed / 9 unsupported / 1 failed，唯一失败是 attention_raise WIP，
+见 `parametric-ctest.log`、`parametric-full-lit.log`。

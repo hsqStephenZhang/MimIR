@@ -94,6 +94,20 @@ mutable 节点在检查 node／flags 后即视为结构不透明，不能用操�
 
 所有未证明纯性的 App 都必须在重建结果中保留，包括返回 Pi 的计算和独立的部分应用。纯算子的完整已解码应用可以证明自身的 curry callee spine，但不能证明作为参数传入的函数生产计算。Lam／Var／binder 叶子不是这样的应用计算；开放函数和 continuation binder 的映射仍被保留。
 
+graph_rule_app 的纯性保护仍检查所替换区域内 lambda 的 body，
+因为已注册 pure 的高阶 axiom 仍可能调用传入的闭包。
+lambda 值本身不是效果；由区域内 enclosing lambda 绑定的函数参数调用视为参数化调用，
+例如 `λ T.λ mk.mk(3,0)` 中的 mk，或内层 lambda 对外层参数的调用。
+该参数由调用方提供，调用方的应用仍需通过自己的纯性检查。
+区域外 binder 的自由函数调用、未注册及非纯 axiom 调用仍受保护，
+即使它们出现在闭合或开放 lambda 的 body 中。
+闭包传给未注册/非纯 axiom 仍通过该 App 拒绝。
+实现只记录沿区域值边遍历到的非 external lambda，不沿 Var 或类型边引入外部 binder；
+未改变任何算子纯性注册契约。
+`rules/schpure.mim`、未修改的 `error/grbimp.mim` 和
+`Graph purity: local lambda parameters are parametric but free calls remain protected`
+验证这一边界。
+
 导入的 immutable 子图也参与替换依赖检查，因此 `a → import(b)`、`b → import(a)`，以及通过更深子表达式形成的循环都会在构建目标图前被拒绝。带排他使用条件或 native Where 的匹配保守地记录更宽的读取范围，避免批量提交使分析条件失效。
 
 有 scope 时，目前要求一个已定义、闭合的 mutable Lam。重建为它建立新 stub 和 Var 映射，并为其他函数使用独立 importer：同一个 hash-consed Def 在其他函数内保留原实现。所有原 external roots 都被保留。无 scope 时只重建显式的闭合 roots，结果可供调用方继续处理，不允许将其直接发布为整个程序。
