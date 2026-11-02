@@ -18,6 +18,7 @@ using namespace mim::plug;
 namespace mim::plug::tensor {
 pattern::WitnessResult fusion_budget(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult grouping_candidate(const pattern::GraphView&, Defs, World&);
+pattern::WitnessResult reverse_candidate(const pattern::GraphView&, Defs, World&);
 static pattern::WitnessResult permuted_box(Defs inputs, std::span<const u64> axes, World& target) {
     DefVec offset, extent;
     for (auto axis : axes) {
@@ -82,6 +83,7 @@ static void reg_witnesses(pattern::Witnesses& witnesses) {
     witnesses.emplace(Annex::base<transpose_box>(), pattern::Witness{3, transpose_box_witness});
     witnesses.emplace(Annex::base<within_budget>(), pattern::Witness{3, fusion_budget});
     witnesses.emplace(Annex::base<group_candidate>(), pattern::Witness{2, grouping_candidate});
+    witnesses.emplace(Annex::base<reverse_legal>(), pattern::Witness{1, reverse_candidate});
 }
 
 static void reg_phases(Flags2Phases& phases) {

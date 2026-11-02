@@ -171,6 +171,21 @@ std::optional<pattern::OpView> decode_fold(const Def* def, size_t) {
     return pattern::OpView{.inputs = {{args[2], 2, {}}}, .regions = {{args[3], n ? Lit::isa(n) : std::nullopt}}};
 }
 
+std::optional<pattern::OpView> decode_reverse(const Def* def, size_t limit) {
+    auto args = groups(def, 2);
+    if (args.empty()) return {};
+    auto p = slot(args[1], 4, 0), cs = slot(args[1], 4, 1);
+    if (!p || !cs || !limit) return pattern::OpView{.inputs = {}, .complete = false};
+    pattern::OpView view{.inputs = {{p, 1, {0}}}};
+    if (auto tuple = cs->isa<Tuple>())
+        inputs(view, cs, tuple->num_ops(), 1, {1}, limit);
+    else if (view.inputs.size() < limit)
+        view.inputs.push_back({cs, 1, {1}});
+    else
+        view.complete = false;
+    return view;
+}
+
 std::optional<pattern::OpView> decode_tiled_n(const Def* def, size_t) {
     auto args = groups(def, 4);
     if (args.empty()) return {};
@@ -223,6 +238,7 @@ void register_operations(pattern::OpRegistry& ops) {
     ops.add(Annex::base<concat>(), decode_concat, true);
     ops.add(Annex::base<slice>(), 4, {{3}}, true);
     ops.add(Annex::base<slice_box>(), 4, {{3}}, true);
+    ops.add(Annex::base<reverse_at>(), decode_reverse, true);
     ops.add(Annex::base<tiled>(), decode_tiled, false);
     ops.add(Annex::base<tiled_n>(), decode_tiled_n, false);
     ops.add(Annex::base<tile_fold>(), decode_fold, false);

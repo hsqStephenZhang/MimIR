@@ -1,0 +1,97 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule tt > %t.rule 2> %t.rule.log
+// RUN: %FileCheck %s < %t.rule
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt > %t.graph 2> %t.graph.log
+// RUN: %FileCheck %s < %t.graph
+// RUN: python3 %S/tf_run.py %mim %s %t rule tt lower > %t.rule.out 2> %t.rule.exec.log
+// RUN: clang++ -O3 -fsanitize=address %S/tf_reverse_aux.cpp %t.rule.ll -o %t.rule.exec -Wno-override-module
+// RUN: %t.rule.exec
+// RUN: python3 %S/tf_reverse_count.py %t.rule.ll %t.count.ll
+// RUN: clang++ -O3 -DREVERSE_COUNT %S/tf_reverse_aux.cpp %t.count.ll -o %t.count.exec -Wno-override-module
+// RUN: %t.count.exec
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt lower > %t.graph.out 2> %t.graph.exec.log
+// RUN: clang++ -O3 -fsanitize=address %S/tf_reverse_aux.cpp %t.graph.ll -o %t.graph.exec -Wno-override-module
+// RUN: %t.graph.exec
+// RUN: python3 %S/tf_run.py %mim %s %t.ref rule tt lower reference > %t.ref.out 2> %t.ref.log
+// RUN: clang++ -O3 -fsanitize=address %S/tf_reverse_aux.cpp %t.ref.rule.ll -o %t.ref.exec -Wno-override-module
+// RUN: %t.ref.exec
+// TF-RULES: (tensor.reverse_rule («5, 7; I64», «5; I64»), tensor.reverse_rule («5, 7; I64», [«5; I64», «5, 7; I64»]), tensor.reverse_rule («5, 7; I64», [«5, 7; I64», «5; I64»]), tensor.reverse_rule («5, 7; I64», «5, 7; I64»), tensor.reverse_rule («5, 7; I64», «7, 5; I64»))
+// TF-PURE: tensor.reverse_at, tensor.reverse_build, tensor.tiled_n, tensor.tile_of, tensor.map_reduce_post, tensor.slice, affine.op.add, affine.op.sub, affine.lit
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin compile;
+use tensor;
+
+fun mac (acc: I64, (x y: I64))@tt: I64 =
+    return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
+fun sum (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
+fun mul (_: I64, (x y: I64))@tt: I64 = return (core.wrap.mul 0 (x, y));
+fun post (x y: I64)@tt: I64 = return (core.wrap.add 0 (x, y));
+lam rows (i _: affine.Index): affine.Index = i;
+lam product (a: «5, 3; I64», b: «3, 7; I64»): «5, 7; I64» =
+    map_reduce ((5, 7), (5, 7, 3)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+lam row_sum (p: «5, 7; I64»): «5; I64» =
+    map_reduce (5, (5, 7)) (sum, 0I64) rows (affine.id @2,) p;
+lam increment (p: «5, 7; I64»): «5, 7; I64» =
+    map_reduce ((5, 7), (5, 7)) (inc, 0I64) (affine.id @2) (affine.id @2,) p;
+
+extern fun rowsum (a: «5, 3; I64», b: «3, 7; I64»): «5; I64» =
+    let p = product (a, b);
+    let (_, c) = reverse_at (p, row_sum p, 0, 2);
+    return c;
+
+extern fun two (a: «5, 3; I64», b: «3, 7; I64»): [«5; I64», «5, 7; I64»] =
+    let p = product (a, b);
+    let (_, cs) = reverse_at (p, (row_sum p, increment p), 0, 2);
+    return cs;
+
+extern fun swapped (a: «5, 3; I64», b: «3, 7; I64»): [«5, 7; I64», «5; I64»] =
+    let p = product (a, b);
+    let (_, cs) = reverse_at (p, (increment p, row_sum p), 0, 1);
+    return cs;
+
+extern fun whole_reader (a: «5, 3; I64», b: «3, 7; I64»): [«5, 7; I64», «5; I64»] =
+    let p = product (a, b);
+    let (p, _) = reverse_at (p, (row_sum p, increment p), 0, 2);
+    return (p, row_sum p);
+
+extern fun swiglu (a: «5, 3; I64», b c: «3, 7; I64»): «5, 7; I64» =
+    let g = product (a, b);
+    let u = product (a, c);
+    let h = map_reduce ((5, 7), (5, 7)) (mul, 0I64)
+        (affine.id @2) (affine.id @2, affine.id @2) (g, u);
+    let (_, h) = reverse_at (g, h, 0, 2);
+    return h;
+
+extern fun permuted (a: «5, 3; I64», b: «3, 7; I64»): «7, 5; I64» =
+    let p = product (a, b);
+    let c = map_reduce ((7, 5), (7, 5)) (inc, 0I64) (affine.id @2)
+        ((λ (j i: affine.Index): «2; affine.Index» = (i, j)),) p;
+    let (_, c) = reverse_at (p, c, 1, 3);
+    return c;
+
+extern fun epilogue (a: «5, 3; I64», b: «3, 7; I64»): «5, 7; I64» =
+    let p = product (a, b);
+    let c = map_reduce_post @(1, 1) @(I64, I64, 2, 2, SchedT) ((5, 7), (5, 7), mk_sched (1, 0))
+        @(I64, 2, (5, 7), I64, 2, (5, 7)) (inc, 0I64, post)
+        (affine.id @2) (affine.id @2, affine.id @2) (p, p);
+    let (_, c) = reverse_at (p, c, 0, 2);
+    return c;
+
+// CHECK-LABEL: extern fun epilogue
+// CHECK: tensor.tiled_n @ (2,
+// CHECK-LABEL: extern fun permuted
+// CHECK: tensor.tiled_n @ (2,
+// CHECK-LABEL: extern fun rowsum
+// CHECK: tensor.tiled_n @ (2,
+// CHECK-LABEL: extern fun swapped
+// CHECK: tensor.tiled_n @ (3,
+// CHECK-LABEL: extern fun swiglu
+// CHECK: tensor.tiled_n @ (2,
+// CHECK-LABEL: extern fun two
+// CHECK: tensor.tiled_n @ (3,
+// CHECK-LABEL: extern fun whole_reader
+// CHECK: tensor.tiled_n @ (3,

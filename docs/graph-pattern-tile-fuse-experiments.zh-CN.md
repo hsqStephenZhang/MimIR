@@ -1,5 +1,26 @@
 # P5 tile-and-fuse 实验
 
+## Task 14B：reverse_compute_at common-root Rule
+
+`reverse_at (P, C, dim, tile_size)` 显式选择 producer 和一个/多个 consumer，
+`reverse_rule` 以冻结 `used_by` 和纯 affine box geometry 为 guard，
+生成 P-first 的共享 grid `tiled_n`。
+检查 P 完整覆盖、write image exact、write preimage 唯一，
+以及 C read preimage exact、完整 reduction 和独占输出 box。
+跨 tiled dim 的 consumer reduction 明确拒绝并要求 ordered fold；
+side/post/accumulator 的间接依赖也拒绝，不交给 lowering 猜测 placement。
+
+两种 Rule frontend 执行 rowsum、two、swapped、SwiGLU-shaped gating，
+另检查 whole reader、inner placement/transpose、直接 producer epilogue，
+与 scalar reference 逐元素比较。destination 和 reference-tiles 均通过；
+乘法计数证明 P 不因多个 consumers 重算，未测运行时间。
+八类非法请求保留 marker，并在 lower_tensor 输出拒绝原因。
+支持边界和完整 proof 条件见 `tensor-tile-constructs.zh-CN.md` §10：
+literal canonical MRP、最多 65536 grid points、显式 common root，
+始终保留 whole P slot；SwiGLU 的独立 U 保持 whole。
+提交前完整验证：CTest 242/242；FULL lit 649 passed、9 unsupported。
+最终增量 build 的 wall time 为 6.93 s；未测任何执行时间。
+
 ## Task 13B：显式 halo Rule
 
 `tensor.fuse_halo (T, rank, budget)` 将保留 image-cap witness 的 `slice_box`

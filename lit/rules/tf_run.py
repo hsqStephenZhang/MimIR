@@ -32,6 +32,8 @@ directory.mkdir()
 generated = directory / "probe.mim"
 try:
     pipeline = f"compile.phases {fixed_point} ({phase}, compile.cleanup)"
+    if len(strategy) > 1 and strategy[1] == "tensor":
+        pipeline = f"compile.phases ff ({pipeline}, tensor.lower_tensor, compile.cleanup)"
     if lower:
         pipeline = f"compile.phases ff ({pipeline}, opt._default_compile ())"
     generated.write_text(

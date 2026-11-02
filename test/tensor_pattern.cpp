@@ -125,6 +125,77 @@ constexpr auto Slice   = Annex::base<tensor::slice>();
 
 } // namespace
 
+TEST_CASE("Tensor witnesses: reverse geometry is frozen and preserves shared-grid slot order") {
+    TensorIR ir(false);
+    ir.parse(R"(
+        plugin tensor;
+        plugin core;
+        plugin affine;
+        use tensor;
+        fun inc (_ x: Nat)@tt: Nat = return (core.nat.add (x, 1));
+        extern lam f (x: «6, 5; Nat», dim size: Nat): [«6, 5; Nat», «5, 6; Nat»] =
+            let p = map_reduce ((6, 5), (6, 5)) (inc, 0) (affine.id @2) (affine.id @2,) x;
+            let c = map_reduce ((5, 6), (5, 6)) (inc, 0) (affine.id @2)
+                ((λ (j i: affine.Index): «2; affine.Index» = (i, j)),) p;
+            reverse_at (p, c, dim, size);
+    )");
+    auto& w                = ir.w;
+    auto [p, c, dim, size] = ir.f()->body()->as<App>()->args<4>();
+    auto request           = [&](const Def* axis, const Def* step) { return w.tuple({p, c, axis, step}); };
+    auto legal             = request(w.lit_nat_1(), w.lit_nat(2));
+    std::array invalid{request(w.lit_nat(2), w.lit_nat_1()), request(w.lit_nat_0(), w.lit_nat_0()),
+                       request(dim, w.lit_nat_1()), request(w.lit_nat_0(), size)};
+    GraphView graph({ir.f()->body()}, {.operators = &ir.ops});
+    auto schema = graph.isa_operation(ir.f()->body());
+    REQUIRE(schema);
+    REQUIRE(schema->inputs.size() == 2);
+    CHECK(schema->inputs[0].value == p);
+    CHECK(schema->inputs[1].value == c);
+    CHECK_FALSE(ir.ops.decode(ir.f()->body(), 1)->complete);
+    auto native = ir.driver.witness(Annex::base<tensor::reverse_legal>());
+    REQUIRE(native);
+    CHECK(native->num_inputs == 1);
+    CHECK(ir.driver.normalizer(Annex::base<tensor::reverse_legal>()) == nullptr);
+    auto target = w.inherit();
+    auto gid    = w.curr_gid();
+    auto result = native->evaluate(graph, std::array{legal}, *target);
+    REQUIRE(result.status == CheckResult::True);
+    CHECK(result.value == target->lit_tt());
+    for (auto fields : invalid) {
+        auto rejected = native->evaluate(graph, std::array{fields}, *target);
+        CHECK(rejected.status == CheckResult::False);
+        CHECK_FALSE(rejected.reason.empty());
+    }
+    CHECK(w.curr_gid() == gid);
+    CHECK(graph.is_current());
+
+    Rewriter importer(*target);
+    auto fields = importer.rewrite(legal);
+    auto build
+        = target->app(target->annex<tensor::reverse_build>(), {fields->proj(4, 0)->type(), fields->proj(4, 1)->type()});
+    auto plan = target->app(build, fields);
+    auto pn   = plan->proj(2, 0)->as<Extract>()->tuple();
+    auto cn   = plan->proj(2, 1)->as<Extract>()->tuple();
+    CHECK(pn == cn);
+    REQUIRE(Axm::isa<tensor::tiled_n>(pn));
+    auto [meta, geometry, boxes, body] = pn->as<App>()->uncurry_args<4>();
+    CHECK(Lit::as(meta->proj(4, 0)) == 2);
+    CHECK(Lit::as(geometry->proj(2, 1)) == 18);
+    auto [pbox, cbox] = target->app(boxes, target->lit_nat(17))->projs<2>();
+    auto [poff, pext] = pbox->projs<2>();
+    auto [coff, cext] = cbox->projs<2>();
+    CHECK(poff == target->tuple({target->lit_nat(5), target->lit_nat(4)}));
+    CHECK(pext == target->tuple({target->lit_nat(1), target->lit_nat(1)}));
+    CHECK(coff == target->tuple({target->lit_nat(4), target->lit_nat(5)}));
+    CHECK(cext == pext);
+    auto [ptile, ctile] = target->app(body, target->lit_nat(17))->projs<2>();
+    REQUIRE(tg::map_reduce(ptile));
+    REQUIRE(tg::map_reduce(ctile));
+    GraphView tiles({ctile}, {.operators = &ir.ops});
+    CHECK(tiles.data_used_by(ptile, ctile) == CheckResult::True);
+    CHECK(w.curr_gid() == gid);
+}
+
 TEST_CASE("Tensor pattern: product schema excludes ring and shape metadata") {
     TensorIR ir;
     auto f   = ir.function({ir.w.lit_nat(4), ir.w.lit_nat(5), ir.w.lit_nat(6)});
