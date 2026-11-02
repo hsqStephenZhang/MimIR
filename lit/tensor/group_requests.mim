@@ -1,0 +1,107 @@
+// RUN: python3 %S/group_run.py %mim %s %t > %t.out 2> %t.log
+// RUN: %FileCheck %s < %t.out
+// RUN: %FileCheck %s --check-prefix=REDUCTION < %t.log
+// RUN: python3 %S/group_run.py %mim %s %t.twice twice > %t.twice.out 2> %t.twice.log
+// RUN: diff %t.out %t.twice.out
+// RUN: python3 %S/group_run.py %mim %s %t.small -Xtensor:group-cache=4096 > %t.small.out 2> %t.small.log
+// RUN: %FileCheck %s --check-prefix=SMALL < %t.small.out
+// RUN: %FileCheck %s --check-prefix=LOG < %t.small.log
+// RUN: python3 %S/group_run.py %mim %s %t.off -Xtensor:group=0 > %t.off.out 2> %t.off.log
+// RUN: %FileCheck %s --check-prefix=OFF < %t.off.out
+// RUN: python3 %S/group_run.py %mim %s %t.report report > %t.report.out 2> %t.report.log
+// RUN: %FileCheck %s --check-prefix=REPORT < %t.report.log
+// RUN: %FileCheck %s --check-prefix=OFF < %t.report.out
+// RUN: diff %t.off.out %t.report.out
+// RUN: not python3 %S/group_run.py %mim %s %t.strict report -Xtensor:strict=1 > %t.strict.out 2> %t.strict.log
+// RUN: %FileCheck %s --check-prefix=STRICT < %t.strict.log
+// RUN: python3 %S/group_run.py %mim %s %t.lanes -Xtensor:vec-width=1 > %t.lanes.out 2> %t.lanes.log
+// RUN: %FileCheck %s --check-prefix=LANES < %t.lanes.out
+// RUN: python3 %S/group_run.py %mim %s %t.lower lower > %t.lower.out 2> %t.lower.log
+// RUN: %FileCheck %s --check-prefix=BUFFER < %t.lower.log
+// RUN: python3 %S/group_run.py %mim %s %t.buffer buffer > %t.buffer.out 2> %t.buffer.log
+// RUN: %FileCheck %s --check-prefix=DIRECT < %t.buffer.log
+
+plugin tensor;
+plugin affine;
+plugin core;
+plugin compile;
+use tensor;
+
+fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+fun mac (acc: I64, (x y: I64))@tt: I64 =
+    return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
+fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
+lam rows (i _: affine.Index): affine.Index = i;
+lam product (a: «5, 3; I64», b: «3, 7; I64»): «5, 7; I64» =
+    map_reduce ((5, 7), (5, 7, 3)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+
+extern fun reverse (a: «5, 3; I64», b: «3, 7; I64»): [«5, 7; I64», «5; I64»] =
+    let p = product (a, b);
+    let c = map_reduce (5, (5, 7)) (add, 0I64) rows (affine.id @2,) p;
+    return (p, c);
+
+extern fun reduction (a: «5, 3; I64», b: «3, 7; I64»): [«5, 7; I64», «1; I64»] =
+    let p = product (a, b);
+    let c = map_reduce (1, (1, 5, 7)) (add, 0I64) (proj_map @(3, 1) (0))
+        (proj_map @(3, 2) (1, 2),) p;
+    return (p, c);
+
+extern fun outer (a: «6, 4, 3; I64»): «4; I64» =
+    let p = map_reduce ((6, 4), (6, 4, 3)) (add, 0I64) (proj_map @(3, 2) (0, 1)) (affine.id @3,) (buf a);
+    return (map_reduce (4, (4, 6)) (add, 0I64) rows
+        ((λ (j i: affine.Index): «2; affine.Index» = (i, j)),) p);
+
+extern fun inner (a: «4, 1024, 3; I64»): «4, 1024; I64» =
+    let p = map_reduce ((4, 1024), (4, 1024, 3)) (add, 0I64) (proj_map @(3, 2) (0, 1)) (affine.id @3,) (buf a);
+    return (map_reduce ((4, 1024), (4, 1024, 2)) (add, 0I64)
+        (proj_map @(3, 2) (0, 1)) (proj_map @(3, 2) (0, 1),) p);
+
+extern fun gemm_epilogue (a: «5, 3; I64», b: «3, 7; I64»): «5, 7; I64» =
+    return (map_reduce ((5, 7), (5, 7)) (inc, 0I64) (affine.id @2) (affine.id @2,) (product (a, b)));
+
+extern fun mlp (a: «5, 3; I64», b: «3, 7; I64», c: «7, 11; I64»): «5, 11; I64» =
+    let p = product (a, b);
+    return (map_reduce ((5, 11), (5, 11, 7)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (p, buf c));
+
+extern fun conv_chain (a: «2, 2, 9, 8; I64», w: «3, 2, 3, 3; I64», v: «2, 3, 3, 3; I64»): «2, 2, 5, 4; I64» =
+    let ring = (I64, 0I64, core.wrap.add 0 @0, core.wrap.mul 0 @0);
+    let p = conv ring ((1, 1), (1, 1), (0, 0)) (buf a, buf w);
+    let p = map_reduce ((2, 3, 7, 6), (2, 3, 7, 6)) (inc, 0I64)
+        (affine.id @4) (affine.id @4,) p;
+    return (conv ring ((1, 1), (1, 1), (0, 0)) (p, buf v));
+
+// CHECK-LABEL: extern fun conv_chain
+// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK-LABEL: extern fun gemm_epilogue
+// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK-LABEL: extern fun inner
+// CHECK: tensor.group_req
+// CHECK-LABEL: extern fun mlp
+// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK: tensor.group_req {{.*}} 2, 0, 2,
+// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK-LABEL: extern fun outer
+// CHECK: tensor.group_req {{.*}} ({{.*}}, 0, 0, 4, 1)
+// CHECK-LABEL: extern fun reduction
+// CHECK: tensor.group_req {{.*}} 1, 0, 5,
+// CHECK-NOT: tensor.group_req {{.*}} 2,
+// CHECK-LABEL: extern fun reverse
+// CHECK: tensor.group_req {{.*}} ({{.*}}, 1, 0, 5, (32, 8, i8))
+// CHECK: tensor.group_req {{.*}} ({{.*}}, 2, 0, 2,
+// SMALL-LABEL: extern fun inner
+// SMALL: tensor.group_req {{.*}} ({{.*}}, 2, 1, 64,
+// LOG: rejected: scratch exceeds cache budget
+// LOG: tensor.group choose {{.*}} kind=2 dim=1 tile=64 scratch=3072
+// REDUCTION: consumer reduces across the producer tile; an ordered fold is required
+// OFF-NOT: tensor.group_req
+// REPORT: unrealized tensor.group_req kind=0 dim=0 tile=4
+// REPORT-SAME: probe.mim
+// STRICT: error: unrealized tensor.group_req kind=
+// LANES: tensor.group_req {{.*}} 1, 0, 1, (4, 128, 16)
+// BUFFER: unrealized tensor.group_req kind=
+// BUFFER-SAME: request reached lower_tensor without realization
+// DIRECT: unrealized tensor.group_req kind=
+// DIRECT-SAME: request reached bufferization without realization

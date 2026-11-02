@@ -196,6 +196,52 @@ TEST_CASE("Tensor witnesses: reverse geometry is frozen and preserves shared-gri
     CHECK(w.curr_gid() == gid);
 }
 
+TEST_CASE("Tensor grouping: requests preserve provenance, identity, and metadata boundaries") {
+    TensorIR ir(false);
+    ir.parse(R"(
+        plugin tensor;
+        plugin core;
+        plugin affine;
+        use tensor;
+        fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
+        fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+        lam row (i _: affine.Index): affine.Index = i;
+        extern lam f (x: «5, 7; I64»): [«5, 7; I64», «5; I64»] =
+            let p = map_reduce ((5, 7), (5, 7)) (inc, 0I64) (affine.id @2) (affine.id @2,) x;
+            let c = map_reduce (5, (5, 7)) (add, 0I64) row (affine.id @2,) p;
+            (p, c);
+    )");
+    auto provenance = ir.f()->body()->proj(2, 0)->loc();
+    CHECK(ir.driver.normalizer(Annex::base<tensor::group_req>()) == nullptr);
+    CHECK(ir.run(Annex::base<tensor::group>()));
+    REQUIRE(ir.count(Annex::base<tensor::group_req>()) == 1);
+    {
+        GraphView graph({ir.f()->body()}, {.operators = &ir.ops});
+        auto found = std::ranges::find_if(graph.operations(), [](auto op) { return Axm::isa<tensor::group_req>(op); });
+        REQUIRE(found != graph.operations().end());
+        auto request                        = (*found)->as<App>();
+        auto [p, kind, dim, tile, consumer] = request->args<5>();
+        CHECK(Lit::as(kind) == 2);
+        CHECK(Lit::as(dim) == 0);
+        CHECK(Lit::as(tile) == 2);
+        CHECK(request->loc() == provenance);
+        auto schema = graph.isa_operation(request);
+        REQUIRE(schema);
+        REQUIRE(schema->inputs.size() == 1);
+        CHECK(schema->inputs[0].value == p);
+        CHECK(schema->inputs[0].path == std::vector<size_t>{0});
+        CHECK_FALSE(ir.ops.decode(request, 0)->complete);
+        CHECK(graph.data_used_by(consumer, request) == CheckResult::False);
+    }
+    CHECK_FALSE(ir.run(Annex::base<tensor::group>()));
+    CHECK(ir.count(Annex::base<tensor::group_req>()) == 1);
+    ir.run(Annex::base<tensor::report_groups>());
+    CHECK(ir.count(Annex::base<tensor::group_req>()) == 0);
+    REQUIRE(ir.count(Annex::base<tensor::map_reduce_post>()) == 2);
+    auto [producer, consumer] = ir.f()->body()->projs<2>();
+    CHECK(consumer->as<App>()->arg(2, 0) == producer);
+}
+
 TEST_CASE("Tensor pattern: product schema excludes ring and shape metadata") {
     TensorIR ir;
     auto f   = ir.function({ir.w.lit_nat(4), ir.w.lit_nat(5), ir.w.lit_nat(6)});

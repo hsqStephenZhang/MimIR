@@ -7,6 +7,7 @@
 #include "mim/plug/tensor/pattern.h"
 #include "mim/plug/tensor/phase/combine_products.h"
 #include "mim/plug/tensor/phase/fuse.h"
+#include "mim/plug/tensor/phase/group.h"
 #include "mim/plug/tensor/phase/lower.h"
 #include "mim/plug/tensor/phase/lower_map_reduce.h"
 #include "mim/plug/tensor/phase/lower_to_mem.h"
@@ -93,11 +94,18 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<lower_map_reduce, phase::LowerMapReduce>(phases);
     Phase::hook<fuse_tensor, phase::Fuse>(phases);
     Phase::hook<lower_to_mem, phase::LowerToMem>(phases);
+    Phase::hook<group, phase::Group>(phases);
+    Phase::hook<report_groups, phase::ReportGroups>(phases);
 }
 } // namespace mim::plug::tensor
 
 // clang-format off
 static constexpr PluginArg known_args[] = {
+    {"group=<n>", "Enable tensor.group request selection (default 1; 0 preserves the input program)."},
+    {"group-cache=<bytes>", "Scratch working-set budget for tensor.group and BLIS block selection (default 32768)."},
+    {"group-registers=<n>", "Register count passed to the shared BLIS selector (default 32, at least 16)."},
+    {"group-budget=<n>", "Maximum producer box recomputation factor for grouping (default 1; values above 1 permit halo requests)."},
+    {"strict=<n>", "Fail on unrealized group_req markers instead of warning (default 0)."},
     {"reassoc-max=<n>", "Longest matrix chain whose `Catalan(n − 1)` bracketings `tensor.reassoc` enumerates and, failing one that provably wins for every extent, dispatches over at run time (default `4`; below `3` switches the dispatch off)."},
     {"vec-width=<n>", "Vector lanes the target's registers hold (`1`, `4`, `8` or `16`, default `8`). It caps the block of independent accumulators a vectorized loop body jams into its registers, and `tensor.reassoc` charges each product's vector loop in units of it; `1` means no lane-sized blocking and plain multiplication counts. See `tensor.vec_width`."},
 };

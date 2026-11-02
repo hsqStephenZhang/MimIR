@@ -6,6 +6,7 @@
 #include <mim/driver.h>
 #include <mim/lam.h>
 
+#include "mim/plug/tensor/phase/group.h"
 #include "mim/plug/tensor/tensor.h"
 
 namespace mim::plug::tensor::phase {
@@ -90,6 +91,10 @@ const Def* Lower::lower_via_impl(const App* app, const Def* impl) {
 const Def* Lower::rewrite_imm_App(const App* app) {
     auto& w = new_world();
 
+    if (Axm::isa<tensor::group_req>(app)) {
+        report_group_request(app, "request reached lower_tensor without realization");
+        return rewrite(app->arg(5, 0));
+    }
     if (Axm::isa<tensor::reverse_at>(app)) {
         auto [p, cs, dim, size] = app->args<4>();
         auto plan               = reverse_tiles(rewrite(p), rewrite(cs), rewrite(dim), rewrite(size));

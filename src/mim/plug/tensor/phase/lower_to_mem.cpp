@@ -16,6 +16,7 @@
 #include <mim/plug/mem/mem.h>
 
 #include "mim/plug/tensor/phase/constraints.h"
+#include "mim/plug/tensor/phase/group.h"
 #include "mim/plug/tensor/tensor.h"
 
 namespace mim::plug::tensor::phase {
@@ -297,6 +298,8 @@ void LowerToMem::collect_tensor_types() {
             } else if (Axm::isa<tensor::splat>(app)) {
                 auto [T, r] = app->callee()->as<App>()->args<2>();
                 elem(T);
+                add_tensor_ty(app->type());
+            } else if (Axm::isa<tensor::group_req>(app)) {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::tiled>(app)) {
                 add_tensor_ty(app->type());
@@ -657,6 +660,10 @@ const Pi* LowerToMem::conv_type(Lam* lam) {
 }
 
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
+    if (Axm::isa<tensor::group_req>(app)) {
+        report_group_request(app, "request reached bufferization without realization");
+        return rewrite(app->arg(5, 0));
+    }
     if (Axm::isa<cps::cps2ds_dep>(app)) return cps::op_cps2ds_dep(rewrite(app->arg()));
     if (Axm::isa<tensor::buf>(app)) {
         auto value = rewrite(app->arg());

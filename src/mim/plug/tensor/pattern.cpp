@@ -186,6 +186,14 @@ std::optional<pattern::OpView> decode_reverse(const Def* def, size_t limit) {
     return view;
 }
 
+std::optional<pattern::OpView> decode_group_req(const Def* def, size_t limit) {
+    auto args = groups(def, 2);
+    if (args.empty()) return {};
+    auto op = slot(args[1], 5, 0);
+    if (!op || !limit) return pattern::OpView{.inputs = {}, .complete = false};
+    return pattern::OpView{.inputs = {{op, 1, {0}}}};
+}
+
 std::optional<pattern::OpView> decode_tiled_n(const Def* def, size_t) {
     auto args = groups(def, 4);
     if (args.empty()) return {};
@@ -239,6 +247,7 @@ void register_operations(pattern::OpRegistry& ops) {
     ops.add(Annex::base<slice>(), 4, {{3}}, true);
     ops.add(Annex::base<slice_box>(), 4, {{3}}, true);
     ops.add(Annex::base<reverse_at>(), decode_reverse, true);
+    ops.add(Annex::base<group_req>(), decode_group_req, true);
     ops.add(Annex::base<tiled>(), decode_tiled, false);
     ops.add(Annex::base<tiled_n>(), decode_tiled_n, false);
     ops.add(Annex::base<tile_fold>(), decode_fold, false);
