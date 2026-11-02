@@ -820,3 +820,39 @@ probe 栈跨度 105,600 bytes 后返回 Budget_Exceeded，规则未改写。
 当作统一阈值；触发停止的是深度限制，不是默认 100,000 steps。
 测量日志与后续验证产物统一存放于
 `/Users/zc/courses/compiler/products/tile-fuse/results/task29b/`。
+
+### 显式任务与选择点
+
+结构匹配现在使用带 depth 的显式 Task，而不为每个 operand 建立 C++ continuation。
+Node/Range 把 operands 按逆序压入 pending 链，All/Binder 同样排入有序 child，
+Capture 先记录绑定再排入其 child；siblings 的 depth 相同，只在下降 child 时增加。
+Type obligation 保存产生它的位置深度，以相同的任务循环逐个完成，
+不会因之前完成的类型数量增加深度；Where/Not 仍在结构和类型完成后检查。
+
+Either 保存右分支任务、pending 链头以及 capture/type/check 的 undo 标记。
+左分支后的任意 sibling、类型或 predicate 失败时都能回到该选择点，
+恢复绑定与 obligations，再尝试右分支；左右失败的状态合并顺序不变。
+pending 使用 arena 中不可变的 next 索引，因此恢复宽 operand 列表不需要复制整个列表，
+大量未决 Either 也只消耗显式存储，不保留逐 sibling 的 native frame。
+没有改变输入 operand 顺序、短路条件、Matched/No_Match/Unknown 的判定或原子发布绑定。
+
+C++ continuation 只保留在跨 graph-anchor 搜索、类型完成和隔离 Not probe 的边界，
+这些引擎调用有独立的 active_depth 限制；Task 的 depth 则限制真正的模式/类型/probe 嵌套。
+默认 max_depth 仍为 256，max_steps 仍为 100,000，深链照常返回 Budget_Exceeded，
+没有通过提高默认预算或丢掉真实栈保护来接纳宽模式。
+每个结构模式和 deferred check 的 step 消耗保留，
+减少的是无意义的递归深度，而不是绕过工作量预算。
+
+| flat `unary(literal)` operand 数 | 新实现 steps | 峰值 depth | 峰值 active_depth | probe 栈跨度 |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 97 | 2 | 1 | 0 bytes |
+| 256 | 769 | 2 | 1 | 0 bytes |
+| 2048 | 6145 | 2 | 1 | 0 bytes |
+
+这里 0 bytes 表示各 operand 的 budget probe 复用同一 native frame，
+不表示 C++ 函数没有固定栈开销。
+经过 RulePattern 的 32/256/2048 个 `x+i` 分别消耗 511/4095/32767 steps，
+三者峰值 depth 都为 12、active_depth 都为 2、probe 栈跨度都为 1,472 bytes，
+规则均成功改写为 `x`。
+另一个 2048-operand 例子交错 Type/Where/Not，消耗 20,473 steps，
+峰值 active_depth=3、probe 栈跨度 3,312 bytes，宽度也不保留 native frame。
