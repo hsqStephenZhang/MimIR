@@ -1,0 +1,17 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+plugin math;
+
+let F = math.F32;
+axm mark: [F → F, F] → F;
+rule scale (a x: F):
+    mark (λ y: F: F = math.arith.sub math.mode.contract (y, a), x) => a;
+extern lam result (x: F): F =
+    mark (λ y: F: F = math.arith.sub math.mode.contract (y, 0.5:F), x);
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.graph_rule_app ((scale,), (mark, math.arith.sub)), compile.cleanup);
+
+// CHECK-LABEL: extern lam result
+// CHECK-NOT: mark
+// CHECK: 1056964608:(math.F (23, 8))

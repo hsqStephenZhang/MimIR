@@ -455,3 +455,44 @@ CTest 249/249；lit 680 passed / 9 unsupported / 1 failed，
 所有新机制回归及已有 pattern suites 通过，未把该 WIP 失败标为 unsupported
 或删除检查；步骤 1 仍不作为完成提交。
 结果见 `comm-commit-ctest.log`、`comm-commit-full-lit.log`。
+
+交换律机制已提交为 `ceb12bb50deef16839cfb3d80e4a629763203299`。
+captured-Lit 的独立提交主题为
+`fix(pattern): rebuild captured literals outside graph regions`，
+仅修改 recipe 选择并添加 `lit/rules/grlitcap.mim`，
+不扩大允许导入的 graph node 集合。
+
+当前设计边界的最小复现保存在结果目录 `schpure.mim`：
+
+```mim
+let Schedule = («2; Nat» → Nat) → Nat;
+axm mark: [Schedule, Nat] → Nat;
+lam schedule (mk: «2; Nat» → Nat): Nat = mk (3, 0);
+rule remove (x: Nat): mark (schedule, x) => x;
+extern lam result (x: Nat): Nat = mark (schedule, x);
+```
+
+使用 `compile.graph_rule_app (remove, mark)` 即退出 1，
+报 `replacement removes a computation without a purity proof`，
+见 `schpure.log`。它不含 tensor，也不依赖交换律；
+使用 monomorphic schedule 只是避免 purity-op 列表的 universe 参数推导干扰。
+实际 attention 中的 polymorphic `λ T.λ mk.mk(3,0)` 遭遇同一保护。
+
+`src/mim/pattern/rewrite.cpp` 的现有不变量明确为：
+pure operator decoder 仅证明调用的 curry spine，
+不证明 function-valued inputs；
+递归扫描 closure body 时，未知 bound-function App 必须保留。
+因此不能把 `mark` 或 map_reduce_post 声明为 pure，
+就悄悄把内部 `mk` 调用从 protected 集合删除。
+若要允许此类消除，需要确定闭合 schedule descriptor 的纯性/可丢弃契约，
+或增加可验证的 higher-order effect 证明；
+这改变纯性证明的边界，而不是遗漏的 literal/capture 实现。
+也不能通过给 sdpa 添加仅为保留 closure 的无用参数来绕过检查，
+那会修改 op/schedule 表示。
+按任务协议在这一设计决定处暂停，保留步骤 1 WIP。
+步骤 2–5 尚未执行，没有模型计数或计时。
+
+captured-Lit 提交前再次运行 CTest 与完整 lit：
+249/249、680 passed / 9 unsupported / 1 failed，
+唯一失败仍为未提交的 attention_raise WIP；
+见 `litcap-commit-ctest.log`、`litcap-commit-full-lit.log`。

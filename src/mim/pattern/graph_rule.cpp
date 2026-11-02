@@ -116,6 +116,7 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
             if (auto i = bindings.find(def); i != bindings.end()) {
                 if (guard.values.contains(def)) return plan->witness_value(i->second);
                 if (def == rule->lhs() && lowered_.is_meta(def)) return plan->instantiate(def, bindings);
+                if (auto literal = i->second->isa<Lit>()) return plan->literal(literal->type(), literal->flags());
                 return plan->import(i->second);
             }
             if (lowered_.is_meta(def) && lowered_.can_bind(def, bindings)) {
