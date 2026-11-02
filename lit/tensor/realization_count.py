@@ -15,6 +15,15 @@ optimized = subprocess.run(
     text=True,
     stdout=subprocess.PIPE,
 ).stdout
+if "--allocations" in sys.argv[3:]:
+    lines = []
+    for line in optimized.replace("@malloc(", "@record_malloc(").replace("@free(", "@record_free(").splitlines():
+        lines.append(line)
+        if " alloca " in line:
+            lines.append("  call void @record_stack()")
+    lines.append("declare void @record_stack()")
+    destination.write_text("\n".join(lines) + "\n")
+    sys.exit(0)
 lines = []
 for line in optimized.splitlines():
     lines.append(line)

@@ -464,6 +464,48 @@ exactly-once 已解决，但 grouping 在这些尺寸通常仍慢于 unfused。
 softmax 还保留 scalar `expf` 调用。这里没有声称 grouping 已获得性能收益，
 也没有为计时删除用于检验共享的 stage 边界。
 
+### 9.5 Sequential tile scratch（Task 15A.1）
+
+materialization 在已证明 pure 的 flat tiled body 中将 storage 与 fill 分开：
+literal shape、closed element type 的 MRP/generate/broadcast/splat temporary 各占一个独立 slot，
+在 enclosing tiled grid 前分配，在整个 grid（包括 peeled tail）完成后释放。
+不同 realization 不复用同一 slot；只复用同一 fill site 在顺序 iteration 间的 storage。
+每个 literal tail specialization 使用自己的 slots，不把不同 shape/stride 当作一个 key。
+不改变 value/template cache，也不缓存跨 iteration 的内容。
+
+MRP 只在 map_out 是一组不重复的 loop projections、各轴 domain extent 等于 output extent、
+且没有 clip_sched 时复用 storage；其余仍走原 allocation 路径。
+generate/broadcast/splat 完整填充 destination。
+scalar reader 的临时 buffer 也在 nest 入口绑定写入，不能只返回裸 pointer 而丢掉 fill 的依赖。
+纯 flat body 不包含 tile_fold/tiled_n/未知 tensor op，也不跨 opaque callback 提取 allocation；
+普通 callback lowering 清除 scratch scope，parallel/per-worker allocation 不在本次实现内。
+
+fill 完成后才向 reader 返回 handle；slot 不同，因此同时 live 的 readers 不会互相覆盖。
+grid 的 memory-carrying yield 发生在该 iteration 全部 readers 完成后，
+下次 fill 因而不会覆盖上一轮仍在读取的值；只复制到 owned destination 的结果会离开 body。
+所有 scratch 在 grid exit 明确释放，不依赖循环内部的 last-reader 分析猜测 lifetime。
+
+`row_norm` 在 LLVM 优化前同时插入 malloc/free 和 alloca 动态计数，
+2×7 与 64×7 均为总计 5 次 allocation（含输出），5×7 与 65×7 均为 7 次；
+tail slots 只增加常数项，循环 32 次不增加分配次数。
+每次返回仅输出 heap allocation 仍 live，三轮更换输入后 scratch 全部释放，
+ASan、原始/优化后 exp count、centered count 和 scalar reference 均检查。
+singleton-column 仍作数值/算术计数回归，不把其 scalar callback fallback 当作已优化的 allocation 路径。
+三个 benchmark shape 的 softmax/layernorm 每次调用均为
+**1 个 output malloc + 2 个 scratch malloc + 2 个 scratch alloca**，
+两个 heap scratch 在 return 前 free；这是 allocation sites 的动态执行计数，不是静态文本计数。
+
+只应用 scratch reuse 的计时见 `build/task15-scratch-bench/results.csv`，
+设置与 §9.4 相同，计时前后检查无 compiler/build 进程：
+
+| Rows×Cols | softmax grouped / unfused (ms) | layernorm grouped / unfused (ms) |
+| --- | --- | --- |
+| 1024×1024 | 3.563 / 2.300 | 0.383 / 0.333 |
+| 4096×1024 | 8.336 / 7.514 | 2.048 / 1.499 |
+| 1024×4096 | 7.845 / 7.435 | 1.441 / 1.565 |
+
+单独移出 allocation 尚未消除 stage copy 或 scalar exp，不声称已达到所有 shape 不慢的目标。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

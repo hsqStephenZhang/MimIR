@@ -6,7 +6,7 @@ import sys
 mim, source, output, *flags = sys.argv[1:]
 mim = str(pathlib.Path(mim).resolve())
 text = pathlib.Path(source).read_text()
-shapes = [(5, 7), (1, 11), (7, 1), (0, 7)]
+shapes = [(5, 7), (1, 11), (7, 1), (0, 7), (2, 7), (64, 7), (65, 7)]
 benchmark = "benchmark" in flags
 if benchmark:
     shapes = [(1024, 1024), (4096, 1024), (1024, 4096)]

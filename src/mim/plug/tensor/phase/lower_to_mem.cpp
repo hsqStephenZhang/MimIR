@@ -110,6 +110,7 @@ public:
     }
 
     bool shareable(const Def* value) { return value->type()->isa<Arr>() && pure(value); }
+    bool reusable(const Def* value) { return pure(value); }
 
 private:
     bool positive(const Def* shape) {
@@ -216,6 +217,47 @@ const Def* copy_buffer(const Def* mem, const Def* dst, const Def* src, const Def
             return std::pair{next, value};
         });
     return result->proj(2, 0);
+}
+
+bool full_output(const btensor::MapRedPost& mr) {
+    auto ranks = mr.ranks();
+    if (!ranks || Axm::isa<btensor::clip_sched>(mr.sched)) return false;
+    auto& w        = mr.map_out->world();
+    auto parameter = w.mut_lam(mr.map_out->type()->as<Pi>());
+    auto mapped    = w.app(mr.map_out, parameter->var());
+    DefSet axes;
+    for (size_t a = 0; a != ranks->ro; ++a) {
+        bool found = false;
+        for (size_t d = 0; d != ranks->nloops(); ++d) {
+            auto index = parameter->var()->proj(ranks->nloops(), d);
+            if (mapped->proj(ranks->ro, a) == index && mr.So->proj(ranks->ro, a) == mr.Sr->proj(ranks->nloops(), d)) {
+                if (!axes.insert(index).second) return false;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+bool sequential_tile(const Def* root) {
+    if (!RealizationRequests(root).reusable(root)) return false;
+    DefVec pending{root};
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>() || def->is_mutable()) continue;
+        if (auto app = def->isa<App>(); app && is_tensor_op(app)) {
+            if (!(Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::stage>(app) || Axm::isa<tensor::slice>(app)
+                  || Axm::isa<tensor::slice_box>(app) || Axm::isa<tensor::splat>(app)
+                  || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::generate>(app)))
+                return false;
+        }
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+    return true;
 }
 
 } // namespace
@@ -530,6 +572,7 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     auto __      = fe::Restore(fresh_memo_, {});
     auto storage = fe::Restore(storage_shapes_, storage_shapes_);
     auto cache   = fe::Restore(realizations_, realizations_);
+    auto scratch = fe::Restore<Scratch*>(scratch_, nullptr);
     push();
     auto new_lam = new_world().mut_lam(conv_type(lam));
     map(lam, new_lam);
@@ -554,6 +597,23 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     new_lam->set(filter, body);
     pop();
     return seal(lam, new_lam);
+}
+
+std::pair<const Def*, const Def*> LowerToMem::allocate(const Def* rank, const Def* shape, const Def* type, bool fills) {
+    auto r       = Lit::isa(rank);
+    auto literal = r.has_value();
+    if (r)
+        for (size_t d = 0; d != *r; ++d)
+            literal &= Lit::isa(shape->proj(*r, d)).has_value();
+    if (!scratch_ || !fills || !literal || !type->is_closed())
+        return buffer::op_alloc(rank, shape, type, fresh_mem())->projs<2>();
+    auto allocation    = buffer::op_alloc(rank, shape, type, scratch_->mem);
+    auto [run, call]   = btensor::ds_splice(allocation, scratch_->result_type, "tileScratch");
+    auto [mem, buffer] = run->var(2, 0)->projs<2>();
+    bind_new(run->has_var());
+    scratch_->mem = mem;
+    scratch_->bindings.emplace_back(run, call);
+    return {fresh_mem(), buffer};
 }
 
 void LowerToMem::prepare_realizations(const Def* root) {
@@ -669,7 +729,15 @@ const Def* LowerToMem::splat_buffer(const Def* arr_ty, const Def* scalar) {
     // `buffer.lit` sets every element to `scalar`; `btensor.lower_map_reduce` fills it with a loop rather
     // than storing a monolithic literal array (which the LLVM backend cannot digest for large shapes).
     auto [bro, bso, boT] = Axm::isa<buffer::Buf>(buf_of(arr_ty))->args<3>();
-    auto [m, out]        = buffer::op_lit(bro, bso, boT, fresh_mem(), scalar)->projs<2>();
+    if (scratch_) {
+        auto [mem, buffer] = allocate(bro, bso, boT);
+        auto& w            = new_world();
+        return btensor::build_pointwise(
+                   w.sigma({mem->type(), buffer->type()}), mem, buffer, scalar, bso, Lit::as(bro), "scratchSplat",
+                   [](Defs, const Def* value, const Def* current) { return std::pair{current, value}; })
+            ->proj(2, 1);
+    }
+    auto [m, out] = buffer::op_lit(bro, bso, boT, fresh_mem(), scalar)->projs<2>();
     return out;
 }
 
@@ -706,6 +774,14 @@ const Def* LowerToMem::to_buffer(const Def* val, const Def* old) {
     if (Axm::isa<buffer::Buf>(val->type())) return val;
     if (!old->type()->isa<Arr>()) {
         auto& w = new_world();
+        if (scratch_) {
+            auto [mem, buffer] = allocate(w.lit_nat_0(), w.tuple(), rewrite(old->type()));
+            auto [run, call]   = btensor::ds_splice(w.tuple({mem, buffer, val}), w.sigma({mem->type(), buffer->type()}),
+                                                    "scalarScratch");
+            auto [current, destination, value] = run->var(2, 0)->projs<3>();
+            run->app(true, run->ret_var(), buffer::op_write(current, destination, w.tuple(), value));
+            return call->proj(2, 1);
+        }
         return buffer::op_lit(w.lit_nat_0(), w.tuple(), rewrite(old->type()), fresh_mem(), val)->proj(2, 1);
     }
     return materialize(old->type(), old);
@@ -818,7 +894,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
         pop();
         return {m, value};
     };
-    auto [am, dst] = buffer::op_alloc(br, bs, bT, fresh_mem())->projs<2>();
+    auto [am, dst] = allocate(br, bs, bT);
     return btensor::build_pointwise(result_ty, am, dst, w.tuple(captures), s_out, rn, "generate", compute)->proj(2, 1);
 }
 
@@ -884,7 +960,7 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     auto op        = w.annex<btensor::broadcast>();
     op             = w.app(op, w.tuple({T, bri, bsi, bro, bso, r}));
     op             = w.app(op, w.tuple({s_in, s_out}));
-    auto [am, dst] = buffer::op_alloc(bro, bso, boT, fresh_mem())->projs<2>();
+    auto [am, dst] = allocate(bro, bso, boT);
     auto [m, out]  = w.app(op, w.tuple({am, dst, input}))->projs<2>();
     return out;
 }
@@ -1082,7 +1158,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         am  = destination->mem;
         dst = destination->buffer;
     } else {
-        std::tie(am, dst) = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, fresh_mem())->projs<2>();
+        std::tie(am, dst) = allocate(mr.Ro, mr.So, mr.Tp, full_output(old_mr));
     }
     auto [m, out] = w.app(op, w.tuple({am, dst, is, post_is}))->projs<2>();
     if (destination) return w.tuple({m, out});
@@ -1181,8 +1257,11 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
     return call;
 }
 
-const Def*
-LowerToMem::lower_tile_body(const Def* body, const Def* off, const Def* ext, const Destination& destination) {
+const Def* LowerToMem::lower_tile_body(const Def* body,
+                                       const Def* off,
+                                       const Def* ext,
+                                       const Destination& destination,
+                                       Scratch* pool) {
     auto& old           = old_world();
     auto& w             = new_world();
     auto rank           = Lit::as(ext->arity());
@@ -1198,6 +1277,7 @@ LowerToMem::lower_tile_body(const Def* body, const Def* off, const Def* ext, con
     auto memo    = fe::Restore(fresh_memo_, {});
     auto storage = fe::Restore(storage_shapes_, storage_shapes_);
     auto cache   = fe::Restore(realizations_, realizations_);
+    auto scratch = fe::Restore(scratch_, sequential_tile(root) ? pool : nullptr);
     push();
     bind_old(parameter->has_var());
     map(origin, off);
@@ -1215,6 +1295,7 @@ LowerToMem::lower_tile_body(const Def* body, const Def* off, const Def* ext, con
 
 const Def* LowerToMem::lower_tiled(const App* app, const Destination* destination) {
     auto& w             = new_world();
+    auto scratch_scope  = fe::Restore<Scratch*>(scratch_, nullptr);
     auto [meta, shapes] = app->callee()->as<App>()->uncurry_args<2>();
     auto [type, r]      = meta->projs<2>();
     auto [shape, tiles] = shapes->projs<2>();
@@ -1242,6 +1323,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     auto [run, call]
         = btensor::ds_splice(w.tuple({mem, dst, w.tuple(captures)}), w.sigma({mem->type(), dst->type()}), "tiled");
     auto runtime = run->var(2, 0);
+    Scratch scratch{mem, call->type(), {}};
     push();
     bind_new(run->has_var());
     for (size_t i = 0; i != sources.size(); ++i)
@@ -1255,7 +1337,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
                 *rank, [&](size_t j) { return w.call(core::nat::add, Defs{base->proj(*rank, j), offsets[j]}); }));
             auto [m, output] = acc->projs<2>();
             auto extent      = w.tuple(extents);
-            auto result      = lower_tile_body(app->arg(), off, extent, {m, output, output_shape, origin, extent});
+            auto result = lower_tile_body(app->arg(), off, extent, {m, output, output_shape, origin, extent}, &scratch);
             return w.app(exit, result);
         }
         if (!sizes[d]) return w.app(exit, acc);
@@ -1276,7 +1358,20 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         loop->set(true, emit(d + 1, state, yield));
         return loop_call;
     };
-    run->set(true, emit(0, w.tuple({runtime->proj(3, 0), runtime->proj(3, 1)}), run->ret_var()));
+    auto done = w.mut_con(call->type())->set("tileScratchDone");
+    run->set(true, emit(0, w.tuple({runtime->proj(3, 0), runtime->proj(3, 1)}), done));
+    auto [done_mem, output] = done->var()->projs<2>();
+    for (auto [binding, invoke] : scratch.bindings | std::views::reverse) {
+        auto buffer              = binding->var(2, 0)->proj(2, 1);
+        auto [rank, shape, type] = Axm::isa<buffer::Buf>(buffer->type())->args<3>();
+        done_mem                 = buffer::op_free(rank, shape, type, done_mem, buffer);
+    }
+    done->app(true, run->ret_var(), w.tuple({done_mem, output}));
+    call = w.app(cps::op_cps2ds_dep(run), w.tuple({scratch.mem, dst, w.tuple(captures)}));
+    for (auto [binding, invoke] : scratch.bindings | std::views::reverse) {
+        binding->app(true, binding->ret_var(), call);
+        call = invoke;
+    }
     pop();
     if (destination) return call;
     auto [out_mem, out] = call->projs<2>();

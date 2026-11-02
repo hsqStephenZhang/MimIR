@@ -1,5 +1,6 @@
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -18,6 +19,19 @@ struct Case {
     float* (*finish)(float*, float*);
 };
 #include "cases.h"
+
+static uint64_t heap_allocations = 0, stack_allocations = 0, frees = 0;
+extern "C" void* record_malloc(uint64_t size) {
+    ++heap_allocations;
+    auto result = std::malloc(size);
+    if (!result) std::abort();
+    return result;
+}
+extern "C" void record_free(void* pointer) {
+    ++frees;
+    std::free(pointer);
+}
+extern "C" void record_stack() { ++stack_allocations; }
 
 static float* unfused(const Case& c, float* x) {
     auto first = c.first(x);
@@ -66,9 +80,19 @@ int main() {
             x[i] = float(int(i % 23) - 11) / 8;
         double medians[2];
         for (int kind = 0; kind != 2; ++kind) {
-            auto execute = [&] { return kind == 0 ? c.grouped(x.data()) : unfused(c, x.data()); };
-            auto result  = execute();
+            auto execute     = [&] { return kind == 0 ? c.grouped(x.data()) : unfused(c, x.data()); };
+            heap_allocations = stack_allocations = frees = 0;
+            auto result                                  = execute();
             check(c, x, result);
+#ifdef ALLOCATION_COUNT
+            if (kind == 0) {
+                std::fprintf(stderr, "%s %dx%d heap=%llu stack=%llu frees=%llu\n", c.layer ? "layer" : "soft", c.m, c.n,
+                             static_cast<unsigned long long>(heap_allocations),
+                             static_cast<unsigned long long>(stack_allocations),
+                             static_cast<unsigned long long>(frees));
+                if (heap_allocations + stack_allocations > 5 || heap_allocations != frees + 1) std::abort();
+            }
+#endif
             std::free(result);
             std::vector<double> times;
             for (int run = 0; run != 7; ++run) {

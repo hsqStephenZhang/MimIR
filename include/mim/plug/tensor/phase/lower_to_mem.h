@@ -34,6 +34,10 @@ private:
     struct Destination {
         const Def *mem, *buffer, *shape, *origin, *extent;
     };
+    struct Scratch {
+        const Def *mem, *result_type;
+        fe::Vector<std::pair<Lam*, const Def*>> bindings;
+    };
     void start() override;
     const Def* rewrite(const Def*) override;
     const Def* rewrite_mut_Lam(Lam*) override;
@@ -64,7 +68,8 @@ private:
     std::pair<DefVec, DefVec> capture_producers(const Def*, bool = false);
     bool linear_step(const Def*, const Def*, const Def*);
     const Def* lower_into(const Def*, const Destination&);
-    const Def* lower_tile_body(const Def*, const Def*, const Def*, const Destination&);
+    const Def* lower_tile_body(const Def*, const Def*, const Def*, const Destination&, Scratch*);
+    std::pair<const Def*, const Def*> allocate(const Def*, const Def*, const Def*, bool = true);
     void record_instance(const Def*);
     void record_helpers(const App*);
     void prepare_realizations(const Def*);
@@ -140,6 +145,7 @@ private:
     DefMap<const Def*> fresh_memo_;
     DefMap<const Def*> realizations_;
     DefMap<const Def*> storage_shapes_;
+    Scratch* scratch_ = nullptr;
 
     /// A function is bufferized iff it is external, set, and mentions a tensor type in its domain.
     bool is_tensor_fn(Lam*) const;
