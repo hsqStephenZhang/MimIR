@@ -1,0 +1,21 @@
+// RUN: %mim %s -o %t.auto
+// RUN: %mim %s -X tensor:attention-online=0 -o %t.manual
+// RUN: %FileCheck %s < %t.auto
+// RUN: diff %t.auto %t.manual
+
+plugin tensor;
+plugin math;
+plugin compile;
+
+extern fun plain (q: «12, 512, 64; math.F32», k: «12, 512, 64; math.F32»,
+                  v: «12, 512, 64; math.F32»): «12, 512, 64; math.F32» =
+    return (tensor.sdpa math.mode.contract @(12, 512, 512, 64, 64) (0.125:math.F32, q, k, v));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (tensor.group_attention,
+        compile.rule_app (tensor.attention_schedule_rule (math.mode.contract, 8, 32)),
+        tensor.lower_tensor, compile.cleanup);
+
+// CHECK: con loop
+// CHECK: tensor.tiled @
+// CHECK-SAME: ((12, 512, 64), (1, 2, 64))

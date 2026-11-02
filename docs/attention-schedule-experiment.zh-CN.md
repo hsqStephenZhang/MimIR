@@ -650,3 +650,42 @@ leaf 仍调用已有 dot scheduling；符号 rows 的 BLIS admission 不成立�
 
 步骤 2 提交前 CTest 250/250、完整 lit 690 通过、9 unsupported；
 日志为 `step2-ctest-final.log` 与 `step2-full-lit-final.log`。
+
+## 步骤 3：显式规则与 group 自动选择
+
+步骤 2 提交为 `aba007b2ea`。
+新增 group-aware 的 `tensor.group_attention`，位于 raising 后、通用 lowering 前：
+若等到 map_reduce group 阶段才决定，复合 attention 已经被普通分解，时机过晚。
+该阶段没有原生 attention matcher，只构造并应用 Mim 的 schedule Rules。
+CPU/group=1 时应用，GPU/group=0 不应用；
+`-X tensor:attention-online=0` 保留 raising 加普通分解的对照，
+`-X tensor:attention=0` 则连 raising 一起禁用。
+
+规则内选择 BK=`vec_width 8`，register budget 复用 `group-registers`（默认32），
+BM 取1/2/4中满足 `BM*(max(K,N)+BK+2)<=registers*lanes` 的最大候选，
+至少为1；这只是预算模型，不是寄存器分配器的证明。
+在 K=N=64 时，默认得到 BM2/BK8；
+lanes4 得 BM1/BK4，registers64/lanes8 得 BM4/BK8，
+`online_select.mim` 分别检查这些选择及禁用路径。
+
+手写 schedule 显式调用同一 `attention_schedule_rule`，不使用 C++ 专用路径。
+`online_schedule.mim` 在自动选择开启和关闭时都调用这条规则，
+分别由自动入口或显式入口完成替换；随后 lower_tensor。
+两个 realized IR 文件逐字节相同（不只是匹配相同几个 FileCheck 行）：
+外层 tiled shape12×512×64/tile1×2×64，内部 CPS K2 fold；
+因而 DAG、静态循环参数和 carry 也相同。
+独立 `online_select.mim` 不含显式 fallback，防止自动入口失效却被手动规则掩盖。
+自动路径的 masked/nonmasked 数值参考由 `online_auto.mim` 覆盖。
+
+真实 seq512 attention、transformer 的 scheduled dump 各恰好一处
+`sdpa_online(16,ff,2,8)`，packed QKV views 不妨碍选择。
+完整 attention 已生成 LLVM（`model_attention_online.ll`）；
+未以此代替运行时模型数值检查或计时。
+结构一致的预测 confirmed；动态计数和同进程交替计时留到步骤 4。
+
+新增 annex 改变生成的 enum ID；仅构建 plugins 后，旧 unit binary
+会错误地把 phase ID 解释成别的 axiom。
+全树重建（包含 unit binaries）后验证通过：
+CTest 250/250、完整 lit 693 通过、9 unsupported，
+见 `step3-rebuild-all.log`、`step3-ctest-final.log`、`step3-full-lit-final.log`。
+这也重新验证了步骤 2 的实现与全部当前 unit consumer 的一致性。

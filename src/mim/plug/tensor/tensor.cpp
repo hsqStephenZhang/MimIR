@@ -96,6 +96,7 @@ static void reg_witnesses(pattern::Witnesses& witnesses) {
 
 static void reg_phases(Flags2Phases& phases) {
     Phase::hook<raise_attention, phase::AttentionRaise>(phases);
+    Phase::hook<group_attention, phase::AttentionSchedule>(phases);
     Phase::hook<combine_products, phase::CombineProducts>(phases);
     Phase::hook<reassoc, phase::Reassoc>(phases);
     Phase::hook<lower_tensor, phase::Lower>(phases);

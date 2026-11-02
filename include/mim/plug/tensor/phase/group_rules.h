@@ -12,6 +12,14 @@ private:
     void start() override;
 };
 
+class AttentionSchedule : public Phase {
+public:
+    using Phase::Phase;
+
+private:
+    void start() override;
+};
+
 class GroupRules : public Phase {
 public:
     using Phase::Phase;

@@ -483,6 +483,20 @@ void GroupDefault::start() {
     pipeline.run();
 }
 
+void AttentionSchedule::start() {
+    if (driver().is_loaded("gpu") || !driver().arg_nat("tensor", "group").value_or(1)
+        || !driver().arg_nat("tensor", "attention").value_or(1)
+        || !driver().arg_nat("tensor", "attention-online").value_or(1))
+        return;
+    auto& w     = world();
+    auto params = w.tuple({w.lit_nat(16), w.app(w.annex<vec_width>(), w.lit_nat(8)),
+                           w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32))});
+    auto rules  = std::vector{w.app(w.annex<attention_schedule_rule>(), params)->as<Rule>(),
+                              w.app(w.annex<attention_masked_schedule_rule>(), params)->as<Rule>()};
+    RuleRewrite rewrite(w, std::move(rules));
+    rewrite.run();
+}
+
 void GroupRules::start() {
     if (driver().is_loaded("gpu")) return;
     {

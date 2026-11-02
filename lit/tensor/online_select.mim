@@ -1,0 +1,22 @@
+// RUN: %mim %s -o - | %FileCheck %s --check-prefix=DEFAULT
+// RUN: %mim %s -o - -X tensor:vec-width=4 | %FileCheck %s --check-prefix=NARROW
+// RUN: %mim %s -o - -X tensor:group-registers=64 | %FileCheck %s --check-prefix=LARGE
+// RUN: %mim %s -o - -X tensor:group=0 | %FileCheck %s --check-prefix=OFF
+// RUN: %mim %s -o - -X tensor:attention-online=0 | %FileCheck %s --check-prefix=OFF
+
+plugin tensor;
+plugin math;
+plugin compile;
+
+extern fun plain (q: «12, 512, 64; math.F32», k: «12, 512, 64; math.F32»,
+                  v: «12, 512, 64; math.F32»): «12, 512, 64; math.F32» =
+    return (tensor.sdpa math.mode.contract @(12, 512, 512, 64, 64) (0.125:math.F32, q, k, v));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (tensor.group_attention, compile.cleanup);
+
+// DEFAULT: tensor.sdpa_online (16, ff, 2, 8)
+// NARROW: tensor.sdpa_online (16, ff, 1, 4)
+// LARGE: tensor.sdpa_online (16, ff, 4, 8)
+// OFF-NOT: tensor.sdpa_online
+// OFF: tensor.sdpa 16
