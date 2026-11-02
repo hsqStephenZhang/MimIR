@@ -8,6 +8,9 @@ mim = str(pathlib.Path(mim).resolve())
 text = pathlib.Path(source).read_text()
 shapes = [(5, 7), (1, 11), (7, 1), (0, 7), (2, 7), (64, 7), (65, 7)]
 benchmark = "benchmark" in flags
+automatic = "automatic" in flags
+if automatic and "all-shapes" not in flags:
+    shapes = [(5, 7), (2, 7), (64, 7), (65, 7)]
 row_override = next((int(flag.split("=", 1)[1]) for flag in flags if flag.startswith("rows=")), None)
 if row_override is not None and row_override <= 0:
     raise ValueError("row tile must be positive")
@@ -18,9 +21,12 @@ cases = []
 for m, n in shapes:
     for kind, marker in (("soft", "mark_soft"), ("layer", "mark_layer")):
         rows = row_override if row_override is not None else 1 if benchmark else 2
+        expression = f"row_{kind} (buf x)" if automatic else f"{marker} @({m}, {n}) ({rows}, buf x)"
+        if automatic and "api" in flags and kind == "soft":
+            expression = "softmax mode tt (buf x)"
         text += (
             f"extern fun {kind}_{m}_{n} (x: «{m}, {n}; F32»): «{m}, {n}; F32» =\n"
-            f"    return ({marker} @({m}, {n}) ({rows}, buf x));\n"
+            f"    return ({expression});\n"
         )
         if benchmark:
             first = "row_max (buf x)" if kind == "soft" else "row_average (ff, buf x)"
@@ -49,7 +55,8 @@ for m, n in shapes:
                 f'{{{m}, {n}, {rows}, {"true" if kind == "layer" else "false"}, '
                 + ", ".join(functions) + "}"
             )
-text += """
+if not automatic:
+    text += """
 import opt;
 extern lam _compile (): compile.Phase =
     compile.phases ff (compile.rule_app (group_soft, group_layer), opt._default_compile ());
@@ -63,4 +70,6 @@ if benchmark:
         "\n".join(declarations) + "\nCase cases[] = {\n" + ",\n".join(cases) + "\n};\n"
     )
 options = ["-X", "tensor:reference-tiles=1"] if "reference" in flags else []
+if automatic:
+    options += ["-X", "tensor:strict=1"]
 subprocess.run([mim, *options, "-p", "opt", str(generated), "-p", "ll"], cwd=directory, check=True)

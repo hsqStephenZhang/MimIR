@@ -1,0 +1,17 @@
+// RUN: python3 %S/row_group_scope.py %mim %S/row_norm.mim %t.closed closed > %t.closed.out 2> %t.closed.log
+// RUN: %FileCheck %s --check-prefix=CLOSED < %t.closed.log
+// RUN: python3 %S/row_group_scope.py %mim %S/row_norm.mim %t.escape escape > %t.escape.out 2> %t.escape.log
+// RUN: %FileCheck %s --check-prefix=ESCAPE < %t.escape.log
+// RUN: python3 %S/row_group_scope.py %mim %S/row_norm.mim %t.permuted permuted > %t.permuted.out 2> %t.permuted.log
+// RUN: %FileCheck %s --check-prefix=PERMUTED < %t.permuted.log
+// RUN: python3 %S/row_group_scope.py %mim %S/row_norm.mim %t.cross cross > %t.cross.out 2> %t.cross.log
+// RUN: %FileCheck %s --check-prefix=PERMUTED < %t.cross.log
+
+// CLOSED: tensor.group row region
+// CLOSED-SAME: tile=1 scratch={{[0-9]+}} members=5
+// ESCAPE-NOT: tensor.group row region
+// ESCAPE: finish phase `tensor.group`
+// ESCAPE-NOT: tensor.group row region
+// PERMUTED-NOT: tensor.group row region
+// PERMUTED: finish phase `tensor.group`
+// PERMUTED-NOT: tensor.group row region

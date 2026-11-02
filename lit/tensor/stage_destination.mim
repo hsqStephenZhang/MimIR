@@ -28,4 +28,4 @@ extern lam _compile (): compile.Phase =
 // GRID-SAME: buffer.Buf (2, (5, 7), I64)
 // GRID: tileGrid
 // GRID: btensor.map_reduce_post
-// GRID: generate
+// GRID-NOT: generate

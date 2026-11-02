@@ -89,12 +89,11 @@ extern fun conv_chain (a: «1, 2, 7, 8; F32», w: «3, 2, 3, 3; F32», v: «2, 3
 // OUTCOME-DAG: rejected: producer recomputation exceeds budget
 // OUTCOME: finish phase `tensor.group_rules.outcomes`
 // OUTCOME: finish phase `tensor.lower_to_mem`
-// PROFILE-DAG: 3  `rule_app`: `rule.rewrites`
-// PROFILE-DAG: 2  `graph_rule_app`: `graph_rule.rewrites`
+// PROFILE-DAG: 5  `rule_app`: `rule.rewrites`
 // PROFILE-DAG: 5  `tensor.group`: `tensor.group.requests`
 // REPORTED-NOT: replacement removes a computation without a purity proof
 // REPORTED-NOT: not realized:
-// HALO-DAG: 6  `rule_app`: `rule.rewrites`
+// HALO-DAG: 8  `rule_app`: `rule.rewrites`
 // HALO-DAG: 6  `tensor.group`: `tensor.group.requests`
 // CLEAN-NOT: not realized:
 // CLEAN-NOT: tensor destination fallback

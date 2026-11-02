@@ -5,6 +5,7 @@ add_mim_plugin(tensor
         normalizers.cpp
         pattern.cpp
         reverse.cpp
+        row_group.cpp
         phase/combine_products.cpp
         phase/lower.cpp
         phase/constraints.cpp

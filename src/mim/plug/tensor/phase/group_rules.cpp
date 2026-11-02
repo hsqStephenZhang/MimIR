@@ -167,6 +167,10 @@ ProducerTile schedule_group(const Def* arg) {
     for (auto extent : *shape)
         if (!extent) return {nullptr, "outer grouping needs nonempty output extents"};
     auto& w = arg->world();
+    if (*axis == 0 && *size == 1 && *budget == 1) {
+        DefVec members;
+        if (auto row = row_group(producer, members); row.value) return row;
+    }
     if (Lit::isa(w.app(w.app(w.annex<group_root>(), producer->type()), producer)) != 0)
         return {outer_parts(producer, mr, *axis, std::min((*shape)[*axis], *size)), {}};
     DefVec tiles(ranks->ro,
@@ -332,7 +336,17 @@ const Def* normalize_group_schedule(const Def*, const Def*, const Def* arg) {
     return w.app(w.app(w.annex<group_region>(), result.value->type()), {result.value, budget});
 }
 
-pattern::WitnessResult group_support_witness(const pattern::GraphView&, Defs inputs, World& target) {
+pattern::WitnessResult group_support_witness(const pattern::GraphView& source, Defs inputs, World& target) {
+    auto fields = inputs[0];
+    if (Lit::isa(fields->proj(5, 1)) == 0 && Lit::isa(fields->proj(5, 2)) == 0 && Lit::isa(fields->proj(5, 3)) == 1
+        && Lit::isa(fields->proj(5, 4)) == 1) {
+        auto scratch = target.inherit();
+        Rewriter importer(*scratch);
+        DefVec members;
+        if (row_group(importer.rewrite(fields->proj(5, 0)), members).value
+            && !row_group_closed(source, fields->proj(5, 0)))
+            return {pattern::CheckResult::Unknown, nullptr, "row region has readers outside the requested closure"};
+    }
     auto scratch = target.inherit();
     Rewriter importer(*scratch);
     auto result = schedule_group(importer.rewrite(inputs[0]));

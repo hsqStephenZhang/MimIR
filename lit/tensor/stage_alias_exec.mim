@@ -25,3 +25,11 @@ extern fun permuted_stage (x: «5, 7; I64»): «5, 7; I64» =
             let p = unary increment p;
             let p = stage @(I64, 2, 0) (ext#tt, ext#ff) ((), (), (tt, ff), 0I64) 0 p;
             unary increment p));
+
+extern fun whole_stage (x: «5, 7; I64»): «5, 7; I64» =
+    let p = unary increment (buf x);
+    let p = stage @(I64, 2, 0) (5, 7) ((), (), (ff, tt), 0I64) 0 p;
+    return (unary increment p);
+
+extern fun borrowed_stage (x: «5, 7; I64»): «5, 7; I64» =
+    return (stage @(I64, 2, 0) (5, 7) ((), (), (ff, tt), 0I64) 0 (buf x));

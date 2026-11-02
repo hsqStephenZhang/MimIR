@@ -16,6 +16,19 @@
 // RUN: python3 %S/row_norm.py %mim %s %t.ref.dir reference
 // RUN: clang++ -O3 %S/row_norm_aux.cpp %t.ref.dir/probe.ll -o %t.ref -Wno-override-module
 // RUN: %t.ref
+// RUN: python3 %S/row_norm.py %mim %s %t.auto.dir automatic
+// RUN: clang++ -O3 -DAUTOMATIC -fsanitize=address %S/row_norm_aux.cpp %t.auto.dir/probe.ll -o %t.auto -Wno-override-module
+// RUN: %t.auto
+// RUN: python3 %S/realization_count.py %t.auto.dir/probe.ll %t.auto.count.ll --exp
+// RUN: clang++ -O3 -DAUTOMATIC -DREALIZATION_COUNT %S/row_norm_aux.cpp %t.auto.count.ll -o %t.auto.count -Wno-override-module
+// RUN: %t.auto.count
+// RUN: python3 %S/realization_count.py %t.auto.dir/probe.ll %t.auto.alloc.ll --allocations --unoptimized
+// RUN: clang++ -O3 -DAUTOMATIC -DALLOCATION_COUNT -fsanitize=address %S/row_norm_aux.cpp %t.auto.alloc.ll -o %t.auto.alloc -Wno-override-module
+// RUN: %t.auto.alloc
+// RUN: python3 %S/row_norm.py %mim %s %t.api.dir automatic api
+// RUN: python3 %S/realization_count.py %t.api.dir/probe.ll %t.api.count.ll --exp
+// RUN: clang++ -O3 -DAUTOMATIC -DREALIZATION_COUNT -fsanitize=address %S/row_norm_aux.cpp %t.api.count.ll -o %t.api.count -Wno-override-module
+// RUN: %t.api.count
 
 plugin tensor;
 plugin affine;

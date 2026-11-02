@@ -99,9 +99,10 @@ int main() {
                             return 1;
                         }
 #ifdef COUNTS
-                    if ((c->mode == "automatic" || c->mode == "explicit")
-                        && exponentials != (c->kind == "soft" ? x.size() : 0)) {
-                        std::fputs("unexpected exp multiplicity\n", stderr);
+                    if ((c->mode == "automatic" || c->mode == "explicit" || c->mode == "api")
+                        && (exponentials != (c->kind == "soft" ? x.size() : 0) || heaps + stacks > 2
+                            || heaps != releases + 1)) {
+                        std::fputs("unexpected exp multiplicity or scratch allocation count\n", stderr);
                         return 1;
                     }
                     std::printf("%s,%s,%d,%d,%.*s,%llu,%llu,%llu,%llu\n", distribution ? "task20" : "task15", kind,

@@ -1476,7 +1476,10 @@ const Def* LowerToMem::lower_stage(const App* app) {
     auto& old                         = old_world();
     auto [meta, shape, layout, scope] = app->callee()->as<App>()->uncurry_args<4>();
     auto [type, rank, split]          = meta->projs<3>();
-    if (scratch_ && Lit::isa(split) == 0) {
+    auto input                        = app->arg();
+    auto owned                        = input->isa<App>() && wants_fresh_mem(input->as<App>());
+    if (auto extract = input->isa<Extract>()) owned |= bool(Axm::isa<tensor::tiled_n>(extract->tuple()));
+    if ((scratch_ || owned) && Lit::isa(split) == 0) {
         auto r        = Lit::isa(rank);
         auto identity = r.has_value();
         if (r)

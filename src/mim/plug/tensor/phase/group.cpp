@@ -385,6 +385,43 @@ void Group::start() {
         }
     }
     for (auto op : source.operations()) {
+        if (!graph::map_reduce(op) || claimed.contains(op) || !row_group_closed(source, op)) continue;
+        DefVec members;
+        auto value = planner.import(op);
+        if (!row_group(value, members).value) continue;
+        u64 storage = 0;
+        auto add    = [&](const Def* type, const Def* shape, u64 rank) {
+            auto size = bytes(type), count = cells(shape, rank);
+            auto rows  = Lit::isa(shape->proj(rank, 0));
+            auto total = size && count && rows && *rows ? product(*size, *count / *rows) : std::nullopt;
+            if (!total || storage > cache || *total > cache - storage) return false;
+            storage += *total;
+            return true;
+        };
+        bool fits = true;
+        for (auto member : members) {
+            if (auto stage = Axm::isa<tensor::stage>(member)) {
+                auto [meta, shape, layout, scope] = stage->callee()->as<App>()->uncurry_args<4>();
+                fits &= add(meta->proj(3, 0), shape, Lit::as(meta->proj(3, 1)));
+            } else {
+                auto mr = btensor::MapRedPost::of(member->as<App>()->callee()->as<App>());
+                fits &= add(mr.Tp, mr.So, Lit::as(mr.Ro)) && add(mr.To, mr.So, Lit::as(mr.Ro));
+                for (auto [n, types, ranks, shapes] : {
+                         std::tuple{mr.nis, mr.Tis, mr.Ris, mr.Sis},
+                         std::tuple{mr.nps, mr.Tps, mr.Rps, mr.Sps}
+                })
+                    for (u64 i = 0; i != Lit::as(n); ++i)
+                        fits &= add(types->proj(Lit::as(n), i), shapes->proj(Lit::as(n), i),
+                                    Lit::as(ranks->proj(Lit::as(n), i)));
+            }
+        }
+        if (!fits) continue;
+        requests_.emplace(op, Request{0, 0, 1, scratch->lit_nat_1(), {}});
+        for (auto candidate : source.operations())
+            if (std::ranges::find(members, planner.import(candidate)) != members.end()) claimed.insert(candidate);
+        log().d("tensor.group row region {}: tile=1 scratch={} members={}", op, storage, members.size());
+    }
+    for (auto op : source.operations()) {
         if (!graph::map_reduce(op) || claimed.contains(op)) continue;
         DefVec consumers;
         for (auto use : source.data_uses(op))

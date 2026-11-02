@@ -213,7 +213,7 @@ const Def* Fuse::fuse_map_reduce(const App* app) {
 
     for (u64 k = 0; k < nis_nat; ++k) {
         auto inner = graph::map_reduce(is->proj(nis_nat, k));
-        if (!inner) continue;
+        if (!inner || !sole_consumer(inner)) continue;
 
         auto im = btensor::MapRedPost::of(inner->callee()->as<App>());
         if (tensor_init(im)) continue;
