@@ -689,3 +689,10 @@ lanes4 得 BM1/BK4，registers64/lanes8 得 BM4/BK8，
 CTest 250/250、完整 lit 693 通过、9 unsupported，
 见 `step3-rebuild-all.log`、`step3-ctest-final.log`、`step3-full-lit-final.log`。
 这也重新验证了步骤 2 的实现与全部当前 unit consumer 的一致性。
+
+步骤 3 提交为 `7cc84d130b37ab9929e6c12cc3ffd631845c3269`。
+后续检查把 masked 空前缀的 correction 单位元明确写成 `1.0:F`：
+Mim 的 `1:F` 是位模式，不是浮点数值 1。
+该分支当时只乘零 carry，因此既有有限结果用例仍正确，但表达式应与递推定义一致。
+修正后的全树重建、CTest 250/250、完整 lit 694 通过、9 unsupported，
+见 `early-raise-ctest.log`、`early-raise-full-lit.log`。
