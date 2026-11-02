@@ -79,10 +79,10 @@ int main() {
         for (size_t i = 0; i != x.size(); ++i)
             x[i] = float(int(i % 23) - 11) / 8;
         double medians[2];
+        auto execute = [&](int kind) { return kind == 0 ? c.grouped(x.data()) : unfused(c, x.data()); };
         for (int kind = 0; kind != 2; ++kind) {
-            auto execute     = [&] { return kind == 0 ? c.grouped(x.data()) : unfused(c, x.data()); };
             heap_allocations = stack_allocations = frees = 0;
-            auto result                                  = execute();
+            auto result                                  = execute(kind);
             check(c, x, result);
 #ifdef ALLOCATION_COUNT
             if (kind == 0) {
@@ -90,20 +90,25 @@ int main() {
                              static_cast<unsigned long long>(heap_allocations),
                              static_cast<unsigned long long>(stack_allocations),
                              static_cast<unsigned long long>(frees));
-                if (heap_allocations + stack_allocations > 4 || heap_allocations != frees + 1) std::abort();
+                auto limit = c.rows == 1 ? 2 : 4;
+                if (heap_allocations + stack_allocations > limit || heap_allocations != frees + 1) std::abort();
             }
 #endif
             std::free(result);
-            std::vector<double> times;
-            for (int run = 0; run != 7; ++run) {
-                auto start = std::chrono::steady_clock::now();
-                result     = execute();
+        }
+        std::vector<double> times[2];
+        for (int run = 0; run != 7; ++run)
+            for (int order = 0; order != 2; ++order) {
+                auto kind   = (run + order) % 2;
+                auto start  = std::chrono::steady_clock::now();
+                auto result = execute(kind);
                 std::free(result);
-                times.push_back(
+                times[kind].push_back(
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
             }
-            std::sort(times.begin(), times.end());
-            medians[kind] = times[3];
+        for (int kind = 0; kind != 2; ++kind) {
+            std::sort(times[kind].begin(), times[kind].end());
+            medians[kind] = times[kind][3];
         }
         std::printf("%d,%d,%d,%s,%.6f,%.6f,%.3f\n", c.m, c.n, c.rows, c.layer ? "layernorm" : "softmax", medians[0],
                     medians[1], medians[1] / medians[0]);

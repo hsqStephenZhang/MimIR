@@ -8,13 +8,16 @@ mim = str(pathlib.Path(mim).resolve())
 text = pathlib.Path(source).read_text()
 shapes = [(5, 7), (1, 11), (7, 1), (0, 7), (2, 7), (64, 7), (65, 7)]
 benchmark = "benchmark" in flags
+row_override = next((int(flag.split("=", 1)[1]) for flag in flags if flag.startswith("rows=")), None)
+if row_override is not None and row_override <= 0:
+    raise ValueError("row tile must be positive")
 if benchmark:
     shapes = [(1024, 1024), (4096, 1024), (1024, 4096)]
 declarations = []
 cases = []
 for m, n in shapes:
     for kind, marker in (("soft", "mark_soft"), ("layer", "mark_layer")):
-        rows = max(1, min(16, 32768 // (n * 4))) if benchmark else 2
+        rows = row_override if row_override is not None else 1 if benchmark else 2
         text += (
             f"extern fun {kind}_{m}_{n} (x: «{m}, {n}; F32»): «{m}, {n}; F32» =\n"
             f"    return ({marker} @({m}, {n}) ({rows}, buf x));\n"

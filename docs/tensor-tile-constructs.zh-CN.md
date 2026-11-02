@@ -561,6 +561,45 @@ layernorm 没有改动，仅作为同轮 baseline；不同轮时间波动不当�
 `build/task15-exp-probe/optimized.ll` 和 `probe.s`；
 独立 intrinsic probe 在 `build/task15-vector-exp.ll` / `.s`。
 
+### 9.8 Independent row regions（Task 15A.4）
+
+这两条 recipe 的不同 rows 之间没有输入复用，也没有跨 row reduction。
+benchmark 默认因此选 `rows=1`，不再仅因 L1 容量允许就把 8/2 行合成一个 region。
+这是已有 grouping rule 的参数选择，不新增 schedule 字段或改变 reduction 顺序。
+一行的 mean/max/sum/variance 可以直接作为 scalar SSA 值，
+无需保留两个 row-vector scratch；exp/centered 仍是完整 row buffer，分别只 fill 一次。
+每次调用只需 **1 个 output + 1 个 scratch**：
+1024 列为 output malloc + scratch alloca，4096 列为两次 malloc、return 前一次 scratch free。
+数量与 rows 总数无关，原始 LLVM 的动态 malloc/alloca 计数及 ASan 检查这个阈值。
+
+`row_local_exec` 对 rows=1 重跑 scalar reference、原始 exp/centered 计数、
+allocation/lifetime 和 reference-tiles；原 rows=2 的 tail regression 保留。
+single-tile 的 1×11 可由 tiled normalizer 直接展开而没有 grid，
+其 allocation 上界单独为 6；有循环的短 row 用例仍要求不超过 5，
+不能为了通过计数把 32/65 个 row iteration 排除在测试外。
+
+复现：`python3 scripts/bench-row-norm.py`，检查无 build 后运行
+`build/task15-row-bench/bench`；`--rows N` 可覆盖 rule 参数，须为正整数。
+F32、单线程、Homebrew clang++ `-O3 -mcpu=native`、包含 allocation/free，
+每种方法仍为 1 次 warmup + 7 次计时取中位数。
+warmup 都检查全部输出后，计时按轮交替两种方法的先后次序，
+避免总先测 grouped、总后测 unfused 的顺序偏置。
+
+确认轮 `build/task15-row-bench/confirm.csv`：
+
+| Rows×Cols | softmax grouped / unfused (ms) | speedup | layernorm grouped / unfused (ms) | speedup |
+| --- | --- | --- | --- | --- |
+| 1024×1024 | 1.798 / 1.826 | 1.016× | 0.237 / 0.262 | 1.104× |
+| 4096×1024 | 7.249 / 7.398 | 1.021× | 0.965 / 1.393 | 1.444× |
+| 1024×4096 | 7.392 / 7.579 | 1.025× | 0.899 / 1.416 | 1.575× |
+
+前一轮 `alternating.csv` 的 softmax speedup 为 1.046/1.024/1.020×，
+layernorm 为 1.103/1.382/1.550×；两轮前后均未发现 compiler/build 进程。
+六个用例在这两轮均未慢于 unfused，但 softmax 只是小幅改善，仍受 scalar expf 主导。
+保留原来顺序计时的 `results.csv`，其中 1024×1024 softmax 为 2.110/1.901ms，
+不以交替顺序的结果抹掉原始差异，也不声称有大幅 SIMD exp 加速。
+layernorm 消除完整矩阵 intermediate 的往返并复用 row storage，收益明显得多。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

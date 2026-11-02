@@ -72,7 +72,7 @@ int main() {
                         static_cast<unsigned long long>(allocations),
                         static_cast<unsigned long long>(stack_allocations), live.size());
             std::fflush(stdout);
-            assert(allocations + stack_allocations <= 5);
+            assert(allocations + stack_allocations <= uint64_t(c.m == 1 ? 6 : 5));
             assert(live.size() == uint64_t(c.m != 0));
 #endif
 #ifdef REALIZATION_COUNT
@@ -87,7 +87,7 @@ int main() {
                         static_cast<unsigned long long>(allocations),
                         static_cast<unsigned long long>(stack_allocations), live.size());
             std::fflush(stdout);
-            assert(allocations + stack_allocations <= 5);
+            assert(allocations + stack_allocations <= uint64_t(c.m == 1 ? 6 : 5));
             assert(live.size() == 2 * uint64_t(c.m != 0));
 #endif
 #ifdef CENTER_COUNT
