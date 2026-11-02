@@ -165,3 +165,90 @@ stage 的读取组合是通用的，不依赖 Linear、权重名称或模型尺�
 `blis_transpose.mim` 覆盖 NN/NT/TN/TT、非整块的 M/N/K、bias/ReLU epilogue，
 并在 grouping 开启和关闭时与标量结果比较；开启时要求四个 kind-1 请求。
 已有 `hlo_train.mim` 同时覆盖共享 forward/backward contraction 的转置路径。
+
+### Singleton 折叠后的 grouping 坐标
+
+`2988413893` 的 transformer 错误发生在 `tensor.group` 的 `Cost::reads/visit`，
+不是报错源码位置所指的 `dot_schedule`。
+`«2, 1, 3; T»` 与 `«2, 3; T»` 是同一个 tensor 类型，
+但 producer 的输出坐标仍有三个轴，reader 的逻辑输入坐标只有两个轴。
+旧成本分析将 reader 的二维 box 原样传给 producer 的三维 `affine.preimage`，
+在 seq512 transformer 中对应四维 box 与三维输出的冲突。
+
+成本分析现在先检查 reader 的逻辑输入 shape 与 producer 的 `So` 是否相同，
+不相同则拒绝该 grouping 候选并记录原因，不把类型折叠当作坐标恒等。
+这不禁止两个算子各自调度，也不改变 BLIS contraction 的合法性。
+跨不同逻辑 shape 的融合需要显式坐标桥接及 box 精确性证明，尚未在该成本路径实现。
+`group_folded_rank.mim` 用两个 map_reduce 和一个 singleton 轴复现，
+grouping 开关两种情况均与整数参考比较；原 seq512 transformer 已可生成 LLVM。
+
+### Batched BLIS
+
+BLIS 将最后两个 parallel 轴视为 M/N，其余 parallel 轴作为 batch 前缀，
+将 reduction 轴按原顺序展平成 K。
+operand view 保留原始物理 shape，通过 batch 坐标和 M/K 或 K/N 坐标组合原读映射；
+epilogue 也收到完整 batch 前缀，因此每 batch 的 bias 不会被广播到其他 batch。
+候选仍要求 literal shape、恒等输出坐标、纯 scalar combiner/epilogue 和默认 schedule，
+且 A 不得读取 N、B 不得读取 M。
+空 batch 或无法表示的 batch/K/panel 大小会被拒绝。
+
+batch 使用 `tiled` 的运行时外层 grid，内部仍调用原有 `group_blis_impl`，
+不改变 jo → K fold → B panel → io 的顺序或目标 block selector。
+没有 batch 前缀时直接走二维 BLIS，恒等 operand 不另建 copy view；
+这也保留 `group_fold.mim` 对 aligned kernel 无 `llvm.memcpy` 的约束。
+`blis_batch.mim` 覆盖 NN/NT/TN、size-1 batch、多维 batch 前缀、
+每 batch bias 及非整块的 M/N/K，grouping 开关均执行标量比较。
+
+### Batch 展开造成的 SEO 深度
+
+原 batch 草稿使用 `tiled_n`；`LowerToMem::lower_tiled_n` 枚举 ownership
+proof 的所有 grid point，为每个 batch 专门化一份 BLIS nest 和后继 continuation。
+SEO 在改写 World 之前的 analysis fixed point 中，沿这些串联 continuation
+逐段发现 loop backedge：新 iv 从常量变为 SCCP proxy，再到不可传播的自身。
+日志中的 iv gid 持续变化，不是同一组 Def 在两个状态之间振荡；
+已到 top 的 iv 没有再次下降，强制 dense analysis 也会超过 1024 轮。
+这是展开图上的慢进展，不是 fresh-memory continuation 共享或 escape 判定错误。
+
+不需要 attention、转置、多个 contraction 或 K fold 就能复现：
+`blis_batch_seo.mim` 只有一个 batch=256、M=K=N=2 的 `tensor.bmm`，
+原草稿在默认 1024 轮限制下失败。
+修复后的 batch grid 是运行时 `tiled` 循环，只有一份内部 BLIS nest；
+回归额外把限制降到 128，并在 grouping 开关两种情况下执行标量比较。
+没有增大迭代限制，也没有修改 `mem.seo`、AddMem 或 `resolve_fresh`。
+这与 `8aeb16ae64` 的 capture 修复不同：这里避免的是 batch wrapper
+要求的静态 nest 展开，不是 slot specialization 意外克隆共享 producer。
+通用、不规则多结果 `tiled_n` 的 ownership 枚举没有改变。
+
+同一单 contraction、batch=32 的编译 profile 中，SEO analyzer 从 455 次、
+126.456 ms 降为 19 次、3.746 ms；batch=128 的修复后版本同样是 19 次。
+seq512 attention 的最终 SEO 是 958 轮，两个 SEO 阶段合计 1.057 s；
+整条 pipeline 为 19.318 s，其中 grouping 为 8.495 s。
+这些是调试编译器的单次编译 profile，不是 kernel 计时。
+仍有其他逐点展开的 row grouping，所以不能据此宣称所有 `tiled_n`
+程序的 SEO 深度都已与 grid 大小无关。
+
+`group_fold.mim` 的 128-byte `llvm.memcpy` 是另一个 wrapper 回归：
+草稿也把没有 batch 的二维 contraction 包进通用 batch/result-copy 路径，
+恒等 operand view 又引入不必要的 materialization。
+其结果把本可直接写入 destination 的寄存器结果经 slot 再复制到输出。
+二维 direct path 和恒等 operand 消除保留原 SSA 累加路径；
+reduction 展平也不再对最外层 K 坐标施加多余的 remainder。
+现有的 no-memcpy 检查保持不变并通过。
+
+正确性检查使用提交 `32cea4febb`，batch=1、seq=128、embed=768、
+heads=12、hidden=3072、threads=1，命令为 `model_bench.py --check`，
+没有采集 latency 或执行计时循环。
+
+| 模型 | kind-1 contraction | group=1 最大绝对误差 | group=0 最大绝对误差 |
+| --- | --- | ---: | ---: |
+| attention | QKV、QKᵀ、PV、output projection，共 4 个 | 1.714e-7 | 1.341e-7 |
+| transformer | attention 的 4 个及 MLP 的 2 个，共 6 个 | 2.861e-6 | 2.384e-6 |
+| MLP | 两个 Linear，共 2 个 | 1.967e-6 | 8.345e-7 |
+
+六个 MimIR 配置均通过 PyTorch 参考检查，kind-1 使用
+MR=4、NR=16、KC=128、NC=256；关闭 grouping 时不生成这些请求。
+transformer 还有两个未实现的 kind-2 reverse 请求，诊断原因为
+`reverse multi-root rule did not match the live consumers`；
+保留原计算路径，未把这两个请求计作 BLIS 成功。
+最终完整验证为 CTest 243/243、lit 673 passed / 9 unsupported；
+原 seq512 attention 和 transformer 都可在 grouping 开启时生成 LLVM。

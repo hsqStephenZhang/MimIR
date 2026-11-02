@@ -144,6 +144,9 @@ struct Cost {
             if (p && !boundaries.contains(p)
                 && (!root(p) || !blis_group(p, w.lit_nat_0(), w.pack(3, w.lit_nat_0())).value)) {
                 if (cap != extent && !storage(types->proj(*num, i), cap, *r)) return false;
+                auto produced = btensor::MapRedPost::of(p->callee()->as<App>());
+                if (!Check::test_alpha(shapes->proj(*num, i), produced.So))
+                    return fail("producer and reader use different logical output shapes");
                 if (!visit(p, start, extent, depth + 1)) return false;
             } else if (!storage(types->proj(*num, i), cap, *r)) {
                 return false;

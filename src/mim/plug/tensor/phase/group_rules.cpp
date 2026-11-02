@@ -40,19 +40,24 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     if (!app) return {nullptr, "BLIS needs a map_reduce_post"};
     auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
     auto ranks = mr.ranks();
-    if (!ranks || ranks->ro != 2 || !ranks->rr || ranks->nis != 2)
-        return {nullptr, "BLIS needs two parallel axes and two inputs"};
+    if (!ranks || ranks->ro < 2 || !ranks->rr || ranks->nis != 2)
+        return {nullptr, "BLIS needs two matrix parallel axes and two inputs"};
     auto& w = producer->world();
     auto nr = lit_projs(mr.Ris, 2);
-    if (!nr || (*nr)[0] != 2 || (*nr)[1] != 2 || !Check::test_alpha(mr.To, mr.Tp)
-        || !Check::test_alpha(mr.init->type(), mr.To))
-        return {nullptr, "BLIS needs rank-two inputs and a scalar accumulator of the result type"};
+    if (!nr || !Check::test_alpha(mr.To, mr.Tp) || !Check::test_alpha(mr.init->type(), mr.To))
+        return {nullptr, "BLIS needs literal input ranks and a scalar accumulator of the result type"};
     auto sizes = lit_projs(mr.Sr, ranks->nloops());
-    auto shape = lit_projs(mr.So, 2);
-    if (!sizes || !shape || (*shape)[0] != (*sizes)[0] || (*shape)[1] != (*sizes)[1])
+    auto shape = lit_projs(mr.So, ranks->ro);
+    if (!sizes || !shape || !std::equal(shape->begin(), shape->end(), sizes->begin()))
         return {nullptr, "BLIS needs literal, untransformed parallel extents"};
-    auto m = (*shape)[0], n = (*shape)[1], k = u64(1);
-    for (u64 d = 2; d != ranks->nloops(); ++d) {
+    auto batch = ranks->ro - 2;
+    auto m = (*shape)[batch], n = (*shape)[batch + 1], k = u64(1), batches = u64(1);
+    for (u64 d = 0; d != batch; ++d) {
+        if (!(*shape)[d] || batches > std::numeric_limits<u64>::max() / (*shape)[d])
+            return {nullptr, "BLIS needs a nonempty batch grid with a representable size"};
+        batches *= (*shape)[d];
+    }
+    for (u64 d = ranks->ro; d != ranks->nloops(); ++d) {
         auto extent = (*sizes)[d];
         if (!extent || k > std::numeric_limits<u64>::max() / extent)
             return {nullptr, "BLIS needs a nonempty literal reduction with a representable size"};
@@ -69,21 +74,17 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
     auto fn     = w.mut_lam(domain, domain);
     auto vars   = fn->var()->projs(ranks->nloops());
-    auto red    = vars[2];
-    for (u64 d = 3; d != ranks->nloops(); ++d)
-        red = w.call(affine::op::add,
-                     Defs{w.call(affine::semiop::mul, Defs{red, mr.Sr->proj(ranks->nloops(), d)}), vars[d]});
     auto output = w.app(mr.map_out, fn->var());
     auto maps   = mr.maps->projs<2>();
     auto shapes = mr.Sis->projs<2>();
-    auto a_read = w.app(maps[0], fn->var()), b_read = w.app(maps[1], fn->var());
-    auto trans_a = a_read == w.tuple({red, vars[0]}), trans_b = b_read == w.tuple({vars[1], red});
-    if (output != w.tuple({vars[0], vars[1]}) || a_read != (trans_a ? w.tuple({red, vars[0]}) : w.tuple({vars[0], red}))
-        || b_read != (trans_b ? w.tuple({vars[1], red}) : w.tuple({red, vars[1]})))
-        return {nullptr, "BLIS access maps are not a matrix contraction"};
-    if (lit_projs(shapes[0], 2) != std::optional(trans_a ? fe::Vector<u64>{k, m} : fe::Vector<u64>{m, k})
-        || lit_projs(shapes[1], 2) != std::optional(trans_b ? fe::Vector<u64>{n, k} : fe::Vector<u64>{k, n}))
-        return {nullptr, "BLIS operand shapes do not match their contraction maps"};
+    if (output != w.tuple(Defs(vars.data(), ranks->ro))) return {nullptr, "BLIS needs identity output coordinates"};
+    for (size_t i = 0; i != 2; ++i) {
+        auto independent           = vars;
+        independent[batch + 1 - i] = w.call<affine::lit>(w.lit_nat_0());
+        if (!Check::test_alpha(w.app(maps[i], fn->var()), w.app(maps[i], w.tuple(independent))))
+            return {nullptr, "BLIS operand reads the other matrix parallel axis"};
+        if (!lit_projs(shapes[i], (*nr)[i])) return {nullptr, "BLIS needs literal physical operand shapes"};
+    }
     auto blocks = lit_projs(params, 3);
     auto rows   = Lit::isa(tile);
     if (!blocks || !rows) return {nullptr, "BLIS block parameters must be literal"};
@@ -100,23 +101,47 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     if (n > std::numeric_limits<u64>::max() - (nr_tile - 1)
         || (n + nr_tile - 1) / nr_tile > std::numeric_limits<u64>::max() / nr_tile / k)
         return {nullptr, "BLIS packed panel size is not representable"};
-    auto types   = mr.Tis->projs<2>();
-    auto builder = w.app(w.annex<group_blis_impl>(), {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps});
+    auto types = mr.Tis->projs<2>();
+    DefVec reads(2);
+    for (size_t i = 0; i != 2; ++i) {
+        auto read   = w.mut_lam(w.arr(ranks->ro, w.annex<affine::Index>()), w.arr((*nr)[i], w.annex<affine::Index>()));
+        auto coords = read->var()->projs(ranks->ro);
+        auto red    = coords[batch + 1 - i];
+        coords[batch + 1 - i] = w.call<affine::lit>(w.lit_nat_0());
+        coords.resize(ranks->nloops());
+        for (u64 d = ranks->nloops(); d-- != ranks->ro;) {
+            auto extent = mr.Sr->proj(ranks->nloops(), d);
+            coords[d]   = d == ranks->ro ? red : w.call(affine::semiop::rem, Defs{red, extent});
+            if (d != ranks->ro) red = w.call(affine::semiop::floordiv, Defs{red, extent});
+        }
+        read->set(true, w.app(maps[i], w.tuple(coords)));
+        reads[i] = read;
+    }
+    auto a_read   = w.app(maps[0], fn->var());
+    auto direct_a = batch == 0 && ranks->rr == 1 && (*nr)[0] == 2 && a_read == w.tuple({vars[0], vars[2]});
+    if (batch == 0) {
+        auto builder = w.app(w.annex<group_blis_impl>(), {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps});
+        builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
+                                       w.lit_nat(nc), w.lit_nat(kc), w.lit_bool(!direct_a)});
+        builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps});
+        auto [inputs, extras] = app->args<2>();
+        auto data             = inputs->projs<2>();
+        for (size_t i = 0; i != 2; ++i) {
+            if ((*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var()) continue;
+            auto view = w.app(w.annex<blis_operand>(), {types[i], w.lit_nat((*nr)[i])});
+            view      = w.app(view, shapes[i]);
+            view      = w.app(view, {w.tuple({w.lit_nat(i ? k : m), w.lit_nat(i ? n : k)}), reads[i]});
+            data[i]   = w.app(view, data[i]);
+        }
+        return {w.app(builder, {data[0], data[1], extras}), {}};
+    }
+    auto builder = w.app(w.annex<group_blis_batch_impl>(),
+                         {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps, w.lit_nat(batch), mr.Ris});
+    builder      = w.app(builder, {mr.Sis, w.tuple(DefVec(batch, [&](size_t d) { return w.lit_nat((*shape)[d]); }))});
     builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
-                                   w.lit_nat(nc), w.lit_nat(kc), w.lit_bool(trans_a)});
-    builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps});
-    auto inputs  = app->arg()->projs<2>();
-    auto data    = inputs[0]->projs<2>();
-    auto operand = [&](size_t i, bool transpose, u64 rows, u64 cols) {
-        if (!transpose) return data[i];
-        auto view   = w.app(w.annex<blis_operand>(), {types[i], w.lit_nat(2)});
-        view        = w.app(view, shapes[i]);
-        auto read   = w.mut_lam(w.arr(2, w.annex<affine::Index>()), w.arr(2, w.annex<affine::Index>()));
-        auto [x, y] = read->vars<2>();
-        read->set(true, w.tuple({y, x}));
-        return w.app(w.app(view, {w.tuple({w.lit_nat(rows), w.lit_nat(cols)}), read}), data[i]);
-    };
-    return {w.app(builder, {operand(0, trans_a, m, k), operand(1, trans_b, k, n), inputs[1]}), {}};
+                                   w.lit_nat(nc), w.lit_nat(kc), w.lit_bool(!direct_a)});
+    builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps, w.tuple(reads)});
+    return {w.app(builder, app->arg()), {}};
 }
 
 namespace {

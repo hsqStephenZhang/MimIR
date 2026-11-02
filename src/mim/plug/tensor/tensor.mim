@@ -1924,3 +1924,31 @@ priv anx lam group_blis_impl {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps;
             let acc = tile_fold (blocks, kc) (splat ((rows, n), init))
                 (λ (acc: «rows, n; T», ko: Nat): «rows, n; T» = block (kc, ko, acc, ff));
             block (K - blocks * kc, blocks * kc, acc, tt));
+
+priv anx lam group_blis_batch_impl
+    {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «i: nps; «Rps#i; Nat»»,
+     nb: Nat, Ris: «2; Nat»}
+    (Sis: «i: 2; «Ris#i; Nat»», batches: «nb; Nat»)
+    (M K N: Nat, mr nr nc kc: Nat, pack_a: Bool)
+    (combine: Fn [T, [Ta, Tb]] → T, init: T, post: Fn [T, «i: nps; Tps#i»] → T,
+     post_maps: «i: nps; «nb + 2; affine.Index» → «Rps#i; affine.Index»»,
+     reads: «i: 2; «nb + 2; affine.Index» → «Ris#i; affine.Index»»)
+    (inputs: [«Sis#ff; Ta», «Sis#tt; Tb»], extras: «i: nps; «Sps#i; Tps#i»»)
+    : «vec.cat (batches, (M, N)); T» =
+    let shape = vec.cat (batches, (M, N));
+    let extent = vec.cat (‹nb; 1›, (M, N));
+    tiled @(T, nb + 2) (shape, extent)
+        (λ (off ext: «nb + 2; Nat»): «ext; T» =
+            let prefix = ‹d: nb; affine.lit (off#(core.conv.u (nb + 2) d))›;
+            let a = blis_operand @(Ta, Ris#ff) (Sis#ff)
+                ((M, K), λ ij: «2; affine.Index»: «Ris#ff; affine.Index» = reads#ff (vec.cat (prefix, ij)))
+                (inputs#ff);
+            let b = blis_operand @(Tb, Ris#tt) (Sis#tt)
+                ((K, N), λ ij: «2; affine.Index»: «Ris#tt; affine.Index» = reads#tt (vec.cat (prefix, ij)))
+                (inputs#tt);
+            reshape_impl (M, N) ext
+                (group_blis_impl @(T, Ta, Tb, nps, Tps, Rps, Sps) (M, K, N, mr, nr, nc, kc, pack_a)
+                    (combine, init, post,
+                     ‹i: nps; λ ij: «2; affine.Index»: «Rps#i; affine.Index» =
+                         post_maps#i (vec.cat (prefix, ij))›)
+                    (a, b, extras)));
