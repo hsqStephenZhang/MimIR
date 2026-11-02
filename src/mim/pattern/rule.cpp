@@ -179,6 +179,15 @@ Pattern RulePattern::lower(const Def* def) {
     auto depth = fe::Restore(lowering_depth_, lowering_depth_ + 1);
     if (!def) throw std::invalid_argument("incomplete node in Rule pattern");
     if (auto i = lowered_.find(def); i != lowered_.end()) return i->second;
+    if (def->is_closed() && (def->isa<Lam>() || (def->is_mutable() && def->type() && def->type()->isa<Type>()))) {
+        auto value  = program_.capture();
+        auto alpha  = program_.where(value, {value}, [def](std::span<const Def* const> values) {
+            return Check::test_alpha(def, values[0]) ? CheckResult::True : CheckResult::False;
+        });
+        auto result = program_.either(program_.exact(def), alpha);
+        lowered_.emplace(def, result);
+        return result;
+    }
     if (auto app = def->isa<App>())
         if (auto var = App::uncurry_callee(app)->isa<Var>(); var && var->binder()->isa<Lam>())
             rule_->blame("Rule LHS bound function application requires higher-order matching").bail();
@@ -196,16 +205,6 @@ Pattern RulePattern::lower(const Def* def) {
     }
     if (auto var = def->isa<Var>(); var && var->binder()->isa<Lam>())
         if (auto i = captures_.find(var); i != captures_.end()) return i->second;
-
-    if (def->is_mutable() && def->is_closed() && def->type() && def->type()->isa<Type>()) {
-        auto value  = program_.capture();
-        auto alpha  = program_.where(value, {value}, [def](std::span<const Def* const> values) {
-            return Check::test_alpha(def, values[0]) ? CheckResult::True : CheckResult::False;
-        });
-        auto result = program_.either(program_.exact(def), alpha);
-        lowered_.emplace(def, result);
-        return result;
-    }
 
     if (def->type() && def->type()->isa<Type>() && !def->is_closed() && !is_meta(def)) {
         DefVec pending{def}, metas;
