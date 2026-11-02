@@ -792,3 +792,31 @@ rewrite:
 当前已交付 P0 至 P4 的基础与首批 tensor 接入，以及 P5 的多根 Mim Rule 前端、原始 operand range、索引 join 和穷举性能对照。现有 tensor fusion 的结构筛选与单次消费检查已接入框架，真实三路整数矩阵乘也已有 LLVM 执行和数值参考验证；独立 pattern parser、通用 tensor 模式库、字节码和增量索引仍属于后续工作。
 
 最先实现并评审的是 **GraphView 的 scope 与边界语义、失败回滚、依赖类型延迟校验和 World 提交协议**。这四项确定后，Mim 表层语法和匹配执行优化可以分别推进。
+
+## P5 matcher 的宽度与深度预算
+
+`3f7ebc465b` 的 `MatchEngine` 用 C++ continuation 保存后续 siblings 和条件。
+`operands` / `range_operands` 把下一个 sibling 的 `depth` 再加一；
+`All` / `Binder` 虽然给各 child 相同的逻辑深度，仍在前一个 `visit`
+尚未返回时调用下一个 child，所以 `active_depth` 也累计所有已匹配节点。
+类型 obligations 的完成过程同样保留此前的 C++ 帧。
+因此默认 `max_depth=256` 实际限制部分模式的大小，而不是嵌套深度。
+
+测量在 Debug 构建的每次 budget probe 记录逻辑 depth、active_depth 和局部变量地址，
+栈跨度是本次匹配的第一个 probe 到后续 probe 的最大地址差，
+不是整个线程栈的绝对大小；临时探针不保留在生产代码。
+下列 flat tuple 的每个 operand 都是 `unary(literal)`，匹配前不做规则降级：
+
+| operand 数 | 原实现 steps | 峰值 depth | 峰值 active_depth | probe 栈跨度 | 结果 |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 32 | 97 | 34 | 96 | 50,544 bytes | Matched |
+| 256 | 256 | 87 | 256 | 135,120 bytes | Budget_Exceeded |
+| 2048 | 256 | 87 | 256 | 135,120 bytes | Budget_Exceeded |
+
+用户的 `pdepth.mim` 还经过 RulePattern 降级、capture 和 type 匹配，
+32 个 `x+i` 在本次构建中走到 276 steps、depth=34、active_depth=256，
+probe 栈跨度 105,600 bytes 后返回 Budget_Exceeded，规则未改写。
+该停止点取决于降级后模式，不应把某次 attention 的约 660 steps
+当作统一阈值；触发停止的是深度限制，不是默认 100,000 steps。
+测量日志与后续验证产物统一存放于
+`/Users/zc/courses/compiler/products/tile-fuse/results/task29b/`。
