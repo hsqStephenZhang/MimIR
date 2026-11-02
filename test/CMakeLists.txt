@@ -54,6 +54,7 @@ add_mim_test(mim-test
         lexer.cpp
         nom.cpp
         pattern.cpp
+        pattern_depth.cpp
         restricted_dep_types.cpp
         test.cpp
         variant.cpp

@@ -12,6 +12,7 @@ enum class MatchStatus { Matched, No_Match, Unknown, Budget_Exceeded };
 
 struct MatchOptions {
     size_t max_steps = 100'000;
+    /// Bounds pattern/probe nesting and native engine recursion, not the number of siblings.
     size_t max_depth = 256;
 };
 

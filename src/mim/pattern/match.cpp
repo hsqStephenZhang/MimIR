@@ -36,7 +36,6 @@ MatchStatus alternatives(MatchStatus a, MatchStatus b) {
 
 } // namespace
 
-/// Continuations keep choices alive until downstream operands and constraints succeed.
 class MatchEngine {
 public:
     MatchEngine(const PatternProgram& program, Budget& budget)
@@ -72,135 +71,211 @@ private:
     struct Obligation {
         Pattern pattern;
         const Def* candidate;
+        size_t depth = 0;
     };
 
     bool is_exhausted(size_t depth) {
         if (budget_.steps >= budget_.options.max_steps || depth >= budget_.options.max_depth
-            || budget_.active_depth >= budget_.options.max_depth)
+            || budget_.active_depth > budget_.options.max_depth)
             return true;
         ++budget_.steps;
         return false;
     }
 
     MatchStatus visit(Pattern p, const Def* def, size_t depth, const Continue& next) {
-        if (is_exhausted(depth)) return MatchStatus::Budget_Exceeded;
-        auto active = fe::Restore(budget_.active_depth, budget_.active_depth + 1);
-        if (!def) return MatchStatus::No_Match;
-        auto mark   = undo_.size();
-        auto types  = types_.size();
-        auto checks = checks_.size();
-        auto status = visit_entry(p, def, depth, next);
-        if (status != MatchStatus::Matched) {
-            while (undo_.size() != mark) {
-                captures_[undo_.back()] = nullptr;
-                undo_.pop_back();
-            }
-            types_.erase(types_.begin() + types, types_.end());
-            checks_.erase(checks_.begin() + checks, checks_.end());
-        }
-        return status;
+        return execute({p, def, depth}, next);
     }
 
-    MatchStatus visit_entry(Pattern p, const Def* def, size_t depth, const Continue& next) {
-        const auto& entry = program_.entries_[p.index_];
-        switch (entry.kind) {
-            case Kind::Any: return next();
-            case Kind::Exact: return def == entry.def ? next() : MatchStatus::No_Match;
-            case Kind::Literal:
-                return def->node() == Node::Lit && def->type() == entry.def && def->flags() == *entry.flags
-                         ? next()
-                         : MatchStatus::No_Match;
-            case Kind::Node:
-                if (def->node() != entry.node) return MatchStatus::No_Match;
-                if (entry.flags && def->flags() != *entry.flags) return MatchStatus::No_Match;
-                if (def->is_mutable()) return MatchStatus::Unknown;
-                if (def->num_ops() != entry.operands.size()) return MatchStatus::No_Match;
-                return operands(entry.operands, def, 0, depth + 1, next);
-            case Kind::Binder: {
-                auto lam = def->isa<Lam>();
-                if (!lam || !lam->is_set()) return MatchStatus::No_Match;
-                const Def* variable = lam->has_var();
-                if (!variable) variable = lam;
-                return visit(entry.operands[0], variable, depth + 1, [&] {
-                    return visit(entry.operands[1], lam->filter(), depth + 1,
-                                 [&] { return visit(entry.operands[2], lam->body(), depth + 1, next); });
-                });
-            }
-            case Kind::Range: {
-                if (def->node() != entry.node || (entry.flags && def->flags() != *entry.flags))
-                    return MatchStatus::No_Match;
-                if (def->is_mutable()) return MatchStatus::Unknown;
-                auto prefix = entry.operands.size() - 1;
-                if (def->num_ops() < prefix || def->num_ops() - prefix < entry.min
-                    || def->num_ops() - prefix > entry.max)
-                    return MatchStatus::No_Match;
-                return range_operands(entry, def, 0, depth + 1, next);
-            }
-            case Kind::Capture:
-                if (auto bound = captures_[p.index_]; bound && bound != def) return MatchStatus::No_Match;
-                if (!captures_[p.index_]) {
-                    captures_[p.index_] = def;
-                    undo_.push_back(p.index_);
+    struct Mark {
+        size_t captures, types, checks;
+    };
+
+    Mark mark() const { return {undo_.size(), types_.size(), checks_.size()}; }
+
+    void restore(Mark mark) {
+        while (undo_.size() != mark.captures) {
+            captures_[undo_.back()] = nullptr;
+            undo_.pop_back();
+        }
+        types_.erase(types_.begin() + mark.types, types_.end());
+        checks_.erase(checks_.begin() + mark.checks, checks_.end());
+    }
+
+    struct Task {
+        std::optional<Pattern> pattern;
+        const Def* candidate = nullptr;
+        size_t depth = 0, index = 0, next = size_t(-1);
+    };
+
+    MatchStatus execute(Task first, const Continue& next) {
+        if (budget_.active_depth >= budget_.options.max_depth) return MatchStatus::Budget_Exceeded;
+        auto active  = fe::Restore(budget_.active_depth, budget_.active_depth + 1);
+        auto initial = mark();
+        auto tasks   = fe::Vector<Task>();
+        auto head    = size_t(-1);
+        auto push    = [&](Task task) {
+            // Persistent links let alternatives restore pending siblings without copying them.
+            task.next = head;
+            head      = tasks.size();
+            tasks.push_back(task);
+        };
+        struct Choice {
+            Task right;
+            size_t pending;
+            Mark mark;
+            std::optional<MatchStatus> left;
+        };
+        auto choices = fe::Vector<Choice>();
+        push(first);
+        for (;;) {
+            auto status = MatchStatus::Matched;
+            if (head == size_t(-1)) {
+                status = next();
+                if (status == MatchStatus::Matched) return status;
+            } else {
+                auto task = tasks[head];
+                head      = task.next;
+                if (!task.pattern) {
+                    if (task.index != types_.size()) {
+                        auto obligation = types_[task.index];
+                        push({{}, nullptr, task.depth, task.index + 1});
+                        push({obligation.pattern, obligation.candidate, obligation.depth + 1});
+                    }
+                    continue;
                 }
-                return visit(entry.operands[0], def, depth + 1, next);
-            case Kind::All:
-                return visit(entry.operands[0], def, depth + 1,
-                             [&] { return visit(entry.operands[1], def, depth + 1, next); });
-            case Kind::Either: {
-                auto left = visit(entry.operands[0], def, depth + 1, next);
-                if (left == MatchStatus::Matched) return left;
-                return alternatives(left, visit(entry.operands[1], def, depth + 1, next));
+                auto p     = *task.pattern;
+                auto def   = task.candidate;
+                auto depth = task.depth;
+                if (is_exhausted(depth)) {
+                    status = MatchStatus::Budget_Exceeded;
+                } else if (!def) {
+                    status = MatchStatus::No_Match;
+                } else {
+                    const auto& entry = program_.entries_[p.index_];
+                    switch (entry.kind) {
+                        case Kind::Any: break;
+                        case Kind::Exact:
+                            if (def != entry.def) status = MatchStatus::No_Match;
+                            break;
+                        case Kind::Literal:
+                            if (def->node() != Node::Lit || def->type() != entry.def || def->flags() != *entry.flags)
+                                status = MatchStatus::No_Match;
+                            break;
+                        case Kind::Node:
+                        case Kind::Range: {
+                            if (def->node() != entry.node || (entry.flags && def->flags() != *entry.flags)) {
+                                status = MatchStatus::No_Match;
+                                break;
+                            }
+                            if (def->is_mutable()) {
+                                status = MatchStatus::Unknown;
+                                break;
+                            }
+                            auto prefix = entry.operands.size() - (entry.kind == Kind::Range);
+                            if (entry.kind == Kind::Node
+                                    ? def->num_ops() != prefix
+                                    : def->num_ops() < prefix || def->num_ops() - prefix < entry.min
+                                          || def->num_ops() - prefix > entry.max) {
+                                status = MatchStatus::No_Match;
+                                break;
+                            }
+                            for (size_t i = def->num_ops(); i-- != 0;)
+                                push({entry.operands[std::min(i, entry.operands.size() - 1)], def->op(i), depth + 1});
+                            break;
+                        }
+                        case Kind::Binder: {
+                            auto lam = def->isa<Lam>();
+                            if (!lam || !lam->is_set()) {
+                                status = MatchStatus::No_Match;
+                                break;
+                            }
+                            const Def* variable = lam->has_var();
+                            if (!variable) variable = lam;
+                            push({entry.operands[2], lam->body(), depth + 1});
+                            push({entry.operands[1], lam->filter(), depth + 1});
+                            push({entry.operands[0], variable, depth + 1});
+                            break;
+                        }
+                        case Kind::Capture:
+                            if (auto bound = captures_[p.index_]; bound && bound != def) {
+                                status = MatchStatus::No_Match;
+                                break;
+                            }
+                            if (!captures_[p.index_]) {
+                                captures_[p.index_] = def;
+                                undo_.push_back(p.index_);
+                            }
+                            push({entry.operands[0], def, depth + 1});
+                            break;
+                        case Kind::All:
+                            push({entry.operands[1], def, depth + 1});
+                            push({entry.operands[0], def, depth + 1});
+                            break;
+                        case Kind::Either:
+                            choices.push_back({
+                                {entry.operands[1], def, depth + 1},
+                                head,
+                                mark(),
+                                {}
+                            });
+                            push({entry.operands[0], def, depth + 1});
+                            break;
+                        case Kind::Type:
+                            if (auto var = def->isa<Var>();
+                                var && (var->binder()->node() == Node::Arr || var->binder()->node() == Node::Pack)) {
+                                status = MatchStatus::Unknown;
+                                break;
+                            }
+                            types_.push_back({entry.operands[0], def->type(), depth});
+                            break;
+                        case Kind::Not: checks_.push_back({p, def, depth}); break;
+                        case Kind::Where:
+                            checks_.push_back({p, def, depth});
+                            push({entry.operands[0], def, depth + 1});
+                            break;
+                    }
+                }
+                if (status == MatchStatus::Matched) continue;
             }
-            case Kind::Type:
-                if (auto var = def->isa<Var>();
-                    var && (var->binder()->node() == Node::Arr || var->binder()->node() == Node::Pack))
-                    return MatchStatus::Unknown;
-                types_.push_back({entry.operands[0], def->type()});
-                return next();
-            case Kind::Not: checks_.push_back({p, def}); return next();
-            case Kind::Where: checks_.push_back({p, def}); return visit(entry.operands[0], def, depth + 1, next);
+            bool retry = false;
+            while (!choices.empty()) {
+                auto& choice = choices.back();
+                restore(choice.mark);
+                if (!choice.left) {
+                    choice.left = status;
+                    head        = choice.pending;
+                    push(choice.right);
+                    retry = true;
+                    break;
+                }
+                status = alternatives(*choice.left, status);
+                choices.pop_back();
+            }
+            if (retry) continue;
+            restore(initial);
+            return status;
         }
-        throw std::logic_error("invalid pattern kind");
-    }
-
-    MatchStatus
-    operands(const std::vector<Pattern>& patterns, const Def* def, size_t index, size_t depth, const Continue& next) {
-        if (index == patterns.size()) return next();
-        return visit(patterns[index], def->op(index), depth,
-                     [&] { return operands(patterns, def, index + 1, depth + 1, next); });
-    }
-
-    MatchStatus range_operands(const PatternProgram::Entry& entry,
-                               const Def* def,
-                               size_t index,
-                               size_t depth,
-                               const Continue& next) {
-        if (index == def->num_ops()) return next();
-        auto p = entry.operands[std::min(index, entry.operands.size() - 1)];
-        return visit(p, def->op(index), depth, [&] { return range_operands(entry, def, index + 1, depth + 1, next); });
     }
 
     MatchStatus complete_types(size_t index, size_t depth) {
-        if (index == types_.size()) {
-            auto status = complete_checks(depth);
+        auto finish = [&] {
+            auto status = complete_checks();
             return status == MatchStatus::Matched && on_match_ ? on_match_() : status;
-        }
-        // visit may append more obligations and reallocate types_.
-        auto obligation = types_[index];
-        return visit(obligation.pattern, obligation.candidate, depth + 1,
-                     [&] { return complete_types(index + 1, depth + 1); });
+        };
+        if (index == types_.size()) return finish();
+        return execute({{}, nullptr, depth, index}, finish);
     }
 
-    MatchStatus complete_checks(size_t depth) {
+    MatchStatus complete_checks() {
         bool unknown = false;
         for (auto obligation : checks_) {
-            if (is_exhausted(depth)) return MatchStatus::Budget_Exceeded;
+            if (is_exhausted(obligation.depth)) return MatchStatus::Budget_Exceeded;
             const auto& entry = program_.entries_[obligation.pattern.index_];
             if (entry.kind == Kind::Not) {
                 MatchEngine probe(program_, budget_);
                 probe.captures_ = captures_;
-                auto status     = probe.visit(entry.operands[0], obligation.candidate, depth + 1,
-                                              [&] { return probe.complete_types(0, depth + 1); });
+                auto status     = probe.visit(entry.operands[0], obligation.candidate, obligation.depth + 1,
+                                              [&] { return probe.complete_types(0, obligation.depth + 1); });
                 if (status == MatchStatus::Matched) return MatchStatus::No_Match;
                 if (status == MatchStatus::Budget_Exceeded) return status;
                 unknown |= status == MatchStatus::Unknown;

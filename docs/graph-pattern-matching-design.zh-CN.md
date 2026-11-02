@@ -792,3 +792,91 @@ rewrite:
 当前已交付 P0 至 P4 的基础与首批 tensor 接入，以及 P5 的多根 Mim Rule 前端、原始 operand range、索引 join 和穷举性能对照。现有 tensor fusion 的结构筛选与单次消费检查已接入框架，真实三路整数矩阵乘也已有 LLVM 执行和数值参考验证；独立 pattern parser、通用 tensor 模式库、字节码和增量索引仍属于后续工作。
 
 最先实现并评审的是 **GraphView 的 scope 与边界语义、失败回滚、依赖类型延迟校验和 World 提交协议**。这四项确定后，Mim 表层语法和匹配执行优化可以分别推进。
+
+## P5 matcher 的宽度与深度预算
+
+`3f7ebc465b` 的 `MatchEngine` 用 C++ continuation 保存后续 siblings 和条件。
+`operands` / `range_operands` 把下一个 sibling 的 `depth` 再加一；
+`All` / `Binder` 虽然给各 child 相同的逻辑深度，仍在前一个 `visit`
+尚未返回时调用下一个 child，所以 `active_depth` 也累计所有已匹配节点。
+类型 obligations 的完成过程同样保留此前的 C++ 帧。
+因此默认 `max_depth=256` 实际限制部分模式的大小，而不是嵌套深度。
+
+测量在 Debug 构建的每次 budget probe 记录逻辑 depth、active_depth 和局部变量地址，
+栈跨度是本次匹配的第一个 probe 到后续 probe 的最大地址差，
+不是整个线程栈的绝对大小；临时探针不保留在生产代码。
+下列 flat tuple 的每个 operand 都是 `unary(literal)`，匹配前不做规则降级：
+
+| operand 数 | 原实现 steps | 峰值 depth | 峰值 active_depth | probe 栈跨度 | 结果 |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 32 | 97 | 34 | 96 | 50,544 bytes | Matched |
+| 256 | 256 | 87 | 256 | 135,120 bytes | Budget_Exceeded |
+| 2048 | 256 | 87 | 256 | 135,120 bytes | Budget_Exceeded |
+
+用户的 `pdepth.mim` 还经过 RulePattern 降级、capture 和 type 匹配，
+32 个 `x+i` 在本次构建中走到 276 steps、depth=34、active_depth=256，
+probe 栈跨度 105,600 bytes 后返回 Budget_Exceeded，规则未改写。
+该停止点取决于降级后模式，不应把某次 attention 的约 660 steps
+当作统一阈值；触发停止的是深度限制，不是默认 100,000 steps。
+测量日志与后续验证产物统一存放于
+`/Users/zc/courses/compiler/products/tile-fuse/results/task29b/`。
+
+### 显式任务与选择点
+
+结构匹配现在使用带 depth 的显式 Task，而不为每个 operand 建立 C++ continuation。
+Node/Range 把 operands 按逆序压入 pending 链，All/Binder 同样排入有序 child，
+Capture 先记录绑定再排入其 child；siblings 的 depth 相同，只在下降 child 时增加。
+Type obligation 保存产生它的位置深度，以相同的任务循环逐个完成，
+不会因之前完成的类型数量增加深度；Where/Not 仍在结构和类型完成后检查。
+
+Either 保存右分支任务、pending 链头以及 capture/type/check 的 undo 标记。
+左分支后的任意 sibling、类型或 predicate 失败时都能回到该选择点，
+恢复绑定与 obligations，再尝试右分支；左右失败的状态合并顺序不变。
+pending 使用 arena 中不可变的 next 索引，因此恢复宽 operand 列表不需要复制整个列表，
+大量未决 Either 也只消耗显式存储，不保留逐 sibling 的 native frame。
+没有改变输入 operand 顺序、短路条件、Matched/No_Match/Unknown 的判定或原子发布绑定。
+
+C++ continuation 只保留在跨 graph-anchor 搜索、类型完成和隔离 Not probe 的边界，
+这些引擎调用有独立的 active_depth 限制；Task 的 depth 则限制真正的模式/类型/probe 嵌套。
+默认 max_depth 仍为 256，max_steps 仍为 100,000，深链照常返回 Budget_Exceeded，
+没有通过提高默认预算或丢掉真实栈保护来接纳宽模式。
+每个结构模式和 deferred check 的 step 消耗保留，
+减少的是无意义的递归深度，而不是绕过工作量预算。
+
+| flat `unary(literal)` operand 数 | 新实现 steps | 峰值 depth | 峰值 active_depth | probe 栈跨度 |
+| ---: | ---: | ---: | ---: | ---: |
+| 32 | 97 | 2 | 1 | 0 bytes |
+| 256 | 769 | 2 | 1 | 0 bytes |
+| 2048 | 6145 | 2 | 1 | 0 bytes |
+
+这里 0 bytes 表示各 operand 的 budget probe 复用同一 native frame，
+不表示 C++ 函数没有固定栈开销。
+经过 RulePattern 的 32/256/2048 个 `x+i` 分别消耗 511/4095/32767 steps，
+三者峰值 depth 都为 12、active_depth 都为 2、probe 栈跨度都为 1,472 bytes，
+规则均成功改写为 `x`。
+另一个 2048-operand 例子交错 Type/Where/Not，消耗 20,473 steps，
+峰值 active_depth=3、probe 栈跨度 3,312 bytes，宽度也不保留 native frame。
+
+### 回归验证
+
+`test/pattern_depth.cpp` 新增六个 doctest：
+32/256/2048-operand 结构匹配同时验证精确的 step 消耗与截断后不暴露 captures；
+512 层 App 链在默认深度处以 511 steps 干净失败；
+2048 个 operands 中的 1024 个 Either 必须因后续 sibling 绑定冲突而回溯；
+2048-operand Range 交错 Type/Where/Not；
+256 个 Binder 的 siblings；
+以及 2048-operand 图模式在 Indexed/Exhaustive 两种搜索模式下得到同一唯一匹配。
+其中宽结构、Binder 和图搜索只给 max_depth=3，Either 和 Range 只给 8。
+
+`lit/rules/pattern_depth.mim` 通过生成器构造 32/256/2048 个 `x+i` 的完整
+Mim Rule 模块，检查输出函数确实变为 `x`，不只检查编译退出码或未报错。
+默认 max_steps 下，最大的规则仍在 32,767 steps 内完成。
+现有 capture 回滚、下游 predicate 选择 OR 分支、Unknown/Not、预算 witness、
+闭合 lambda 常量和多 anchor 枚举回归均保留。
+
+完整 CTest 为 249/249；`mim-tensor-pattern-test` 单独运行 21 cases、
+232 assertions 通过；完整 lit 为 675 passed / 9 unsupported，其中
+`lit/rules` 为 69 passed。
+当前分支没有独立 `lit/pattern` 目录，底层 pattern 回归由 C++ suites 覆盖。
+所有重构建限制四个并行任务，测试使用 `ctest -j4` / `lit -j4`，
+重任务串行启动并使用 `nice -n 10`，未运行计时 benchmark。
