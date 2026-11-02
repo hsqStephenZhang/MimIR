@@ -1407,12 +1407,15 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
             = buffer::op_alloc(rewrite(plan.ranks->proj(count, i)), rewrite(plan.shapes->proj(count, i)),
                                rewrite(plan.types->proj(count, i)), mem)
                   ->projs<2>();
-    auto [run, call]        = btensor::ds_splice(w.tuple({mem, w.tuple(buffers)}),
-                                                 w.sigma({mem->type(), w.tuple(buffers)->type()}), "tiledN");
-    auto [current, outputs] = run->var(2, 0)->projs<2>();
-    auto pending            = fe::Restore(pending_, {});
+    auto [sources, captures]        = capture_producers(plan.body, true);
+    auto [run, call]                = btensor::ds_splice(w.tuple({mem, w.tuple(buffers), w.tuple(captures)}),
+                                                         w.sigma({mem->type(), w.tuple(buffers)->type()}), "tiledN");
+    auto [current, outputs, inputs] = run->var(2, 0)->projs<3>();
+    auto pending                    = fe::Restore(pending_, {});
     push();
     bind_new(run->has_var());
+    for (size_t i = 0; i != sources.size(); ++i)
+        map(sources[i], inputs->proj(sources.size(), i));
     for (size_t t = 0; t != plan.points.size(); ++t) {
         auto memo    = fe::Restore(fresh_memo_, {});
         auto storage = fe::Restore(storage_shapes_, storage_shapes_);
@@ -1421,6 +1424,14 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
         Rewriter substitutions(old);
         for (auto var : roots->free_vars())
             substitutions.map(var, var);
+        // Typed placeholders keep slot specialization from cloning captured producers.
+        for (size_t i = 0; i != sources.size(); ++i) {
+            auto proxy = old.mut_lam(old.pi(sources[i]->type(), old.type_nat()));
+            proxy->var();
+            bind_old(proxy->has_var());
+            map(proxy->var(), inputs->proj(sources.size(), i));
+            substitutions.map(sources[i], proxy->var());
+        }
         for (size_t i = 0; i != count; ++i) {
             auto rank       = Lit::as(plan.ranks->proj(count, i));
             auto shape      = plan.shapes->proj(count, i);

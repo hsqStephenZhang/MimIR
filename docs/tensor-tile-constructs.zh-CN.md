@@ -329,6 +329,77 @@ graph registry 把 body 登记为 region 并提供 literal trip count；
 尚无 tiled_n 专用 cost witness 时，fusion budget 保留 Unknown。
 没有修改 tile_of 的 normalizer。
 
+### 8.1. Grid 外的 invariant producer captures（Task 22B）
+
+`tiled_n` 与单结果 `tiled` 一样，在进入 grid 前捕获不依赖 point 的 producer，
+将已 bufferize 的结果作为 continuation 参数传入。
+逐 point 的 slot substitution 还必须先把这些 producer 映射到同类型的旧 World 占位变量，
+再由 `LowerToMem` 把占位变量映射到 capture 参数。
+只有直接的跨 World 映射不够：slot substitution 使用的同 World `Rewriter`
+会复制 mutable callbacks，连带复制它们引用的完整 invariant producer graph。
+每个 point 又有独立的 fresh-memory memo 和 realization scope，
+嵌套 grids 因而反复生成完整上游计算，不能依赖 realization cache 在事后消除。
+修复保留 point 内的 slot 写入顺序和读取已写 producer tile 的替换，不提升依赖 point 的计算。
+
+回归 `tiled_n_captures_exec.mim` 仅有四个 I64 元素、每层两个 grid points、
+每个 point 两个结果 slots，连续八层执行 `x → 2*x`。
+它不需要卷积、自动分组或显式 fresh-memory continuation。
+未修复版本在默认 1024 轮 SEO 上限失败；修复后在更严格的 128 轮上限内编译，
+并执行检查负数、零和正数的结果均为 `256*x`。
+
+原始 VGG16 的问题是有限分析状态的缓慢增长，不是两个状态振荡：
+第二次 `mem.seo` 的 lattice 从第 0 轮的 60 个 entries 增至第 1023 轮的 44612 个，
+仍有新 loop/phi 状态被发现；典型 loop index 依次从常量 0、1 变成未知。
+SEO 在分析收敛后才重建程序，并不是每轮持续复制 callbacks。
+临时逐轮计数记录的 1024 轮分析合计约 5.56 s，带诊断的整次失败编译为 78.73 s；
+不能把全部编译时间归于 SEO。
+阶段输出显示重复计算在 tensor lowering 已产生，后续 loop lowering 和 specialization 放大它：
+原始 VGG 的 continuation 数量在 tensor lowering 后为 622，
+btensor lowering 后为 39719，lam specialization 后为 94943，
+SEO 前仍有 30589 个。
+修复使 SEO 前的文本 IR 从 323886 行降至 29218 行，最终 SEO 在 128 轮内收敛。
+最终 tree profile 中，group 为 698.5 ms，tensor lowering 为 47.8 ms，
+btensor lowering 为 142.4 ms，resolve_fresh 为 1.4 ms，lam specialization 为 842.4 ms，
+最终 SEO 为 1933.1 ms，后续 ADCE 为 2218.0 ms，free_locals 为 279.5 ms；
+整条 phase pipeline 为 9.31 s。
+单独无诊断编译由原始失败的 107.13 s 降至完整修复后成功的 9.84 s；
+这些是共享机器上的单次编译测量，不是 kernel 性能比较。
+
+与 fresh-memory 修改的对照均在修复前的 tensor lowering 上进行：
+
+| 修改 | VGG16 结果 |
+| --- | --- |
+| 撤销 `6d789509c2` 的 continuation-local AddMem mapping | `World::externalize` 的 `def->is_closed()` 断言失败，不能撤销该作用域 |
+| 去掉第二次 AddMem，即 `mem.resolve_fresh` | 无 profile 的对照在 1024 轮仍报 SEO 上限，编译 71.86 s |
+| 在 scratch branch 移植 `e76c4d05f9`、`e9d856fb28`、`9d2bf7f6a7` 的 splice 和 request-local push/pop | 仍在 1024 轮失败，编译 50.45 s |
+
+因此根因不是 `9d2bf7f6a7` 修复的共享 fresh continuation 请求绑定泄漏。
+这里复制的是 AddMem 之前的完整 tensor producer graph；修复不改变 AddMem、resolve_fresh、
+SEO 的 lattice 或默认 fixed-point 上限。
+frontend-dev 实验仅适配当前已替换 `map_root`/`seal_stub` 的 Rewriter API，
+保留本分支已有的 continuation-local memory scopes；实验补丁保存在
+`build/task22/frontend-splice.patch`，未合入。
+强制 dense SEO 的对照也未及时完成，采样显示 alpha 检查和 free-variable/nest 计算占用明显，
+约 10.8 GiB 内存后停止，不把更换分析策略作为修复。
+
+VGG16 分组和不分组的实际 LLVM 产物均以 seeds 42、137 对照同一 PyTorch FP32 reference，
+两者最大绝对误差均为 `1.4901161e-08`；只执行正确性检查，没有计时循环。
+重复正确性运行还暴露了提前释放的相关问题：conv 的条件 cell callbacks 使用无 memory 参数的
+continuation，捕获了 `mem.load` 的结果和 memory output。
+`EscapeAnalysis::walk` 只记录 continuation 自身的线性 memory chain，
+漏掉这些 captured loads，`free_locals` 就会在 padding 写完后、conv 读取前释放 padding buffer。
+原始 capture 修复因此可能偶然算对，不能只依赖一次数值比较。
+生成 LLVM 的 AddressSanitizer 检查确定为 13872-byte padding buffer 的 heap-use-after-free。
+
+现在 escape analysis 也遍历每个 tail 的 immutable 数据依赖，将不在线性 chain 中的 loads
+记作该 continuation 的末端 uses；不穿越另一个 mutable continuation 的 body。
+这些 uses 与 chain 内 uses 使用同一 alias、shared 和 escaping 规则，释放点必须在读取之后。
+`lit/mem/free_locals_captured.mim` 的 `borrowed` 仅用一个 allocation、一次 store、
+一个带 memory 的 consumer 和无参数的条件 read continuation，即可复现旧版的提前 free，
+并检查新版先 load 再 free。
+修复后的 grouped VGG 同时通过 AddressSanitizer 和 FP32 reference 检查。
+最终 CTest 为 **243/243**，完整 lit 为 **667 passed、9 unsupported**（共 676）。
+
 ## 9. Exact realization cache（Task 13A.2）
 
 `lower_to_mem` 在每个实际 lowering scope 建立只读请求计划。

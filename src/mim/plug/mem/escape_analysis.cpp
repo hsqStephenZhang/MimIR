@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include <fe/worklist.h>
+
 #include <mim/tuple.h>
 
 namespace mim::plug::mem {
@@ -70,23 +72,22 @@ void EscapeAnalysis::leave() {
     auto escaping = escaping_.contains(lam);
     auto& chain = chains_[lam] = Chain{tail, std::move(*ops), {}, {}};
     auto own                   = DefSet(chain.ops.begin(), chain.ops.end());
+    auto mention               = [&](const Def* def, size_t index) {
+        if (auto k = def->isa_mut<Lam>()) return escape(k);
+        chain.last[def] = index;
+        if (escaping)
+            pin(def);
+        else if (!own.contains(def))
+            shared_.emplace(def);
+    };
     for (size_t i = 0, n = chain.ops.size(); i != n; ++i) {
         auto op      = chain.ops[i];
         auto carried = DefVec();
         join(carried, op->callee());
         join(carried, op->arg());
         dedup(carried);
-        for (auto d : carried) {
-            if (auto k = d->isa_mut<Lam>()) {
-                escape(k);
-                continue;
-            }
-            chain.last[d] = i;
-            if (escaping)
-                pin(d);
-            else if (!own.contains(d))
-                shared_.emplace(d);
-        }
+        for (auto d : carried)
+            mention(d, i);
 
         // A pointer stored into memory may be loaded again anywhere.
         if (auto store = Axm::isa<mem::store>(op)) {
@@ -95,6 +96,21 @@ void EscapeAnalysis::leave() {
             escape(op->callee());
             escape(op->arg());
         }
+    }
+
+    // Loads captured by memoryless continuations are absent from their linear memory chains.
+    auto todo = fe::BFSWorklist<DefSet>();
+    todo.push(tail);
+    while (!todo.empty()) {
+        auto def = todo.pop();
+        if (def->isa_mut()) continue;
+        if (auto load = Axm::isa<mem::load>(def); load && !own.contains(load)) {
+            auto carried = DefVec();
+            join(carried, load->arg(2, 1));
+            for (auto d : carried)
+                mention(d, chain.ops.size());
+        }
+        todo.push(def->ops());
     }
 
     if (auto known = jumps(tail->callee()); !known.empty()) {
