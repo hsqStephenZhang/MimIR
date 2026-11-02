@@ -181,3 +181,20 @@ stage 的读取组合是通用的，不依赖 Linear、权重名称或模型尺�
 跨不同逻辑 shape 的融合需要显式坐标桥接及 box 精确性证明，尚未在该成本路径实现。
 `group_folded_rank.mim` 用两个 map_reduce 和一个 singleton 轴复现，
 grouping 开关两种情况均与整数参考比较；原 seq512 transformer 已可生成 LLVM。
+
+### Batched BLIS
+
+BLIS 将最后两个 parallel 轴视为 M/N，其余 parallel 轴作为 batch 前缀，
+将 reduction 轴按原顺序展平成 K。
+operand view 保留原始物理 shape，通过 batch 坐标和 M/K 或 K/N 坐标组合原读映射；
+epilogue 也收到完整 batch 前缀，因此每 batch 的 bias 不会被广播到其他 batch。
+候选仍要求 literal shape、恒等输出坐标、纯 scalar combiner/epilogue 和默认 schedule，
+且 A 不得读取 N、B 不得读取 M。
+空 batch 或无法表示的 batch/K/panel 大小会被拒绝。
+
+batch 使用 `tiled` 的运行时外层 grid，内部仍调用原有 `group_blis_impl`，
+不改变 jo → K fold → B panel → io 的顺序或目标 block selector。
+没有 batch 前缀时直接走二维 BLIS，恒等 operand 不另建 copy view；
+这也保留 `group_fold.mim` 对 aligned kernel 无 `llvm.memcpy` 的约束。
+`blis_batch.mim` 覆盖 NN/NT/TN、size-1 batch、多维 batch 前缀、
+每 batch bias 及非整块的 M/N/K，grouping 开关均执行标量比较。

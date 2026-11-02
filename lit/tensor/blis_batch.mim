@@ -1,0 +1,35 @@
+// RUN: %mim -p opt -p ll -X tensor:strict=1 -VVVV %s -X ll:o=%t.ll 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: clang++ -O3 -fsanitize=address %S/blis_batch_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -p opt -p ll -X tensor:group=0 %s -X ll:o=%t.off.ll
+// RUN: clang++ -O3 -fsanitize=address %S/blis_batch_aux.cpp %t.off.ll -o %t.off -Wno-override-module
+// RUN: %t.off
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let mode = math.mode.contract;
+let add = math.arith.add mode;
+let R: tensor.Ring = (F32, 0:F32, add, math.arith.mul mode);
+
+lam finish {b: Nat} (x: «b, 13, 11; F32», bias: «b, 11; F32»): «b, 13, 11; F32» =
+    tensor.binary add (x, tensor.broadcast @(F32, 3) ((b, 1, 11), (b, 13, 11), bias));
+
+extern fun batched (a: «2, 13, 7; F32», b: «2, 7, 11; F32», c: «2, 11; F32»): «2, 13, 11; F32» =
+    return (finish @2 (tensor.bmm R @(2, 13, 7, 11) (tensor.buf a, tensor.buf b), tensor.buf c));
+extern fun batch_nt (a: «2, 13, 7; F32», b: «2, 11, 7; F32», c: «2, 11; F32»): «2, 13, 11; F32» =
+    return (finish (tensor.dot_product R @(3, 3) @(1, 1) (2₃, 2₃, 0₃, 0₃) (tensor.buf a, tensor.buf b), tensor.buf c));
+extern fun batch_tn (a: «2, 7, 13; F32», b: «2, 7, 11; F32», c: «2, 11; F32»): «2, 13, 11; F32» =
+    return (finish (tensor.dot_product R @(3, 3) @(1, 1) (1₃, 1₃, 0₃, 0₃) (tensor.buf a, tensor.buf b), tensor.buf c));
+extern fun single (a: «1, 13, 7; F32», b: «1, 7, 11; F32», c: «1, 11; F32»): «1, 13, 11; F32» =
+    return (finish @1 (tensor.bmm R @(1, 13, 7, 11) (tensor.buf a, tensor.buf b), tensor.buf c));
+extern fun prefix (a: «2, 3, 13, 7; F32», b: «2, 3, 11, 7; F32», c: «2, 3, 11; F32»): «2, 3, 13, 11; F32» =
+    let x = tensor.dot_product R @(4, 4) @(1, 2) (3₄, 3₄, (0₄, 1₄), (0₄, 1₄)) (tensor.buf a, tensor.buf b);
+    return (tensor.binary add (x, tensor.broadcast @(F32, 4) ((2, 3, 1, 11), (2, 3, 13, 11), tensor.buf c)));
+
+// CHECK-COUNT-5: tensor.group contraction {{.*}}: MR=
+// CHECK-NOT: tensor.group contraction
+// CHECK-NOT: not realized
