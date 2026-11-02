@@ -1,5 +1,58 @@
 # P5 tile-and-fuse 实验
 
+## Task 19A.3：默认开启与完整基准
+
+CPU 的自动 group → scoped rules → fuse_views 已默认开启，`-X tensor:group=0` 保留旧路径；
+GPU gate 不变。完整 CTest 243/243，full lit 664 passed、9 unsupported。
+`group_default.mim` 的主运行不再指定 group=1，直接验证默认流水线。
+`group_requests.mim` 的 default lowering 现在实现先前留下的 marker，
+直接跳过 rule stage 的 bufferization 仍单独检查未实现请求诊断。
+`register_block_exec.mim` 在 group=0 下保留原始无 alloca microkernel 检查，
+默认模式另做数值执行并检查 `<64 x float>` accumulator；
+BLIS packing 新增的 panel storage 不再错误地视作 leaf accumulator spill。
+
+大形状 row normalization 现在同样获得合法请求：
+1024 列选择 row tile 31，scratch 254324 bytes；
+4096 列选择 row tile 7，scratch 229460 bytes，均 exact、重算比 1。
+相对于原先 32 KiB，Task 19A.1 的 256 KiB 默认 cap
+使 grid 的 sample 数降至 256 上限内，两者共同解决“无请求”的原因；
+没有取消成本分析上限。六个 row kind 2 均实现。
+两 batch conv 选择 batch tile 1，scratch 91264 bytes、重算比 1，
+因此无需放宽默认预算就能实现；单 batch 的重叠 spatial halo 仍须显式提高预算。
+完整 benchmark 模块记录 23 次 request publication、6 次 graph rewrite、
+18 次普通 Rule rewrite，无 unrealized request；这里采用 profiler 的 publication 计数。
+
+使用 `scripts/bench-default-groups.py build/task19-default-final-bench`，
+设置仍为 F32、单线程、native `-O3`、1 warmup + 7 runs 中位数；
+脚本等待机器上没有 mim/clang/cmake/ninja 构建才启动计时，结束后检查同样无构建。
+全部模式先通过 scalar/OpenBLAS 数值检查。下表单位 ms；
+OpenBLAS 列含独立 bias/ReLU loop 或两层 MLP 的中间值管理。
+
+| 工作负载 | shape | 默认 group | group=0 | OpenBLAS + loop |
+| --- | --- | ---: | ---: | ---: |
+| GEMM+bias+ReLU | 256³ | 0.493666 | 1.259333 | 0.569583 |
+| MLP | 256³ × 2 | 0.822958 | 2.104667 | 0.912708 |
+| GEMM+bias+ReLU | 512³ | 2.813041 | 7.758375 | 2.830667 |
+| MLP | 512³ × 2 | 5.754875 | 15.692208 | 5.507166 |
+| GEMM+bias+ReLU | 1024³ | 23.658333 | 64.201792 | 22.608833 |
+| MLP | 1024³ × 2 | 45.700375 | 127.754375 | 43.374584 |
+| GEMM+bias+ReLU | 2048³ | 182.193375 | 607.883958 | 166.536792 |
+| MLP | 2048³ × 2 | 364.060209 | 1212.851250 | 328.126917 |
+| softmax | 1024×1024 | 3.324500 | 3.324333 | — |
+| layernorm | 1024×1024 | 0.186666 | 0.187208 | — |
+| softmax | 4096×1024 | 13.725000 | 14.286000 | — |
+| layernorm | 4096×1024 | 0.813375 | 0.845916 | — |
+| softmax | 1024×4096 | 13.258625 | 13.231833 | — |
+| layernorm | 1024×4096 | 0.873917 | 0.887167 | — |
+| conv chain | N=2、Cin=Cout=8、32²→30²→28² | 0.076250 | 0.077625 | — |
+
+512³+bias+ReLU 约 95.4 GFLOPS，保持 Task 19A.1 的显式 BLIS 水平。
+矩阵相比旧默认快约 2.6–3.3 倍，2048³ 仍慢于 OpenBLAS。
+row/conv 有真实请求实现，但相对此处 group=0 的已有 L1 融合和叶循环优化，
+本轮只观测到近似持平或小幅改善，不把这些小差值视为显著性能收益。
+CSV、模块和 profile 分别位于 `build/task19-default-final-bench/`、
+`build/task19-final-plan.profile`，本节取代下面 Task 17A 的旧默认状态及其性能结论。
+
 ## Task 19A.2a：row reverse 的 callback 身份
 
 请求 metadata 复用主 phase 已重写的 consumer callee，TileReads 保留 comb/post。

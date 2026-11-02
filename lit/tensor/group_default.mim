@@ -1,4 +1,4 @@
-// RUN: %mim -p opt -p ll -X tensor:group=1 %s -X ll:o=%t.on.ll --profile summary --output-profile %t.profile -V -V -V -V 2> %t.on.log
+// RUN: %mim -p opt -p ll %s -X ll:o=%t.on.ll --profile summary --output-profile %t.profile -V -V -V -V 2> %t.on.log
 // RUN: %FileCheck %s --check-prefix=OUTCOME < %t.on.log
 // RUN: %FileCheck %s --check-prefix=PROFILE < %t.profile
 // RUN: %FileCheck %s --check-prefix=REPORTED < %t.on.log

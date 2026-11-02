@@ -107,8 +107,9 @@ extern fun conv_chain (a: «2, 2, 9, 8; I64», w: «3, 2, 3, 3; I64», v: «2, 3
 // REPORT-DAG: unrealized tensor.group_req kind=0 dim=0 tile=1 at {{.*}}tensor.mim
 // STRICT: error: unrealized tensor.group_req kind=
 // LANES: tensor.group_req {{.*}} 1, 0, 1, (4, i8, 16)
-// BUFFER: unrealized tensor.group_req kind=
-// BUFFER-SAME: request reached bufferization without realization
+// BUFFER-NOT: request reached bufferization without realization
+// BUFFER: tensor.group_default.pipeline
+// BUFFER-NOT: request reached bufferization without realization
 // DIRECT: unrealized tensor.group_req kind=
 // DIRECT-SAME: request reached bufferization without realization
 // REALIZED-NOT: tensor.group_req

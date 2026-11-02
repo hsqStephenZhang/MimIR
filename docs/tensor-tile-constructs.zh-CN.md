@@ -770,7 +770,7 @@ params 是 consumer 模板，不是 runtime read；registry 只把字段 `op` �
 
 ### 12.2 有界成本模型
 
-默认 `-X tensor:group-cache=32768`、`group-budget=1`、`group-registers=32`；
+默认 `-X tensor:group-cache=262144`、`group-budget=1`、`group-registers=32`；
 `group=0` 完全禁止选择，非正 cache/budget 或 registers<16 明确报错。
 不是固定选择 outermost 轴：普通分组检查全部 parallel output axes，
 reverse 检查 placement 允许的 canonical parallel prefix。
@@ -817,7 +817,7 @@ native test 检查 identity、provenance 和 params 不计为 data read。
 `opt._default_compile` 在 L1 `fuse_tensor` 后调用 `tensor.group_default`：
 `group → group_rules → fuse_views → lower_to_mem`。
 `fuse_views` 只组合纯 reindexing reads，不执行 producer fusion 或 epilogue sinking。
-默认关闭，显式 `-X tensor:group=1` 开启；`group=0` 不运行这三个阶段，保留原流水线。
+默认开启；显式 `-X tensor:group=0` 不运行这三个阶段，保留原流水线。
 `reduce_exec` 的自动 outer grouping 仍触发 closure lowering 类型错误，修复前不默认开启。
 
 加载 `gpu` plugin 时，`group_default`、`group` 和 `group_rules` 均不运行；

@@ -1,9 +1,13 @@
-// RUN: %mim -p opt %s -p ll
+// RUN: %mim -p opt %s -p ll -X tensor:group=0
 // RUN: clang++ -O0 %S/register_block_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
 // RUN: clang++ -O3 %S/register_block_aux.cpp %{s:stem}.ll -o %t.opt -Wno-override-module
 // RUN: %t.opt
 // RUN: %FileCheck %s < %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.group.ll
+// RUN: clang++ -O3 %S/register_block_aux.cpp %t.group.ll -o %t.group -Wno-override-module
+// RUN: %t.group
+// RUN: %FileCheck %s --check-prefix=GROUP < %t.group.ll
 
 plugin tensor;
 plugin math;
@@ -48,5 +52,7 @@ extern fun block_order (a: «5; I64»): «2, 3; I64» =
 
 // CHECK-LABEL: define {{.*}}@block_full
 // CHECK-NOT: alloca
+// GROUP-LABEL: define {{.*}}@block_full
+// GROUP: phi <64 x float>
 // CHECK: phi <64 x float>
 // CHECK-NOT: alloca

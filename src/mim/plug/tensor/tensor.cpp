@@ -111,7 +111,7 @@ static void reg_phases(Flags2Phases& phases) {
 
 // clang-format off
 static constexpr PluginArg known_args[] = {
-    {"group=<n>", "Enable automatic grouping and in-group rules in the default pipeline (default 0 while integration is unvalidated)."},
+    {"group=<n>", "Enable automatic grouping and in-group rules in the default pipeline (default 1; disabled for GPU)."},
     {"group-cache=<bytes>", "Scratch working-set budget for tensor.group and BLIS block selection (default 262144)."},
     {"group-registers=<n>", "Register count passed to the shared BLIS selector (default 32, at least 16)."},
     {"group-budget=<n>", "Maximum producer box recomputation factor for grouping (default 1; values above 1 permit halo requests)."},
