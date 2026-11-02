@@ -597,3 +597,19 @@ non-causal 和 causal 都满足 atol=rtol=2e-4。
 无失败，见 `step1-ctest-final.log`、`step1-full-lit-final.log`。
 前一轮 all build 没有更新 lit staged copy，读到了修改前的 FileCheck 顺序；
 显式构建 mim_lit_tests 后重跑完整套件，不以源文件的定向通过代替 staged 验证。
+
+步骤 1 已提交为 `b07049508477f3448cc8df2652481b1d9dfb6ab6`。
+
+### online 实验暴露的静态选择死分支验证问题
+
+online 初稿使用已有 tiled/tile_fold 和普通 dot leaf。
+lower_to_mem 在收集 tensor 类型时递归扫描仍未决定的 `if_static`
+的 key/静态候选，遇到仅作编译期查询的 blis_candidate 就报
+`unbufferizable tensor op`；实际 rewrite 已明确选择 dynamic fallback，
+这些 key/静态候选不会被求值。
+局部修复主题为 `fix(tensor): skip discarded static selector operands during bufferization`：
+类型收集与已有 rewrite 保持一致，只遍历 dynamic 分支和结果类型，
+不改变 selector 的决策规则或 pipeline 默认值。
+`static_dead.mim` 独立覆盖，online 的 H2/M5/S7/K3/N4、BM2/BK3
+随后通过普通及 causal 标量参考（`online-after-static-run.log`）。
+online 仍是未提交步骤 2 WIP；此机制修复单独提交。

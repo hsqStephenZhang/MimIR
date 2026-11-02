@@ -1,0 +1,10 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -O2 -std=c++23 %S/static_dead_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin tensor;
+plugin core;
+
+extern fun dead_query (x: Nat): Bool =
+    let query = tensor.blis_candidate x;
+    return (tensor.if_static (core.idx2nat query, query, ff));

@@ -418,8 +418,9 @@ void LowerToMem::collect_tensor_types() {
                     }
                 }
             } else if (Axm::isa<tensor::if_static>(app)) {
-                // Value-level binding-time dispatch; this phase's rewrite residualizes it to its
-                // dynamic branch - not a tensor op.
+                push(app->arg(3, 2));
+                push(app->type());
+                continue;
             } else if (Axm::isa<tensor::gather>(app)) {
                 auto [Tr, shapes, dim] = app->callee()->as<App>()->uncurry_args<3>();
                 auto [T, r]            = Tr->projs<2>();
