@@ -206,8 +206,10 @@ public:
                     throw std::invalid_argument("recipe imports a value outside the graph");
                 if (entry.kind == RewritePlan::Kind::Call && !graph.has_purity(entry.def->flags()))
                     throw std::invalid_argument("recipe calls an operator without a purity guarantee");
-                if (entry.kind == RewritePlan::Kind::Literal && entry.def->node() != Node::Nat && !Idx::isa(entry.def))
-                    throw std::invalid_argument("literal recipes require a Nat or Idx scalar type");
+                if (entry.kind == RewritePlan::Kind::Literal
+                    && (!entry.def->is_closed() || entry.def->isa<Sigma>() || entry.def->isa<Arr>()
+                        || entry.def->isa<Pi>()))
+                    throw std::invalid_argument("literal recipes require a closed scalar type");
                 if (entry.kind == RewritePlan::Kind::Instantiate) {
                     for (auto [meta, value] : entry.bindings) {
                         if (!meta || &meta->world() != &graph.world())

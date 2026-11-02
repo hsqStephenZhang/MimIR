@@ -1,0 +1,17 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+plugin math;
+
+axm mark: math.F32 → math.F32;
+
+rule replace (x: math.F32): mark x => 0.5:math.F32;
+
+extern lam result (x: math.F32): math.F32 = mark x;
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.graph_rule_app (replace, mark), compile.cleanup);
+
+// CHECK-LABEL: extern lam result
+// CHECK-NOT: mark
+// CHECK: 1056964608:(math.F (23, 8))
