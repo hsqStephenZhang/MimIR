@@ -165,3 +165,19 @@ stage 的读取组合是通用的，不依赖 Linear、权重名称或模型尺�
 `blis_transpose.mim` 覆盖 NN/NT/TN/TT、非整块的 M/N/K、bias/ReLU epilogue，
 并在 grouping 开启和关闭时与标量结果比较；开启时要求四个 kind-1 请求。
 已有 `hlo_train.mim` 同时覆盖共享 forward/backward contraction 的转置路径。
+
+### Singleton 折叠后的 grouping 坐标
+
+`2988413893` 的 transformer 错误发生在 `tensor.group` 的 `Cost::reads/visit`，
+不是报错源码位置所指的 `dot_schedule`。
+`«2, 1, 3; T»` 与 `«2, 3; T»` 是同一个 tensor 类型，
+但 producer 的输出坐标仍有三个轴，reader 的逻辑输入坐标只有两个轴。
+旧成本分析将 reader 的二维 box 原样传给 producer 的三维 `affine.preimage`，
+在 seq512 transformer 中对应四维 box 与三维输出的冲突。
+
+成本分析现在先检查 reader 的逻辑输入 shape 与 producer 的 `So` 是否相同，
+不相同则拒绝该 grouping 候选并记录原因，不把类型折叠当作坐标恒等。
+这不禁止两个算子各自调度，也不改变 BLIS contraction 的合法性。
+跨不同逻辑 shape 的融合需要显式坐标桥接及 box 精确性证明，尚未在该成本路径实现。
+`group_folded_rank.mim` 用两个 map_reduce 和一个 singleton 轴复现，
+grouping 开关两种情况均与整数参考比较；原 seq512 transformer 已可生成 LLVM。
