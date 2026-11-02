@@ -613,3 +613,40 @@ lower_to_mem 在收集 tensor 类型时递归扫描仍未决定的 `if_static`
 `static_dead.mim` 独立覆盖，online 的 H2/M5/S7/K3/N4、BM2/BK3
 随后通过普通及 causal 标量参考（`online-after-static-run.log`）。
 online 仍是未提交步骤 2 WIP；此机制修复单独提交。
+
+## 步骤 2：online 规则实现
+
+静态选择器修复提交为 `8314b18af0701c5cc2f0b7a6c78cd687e28dbc14`；
+其提交前 CTest 250/250、完整 lit 685 通过、9 unsupported。
+
+新增 `attention_online_rule` 与 masked 对应规则，把步骤 1 construct
+改写为 `sdpa_online(mode,masked,BM,BK)`。
+后者仍是 tensor-level 复合 op，lowering 才展开成已有 tiled/tile_fold，
+没有新增 attention 专用 C++ 循环生成器。
+外层 tile=(1,BM,N)，内层 K1 不切、K2 fold 携带 max/sum/output 三元组；
+最后一个 K2 块在 fold 外剥离，确保其宽度静态，避免把符号 min 宽度带入 leaf。
+例如 S7/BK3 是两次宽3的 fold，随后宽1尾块；S1 则 fold 零次。
+规则不接收 S0、N0 或零 tile；直接调用 online op 时以明确诊断拒绝这些参数，
+不以 unsigned 下溢或零 tile 除法决定行为。
+
+数值检查复用 `sdpa_aux.cpp` 标量参考：
+H2/M5/S7/K3/N4、BM2/BK3，group=1 与 group=0，
+普通、causal、大幅值 score、首个 K2 块完全屏蔽但后块有效、整行全屏蔽。
+首块全 mask 需要显式令无有效项时 probability=0、carry correction=1；
+否则 `-inf-(-inf)` 会使后续有效块也永久变为 NaN。
+整行全 mask 的最终 0/0 保持普通 stable softmax 的 NaN，不擅自定义成零。
+有限结果仍用 atol=rtol=2e-4，不放宽容差。
+`online_single.mim` 另检查 batch1、K2仅1、M尾块和所有维度为1的标量退化。
+
+**结构判定：部分 confirmed，计数/性能待步骤 4。**
+规则确实表达了 tile 内分解与异构 carry，并通过以上数值用例；
+但当前异构 tuple 的 tile_fold 使用已有 CPS fallback，
+不是 direct Arr carry 的原位 buffer 更新。
+leaf 仍调用已有 dot scheduling；符号 rows 的 BLIS admission 不成立时，
+使用其既有 fallback，不宣称每个 tile 得到了 kind-1 BLIS。
+因此 register 常驻、理想 1184 字节工作区与时间区间均尚未确认。
+最初动态 min 宽度方案的 group=0 类型错误不再复现：
+静态尾块方案的 group=0 数值用例通过。
+
+步骤 2 提交前 CTest 250/250、完整 lit 690 通过、9 unsupported；
+日志为 `step2-ctest-final.log` 与 `step2-full-lit-final.log`。

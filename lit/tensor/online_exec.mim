@@ -1,0 +1,24 @@
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -O2 -std=c++23 %S/sdpa_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -p opt %s -p ll -X tensor:group=0
+// RUN: clang++ -O2 -std=c++23 %S/sdpa_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin tensor;
+plugin math;
+import opt;
+plugin compile;
+
+extern fun plain (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
+                  v: «2, 7, 4; math.F32»): «2, 5, 4; math.F32» =
+    return (tensor.sdpa math.mode.contract @(2, 5, 7, 3, 4)
+        (0.5:math.F32, tensor.buf q, tensor.buf k, tensor.buf v));
+extern fun masked (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
+                   v: «2, 7, 4; math.F32», mask: «2, 5, 7; math.F32»): «2, 5, 4; math.F32» =
+    return (tensor.sdpa_masked math.mode.contract @(2, 5, 7, 3, 4)
+        (0.5:math.F32, tensor.buf q, tensor.buf k, tensor.buf v, tensor.buf mask));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.rule_app (tensor.attention_online_rule (math.mode.contract, 2, 3),
+        tensor.attention_masked_online_rule (math.mode.contract, 2, 3)), opt._default_compile ());

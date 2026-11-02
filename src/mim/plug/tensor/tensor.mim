@@ -1858,6 +1858,82 @@ priv anx lam tile_fold_impl {Acc: *} (n ks: Nat) (init: Acc)
         end;
     cps.cps2ds run ();
 
+axm sdpa_online: [mode: Nat, masked: Bool, bm bk: Nat] → {H M S K N: Nat}
+    → [scale: math.F32, q: «H, M, K; math.F32», k: «H, S, K; math.F32»,
+       v: «H, S, N; math.F32», mask: «H, M, S; math.F32»] → «H, M, N; math.F32», normalize_sdpa_online;
+
+pub anx lam attention_online_rule (mode bm bk: Nat): Rule [
+    H M S K N: Nat, scale: math.F32, q: «H, M, K; math.F32»,
+    k: «H, S, K; math.F32», v: «H, S, N; math.F32»] =
+    rule online (H M S K N: Nat, scale: math.F32, q: «H, M, K; math.F32»,
+                 k: «H, S, K; math.F32», v: «H, S, N; math.F32»):
+        sdpa mode @(H, M, S, K, N) (scale, q, k, v)
+        when core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), core.bit2.and 0 (0 < bm, 0 < bk)) =>
+        sdpa_online (mode, ff, bm, bk) @(H, M, S, K, N)
+            (scale, q, k, v, splat ((H, M, S), 0:math.F32));
+    online;
+
+pub anx lam attention_masked_online_rule (mode bm bk: Nat): Rule [
+    H M S K N: Nat, scale: math.F32, q: «H, M, K; math.F32»,
+    k: «H, S, K; math.F32», v: «H, S, N; math.F32», mask: «H, M, S; math.F32»] =
+    rule online (H M S K N: Nat, scale: math.F32, q: «H, M, K; math.F32»,
+                 k: «H, S, K; math.F32», v: «H, S, N; math.F32», mask: «H, M, S; math.F32»):
+        sdpa_masked mode @(H, M, S, K, N) (scale, q, k, v, mask)
+        when core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), core.bit2.and 0 (0 < bm, 0 < bk)) =>
+        sdpa_online (mode, tt, bm, bk) @(H, M, S, K, N) (scale, q, k, v, mask);
+    online;
+
+priv anx lam sdpa_online_impl (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N: Nat}
+    (scale: math.F32, q: «H, M, K; math.F32», k: «H, S, K; math.F32»,
+     v: «H, S, N; math.F32», mask: «H, M, S; math.F32»): «H, M, N; math.F32» =
+    let F = math.F32;
+    let add = math.arith.add mode;
+    let mul = math.arith.mul mode;
+    let sub = math.arith.sub mode;
+    let maximum = math.extrema.fmax mode;
+    let R: Ring = (F, 0:F, add, mul);
+    tiled ((H, M, N), (1, bm, N))
+        (λ (off ext: «3; Nat»): «ext; F» =
+            let rows = ext#1₃;
+            let qt = reshape (1, rows, K) (rows, K)
+                (slice @(F, 3) (H, M, K) ((off#0₃, off#1₃, 0), (1, 1, 1), (1, rows, K)) q);
+            let Acc = [«rows; F», «rows; F», «rows, N; F»];
+            let init: Acc = (splat (rows, math.neg_inf math.f32), splat (rows, 0:F), splat ((rows, N), 0:F));
+            lam block (width ko: Nat, (old_max old_sum: «rows; F», old_out: «rows, N; F»)): Acc =
+                let kt = reshape (1, width, K) (width, K)
+                    (slice @(F, 3) (H, S, K) ((off#0₃, ko, 0), (1, 1, 1), (1, width, K)) k);
+                let vt = reshape (1, width, N) (width, N)
+                    (slice @(F, 3) (H, S, N) ((off#0₃, ko, 0), (1, 1, 1), (1, width, N)) v);
+                let scores = dot_product R @(2, 2) @(1, 0) (1₂, 1₂, (), ())
+                    @((rows, K), (width, K)) (qt, kt);
+                let scores = unary (λ x: F: F = mul (x, scale)) @(2, (rows, width)) scores;
+                let scores = (λ (): «rows, width; F» = scores,
+                    λ (): «rows, width; F» =
+                        let bias = reshape (1, rows, width) (rows, width)
+                            (slice @(F, 3) (H, M, S) ((off#0₃, off#1₃, ko),
+                                (1, 1, 1), (1, rows, width)) mask);
+                        binary add @(2, (rows, width)) (scores, bias))#masked ();
+                let next_max = binary maximum @(1, rows)
+                    (old_max, reduce (maximum, math.neg_inf math.f32) @2 1₂ @(rows, width) scores);
+                let correction = binary (λ (x y: F): F =
+                    (math.exp.exp mode (sub (x, y)), 1:F)#(math.cmp.e math.mode.none (y, math.neg_inf math.f32)))
+                    @(1, rows) (old_max, next_max);
+                let p = binary_ax (λ (x y: F): F =
+                    (math.exp.exp mode (sub (x, y)), 0:F)#(math.cmp.e math.mode.none (y, math.neg_inf math.f32)))
+                    @2 1₂ @(rows, width) (scores, next_max);
+                let next_sum = binary add @(1, rows)
+                    (binary mul @(1, rows) (old_sum, correction), reduce (add, 0:F) @2 1₂ @(rows, width) p);
+                let pv = dot_product R @(2, 2) @(1, 0) (1₂, 0₂, (), ())
+                    @((rows, width), (width, N)) (p, vt);
+                let next_out = binary add @(2, (rows, N))
+                    (binary_ax mul @2 1₂ @(rows, N) (old_out, correction), pv);
+                (next_max, next_sum, next_out);
+            let blocks = (S - 1) / bk;
+            let acc = tile_fold @Acc (blocks, bk) init
+                (λ (acc: Acc, ko: Nat): Acc = block (bk, ko, acc));
+            let (_, sums, result) = block (S - blocks * bk, blocks * bk, acc);
+            reshape (rows, N) ext (binary_ax (math.arith.div mode) @2 1₂ @(rows, N) (result, sums)));
+
 anx lam stage_shape {r k: Nat} (s: «r; Nat»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r»): «r + k; Nat» =
     let axes = ‹j: k; core.idx2nat j›;

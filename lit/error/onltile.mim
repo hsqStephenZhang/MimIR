@@ -1,0 +1,10 @@
+// RUN: (! %mim %s -o - 2>&1) | %FileCheck %s
+
+plugin tensor;
+plugin math;
+
+extern fun invalid (q k v: «2, 3, 4; math.F32»): «2, 3, 4; math.F32» =
+    return (tensor.sdpa_online (math.mode.contract, ff, 0, 3) @(2, 3, 3, 4, 4)
+        (0.5:math.F32, q, k, v, tensor.splat ((2, 3, 3), 0:math.F32)));
+
+// CHECK: tensor.sdpa_online requires positive tile sizes

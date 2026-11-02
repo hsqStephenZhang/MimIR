@@ -16,6 +16,17 @@
 
 namespace mim::plug::tensor {
 
+const Def* normalize_sdpa_online(const Def*, const Def* callee, const Def*) {
+    auto params = callee->as<App>()->callee()->as<App>()->arg();
+    if (Lit::isa(params->proj(4, 2)) == 0 || Lit::isa(params->proj(4, 3)) == 0)
+        callee->blame("tensor.sdpa_online requires positive tile sizes").bail();
+    if (Lit::isa(callee->as<App>()->arg()->proj(5, 2)) == 0)
+        callee->blame("tensor.sdpa_online requires a nonempty key sequence").bail();
+    if (Lit::isa(callee->as<App>()->arg()->proj(5, 4)) == 0)
+        callee->blame("tensor.sdpa_online requires a nonempty output feature dimension").bail();
+    return nullptr;
+}
+
 const Def* normalize_blis_candidate(const Def*, const Def*, const Def* producer) {
     auto& w = producer->world();
     if (w.driver().is_loaded("gpu") || !w.driver().arg_nat("tensor", "group").value_or(1)) return w.lit_ff();

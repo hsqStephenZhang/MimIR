@@ -1,0 +1,32 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin tensor;
+plugin math;
+plugin compile;
+
+extern fun plain (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
+                  v: «2, 7, 4; math.F32»): «2, 5, 4; math.F32» =
+    return (tensor.sdpa math.mode.contract @(2, 5, 7, 3, 4) (0.5:math.F32, q, k, v));
+extern fun masked (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
+                   v: «2, 7, 4; math.F32», mask: «2, 5, 7; math.F32»): «2, 5, 4; math.F32» =
+    return (tensor.sdpa_masked math.mode.contract @(2, 5, 7, 3, 4) (0.5:math.F32, q, k, v, mask));
+extern fun empty (q: «2, 5, 3; math.F32», k: «2, 0, 3; math.F32»,
+                  v: «2, 0, 4; math.F32»): «2, 5, 4; math.F32» =
+    return (tensor.sdpa math.mode.contract @(2, 5, 0, 3, 4) (0.5:math.F32, q, k, v));
+extern fun no_features (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
+                        v: «2, 7, 0; math.F32»): «2, 5, 0; math.F32» =
+    return (tensor.sdpa math.mode.contract @(2, 5, 7, 3, 0) (0.5:math.F32, q, k, v));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.rule_app (tensor.attention_online_rule (math.mode.contract, 2, 3),
+        tensor.attention_masked_online_rule (math.mode.contract, 2, 3)), compile.cleanup);
+
+// CHECK-LABEL: extern fun empty
+// CHECK: tensor.sdpa 16
+// CHECK-LABEL: extern fun masked
+// CHECK: tensor.sdpa_online (16, tt, 2, 3)
+// CHECK-LABEL: extern fun no_features
+// CHECK-NOT: tensor.sdpa_online
+// CHECK: return ‹2, 5; ()›;
+// CHECK-LABEL: extern fun plain
+// CHECK: tensor.sdpa_online (16, ff, 2, 3)
