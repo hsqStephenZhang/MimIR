@@ -1,0 +1,83 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule tt > %t.rule 2> %t.rule.log
+// RUN: %FileCheck %s --check-prefix=IR < %t.rule
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt > %t.graph 2> %t.graph.log
+// RUN: %FileCheck %s --check-prefix=IR < %t.graph
+// RUN: python3 %S/tf_run.py %mim %s %t.report rule tt tensor > %t.out 2> %t.log
+// RUN: %FileCheck %s --check-prefix=REPORT < %t.log
+// TF-RULES: (tensor.reverse_rule («6, 5; I64», «5; I64»), tensor.reverse_rule («6; I64», «6; I64»), tensor.reverse_rule («6, 5; I64», «6, 5; I64»))
+// TF-PURE: tensor.reverse_at, tensor.reverse_build, tensor.tiled_n, tensor.tile_of, tensor.map_reduce_post, tensor.slice
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin compile;
+use tensor;
+
+fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
+fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+fun combine (_: I64, (x y: I64))@tt: I64 = return (core.wrap.add 0 (x, y));
+fun post (x y: I64)@tt: I64 = return (core.wrap.add 0 (x, y));
+lam first (i _: affine.Index): affine.Index = i;
+lam identity (x: «6; I64»): «6; I64» =
+    map_reduce (6, 6) (inc, 0I64) (affine.id @1) (affine.id @1,) (buf x);
+
+extern fun reduction (a: «6, 5; I64»): [«6, 5; I64», «5; I64»] =
+    let p = map_reduce ((6, 5), (6, 5)) (inc, 0I64) (affine.id @2) (affine.id @2,) (buf a);
+    let c = map_reduce (5, (5, 6)) (add, 0I64) first
+        ((λ (j i: affine.Index): «2; affine.Index» = (i, j)),) p;
+    return (reverse_at (p, c, 0, 1));
+
+extern fun side_dependency (a: «6; I64»): [«6; I64», «6; I64»] =
+    let p = identity a;
+    let q = identity p;
+    let c = map_reduce (6, 6) (combine, 0I64) (affine.id @1) (affine.id @1, affine.id @1) (p, q);
+    return (reverse_at (p, c, 0, 1));
+
+extern fun post_dependency (a: «6; I64»): [«6; I64», «6; I64»] =
+    let p = identity a;
+    let q = identity p;
+    let c = map_reduce_post @(1, 1) @(I64, I64, 1, 1, SchedT) (6, 6, mk_sched (1, 0))
+        @(I64, 1, 6, I64, 1, 6) (inc, 0I64, post)
+        (affine.id @1) (affine.id @1, affine.id @1) (p, q);
+    return (reverse_at (p, c, 0, 1));
+
+extern fun shifted_post (a: «6; I64»): [«6; I64», «6; I64»] =
+    let p = identity a;
+    let c = map_reduce_post @(1, 1) @(I64, I64, 1, 1, SchedT) (6, 6, mk_sched (1, 0))
+        @(I64, 1, 6, I64, 1, 6) (inc, 0I64, post)
+        (affine.id @1) (affine.id @1, (λ (i: affine.Index): affine.Index = affine.semiop.rem (i, 5))) (p, p);
+    return (reverse_at (p, c, 0, 1));
+
+extern fun not_covering (a: «5; I64»): [«6; I64», «6; I64»] =
+    let p = map_reduce (6, 5) (inc, 0I64) (affine.id @1) (affine.id @1,) (buf a);
+    return (reverse_at (p, identity p, 0, 1));
+
+extern fun not_unique (a: «6, 5; I64»): [«6, 5; I64», «6, 5; I64»] =
+    let p = map_reduce ((6, 5), (6, 6, 5)) (add, 0I64)
+        (proj_map @(3, 2) (1, 2)) (proj_map @(3, 2) (1, 2),) (buf a);
+    let c = map_reduce ((6, 5), (6, 5)) (inc, 0I64) (affine.id @2) (affine.id @2,) p;
+    return (reverse_at (p, c, 0, 1));
+
+extern fun inexact (a: «6; I64»): [«6; I64», «6; I64»] =
+    let p = map_reduce (6, 6) (inc, 0I64)
+        (λ (i: affine.Index): affine.Index = affine.op.add (affine.lit 5, affine.op.neg i))
+        (affine.id @1,) (buf a);
+    return (reverse_at (p, identity p, 0, 1));
+
+axm custom_schedule: SchedT;
+extern fun surrounding_loops (a: «6; I64»): [«6; I64», «6; I64»] =
+    let p = map_reduce_post @(1, 0) @(I64, I64, 1, 1, SchedT) (6, 6, custom_schedule)
+        @(I64, 1, 6, (), (), ()) (inc, 0I64, id @I64)
+        (affine.id @1) (affine.id @1, ()) (buf a, ());
+    return (reverse_at (p, identity p, 0, 1));
+
+// IR-COUNT-8: tensor.reverse_at
+// IR-NOT: tensor.tiled_n
+// REPORT-DAG: consumer reduces across the producer tile; an ordered fold is required
+// REPORT-DAG: consumer side input depends on the producer or another selected consumer
+// REPORT-DAG: consumer epilogue input depends on the producer or another selected consumer
+// REPORT-DAG: consumer epilogue reads the producer outside its input tile
+// REPORT-DAG: producer does not write its whole result exactly
+// REPORT-DAG: producer box is also written by another grid point
+// REPORT-DAG: producer does not write its whole result exactly
+// REPORT-DAG: only canonical nests prove that just the placement prefix runs around the tile

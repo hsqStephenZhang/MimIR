@@ -300,6 +300,8 @@ void LowerToMem::collect_tensor_types() {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::tiled>(app)) {
                 add_tensor_ty(app->type());
+            } else if (Axm::isa<tensor::reverse_source>(app) || Axm::isa<tensor::reverse_part>(app)) {
+                add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::tiled_n>(app)) {
                 auto plan = multi_tile_plan(app);
                 for (auto type : app->type()->projs(Lit::as(plan.ranks->arity())))

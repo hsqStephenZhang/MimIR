@@ -1622,6 +1622,23 @@ axm group_build: {P: *} → [producer: P, tile_size: Nat] → P, normalize_group
 pub lam group_outer (P: *, tile_size: Nat): Rule P =
     rule group (p: P): p when group_candidate (p, tile_size) => group_build (p, tile_size);
     group;
+
+axm reverse_at: {P C: *} → [producer: P, consumers: C, dim tile_size: Nat] → [P, C];
+axm reverse_legal: {P C: *} → [producer: P, consumers: C, dim tile_size: Nat] → Bool;
+axm reverse_build: {P C: *} → [producer: P, consumers: C, dim tile_size: Nat] → [P, C], normalize_reverse_build;
+
+pub lam reverse_rule (P C: *): Rule [producer: P, consumers: C, dim tile_size: Nat] =
+    rule place (p: P, cs: C, dim tile_size: Nat):
+        reverse_at (p, cs, dim, tile_size)
+        when reverse_legal (p, cs, dim, tile_size) =>
+        reverse_build (p, cs, dim, tile_size);
+    place;
+
+priv axm reverse_source: {T: *, r: Nat} → [s: «r; Nat»]
+    → [producer: «s; T», off ext: «r; Nat»] → «ext; T», normalize_reverse_source;
+priv axm reverse_part: {T: *, r rp: Nat, P C Tile: *}
+    → [consumer: C, producer: P, tile: Tile, off ext: «r; Nat», producer_off producer_ext: «rp; Nat»]
+    → «ext; T», normalize_reverse_part;
 ///
 /// The tensor accumulator descriptor read at each full loop coordinate before reduction.
 ///

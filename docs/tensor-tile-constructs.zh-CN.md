@@ -106,7 +106,7 @@ outer axis 是 canonical nest 的第零 parallel 轴；它本身是 vector loop 
 
 没有照搬 reference 分支的 action/prepack/cache/placement bits：本分支没有这些 record
 字段，stage 是显式 barrier，custom chooser 保守作为 root。
-不支持 reference 的 reverse placement 和跨调用 prepack；halo 的显式 opt-in 路径见 §7.7；
+reverse placement 的显式 opt-in 路径见 §10，halo 见 §7.7；仍不支持跨调用 prepack；
 也没有把其支持的任意 loop order 推广到本分支的 canonical outer-axis strategy。
 reference 会先标记每个 eligible op；此处先选择 terminal group，再在后续快照处理剩余
 whole producer，避免既给 producer 独立分组又在消费者中重建它。
@@ -599,6 +599,77 @@ layernorm 为 1.103/1.382/1.550×；两轮前后均未发现 compiler/build 进�
 保留原来顺序计时的 `results.csv`，其中 1024×1024 softmax 为 2.110/1.901ms，
 不以交替顺序的结果抹掉原始差异，也不声称有大幅 SIMD exp 加速。
 layernorm 消除完整矩阵 intermediate 的往返并复用 row storage，收益明显得多。
+
+## 10. reverse_compute_at Rules（Task 14B）
+
+`reverse_at (p, consumers, dim, tile_size)` 是显式 common root，语义为 `(p, consumers)`。
+`consumers` 可以是一个 MRP，或按执行顺序排列、互不相同的 MRP tuple。
+`reverse_rule (P, C)` 在 `reverse_legal` 成立时将该 root 改写为一个 `tiled_n`：
+slot 0 为 P，随后是 consumers 的原始顺序，不由 tuple 的结果类型推断执行次序。
+例如：
+
+```mim
+let p = product (a, b);
+let (p, cs) = reverse_at (p, (row_sum p, increment p), 0, 2);
+```
+
+策略将对应的 `reverse_rule` 交给 `compile.rule_app` 或 `compile.graph_rule_app`；
+两种 frontend 共用同一个冻结 program snapshot 的 native witness。
+marker 的 decoder 只暴露 P 和 consumer data slots，dim/tile_size 不是 tensor inputs；
+witness 先证明每个 C 对 P 的 `used_by`，再在 scratch World 计算 geometry，
+不修改源 graph、不读取 lowering 的 buffer/placement/cache 状态。
+
+### 10.1 纯 geometry 与拒绝原因
+
+以 P 的 canonical parallel prefix `0..dim` 为 grid：早于 dim 的轴每点一个 index，
+dim 每点最多 tile_size，晚于 dim 的 parallel 轴及全部 reduction 轴留在 tile 内。
+尾块使用 actual extent；这里只重排纯 parallel 工作，不切分或重排 reduction。
+grid 目前展平为一维 literal 点集，最多 65536 点。
+
+geometry 复用 `affine.image/preimage`，逐点要求：
+
+| 前提 | 证明或拒绝 |
+| --- | --- |
+| P/C 的 literal shape、canonical chooser、纯 scalar callbacks | 未知 shape、自定义/clip schedule、未证明纯的 callback 拒绝 |
+| P 写完整结果 | full-domain image exact，origin 为零、extent 为 So |
+| P 单点 write box exact 且唯一 | box 的 full-domain write preimage 恰好等于该 prefix tile，排除另一 grid point 的 writer |
+| C 对 P 的读取有 exact preimage | 全域读取在 P domain 内；每个 P box 的 read preimage exact |
+| C reduction 完整 | 每个 reduction 轴的 preimage 从零覆盖全域；否则报告需要 ordered fold |
+| C 输出由该点独占 | C preimage 的 write image exact，反向 write preimage 恰好为该 C tile |
+| side/post/accumulator 无跨 tile 依赖 | 拒绝间接依赖 P 或选中 sibling consumer；直接 post 读取 P 仅允许 post-map 与 read-map 组合相同 |
+
+每个 C 必须通过恰好一个普通 input 直接读取 P；重复相同 consumer、
+空 consumer tuple、空 placement prefix、非 parallel dim、非正 literal tile size 都拒绝。
+依赖 walk 超过上限也不视为独立。这里不实现跨 tile reduction 的 ordered fold，
+也不把自定义 loop nest 当作 canonical prefix。
+guard 不成立时保留 marker；`lower_tensor` 明确输出拒绝原因并恢复原始 `(P, C)`，
+合法但未运行 Rule 时也报告 `reverse_rule was not applied`。
+
+### 10.2 Tile specialization 与结果复用
+
+producer/consumer 的私有 tile recipes 等 grid point 的 off/ext 成为 literal 后才展开，
+避免 inner-placement 的 `1×1` 尾块携带 whole-size symbolic storage cap。
+P tile 通过已有 `producer_tile` 方程构造；C tile 的普通与 epilogue slices
+都重定位到同一点的 P tile，不再读取 P whole。
+destination lowering 复用 §8 的 slot-order 协议：先写 P owned box，
+随后 C 通过该 destination 的只读 view 读取 P，不重算 P tile。
+reference-tiles 同样执行这些纯 recipes，不需要新的 placement 状态。
+
+本实现始终保留 P whole slot，即使调用方丢弃它；尚无 C-only storage pruning。
+需要共享 whole P 的其它 reader 应使用 marker 返回的 P；
+common-root Rule 不会重定向 marker 外对原始 P 的独立读取。
+独立 side producer 可保留 whole；本次 SwiGLU-shaped `G ⊙ U` 把 H 放进 G 的 row grid，
+U 保持 whole，不声称实现 default-sched 同时附着 G/U 两个 anchors 的 placement。
+
+`tf_reverse_exec` 用两个 frontend、destination/reference lowering 和 ASan 检查
+rowsum、two、swapped、SwiGLU-shaped gating、whole reader、transpose/inner placement、
+直接 P epilogue，均与 I64 scalar reference 比较；每个函数改变输入重复两次。
+`5×3 · 3×7` 的 2-row tail、1-row tiles 和 3-column tail 均覆盖。
+优化 LLVM 的乘法工作量检查为每个单 GEMM 105 次、gating 245 次，
+确认多个 consumer/whole reader 不会重算 P；这是工作量断言，不是计时 benchmark。
+`tf_reverse_reject` 检查两个 frontend 保留非法 markers，且 fallback 输出八类原因；
+unit test 检查冻结源、literal selectors、18-point permutation grid、
+P-before-C slot、尾块 boxes 和 C 对 P tile 的实际 data edge。
 
 ## 4. Destination tiled lowering（Task 8）
 

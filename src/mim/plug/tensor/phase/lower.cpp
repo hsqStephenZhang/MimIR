@@ -90,6 +90,14 @@ const Def* Lower::lower_via_impl(const App* app, const Def* impl) {
 const Def* Lower::rewrite_imm_App(const App* app) {
     auto& w = new_world();
 
+    if (Axm::isa<tensor::reverse_at>(app)) {
+        auto [p, cs, dim, size] = app->args<4>();
+        auto plan               = reverse_tiles(rewrite(p), rewrite(cs), rewrite(dim), rewrite(size));
+        auto report             = w.log();
+        report.set(fe::Log::Level::Warn)
+            .w("tensor.reverse_at not realized: {}", plan.value ? "reverse_rule was not applied" : plan.reason);
+        return w.tuple({rewrite(p), rewrite(cs)});
+    }
     if (Axm::isa<tensor::tile_of>(app)) {
         auto [producer, off, ext] = app->args<3>();
         auto tiled                = producer_tile(rewrite(producer), rewrite(off), rewrite(ext));

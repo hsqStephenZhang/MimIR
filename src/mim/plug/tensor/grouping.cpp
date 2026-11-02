@@ -15,6 +15,8 @@ std::optional<u64> mul(std::optional<u64> a, std::optional<u64> b) {
     return *a * *b;
 }
 
+} // namespace
+
 bool pure_scalar(const Def* fn) {
     auto value = Lam::isa_ret_arg(fn);
     if (!value) return false;
@@ -40,6 +42,8 @@ bool pure_scalar(const Def* fn) {
     }
     return true;
 }
+
+namespace {
 
 class CostImporter : public Rewriter {
 public:
