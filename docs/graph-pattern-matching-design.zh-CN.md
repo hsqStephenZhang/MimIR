@@ -103,6 +103,8 @@ lambda 值本身不是效果；由区域内 enclosing lambda 绑定的函数参�
 即使它们出现在闭合或开放 lambda 的 body 中。
 闭包传给未注册/非纯 axiom 仍通过该 App 拒绝。
 实现只记录沿区域值边遍历到的非 external lambda，不沿 Var 或类型边引入外部 binder；
+参数识别允许固定 Extract 链，因此 tuple 参数内的 callback/return continuation
+与直接 Var 参数具有相同边界；不跨越其他计算或动态投影。
 未改变任何算子纯性注册契约。
 `rules/schpure.mim`、未修改的 `error/grbimp.mim` 和
 `Graph purity: local lambda parameters are parametric but free calls remain protected`

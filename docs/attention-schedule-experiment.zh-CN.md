@@ -542,3 +542,15 @@ pure 高阶 axiom 仍可能调用闭包，`grbimp.mim` 暴露的 effect 不能�
 提交前完整验证：CTest 250/250；
 lit 681 passed / 9 unsupported / 1 failed，唯一失败是 attention_raise WIP，
 见 `parametric-ctest.log`、`parametric-full-lit.log`。
+
+参数化调用主体修复提交为 `c3a249399cc1352b167289e75a58ad4e145a8dff`。
+继续 raising 定位到同一语义的表示遗漏：Mim 的 `fun` 返回 continuation
+是 tuple binder 的固定投影，不是裸 Var，
+例如 `return_400631` 实际来自局部 lambda 参数组。
+补充提交主题为 `fix(pattern): recognize projected local callback parameters`：
+沿固定 Extract 链寻找区域内 binder，不穿过任意计算，也不接受自由 binder。
+既有自由 tuple 参数反例仍拒绝，新增本地 tuple callback 正例通过；
+定向 schpure、grbimp、attention_raise 全部通过。
+
+补充提交前完整验证：CTest 250/250，lit 682 passed / 9 unsupported，
+无失败，见 `proj-parametric-ctest.log`、`proj-parametric-full-lit.log`。

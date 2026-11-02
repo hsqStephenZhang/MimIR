@@ -567,6 +567,11 @@ TEST_CASE("Graph purity: local lambda parameters are parametric but free calls r
         input   = free;
         allowed = false;
     }
+    SUBCASE("closure calls projected local parameter") {
+        auto local = ir.w.mut_lam(ir.w.pi(ir.w.sigma({callback, ir.nat}), ir.nat));
+        local->set(false, ir.w.app(local->var(2, 0), local->var(2, 1)));
+        input = local;
+    }
     SUBCASE("closure calls unregistered axiom") {
         auto effect    = ir.w.axm(callback);
         auto effectful = ir.w.mut_lam(callback);

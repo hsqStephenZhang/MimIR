@@ -330,9 +330,15 @@ public:
             if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>() || def->isa<Pi>()) continue;
             if (auto lam = def->isa<Lam>(); lam && lam->is_external()) continue;
             if (auto app = def->isa<App>()) {
-                auto callee = App::uncurry_callee(app);
-                auto axm    = callee->isa<Axm>();
-                auto var    = callee->isa<Var>();
+                auto callee    = App::uncurry_callee(app);
+                auto axm       = callee->isa<Axm>();
+                auto parameter = callee;
+                while (auto projection = parameter->isa<Extract>()) {
+                    if (!projection->index()->isa<Lit>()) break;
+                    parameter = projection->tuple();
+                    budget_.touch();
+                }
+                auto var = parameter->isa<Var>();
                 DefVec args;
                 for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                     args.push_back(cur->arg());
