@@ -113,6 +113,6 @@ extern fun conv_chain (a: «2, 2, 9, 8; I64», w: «3, 2, 3, 3; I64», v: «2, 3
 // DIRECT-SAME: request reached bufferization without realization
 // REALIZED-NOT: tensor.group_req
 // REALIZED-NOT: tensor.group_region
-// REALIZE-LOG: graph_rule_app skipped unproved replacement
-// REALIZE-LOG-SAME: replacement removes a computation without a purity proof
-// REALIZE-LOG: not realized: reverse multi-root rule did not match the live consumers
+// REALIZE-LOG-NOT: graph_rule_app skipped unproved replacement
+// REALIZE-LOG: first accepted changed rewrite
+// REALIZE-LOG-NOT: not realized: reverse multi-root rule did not match the live consumers

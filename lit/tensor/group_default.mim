@@ -79,10 +79,11 @@ extern fun conv_chain (a: «1, 2, 7, 8; F32», w: «3, 2, 3, 3; F32», v: «2, 3
 
 // OUTCOME: tensor.group_default.pipeline
 // OUTCOME-DAG: not realized: BLIS needs two parallel axes and two inputs
-// OUTCOME-DAG: not realized: reverse multi-root rule did not match the live consumers
 // OUTCOME: finish phase `tensor.group_rules.outcomes`
 // OUTCOME: finish phase `tensor.lower_to_mem`
 // PROFILE-DAG: 3  `rule_app`: `rule.rewrites`
+// PROFILE-DAG: 2  `graph_rule_app`: `graph_rule.rewrites`
 // PROFILE-DAG: 7  `tensor.group`: `tensor.group.requests`
-// REPORTED-COUNT-4: not realized:
+// REPORTED-NOT: replacement removes a computation without a purity proof
+// REPORTED-COUNT-2: not realized:
 // REPORTED-NOT: not realized:

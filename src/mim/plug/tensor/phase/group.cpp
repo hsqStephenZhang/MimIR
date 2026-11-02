@@ -431,9 +431,12 @@ const Def* Group::rewrite_imm_App(const App* app) {
     metadata.map(app, value);
     const Def* params;
     if (request.kind == 2) {
-        for (auto c : request.consumers)
+        for (auto c : request.consumers) {
+            auto callee = c->as<App>()->callee();
+            metadata.map(callee, rewrite(callee));
             for (auto var : c->free_vars())
                 metadata.map(var, rewrite(var));
+        }
         params = w.tuple(metadata.rewrite(request.consumers));
     } else {
         params = metadata.rewrite(request.params);

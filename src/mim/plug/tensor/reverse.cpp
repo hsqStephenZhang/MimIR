@@ -304,6 +304,9 @@ const Def* normalize_reverse_part(const Def*, const Def* callee, const Def* arg)
     auto result = producer_tile(consumer, off, ext);
     if (!result.value) consumer->blame("reverse consumer tile failed: {}", result.reason).bail();
     TileReads rewrite(consumer->world(), producer, tile, poff, pext);
+    auto mr = btensor::MapRedPost::of(result.value->as<App>()->callee()->as<App>());
+    rewrite.map(mr.comb, mr.comb);
+    rewrite.map(mr.post, mr.post);
     for (auto var : result.value->free_vars())
         rewrite.map(var, var);
     return rewrite.rewrite(result.value);

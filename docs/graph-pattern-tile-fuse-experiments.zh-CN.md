@@ -1,5 +1,13 @@
 # P5 tile-and-fuse 实验
 
+## Task 19A.2a：row reverse 的 callback 身份
+
+请求 metadata 复用主 phase 已重写的 consumer callee，TileReads 保留 comb/post。
+这样 live consumer 与请求中的 CPS callback 不再被分别复制，
+graph publication 的原有 purity 保留检查无需放宽。
+5×7 softmax/layernorm 的两个 reverse 请求均实现；
+`group_default.mim` 保留 scalar reference、ASan 和两次 graph rewrite 的计数检查。
+
 ## Task 19A.1：自动 BLIS 与显式 Rule 对齐
 
 自动 selector 曾用 `vec_width 8` 和 32 KiB cache，显式 Rule 用 `vec_width 4` 和
