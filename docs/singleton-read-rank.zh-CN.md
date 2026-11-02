@@ -47,3 +47,32 @@ combiner/post 输入、tensor-init 以及 linear-step accumulator 分析
 以 I64 序列对 group=0/1 都执行 ASan 数值检查，
 输出应逐元素等于输入，并保持独立返回 storage 的所有权。
 保留原有 normalize.mim 中 singleton reshape 的 structural identity 检查。
+
+## 四份模型的重新验证
+
+独立目录只附带 kernel、命令、编译错误/IR，没有输入参数或 PyTorch 输出，
+因此不能声称重放了 gemm-bench 原始随机参数。
+新增 `scripts/check-singleton-models.py <model_fail目录>`：
+使用当前 build/bin/mim 与配对的 build/lib/mim，保留 JSON 原命令其它 flags，
+每份 kernel 分别覆盖 group=0/1，另输出 LLVM；
+以 Homebrew clang++ `-O3 -mcpu=native -dynamiclib` 编译后调用完整 `mim_model`。
+无计时，不使用或修改 B 的 worktree。
+
+纯 Python scalar reference 完整实现原 kernel 的两层 padded conv、residual/ReLU、
+QKV 两头 attention、softmax、输出 projection，以及 transformer 两个 layernorm/MLP。
+三组确定性输入/参数含正负值、零输入和非平凡 layernorm affine weights；
+reference 从传入的 F32 参数值起算，使用 double 标量运算。
+检查输出有限、abs error ≤ `2e-5 + 2e-4*abs(expected)`，并检查输入未被修改；
+每次返回结果均释放。无需安装 Python tensor package。
+
+| reproducer | group=0 | group=1 | 每模式 trials | 最大绝对误差 |
+| --- | --- | --- | ---: | ---: |
+| resnet_mimir_group0 | 编译、数值通过 | 编译、数值通过 | 3 | 0 |
+| resnet_mimir_group1 | 编译、数值通过 | 编译、数值通过 | 3 | 0 |
+| attention_mimir_group1 | 编译、数值通过 | 编译、数值通过 | 3 | 5.263e-8 |
+| transformer_mimir_group1 | 编译、数值通过 | 编译、数值通过 | 3 | 2.558e-7 |
+
+结果 CSV 为 `build/task22/model-numeric.csv`；
+每模式命令、日志、IR 和动态库保留在 `build/task22-model-check/`。
+完整 CTest 243/243，full lit 666 passed、9 unsupported。
+未处理另一会话负责的 VGG16 mem.seo fixed-point 问题。
