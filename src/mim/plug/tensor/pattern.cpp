@@ -171,6 +171,27 @@ std::optional<pattern::OpView> decode_fold(const Def* def, size_t) {
     return pattern::OpView{.inputs = {{args[2], 2, {}}}, .regions = {{args[3], n ? Lit::isa(n) : std::nullopt}}};
 }
 
+std::optional<pattern::OpView> decode_tiled_n(const Def* def, size_t) {
+    auto args = groups(def, 4);
+    if (args.empty()) return {};
+    auto rank                = Lit::isa(slot(args[0], 4, 1));
+    auto grid                = slot(args[1], 2, 1);
+    std::optional<u64> trips = 1;
+    if (!rank || !grid)
+        trips.reset();
+    else
+        for (u64 d = 0; d != *rank; ++d) {
+            auto extent = slot(grid, *rank, d);
+            auto count  = extent ? Lit::isa(extent) : std::nullopt;
+            if (!count || (*count && *trips > std::numeric_limits<u64>::max() / *count)) {
+                trips.reset();
+                break;
+            }
+            *trips *= *count;
+        }
+    return pattern::OpView{.inputs = {}, .regions = {{args[3], trips}}};
+}
+
 } // namespace
 
 const App* map_reduce(const Def* def) { return calls().match(calls().mr, def); }
@@ -202,6 +223,7 @@ void register_operations(pattern::OpRegistry& ops) {
     ops.add(Annex::base<concat>(), decode_concat, true);
     ops.add(Annex::base<slice>(), 4, {{3}}, true);
     ops.add(Annex::base<tiled>(), decode_tiled, false);
+    ops.add(Annex::base<tiled_n>(), decode_tiled_n, false);
     ops.add(Annex::base<tile_fold>(), decode_fold, false);
     ops.add(Annex::base<stage>(), 5, {{4}}, true);
     ops.add(Annex::base<buf>(), 2, {{1}}, true);

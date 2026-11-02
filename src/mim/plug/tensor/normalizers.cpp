@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <limits>
 
 #include <fe/format.h>
 
@@ -14,6 +15,75 @@
 #include "mim/plug/tensor/tensor.h"
 
 namespace mim::plug::tensor {
+
+MultiTilePlan multi_tile_plan(const App* app) {
+    auto [meta, shapes_grid, boxes, body] = app->uncurry_args<4>();
+    auto [n, g, types, ranks]             = meta->projs<4>();
+    auto [shapes, grid]                   = shapes_grid->projs<2>();
+    auto count                            = Lit::expect(n, "a literal tensor.tiled_n result count");
+    auto dims                             = Lit::expect(g, "a literal tensor.tiled_n grid rank");
+    auto plan                             = MultiTilePlan{types, ranks, shapes, grid, boxes, body, {}, {}};
+    u64 trips                             = 1;
+    for (u64 d = 0; d != dims; ++d) {
+        auto extent = Lit::expect(grid->proj(dims, d), "a literal tensor.tiled_n grid extent");
+        if (extent && trips > 65536 / extent)
+            app->blame("tensor.tiled_n ownership proof exceeds 65536 grid points").bail();
+        trips *= extent;
+    }
+    auto& w = app->world();
+    for (u64 t = 0; t != trips; ++t) {
+        DefVec point(dims);
+        auto index = t;
+        for (u64 d = dims; d-- != 0;) {
+            auto extent = Lit::as(grid->proj(dims, d));
+            point[d]    = w.lit_nat(index % extent);
+            index /= extent;
+        }
+        plan.points.push_back(w.tuple(point));
+        auto owned = w.app(boxes, plan.points.back());
+        plan.owned.push_back(DefVec(count, [&](size_t i) { return owned->proj(count, i); }));
+    }
+    for (u64 i = 0; i != count; ++i) {
+        auto rank  = Lit::expect(ranks->proj(count, i), "a literal tensor.tiled_n result rank");
+        auto shape = shapes->proj(count, i);
+        u64 volume = 1, covered = 0;
+        for (u64 d = 0; d != rank; ++d) {
+            auto size = Lit::expect(shape->proj(rank, d), "a literal tensor.tiled_n result extent");
+            if (size && volume > std::numeric_limits<u64>::max() / size)
+                app->blame("tensor.tiled_n result volume overflows").bail();
+            volume *= size;
+        }
+        for (size_t t = 0; t != plan.points.size(); ++t) {
+            auto [off, ext] = plan.owned[t][i]->projs<2>();
+            u64 cells       = 1;
+            for (u64 d = 0; d != rank; ++d) {
+                auto start = Lit::expect(off->proj(rank, d), "a literal tensor.tiled_n owned origin");
+                auto size  = Lit::expect(ext->proj(rank, d), "a literal tensor.tiled_n owned extent");
+                auto limit = Lit::as(shape->proj(rank, d));
+                if (start > limit || size > limit - start)
+                    app->blame("tensor.tiled_n owned box is outside its result").bail();
+                if (size && cells > std::numeric_limits<u64>::max() / size)
+                    app->blame("tensor.tiled_n owned volume overflows").bail();
+                cells *= size;
+            }
+            if (!cells) continue;
+            if (covered > volume - cells) app->blame("tensor.tiled_n owned boxes overlap").bail();
+            covered += cells;
+            for (size_t previous = 0; previous != t; ++previous) {
+                auto [other_off, other_ext] = plan.owned[previous][i]->projs<2>();
+                bool overlap                = true;
+                for (u64 d = 0; d != rank; ++d) {
+                    auto a = Lit::as(off->proj(rank, d)), b = Lit::as(other_off->proj(rank, d));
+                    auto ae = Lit::as(ext->proj(rank, d)), be = Lit::as(other_ext->proj(rank, d));
+                    overlap &= ae && be && a < b + be && b < a + ae;
+                }
+                if (overlap) app->blame("tensor.tiled_n owned boxes overlap").bail();
+            }
+        }
+        if (covered != volume) app->blame("tensor.tiled_n owned boxes do not cover their result").bail();
+    }
+    return plan;
+}
 
 const Def* normalize_group_root(const Def*, const Def*, const Def* producer) {
     auto& w  = producer->world();

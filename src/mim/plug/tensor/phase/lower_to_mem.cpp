@@ -67,9 +67,10 @@ const Def* splat_scalar(const Def* d) {
 /// Is `app` a tensor op whose lowering consumes a LowerToMem::fresh_mem?
 bool wants_fresh_mem(const App* app) {
     return Axm::isa<tensor::tile_of>(app) || Axm::isa<tensor::slice>(app) || Axm::isa<tensor::stage>(app)
-        || Axm::isa<tensor::tile_fold>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::generate>(app)
-        || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::pad>(app)
-        || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app) || Axm::isa<tensor::scatter>(app);
+        || Axm::isa<tensor::tile_fold>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::tiled_n>(app)
+        || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app)
+        || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app)
+        || Axm::isa<tensor::scatter>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -151,6 +152,10 @@ void LowerToMem::collect_tensor_types() {
                 add_tensor_ty(app->type());
             } else if (Axm::isa<tensor::tiled>(app)) {
                 add_tensor_ty(app->type());
+            } else if (Axm::isa<tensor::tiled_n>(app)) {
+                auto plan = multi_tile_plan(app);
+                for (auto type : app->type()->projs(Lit::as(plan.ranks->arity())))
+                    add_tensor_ty(type);
             } else if (Axm::isa<tensor::tile_of>(app)) {
                 add_tensor_ty(app->type());
                 add_tensor_ty(app->arg(3, 0)->type());
@@ -247,25 +252,7 @@ void LowerToMem::collect_tensor_types() {
             // nests) are element-level — TRANSITIVELY, including their local helper lams: e.g. the
             // loop-vector prefixes «r; I32» inside a schedule nest must not be mistaken for value
             // tensors of a recorded «r; I32» tensor type.
-            if (is_tensor_op(app)) {
-                auto args = fe::BFSWorklist<DefSet>();
-                if (Axm::isa<tensor::generate>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::tile_fold>(app))
-                    args.push(app->arg());
-                if (Axm::isa<tensor::map_reduce_post>(app)) {
-                    auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
-                    for (auto helper : {mr.comb, mr.post, mr.sched, mr.map_out, mr.maps, mr.post_maps})
-                        args.push(helper);
-                    if (auto initial = tensor_init(mr)) args.push(initial->map);
-                }
-                while (!args.empty()) {
-                    auto d = args.pop();
-                    if (d->isa<Var>()) continue;
-                    if (auto nested = d->isa<App>(); nested && is_tensor_op(nested)) continue;
-                    if (auto k = d->isa_mut<Lam>()) op_args_.emplace(k);
-                    for (auto op : d->ops())
-                        if (op) args.push(op);
-                }
-            }
+            if (is_tensor_op(app)) record_helpers(app);
         }
 
         for (auto op : def->ops())
@@ -486,6 +473,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
     if (Axm::isa<tensor::splat>(app)) return lower_splat(app);
     if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app);
+    if (Axm::isa<tensor::tiled_n>(app)) return lower_tiled_n(app);
     if (Axm::isa<tensor::tile_fold>(app)) return lower_tile_fold(app);
     if (Axm::isa<tensor::stage>(app)) return lower_stage(app);
     if (Axm::isa<tensor::slice>(app)) {
@@ -953,6 +941,27 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     return scalar_result(app, m, out);
 }
 
+void LowerToMem::record_helpers(const App* app) {
+    auto args = fe::BFSWorklist<DefSet>();
+    if (Axm::isa<tensor::generate>(app) || Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::tiled_n>(app)
+        || Axm::isa<tensor::tile_fold>(app))
+        args.push(app->arg());
+    if (Axm::isa<tensor::map_reduce_post>(app)) {
+        auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
+        for (auto helper : {mr.comb, mr.post, mr.sched, mr.map_out, mr.maps, mr.post_maps})
+            args.push(helper);
+        if (auto initial = tensor_init(mr)) args.push(initial->map);
+    }
+    while (!args.empty()) {
+        auto d = args.pop();
+        if (d->isa<Var>()) continue;
+        if (auto nested = d->isa<App>(); nested && is_tensor_op(nested)) continue;
+        if (auto k = d->isa_mut<Lam>()) op_args_.emplace(k);
+        for (auto op : d->ops())
+            if (op) args.push(op);
+    }
+}
+
 void LowerToMem::record_instance(const Def* root) {
     auto queue = fe::BFSWorklist<DefSet>();
     queue.push(root);
@@ -963,6 +972,7 @@ void LowerToMem::record_instance(const Def* root) {
         auto def = queue.pop();
         if (def->isa<Var>() || def->isa<Axm>()) continue;
         if (auto app = def->isa<App>(); app && is_tensor_op(app)) {
+            record_helpers(app);
             record(app);
             if (Axm::isa<tensor::map_reduce_post>(app)) {
                 auto mr              = btensor::MapRedPost::of(app->callee()->as<App>());
@@ -1120,6 +1130,82 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     if (destination) return call;
     auto [out_mem, out] = call->projs<2>();
     return scalar_result(app, out_mem, out);
+}
+
+const Def* LowerToMem::lower_tiled_n(const App* app) {
+    auto plan  = multi_tile_plan(app);
+    auto& w    = new_world();
+    auto& old  = old_world();
+    auto count = Lit::as(plan.ranks->arity());
+    DefVec buffers(count);
+    auto mem = fresh_mem();
+    for (size_t i = 0; i != count; ++i)
+        std::tie(mem, buffers[i])
+            = buffer::op_alloc(rewrite(plan.ranks->proj(count, i)), rewrite(plan.shapes->proj(count, i)),
+                               rewrite(plan.types->proj(count, i)), mem)
+                  ->projs<2>();
+    auto [run, call]        = btensor::ds_splice(w.tuple({mem, w.tuple(buffers)}),
+                                                 w.sigma({mem->type(), w.tuple(buffers)->type()}), "tiledN");
+    auto [current, outputs] = run->var(2, 0)->projs<2>();
+    auto pending            = fe::Restore(pending_, {});
+    push();
+    bind_new(run->has_var());
+    for (size_t t = 0; t != plan.points.size(); ++t) {
+        auto memo    = fe::Restore(fresh_memo_, {});
+        auto storage = fe::Restore(storage_shapes_, {});
+        auto roots   = old.app(plan.body, plan.points[t]);
+        Rewriter substitutions(old);
+        for (auto var : roots->free_vars())
+            substitutions.map(var, var);
+        for (size_t i = 0; i != count; ++i) {
+            auto rank       = Lit::as(plan.ranks->proj(count, i));
+            auto shape      = plan.shapes->proj(count, i);
+            auto [off, ext] = plan.owned[t][i]->projs<2>();
+            bool empty      = false;
+            for (size_t d = 0; d != rank; ++d)
+                empty |= Lit::as(ext->proj(rank, d)) == 0;
+            if (empty) continue;
+            auto root  = roots->proj(count, i);
+            auto value = substitutions.rewrite(root);
+            auto result
+                = lower_into(value, {current, outputs->proj(count, i), rewrite(shape), rewrite(off), rewrite(ext)});
+            current = result->proj(2, 0);
+            if (!root->type()->isa<Arr>()) {
+                auto proxy = old.mut_lam(old.pi(root->type(), old.type_nat()));
+                auto value = proxy->var();
+                bind_old(proxy->has_var());
+                auto index = w.tuple(DefVec(rank, [&](size_t d) {
+                    return w.lit_idx(Lit::as(shape->proj(rank, d)), Lit::as(off->proj(rank, d)));
+                }));
+                auto [next, scalar]
+                    = buffer::op_read(current, outputs->proj(count, i), *Shape(index).fold(rewrite(shape)))->projs<2>();
+                current = next;
+                map(value, scalar);
+                substitutions.map(root, value);
+                continue;
+            }
+            auto proxy = old.mut_lam(old.pi(old.arr(shape, plan.types->proj(count, i)), old.type_nat()));
+            proxy->var();
+            bind_old(proxy->has_var());
+            map(proxy->var(), outputs->proj(count, i));
+            auto slice = old.app(old.annex<tensor::slice>(), {plan.types->proj(count, i), plan.ranks->proj(count, i)});
+            slice      = old.app(slice, shape);
+            slice      = old.app(slice, {off, old.pack(rank, old.lit_nat(1)), ext});
+            substitutions.map(root, old.app(slice, proxy->var()));
+        }
+    }
+    run->app(true, run->ret_var(), w.tuple({current, outputs}));
+    run->set(true, wrap_fresh_mem(run->body()));
+    pop();
+    auto [done, results] = call->projs<2>();
+    return w.tuple(DefVec(count, [&](size_t i) -> const Def* {
+        auto result = results->proj(count, i);
+        if (app->type()->proj(count, i)->isa<Arr>()) return result;
+        auto [r, shape, type] = Axm::isa<buffer::Buf>(result->type())->args<3>();
+        auto rank             = Lit::as(r);
+        auto zero = w.tuple(DefVec(rank, [&](size_t d) { return w.lit_idx(Lit::as(shape->proj(rank, d)), 0); }));
+        return buffer::op_read(done, result, zero)->proj(2, 1);
+    }));
 }
 
 const Def* LowerToMem::lower_stage(const App* app) {

@@ -1619,6 +1619,54 @@ axm tiled: {T: *, r: Nat}
          → [body: [off ext: «r; Nat»] → «ext; T»]
          → «s; T», normalize_tiled;
 
+axm tile_fold: {Acc: *}
+             → [n ks: Nat]
+             → [init: Acc]
+             → [step: [acc: Acc, off: Nat] → Acc]
+             → Acc, normalize_tile_fold;
+
+anx lam TileBox (r: Nat): * = [off ext: «r; Nat»];
+axm tiled_n: {n g: Nat, Ts: «n; *», rs: «n; Nat»}
+           → [shapes: «i: n; «rs#i; Nat»», grid: «g; Nat»]
+           → [boxes: «g; Nat» → «i: n; TileBox (rs#i)»]
+           → [body: [point: «g; Nat»] → «i: n; «(boxes point)#i#tt; Ts#i»»]
+           → «i: n; «shapes#i; Ts#i»»;
+
+priv anx lam tiled_n_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
+    (shapes: «i: n; «rs#i; Nat»», grid: «g; Nat»)
+    (boxes: «g; Nat» → «i: n; TileBox (rs#i)»)
+    (body: [point: «g; Nat»] → «i: n; «(boxes point)#i#tt; Ts#i»»): «i: n; «shapes#i; Ts#i»» =
+    let count = vec.fold.r @(Nat, Nat) @g core.nat.mul (grid, 1);
+    let Results = «i: n; «shapes#i; Ts#i»»;
+    let init = ‹i: n; splat (shapes#i, ⊥:(Ts#i))›;
+    lam step (acc: Results, index: Nat): Results =
+        let point = ‹d: g;
+            let stride = vec.fold.r @(Nat, Idx g) @g
+                (λ (j: Idx g, value: Nat): Nat = value * (1, grid#j)#(core.idx2nat j > core.idx2nat d))
+                (‹j: g; j›, 1);
+            index / stride % grid#d›;
+        let owned = boxes point;
+        let tiles = body point;
+        ‹i: n;
+            let (off, ext) = owned#i;
+            lam at (x: «rs#i; I64»): Ts#i =
+                let local = ‹d: rs#i; core.bitcast Nat (x#d) - off#d›;
+                let valid = vec.scan.for_all @(Idx (rs#i)) @(rs#i)
+                    (λ (d: Idx (rs#i)): Bool =
+                        core.bit2.and 0 (off#d <= core.bitcast Nat (x#d), local#d < ext#d)) ‹d: rs#i; d›;
+                fun read (): Ts#i =
+                    (old_value, tile_value)#valid ()
+                    where
+                        con old_value () = return (acc#i#‹d: rs#i; core.idx 0 (shapes#i#d) (core.bitcast Nat (x#d))›);
+                        con tile_value () = return (tiles#i#‹d: rs#i; core.idx 0 (ext#d) (local#d)›);
+                    end;
+                cps.cps2ds read ();
+            generate (shapes#i) at›;
+    lam run (index: Nat, acc: Results)@core.pe.is_closed (count, index): Results =
+        (λ (): Results = acc,
+         λ (): Results = run (index + 1, step (acc, index)))#(index < count) ();
+    run (0, init);
+
 priv anx lam group_impl {T: *, r: Nat, s: «r; Nat»} (p: «s; T», ts: «r; Nat»): «s; T» =
     tiled @(T, r) (s, ts) (λ (off ext: «r; Nat»): «ext; T» = tile_of (p, off, ext));
 
@@ -1646,12 +1694,6 @@ priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat»)
             )#(d < r) ();
         peel (0, ts);
     generate s at;
-
-axm tile_fold: {Acc: *}
-             → [n ks: Nat]
-             → [init: Acc]
-             → [step: [acc: Acc, off: Nat] → Acc]
-             → Acc, normalize_tile_fold;
 
 priv anx lam tile_fold_impl {Acc: *} (n ks: Nat) (init: Acc)
     (step: [acc: Acc, off: Nat] → Acc): Acc =

@@ -28,6 +28,14 @@ struct ProducerTile {
 
 ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext);
 
+struct MultiTilePlan {
+    const Def *types, *ranks, *shapes, *grid, *boxes, *body;
+    DefVec points;
+    fe::Vector<DefVec> owned;
+};
+
+MultiTilePlan multi_tile_plan(const App*);
+
 inline std::optional<TensorInit> tensor_init(const btensor::MapRedPost& mr) {
     if (Check::test_alpha(mr.init->type(), mr.To)) return {};
     auto& w         = mr.init->world();

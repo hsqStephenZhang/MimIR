@@ -207,6 +207,41 @@ benchmark 使用未插桩的可执行文件；乘法计数只用于归因，不�
 本任务不实现 diamond realization cache，因此这里明确保留限制，
 不把“两个 contraction 都匹配了 BLIS Rule”称为两个 GEMM 间的高效融合。
 
+## 8. Multi-result tiles（Task 13A.1）
+
+`tiled_n @(n, g, Ts, rs) (shapes, grid) boxes body` 在一个共享 grid 上产生 n 个结果。
+grid 给出每轴的 point 数量，不是元素总数；point 为 row-major 的 Nat 坐标。
+`boxes point` 的第 i 个 slot 是 `[off, ext]: TileBox (rs#i)`，
+body 在同一 point 返回 `«i: n; «(boxes point)#i#tt; Ts#i»»`。
+不同 slot 可以有不同 rank、shape、元素类型和 owned box。
+每个结果各有一个全尺寸 destination，point 顺序为 row-major，point 内 slot 顺序为求值顺序。
+
+当前 ownership proof 接受 literal rank/shape/grid、逐 point 可 β-reduce 为 literal 的 boxes；
+最多枚举 65536 个 points，超出或未知时明确诊断，不猜测 ownership。
+每个 owned box 必须位于对应结果内；同一结果的非空 boxes 必须两两不交，
+其体积总和必须等于结果体积。由此每个结果元素恰好写一次。
+空 owned boxes 不执行相应 slot；空 grid 只能产生空结果；
+rank-0 的标量结果只有一个拥有者。零 result count 允许空 tuple。
+此版 destination 显式展开 grid，尚未把相同 extents 的 points 压回运行时 loop；
+因此大型 grid 的编译规模和 reference specialization fuel 仍有限制。
+
+reference `_impl` 按同一 grid 更新不可变结果 tuple：
+每步调用 body，将各 owned box 的元素插入对应旧结果。
+成员测试同时检查 `global >= off` 和 `global - off < ext`，不能依赖 Nat 减法下溢。
+destination 路径只分配各结果自己的 destination；
+按 slot 顺序用 `lower_into` 写入 owned box，再将该 slot 的原 tile 值替换为结果的只读 slice，
+后续 slots 从已写结果读，不重新计算该 tile。
+memory token 显式依次经过所有 slots；不同 point 的 owned 区域不重叠。
+普通 fallback 仍可能需要 temporary+copy，不把它声称为 in-place producer。
+
+`tiled_n_exec` 对 reference/destination 验证：
+5×3 的 doubled producer 与每行 sum 两个不同 rank 结果、tail、whole-reader、
+空 grid、rank-0/singleton，以及 2×3 grid 上 I64/I32 两个转置 ownership 结果。
+`tiled_n_invalid` 在两条 pipeline 拒绝重叠、缺口、越界、空 grid 非空结果。
+graph registry 把 body 登记为 region 并提供 literal trip count；
+尚无 tiled_n 专用 cost witness 时，fusion budget 保留 Unknown。
+没有修改 tile_of 的 normalizer。
+
 ## 4. Destination tiled lowering（Task 8）
 
 默认 `lower_tensor` 保留 tiled，`lower_to_mem` 顺序遍历 tile grid；

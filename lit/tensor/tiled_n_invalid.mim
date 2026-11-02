@@ -1,0 +1,1 @@
+// RUN: python3 %S/tiled_n_invalid.py %mim %t.dir
