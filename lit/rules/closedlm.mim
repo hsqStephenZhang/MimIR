@@ -3,19 +3,30 @@
 plugin compile;
 
 axm mark: [[T: *] → (Nat → T) → T, Nat] → Nat;
+axm pair: [Nat → Nat, Nat → Nat, Nat] → Nat;
 
 lam schedule (T: *) (mk: Nat → T): T = mk 3;
 lam other (T: *) (mk: Nat → T): T = mk 4;
+lam inc (x: Nat): Nat = x;
+lam first (x: Nat): Nat = x;
+lam second (x: Nat): Nat = x;
 
 rule remove (x: Nat): mark (schedule, x) => x;
+rule unpair (x: Nat): pair (inc, inc, x) => x;
 
 extern lam hit (x: Nat): Nat = mark (schedule, x);
 extern lam miss (x: Nat): Nat = mark (other, x);
+extern lam shared (x: Nat): Nat = pair (first, first, x);
+extern lam distinct (x: Nat): Nat = pair (first, second, x);
 
 extern lam _compile (): compile.Phase =
-    compile.phases tt (compile.cleanup, compile.rule_app remove, compile.cleanup);
+    compile.phases tt (compile.cleanup, compile.rule_app (remove, unpair), compile.cleanup);
 
+// CHECK-LABEL: extern lam distinct
+// CHECK-NOT: pair
 // CHECK-LABEL: extern lam hit
 // CHECK-NOT: mark
 // CHECK-LABEL: extern lam miss
 // CHECK: mark
+// CHECK-LABEL: extern lam shared
+// CHECK-NOT: pair

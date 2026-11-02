@@ -184,9 +184,7 @@ Pattern RulePattern::lower(const Def* def) {
         auto alpha  = program_.where(value, {value}, [def](std::span<const Def* const> values) {
             return Check::test_alpha(def, values[0]) ? CheckResult::True : CheckResult::False;
         });
-        auto result = program_.either(program_.exact(def), alpha);
-        lowered_.emplace(def, result);
-        return result;
+        return program_.either(program_.exact(def), alpha);
     }
     if (auto app = def->isa<App>())
         if (auto var = App::uncurry_callee(app)->isa<Var>(); var && var->binder()->isa<Lam>())
