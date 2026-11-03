@@ -1,0 +1,29 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// RUN: python3 %S/tf_run.py %mim %s %t graph > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// TF-RULES: (higher)
+// TF-PURE: nest, done, twice
+
+plugin compile;
+axm nest: ((Nat → Nat) → Nat) → Nat;
+axm done: ((Nat → Nat) → Nat) → Nat;
+axm twice: Nat → Nat;
+rule higher (x: Nat): nest (λ (f: Nat → Nat): Nat = f x) =>
+    done (λ (f: Nat → Nat): Nat = f (twice x));
+extern lam hit (x: Nat): Nat = nest (λ (f: Nat → Nat): Nat = f x);
+extern lam miss (g: Nat → Nat, x: Nat): Nat = nest (λ (f: Nat → Nat): Nat = g x);
+extern lam nested (x: Nat): Nat = nest (λ (f: Nat → Nat): Nat = f (f x));
+
+// CHECK-LABEL: extern lam hit
+// CHECK: lam [[HB:[a-zA-Z_][a-zA-Z_0-9]*]] ([[HF:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat → Nat)
+// CHECK: [[HF]] (twice
+// CHECK: done [[HB]]
+// CHECK-LABEL: extern lam miss
+// CHECK: nest
+// CHECK-NOT: done
+// CHECK-LABEL: extern lam nested
+// CHECK: lam [[NB:[a-zA-Z_][a-zA-Z_0-9]*]] ([[NF:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat → Nat)
+// CHECK: [[NI:[a-zA-Z_][a-zA-Z_0-9]*]] = [[NF]]
+// CHECK: [[NF]] (twice [[NI]])
+// CHECK: done [[NB]]

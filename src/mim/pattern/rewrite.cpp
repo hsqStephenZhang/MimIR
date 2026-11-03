@@ -10,6 +10,14 @@
 
 namespace mim::pattern {
 
+namespace {
+const Lam* param_binder(const Def* callee) {
+    if (auto extract = callee->isa<Extract>()) callee = extract->tuple();
+    if (auto var = callee->isa<Var>()) return var->binder()->isa<Lam>();
+    return nullptr;
+}
+} // namespace
+
 RewritePlan::RewritePlan(const GraphMatch& match)
     : snapshot_(match.snapshot())
     , reads_(match.reads().begin(), match.reads().end()) {
@@ -109,7 +117,12 @@ public:
     const Def2Def* captures    = nullptr;
     const Def* rewrite_mut_Lam(Lam* lam) override {
         auto fresh = world().mut_lam(rewrite(lam->type())->as<Pi>());
-        if (pattern && captures) pattern->map_binder(lam, fresh, *this, *captures);
+        if (pattern && captures) {
+            pattern->map_binder(lam, fresh, *this, *captures);
+            for (auto [meta, value] : *captures)
+                if (meta->isa<Lam>()) locals_.emplace(value);
+        }
+        locals_.emplace(lam);
         return rewrite_stub(lam, fresh);
     }
     const Def* lookup(const Def* def) override {
@@ -121,8 +134,10 @@ public:
     }
 
     const Def* rewrite_imm_App(const App* app) override {
-        auto axm = App::uncurry_callee(app)->isa<Axm>();
+        auto head = App::uncurry_callee(app);
+        auto axm  = head->isa<Axm>();
         if (!axm && app->type()->isa<Type>()) return Rewriter::rewrite_imm_App(app);
+        if (auto binder = param_binder(head); binder && locals_.contains(binder)) return Rewriter::rewrite_imm_App(app);
         if (!axm) throw InstantiationFailure("graph Rule RHS may only introduce axiom calls");
         std::vector<const Def*> source;
         for (auto cur = app; cur; cur = cur->callee()->isa<App>())
@@ -165,6 +180,7 @@ public:
 
 private:
     const GraphView& graph_;
+    DefSet locals_;
 };
 
 } // namespace
@@ -220,6 +236,10 @@ public:
                             continue;
                         if (!graph.is_contained(value) && !value->has_free_vars())
                             throw std::invalid_argument("RHS instantiation has foreign capture bindings");
+                        DefSet locals;
+                        for (auto [source, target] : entry.bindings)
+                            if (source->isa<Lam>())
+                                if (auto lam = target->isa<Lam>()) locals.emplace(lam);
                         DefVec pending{value};
                         DefSet seen;
                         for (size_t i = 0; i != pending.size(); ++i) {
@@ -228,12 +248,15 @@ public:
                             if (!seen.insert(source).second) continue;
                             if (auto app = source->isa<App>()) {
                                 if (app->callee()->isa<Idx>()) continue;
-                                auto axm = App::uncurry_callee(app)->isa<Axm>();
+                                auto callee = App::uncurry_callee(app);
+                                auto axm    = callee->isa<Axm>();
                                 DefVec args;
                                 for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                                     args.push_back(cur->arg());
                                 std::ranges::reverse(args);
-                                if (!axm || !graph.is_pure_call(axm->flags(), args))
+                                auto binder = param_binder(callee);
+                                if (!(binder && locals.contains(binder))
+                                    && (!axm || !graph.is_pure_call(axm->flags(), args)))
                                     throw InstantiationFailure("RHS binder capture includes an unproved computation");
                                 for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                                     pending.push_back(cur->arg());

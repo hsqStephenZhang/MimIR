@@ -1,0 +1,21 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule > %t.out 2> %t.log
+// RUN: cat %t.out | %FileCheck %s
+// TF-RULES: (retile)
+// TF-PURE: mark, tile
+
+plugin compile;
+axm mark: [[T: *] → (Nat → T) → T, Nat] → Nat;
+axm tile: [Nat, Nat] → Nat;
+rule retile (t x: Nat): mark (λ (T: *) (mk: Nat → T): T = mk t, x) => tile (t, x);
+extern lam three (x: Nat): Nat = mark (λ (T: *) (mk: Nat → T): T = mk 3, x);
+extern lam seven (x: Nat): Nat = mark (λ (U: *) (k: Nat → U): U = k 7, x);
+extern lam fixed (x: Nat): Nat = mark (λ (T: *) (mk: Nat → T): T = mk x, x);
+
+// CHECK-LABEL: extern lam fixed
+// CHECK: tile ‹2; x›
+// CHECK-LABEL: extern lam seven
+// CHECK: tile (7, {{.*}})
+// CHECK-NOT: mark
+// CHECK-LABEL: extern lam three
+// CHECK: tile (3, {{.*}})
+// CHECK-NOT: mark

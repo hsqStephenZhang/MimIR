@@ -110,6 +110,11 @@ lambda 值本身不是效果；由区域内 enclosing lambda 绑定的函数参�
 `Graph purity: local lambda parameters are parametric but free calls remain protected`
 验证这一边界。
 
+同一口径适用于 Rule LHS 与 RHS：调用 pattern lambda 自身参数是一阶结构匹配，参数映射到目标 binder 的变量。
+RHS 可以调用 RHS lambda 或已匹配源 lambda 的参数；调用其他未知函数仍被拒绝。
+`?F x` 形式的元变量调用只做语法匹配，不做高阶合一。
+`rules/grho.mim` 与 `rules/schedarg.mim` 覆盖这一点，后者从调度闭包 `λ T.λ mk.mk t` 中取出 `t`。
+
 导入的 immutable 子图也参与替换依赖检查，因此 `a → import(b)`、`b → import(a)`，以及通过更深子表达式形成的循环都会在构建目标图前被拒绝。带排他使用条件或 native Where 的匹配保守地记录更宽的读取范围，避免批量提交使分析条件失效。
 
 有 scope 时，目前要求一个已定义、闭合的 mutable Lam。重建为它建立新 stub 和 Var 映射，并为其他函数使用独立 importer：同一个 hash-consed Def 在其他函数内保留原实现。所有原 external roots 都被保留。无 scope 时只重建显式的闭合 roots，结果可供调用方继续处理，不允许将其直接发布为整个程序。

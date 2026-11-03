@@ -187,10 +187,6 @@ Pattern RulePattern::lower(const Def* def) {
         });
         return program_.either(program_.exact(def), alpha);
     }
-    if (auto app = def->isa<App>())
-        if (auto var = App::uncurry_callee(app)->isa<Var>(); var && var->binder()->isa<Lam>())
-            rule_->blame("Rule LHS bound function application requires higher-order matching").bail();
-
     if (auto lam = def->isa<Lam>()) {
         auto variable = program_.capture();
         if (auto var = lam->has_var()) captures_.emplace(var, variable);
