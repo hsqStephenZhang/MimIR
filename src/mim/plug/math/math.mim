@@ -8,7 +8,9 @@
 /// It comes before the implicit `pe` so that currying it - `math.arith.add 0` - still yields a value polymorphic in `pe`.
 ///
 /// [TOC]
-///
+
+import compile;
+
 /// ## Types
 ///
 /// ### F
@@ -369,3 +371,11 @@ pub mod ops
         pub let `>= =   cmp.ge  mode.fast;
     end
 end
+///
+/// ## Phases
+///
+/// ### lower_exp
+///
+/// Expands the F32 `math.exp.exp` into arithmetic the LLVM vectorizers can vectorize; `-X math:exp-poly=0` disables it.
+///
+axm lower_exp: compile.Phase;

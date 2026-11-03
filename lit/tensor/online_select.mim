@@ -1,7 +1,8 @@
-// RUN: %mim %s -o - | %FileCheck %s --check-prefix=DEFAULT
-// RUN: %mim %s -o - -X tensor:vec-width=4 | %FileCheck %s --check-prefix=NARROW
-// RUN: %mim %s -o - -X tensor:group-registers=64 | %FileCheck %s --check-prefix=LARGE
-// RUN: %mim %s -o - -X tensor:group=0 | %FileCheck %s --check-prefix=OFF
+// RUN: %mim %s -o - -X tensor:attention-online=1 | %FileCheck %s --check-prefix=DEFAULT
+// RUN: %mim %s -o - | %FileCheck %s --check-prefix=OFF
+// RUN: %mim %s -o - -X tensor:attention-online=1 -X tensor:vec-width=4 | %FileCheck %s --check-prefix=NARROW
+// RUN: %mim %s -o - -X tensor:attention-online=1 -X tensor:group-registers=64 | %FileCheck %s --check-prefix=LARGE
+// RUN: %mim %s -o - -X tensor:attention-online=1 -X tensor:group=0 | %FileCheck %s --check-prefix=OFF
 // RUN: %mim %s -o - -X tensor:attention-online=0 | %FileCheck %s --check-prefix=OFF
 
 plugin tensor;

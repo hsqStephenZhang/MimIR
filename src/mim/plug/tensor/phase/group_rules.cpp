@@ -138,8 +138,9 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     auto builder = w.app(w.annex<group_blis_batch_impl>(),
                          {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps, w.lit_nat(batch), mr.Ris});
     builder      = w.app(builder, {mr.Sis, w.tuple(DefVec(batch, [&](size_t d) { return w.lit_nat((*shape)[d]); }))});
+    // group_blis_batch_impl copies each batch's A into a row-major (M, K) operand, which needs no second pack.
     builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
-                                   w.lit_nat(nc), w.lit_nat(kc), w.lit_bool(!direct_a)});
+                                   w.lit_nat(nc), w.lit_nat(kc), w.lit_ff()});
     builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps, w.tuple(reads)});
     return {w.app(builder, app->arg()), {}};
 }
@@ -507,7 +508,7 @@ void GroupDefault::start() {
 void AttentionSchedule::start() {
     if (driver().is_loaded("gpu") || !driver().arg_nat("tensor", "group").value_or(1)
         || !driver().arg_nat("tensor", "attention").value_or(1)
-        || !driver().arg_nat("tensor", "attention-online").value_or(1))
+        || !driver().arg_nat("tensor", "attention-online").value_or(0))
         return;
     auto& w     = world();
     auto params = w.tuple({w.lit_nat(16), w.app(w.annex<vec_width>(), w.lit_nat(8)),

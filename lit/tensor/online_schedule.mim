@@ -1,4 +1,4 @@
-// RUN: %mim %s -o %t.auto
+// RUN: %mim %s -X tensor:attention-online=1 -o %t.auto
 // RUN: %mim %s -X tensor:attention-online=0 -o %t.manual
 // RUN: %FileCheck %s < %t.auto
 // RUN: diff %t.auto %t.manual
