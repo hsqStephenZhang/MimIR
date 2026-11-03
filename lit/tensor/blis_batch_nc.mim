@@ -1,0 +1,21 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang++ -O2 -std=c++23 -fsanitize=address %S/blis_batch_nc_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: sed 's/@malloc(/@counted_malloc(/g' %{s:stem}.ll > %t.count.ll
+// RUN: clang++ -O2 -std=c++23 -DCOUNT_MALLOC %S/blis_batch_nc_aux.cpp %t.count.ll -o %t.count -Wno-override-module
+// RUN: %t.count
+
+// Batched contractions whose N equals the BLIS NC block leave group_blis_impl a single (M, NC) tile.
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let mode = math.mode.contract;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add mode, math.arith.mul mode);
+
+extern fun short_k (a: tensor.Tensor 3 (2, 8, 64) F32, b: tensor.Tensor 3 (2, 256, 64) F32): tensor.Tensor 3 (2, 8, 256) F32 =
+    return (tensor.dot_product R @(3, 3) @(1, 1) (2₃, 2₃, 0₃, 0₃) (tensor.buf a, tensor.buf b));
+extern fun long_k (a: tensor.Tensor 3 (2, 8, 300) F32, b: tensor.Tensor 3 (2, 256, 300) F32): tensor.Tensor 3 (2, 8, 256) F32 =
+    return (tensor.dot_product R @(3, 3) @(1, 1) (2₃, 2₃, 0₃, 0₃) (tensor.buf a, tensor.buf b));

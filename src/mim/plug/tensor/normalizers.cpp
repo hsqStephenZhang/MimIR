@@ -387,6 +387,25 @@ const Def* normalize_tile_of_box(const Def*, const Def*, const Def* arg) {
     return producer_tile(producer, off, ext, cap).value;
 }
 
+namespace {
+
+bool nests_region(const Def* body) {
+    DefVec pending{body};
+    DefSet seen{body};
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (Axm::isa<tensor::tiled>(def) || Axm::isa<tensor::tile_fold>(def) || Axm::isa<tensor::tiled_n>(def)
+            || Axm::isa<tensor::tiled_multi>(def))
+            return true;
+        if (def->isa<Axm>()) continue;
+        for (auto op : def->ops())
+            if (op && seen.insert(op).second) pending.push_back(op);
+    }
+    return false;
+}
+
+} // namespace
+
 const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
     auto [meta, shapes, input_type, inputs] = c->as<App>()->uncurry_args<4>();
     check_region_inputs(body, c);
@@ -399,7 +418,9 @@ const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
                 auto& w = c->world();
                 return w.app(w.app(w.annex<tensor::splat>(), meta), {s, w.bot(meta->proj(2, 0))});
             }
-        if (s == ts)
+        // An open body may be a copy that an enclosing reduction is still filling; reducing it now leaves stale vars.
+        // A nested region keeps its destination only through this region's boundary.
+        if (s == ts && body->is_closed() && !nests_region(body))
             return c->world().app(c->world().app(body, {c->world().pack(*rank, c->world().lit_nat(0)), s}), inputs);
     }
     return nullptr;
