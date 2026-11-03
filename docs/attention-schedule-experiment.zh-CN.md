@@ -1250,3 +1250,125 @@ attention的BM2 carry共528字节，故每个row tile增加3次allocation及528�
 这符合修订预测，见 `ownership-preview/counts.json`。
 定向回归8/8、CTest257/257、完整lit700通过/9 unsupported，
 见 `ownership-targeted.log`、`ownership-ctest.log`、`ownership-lit.log`。
+
+## 新状态最终验证：181准入修复与921结果所有权修复
+
+机制修复提交为 `921dd02fde676febd55036b1150f48608de5be3a`
+（`fix(tensor): return owned buffers from product folds`）。
+单独保留 `compiler-921dd02fde`，完整重建并通过CTest257/257、
+lit700/9 unsupported后，再测全部16个完整模型auto/manual实例。
+36份复用基线再次通过strip后的逐字节比较，
+见 `owned_baseline_provenance.json`；
+因此旧core和group=0/current基线仍有效，不混用未经校验的版本。
+这是18aab8fc9e到921dd02fde的固定快照比较，
+没有对中间每个提交单独消融，也不把全部速度收益拆分归因到某一个提交。
+
+### 时间、结构与正确性
+
+仍为单线程、相同FP32模式及atol=rtol=2e-4，每个时间是至少3次中位数。
+表中的独立进程时间来自 `models_<L>_<variant>_921dd02fde/results.json`；
+同进程列来自3组交替批次，单位均为ms。
+eager是各auto运行配对的完整模型ATen/OpenBLAS基线，不是孤立core的Python计时。
+
+| 模型 | L | auto | manual | 同进程auto/manual | eager |
+|---|---:|---:|---:|---:|---:|
+| attention | 128 | 19.266 | 19.437 | 19.275 / 19.453 | 7.235 |
+| attention | 512 | 155.097 | 154.583 | 157.606 / 158.034 | 37.443 |
+| attention | 1024 | 515.318 | 556.252 | 525.626 / 527.075 | 102.801 |
+| attention | 2048 | 1931.884 | 1976.703 | 1947.344 / 2011.817 | 321.462 |
+| transformer | 128 | 33.343 | 34.002 | 33.953 / 34.371 | 19.780 |
+| transformer | 512 | 206.742 | 238.928 | 210.171 / 210.533 | 85.081 |
+| transformer | 1024 | 678.270 | 674.256 | 632.121 / 636.518 | 207.608 |
+| transformer | 2048 | 2151.596 | 2236.814 | 2228.959 / 2251.975 | 514.073 |
+
+8对最终LLVM在只strip非语义信息后全部逐字节相同，
+不只是采用了同一个tile参数；动态计数也逐项相同。
+同进程偏差最大约3.2%，兑现≤10%的预测。
+独立进程的transformer L512差约15.6%，没有隐藏；
+该差异在同进程比较不复现，不能归因于调度结构不同，
+本实验未进一步定位其环境/时序来源。
+对应记录为 `model_schedule_comparison_921dd02fde.json`、
+`owned_summary.json`、`summarize_owned_results.py`。
+
+所有计时与优化后插桩实例均通过原容差，
+计时最大绝对误差attention≤1.79e-7、transformer≤3.82e-6。
+插桩所用原始LLVM的SHA256逐个与实际计时文件核对，
+没有拿另一份重新生成的程序代替被测程序。
+
+### 优化后存储与工作量
+
+继续先clang -O3再插桩，覆盖malloc、calloc、free、标量/向量exp及乘项。
+最终记录是 `native_counts_921dd02fde.json`，16例释放输出后均剩0字节。
+下表为heap计数与显式LLVM alloca payload，单位bytes；
+后者仍不是物理stack峰值或spill测量。
+
+| 模型 | L | heap allocation次数 | 累计heap bytes | heap峰值 | 显式alloca payload |
+|---|---:|---:|---:|---:|---:|
+| attention | 128 | 66135 | 41379840 | 2359296 | 0 |
+| attention | 512 | 854103 | 232759296 | 8650752 | 0 |
+| attention | 1024 | 3280983 | 710885376 | 17039360 | 0 |
+| attention | 2048 | 12853335 | 2431549440 | 33816576 | 0 |
+| transformer | 128 | 66303 | 65760768 | 4325376 | 512 |
+| transformer | 512 | 854271 | 273659904 | 16515072 | 2048 |
+| transformer | 1024 | 3281151 | 773812224 | 32768000 | 4096 |
+| transformer | 2048 | 12853504 | 2538536960 | 65282048 | 0 |
+
+这四点的heap+显式alloca峰值分别符合
+attention `16384*L+262144`、transformer `31748*L+262144`，
+仅是本形状组的实测关系，不外推为任意形状的预算证明。
+没有恢复完整S/P，峰值线性空间预测兑现；
+但attention的allocation次数符合 `3*L²+132*L+87`，
+transformer仅多168次（L2048因一个alloca转heap而多169次）。
+因此线性峰值不等于线性allocation次数或流量：
+L2048 attention累计分配约2.43GB，明显偏离寄存器carry的理想执行。
+新QKV tiled producer使保守顺序scratch guard不再准入，
+每个K2块的临时量重复分配；本次没有放宽该安全guard来掩盖成本。
+
+所有exp计数仍恰为1.125E。
+下表最后一列是新online相对对应current基线多出的乘项，两模型相同：
+
+| L | attention乘项 | transformer乘项 | 相对current增量 |
+|---|---:|---:|---:|
+| 128 | 328949760 | 933322752 | 1597440 |
+| 512 | 1639317504 | 4056809472 | 25559040 |
+| 1024 | 4141350912 | 8976334848 | 102236160 |
+| 2048 | 11733565440 | 21403533312 | 408944640 |
+
+增量全部等于 `12*L*ceil(L/8)*65`，只剩预期carry rescale；
+原先多出的 `3*L*768²` QKV项消失。
+这超出“只恢复leaf、仍保留重复projection”的保守预测，判为正向偏离。
+`hoist-trace.log`已有QKV及output的contraction请求；
+921只修buffer所有权，不更改该group策略。
+准入改写与单次QKV工作量同时出现，说明不能只把它理解成
+对原来两份工作换更快leaf；但这也不是任意跨region DAG都单次realization的证明。
+
+### 新状态逐项判定及表达能力修订
+
+| 预测 | 实测 | 判定 |
+|---|---|---|
+| core及旧模型基线不变 | 原始hash不同，36对strip后完全一致 | 原始字节预测偏离；计算结构不变，允许复用基线 |
+| QKV恢复BLIS，BM2/BK8不变 | 新contraction请求，8对手动/自动LLVM一致 | confirmed |
+| QKV重复工作仍存在 | 全量重复项消失，仅剩carry rescale | deviates，正向结构效果超出预测 |
+| exp1.125E、线性峰值、不恢复S/P | 全部符合；16例释放输出后0字节 | confirmed，需921所有权修复 |
+| 结果buffer只靠固定bank即可释放 | 回归仍泄漏；最终需独立owned结果及copy | deviates，已明确增加容量与分配成本 |
+| 新online时间落入预报范围 | 两模型、四长度、auto/manual全部落入原范围 | confirmed，但不代表优于current或eager |
+| 手动/自动同结构且同进程≤10%差异 | 8对strip后完全一致，计数相同，时间差≤3.3% | confirmed |
+
+新auto相对18快约3.54–18.05倍（attention）及3.30–10.67倍（transformer），
+但仍比无attention规则的current慢约1.43–3.11倍及1.19–2.46倍，
+也没有追平eager；不能把恢复QKV leaf宣传为端到端优化已成功。
+原core本就慢于current，完整模型又多出未池化的allocation流量；
+两者都是直接观测，未单独消融测得各项耗时占比。
+
+步骤5中“外部输入contraction被region读取就失去准入”的具体缺口，
+已由181修复；“完整模型必有重复QKV”的18快照现象也不再成立。
+仍成立的机制边界是：局部等价规则不能单独承担跨region所有权、
+scratch复用证明、物理寄存器驻留、目标vector legality和多线程运行时契约。
+这次需要在通用product-fold lowering显式提供owned结果，
+而不是扩大P5纯性或绕过保守escape analysis，正好说明执行层契约的必要性。
+数学规则与自动选择的正确性/可行性已验证；
+高效CPU执行仍受leaf质量、region-aware存储策略与目标lowering限制。
+
+最终报告提交前，主worktree再次完整重建并通过CTest257/257、
+完整lit700通过/9 unsupported，见
+`final-build.log`、`final-ctest.log`、`final-lit.log`。
