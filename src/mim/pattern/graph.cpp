@@ -127,9 +127,9 @@ std::span<const DataOccurrence> GraphView::occurrences(const Def* consumer) cons
     return i == occurrences_.end() ? std::span<const DataOccurrence>() : std::span<const DataOccurrence>(i->second);
 }
 
-CheckResult GraphView::complete_data_uses(const Def* producer) const {
+CheckResult GraphView::complete_data_uses(const Def* producer, bool include_outputs) const {
     if (!program_ || !is_contained(producer)) return CheckResult::Unknown;
-    return data_boundary(producer) == CheckResult::True ? CheckResult::True : CheckResult::Unknown;
+    return data_boundary(producer, include_outputs) == CheckResult::True ? CheckResult::True : CheckResult::Unknown;
 }
 
 bool GraphSnapshot::is_live() const { return !published_ && (!world_ || world_->data_.storage_token == generation_); }
@@ -423,7 +423,7 @@ CheckResult GraphView::data_used_by(const Def* producer, const Def* consumer) co
     return isa_operation(consumer)->complete ? CheckResult::False : CheckResult::Unknown;
 }
 
-CheckResult GraphView::data_boundary(const Def* producer) const {
+CheckResult GraphView::data_boundary(const Def* producer, bool include_outputs) const {
     auto pending = std::vector<const Def*>{producer};
     DefSet seen;
     bool unknown = false;
@@ -431,9 +431,24 @@ CheckResult GraphView::data_boundary(const Def* producer) const {
         auto def = pending[i];
         if (!seen.insert(def).second) continue;
         unknown |= unknown_uses_.contains(def);
-        if (outputs_.contains(def)) return CheckResult::False;
+        if (outputs_.contains(def) && !include_outputs) return CheckResult::False;
         for (auto edge : uses(def)) {
             if (edge.kind == EdgeKind::Type) continue;
+            if (include_outputs && outputs_.contains(edge.owner) && edge.kind == EdgeKind::Operand)
+                if (auto call = edge.owner->isa<App>(); call && Pi::isa_cn(call->callee()->type())) {
+                    auto parameter = call->callee();
+                    u64 index      = 0;
+                    if (auto ex = parameter->isa<Extract>(); ex && Lit::isa(ex->index())) {
+                        index     = Lit::as(ex->index());
+                        parameter = ex->tuple();
+                    }
+                    if (auto var = parameter->isa<Var>())
+                        if (auto fn = var->binder()->isa<Lam>();
+                            fn && fn->is_external() && index + 1 == fn->type()->dom()->num_projs()) {
+                            pending.push_back(edge.owner);
+                            continue;
+                        }
+                }
             if (auto op = isa_operation(edge.owner)) {
                 if (!op->complete || data_used_by(producer, edge.owner) != CheckResult::True
                     || (edge.kind == EdgeKind::Callee && !curry_prefixes_.contains(def)))

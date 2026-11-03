@@ -1,0 +1,154 @@
+// RUN: python3 %S/fuse_yield.py %mim %s %t structure > %t.mim 2> %t.log
+// RUN: %FileCheck %s < %t.mim
+// RUN: python3 %S/fuse_yield.py %mim %s %t lower
+// RUN: python3 %S/realization_count.py %t.ll %t.count.ll
+// RUN: clang++ -O3 -fsanitize=address %S/fuse_yield_aux.cpp %t.count.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+// RUN: python3 %S/fuse_yield.py %mim %s %t.budget budget
+// RUN: python3 %S/realization_count.py %t.budget.ll %t.budget.count.ll
+// RUN: clang++ -O3 -fsanitize=address -DBUDGET_ONE %S/fuse_yield_aux.cpp %t.budget.count.ll -o %t.budget.exec -Wno-override-module
+// RUN: %t.budget.exec
+// RUN: python3 %S/fuse_yield.py %mim %s %t.plain plain
+// RUN: python3 %S/realization_count.py %t.plain.ll %t.plain.count.ll
+// RUN: clang++ -O3 -fsanitize=address -DWHOLE_BASELINE %S/fuse_yield_aux.cpp %t.plain.count.ll -o %t.plain.exec -Wno-override-module
+// RUN: %t.plain.exec
+
+plugin tensor;
+plugin affine;
+plugin math;
+plugin core;
+plugin compile;
+use tensor;
+let F32 = math.F32;
+fun scale (_ x: F32)@tt: F32 = return (math.arith.mul math.mode.fast (x, 2.0:F32));
+fun inc (_ x: F32)@tt: F32 = return (math.arith.add math.mode.fast (x, 1.0:F32));
+fun seven (_ x: F32)@tt: F32 = return (math.arith.add math.mode.fast (x, 7.0:F32));
+lam producer (x: Tensor 1 (10) F32): Tensor 1 (10) F32 =
+    map_reduce (10, 10) (scale, 0.0:F32) (affine.id @1) (affine.id @1,) (buf x);
+lam outer (x: Tensor 1 (10) F32): Tensor 1 (10) F32 =
+    map_reduce (10, 10) (seven, 0.0:F32) (affine.id @1) (affine.id @1,) x;
+
+extern fun collision (x: Tensor 2 (2, 10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer (reshape (1, 10) 10 (slice (2, 10) ((0, 0), (1, 1), (1, 10)) (buf x)));
+    let c = tiled (10, 4) p
+        (λ (off ext: Nat) (p): Tensor 1 (ext) F32 =
+            map_reduce (ext, ext) (inc, 0.0:F32) (affine.id @1) (affine.id @1,) (slice 10 (off, 1, ext) p));
+    return (c, outer p);
+
+extern fun exact (x: Tensor 1 (10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let c = tiled (10, 4) p
+        (λ (off ext: Nat) (p): Tensor 1 (ext) F32 =
+            map_reduce (ext, ext) (inc, 0.0:F32) (affine.id @1) (affine.id @1,) (slice 10 (off, 1, ext) p));
+    return (c, outer p);
+
+extern fun exact_output (x: Tensor 1 (10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let c = tiled (10, 4) p
+        (λ (off ext: Nat) (p): Tensor 1 (ext) F32 =
+            map_reduce (ext, ext) (inc, 0.0:F32) (affine.id @1) (affine.id @1,) (slice 10 (off, 1, ext) p));
+    return (c, p);
+
+extern fun halo (x: Tensor 1 (10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let c = tiled (10, 4) p
+        (λ (off ext: Nat) (p): Tensor 1 (ext) F32 =
+            let extra = core.nat.add (ext, 1);
+            let remaining = core.nat.sub (10, off);
+            let size = (extra, remaining)#(core.ncmp.l (remaining, extra));
+            let h = slice_box @(F32, 1) 10 (off, size, 5) p;
+            generate @(F32, 1) ext (λ (i: I64): F32 =
+                let j = core.bitcast Nat i;
+                let next = core.nat.add (j, 1);
+                let last = core.ncmp.e (next, size);
+                let right = (get (h, core.idx 0 size ((next, j)#last)), 0.0:F32)#last;
+                math.arith.add math.mode.fast (get (h, core.idx 0 size j), right)));
+    return (c, outer p);
+
+extern fun multi (x: Tensor 1 (10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let c = tiled_multi @(2, 1, (F32, F32), (1, 1)) ((10, 10), 10, 4) (0_1, 0_1) p
+        (λ (off ext: Nat) (p): [Tensor 1 (ext) F32, Tensor 1 (ext) F32] =
+            let t = slice 10 (off, 1, ext) p;
+            (map_reduce (ext, ext) (inc, 0.0:F32) (affine.id @1) (affine.id @1,) t,
+             map_reduce (ext, ext) (seven, 0.0:F32) (affine.id @1) (affine.id @1,) t));
+    return (binary (math.arith.add math.mode.fast) (c#ff, c#tt), outer p);
+
+extern fun one (x: Tensor 1 (10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let c = tiled (10, 1) p
+        (λ (off ext: Nat) (p): Tensor 1 (ext) F32 =
+            map_reduce (ext, ext) (inc, 0.0:F32) (affine.id @1) (affine.id @1,) (slice 10 (off, 1, ext) p));
+    return (c, outer p);
+
+extern fun permuted (x: Tensor 2 (3, 10) F32): [Tensor 1 (10) F32, Tensor 2 (3, 10) F32] =
+    let p = map_reduce ((3, 10), (3, 10)) (scale, 0.0:F32) (affine.id @2) (affine.id @2,) (buf x);
+    let c = tiled (10, 4) p
+        (λ (off ext: Nat) (p): Tensor 1 (ext) F32 =
+            fun add (a b: F32)@tt: F32 = return (math.arith.add math.mode.fast (a, b));
+            lam row (i _: affine.Index): affine.Index = i;
+            map_reduce (ext, (ext, 3)) (add, 0.0:F32) row (affine.id @2,)
+                (transpose (1_2, 0_2) (slice (3, 10) ((0, off), (1, 1), (3, ext)) p)));
+    return (c, map_reduce ((3, 10), (3, 10)) (seven, 0.0:F32) (affine.id @2) (affine.id @2,) p);
+
+extern fun rejected (x: Tensor 1 (10) F32): [Tensor 1 (5) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let c = tiled (5, 2) p
+        (λ (off ext: Nat) (p): Tensor 1 (ext) F32 =
+            map_reduce (ext, ext) (inc, 0.0:F32) (affine.id @1) (affine.id @1,) (slice 10 (off, 1, ext) p));
+    return (c, outer p);
+
+extern fun rejected_alias (x: Tensor 1 (10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let c = tiled (10, 4) (p, p)
+        (λ (off ext: Nat) (a, b): Tensor 1 (ext) F32 =
+            binary (math.arith.add math.mode.fast)
+                (slice 10 (off, 1, ext) a, slice 10 (off, 1, ext) b));
+    return (c, outer p);
+
+extern fun rejected_cycle (x: Tensor 1 (10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let q = outer p;
+    let c = tiled (10, 4) (p, q)
+        (λ (off ext: Nat) (p, q): Tensor 1 (ext) F32 =
+            binary (math.arith.add math.mode.fast)
+                (slice 10 (off, 1, ext) p, slice 10 (off, 1, ext) q));
+    return (c, q);
+
+extern fun rejected_whole (x: Tensor 1 (10) F32): [Tensor 1 (10) F32, Tensor 1 (10) F32] =
+    let p = producer x;
+    let c = tiled (10, 4) p
+        (λ (off ext: Nat) (p): Tensor 1 ext F32 =
+            let total = item (reduce (math.arith.add math.mode.fast, 0.0:F32) 0_1 p);
+            binary (math.arith.add math.mode.fast)
+                (slice 10 (off, 1, ext) p, splat (ext, total)));
+    return (c, outer p);
+
+// CHECK-LABEL: extern fun collision
+// CHECK: tensor.tiled_multi
+// CHECK-LABEL: extern fun exact (
+// CHECK: tensor.tiled_multi
+// CHECK-NOT: tensor.yield_tiles
+// CHECK-LABEL: extern fun exact_output
+// CHECK: tensor.tiled_multi
+// CHECK-LABEL: extern fun halo
+// CHECK: tensor.tiled_multi
+// CHECK-NOT: tensor.yield_tiles
+// CHECK-LABEL: extern fun multi
+// CHECK: tensor.tiled_multi @ (3,
+// CHECK-LABEL: extern fun one
+// CHECK: tensor.tiled_multi
+// CHECK-LABEL: extern fun permuted
+// CHECK: tensor.tiled_multi
+// CHECK-LABEL: extern fun rejected
+// CHECK-NOT: tensor.tiled_multi
+// CHECK: tensor.tiled
+// CHECK-LABEL: extern fun rejected_alias
+// CHECK-NOT: tensor.tiled_multi
+// CHECK: tensor.tiled
+// CHECK-LABEL: extern fun rejected_cycle
+// CHECK-NOT: tensor.tiled_multi
+// CHECK: tensor.tiled
+// CHECK-LABEL: extern fun rejected_whole
+// CHECK-NOT: tensor.tiled_multi
+// CHECK: tensor.tiled

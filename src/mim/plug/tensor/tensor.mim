@@ -1701,6 +1701,12 @@ axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
 axm region_fusion_ok: {P R B: *}
     → [producer: P, region: R, body: B, slot mode budget: Nat] → Bool;
 axm fuse_region_inputs: [mode budget: Nat, graph: Bool] → compile.Phase;
+axm fuse_and_yield: [budget: Nat] → compile.Phase;
+axm region_yield_ok: {P R B A: *}
+    → [producer: P, region: R, body: B, axes: A, slot budget: Nat] → Bool;
+
+priv axm yield_tiles: {T: *, r: Nat, C: *} → {s: «r; Nat»}
+    → [producer: Tensor r s T, off ext: «r; Nat», value: C] → [Tensor r ext T, C], normalize_yield_tiles;
 
 priv anx lam group_request_rule (P C: *): Rule [p: P, kind dim tile: Nat, params: C] =
     rule request (p: P, kind dim tile: Nat, params: C):

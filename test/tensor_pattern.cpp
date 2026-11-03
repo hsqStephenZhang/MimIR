@@ -211,6 +211,14 @@ TEST_CASE("Tensor grouping: requests preserve provenance, identity, and metadata
             let c = map_reduce (5, (5, 7)) (add, 0I64) row (affine.id @2,) p;
             (p, c);
     )");
+    {
+        auto p = ir.f()->body()->proj(2, 0);
+        GraphView program(ir.w, ir.ops);
+        CHECK(program.complete_data_uses(p) == CheckResult::Unknown);
+        CHECK(program.complete_data_uses(p, true) == CheckResult::True);
+        GraphView local({ir.f()->body()}, {.operators = &ir.ops});
+        CHECK(local.complete_data_uses(p, true) == CheckResult::Unknown);
+    }
     auto provenance = ir.f()->body()->proj(2, 0)->loc();
     CHECK(ir.driver.normalizer(Annex::base<tensor::group_req>()) == nullptr);
     CHECK(ir.run(Annex::base<tensor::group>()));

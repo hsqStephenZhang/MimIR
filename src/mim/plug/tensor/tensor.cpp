@@ -49,6 +49,7 @@ pattern::WitnessResult group_support_witness(const pattern::GraphView&, Defs, Wo
 pattern::WitnessResult group_fusion_witness(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult group_reverse_witness(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult region_fusion_witness(const pattern::GraphView&, Defs, World&);
+pattern::WitnessResult region_yield_witness(const pattern::GraphView&, Defs, World&);
 static pattern::WitnessResult permuted_box(Defs inputs, std::span<const u64> axes, World& target) {
     DefVec offset, extent;
     for (auto axis : axes) {
@@ -118,6 +119,7 @@ static void reg_witnesses(pattern::Witnesses& witnesses) {
     witnesses.emplace(Annex::base<group_fusion>(), pattern::Witness{2, group_fusion_witness});
     witnesses.emplace(Annex::base<group_reverse_supported>(), pattern::Witness{3, group_reverse_witness});
     witnesses.emplace(Annex::base<region_fusion_ok>(), pattern::Witness{6, region_fusion_witness});
+    witnesses.emplace(Annex::base<region_yield_ok>(), pattern::Witness{6, region_yield_witness});
 }
 
 static void reg_phases(Flags2Phases& phases) {
@@ -134,6 +136,7 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<lower_to_mem, phase::LowerToMem>(phases);
     Phase::hook<group, phase::Group>(phases);
     Phase::hook<fuse_region_inputs, phase::FuseRegionInputs>(phases);
+    Phase::hook<fuse_and_yield, phase::FuseAndYield>(phases);
     Phase::hook<report_groups, phase::ReportGroups>(phases);
 }
 } // namespace mim::plug::tensor
@@ -145,6 +148,7 @@ static constexpr PluginArg known_args[] = {
     {"group-cache=<bytes>", "Scratch working-set budget for tensor.group and BLIS block selection (default 262144)."},
     {"group-registers=<n>", "Register count passed to the shared BLIS selector (default 32, at least 16)."},
     {"group-budget=<n>", "Maximum producer box recomputation factor for grouping (default 1; values above 1 permit halo requests)."},
+    {"fuse-and-yield=<n>", "Yield shared producers from compatible tile grids before grouping (default 1)."},
     {"strict=<n>", "Fail on unrealized group_req markers instead of warning (default 0)."},
     {"reassoc-max=<n>", "Longest matrix chain whose `Catalan(n − 1)` bracketings `tensor.reassoc` enumerates and, failing one that provably wins for every extent, dispatches over at run time (default `4`; below `3` switches the dispatch off)."},
     {"vec-width=<n>", "Vector lanes the target's registers hold (`1`, `4`, `8` or `16`, default `8`). It caps the block of independent accumulators a vectorized loop body jams into its registers, and `tensor.reassoc` charges each product's vector loop in units of it; `1` means no lane-sized blocking and plain multiplication counts. See `tensor.vec_width`."},

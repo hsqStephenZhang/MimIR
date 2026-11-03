@@ -314,11 +314,30 @@ void register_operations(pattern::OpRegistry& ops) {
     ops.add(Annex::base<concat>(), decode_concat, true);
     ops.add(Annex::base<slice>(), 4, {{3}}, true);
     ops.add(Annex::base<slice_box>(), 4, {{3}}, true);
+    ops.add(Annex::base<reshape>(), 4, {{3}}, true);
+    ops.add(Annex::base<transpose>(), 4, {{3}}, true);
+    ops.add(Annex::base<get>(), 2,
+            {
+                {1, 0}
+    },
+            true);
+    ops.add(Annex::base<item>(), 2, {{1}}, true);
     ops.add(Annex::base<reverse_at>(), decode_reverse, true);
     ops.add(Annex::base<group_req>(), decode_group, true);
     ops.add(Annex::base<group_region>(), decode_group, true);
     ops.add(Annex::base<tiled>(), decode_tiled, false);
     ops.add(Annex::base<tiled_multi>(), decode_tiled_multi, false);
+    ops.add(
+        Annex::base<yield_tiles>(),
+        [](const Def* def, size_t) -> std::optional<pattern::OpView> {
+            auto args = groups(def, 3);
+            if (args.empty()) return {};
+            auto [p, off, ext, value] = args[2]->projs<4>();
+            return pattern::OpView{
+                .inputs = {{p, 2, {0}}, {value, 2, {3}}}
+            };
+        },
+        true);
     ops.add(Annex::base<tiled_n>(), decode_tiled_n, false);
     ops.add(Annex::base<tile_fold>(), decode_fold, false);
     ops.add(Annex::base<stage>(), 5, {{4}}, true);

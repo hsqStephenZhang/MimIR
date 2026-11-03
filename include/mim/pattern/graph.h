@@ -117,7 +117,7 @@ public:
     size_t data_use_count(const Def*) const;
     size_t data_consumer_count(const Def*) const;
     bool is_program() const { return program_; }
-    CheckResult complete_data_uses(const Def*) const;
+    CheckResult complete_data_uses(const Def*, bool include_outputs = false) const;
     std::span<const DataOccurrence> occurrences(const Def*) const;
 
 private:
@@ -129,7 +129,7 @@ private:
     };
     void build_semantics(size_t);
     void index_occurrences();
-    CheckResult data_boundary(const Def*) const;
+    CheckResult data_boundary(const Def*, bool include_outputs = false) const;
     std::vector<const Def*> roots_;
     DefSet outputs_;
     std::vector<const Def*> nodes_;

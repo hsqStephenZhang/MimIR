@@ -154,8 +154,10 @@ public:
         DefVec args;
         for (auto arg : source | std::views::reverse)
             args.push_back(rewrite(arg));
-        if (!graph_.is_pure_call(axm->flags(), args))
+        if (!graph_.is_pure_call(axm->flags(), args)) {
+            graph_.world().log().d("graph RHS purity rejected {} with {} argument groups", axm, args.size());
             throw InstantiationFailure("graph Rule RHS call has no satisfied purity guarantee");
+        }
         auto callee = rewrite(axm);
         auto value  = callee;
         for (size_t i = 0; i != args.size(); ++i) {

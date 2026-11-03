@@ -12,8 +12,33 @@
 bufferization 删除 Arr 角色猜测及按类型推断张量参数的表，按名义类型统一改写接口。
 只增删 literal size-1 轴的 `reshape` 在物理 buffer 类型相同时保留为无分配视图。
 若 cap 导致物理布局不同，则仍使用原有复制实现，不能仅按逻辑 shape 判定别名。
+
+## 共享生产者的 fuse-and-yield
+
+`tensor.fuse_and_yield budget` 用 P5 multi-root Rule 同时替换显式区域输入中的
+`map_reduce_post` 及其 `tiled`/`tiled_multi` 消费者；其他使用者读取新增的 assembled result。
+默认在 grouping、区域输入融合和 view fusion 后以固定点执行；
+`-X tensor:fuse-and-yield=0` 可禁用，预算沿用 `tensor:group-budget`。
+单结果 `tiled` 的接口不变，融合后的区域使用 `tiled_multi`，不构造额外的全量生产者副本。
+
+guard 要求完整的程序 DATA uses、纯生产者、唯一且无别名的输入位置、无循环依赖，
+并证明每个 grid 轴都能映到生产者的一个等长且不同的轴。
+每个其他生产者轴整轴写回；因此每个 owned box 不重叠且恰好覆盖整个生产者。
+当前实现接受一个共享的 unit-stride slice/slice_box 读取，使用既有 `producer_tile` 证明
+其可分块；整张量读取、非 B1 布局、嵌套区域、未知或过大的证明网格保持原来的预计算输入。
+证明枚举有界 literal 网格，但生成的区域仍以运行时 offset 的共享循环执行，不展开成 `tiled_n`。
+
+halo 的计算使用整个 over-box，额外结果仅复制其中的 owned box，不为写回再次执行生产者。
+预算按所有 over-box 的单元数求和，包含边界裁剪后的 overlap，不能用 LLVM CSE 后的计数放宽 guard。
+`fuse_yield.mim` 检查结构、ASan 数值与乘法数，覆盖直接返回生产者、其他 whole reader、
+多结果消费者、轴置换、尾块、单行块、halo、预算拒绝、别名和循环拒绝。
+本分支没有 OpenMP plugin 或 parallel-tiled lowering，因而不声称并行执行支持。
 张量读取也必须参与 memory threading：`get/item` 请求当前 memory，
 使 pinned callback 在 ABI 转换后仍保持初始化与读取的先后关系。
+`-VVVV` 记录候选的 B1 shape 不符、非 MRP 输入以及 witness 的具体拒绝原因。
+现有 BLIS 网格同时包含输出行和输出列；LayerNorm 的宽度若不等于 BLIS 输出列数，
+便不能将这两个 grid 轴都写回 LayerNorm 结果。
+Q/K/V 的列偏移切片也不是 QKV 全结果的 B1 permutation；这些情况保持预计算，不放宽写回关系。
 
 ## Multi-result loop tiles（Task 32B）
 

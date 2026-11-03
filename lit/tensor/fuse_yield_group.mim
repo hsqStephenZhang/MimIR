@@ -1,0 +1,29 @@
+// RUN: %mim %s -X tensor:group-budget=1 -o - | %FileCheck %s
+// RUN: %mim %s -X tensor:group-budget=1 -p ll -X ll:o=%t.ll
+// RUN: python3 %S/realization_count.py %t.ll %t.count.ll
+// RUN: clang++ -O3 -fsanitize=address %S/fuse_yield_group_aux.cpp %t.count.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin opt;
+plugin compile;
+plugin tensor;
+plugin affine;
+plugin math;
+plugin core;
+use tensor;
+let F32 = math.F32;
+fun scale (_ x: F32)@tt: F32 = return (math.arith.mul math.mode.fast (x, 2.0:F32));
+fun inc (_ x: F32)@tt: F32 = return (math.arith.add math.mode.fast (x, 1.0:F32));
+
+extern fun formed (x: Tensor 1 10 F32): [Tensor 1 10 F32, Tensor 1 10 F32] =
+    let p = map_reduce (10, 10) (scale, 0.0:F32) (affine.id @1) (affine.id @1,) (buf x);
+    let c = map_reduce (10, 10) (inc, 0.0:F32) (affine.id @1) (affine.id @1,) p;
+    let c = group_req (c, 0, 0, 4, 1);
+    return (c, p);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (group_default, compile.cond "ll" (opt._default_compile ()), compile.cleanup);
+
+// CHECK-LABEL: extern fun formed
+// CHECK: tensor.tiled_multi
+// CHECK-NOT: tensor.group_req

@@ -48,4 +48,15 @@ private:
     bool graph_ = true;
 };
 
+class FuseAndYield : public Phase {
+public:
+    using Phase::Phase;
+    void apply(const App*) override;
+    std::unique_ptr<Phase> recreate() override;
+
+private:
+    void start() override;
+    u64 budget_ = 1;
+};
+
 } // namespace mim::plug::tensor::phase

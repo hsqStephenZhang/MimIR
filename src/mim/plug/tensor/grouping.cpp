@@ -118,6 +118,217 @@ void input_parameters(const Def* shape, const Def* parameter, DefVec& fields) {
         fields.push_back(parameter);
 }
 
+struct YieldRead {
+    const App* app;
+    const Def *off, *ext, *cap;
+};
+
+class YieldReads {
+public:
+    YieldReads(const Def* producer, const Def* root) {
+        DefVec pending{root};
+        DefSet seen;
+        for (size_t i = 0; i != pending.size(); ++i) {
+            if (i > 65536) return;
+            auto def = pending[i];
+            if (!seen.insert(def).second) continue;
+            if (def == producer) return;
+            if (auto app = def->isa<App>();
+                app && (Axm::isa<slice>(app) || Axm::isa<slice_box>(app)) && app->arg() == producer) {
+                auto [meta, shape, params, source] = app->uncurry_args<4>();
+                auto [off, middle, last]           = params->projs<3>();
+                if (Axm::isa<slice>(app)) {
+                    auto rank = Lit::isa(last->arity());
+                    if (!rank) return;
+                    for (u64 d = 0; d != *rank; ++d)
+                        if (Lit::isa(middle->proj(*rank, d)) != 1) return;
+                    reads.push_back({app, off, last, last});
+                } else {
+                    reads.push_back({app, off, middle, last});
+                }
+                continue;
+            }
+            if (def->isa<Var>() || def->isa<Axm>() || def->isa<Pi>()) continue;
+            if (auto lam = def->isa<Lam>(); lam && (!lam->is_set() || lam->is_external())) continue;
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+        }
+        complete = true;
+    }
+
+    fe::Vector<YieldRead> reads;
+    bool complete = false;
+};
+
+ProducerTile
+yield_tiles_value(const Def* producer, const Def* off, const Def* ext, const Def* value, bool proof, u64& work) {
+    YieldReads uses(producer, value);
+    if (!uses.complete || uses.reads.size() != 1) return {nullptr, "yield needs one shared tileable slice/box read"};
+    auto& w   = producer->world();
+    auto rank = Lit::isa(ext->arity());
+    if (!rank) return {nullptr, "yield needs a literal producer rank"};
+    Rewriter rw(w);
+    for (auto var : value->free_vars())
+        rw.map(var, var);
+    const Def* owned = nullptr;
+    for (auto read : uses.reads) {
+        auto tile = producer_tile(producer, read.off, read.ext, Axm::isa<slice_box>(read.app) ? read.cap : nullptr);
+        if (!tile.value) return tile;
+        rw.map(read.app, tile.value);
+        if (proof) {
+            std::optional<u64> cells = 1;
+            for (u64 d = 0; d != *rank; ++d)
+                cells = mul(cells, Lit::isa(read.ext->proj(*rank, d)));
+            if (!cells || work > std::numeric_limits<u64>::max() - *cells)
+                return {nullptr, "yield has unknown or overflowing tile work"};
+            work += *cells;
+        }
+        if (!owned) {
+            // The staged witness proves containment before this private recipe is instantiated.
+            DefVec local;
+            for (u64 d = 0; d != *rank; ++d) {
+                auto start = off->proj(*rank, d), size = ext->proj(*rank, d);
+                auto base = read.off->proj(*rank, d), length = read.ext->proj(*rank, d);
+                if (proof) {
+                    auto a = Lit::isa(start), b = Lit::isa(base), n = Lit::isa(size), m = Lit::isa(length);
+                    if (!a || !b || !n || !m || *a < *b || *a - *b > *m || *n > *m - (*a - *b))
+                        return {nullptr, "yield owned box is not contained in its first producer read"};
+                }
+                local.push_back(w.call(core::nat::sub, Defs{start, base}));
+            }
+            if (off == read.off && ext == read.ext)
+                owned = tile.value;
+            else {
+                auto mr    = btensor::MapRedPost::of(producer->as<App>()->callee()->as<App>());
+                auto slice = w.app(w.app(w.annex<tensor::slice_box>(), {mr.Tp, mr.Ro}), read.ext);
+                owned      = w.app(w.app(slice, {w.tuple(local), ext, ext}), tile.value);
+            }
+        }
+    }
+    return {w.tuple({owned, rw.rewrite(value)}), {}};
+}
+
+class YieldAxes {
+public:
+    YieldAxes(const GridTilePlan& plan, const btensor::MapRedPost& producer)
+        : plan_(plan)
+        , producer_(producer)
+        , rank_(Lit::as(producer.Ro))
+        , used_(rank_, false) {
+        collect(0);
+    }
+    DefVec choices;
+
+private:
+    void collect(u64 d) {
+        if (choices.size() >= 64) return;
+        auto& w = producer_.So->world();
+        if (d == plan_.rank) {
+            choices.push_back(w.tuple(axes_));
+            return;
+        }
+        for (u64 a = 0; a != rank_; ++a)
+            if (!used_[a] && Check::test_alpha(plan_.shape->proj(plan_.rank, d), producer_.So->proj(rank_, a))) {
+                used_[a] = true;
+                axes_.push_back(w.lit_idx(rank_, a));
+                collect(d + 1);
+                axes_.pop_back();
+                used_[a] = false;
+            }
+    }
+    const GridTilePlan& plan_;
+    const btensor::MapRedPost& producer_;
+    u64 rank_;
+    fe::Vector<bool> used_;
+    DefVec axes_;
+};
+
+const Rule* yield_rule(const InputRegion& region, size_t slot, const Def* axes, u64 budget) {
+    auto& w   = region.app->world();
+    auto plan = grid_tile_plan(region.app);
+    DefVec leaves;
+    input_leaves(region.values(), leaves);
+    auto producer = graph::map_reduce(leaves[slot]);
+    DefVec vars;
+    for (auto var : region.app->free_vars())
+        vars.push_back(var);
+    auto count  = vars.size() + leaves.size() + 1;
+    auto domain = w.mut_sigma(count);
+    VarRewriter types(w);
+    for (size_t i = 0; i != vars.size(); ++i) {
+        domain->set(i, types.rewrite(vars[i]->type()));
+        types.add(vars[i]->as<Var>(), domain->var()->proj(count, i));
+    }
+    for (size_t i = 0; i != leaves.size(); ++i)
+        domain->set(vars.size() + i, types.rewrite((i == slot ? producer->arg() : leaves[i])->type()));
+    domain->set(count - 1, types.rewrite(region.body()->type()));
+    auto rule   = w.mut_rule(w.reform(domain))->set("fuseAndYield");
+    auto fields = rule->vars(count);
+    VarRewriter values(w);
+    for (size_t i = 0; i != vars.size(); ++i)
+        values.add(vars[i]->as<Var>(), fields[i]);
+    auto args   = values.Rewriter::rewrite(region.args);
+    auto callee = values.rewrite(producer->callee());
+    DefVec inputs;
+    for (size_t i = 0; i != leaves.size(); ++i)
+        inputs.push_back(fields[vars.size() + i]);
+    auto moved         = inputs[slot];
+    auto p             = w.app(callee, moved);
+    inputs[slot]       = p;
+    size_t cursor      = 0;
+    args[region.input] = input_tree(region.values(), inputs, cursor);
+    args.back()        = fields.back();
+    const Def* lhs     = App::uncurry_callee(region.app);
+    for (auto arg : args)
+        lhs = w.app(lhs, arg);
+    inputs[slot]     = moved;
+    cursor           = 0;
+    auto ins         = input_tree(region.values(), inputs, cursor);
+    auto source_plan = grid_tile_plan(lhs->as<App>());
+    auto source_mr   = btensor::MapRedPost::of(p->as<App>()->callee()->as<App>());
+    DefVec result_types{source_mr.Tp}, result_ranks{source_mr.Ro}, result_shapes{source_mr.So}, mappings{axes};
+    for (u64 i = 0; i != plan.count; ++i) {
+        result_types.push_back(source_plan.types->proj(plan.count, i));
+        result_ranks.push_back(source_plan.ranks->proj(plan.count, i));
+        result_shapes.push_back(source_plan.shapes->proj(plan.count, i));
+        mappings.push_back(source_plan.axes->proj(plan.count, i));
+    }
+    auto build = w.app(w.annex<tiled_multi>(),
+                       {w.lit_nat(plan.count + 1), w.lit_nat(plan.rank), w.tuple(result_types), w.tuple(result_ranks)});
+    build      = w.app(w.app(build, {w.tuple(result_shapes), source_plan.shape, source_plan.tiles}), w.tuple(mappings));
+    build      = w.app(w.app(build, ins->type()), ins);
+    auto body  = w.mut_lam(build->type()->as<Pi>()->dom()->as<Pi>());
+    auto inner = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());
+    DefVec parameters;
+    input_parameters(ins, inner->var(), parameters);
+    auto rebuilt     = w.app(callee, parameters[slot]);
+    parameters[slot] = rebuilt;
+    cursor           = 0;
+    auto original    = input_tree(region.values(), parameters, cursor);
+    auto value       = w.app(w.app(fields.back(), body->var()), original);
+    auto [off, ext]  = body->vars<2>();
+    GridTilePlan owned{
+        source_mr.Tp, source_mr.Ro, source_mr.So, source_plan.shape, source_plan.tiles, axes, ins, body, 1,
+        plan.rank,    false};
+    auto [start, extent] = owned.box(0, off, ext);
+    auto tile = w.app(w.app(w.annex<yield_tiles>(), {source_mr.Tp, source_mr.Ro, value->type()}), source_mr.So);
+    auto pair = w.app(tile, {rebuilt, start, extent, value});
+    DefVec results{pair->proj(2, 0)};
+    for (u64 i = 0; i != plan.count; ++i)
+        results.push_back(plan.multiple ? pair->proj(2, 1)->proj(plan.count, i) : pair->proj(2, 1));
+    inner->set(true, w.tuple(results));
+    body->set(true, inner);
+    build = w.app(build, body);
+    DefVec replacements;
+    for (u64 i = 0; i != plan.count; ++i)
+        replacements.push_back(build->proj(plan.count + 1, i + 1));
+    auto guard = w.app(w.annex<region_yield_ok>(), {p->type(), lhs->type(), fields.back()->type(), axes->type()});
+    guard      = w.app(guard, {p, lhs, fields.back(), axes, w.lit_nat(slot), w.lit_nat(budget)});
+    return rule->set(
+        w.tuple({p, lhs}),
+        w.tuple({build->proj(plan.count + 1, 0), plan.multiple ? w.tuple(replacements) : replacements.front()}), guard);
+}
+
 const Rule* region_rule(const InputRegion& region, size_t slot, u64 mode, u64 budget) {
     auto& w = region.app->world();
     DefVec leaves;
@@ -775,7 +986,188 @@ pattern::WitnessResult region_fusion_witness(const pattern::GraphView& source, D
     return {CheckResult::True, target.lit_bool(accepted), {}};
 }
 
+const Def* normalize_yield_tiles(const Def*, const Def*, const Def* arg) {
+    auto [producer, off, ext, value] = arg->projs<4>();
+    if (!graph::map_reduce(producer)) return nullptr;
+    u64 work = 0;
+    return yield_tiles_value(producer, off, ext, value, false, work).value;
+}
+
+static pattern::WitnessResult check_region_yield(const pattern::GraphView& source, Defs inputs, World& target) {
+    using pattern::CheckResult;
+    auto producer = graph::map_reduce(inputs[0]);
+    auto region   = input_region(inputs[1]);
+    auto slot = Lit::isa(inputs[4]), budget = Lit::isa(inputs[5]);
+    if (!producer || !region || !slot || !budget || !*budget
+        || (!Axm::isa<tiled>(region->app) && !Axm::isa<tiled_multi>(region->app)) || inputs[2] != region->body())
+        return {CheckResult::False, nullptr, "yield requires a matching grid region and literal policy"};
+    if (source.complete_data_uses(producer, true) != CheckResult::True)
+        return {CheckResult::Unknown, nullptr, "yield requires complete producer data uses"};
+    auto mr = btensor::MapRedPost::of(producer->callee()->as<App>());
+    if (!pure_scalar(mr.comb) || !pure_scalar(mr.post))
+        return {CheckResult::False, nullptr, "yield requires pure producer callbacks"};
+    DefVec leaves;
+    input_leaves(region->values(), leaves);
+    if (*slot >= leaves.size() || leaves[*slot] != producer || std::ranges::count(leaves, producer) != 1)
+        return {CheckResult::False, nullptr, "yield requires a single unaliased input position"};
+    DefVec dependencies;
+    input_leaves(producer->arg(), dependencies);
+    for (size_t i = 0; i != leaves.size(); ++i)
+        if (i != *slot && TensorType::isa(leaves[i]->type())
+            && std::ranges::find(dependencies, leaves[i]) != dependencies.end())
+            return {CheckResult::False, nullptr, "yield would alias another region input"};
+    bool inside = false, outside = source.complete_data_uses(producer) != CheckResult::True;
+    for (auto use : source.data_uses(producer)) {
+        if (use.consumer == region->app) {
+            if (use.group != region->input) return {CheckResult::False, nullptr, "yield has an aliased region input"};
+            inside = true;
+        } else
+            outside = true;
+    }
+    if (!inside || !outside) return {CheckResult::False, nullptr, "yield needs both region and outside readers"};
+    leaves[*slot]  = producer->arg();
+    DefVec pending = leaves;
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i > 65536) return {CheckResult::Unknown, nullptr, "yield dependency proof exceeded its budget"};
+        auto def = pending[i];
+        if (def == producer) return {CheckResult::False, nullptr, "yield would create a cyclic region input"};
+        if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>()) continue;
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+    auto occurrences = source.occurrences(region->app);
+    if (occurrences.size() != 1 || !occurrences.front().regions.empty() || occurrences.front().trips != 1)
+        return {CheckResult::Unknown, nullptr, "yield requires one non-nested grid occurrence"};
+    auto scratch = target.inherit();
+    pattern::ParameterImporter importer(*scratch);
+    auto p        = importer.rewrite(producer);
+    auto imported = input_region(importer.rewrite(region->app));
+    auto plan     = grid_tile_plan(imported->app);
+    auto axes     = importer.rewrite(inputs[3]);
+    auto r        = Lit::isa(mr.Ro);
+    if (!r) return {CheckResult::Unknown, nullptr, "yield needs a literal producer rank"};
+    auto shape               = importer.rewrite(mr.So);
+    std::optional<u64> whole = 1;
+    for (u64 d = 0; d != *r; ++d)
+        whole = mul(whole, Lit::isa(shape->proj(*r, d)));
+    auto limit = mul(whole, budget);
+    if (!limit) return {CheckResult::Unknown, nullptr, "yield has an unknown or overflowing work budget"};
+    fe::Vector<bool> used(*r, false);
+    for (u64 d = 0; d != plan.rank; ++d) {
+        auto a = Lit::isa(axes->proj(plan.rank, d));
+        if (!a || *a >= *r || used[*a] || shape->proj(*r, *a) != plan.shape->proj(plan.rank, d))
+            return {CheckResult::False, nullptr, "yield result does not satisfy the grid box relation"};
+        used[*a] = true;
+    }
+    GridTilePlan owned{importer.rewrite(mr.Tp),
+                       importer.rewrite(mr.Ro),
+                       shape,
+                       plan.shape,
+                       plan.tiles,
+                       axes,
+                       plan.inputs,
+                       plan.body,
+                       1,
+                       plan.rank,
+                       false};
+    RegionCoordinates coordinates(*scratch);
+    if (!coordinates.collect(*imported))
+        return {CheckResult::Unknown, nullptr, "yield needs bounded literal grid geometry"};
+    u64 work = 0;
+    DefSet extents;
+    for (auto coordinate : coordinates.points) {
+        auto [off, ext]      = coordinate->projs<2>();
+        auto [start, extent] = owned.box(0, off, ext);
+        auto value           = scratch->app(scratch->app(plan.body, coordinate), plan.inputs);
+        auto result          = yield_tiles_value(p, start, extent, value, true, work);
+        if (!result.value || work > *limit)
+            return {CheckResult::False, nullptr,
+                    result.value ? "yield exceeds the producer work budget" : result.reason};
+        if (extents.insert(ext).second) {
+            auto origin           = scratch->mut_lam(off->type(), scratch->type_nat())->var();
+            auto [symbolic, size] = owned.box(0, origin, ext);
+            auto body             = scratch->app(scratch->app(plan.body, {origin, ext}), plan.inputs);
+            if (!yield_tiles_value(p, symbolic, size, body, false, work).value)
+                return {CheckResult::False, nullptr, "yield cannot tile a runtime grid origin"};
+        }
+    }
+    target.log().d("tensor fuse-and-yield candidate {}: work={} whole={} budget={}", producer, work, *whole, *budget);
+    return {CheckResult::True, target.lit_tt(), {}};
+}
+
+pattern::WitnessResult region_yield_witness(const pattern::GraphView& source, Defs inputs, World& target) {
+    auto result = check_region_yield(source, inputs, target);
+    if (result.status != pattern::CheckResult::True)
+        target.log().d("tensor fuse-and-yield candidate {} region {}: reject {}", inputs[0], inputs[1], result.reason);
+    return result;
+}
+
 namespace phase {
+
+void FuseAndYield::apply(const App* app) {
+    if (!Lit::isa(app->arg()) || !Lit::as(app->arg()))
+        app->blame("tensor.fuse_and_yield requires a positive literal budget").bail();
+    budget_ = Lit::as(app->arg());
+}
+
+std::unique_ptr<Phase> FuseAndYield::recreate() {
+    auto phase     = std::make_unique<FuseAndYield>(world(), std::string(name()));
+    phase->budget_ = budget_;
+    return phase;
+}
+
+void FuseAndYield::start() {
+    std::vector<const Rule*> rules;
+    std::vector<const Axm*> pure;
+    DefVec regions;
+    {
+        pattern::GraphView source(world(), driver().graph_operations());
+        for (auto op : source.operations())
+            if (Axm::isa<tiled>(op) || Axm::isa<tiled_multi>(op)) regions.push_back(op);
+    }
+    for (auto def : regions) {
+        auto region = *input_region(def);
+        auto plan   = grid_tile_plan(region.app);
+        DefVec leaves;
+        input_leaves(region.values(), leaves);
+        for (size_t i = 0; i != leaves.size(); ++i)
+            if (auto producer = graph::map_reduce(leaves[i])) {
+                auto mr = btensor::MapRedPost::of(producer->callee()->as<App>());
+                if (!Lit::isa(mr.Ro) || !mr.So->is_closed() || !plan.shape->is_closed()) {
+                    log().d("tensor fuse-and-yield candidate {} input {}: reject unknown producer/grid geometry", def,
+                            i);
+                    continue;
+                }
+                YieldAxes axes(plan, mr);
+                if (axes.choices.empty())
+                    log().d("tensor fuse-and-yield candidate {} input {}: reject B1 grid shape {} producer shape {}",
+                            def, i, plan.shape, mr.So);
+                for (auto mapping : axes.choices)
+                    rules.push_back(yield_rule(region, i, mapping, budget_));
+            } else {
+                log().d("tensor fuse-and-yield candidate {} input {}: reject non-MRP input {}", def, i, leaves[i]);
+            }
+    }
+    profile_count("tensor.yield.regions", regions.size());
+    profile_count("tensor.yield.rules", rules.size());
+    log().d("tensor fuse-and-yield candidates: regions={} rules={}", regions.size(), rules.size());
+    if (rules.empty()) return;
+    {
+        pattern::GraphView source(world(), driver().graph_operations());
+        for (auto node : source.nodes())
+            if (auto axm = node->isa<Axm>())
+                if (scalar_operator(axm) || axm->sym().view().starts_with("affine.")) pure.push_back(axm);
+    }
+    for (auto name : {"tensor.tiled", "tensor.tiled_multi", "tensor.map_reduce_post", "tensor.slice",
+                      "tensor.slice_box", "tensor.tile_of", "tensor.tile_of_box", "tensor.yield_tiles",
+                      "tensor.generate", "tensor.transpose", "btensor.clip_sched", "core.idx", "math.F"})
+        pure.push_back(world().annex(driver().sym(name))->as<Axm>());
+    GraphRuleRewrite phase(world(), std::move(rules), std::move(pure), true);
+    phase.run();
+    invalidate(phase.todo());
+    if (phase.todo()) profile_count("tensor.yield.rounds");
+}
 
 void FuseRegionInputs::apply(const App* app) {
     auto [mode, budget, graph] = app->args<3>();

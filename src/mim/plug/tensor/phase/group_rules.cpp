@@ -491,6 +491,17 @@ void GroupDefault::start() {
     PhaseMan pipeline(world(), "tensor.group_default.pipeline");
     pipeline.apply(false, std::move(stages));
     pipeline.run();
+
+    auto yield_budget = driver().arg_nat("tensor", "group-budget").value_or(1);
+    if (driver().arg_nat("tensor", "fuse-and-yield").value_or(1) && yield_budget) {
+        Phases stages;
+        auto phase = std::make_unique<FuseAndYield>(world(), Annex::base<fuse_and_yield>());
+        phase->apply(world().app(world().annex<fuse_and_yield>(), world().lit_nat(yield_budget))->as<App>());
+        stages.push_back(std::move(phase));
+        PhaseMan fusion(world(), "tensor.fuse-and-yield");
+        fusion.apply(true, std::move(stages));
+        fusion.run();
+    }
 }
 
 void AttentionSchedule::start() {
