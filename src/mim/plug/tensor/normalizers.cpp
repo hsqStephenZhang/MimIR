@@ -16,6 +16,55 @@
 
 namespace mim::plug::tensor {
 
+namespace {
+
+bool tensor_input_type(const Def* type) {
+    if (type->isa<Arr>()) return true;
+    if (auto sigma = type->isa<Sigma>()) return std::ranges::any_of(sigma->ops(), tensor_input_type);
+    return false;
+}
+
+} // namespace
+
+void check_region_inputs(const Def* function) {
+    auto outer = function->isa<Lam>();
+    if (!outer || !outer->is_set()) return;
+    auto inner = outer->body()->isa<Lam>();
+    if (!inner || !inner->is_set()) return;
+    DefSet bound;
+    if (auto var = outer->has_var()) bound.insert(var);
+    if (auto var = inner->has_var()) bound.insert(var);
+    auto& ops = function->driver().graph_operations();
+    DefVec pending{inner->body()};
+    DefSet seen;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (!seen.insert(def).second) continue;
+        if (auto view = ops.decode(def, 65536)) {
+            for (auto input : view->inputs) {
+                if (!tensor_input_type(input.value->type()) || input.value->is_closed()) continue;
+                bool local = false;
+                for (auto var : input.value->free_vars())
+                    local |= bound.contains(var);
+                if (!local)
+                    def->blame("tensor region operation {} reads outer tensor input {}; pass it explicitly",
+                               App::uncurry_callee(def->as<App>())->sym(), input.value)
+                        .bail();
+                pending.push_back(input.value);
+            }
+            continue;
+        }
+        if (auto lam = def->isa<Lam>()) {
+            if (!lam->is_set()) continue;
+            if (auto var = lam->has_var()) bound.insert(var);
+        } else if (def->is_mutable() || def->isa<Var>() || def->isa<Axm>()) {
+            continue;
+        }
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+}
+
 const Def* normalize_sdpa_online(const Def*, const Def* callee, const Def*) {
     auto params = callee->as<App>()->callee()->as<App>()->arg();
     if (Lit::isa(params->proj(4, 2)) == 0 || Lit::isa(params->proj(4, 3)) == 0)
@@ -50,13 +99,13 @@ const Def* normalize_blis_candidate(const Def*, const Def*, const Def* producer)
 }
 
 MultiTilePlan multi_tile_plan(const App* app) {
-    auto [meta, shapes_grid, boxes, body] = app->uncurry_args<4>();
-    auto [n, g, types, ranks]             = meta->projs<4>();
-    auto [shapes, grid]                   = shapes_grid->projs<2>();
-    auto count                            = Lit::expect(n, "a literal tensor.tiled_n result count");
-    auto dims                             = Lit::expect(g, "a literal tensor.tiled_n grid rank");
-    auto plan                             = MultiTilePlan{types, ranks, shapes, grid, boxes, body, {}, {}};
-    u64 trips                             = 1;
+    auto [meta, shapes_grid, boxes, input_type, inputs, body] = app->uncurry_args<6>();
+    auto [n, g, types, ranks]                                 = meta->projs<4>();
+    auto [shapes, grid]                                       = shapes_grid->projs<2>();
+    auto count                                                = Lit::expect(n, "a literal tensor.tiled_n result count");
+    auto dims                                                 = Lit::expect(g, "a literal tensor.tiled_n grid rank");
+    auto plan = MultiTilePlan{types, ranks, shapes, grid, boxes, inputs, body, {}, {}};
+    u64 trips = 1;
     for (u64 d = 0; d != dims; ++d) {
         auto extent = Lit::expect(grid->proj(dims, d), "a literal tensor.tiled_n grid extent");
         if (extent && trips > 65536 / extent)
@@ -290,8 +339,9 @@ const Def* normalize_tile_of_box(const Def*, const Def*, const Def* arg) {
 }
 
 const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
-    auto [meta, shapes] = c->as<App>()->uncurry_args<2>();
-    auto [s, ts]        = shapes->projs<2>();
+    auto [meta, shapes, input_type, inputs] = c->as<App>()->uncurry_args<4>();
+    check_region_inputs(body);
+    auto [s, ts] = shapes->projs<2>();
     if (auto rank = Lit::isa(meta->proj(2, 1))) {
         for (size_t d = 0; d != *rank; ++d)
             if (Lit::isa(ts->proj(*rank, d)) == 0) c->blame("tensor.tiled requires positive tile sizes").bail();
@@ -300,17 +350,47 @@ const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
                 auto& w = c->world();
                 return w.app(w.app(w.annex<tensor::splat>(), meta), {s, w.bot(meta->proj(2, 0))});
             }
-        if (s == ts) return c->world().app(body, {c->world().pack(*rank, c->world().lit_nat(0)), s});
+        if (s == ts)
+            return c->world().app(c->world().app(body, {c->world().pack(*rank, c->world().lit_nat(0)), s}), inputs);
     }
     return nullptr;
 }
 
-const Def* normalize_tile_fold(const Def*, const Def* c, const Def*) {
-    auto [meta, blocks, init] = c->as<App>()->uncurry_args<3>();
-    auto [n, ks]              = blocks->projs<2>();
+const Def* normalize_tile_fold(const Def*, const Def* c, const Def* body) {
+    auto [meta, blocks, init, input_type, inputs] = c->as<App>()->uncurry_args<5>();
+    check_region_inputs(body);
+    auto [n, ks] = blocks->projs<2>();
     if (Lit::isa(n) == 0) return init;
     if (Lit::isa(ks) == 0) c->blame("tensor.tile_fold requires a positive block size").bail();
     return nullptr;
+}
+
+const Def* normalize_tiled_n(const Def*, const Def*, const Def* body) {
+    check_region_inputs(body);
+    return nullptr;
+}
+
+const Def* normalize_group_impl(const Def*, const Def* callee, const Def* arg) {
+    auto& w                  = arg->world();
+    auto [type, rank, shape] = callee->as<App>()->args<3>();
+    auto [producer, tiles]   = arg->projs<2>();
+    if (!graph::map_reduce(producer) || !Lit::isa(rank)) return nullptr;
+    RegionInputs inputs(Defs{producer});
+    auto values     = inputs.values(w);
+    auto tiled      = w.app(w.app(w.annex<tensor::tiled>(), {type, rank}), {shape, tiles});
+    tiled           = w.app(w.app(tiled, values->type()), values);
+    auto body       = w.mut_lam(tiled->type()->as<Pi>()->dom()->as<Pi>());
+    auto inner      = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());
+    auto [off, ext] = body->vars<2>();
+    auto r          = Lit::as(rank);
+    DefVec origin(r, [&](size_t d) {
+        auto s = Lit::isa(shape->proj(r, d)), t = Lit::isa(tiles->proj(r, d));
+        return s && t && *s <= *t ? w.lit_nat_0() : off->proj(r, d);
+    });
+    auto read = w.app(w.app(w.annex<tile_of>(), {type, rank}), shape);
+    inner->set(true, w.app(read, {inputs.rebuild(producer, inner->var()), w.tuple(origin), ext}));
+    body->set(true, inner);
+    return w.app(tiled, body);
 }
 
 const Def* normalize_stage(const Def*, const Def* c, const Def*) {

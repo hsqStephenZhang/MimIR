@@ -12,7 +12,8 @@ namespace mim::pattern {
 
 namespace {
 const Lam* param_binder(const Def* callee) {
-    if (auto extract = callee->isa<Extract>()) callee = extract->tuple();
+    while (auto extract = callee->isa<Extract>())
+        callee = extract->tuple();
     if (auto var = callee->isa<Var>()) return var->binder()->isa<Lam>();
     return nullptr;
 }
@@ -255,6 +256,7 @@ public:
                             auto source = pending[i];
                             if (!seen.insert(source).second) continue;
                             if (auto app = source->isa<App>()) {
+                                if (app->type()->isa<Type>()) continue;
                                 if (app->callee()->isa<Idx>()) continue;
                                 auto callee = App::uncurry_callee(app);
                                 auto axm    = callee->isa<Axm>();
@@ -264,8 +266,10 @@ public:
                                 std::ranges::reverse(args);
                                 auto binder = param_binder(callee);
                                 if (!(binder && locals.contains(binder))
-                                    && (!axm || !graph.is_pure_call(axm->flags(), args)))
+                                    && (!axm || !graph.is_pure_call(axm->flags(), args))) {
+                                    graph.world().log().d("graph RHS binder capture rejected {}", source);
                                     throw InstantiationFailure("RHS binder capture includes an unproved computation");
+                                }
                                 for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                                     pending.push_back(cur->arg());
                             } else if (!source->is_mutable() && !source->isa<Var>() && !source->isa<Axm>()) {

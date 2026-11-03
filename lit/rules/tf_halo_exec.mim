@@ -56,50 +56,67 @@ lam prepared (input: «2, 2, 5, 6; I64»): «2, 2, 7, 8; I64» =
 extern fun stride_one (input: «2, 2, 5, 6; I64», weight: «3, 2, 3, 3; I64», bias: «3; I64»): «2, 3, 5, 6; I64» =
     let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias);
     return (tiled @(I64, 4) ((2, 3, 5, 6), (2, 3, 2, 6))
-        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+        (input, weight, bias)
+        (λ (off ext: «4; Nat») (input, weight, bias): «ext; I64» =
+            let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias); tile_of_box (p, off, ext, ext)));
 
 extern fun stride_two (input: «2, 2, 5, 6; I64», weight: «3, 2, 3, 3; I64», bias: «3; I64»): «2, 3, 3, 3; I64» =
     let p = convolution ((2, 2), (1, 1)) (prepared input, buf weight, buf bias);
     return (tiled @(I64, 4) ((2, 3, 3, 3), (2, 3, 2, 3))
-        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+        (input, weight, bias)
+        (λ (off ext: «4; Nat») (input, weight, bias): «ext; I64» =
+            let p = convolution ((2, 2), (1, 1)) (prepared input, buf weight, buf bias); tile_of_box (p, off, ext, ext)));
 
 extern fun one_row (input: «2, 2, 5, 6; I64», weight: «3, 2, 3, 3; I64», bias: «3; I64»): «2, 3, 5, 6; I64» =
     let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias);
     return (tiled @(I64, 4) ((2, 3, 5, 6), (2, 3, 1, 6))
-        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+        (input, weight, bias)
+        (λ (off ext: «4; Nat») (input, weight, bias): «ext; I64» =
+            let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias); tile_of_box (p, off, ext, ext)));
 
 extern fun dilated (input: «2, 2, 5, 6; I64», weight: «3, 2, 3, 3; I64», bias: «3; I64»): «2, 3, 3, 4; I64» =
     let p = convolution ((1, 1), (2, 2)) (prepared input, buf weight, buf bias);
     return (tiled @(I64, 4) ((2, 3, 3, 4), (2, 3, 2, 4))
-        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+        (input, weight, bias)
+        (λ (off ext: «4; Nat») (input, weight, bias): «ext; I64» =
+            let p = convolution ((1, 1), (2, 2)) (prepared input, buf weight, buf bias); tile_of_box (p, off, ext, ext)));
 
 extern fun chain (input: «2, 2, 9, 8; I64», first: «3, 2, 3, 3; I64», second: «2, 3, 3, 3; I64»): «2, 2, 5, 4; I64» =
     let p = convolution ((1, 1), (1, 1)) (buf input, buf first, splat (3, 0I64));
     let p = convolution ((1, 1), (1, 1)) (p, buf second, splat (2, 0I64));
     return (tiled @(I64, 4) ((2, 2, 5, 4), (2, 2, 2, 4))
-        (λ (off ext: «4; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+        (input, first, second)
+        (λ (off ext: «4; Nat») (input, first, second): «ext; I64» =
+            let p = convolution ((1, 1), (1, 1)) (buf input, buf first, splat (3, 0I64));
+            let p = convolution ((1, 1), (1, 1)) (p, buf second, splat (2, 0I64)); tile_of_box (p, off, ext, ext)));
 
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 3, 7, 6),
+// CHECK: btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 3, 7, 6),
 // CHECK-LABEL: extern fun chain
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 3, 7, 6),
-// CHECK: btensor.clip_sched
-// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 3, 7, 6),
 // CHECK: tensor.tiled
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
 // CHECK-LABEL: extern fun dilated
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
-// CHECK: btensor.clip_sched
 // CHECK: tensor.tiled
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
 // CHECK-LABEL: extern fun one_row
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK: tensor.tiled
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
 // CHECK: btensor.clip_sched
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
-// CHECK: tensor.tiled
 // CHECK-LABEL: extern fun stride_one
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
-// CHECK: btensor.clip_sched
-// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
 // CHECK: tensor.tiled
-// CHECK-LABEL: extern fun stride_two
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
 // CHECK: btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
+// CHECK-LABEL: extern fun stride_two
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((2, 2, 7, 8),
 // CHECK: tensor.tiled

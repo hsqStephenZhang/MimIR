@@ -1,5 +1,6 @@
 // RUN: (! %mim %s 2>&1) | %FileCheck %s
 plugin tensor;
 extern lam bad (x: «3; Nat»): «3; Nat» =
-    tensor.tiled (3, 0) (λ (off ext: Nat): «ext; Nat» = tensor.slice 3 (off, 1, ext) x);
+    tensor.tiled (3, 0) x
+        (λ (off ext: Nat) (x): «ext; Nat» = tensor.slice 3 (off, 1, ext) x);
 // CHECK: tensor.tiled requires positive tile sizes

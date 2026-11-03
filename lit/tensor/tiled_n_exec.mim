@@ -22,7 +22,8 @@ lam boxes (point: Nat): [TileBox 2, TileBox 1] =
 lam paired_value (x: «5, 3; I64»): [«5, 3; I64», «5; I64»] =
     let x = buf x;
     tiled_n @(2, 1, (I64, I64), (2, 1)) (((5, 3), 5), 3) boxes
-        (λ (point: Nat): [«(boxes point)#ff#tt; I64», «(boxes point)#tt#tt; I64»] =
+        x
+        (λ (point: Nat) (x): [«(boxes point)#ff#tt; I64», «(boxes point)#tt#tt; I64»] =
             let (off, ext) = (boxes point)#ff;
             let p = map_reduce (ext, ext) (twice, 0I64) (affine.id @2) (affine.id @2,)
                 (slice (5, 3) (off, (1, 1), ext) x);
@@ -39,18 +40,19 @@ extern fun whole_reader (x: «5, 3; I64»): «5; I64» =
 extern fun empty (x: «0; I64»): [«0; I64», «0; I64»] =
     return (tiled_n @(2, 1, (I64, I64), (1, 1)) ((0, 0), 0)
         (λ (_: Nat): [TileBox 1, TileBox 1] = ((0, 0), (0, 0)))
-        (λ (_: Nat): [«0; I64», «0; I64»] = (x, x)));
+        x (λ (_: Nat) (x: «0; I64»): [«0; I64», «0; I64»] = (x, x)));
 
 extern fun singleton (x: I64): [I64, I64] =
     return (tiled_n @(2, 0, (I64, I64), (0, 1)) (((), 1), ())
         (λ (_: []): [TileBox 0, TileBox 1] = (((), ()), (0, 1)))
-        (λ (_: []): [I64, I64] = (x, core.wrap.mul 0 (x, 2I64))));
+        () (λ (_: []) (): [I64, I64] = (x, core.wrap.mul 0 (x, 2I64))));
 
 lam mixed_boxes (point: «2; Nat»): [TileBox 2, TileBox 2] =
     ((point, (1, 1)), ((point#tt, point#ff), (1, 1)));
 extern fun mixed (x: «2, 3; I64»): [«2, 3; I64», «3, 2; I32»] =
     let x = buf x;
     return (tiled_n @(2, 2, (I64, I32), (2, 2)) (((2, 3), (3, 2)), (2, 3)) mixed_boxes
-        (λ (point: «2; Nat»): [I64, I32] =
+        x
+        (λ (point: «2; Nat») (x: «2, 3; I64»): [I64, I32] =
             let value = x#(core.idx 0 2 (point#ff), core.idx 0 3 (point#tt));
             (value, core.conv.s 4294967296 (core.wrap.add 0 (value, 1I64)))));

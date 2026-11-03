@@ -259,25 +259,31 @@ ProducerTile reverse_tiles(const Def* producer, const Def* consumers, const Def*
         return w.sigma(DefVec(count, [&](size_t i) { return w.arr(owned->proj(count, i)->proj(2, 1), types[i]); }));
     };
     auto pi = w.mut_pi(w.type())->set_dom(w.type_nat());
-    pi->set_codom(result_types(pi->var()));
+    RegionInputs inputs(plan.ops);
+    auto values = inputs.values(w);
+    pi->set_codom(w.pi(values->type(), result_types(pi->var())));
     auto body         = w.mut_lam(pi)->set("reverseTiles");
+    auto inner        = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());
     auto owned        = w.app(boxes, body->var());
     auto [poff, pext] = owned->proj(count, 0)->projs<2>();
     auto p            = w.app(w.app(w.annex<reverse_source>(), {types[0], ranks[0]}), shapes[0]);
-    p                 = w.app(p, {producer, poff, pext});
+    auto rebuilt      = inputs.rebuild(plan.ops, inner->var());
+    p                 = w.app(p, {rebuilt.front(), poff, pext});
     DefVec tiles{p};
     for (size_t i = 1; i != count; ++i) {
         auto [off, ext] = owned->proj(count, i)->projs<2>();
         auto part       = w.app(w.annex<reverse_part>(),
                                 {types[i], ranks[i], ranks[0], producer->type(), plan.ops[i]->type(), p->type()});
-        tiles.push_back(w.app(part, {plan.ops[i], producer, p, off, ext, poff, pext}));
+        tiles.push_back(w.app(part, {rebuilt[i], rebuilt.front(), p, off, ext, poff, pext}));
     }
-    body->set(true, w.tuple(tiles));
+    inner->set(true, w.tuple(tiles));
+    body->set(true, inner);
     auto result = w.app(w.annex<tiled_n>(), {w.lit_nat(count), w.lit_nat_1(), w.tuple(types), w.tuple(ranks)});
-    result      = w.app(w.app(w.app(result, {w.tuple(shapes), w.lit_nat(trips)}), boxes), body);
-    auto cs     = graph::map_reduce(consumers)
-                    ? result->proj(count, 1)
-                    : w.tuple(DefVec(count - 1, [&](size_t i) { return result->proj(count, i + 1); }));
+    result      = w.app(
+        w.app(w.app(w.app(w.app(result, {w.tuple(shapes), w.lit_nat(trips)}), boxes), values->type()), values), body);
+    auto cs = graph::map_reduce(consumers)
+                ? result->proj(count, 1)
+                : w.tuple(DefVec(count - 1, [&](size_t i) { return result->proj(count, i + 1); }));
     return {w.tuple({result->proj(count, 0), cs}), {}};
 }
 

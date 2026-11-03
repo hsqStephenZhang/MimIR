@@ -34,12 +34,24 @@ bool row_group_closed(const pattern::GraphView&, const Def* producer);
 bool pure_scalar(const Def*);
 
 struct MultiTilePlan {
-    const Def *types, *ranks, *shapes, *grid, *boxes, *body;
+    const Def *types, *ranks, *shapes, *grid, *boxes, *inputs, *body;
     DefVec points;
     fe::Vector<DefVec> owned;
 };
 
 MultiTilePlan multi_tile_plan(const App*);
+void check_region_inputs(const Def*);
+
+class RegionInputs {
+public:
+    explicit RegionInputs(Defs);
+    const Def* values(World&) const;
+    const Def* rebuild(const Def*, const Def*) const;
+    DefVec rebuild(Defs, const Def*) const;
+
+private:
+    DefVec inputs_;
+};
 
 inline std::optional<TensorInit> tensor_init(const btensor::MapRedPost& mr) {
     if (Check::test_alpha(mr.init->type(), mr.To)) return {};

@@ -20,4 +20,7 @@ extern fun edge (input: «7; I64», off: Nat): I64 =
 extern fun tiles (input: «7; I64»): «7; I64» =
     let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf input);
     return (tiled @(I64, 1) (7, 3)
-        (λ (off ext: «1; Nat»): «ext; I64» = tile_of_box (p, off, ext, ext)));
+        input
+        (λ (off ext: «1; Nat») (input): «ext; I64» =
+            let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf input);
+            tile_of_box (p, off, ext, ext)));

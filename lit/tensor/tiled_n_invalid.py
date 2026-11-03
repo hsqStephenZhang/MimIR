@@ -18,7 +18,7 @@ for box, shape, grid, expected in cases:
         f"extern fun invalid (): «{shape}; I64» =\n"
         f"    return (tiled_n @(1, 1, I64, 1) ({shape}, {grid})\n"
         f"        (λ (point: Nat): TileBox 1 = {box})\n"
-        "        (λ (point: Nat): «"
+        "        () (λ (point: Nat) (): «"
         f"({box})#tt"
         "; I64» = splat ("
         f"({box})#tt, 0I64)));\n"

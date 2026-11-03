@@ -93,11 +93,12 @@ extern fun conv_chain (a: «1, 2, 7, 8; F32», w: «3, 2, 3, 3; F32», v: «2, 3
 // PROFILE-DAG: 5  `tensor.group`: `tensor.group.requests`
 // REPORTED-NOT: replacement removes a computation without a purity proof
 // REPORTED-NOT: not realized:
-// HALO-DAG: 8  `rule_app`: `rule.rewrites`
+// HALO-DAG: 6  `rule_app`: `rule.rewrites`
 // HALO-DAG: 6  `tensor.group`: `tensor.group.requests`
 // CLEAN-NOT: not realized:
 // CLEAN-NOT: tensor destination fallback
+// STRUCTURE: tensor.map_reduce_post {{.*}} btensor.clip_sched
+// STRUCTURE: tensor.map_reduce_post {{.*}} btensor.clip_sched
 // STRUCTURE-LABEL: extern fun conv_chain
-// STRUCTURE: tensor.tile_of_box
 // STRUCTURE: tensor.tiled_n
 // STRUCTURE-NOT: tensor.group_req

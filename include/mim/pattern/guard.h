@@ -1,11 +1,20 @@
 #pragma once
 
+#include "mim/rewrite.h"
 #include "mim/rule.h"
 
 #include "mim/pattern/graph.h"
 #include "mim/pattern/match.h"
 
 namespace mim::pattern {
+
+class ParameterImporter : public Rewriter {
+public:
+    using Rewriter::Rewriter;
+
+private:
+    const Def* rewrite_imm_Var(const Var*) override;
+};
 
 struct DataOp {
     flags_t axm;

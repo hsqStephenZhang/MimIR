@@ -1689,6 +1689,9 @@ anx lam group_blocks (bytes lanes registers cache_bytes: Nat): «4; Nat» =
     (mr, nr, kc, nc);
 
 axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
+axm region_fusion_ok: {P R B: *}
+    → [producer: P, region: R, body: B, slot mode budget: Nat] → Bool;
+axm fuse_region_inputs: [mode budget: Nat, graph: Bool] → compile.Phase;
 
 priv anx lam group_request_rule (P C: *): Rule [p: P, kind dim tile: Nat, params: C] =
     rule request (p: P, kind dim tile: Nat, params: C):
@@ -1711,20 +1714,26 @@ priv anx lam group_box_rule (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», of
         tile_of_box (p, off, ext, cap);
     fuse;
 
-pub lam fuse_producer (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», off ext: «r; Nat»] =
+priv anx lam fusion_slice_rule (T: *, r budget: Nat): Rule [s: «r; Nat», p: «s; T», off ext: «r; Nat»] =
     rule fuse (s: «r; Nat», p: «s; T», off ext: «r; Nat»):
         slice @(T, r) s (off, ‹r; 1›, ext) p
         when core.bit2.and 0 (core.bit2.xor 0 (group_root p, tt),
-            within_budget (p, slice @(T, r) s (off, ‹r; 1›, ext) p, 1)) =>
+            within_budget (p, slice @(T, r) s (off, ‹r; 1›, ext) p, budget)) =>
         tile_of (p, off, ext);
     fuse;
 
-pub lam fuse_halo (T: *, r budget: Nat): Rule [s: «r; Nat», p: «s; T», off ext cap: «r; Nat»] =
+pub lam fuse_producer (T: *, r: Nat): Rule [s: «r; Nat», p: «s; T», off ext: «r; Nat»] =
+    fusion_slice_rule (T, r, 1);
+
+priv anx lam fusion_box_rule (T: *, r budget: Nat): Rule [s: «r; Nat», p: «s; T», off ext cap: «r; Nat»] =
     rule fuse (s: «r; Nat», p: «s; T», off ext cap: «r; Nat»):
         slice_box @(T, r) s (off, ext, cap) p
         when within_budget (p, slice_box @(T, r) s (off, ext, cap) p, budget) =>
         tile_of_box (p, off, ext, cap);
     fuse;
+
+pub lam fuse_halo (T: *, r budget: Nat): Rule [s: «r; Nat», p: «s; T», off ext cap: «r; Nat»] =
+    fusion_box_rule (T, r, budget);
 
 axm group_candidate: {P: *} → [producer: P, tile_size: Nat] → Bool;
 axm group_build: {P: *} → [producer: P, tile_size: Nat] → P, normalize_group_build;
@@ -1764,26 +1773,30 @@ anx lam outs_default {T: *, Ro: Nat} (shape: «Ro; Nat») (value: «shape; T»):
 
 axm tiled: {T: *, r: Nat}
          → [s ts: «r; Nat»]
-         → [body: [off ext: «r; Nat»] → «ext; T»]
+         → {I: *} → [ins: I]
+         → [body: [off ext: «r; Nat»] → I → «ext; T»]
          → «s; T», normalize_tiled;
 
 axm tile_fold: {Acc: *}
              → [n ks: Nat]
              → [init: Acc]
-             → [step: [acc: Acc, off: Nat] → Acc]
+             → {I: *} → [ins: I]
+             → [step: [acc: Acc, off: Nat] → I → Acc]
              → Acc, normalize_tile_fold;
 
 anx lam TileBox (r: Nat): * = [off ext: «r; Nat»];
 axm tiled_n: {n g: Nat, Ts: «n; *», rs: «n; Nat»}
            → [shapes: «i: n; «rs#i; Nat»», grid: «g; Nat»]
            → [boxes: «g; Nat» → «i: n; TileBox (rs#i)»]
-           → [body: [point: «g; Nat»] → «i: n; «(boxes point)#i#tt; Ts#i»»]
-           → «i: n; «shapes#i; Ts#i»»;
+           → {I: *} → [ins: I]
+           → [body: [point: «g; Nat»] → I → «i: n; «(boxes point)#i#tt; Ts#i»»]
+           → «i: n; «shapes#i; Ts#i»», normalize_tiled_n;
 
 priv anx lam tiled_n_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
     (shapes: «i: n; «rs#i; Nat»», grid: «g; Nat»)
     (boxes: «g; Nat» → «i: n; TileBox (rs#i)»)
-    (body: [point: «g; Nat»] → «i: n; «(boxes point)#i#tt; Ts#i»»): «i: n; «shapes#i; Ts#i»» =
+    {I: *} (ins: I)
+    (body: [point: «g; Nat»] → I → «i: n; «(boxes point)#i#tt; Ts#i»»): «i: n; «shapes#i; Ts#i»» =
     let count = vec.fold.r @(Nat, Nat) @g core.nat.mul (grid, 1);
     let Results = «i: n; «shapes#i; Ts#i»»;
     let init = ‹i: n; splat (shapes#i, ⊥:(Ts#i))›;
@@ -1794,7 +1807,7 @@ priv anx lam tiled_n_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
                 (‹j: g; j›, 1);
             index / stride % grid#d›;
         let owned = boxes point;
-        let tiles = body point;
+        let tiles = body point ins;
         ‹i: n;
             let (off, ext) = owned#i;
             lam at (x: «rs#i; I64»): Ts#i =
@@ -1815,19 +1828,17 @@ priv anx lam tiled_n_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
          λ (): Results = run (index + 1, step (acc, index)))#(index < count) ();
     run (0, init);
 
-priv anx lam group_impl {T: *, r: Nat, s: «r; Nat»} (p: «s; T», ts: «r; Nat»): «s; T» =
-    tiled @(T, r) (s, ts) (λ (off ext: «r; Nat»): «ext; T» =
-        let origin = ‹d: r; (off#d, 0)#(s#d <= ts#d)›;
-        tile_of (p, origin, ext));
+axm group_impl: {T: *, r: Nat, s: «r; Nat»} → [p: «s; T», ts: «r; Nat»] → «s; T»,
+    normalize_group_impl;
 
 priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat»)
-    (body: [off ext: «r; Nat»] → «ext; T»): «s; T» =
+    {I: *} (ins: I) (body: [off ext: «r; Nat»] → I → «ext; T»): «s; T» =
     let ts = ‹d: r; (ts#d, s#d)#(s#d < ts#d)›;
     lam at (x: «r; I64»): T =
         let off = ‹d: r; let i = core.bitcast Nat (x#d); i / ts#d * ts#d›;
         let local = ‹d: r; core.bitcast Nat (x#d) - off#d›;
         lam peel (d: Nat, ext: «r; Nat»)@core.pe.is_closed (r, s, ts): T =
-            (λ (): T = (body (off, ext))#‹j: r; core.idx 0 (ext#j) (local#j)›,
+            (λ (): T = (body (off, ext) ins)#‹j: r; core.idx 0 (ext#j) (local#j)›,
              λ (): T =
                 let axis = core.idx 0 r d;
                 let rem = s#axis % ts#axis;
@@ -1846,7 +1857,7 @@ priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat»)
     generate s at;
 
 priv anx lam tile_fold_impl {Acc: *} (n ks: Nat) (init: Acc)
-    (step: [acc: Acc, off: Nat] → Acc): Acc =
+    {I: *} (ins: I) (step: [acc: Acc, off: Nat] → I → Acc): Acc =
     fun run (): Acc =
         loop (0, init)
         where
@@ -1854,7 +1865,7 @@ priv anx lam tile_fold_impl {Acc: *} (n ks: Nat) (init: Acc)
                 (done, next)#(i < n) ()
                 where
                     con done () = return acc;
-                    con next () = loop (i + 1, step (acc, i * ks));
+                    con next () = loop (i + 1, step (acc, i * ks) ins);
                 end
         end;
     cps.cps2ds run ();
@@ -1911,23 +1922,25 @@ pub anx lam attention_masked_schedule_rule (mode lanes registers: Nat): Rule [
             @(H, M, S, K, N) (scale, q, k, v, mask);
     schedule;
 
-priv anx lam sdpa_online_impl (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N: Nat}
+priv anx lam sdpa_online_inputs (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N: Nat} {Mask: *}
     (scale: math.F32, q: «H, M, K; math.F32», k: «H, S, K; math.F32»,
-     v: «H, S, N; math.F32», mask: «H, M, S; math.F32»): «H, M, N; math.F32» =
+     v: «H, S, N; math.F32», mask: Mask, get_mask: Mask → «H, M, S; math.F32»): «H, M, N; math.F32» =
     let F = math.F32;
     let add = math.arith.add mode;
     let mul = math.arith.mul mode;
     let sub = math.arith.sub mode;
     let maximum = math.extrema.fmax mode;
     let R: Ring = (F, 0:F, add, mul);
-    tiled ((H, M, N), (1, bm, N))
-        (λ (off ext: «3; Nat»): «ext; F» =
+    tiled ((H, M, N), (1, bm, N)) (q, k, v, mask)
+        (λ (off ext: «3; Nat»)
+            (q: «H, M, K; F», k: «H, S, K; F», v: «H, S, N; F», mask: Mask): «ext; F» =
             let rows = ext#1₃;
             let qt = reshape (1, rows, K) (rows, K)
                 (slice @(F, 3) (H, M, K) ((off#0₃, off#1₃, 0), (1, 1, 1), (1, rows, K)) q);
             let Acc = [«rows; F», «rows; F», «rows, N; F»];
             let init: Acc = (splat (rows, math.neg_inf math.f32), splat (rows, 0:F), splat ((rows, N), 0:F));
-            lam block (width ko: Nat, (old_max old_sum: «rows; F», old_out: «rows, N; F»)): Acc =
+            lam block (qt: «rows, K; F», k: «H, S, K; F», v: «H, S, N; F», mask: Mask)
+                (width ko: Nat, (old_max old_sum: «rows; F», old_out: «rows, N; F»)): Acc =
                 let kt = reshape (1, width, K) (width, K)
                     (slice @(F, 3) (H, S, K) ((off#0₃, ko, 0), (1, 1, 1), (1, width, K)) k);
                 let vt = reshape (1, width, N) (width, N)
@@ -1939,7 +1952,7 @@ priv anx lam sdpa_online_impl (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N: 
                     λ (): «rows, width; F» =
                         let bias = reshape (1, rows, width) (rows, width)
                             (slice @(F, 3) (H, M, S) ((off#0₃, off#1₃, ko),
-                                (1, 1, 1), (1, rows, width)) mask);
+                                (1, 1, 1), (1, rows, width)) (get_mask mask));
                         binary add @(2, (rows, width)) (scores, bias))#masked ();
                 let next_max = binary maximum @(1, rows)
                     (old_max, reduce (maximum, math.neg_inf math.f32) @2 1₂ @(rows, width) scores);
@@ -1957,10 +1970,22 @@ priv anx lam sdpa_online_impl (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N: 
                     (binary_ax mul @2 1₂ @(rows, N) (old_out, correction), pv);
                 (next_max, next_sum, next_out);
             let blocks = (S - 1) / bk;
-            let acc = tile_fold @Acc (blocks, bk) init
-                (λ (acc: Acc, ko: Nat): Acc = block (bk, ko, acc));
-            let (_, sums, result) = block (S - blocks * bk, blocks * bk, acc);
+            let acc = tile_fold @Acc (blocks, bk) init (qt, k, v, mask)
+                (λ (acc: Acc, ko: Nat)
+                    (qt: «rows, K; F», k: «H, S, K; F», v: «H, S, N; F», mask: Mask): Acc =
+                    block (qt, k, v, mask) (bk, ko, acc));
+            let (_, sums, result) = block (qt, k, v, mask) (S - blocks * bk, blocks * bk, acc);
             reshape (rows, N) ext (binary_ax (math.arith.div mode) @2 1₂ @(rows, N) (result, sums)));
+
+priv anx lam sdpa_online_impl (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N: Nat}
+    (scale: math.F32, q: «H, M, K; math.F32», k: «H, S, K; math.F32»,
+     v: «H, S, N; math.F32», mask: «H, M, S; math.F32»): «H, M, N; math.F32» =
+    (λ (): «H, M, N; math.F32» =
+        sdpa_online_inputs (mode, ff, bm, bk) @(H, M, S, K, N) @[]
+            (scale, q, k, v, (), λ (): «H, M, S; math.F32» = splat ((H, M, S), 0:math.F32)),
+     λ (): «H, M, N; math.F32» =
+        sdpa_online_inputs (mode, tt, bm, bk) @(H, M, S, K, N) @«H, M, S; math.F32»
+            (scale, q, k, v, mask, λ x: «H, M, S; math.F32»: «H, M, S; math.F32» = x))#masked ();
 
 anx lam stage_shape {r k: Nat} (s: «r; Nat»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r»): «r + k; Nat» =
@@ -2032,15 +2057,19 @@ priv anx lam group_blis_impl {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps;
     (combine: Fn [T, [Ta, Tb]] → T, init: T, post: Fn [T, «i: nps; Tps#i»] → T,
      post_maps: «i: nps; «2; affine.Index» → «Rps#i; affine.Index»»)
     (a: «M, K; Ta», b: «K, N; Tb», extras: «i: nps; «Sps#i; Tps#i»»): «M, N; T» =
-    tiled ((M, N), (M, nc))
-        (λ (off ext: «2; Nat»): «ext; T» =
+    tiled ((M, N), (M, nc)) (a, b, extras)
+        (λ (off ext: «2; Nat»)
+            (a: «M, K; Ta», b: «K, N; Tb», extras: «i: nps; «Sps#i; Tps#i»»): «ext; T» =
             let rows = ext#ff;
             let n = ext#tt;
-            lam block (k ko: Nat, acc: «rows, n; T», last: Bool): «rows, n; T» =
+            lam block (a: «M, K; Ta», b: «K, N; Tb», extras: «i: nps; «Sps#i; Tps#i»»)
+                (k ko: Nat, acc: «rows, n; T», last: Bool): «rows, n; T» =
                 let bp = stage @(Tb, 2, 1) (k, n) (1, nr, (tt, ff), ⊥:Tb) 0
                     (slice @(Tb, 2) (K, N) ((ko, off#tt), (1, 1), (k, n)) b);
-                tiled ((rows, n), (mr, nr))
-                    (λ (row size: «2; Nat»): «size; T» =
+                tiled ((rows, n), (mr, nr)) (a, bp, acc, extras)
+                    (λ (row size: «2; Nat»)
+                        (a: «M, K; Ta», bp: «stage_shape @(2, 1) (k, n) (1, nr, (tt, ff)); Tb»,
+                         acc: «rows, n; T», extras: «i: nps; «Sps#i; Tps#i»»): «size; T» =
                         let m = size#ff;
                         let cols = size#tt;
                         let kt = core.select (core.ncmp.e (k / 4 * 4, k), 4, 1);
@@ -2078,9 +2107,11 @@ priv anx lam group_blis_impl {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps;
                                                   affine.op.add (o#tt, affine.lit (off#tt + row#tt)))›,
                                  extras))#last ());
             let blocks = (K - 1) / kc;
-            let acc = tile_fold (blocks, kc) (splat ((rows, n), init))
-                (λ (acc: «rows, n; T», ko: Nat): «rows, n; T» = block (kc, ko, acc, ff));
-            block (K - blocks * kc, blocks * kc, acc, tt));
+            let acc = tile_fold (blocks, kc) (splat ((rows, n), init)) (a, b, extras)
+                (λ (acc: «rows, n; T», ko: Nat)
+                    (a: «M, K; Ta», b: «K, N; Tb», extras: «i: nps; «Sps#i; Tps#i»»): «rows, n; T» =
+                    block (a, b, extras) (kc, ko, acc, ff));
+            block (a, b, extras) (K - blocks * kc, blocks * kc, acc, tt));
 
 priv anx lam group_blis_batch_impl
     {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «i: nps; «Rps#i; Nat»»,
@@ -2094,8 +2125,9 @@ priv anx lam group_blis_batch_impl
     : «vec.cat (batches, (M, N)); T» =
     let shape = vec.cat (batches, (M, N));
     let extent = vec.cat (‹nb; 1›, (M, N));
-    tiled @(T, nb + 2) (shape, extent)
-        (λ (off ext: «nb + 2; Nat»): «ext; T» =
+    tiled @(T, nb + 2) (shape, extent) (inputs, extras)
+        (λ (off ext: «nb + 2; Nat»)
+            (inputs: [«Sis#ff; Ta», «Sis#tt; Tb»], extras: «i: nps; «Sps#i; Tps#i»»): «ext; T» =
             let prefix = ‹d: nb; affine.lit (off#(core.conv.u (nb + 2) d))›;
             let a = blis_operand @(Ta, Ris#ff) (Sis#ff)
                 ((M, K), λ ij: «2; affine.Index»: «Ris#ff; affine.Index» = reads#ff (vec.cat (prefix, ij)))

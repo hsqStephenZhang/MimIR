@@ -165,13 +165,18 @@ const Def* outer_parts(const Def* producer, const btensor::MapRedPost& mr, u64 a
         auto off        = DefVec(rank, w.lit_nat_0());
         off[axis]       = w.call(core::nat::mul, Defs{boxes->var(), w.lit_nat(tile)});
         boxes->set(true, w.tuple({w.tuple(off), ext}));
-        auto body = w.mut_lam(w.type_nat(), w.arr(ext, mr.Tp));
-        off[axis] = w.call(core::nat::add, Defs{w.call(core::nat::mul, Defs{body->var(), w.lit_nat(tile)}),
-                                                w.lit_nat(remainder ? full * tile : 0)});
-        auto read = w.app(w.app(w.annex<tile_of_box>(), {mr.Tp, mr.Ro}), mr.So);
-        body->set(true, w.app(read, {producer, w.tuple(off), ext, ext}));
+        RegionInputs inputs(Defs{producer});
+        auto values = inputs.values(w);
+        auto body   = w.mut_lam(w.type_nat(), w.pi(values->type(), w.arr(ext, mr.Tp)));
+        auto inner  = w.mut_lam(values->type(), w.arr(ext, mr.Tp));
+        off[axis]   = w.call(core::nat::add, Defs{w.call(core::nat::mul, Defs{body->var(), w.lit_nat(tile)}),
+                                                  w.lit_nat(remainder ? full * tile : 0)});
+        auto read   = w.app(w.app(w.annex<tile_of_box>(), {mr.Tp, mr.Ro}), mr.So);
+        inner->set(true, w.app(read, {inputs.rebuild(producer, inner->var()), w.tuple(off), ext, ext}));
+        body->set(true, inner);
         auto tiled = w.app(w.annex<tiled_n>(), {w.lit_nat_1(), w.lit_nat_1(), mr.Tp, mr.Ro});
-        tiled      = w.app(w.app(w.app(tiled, {part_shape, w.lit_nat(trips)}), boxes), body);
+        tiled = w.app(w.app(w.app(w.app(w.app(tiled, {part_shape, w.lit_nat(trips)}), boxes), values->type()), values),
+                      body);
         parts.push_back(tiled);
         shapes.push_back(part_shape);
     }
@@ -391,23 +396,28 @@ pattern::WitnessResult group_support_witness(const pattern::GraphView& source, D
                         : pattern::WitnessResult{pattern::CheckResult::Unknown, nullptr, result.reason};
 }
 
+bool group_fusion_producer(const Def* producer) {
+    auto app = graph::map_reduce(producer);
+    if (!app || is_pure_read(producer)) return false;
+    auto& w = producer->world();
+    auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    return Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>())
+        && Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), w.app(w.annex<tile_sched>(), mr.sched)))
+        && !blis_group(producer, w.lit_nat_0(), w.pack(3, w.lit_nat_0())).value;
+}
+
 pattern::WitnessResult group_fusion_witness(const pattern::GraphView& source, Defs inputs, World& target) {
     auto budget = scope_budget(source, inputs[1]);
     if (!budget) return {pattern::CheckResult::False, nullptr, "reader is not confined to requested groups"};
     auto scratch = target.inherit();
     Rewriter importer(*scratch);
-    auto producer = importer.rewrite(inputs[0]);
-    auto app      = graph::map_reduce(producer);
-    if (!app) return {pattern::CheckResult::False, nullptr, "fusion producer is not a map_reduce_post"};
-    if (is_pure_read(producer))
-        return {pattern::CheckResult::False, nullptr, "a view is composed by its reader rather than tiled"};
-    auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
-    if (!Check::test_alpha(mr.TSched, scratch->annex<btensor::SchedT>())
-        || !Check::test_alpha(mr.sched, scratch->app(scratch->annex<btensor::mk_sched>(),
-                                                     scratch->app(scratch->annex<tile_sched>(), mr.sched)))
-        || blis_group(producer, scratch->lit_nat_0(), scratch->pack(3, scratch->lit_nat_0())).value)
+    if (!group_fusion_producer(importer.rewrite(inputs[0])))
         return {pattern::CheckResult::False, nullptr, "fusion cannot cross a BLIS or placed root"};
     return fusion_budget(source, {inputs[0], inputs[1], target.lit_nat(*budget)}, target);
+}
+
+std::optional<u64> region_scope_budget(const pattern::GraphView& source, const Def* region) {
+    return scope_budget(source, region);
 }
 
 pattern::WitnessResult group_reverse_witness(const pattern::GraphView& source, Defs inputs, World& target) {
@@ -547,6 +557,12 @@ void GroupRules::start() {
         stages.push_back(std::make_unique<GraphRuleRewrite>(world(), std::move(graph_rules), std::move(pure), true));
     }
     stages.push_back(std::make_unique<RuleRewrite>(world(), std::move(compiled)));
+    auto fusion = std::make_unique<FuseRegionInputs>(world(), Annex::base<fuse_region_inputs>());
+    fusion->apply(
+        world()
+            .app(world().annex<fuse_region_inputs>(), {world().lit_nat(2), world().lit_nat_1(), world().lit_tt()})
+            ->as<App>());
+    stages.push_back(std::move(fusion));
     PhaseMan pipeline(world(), "tensor.group_rules.fixed_point");
     pipeline.apply(true, std::move(stages));
     pipeline.run();

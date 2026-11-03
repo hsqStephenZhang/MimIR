@@ -93,10 +93,10 @@ struct WitnessFailure : std::invalid_argument {
     MatchStatus status;
 };
 
-class GuardImporter : public Rewriter {
+class GuardImporter : public ParameterImporter {
 public:
     GuardImporter(World& target, const Def2Def& frozen, const GuardContext* context)
-        : Rewriter(target)
+        : ParameterImporter(target)
         , frozen_(frozen)
         , context_(context) {}
 
@@ -155,6 +155,12 @@ private:
 };
 
 } // namespace
+
+const Def* ParameterImporter::rewrite_imm_Var(const Var* var) {
+    if (auto binder = lookup(var->binder())) return world().var(binder->as_mut());
+    auto parameter = world().mut_lam(world().pi(rewrite(var->type()), world().type_nat()));
+    return map(var, parameter->var());
+}
 
 std::vector<DataOp> parse_data_ops(const Def* def) {
     DataOps collector;

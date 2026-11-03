@@ -12,6 +12,7 @@ let Ring = (F32, 0.0:F32, math.arith.add mode, math.arith.mul mode);
 extern fun rows (a: «64, 96; F32», b: «96, 128; F32»): «64, 128; F32» =
     let p = product_2d Ring (buf a, buf b);
     return (tiled ((64, 128), (2, 128))
-        (λ (off ext: «2; Nat»): «ext; F32» = slice @(F32, 2) (64, 128) (off, (1, 1), ext) p));
+        p
+        (λ (off ext: «2; Nat») (p): «ext; F32» = slice @(F32, 2) (64, 128) (off, (1, 1), ext) p));
 
 // CHECK: tensor.group contraction {{.*}}: MR=

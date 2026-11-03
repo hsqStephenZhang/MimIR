@@ -57,8 +57,16 @@ void GraphView::index_occurrences() {
     DefSet entered, recursive;
     DefMap<DefSet> region_owners;
     for (auto def : operations_)
-        for (auto region : isa_operation(def)->regions)
+        for (auto region : isa_operation(def)->regions) {
             region_owners[region.body].insert(def);
+            auto outer = region.body->isa<Lam>();
+            while (outer && outer->is_set()) {
+                auto inner = outer->body()->isa<Lam>();
+                if (!inner) break;
+                region_owners[inner].insert(outer);
+                outer = inner;
+            }
+        }
     auto visit = [&](this auto&& visit, const Def* body, std::optional<u64> trips, std::vector<const Def*> regions,
                      DefSet active, bool opaque) -> void {
         DefVec pending{body};
@@ -86,6 +94,12 @@ void GraphView::index_occurrences() {
                     nested.push_back(def);
                     auto next = active;
                     next.insert(fn);
+                    while (auto inner = fn->body()->isa<Lam>()) {
+                        if (!inner->is_set() || next.contains(inner)) break;
+                        entered.insert(inner);
+                        next.insert(inner);
+                        fn = inner;
+                    }
                     visit(fn->body(), multiply(trips, region.trips), std::move(nested), std::move(next), opaque);
                 }
             }
@@ -364,8 +378,10 @@ bool GraphView::is_pure_function(const Def* fn) const {
             if (op) pending.push_back(op);
     }
     auto local = [&](const Def* def) {
-        if (auto extract = def->isa<Extract>()) def = extract->tuple();
-        if (auto var = def->isa<Var>()) return locals.contains(var->binder()->isa_mut<Lam>());
+        while (auto extract = def->isa<Extract>())
+            def = extract->tuple();
+        if (auto var = def->isa<Var>())
+            if (auto binder = var->binder()->isa_mut<Lam>()) return locals.contains(binder);
         if (auto lam = def->isa_mut<Lam>()) return locals.contains(lam);
         return false;
     };
@@ -376,14 +392,19 @@ bool GraphView::is_pure_function(const Def* fn) const {
     };
     for (auto def : seen)
         if (auto app = def->isa<App>(); app && evaluated(app)) {
+            if (app->type()->isa<Type>()) continue;
             auto callee = App::uncurry_callee(app);
             if (local(callee)) continue;
             auto axm = callee->isa<Axm>();
+            if (axm && app->type()->isa<Pi>() && is_pure(axm->flags())) continue;
             DefVec args;
             for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                 args.push_back(cur->arg());
             std::ranges::reverse(args);
-            if (!axm || !is_pure_call(axm->flags(), args)) return false;
+            if (!axm || !is_pure_call(axm->flags(), args)) {
+                world_->log().d("graph pure-function proof rejected {}", app);
+                return false;
+            }
         }
     return true;
 }

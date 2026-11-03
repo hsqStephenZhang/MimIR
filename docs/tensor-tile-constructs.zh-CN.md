@@ -1,5 +1,74 @@
 # Tensor-level tiling constructs（Task 7 / destination lowering）
 
+## Region 的显式输入（Task 31B）
+
+当前接口如下；`I` 可以是单个 tensor、嵌套 tuple 或空 tuple `[]`，空输入传 `()`。
+`stage` 是数据布局转换，不是 region，接口不变。
+
+```mim
+tiled {T, r} (s, ts) {I} ins
+    (body: [off ext: «r; Nat»] → I → «ext; T»)
+tile_fold {Acc} (n, ks) init {I} ins
+    (step: [acc: Acc, off: Nat] → I → Acc)
+tiled_n {n, g, Ts, rs} (shapes, grid) boxes {I} ins
+    (body: [point: «g; Nat»] → I → «i: n; «(boxes point)#i#tt; Ts#i»»)
+```
+
+`ins` 表示进入 region 前已经计算的完整数据值，不包含 access map；
+body 通过自己的输入参数调用 `slice`、`slice_box`、`tile_of` 等选取读取范围。
+若要每 tile 重算 producer，则传入 producer 的输入，在 body 参数上重新构造 producer。
+重建节点依赖 body 的 binder，与外层 producer 不再是同一节点。
+reverse placement 保留逐 literal point 的证明以及 `reverse_source/reverse_part` 的延迟归约，
+但模板引用的是在 body 输入参数上重建的节点。
+
+normalizer 使用 operation registry 的 DATA edges 检查隔离性：
+body 内每个操作的非闭合 tensor 数据输入，必须依赖该 body 的坐标、accumulator
+或输入参数之一；检查还会沿数据计算递归，不能用一个局部输入掩盖另一个外部输入。
+嵌套 region 的 body 单独检查，不沿其闭包扫描。
+shape、type、map 和标量参数不属于 tensor 数据输入，允许捕获；
+闭合 tensor 常量也允许使用。
+诊断指出读取操作及未显式传入的 tensor 输入，不把 region 向外产生的结果误报为捕获。
+
+三个 destination lowering 都先 materialize `ins`，将结果作为 continuation 参数传入，
+再用旧 World 的同类型 proxy 映射 body 输入。
+`tiled_n` 的逐 point/slot substitution 因而不会复制外层 producer。
+`capture_producers` 不再参与这三个 region，只保留给尚未改变接口的 `generate`；
+删除了 destination root 排除、隐式闭包捕获以及捕获后继续递归的推断分支。
+此基线没有 `lower_parallel_tiled`，本改动没有引入另一套并行 lowering。
+
+### 跨输入边界的受保护融合
+
+`tensor.fuse_region_inputs (mode, budget, graph)` 生成类型专用的 P5 whole-region Rule：
+捕获原 body 为函数参数，用 producer 的输入替换其输入位置，
+在新 body 中重建 producer，再调用捕获的原 body。
+支持三个 region 和嵌套 tuple 输入，不通过改写 binder 的对应关系偷渡 producer。
+`graph=tt` 使用 `graph_rule_app`，`ff` 使用 `rule_app`。
+phase 在边界改写后运行对应的 slice/box Rule；整段 pipeline 仍应运行到 fixed point，
+以处理随后暴露的上游 producer。自动 `tensor.group_rules` 已包含此组合。
+
+| mode | 策略 |
+| --- | --- |
+| `0` | exact slice，保留 `fuse_producer` 的 root 限制，通常 budget 为 1 |
+| `1` | halo slice_box，使用显式 budget，允许已证明可重算的 canonical contraction |
+| `2` | 自动 grouping，使用各 reader 的 `group_region` scope budget，保留 BLIS/view/placed-root 限制 |
+
+staged `region_fusion_ok` 在 frozen program snapshot 上检查所有 reader：
+每个 reader 都必须是通过显式输入读取该 producer 的 region，且没有别名位置、
+fold init 使用、whole reader 或未证明完整的 data uses。
+对所有读取位置、nested regions 和 enclosing occurrences 累加实际 slice/over-box 体积；
+总量不得超过完整 producer 体积乘以 budget，多 scope 使用其中最小的 budget。
+每个读取还必须通过真实 `producer_tile` normalizer 的证明；
+运行时 tiled/fold origin 另作 symbolic probe，不能只在枚举出的常量 offset 上成立。
+不支持的读取、未知 trip/shape、溢出或超过 65536 次证明工作均保留预计算结果。
+producer 的 combiner/post 必须可证明纯；graph frontend 对捕获函数也检查调用纯性。
+因此，边界改写不是无条件把整个 producer 移入 body。
+
+`tf_region_inputs` 在两个前端及 ASan 标量对照下覆盖 fold、嵌套异构输入、
+共享 producer 的两个 tile regions，以及同时用作 fold init 时拒绝移动的情况。
+已有 halo、BLIS、row、reverse 的执行与工作量断言继续约束融合结果。
+unmasked online attention 的显式输入不包含未使用的零 mask；
+masked 路径才传入 mask tensor，避免因显式 materialization 分配完整零 mask。
+
 ## 7. Cross-op grouping
 
 ### 7.1 Pure affine boxes
@@ -219,7 +288,7 @@ halo 使用带 box witness 的 `tile_of_box (p, off, ext, cap)`；
 例如按输出行分块时，外层仍是普通 `tiled`，body 写：
 
 ```mim
-λ (off ext: «4; Nat»): «ext; I64» = tensor.tile_of_box (p, off, ext, ext)
+λ (off ext: «4; Nat») (p): «ext; I64» = tensor.tile_of_box (p, off, ext, ext)
 ```
 
 producer 的 write preimage 仍须 exact，reduction dims 仍须完整保留。
@@ -296,10 +365,10 @@ pad、weights 和 bias 留 whole；IR 检查 scale 和第一层 conv 没有 whol
 
 ## 8. Multi-result tiles（Task 13A.1）
 
-`tiled_n @(n, g, Ts, rs) (shapes, grid) boxes body` 在一个共享 grid 上产生 n 个结果。
+`tiled_n @(n, g, Ts, rs) (shapes, grid) boxes ins body` 在一个共享 grid 上产生 n 个结果。
 grid 给出每轴的 point 数量，不是元素总数；point 为 row-major 的 Nat 坐标。
 `boxes point` 的第 i 个 slot 是 `[off, ext]: TileBox (rs#i)`，
-body 在同一 point 返回 `«i: n; «(boxes point)#i#tt; Ts#i»»`。
+`body point ins` 返回 `«i: n; «(boxes point)#i#tt; Ts#i»»`。
 不同 slot 可以有不同 rank、shape、元素类型和 owned box。
 每个结果各有一个全尺寸 destination，point 顺序为 row-major，point 内 slot 顺序为求值顺序。
 
@@ -325,13 +394,14 @@ memory token 显式依次经过所有 slots；不同 point 的 owned 区域不�
 5×3 的 doubled producer 与每行 sum 两个不同 rank 结果、tail、whole-reader、
 空 grid、rank-0/singleton，以及 2×3 grid 上 I64/I32 两个转置 ownership 结果。
 `tiled_n_invalid` 在两条 pipeline 拒绝重叠、缺口、越界、空 grid 非空结果。
-graph registry 把 body 登记为 region 并提供 literal trip count；
-尚无 tiled_n 专用 cost witness 时，fusion budget 保留 Unknown。
+graph registry 把 body 登记为 region 并提供 literal trip count，`ins` 登记为 DATA inputs；
+显式输入边界的 fusion witness 支持逐 literal point 证明，未知 geometry 仍不融合。
 没有修改 tile_of 的 normalizer。
 
 ### 8.1. Grid 外的 invariant producer captures（Task 22B）
 
-`tiled_n` 与单结果 `tiled` 一样，在进入 grid 前捕获不依赖 point 的 producer，
+原实现通过闭包扫描寻找不依赖 point 的 producer；
+Task 31B 将该推断替换为显式 `ins`，在进入 grid 前 materialize，
 将已 bufferize 的结果作为 continuation 参数传入。
 逐 point 的 slot substitution 还必须先把这些 producer 映射到同类型的旧 World 占位变量，
 再由 `LowerToMem` 把占位变量映射到 capture 参数。

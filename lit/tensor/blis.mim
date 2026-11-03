@@ -30,15 +30,16 @@ lam packed_with_post {M K N: Nat} (config: Config, a: «M, K; I64», b: «K, N; 
     add mul: «2; I64» → I64, bias: «N; I64», epilogue: Fn [I64, I64] → I64, apply_post: Bool): «M, N; I64» =
     let (MR, NR, NC, KC, pack_a) = config;
     fun combine (acc: I64, pair: «2; I64»)@tt: I64 = return (add (acc, mul pair));
-    tiled @(I64, 2) ((M, N), (M, NC))
-        (λ (off ext: «2; Nat»): «ext; I64» =
+    tiled @(I64, 2) ((M, N), (M, NC)) (a, b, bias)
+        (λ (off ext: «2; Nat») (a: «M, K; I64», b: «K, N; I64», bias: «N; I64»): «ext; I64» =
             let rows = ext#ff;
             let n = ext#tt;
-            lam block (k ko: Nat, acc: «rows, n; I64», last: Bool): «rows, n; I64» =
+            lam block (a: «M, K; I64», b: «K, N; I64», bias: «N; I64»)
+                (k ko: Nat, acc: «rows, n; I64», last: Bool): «rows, n; I64» =
                 let bp = stage @(I64, 2, 1) (k, n) (1, NR, (1₂, 0₂), 0I64) 0
                     (slice @(I64, 2) (K, N) ((ko, off#tt), (1, 1), (k, n)) b);
-                tiled @(I64, 2) ((rows, n), (MR, NR))
-                    (λ (row size: «2; Nat»): «size; I64» =
+                tiled @(I64, 2) ((rows, n), (MR, NR)) (a, bp, acc, bias)
+                    (λ (row size: «2; Nat») (a, bp, acc, bias): «size; I64» =
                         let m = size#ff;
                         let cols = size#tt;
                         let (kt, sched) = blocked_leaf (m, cols, k);
@@ -63,9 +64,10 @@ lam packed_with_post {M K N: Nat} (config: Config, a: «M, K; I64», b: «K, N; 
                         (λ (): «size; I64» = leaf @0 (id @I64, ()),
                          λ (): «size; I64» = leaf @1 (epilogue, (bias,)))#last ());
             let blocks = (K - 1) / KC;
-            let acc = tile_fold (blocks, KC) (splat ((rows, n), 0I64))
-                (λ (acc: «rows, n; I64», ko: Nat): «rows, n; I64» = block (KC, ko, acc, ff));
-            block (K - blocks * KC, blocks * KC, acc, apply_post));
+            let acc = tile_fold (blocks, KC) (splat ((rows, n), 0I64)) (a, b, bias)
+                (λ (acc: «rows, n; I64», ko: Nat) (a, b, bias): «rows, n; I64» =
+                    block (a, b, bias) (KC, ko, acc, ff));
+            block (a, b, bias) (K - blocks * KC, blocks * KC, acc, apply_post));
 
 lam packed {M K N: Nat} (config: Config, a: «M, K; I64», b: «K, N; I64»,
     add mul: «2; I64» → I64): «M, N; I64» =

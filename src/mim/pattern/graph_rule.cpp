@@ -13,14 +13,6 @@ namespace mim::pattern {
 
 namespace {
 
-bool literal_shape(const Def* shape) {
-    if (shape->isa<Lit>()) return true;
-    if (auto tuple = shape->isa<Tuple>())
-        return std::ranges::all_of(tuple->ops(), [](auto d) { return d->template isa<Lit>(); });
-    if (auto pack = shape->isa_imm<Pack>()) return Lit::isa(*pack->shape()) && pack->body()->isa<Lit>();
-    return false;
-}
-
 std::vector<const Def*> roots(const Def* value, size_t limit) {
     if (!limit) throw std::invalid_argument("graph Rule root budget is zero");
     if (auto tuple = value->isa<Tuple>()) {
@@ -130,21 +122,43 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
             if (def->isa<Lam>()) {
                 DefVec pending{def};
                 DefSet seen;
+                LamSet locals;
+                for (size_t i = 0; i != pending.size(); ++i) {
+                    if (++count > 10000) throw std::invalid_argument("graph Rule recipe budget exceeded");
+                    auto term = pending[i];
+                    if (!seen.insert(term).second || bindings.contains(term) || term->isa<Var>() || term->isa<Axm>()
+                        || term->isa<Pi>())
+                        continue;
+                    if (auto lam = term->isa_mut<Lam>()) locals.insert(lam);
+                    for (auto op : term->ops())
+                        if (op) pending.push_back(op);
+                }
+                pending = {def};
+                seen.clear();
                 for (size_t i = 0; i != pending.size(); ++i) {
                     if (++count > 10000) throw std::invalid_argument("graph Rule recipe budget exceeded");
                     auto term = pending[i];
                     if (!seen.insert(term).second || bindings.contains(term)) continue;
                     if (auto app = term->isa<App>()) {
+                        if (app->type()->isa<Type>()) continue;
                         auto callee = App::uncurry_callee(app);
                         auto axm    = callee->isa<Axm>();
                         auto bound  = bindings.find(callee);
-                        if (!axm && bound != bindings.end() && graph.is_pure_function(bound->second)) {
+                        auto local  = callee;
+                        while (auto extract = local->isa<Extract>())
+                            local = extract->tuple();
+                        auto var    = local->isa<Var>();
+                        auto binder = var ? var->binder()->isa_mut<Lam>() : nullptr;
+                        if ((!axm && bound != bindings.end() && graph.is_pure_function(bound->second))
+                            || (binder && locals.contains(binder))) {
                             for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                                 pending.push_back(cur->arg());
                             continue;
                         }
-                        if (!axm || !graph.has_purity(axm->flags()))
-                            throw std::invalid_argument("graph Rule RHS calls an operator without a purity guarantee");
+                        if (!axm || !graph.has_purity(axm->flags())) {
+                            throw std::invalid_argument("graph Rule RHS calls an operator without a purity guarantee: "
+                                                        + (axm ? axm->sym().str() : std::to_string(callee->gid())));
+                        }
                         for (auto cur = app; cur; cur = cur->callee()->isa<App>())
                             pending.push_back(cur->arg());
                         continue;
@@ -177,14 +191,7 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
             }
             if (auto app = def->isa<App>(); app && app->callee()->isa<Idx>() && def->is_closed())
                 return plan->import(def);
-            if (def->isa<Arr>() && def->is_closed()) {
-                auto element = def;
-                while (auto arr = element->isa<Arr>()) {
-                    if (!literal_shape(*arr->shape())) break;
-                    element = arr->body();
-                }
-                if (element->isa<Nat>() || element->isa<Axm>() || Idx::isa(element)) return plan->instantiate(def, {});
-            }
+            if (def->type()->isa<Type>()) return plan->instantiate(def, bindings);
             if (auto app = def->isa<App>()) {
                 auto callee = App::uncurry_callee(app)->isa<Axm>();
                 if (!callee) throw std::invalid_argument("graph Rule recipes only call explicitly pure axioms");

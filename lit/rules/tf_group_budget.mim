@@ -3,6 +3,7 @@
 // RUN: python3 %S/tf_run.py %mim %s %t graph tt > %t.graph 2> %t.graph.log
 // RUN: %FileCheck %s < %t.graph
 // TF-RULES: (tensor.fuse_producer (I64, 1))
+// TF-REGION-FUSION: 0, 1
 // TF-PURE: tensor.tile_of, tensor.slice, tensor.map_reduce_post
 
 plugin tensor;
@@ -18,66 +19,87 @@ lam producer (a: «10; I64»): «10; I64» =
 extern fun once (a: «10; I64»): «10; I64» =
     let p = producer a;
     return (tiled @(I64, 1) (10, 4)
-        (λ (off ext: «1; Nat»): «ext; I64» = slice @(I64, 1) 10 (off, 1, ext) p));
+        p
+        (λ (off ext: «1; Nat») (p): «ext; I64» =
+            slice @(I64, 1) 10 (off, 1, ext) p));
 
 extern fun repeated (a: «10; I64»): «10; I64» =
     let p = producer a;
     return (tiled @(I64, 1) (10, 4)
-        (λ (off ext: «1; Nat»): «ext; I64» =
-            tile_fold (2, 1) (splat (ext, 0I64))
-                (λ (_: «ext; I64», _: Nat): «ext; I64» = slice @(I64, 1) 10 (off, 1, ext) p)));
+        p
+        (λ (off ext: «1; Nat») (p): «ext; I64» =
+            tile_fold (2, 1) (splat (ext, 0I64)) p
+                (λ (_: «ext; I64», _: Nat) (p): «ext; I64» =
+                    slice @(I64, 1) 10 (off, 1, ext) p)));
 
 extern fun shared (a: «10; I64»): [«10; I64», «10; I64»] =
     let p = producer a;
     return ((tiled @(I64, 1) (10, 4)
-        (λ (off ext: «1; Nat»): «ext; I64» = slice @(I64, 1) 10 (off, 1, ext) p),
+        p
+        (λ (off ext: «1; Nat») (p): «ext; I64» = slice @(I64, 1) 10 (off, 1, ext) p),
      p));
 
 extern fun whole_reader (a: «10; I64»): [«10; I64», «10; I64»] =
     let p = producer a;
     return ((tiled @(I64, 1) (10, 4)
-        (λ (off ext: «1; Nat»): «ext; I64» = slice @(I64, 1) 10 (off, 1, ext) p),
+        p
+        (λ (off ext: «1; Nat») (p): «ext; I64» = slice @(I64, 1) 10 (off, 1, ext) p),
      producer p));
 
 extern fun unknown_fold (a: «10; I64», n: Nat): «10; I64» =
     let p = producer a;
     return (tiled @(I64, 1) (10, 4)
-        (λ (off ext: «1; Nat»): «ext; I64» =
-            tile_fold (n, 1) (splat (ext, 0I64))
-                (λ (_: «ext; I64», _: Nat): «ext; I64» = slice @(I64, 1) 10 (off, 1, ext) p)));
+        p
+        (λ (off ext: «1; Nat») (p): «ext; I64» =
+            tile_fold (n, 1) (splat (ext, 0I64)) p
+                (λ (_: «ext; I64», _: Nat) (p): «ext; I64» =
+                    slice @(I64, 1) 10 (off, 1, ext) p)));
 
 extern fun nested (a: «10; I64»): «10; I64» =
     let p = producer a;
     return (tiled @(I64, 1) (10, 4)
-        (λ (off ext: «1; Nat»): «ext; I64» =
+        p
+        (λ (off ext: «1; Nat») (p): «ext; I64» =
             tiled @(I64, 1) (ext, 3)
-                (λ (lo len: «1; Nat»): «len; I64» =
+                p
+        (λ (lo len: «1; Nat») (p): «len; I64» =
                     slice @(I64, 1) 10 (core.nat.add (off, lo), 1, len) p)));
 
 extern fun two_tiles (a: «10; I64»): [«4; I64», «4; I64»] =
     let p = producer a;
     return (slice @(I64, 1) 10 (0, 1, 4) p, slice @(I64, 1) 10 (6, 1, 4) p);
 
+// CHECK-NOT: tensor.map_reduce_post
+// CHECK: tensor.slice
+// CHECK: tensor.map_reduce_post
+// CHECK-NOT: tensor.map_reduce_post
 // CHECK-LABEL: extern fun nested
 // CHECK-NOT: tensor.map_reduce_post
+// CHECK: tensor.tiled
 // CHECK: tensor.slice
 // CHECK: tensor.map_reduce_post
 // CHECK-NOT: tensor.map_reduce_post
 // CHECK-LABEL: extern fun once
 // CHECK-NOT: tensor.map_reduce_post
+// CHECK: tensor.tiled
 // CHECK: tensor.slice
-// CHECK: tensor.map_reduce_post
-// CHECK-NOT: tensor.map_reduce_post
 // CHECK-LABEL: extern fun repeated
+// CHECK: tensor.map_reduce_post {{.*}} (10,
+// CHECK: tensor.tiled
 // CHECK: tensor.slice
 // CHECK-LABEL: extern fun shared
-// CHECK: tensor.slice
+// CHECK: tensor.map_reduce_post {{.*}} (10,
+// CHECK: tensor.tiled
 // CHECK-LABEL: extern fun two_tiles
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (10,
 // CHECK: tensor.map_reduce_post
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (10,
+// CHECK: tensor.slice
 // CHECK-LABEL: extern fun unknown_fold
+// CHECK: tensor.map_reduce_post {{.*}} (10,
+// CHECK: tensor.tiled
 // CHECK: tensor.slice
 // CHECK-LABEL: extern fun whole_reader
 // CHECK: tensor.map_reduce_post
-// CHECK: tensor.slice
+// CHECK: tensor.tiled
+// CHECK: tensor.map_reduce_post

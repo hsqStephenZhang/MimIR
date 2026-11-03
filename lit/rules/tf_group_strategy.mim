@@ -9,6 +9,7 @@
 // RUN: clang++ -O3 %S/tf_group_strategy_aux.cpp %t.graph.ll -o %t.graph.exec -Wno-override-module
 // RUN: %t.graph.exec
 // TF-RULES: (tensor.group_outer («4; I64», 1), tensor.group_outer («6, 5; I64», 1), tensor.fuse_producer (I64, 2), tensor.fuse_producer (I64, 3))
+// TF-REGION-FUSION: 0, 1
 // TF-PURE: tensor.group_build, tensor.tile_of, tensor.slice, tensor.map_reduce_post
 
 plugin tensor;
@@ -48,8 +49,10 @@ extern fun repeated (a: «6, 5, 3, 2; I64»): «4, 5; I64» =
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((6, 5, 3),
 // CHECK: tensor.tiled
 // CHECK: tensor.map_reduce_post {{.*}} ((4, 5),
-// CHECK-LABEL: extern fun rows
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((6, 4),
 // CHECK: tensor.map_reduce_post
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((6, 4),
+// CHECK-LABEL: extern fun rows
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((6, 4),
 // CHECK: tensor.tiled
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((6, 4),

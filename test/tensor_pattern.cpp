@@ -178,7 +178,7 @@ TEST_CASE("Tensor witnesses: reverse geometry is frozen and preserves shared-gri
     auto cn   = plan->proj(2, 1)->as<Extract>()->tuple();
     CHECK(pn == cn);
     REQUIRE(Axm::isa<tensor::tiled_n>(pn));
-    auto [meta, geometry, boxes, body] = pn->as<App>()->uncurry_args<4>();
+    auto [meta, geometry, boxes, input_type, inputs, body] = pn->as<App>()->uncurry_args<6>();
     CHECK(Lit::as(meta->proj(4, 0)) == 2);
     CHECK(Lit::as(geometry->proj(2, 1)) == 18);
     auto [pbox, cbox] = target->app(boxes, target->lit_nat(17))->projs<2>();
@@ -188,7 +188,7 @@ TEST_CASE("Tensor witnesses: reverse geometry is frozen and preserves shared-gri
     CHECK(pext == target->tuple({target->lit_nat(1), target->lit_nat(1)}));
     CHECK(coff == target->tuple({target->lit_nat(4), target->lit_nat(5)}));
     CHECK(cext == pext);
-    auto [ptile, ctile] = target->app(body, target->lit_nat(17))->projs<2>();
+    auto [ptile, ctile] = target->app(target->app(body, target->lit_nat(17)), inputs)->projs<2>();
     REQUIRE(tg::map_reduce(ptile));
     REQUIRE(tg::map_reduce(ctile));
     GraphView tiles({ctile}, {.operators = &ir.ops});
@@ -523,7 +523,8 @@ TEST_CASE("Tensor pattern: opaque and fused input wrappers remain explicitly inc
     auto decoded = ir.ops.decode(concat, 10);
     REQUIRE(decoded);
     CHECK_FALSE(decoded->complete);
-    CHECK(decoded->inputs.empty());
+    REQUIRE(decoded->inputs.size() == 1);
+    CHECK(decoded->inputs[0].value == values);
     CHECK(w.curr_gid() == gid);
 }
 

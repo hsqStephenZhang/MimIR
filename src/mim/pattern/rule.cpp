@@ -242,7 +242,7 @@ Pattern RulePattern::lower(const Def* def) {
             }
             auto result = program_.where(value, std::move(inputs), [def, metas](std::span<const Def* const> values) {
                 auto scratch = def->world().inherit();
-                Rewriter importer(*scratch);
+                ParameterImporter importer(*scratch);
                 for (size_t i = 0; i != metas.size(); ++i)
                     importer.map(metas[i], importer.rewrite(values[i + 1]));
                 auto expected = importer.rewrite(def);

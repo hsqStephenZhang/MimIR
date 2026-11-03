@@ -18,12 +18,37 @@ using namespace mim;
 using namespace mim::plug;
 
 namespace mim::plug::tensor {
+RegionInputs::RegionInputs(Defs roots) {
+    DefSet internal(roots.begin(), roots.end()), seen;
+    for (auto root : roots)
+        if (auto view = root->driver().graph_operations().decode(root, 65536))
+            for (auto input : view->inputs)
+                if (!internal.contains(input.value) && seen.insert(input.value).second) inputs_.push_back(input.value);
+}
+
+const Def* RegionInputs::values(World& w) const { return w.tuple(inputs_); }
+
+const Def* RegionInputs::rebuild(const Def* root, const Def* parameters) const {
+    return rebuild(Defs{root}, parameters).front();
+}
+
+DefVec RegionInputs::rebuild(Defs roots, const Def* parameters) const {
+    VarRewriter rw(parameters->world());
+    for (auto root : roots)
+        for (auto var : root->free_vars())
+            rw.add(var, var);
+    for (size_t i = 0; i != inputs_.size(); ++i)
+        rw.map(inputs_[i], parameters->proj(inputs_.size(), i));
+    return rw.Rewriter::rewrite(roots);
+}
+
 pattern::WitnessResult fusion_budget(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult grouping_candidate(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult reverse_candidate(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult group_support_witness(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult group_fusion_witness(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult group_reverse_witness(const pattern::GraphView&, Defs, World&);
+pattern::WitnessResult region_fusion_witness(const pattern::GraphView&, Defs, World&);
 static pattern::WitnessResult permuted_box(Defs inputs, std::span<const u64> axes, World& target) {
     DefVec offset, extent;
     for (auto axis : axes) {
@@ -92,6 +117,7 @@ static void reg_witnesses(pattern::Witnesses& witnesses) {
     witnesses.emplace(Annex::base<group_supported>(), pattern::Witness{1, group_support_witness});
     witnesses.emplace(Annex::base<group_fusion>(), pattern::Witness{2, group_fusion_witness});
     witnesses.emplace(Annex::base<group_reverse_supported>(), pattern::Witness{3, group_reverse_witness});
+    witnesses.emplace(Annex::base<region_fusion_ok>(), pattern::Witness{6, region_fusion_witness});
 }
 
 static void reg_phases(Flags2Phases& phases) {
@@ -107,6 +133,7 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<group_default, phase::GroupDefault>(phases);
     Phase::hook<lower_to_mem, phase::LowerToMem>(phases);
     Phase::hook<group, phase::Group>(phases);
+    Phase::hook<fuse_region_inputs, phase::FuseRegionInputs>(phases);
     Phase::hook<report_groups, phase::ReportGroups>(phases);
 }
 } // namespace mim::plug::tensor

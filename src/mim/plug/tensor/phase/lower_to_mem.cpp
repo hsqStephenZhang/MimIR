@@ -160,7 +160,15 @@ private:
     }
 
     void region(const Def* fn) {
-        if (auto body = fn->isa<Lam>(); body && body->is_set()) scan(body->body(), fn);
+        auto body = fn->isa<Lam>();
+        while (body && body->is_set()) {
+            if (auto inner = body->body()->isa<Lam>())
+                body = inner;
+            else {
+                scan(body->body(), fn);
+                break;
+            }
+        }
     }
 
     void scan(const Def* def, const Def* site) {
@@ -168,12 +176,14 @@ private:
         auto app = def->isa<App>();
         if (app && wants_fresh_mem(app)) sites_[app].insert(site);
         if (app && Axm::isa<tensor::tiled>(app)) {
-            if (positive(app->callee()->as<App>()->arg(2, 0))) region(app->arg());
+            auto [meta, shapes, it, ins, body] = app->uncurry_args<5>();
+            if (positive(shapes->proj(2, 0))) region(body);
         } else if (app && Axm::isa<tensor::tiled_n>(app)) {
-            auto [meta, shapes_grid, boxes, body] = app->uncurry_args<4>();
+            auto [meta, shapes_grid, boxes, it, ins, body] = app->uncurry_args<6>();
             if (positive(shapes_grid->proj(2, 1))) region(body);
         } else if (app && Axm::isa<tensor::tile_fold>(app)) {
-            auto count = Lit::isa(app->callee()->as<App>()->callee()->as<App>()->arg(2, 0));
+            auto [meta, blocks, init, it, ins, body] = app->uncurry_args<6>();
+            auto count                               = Lit::isa(blocks->proj(2, 0));
             if (count && *count) region(app->arg());
         } else if (app && Axm::isa<tensor::generate>(app)) {
             if (positive(app->callee()->as<App>()->arg())) region(app->arg());
@@ -959,7 +969,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
     return btensor::build_pointwise(result_ty, am, dst, w.tuple(captures), s_out, rn, "generate", compute)->proj(2, 1);
 }
 
-std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function, bool destination) {
+std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function) {
     if (auto body = function->isa<Lam>(); body && body->is_set()) prepare_realizations(body->body(), body);
     auto sources = DefVec(), captures = DefVec();
     auto body = function->isa<Lam>();
@@ -971,9 +981,7 @@ std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function, boo
         auto def = queue.pop();
         if (def->isa<Var>() || def->isa<Axm>()) continue;
         if (auto app = def->isa<App>(); app && wants_fresh_mem(app)) {
-            auto root      = destination && def == body->body()
-                          && (Axm::isa<tensor::tiled>(app) || Axm::isa<tensor::map_reduce_post>(app));
-            auto available = !root;
+            bool available = true;
             for (auto var : def->free_vars())
                 available &= body->has_free_var(var);
             if (available) {
@@ -984,7 +992,7 @@ std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function, boo
                 }
                 sources.push_back(def);
                 captures.push_back(value);
-                if (!destination) continue;
+                continue;
             }
         }
         for (auto op : def->ops())
@@ -1298,6 +1306,7 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
 const Def* LowerToMem::lower_tile_body(const Def* body,
                                        const Def* off,
                                        const Def* ext,
+                                       const Def* inputs,
                                        const Destination& destination,
                                        Scratch* pool) {
     auto& old           = old_world();
@@ -1312,7 +1321,7 @@ const Def* LowerToMem::lower_tile_body(const Def* body,
     auto literal_extent = Rewriter(old).rewrite(ext);
     const Def* root;
     if (auto lam = body->isa<Lam>(); lam && lam->is_set())
-        root = lam->reduce(old.tuple({specialized, literal_extent})).back();
+        root = old.app(lam->reduce(old.tuple({specialized, literal_extent})).back(), inputs);
     else
         body->blame("tensor.tiled body must be a defined lambda").bail();
     auto pending = fe::Restore(pending_, {});
@@ -1336,12 +1345,12 @@ const Def* LowerToMem::lower_tile_body(const Def* body,
 }
 
 const Def* LowerToMem::lower_tiled(const App* app, const Destination* destination) {
-    auto& w             = new_world();
-    auto scratch_scope  = fe::Restore<Scratch*>(scratch_, nullptr);
-    auto [meta, shapes] = app->callee()->as<App>()->uncurry_args<2>();
-    auto [type, r]      = meta->projs<2>();
-    auto [shape, tiles] = shapes->projs<2>();
-    auto rank           = Lit::isa(r);
+    auto& w                                       = new_world();
+    auto scratch_scope                            = fe::Restore<Scratch*>(scratch_, nullptr);
+    auto [meta, shapes, input_type, inputs, body] = app->uncurry_args<5>();
+    auto [type, r]                                = meta->projs<2>();
+    auto [shape, tiles]                           = shapes->projs<2>();
+    auto rank                                     = Lit::isa(r);
     if (!rank) app->blame("tensor.tiled destination lowering requires literal rank").bail();
     auto sizes = fe::Vector<u64>(*rank), steps = fe::Vector<u64>(*rank);
     for (size_t d = 0; d != *rank; ++d) {
@@ -1359,17 +1368,18 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     } else {
         std::tie(mem, dst) = buffer::op_alloc(rewrite(r), rewrite(shape), rewrite(type), fresh_mem())->projs<2>();
     }
-    auto output_shape        = destination ? destination->shape : rewrite(shape);
-    auto base                = destination ? destination->origin : zero;
-    auto [sources, captures] = capture_producers(app->arg(), true);
-    auto [run, call]
-        = btensor::ds_splice(w.tuple({mem, dst, w.tuple(captures)}), w.sigma({mem->type(), dst->type()}), "tiled");
-    auto runtime = run->var(2, 0);
+    auto output_shape = destination ? destination->shape : rewrite(shape);
+    auto base         = destination ? destination->origin : zero;
+    auto captured     = materialize(input_type, inputs);
+    auto parameter    = old_world().mut_lam(input_type, old_world().type_nat());
+    auto proxy        = parameter->var();
+    auto [run, call]  = btensor::ds_splice(w.tuple({mem, dst, captured}), w.sigma({mem->type(), dst->type()}), "tiled");
+    auto runtime      = run->var(2, 0);
     Scratch scratch{mem, call->type(), {}};
     push();
     bind_new(run->has_var());
-    for (size_t i = 0; i != sources.size(); ++i)
-        map(sources[i], runtime->proj(3, 2)->proj(sources.size(), i));
+    if (auto var = parameter->has_var()) bind_old(var);
+    map(proxy, runtime->proj(3, 2));
     DefVec offsets(*rank), extents(*rank);
     std::function<const Def*(size_t, const Def*, const Def*)> emit
         = [&](size_t d, const Def* acc, const Def* exit) -> const Def* {
@@ -1379,7 +1389,8 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
                 *rank, [&](size_t j) { return w.call(core::nat::add, Defs{base->proj(*rank, j), offsets[j]}); }));
             auto [m, output] = acc->projs<2>();
             auto extent      = w.tuple(extents);
-            auto result = lower_tile_body(app->arg(), off, extent, {m, output, output_shape, origin, extent}, &scratch);
+            auto result
+                = lower_tile_body(body, off, extent, proxy, {m, output, output_shape, origin, extent}, &scratch);
             return w.app(exit, result);
         }
         if (!sizes[d]) return w.app(exit, acc);
@@ -1409,7 +1420,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         done_mem                 = buffer::op_free(rank, shape, type, done_mem, buffer);
     }
     done->app(true, run->ret_var(), w.tuple({done_mem, output}));
-    call = w.app(cps::op_cps2ds_dep(run), w.tuple({scratch.mem, dst, w.tuple(captures)}));
+    call = w.app(cps::op_cps2ds_dep(run), w.tuple({scratch.mem, dst, captured}));
     for (auto [binding, invoke] : scratch.bindings | std::views::reverse) {
         binding->app(true, binding->ret_var(), call);
         call = invoke;
@@ -1432,31 +1443,25 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
             = buffer::op_alloc(rewrite(plan.ranks->proj(count, i)), rewrite(plan.shapes->proj(count, i)),
                                rewrite(plan.types->proj(count, i)), mem)
                   ->projs<2>();
-    auto [sources, captures]        = capture_producers(plan.body, true);
-    auto [run, call]                = btensor::ds_splice(w.tuple({mem, w.tuple(buffers), w.tuple(captures)}),
+    auto captured                   = materialize(plan.inputs->type(), plan.inputs);
+    auto [run, call]                = btensor::ds_splice(w.tuple({mem, w.tuple(buffers), captured}),
                                                          w.sigma({mem->type(), w.tuple(buffers)->type()}), "tiledN");
     auto [current, outputs, inputs] = run->var(2, 0)->projs<3>();
     auto pending                    = fe::Restore(pending_, {});
     push();
     bind_new(run->has_var());
-    for (size_t i = 0; i != sources.size(); ++i)
-        map(sources[i], inputs->proj(sources.size(), i));
+    auto parameter = old.mut_lam(plan.inputs->type(), old.type_nat());
+    auto proxy     = parameter->var();
+    if (auto var = parameter->has_var()) bind_old(var);
+    map(proxy, inputs);
     for (size_t t = 0; t != plan.points.size(); ++t) {
         auto memo    = fe::Restore(fresh_memo_, {});
         auto storage = fe::Restore(storage_shapes_, storage_shapes_);
         auto cache   = fe::Restore(realizations_, realizations_);
-        auto roots   = old.app(plan.body, plan.points[t]);
+        auto roots   = old.app(old.app(plan.body, plan.points[t]), proxy);
         Rewriter substitutions(old);
         for (auto var : roots->free_vars())
             substitutions.map(var, var);
-        // Typed placeholders keep slot specialization from cloning captured producers.
-        for (size_t i = 0; i != sources.size(); ++i) {
-            auto proxy = old.mut_lam(old.pi(sources[i]->type(), old.type_nat()));
-            proxy->var();
-            bind_old(proxy->has_var());
-            map(proxy->var(), inputs->proj(sources.size(), i));
-            substitutions.map(sources[i], proxy->var());
-        }
         for (size_t i = 0; i != count; ++i) {
             auto rank       = Lit::as(plan.ranks->proj(count, i));
             auto shape      = plan.shapes->proj(count, i);
@@ -1575,15 +1580,15 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
     auto app = root->isa<App>();
     if (!app) return false;
     if (Axm::isa<tensor::tiled>(app)) {
-        auto [meta, shapes] = app->callee()->as<App>()->uncurry_args<2>();
-        auto rank           = Lit::as(meta->proj(2, 1));
-        auto lam            = app->arg()->isa<Lam>();
+        auto [meta, shapes, it, ins, body] = app->uncurry_args<5>();
+        auto rank                          = Lit::as(meta->proj(2, 1));
+        auto lam                           = app->arg()->isa<Lam>();
         if (!lam || !lam->is_set()) return false;
         auto param = w.mut_lam(w.pi(w.arr(rank, w.type_nat()), w.type_nat()));
         auto off   = param->var();
         auto next  = w.tuple(DefVec(
             rank, [&](size_t d) { return w.call(core::nat::add, Defs{origin->proj(rank, d), off->proj(rank, d)}); }));
-        return linear_step(lam->reduce(w.tuple({off, shapes->proj(2, 1)})).back(), accumulator, next);
+        return linear_step(w.app(lam->reduce(w.tuple({off, shapes->proj(2, 1)})).back(), ins), accumulator, next);
     }
     if (!Axm::isa<tensor::map_reduce_post>(app)) return false;
     auto mr      = btensor::MapRedPost::of(app->callee()->as<App>());
@@ -1623,17 +1628,28 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
     return true;
 }
 
+const Def* LowerToMem::region_input(const Def* inputs) {
+    auto value     = materialize(inputs->type(), inputs);
+    auto& old      = old_world();
+    auto parameter = old.mut_lam(inputs->type(), old.type_nat());
+    auto proxy     = parameter->var();
+    if (auto var = parameter->has_var()) bind_old(var);
+    map(proxy, value);
+    return proxy;
+}
+
 const Def* LowerToMem::lower_tile_fold(const App* app) {
     if (app->type()->isa_imm<Sigma>()) return lower_product_fold(app);
-    auto& w                   = new_world();
-    auto& old                 = old_world();
-    auto [type, blocks, init] = app->callee()->as<App>()->uncurry_args<3>();
-    auto [count, stride]      = blocks->projs<2>();
-    auto step                 = app->arg()->isa<Lam>();
+    auto& w                                             = new_world();
+    auto& old                                           = old_world();
+    auto [type, blocks, init, input_type, inputs, body] = app->uncurry_args<6>();
+    auto [count, stride]                                = blocks->projs<2>();
+    auto step                                           = app->arg()->isa<Lam>();
     if (!step || !step->is_set()) app->blame("tensor.tile_fold step must be a defined lambda").bail();
     auto parameter             = old.mut_lam(old.pi(old.sigma({init->type(), old.type_nat()}), old.type_nat()));
     auto [accumulator, offset] = parameter->var()->projs<2>();
-    auto root                  = step->reduce(parameter->var()).back();
+    auto input                 = region_input(inputs);
+    auto root                  = old.app(step->reduce(parameter->var()).back(), input);
     auto result                = root;
     for (size_t i = 0; i != 128; ++i) {
         auto call = result->isa<App>();
@@ -1650,7 +1666,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     }
     auto shape = old.tuple(dimensions);
     if (auto call = result->isa<App>()) {
-        if (Axm::isa<tensor::tiled>(call)) shape = call->callee()->as<App>()->arg()->proj(2, 0);
+        if (Axm::isa<tensor::tiled>(call)) shape = call->uncurry_args<5>()[1]->proj(2, 0);
         if (Axm::isa<tensor::map_reduce_post>(call)) shape = btensor::MapRedPost::of(call->callee()->as<App>()).So;
     }
     auto rank    = Lit::as(shape->arity());
@@ -1663,7 +1679,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     auto first_scalar  = inplace && literal_count && *literal_count != 0 && splat_scalar(init);
     auto [mem, buffer] = buffer::op_alloc(w.lit_nat(rank), rewrite(shape), rewrite(element), fresh_mem())->projs<2>();
     if (first_scalar) {
-        auto first_root = step->reduce(old.tuple({init, old.lit_nat(0)})).back();
+        auto first_root = old.app(step->reduce(old.tuple({init, old.lit_nat(0)})).back(), input);
         record_instance(first_root);
         auto [first, first_call]
             = btensor::ds_splice(w.tuple({mem, buffer}), w.sigma({mem->type(), buffer->type()}), "foldFirst");
@@ -1716,15 +1732,15 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
 }
 
 const Def* LowerToMem::lower_product_fold(const App* app) {
-    auto& w                   = new_world();
-    auto& old                 = old_world();
-    auto [type, blocks, init] = app->callee()->as<App>()->uncurry_args<3>();
-    auto [count, stride]      = blocks->projs<2>();
-    auto step                 = app->arg()->isa<Lam>();
+    auto& w                                             = new_world();
+    auto& old                                           = old_world();
+    auto [type, blocks, init, input_type, inputs, body] = app->uncurry_args<6>();
+    auto [count, stride]                                = blocks->projs<2>();
+    auto step                                           = app->arg()->isa<Lam>();
     if (!step || !step->is_set()) app->blame("tensor.tile_fold step must be a defined lambda").bail();
     auto parameter             = old.mut_lam(old.pi(old.sigma({type, old.type_nat()}), old.type_nat()));
     auto [accumulator, offset] = parameter->var()->projs<2>();
-    auto root                  = step->reduce(parameter->var()).back();
+    auto root                  = old.app(step->reduce(parameter->var()).back(), region_input(inputs));
     record_instance(root);
     auto fields = [&](auto&& self, const Def* t, const Def* value, auto&& leaf) -> const Def* {
         if (auto sigma = t->isa_imm<Sigma>()) {
@@ -1813,7 +1829,7 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
                 if (Axm::isa<tensor::map_reduce_post>(operation))
                     shape = btensor::MapRedPost::of(operation->callee()->as<App>()).So;
                 else if (Axm::isa<tensor::tiled>(operation))
-                    shape = operation->callee()->as<App>()->arg(2, 0);
+                    shape = operation->uncurry_args<5>()[1]->proj(2, 0);
             }
             auto rank    = Lit::as(shape->arity());
             auto zero    = w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat(0); }));

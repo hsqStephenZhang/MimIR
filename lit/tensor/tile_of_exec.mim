@@ -40,7 +40,8 @@ extern fun seeded_empty (a: «6, 5; I64», b: «6; I64»): «3; I64» =
 
 extern fun partition (a: «6, 5; I64», b: «6; I64»): «6; I64» =
     return (tiled @(I64, 1) (6, 4)
-        (λ (off ext: «1; Nat»): «ext; I64» = tile_of (rows (buf a, buf b), off, ext)));
+        (a, b)
+        (λ (off ext: «1; Nat») (a, b): «ext; I64» = tile_of (rows (buf a, buf b), off, ext)));
 
 extern fun shifted (a: «6; I64»): «3; I64» =
     fun keep (_ x: I64)@tt: I64 = return x;

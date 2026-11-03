@@ -137,11 +137,16 @@ ProducerTile row_group(const Def* producer, DefVec& members) {
     RowRegion region(w, mr.So);
     if (!region.collect(producer) || !region.reduction || region.members.size() < 3)
         return {nullptr, "row region needs a pure row-separable reduction closure"};
-    auto tiled      = w.app(w.annex<tensor::tiled>(), {mr.Tp, mr.Ro});
-    tiled           = w.app(tiled, {mr.So, w.tuple({w.lit_nat_1(), mr.So->proj(2, 1)})});
+    auto tiled = w.app(w.annex<tensor::tiled>(), {mr.Tp, mr.Ro});
+    tiled      = w.app(tiled, {mr.So, w.tuple({w.lit_nat_1(), mr.So->proj(2, 1)})});
+    RegionInputs inputs(region.members);
+    auto values     = inputs.values(w);
+    tiled           = w.app(w.app(tiled, values->type()), values);
     auto body       = w.mut_lam(tiled->type()->as<Pi>()->dom()->as<Pi>());
     auto [off, ext] = body->vars<2>();
-    body->set(true, region.build(producer, off, ext));
+    auto inner      = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());
+    inner->set(true, inputs.rebuild(region.build(producer, off, ext), inner->var()));
+    body->set(true, inner);
     members = std::move(region.members);
     return {w.app(tiled, body), {}};
 }

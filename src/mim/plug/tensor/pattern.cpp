@@ -68,7 +68,8 @@ void inputs(pattern::OpView& view,
         auto value = slot(values, count, i);
         if (!value) {
             view.complete = false;
-            continue;
+            if (values && view.inputs.size() < limit) view.inputs.push_back({values, group, std::move(prefix)});
+            return;
         }
         auto path = prefix;
         path.push_back(i);
@@ -80,11 +81,17 @@ std::optional<pattern::OpView> decode_mr(const Def* def, size_t limit) {
     auto args = groups(def, 9);
     if (args.empty()) return {};
     pattern::OpView view;
+    if (!slot(args[8], 2, 0) || !slot(args[8], 2, 1)) {
+        view.complete = false;
+        if (limit) view.inputs.push_back({args[8], 8, {}});
+        return view;
+    }
     for (size_t group = 0; group != 2; ++group) {
         auto count = slot(args[0], 2, group);
         auto n     = count ? Lit::isa(count) : std::nullopt;
         if (!n) {
             view.complete = false;
+            if (view.inputs.size() < limit) view.inputs.push_back({slot(args[8], 2, group), 8, {group}});
             continue;
         }
         inputs(view, slot(args[8], 2, group), *n, 8, {group}, limit);
@@ -138,8 +145,23 @@ std::optional<pattern::OpView> decode_broadcast(const Def* def, size_t limit) {
     return view;
 }
 
-std::optional<pattern::OpView> decode_tiled(const Def* def, size_t) {
-    auto args = groups(def, 3);
+void region_data(pattern::OpView& view, const Def* value, size_t group, std::vector<size_t> path, size_t limit) {
+    if (auto tuple = value->isa<Tuple>()) {
+        for (size_t i = 0; i != tuple->num_ops(); ++i) {
+            auto nested = path;
+            nested.push_back(i);
+            region_data(view, tuple->op(i), group, std::move(nested), limit);
+        }
+    } else {
+        if (view.inputs.size() < limit)
+            view.inputs.push_back({value, group, std::move(path)});
+        else
+            view.complete = false;
+    }
+}
+
+std::optional<pattern::OpView> decode_tiled(const Def* def, size_t limit) {
+    auto args = groups(def, 5);
     if (args.empty()) return {};
     auto rank  = Lit::isa(slot(args[0], 2, 1));
     auto shape = slot(args[1], 2, 0), tile = slot(args[1], 2, 1);
@@ -161,14 +183,19 @@ std::optional<pattern::OpView> decode_tiled(const Def* def, size_t) {
             }
             *trips *= count;
         }
-    return pattern::OpView{.inputs = {}, .regions = {{args[2], trips}}};
+    pattern::OpView view{.inputs = {}, .regions = {{args[4], trips}}};
+    region_data(view, args[3], 3, {}, limit);
+    return view;
 }
 
-std::optional<pattern::OpView> decode_fold(const Def* def, size_t) {
-    auto args = groups(def, 4);
+std::optional<pattern::OpView> decode_fold(const Def* def, size_t limit) {
+    auto args = groups(def, 6);
     if (args.empty()) return {};
     auto n = slot(args[1], 2, 0);
-    return pattern::OpView{.inputs = {{args[2], 2, {}}}, .regions = {{args[3], n ? Lit::isa(n) : std::nullopt}}};
+    pattern::OpView view{.inputs = {}, .regions = {{args[5], n ? Lit::isa(n) : std::nullopt}}};
+    region_data(view, args[2], 2, {}, limit);
+    region_data(view, args[4], 4, {}, limit);
+    return view;
 }
 
 std::optional<pattern::OpView> decode_reverse(const Def* def, size_t limit) {
@@ -195,8 +222,8 @@ std::optional<pattern::OpView> decode_group(const Def* def, size_t limit) {
     return pattern::OpView{.inputs = {{value, 1, {0}}}};
 }
 
-std::optional<pattern::OpView> decode_tiled_n(const Def* def, size_t) {
-    auto args = groups(def, 4);
+std::optional<pattern::OpView> decode_tiled_n(const Def* def, size_t limit) {
+    auto args = groups(def, 6);
     if (args.empty()) return {};
     auto rank                = Lit::isa(slot(args[0], 4, 1));
     auto grid                = slot(args[1], 2, 1);
@@ -213,7 +240,9 @@ std::optional<pattern::OpView> decode_tiled_n(const Def* def, size_t) {
             }
             *trips *= *count;
         }
-    return pattern::OpView{.inputs = {}, .regions = {{args[3], trips}}};
+    pattern::OpView view{.inputs = {}, .regions = {{args[5], trips}}};
+    region_data(view, args[4], 4, {}, limit);
+    return view;
 }
 
 } // namespace
@@ -240,9 +269,17 @@ bool is_standard_ring(const Def* ring) {
 }
 
 void register_operations(pattern::OpRegistry& ops) {
-    ops.add(Annex::base<dot_product>(), 6, {{5, 1}}, false);
+    ops.add(Annex::base<dot_product>(), 6,
+            {
+                {5, 1}
+    },
+            false);
     ops.add(Annex::base<unary>(), 4, {{3}}, false);
-    ops.add(Annex::base<binary>(), 4, {{3, 1}}, false);
+    ops.add(Annex::base<binary>(), 4,
+            {
+                {3, 1}
+    },
+            false);
     ops.add(Annex::base<map_reduce_post>(), decode_mr, false);
     ops.add(Annex::base<product_2d>(), decode_product,
             pattern::OpRegistry::Purity([](auto args) { return args.size() == 3 && is_standard_ring(args[0]); }));

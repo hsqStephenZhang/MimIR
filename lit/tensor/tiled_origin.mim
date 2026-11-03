@@ -12,7 +12,10 @@ lam packed (i j k _: affine.Index): «3; affine.Index» =
 extern fun origin (x: «4, 1, 5, 3; I64»): «4, 1, 5; I64» =
     let p = map_reduce ((4, 1, 5), (4, 1, 5, 3)) (add, 0I64) packed (affine.id @4,) (buf x);
     return (tiled @(I64, 3) ((4, 1, 5), (4, 1, 3))
-        (λ (off ext: «3; Nat»): «ext; I64» = tile_of_box @(I64, 3) @(4, 1, 5) (p, off, ext, (4, 1, 3))));
+        x
+        (λ (off ext: «3; Nat») (x): «ext; I64» =
+            let p = map_reduce ((4, 1, 5), (4, 1, 5, 3)) (add, 0I64) packed (affine.id @4,) (buf x);
+            tile_of_box @(I64, 3) @(4, 1, 5) (p, off, ext, (4, 1, 3))));
 
 // CHECK-NOT: tensor destination fallback
 // CHECK: finish phase `tensor.lower_to_mem`

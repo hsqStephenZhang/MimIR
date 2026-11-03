@@ -27,9 +27,9 @@ extern fun boundary (x: «5, 7; I64»): «5, 7; I64» =
 extern lam _compile (): compile.Phase =
     compile.phases ff (lower_tensor, group_rules);
 
+// CHECK: tensor.slice
 // CHECK-LABEL: extern fun boundary
 // CHECK: tensor.tiled
-// CHECK: tensor.slice
 // CHECK: tensor.tiled
 // CHECK-NOT: tensor.group_req
 // CHECK-NOT: tensor.group_region

@@ -31,6 +31,10 @@ directory = pathlib.Path(f"{temporary}.{frontend}.dir")
 directory.mkdir()
 generated = directory / "probe.mim"
 try:
+    region_fusion = re.search(r"^// TF-REGION-FUSION: (.+)$", text, re.MULTILINE)
+    if region_fusion:
+        backend = "tt" if frontend == "graph" else "ff"
+        phase = f"{phase}, tensor.fuse_region_inputs ({region_fusion.group(1)}, {backend})"
     pipeline = f"compile.phases {fixed_point} ({phase}, compile.cleanup)"
     if len(strategy) > 1 and strategy[1] == "tensor":
         pipeline = f"compile.phases ff ({pipeline}, tensor.lower_tensor, compile.cleanup)"

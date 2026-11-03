@@ -19,7 +19,8 @@ fun sum (_: F32, (a b: F32))@tt: F32 = return (math.arith.add math.mode.fast (a,
 lam scaled {n: Nat} (x: «n; F32»): «n; F32» =
     map_reduce (n, n) (scale, 0.0:F32) (affine.id @1) (affine.id @1,) x;
 lam reader {n: Nat} (size: Nat, x: «n; F32»): «n; F32» =
-    tiled (n, size) (λ (off ext: Nat): «ext; F32» = slice n (off, 1, ext) x);
+    tiled (n, size) x
+        (λ (off ext: Nat) (x): «ext; F32» = slice n (off, 1, ext) x);
 lam joined {n: Nat} (a b: «n; F32»): «n; F32» =
     map_reduce @2 @(F32, 1, 1) (n, n) @((F32, F32), (1, 1), (n, n))
         (sum, 0.0:F32) (affine.id @1) (affine.id @1, affine.id @1) (a, b);
@@ -31,7 +32,8 @@ extern fun shared (x: «8; F32»): «8; F32» = return (shared_value (buf x));
 extern fun nested (x: «8; F32»): «8; F32» =
     let x = buf x;
     return (tiled (8, 4)
-        (λ (off ext: Nat): «ext; F32» = shared_value (slice 8 (off, 1, ext) x)));
+        x
+        (λ (off ext: Nat) (x): «ext; F32» = shared_value (slice 8 (off, 1, ext) x)));
 extern fun boxes (x: «8; F32»): «4; F32» =
     let x = buf x;
     let a = scaled (slice 8 (0, 1, 4) x);

@@ -36,4 +36,16 @@ private:
     void start() override;
 };
 
+class FuseRegionInputs : public Phase {
+public:
+    using Phase::Phase;
+    void apply(const App*) override;
+    std::unique_ptr<Phase> recreate() override;
+
+private:
+    void start() override;
+    u64 mode_ = 0, budget_ = 1;
+    bool graph_ = true;
+};
+
 } // namespace mim::plug::tensor::phase

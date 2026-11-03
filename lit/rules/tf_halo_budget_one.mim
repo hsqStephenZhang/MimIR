@@ -3,6 +3,7 @@
 // RUN: python3 %S/tf_run.py %mim %s %t graph tt > %t.graph 2> %t.graph.log
 // RUN: %FileCheck %s < %t.graph
 // TF-RULES: (tensor.fuse_halo (I64, 1, 1))
+// TF-REGION-FUSION: 1, 1
 // TF-PURE: tensor.tile_of_box, tensor.slice_box, tensor.map_reduce_post
 
 plugin tensor;
@@ -19,9 +20,13 @@ extern fun rejected (a: «7; I64»): «5; I64» =
     let q = map_reduce (5, (5, 3)) (add, 0I64) (proj_map @(2, 1) 0)
         ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
     return (tiled @(I64, 1) (5, 2)
-        (λ (off ext: «1; Nat»): «ext; I64» = tile_of_box (q, off, ext, ext)));
+        p
+        (λ (off ext: «1; Nat») (p): «ext; I64» =
+            let q = map_reduce (5, (5, 3)) (add, 0I64) (proj_map @(2, 1) 0)
+                ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
+            tile_of_box (q, off, ext, ext)));
 
+// CHECK: tensor.slice_box
 // CHECK-LABEL: extern fun rejected
 // CHECK: tensor.map_reduce_post {{.*}} (7,
-// CHECK: tensor.slice_box
 // CHECK: tensor.tiled

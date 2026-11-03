@@ -53,7 +53,8 @@ if workloads:
     text = text.replace(
         "compile.rule_app (pack, pack_post)",
         "compile.phases tt (compile.rule_app (pack_post, pack, tensor.group_outer («5, 11; F32», 2), "
-        "tensor.fuse_producer (F32, 1), tensor.fuse_producer (F32, 2)), compile.cleanup)",
+        "tensor.fuse_producer (F32, 1), tensor.fuse_producer (F32, 2)), "
+        "tensor.fuse_region_inputs (0, 1, ff), compile.cleanup)",
     )
 if "schedule" in reference:
     text = text.replace("opt._default_compile ()", "compile.null")

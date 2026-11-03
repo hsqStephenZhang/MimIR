@@ -49,21 +49,26 @@ extern fun row_max (a: «5, 7; F32», b: «5, 11; F32»): «5, 11; F32» =
 // CHECK-LABEL: extern fun ew_a (
 // CHECK: tensor.map_reduce_post {{.*}} ((5, 9), (5, 9),
 // CHECK: tensor.tiled
-// CHECK-LABEL: extern fun ew_a_fused (
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((5, 3), (5, 3),
 // CHECK: tensor.map_reduce_post {{.*}} btensor.clip_sched
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((5, 3), (5, 3),
+// CHECK-LABEL: extern fun ew_a_fused (
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((5, 3), (5, 3),
 // CHECK: tensor.tiled
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((5, 3), (5, 3),
 // CHECK-LABEL: extern fun mlp (
 // CHECK: let h = tensor.tiled {{.*}} ((13, 11), (13, 32))
 // CHECK: tensor.tiled {{.*}} ((13, 5), (13, 32))
-// CHECK-LABEL: extern fun row_max (
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),
 // CHECK: tensor.map_reduce_post {{.*}} btensor.clip_sched {{.*}} (maximum,
+// CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),
+// CHECK-LABEL: extern fun row_max (
+// CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),
 // CHECK: tensor.tiled {{.*}} ((5, 11), (2, 11))
+// CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),
+// CHECK: tensor.map_reduce_post {{.*}} btensor.clip_sched {{.*}} (sum,
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),
 // CHECK-LABEL: extern fun row_sum (
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),
-// CHECK: tensor.map_reduce_post {{.*}} btensor.clip_sched {{.*}} (sum,
 // CHECK: tensor.tiled {{.*}} ((5, 11), (2, 11))
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),
