@@ -607,7 +607,10 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::from_array>(app)) return lower_from_array(app);
     if (Axm::isa<tensor::get>(app)) return lower_get(app);
     if (Axm::isa<tensor::set>(app)) return lower_set(app);
-    if (Axm::isa<tensor::scalar>(app)) return splat_buffer(app->type(), rewrite(app->arg()));
+    if (Axm::isa<tensor::scalar>(app)) {
+        auto T = rewrite(app->arg()->type());
+        return buffer::op_init(w.lit_nat_0(), w.tuple(), T, fresh_mem(), rewrite(app->arg()))->proj(2, 1);
+    }
     if (Axm::isa<tensor::item>(app)) return buffer::op_read(fresh_mem(), rewrite(app->arg()), w.tuple())->proj(2, 1);
     if (Axm::isa<tensor::splat>(app)) return lower_splat(app);
     if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app);
@@ -962,6 +965,8 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
 
     prepare_realizations(root);
     if (auto app = root->isa<App>()) {
+        if (Axm::isa<tensor::scalar>(app))
+            return buffer::op_write(destination.mem, destination.buffer, new_world().tuple(), rewrite(app->arg()));
         if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app, &destination);
         if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app, &destination);
     }
