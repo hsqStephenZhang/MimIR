@@ -696,3 +696,62 @@ Mim 的 `1:F` 是位模式，不是浮点数值 1。
 该分支当时只乘零 carry，因此既有有限结果用例仍正确，但表达式应与递推定义一致。
 修正后的全树重建、CTest 250/250、完整 lit 694 通过、9 unsupported，
 见 `early-raise-ctest.log`、`early-raise-full-lit.log`。
+
+## 动态计数揭示的问题及 product carry 修复
+
+第一次 L128 动态实验暴露两点，不能用步骤 3 的局部结构检查代替整条默认 pipeline：
+通用 optimize 先行时孤立 core 的 diamond 没有 raising，
+所谓 auto 与 current 的 LLVM hash 一致。
+实际 exp 为393216，即理论 E196608的两倍；group=0 为196608。
+这是既有 grouping 重复 exp 的测得偏离，不把它记成 online 的结果。
+ordinary raising 后再分解的 `raised` 与 current hash 也相同。
+候选修复将 raising、group_attention 移到通用 optimize 前，
+先识别再优化；`online_early.mim` 检查 L128 默认 pipeline 不再申请完整 score 矩阵。
+
+真正选中 online 后，异构 tuple fold 的 CPS fallback 暴露旧 carry 泄漏：
+L128 一次调用释放最终输出后仍有6488064字节不可达。
+最小 `fold_escape.mim` 不含 attention，3次迭代各申请16字节；
+返回结果释放后仍泄漏32字节，LLVM 中没有 free。
+复现、计数器、driver 和日志保存在 task28a 结果目录。
+因此没有继续大 L 重复运行该版本。
+
+native product-fold 把 immutable Sigma carry 递归分成字段，
+tensor 字段各用两块存储 ping-pong，标量字段保持 SSA；
+所有 next 字段读同一轮旧状态，不能覆盖另一个字段尚未读完的旧值。
+独立 fold 复制 init、结束释放 unused bank，返回 bank 的所有权与普通 tensor 输出相同。
+位于已有 sequential tiled 内部且形状静态时，两块 bank 使用既有 tile scratch pool，
+在整个 grid 结束统一释放；不逐迭代申请。
+非静态或不满足 pool 条件仍使用独立分配，不静默假定可复用。
+`product_fold.mim` 用两个互相依赖、形状不同的 tensor 和一个标量，
+检查0/1/2/5轮数值、输入值语义与释放输出后零 outstanding allocation。
+
+实现同时修复两个局部边界：
+capture_producers 的共享 realization 只能提前生成依赖外部自由变量的 producer，
+不能在 tile 参数绑定前生成依赖 tile 参数的计算；
+单例轴折叠后，写入 destination 仍须采用 producer 的逻辑 shape/rank。
+共享准备越界及逻辑秩失配均由 `online_exec.mim` 的 BM2/M5、BK3/S7 覆盖。
+scratch 分配的占位 memory 不能取代 carry 初始化的顺序链：
+各字段的 init copy 必须相互依赖，否则后一个 fresh placeholder 会丢掉前一个 copy。
+该问题在定向数值验证中发现并修正，而非降低精度要求。
+
+修复后的 L128 auto/manual 动态计数相同：
+7次 heap 分配、累计/峰值394272字节，最大分配393216字节为输出；
+17次静态大小 stack slot 共2488字节，计入后二者峰值396760字节；
+exp221184=E+h·L·ceil(L/8)，释放输出后零泄漏。
+工作区为3544字节，**偏离**原理想1184字节预测：
+双 bank、普通 tensor leaf 及临时缓冲并没有全部 register 常驻。
+仍无完整 S/P，活动 workspace 与 L 无关的结构预测得到支持。
+这里 stack 计数按 LLVM alloca 的 payload 字节，不计 ABI padding/编译器 spill；
+计数版把 scalar exp intrinsic 替换成带副作用 wrapper，计时使用未插桩库。
+
+在继续 L512/1024/2048 前的预测：相同 BM2/BK8 下，
+heap次数7、stack payload2488和额外heap1056应不变，
+动态 exp 应分别为3538944/14155776/56623104，
+峰值应为输出 `4*h*L*64` 加3544字节。
+这些是对新 carry 实现的可证伪预测，不代替原始预测。
+
+product-fold 提交前 CTest250/250，完整 lit695通过、9 unsupported。
+池化新增准入仅限 native Sigma fold，保留原 Arr fold 的准入行为：
+扩大到所有 fold 曾使 BLIS MLP 的乘法计数多4次，
+因此收回该无关扩展，既有 `blis_workloads.mim` 的精确计数保持通过。
+见 `product-commit-ctest.log`、`product-commit-lit.log`。

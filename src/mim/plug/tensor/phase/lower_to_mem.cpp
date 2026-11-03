@@ -289,7 +289,8 @@ bool sequential_tile(const Def* root) {
         if (auto app = def->isa<App>(); app && is_tensor_op(app)) {
             if (!(Axm::isa<tensor::map_reduce_post>(app) || Axm::isa<tensor::stage>(app) || Axm::isa<tensor::slice>(app)
                   || Axm::isa<tensor::slice_box>(app) || Axm::isa<tensor::splat>(app)
-                  || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::generate>(app)))
+                  || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::generate>(app)
+                  || (Axm::isa<tensor::tile_fold>(app) && app->type()->isa_imm<Sigma>())))
                 return false;
         }
         for (auto op : def->ops())
@@ -353,7 +354,14 @@ void LowerToMem::collect_tensor_types() {
                 add_tensor_ty(app->type());
                 add_tensor_ty(app->arg(4, 0)->type());
             } else if (Axm::isa<tensor::tile_fold>(app)) {
-                add_tensor_ty(app->type());
+                auto record = [&](auto&& self, const Def* type) -> void {
+                    if (auto sigma = type->isa_imm<Sigma>())
+                        for (auto field : sigma->ops())
+                            self(self, field);
+                    else
+                        add_tensor_ty(type);
+                };
+                record(record, app->type());
             } else if (Axm::isa<tensor::stage>(app)) {
                 add_tensor_ty(app->type());
                 add_tensor_ty(app->arg()->type());
@@ -659,9 +667,15 @@ std::pair<const Def*, const Def*> LowerToMem::allocate(const Def* rank, const De
     return {fresh_mem(), buffer};
 }
 
-void LowerToMem::prepare_realizations(const Def* root) {
+void LowerToMem::prepare_realizations(const Def* root, const Lam* region) {
     for (auto group : RealizationRequests(root).shared()) {
-        auto value    = group.front();
+        auto value = group.front();
+        if (region) {
+            bool available = true;
+            for (auto var : value->free_vars())
+                available &= region->has_free_var(var);
+            if (!available) continue;
+        }
         auto realized = lookup(value);
         if (!realized) realized = rewrite(value);
         realizations_[value] = realized;
@@ -946,7 +960,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
 }
 
 std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function, bool destination) {
-    if (auto body = function->isa<Lam>(); body && body->is_set()) prepare_realizations(body->body());
+    if (auto body = function->isa<Lam>(); body && body->is_set()) prepare_realizations(body->body(), body);
     auto sources = DefVec(), captures = DefVec();
     auto body = function->isa<Lam>();
     if (!body || !body->is_set()) return {sources, captures};
@@ -1610,6 +1624,7 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
 }
 
 const Def* LowerToMem::lower_tile_fold(const App* app) {
+    if (app->type()->isa_imm<Sigma>()) return lower_product_fold(app);
     auto& w                   = new_world();
     auto& old                 = old_world();
     auto [type, blocks, init] = app->callee()->as<App>()->uncurry_args<3>();
@@ -1698,6 +1713,133 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     run->set(true, loop_call);
     auto [out_mem, out] = call->projs<2>();
     return scalar_result(app, out_mem, out);
+}
+
+const Def* LowerToMem::lower_product_fold(const App* app) {
+    auto& w                   = new_world();
+    auto& old                 = old_world();
+    auto [type, blocks, init] = app->callee()->as<App>()->uncurry_args<3>();
+    auto [count, stride]      = blocks->projs<2>();
+    auto step                 = app->arg()->isa<Lam>();
+    if (!step || !step->is_set()) app->blame("tensor.tile_fold step must be a defined lambda").bail();
+    auto parameter             = old.mut_lam(old.pi(old.sigma({type, old.type_nat()}), old.type_nat()));
+    auto [accumulator, offset] = parameter->var()->projs<2>();
+    auto root                  = step->reduce(parameter->var()).back();
+    record_instance(root);
+    auto fields = [&](auto&& self, const Def* t, const Def* value, auto&& leaf) -> const Def* {
+        if (auto sigma = t->isa_imm<Sigma>()) {
+            for (size_t i = 0; i != 128; ++i) {
+                auto call = value->isa<App>();
+                if (!call) break;
+                auto lam = call->callee()->isa<Lam>();
+                if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
+                value = lam->reduce(call->arg()).back();
+            }
+            return w.tuple(DefVec(sigma->num_ops(), [&](size_t i) {
+                return self(self, sigma->op(i), value->proj(sigma->num_ops(), i), leaf);
+            }));
+        }
+        return leaf(t, value);
+    };
+    auto shape_of = [&](const Def* t) {
+        auto dimensions = DefVec();
+        while (auto arr = t->isa<Arr>()) {
+            dimensions.push_back(*arr->shape());
+            t = arr->body();
+        }
+        return std::pair{old.tuple(dimensions), t};
+    };
+    const Def* mem = fresh_mem();
+    DefVec spare;
+    fe::Vector<bool> pooled;
+    auto initialize = [&](const Def* t, const Def* value) -> const Def* {
+        if (!t->isa<Arr>()) {
+            auto scalar = rewrite(value);
+            spare.push_back(scalar);
+            pooled.push_back(false);
+            return scalar;
+        }
+        tensor_ty_.insert(t);
+        auto [shape, element] = shape_of(t);
+        auto rank             = w.lit_nat(Lit::as(shape->arity()));
+        auto owned            = scratch_ && lit_projs(rewrite(shape), Lit::as(rank)) && rewrite(element)->is_closed();
+        const Def *current, *next;
+        if (owned) {
+            current = allocate(rank, rewrite(shape), rewrite(element)).second;
+            next    = allocate(rank, rewrite(shape), rewrite(element)).second;
+        } else {
+            std::tie(mem, current) = buffer::op_alloc(rank, rewrite(shape), rewrite(element), mem)->projs<2>();
+            std::tie(mem, next)    = buffer::op_alloc(rank, rewrite(shape), rewrite(element), mem)->projs<2>();
+        }
+        pooled.push_back(owned);
+        spare.push_back(next);
+        mem = copy_buffer(mem, current, make_buffer(value, rank, rewrite(shape)), rewrite(shape));
+        return current;
+    };
+    auto current           = fields(fields, type, init, initialize);
+    size_t cursor          = 0;
+    auto take_spare        = [&](const Def*, const Def*) { return spare[cursor++]; };
+    auto alternate         = fields(fields, type, init, take_spare);
+    auto state             = w.tuple({mem, current, alternate});
+    auto [run, call]       = btensor::ds_splice(state, state->type(), "productFold");
+    auto [loop, loop_call] = affine::counting_for(w.call<core::bitcast>(w.type_i64(), rewrite(count)), run->var(2, 0),
+                                                  run->ret_var(), w.sym("productFoldStep"));
+    auto [index, carried, yield]         = loop->vars<3>();
+    auto [loop_mem, source, destination] = carried->projs<3>();
+    {
+        auto pending = fe::Restore(pending_, {});
+        auto memo    = fe::Restore(fresh_memo_, {});
+        auto cache   = fe::Restore(realizations_, realizations_);
+        push();
+        bind_old(parameter->has_var());
+        map(accumulator, source);
+        map(offset, w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), rewrite(stride)}));
+        prepare_realizations(root);
+        DefVec targets;
+        auto collect = [&](const Def*, const Def* value) {
+            targets.push_back(value);
+            return value;
+        };
+        fields(fields, type, destination, collect);
+        cursor                 = 0;
+        const Def* updated_mem = loop_mem;
+        auto update            = [&](const Def* t, const Def* value) -> const Def* {
+            auto target = targets[cursor++];
+            if (!t->isa<Arr>()) return rewrite(value);
+            auto [shape, _] = shape_of(t);
+            if (auto operation = value->isa<App>()) {
+                if (Axm::isa<tensor::map_reduce_post>(operation))
+                    shape = btensor::MapRedPost::of(operation->callee()->as<App>()).So;
+                else if (Axm::isa<tensor::tiled>(operation))
+                    shape = operation->callee()->as<App>()->arg(2, 0);
+            }
+            auto rank    = Lit::as(shape->arity());
+            auto zero    = w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat(0); }));
+            auto written = lower_into(value, {updated_mem, target, rewrite(shape), zero, rewrite(shape)});
+            updated_mem  = written->proj(2, 0);
+            return target;
+        };
+        auto result = fields(fields, type, root, update);
+        loop->app(true, yield, w.tuple({updated_mem, result, source}));
+        loop->set(true, wrap_fresh_mem(loop->body()));
+        pop();
+    }
+    run->set(true, loop_call);
+    auto output_type                 = w.sigma({mem->type(), current->type()});
+    auto [finish, finished]          = btensor::ds_splice(call, output_type, "productFoldResult");
+    auto [final_mem, result, unused] = finish->var(2, 0)->projs<3>();
+    const Def* released              = final_mem;
+    cursor                           = 0;
+    auto release                     = [&](const Def* t, const Def* value) {
+        if (!pooled[cursor++] && t->isa<Arr>()) {
+            auto [rank, shape, element] = Axm::isa<buffer::Buf>(value->type())->args<3>();
+            released                    = buffer::op_free(rank, shape, element, released, value);
+        }
+        return value;
+    };
+    fields(fields, type, unused, release);
+    finish->app(true, finish->ret_var(), w.tuple({released, result}));
+    return finished->proj(2, 1);
 }
 
 const Def* LowerToMem::lower_pad(const App* app) {

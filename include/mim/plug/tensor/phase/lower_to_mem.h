@@ -64,6 +64,7 @@ private:
     const Def* lower_tiled(const App*, const Destination* = nullptr);
     const Def* lower_tiled_n(const App*);
     const Def* lower_tile_fold(const App*);
+    const Def* lower_product_fold(const App*);
     const Def* lower_stage(const App*);
     std::pair<DefVec, DefVec> capture_producers(const Def*, bool = false);
     bool linear_step(const Def*, const Def*, const Def*);
@@ -72,7 +73,7 @@ private:
     std::pair<const Def*, const Def*> allocate(const Def*, const Def*, const Def*, bool = true);
     void record_instance(const Def*);
     void record_helpers(const App*);
-    void prepare_realizations(const Def*);
+    void prepare_realizations(const Def*, const Lam* = nullptr);
 
     /// Adapts a call to a bufferized function: materializes value-world tensor arguments into buffers;
     /// continuation arguments pass through (their domains are converted by `rewrite_mut_Lam`).

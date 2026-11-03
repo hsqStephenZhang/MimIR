@@ -16,6 +16,7 @@ extern lam _compile (): compile.Phase =
         compile.rule_app (tensor.attention_schedule_rule (math.mode.contract, 8, 32)),
         tensor.lower_tensor, compile.cleanup);
 
-// CHECK: con loop
+// CHECK: tensor.tile_fold @
+// CHECK-SAME: (63, 8)
 // CHECK: tensor.tiled @
 // CHECK-SAME: ((12, 512, 64), (1, 2, 64))
