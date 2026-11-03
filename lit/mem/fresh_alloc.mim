@@ -1,0 +1,29 @@
+// RUN: %mim %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O3 -fsanitize=address %S/fresh_alloc_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin opt;
+plugin compile;
+plugin buffer;
+plugin core;
+plugin mem;
+
+extern fun fresh_alloc (): I64 =
+    con first (m1: mem.M 0)@tt =
+        con second (m2: mem.M 0)@tt =
+            let (_, a) = buffer.alloc (1, 2, I64) m1;
+            let (_, b) = buffer.alloc (1, 2, I64) m2;
+            let (m, _) = buffer.write (1, 2, I64) (m1, a, 0₂, 13I64);
+            let (m, _) = buffer.write (1, 2, I64) (m, b, 0₂, 29I64);
+            con region (m: mem.M 0) =
+                let (m, x) = buffer.read (1, 2, I64) (m, a, 0₂);
+                let (m, y) = buffer.read (1, 2, I64) (m, b, 0₂);
+                let m = buffer.free (1, 2, I64) (m, a);
+                let m = buffer.free (1, 2, I64) (m, b);
+                return (core.wrap.add 0 (x, y));
+            region m;
+        mem.fresh (0, second);
+    mem.fresh (0, first);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (mem.add_mem, opt._default_compile ());

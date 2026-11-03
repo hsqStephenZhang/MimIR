@@ -58,6 +58,7 @@ bool AddMem::analyze() {
 }
 
 const Def* AddMem::rewrite(const Def* old_def) {
+    if (curr_mem_ && fresh_parameters_.contains(old_def)) return curr_mem_;
     // Type rewriting is MODE-DEPENDENT: outside a pinned ABI every continuation pi gains a leading
     // mem, inside one it must not - but the rewrite memo is shared. Whichever mode first touches a
     // shared type (e.g. a plain 'Cn F32' return pi) would poison the other, hash-order-dependently.
@@ -160,10 +161,15 @@ const Def* AddMem::rewrite_imm_App(const App* app) {
 
     auto& w = new_world();
 
-    // `mem.fresh (a, k)`: the request for a fresh memory resolves to the memory that is current right
-    // here - jump to `k` with it. (Like the rest of this phase, only address space 0 is threaded.)
+    // Resolving at operand uses keeps independent allocations on the advancing memory chain.
     if (Axm::isa<mem::fresh>(app)) {
         auto [_, k] = app->args<2>();
+        if (auto lam = k->isa<Lam>(); lam && lam->is_set() && lam->filter() == old_world().lit_tt()) {
+            if (auto var = lam->has_var()) fresh_parameters_.insert(var);
+            auto body = rewrite(lam->body());
+            if (auto var = lam->has_var()) fresh_parameters_.erase(var);
+            return body;
+        }
         return w.app(rewrite(k), curr_mem_);
     }
     // Rewrite the argument before the callee (as the base Rewriter does). This threads the current memory

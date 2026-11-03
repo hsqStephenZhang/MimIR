@@ -1,0 +1,19 @@
+// RUN: %mim -p opt %s -p ll -X tensor:group=0 -X ll:o=%t.ll
+// RUN: python3 %S/realization_count.py %t.ll %t.count.ll
+// RUN: clang++ -O3 -fsanitize=address %S/whole_alloc_aux.cpp %t.count.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin tensor;
+plugin affine;
+plugin math;
+plugin core;
+use tensor;
+let F32 = math.F32;
+fun scale (_ x: F32)@tt: F32 = return (math.arith.mul math.mode.fast (x, 2.0:F32));
+extern fun whole_alloc (x: Tensor 1 10 F32): Tensor 1 10 F32 =
+    let p = map_reduce (10, 10) (scale, 0.0:F32) (affine.id @1) (affine.id @1,) (buf x);
+    return (tiled (10, 4) p
+        (λ (off ext: Nat) (p): Tensor 1 ext F32 =
+            let total = item (reduce (math.arith.add math.mode.fast, 0.0:F32) 0₁ p);
+            binary (math.arith.add math.mode.fast)
+                (slice 10 (off, 1, ext) p, splat (ext, total))));

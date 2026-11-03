@@ -75,23 +75,10 @@ private:
     /// ops still collapse into one (e.g. a weight literal materialized at many sites).
     const Def* bot_mem();
 
-    /// A *fresh* `mem.M 0` for one emitted buffer/btensor operation: the var of a newly minted continuation
-    /// `con fresh_mem(mem: mem.M 0)` that receives its memory once LowerToMem::wrap_fresh_mem has chained it
-    /// in front of the enclosing lam's body.
-    /// Required by every op that allocates a buffer it then writes into, for two independent reasons:
-    /// 1. Immutable Def%s are hash-consed, so two `buffer.alloc`s agreeing on `(r, s, T)` and sharing one
-    ///    placeholder collapse into a single allocation - two distinct tensors would alias one buffer.
-    /// 2. AddMem is a memoizing Rewriter, so two operations sharing one argument tuple
-    ///    `(⊥: mem.M 0, …)` - which happens whenever they differ only in their curried callee - are threaded
-    ///    from the *same* current memory, and the resulting parallel mem chains collapse in `cps.conv`.
-    /// Mutables are never hash-consed, so the continuations' vars are distinct by construction - no
-    /// distinguishing tag required.
+    /// AddMem resolves this request at each operand use, after threading preceding memory effects.
     const Def* fresh_mem();
 
-    /// Chains the LowerToMem::pending_ continuations in front of the freshly rewritten @p body:
-    /// yields `mem.fresh (0, k₁)` with `k₁ ↦ mem.fresh (0, k₂)`, …, and the last one carries @p body.
-    /// AddMem resolves each request by jumping to the continuation with the scheduler-placed current memory,
-    /// and the `tt` filter beta-reduces the continuations away again as soon as that happens.
+    /// AddMem inlines these request continuations without fixing their memory operands at the lam head.
     const Def* wrap_fresh_mem(const Def* body);
 
     flags_t tensor_key_ = 0;
