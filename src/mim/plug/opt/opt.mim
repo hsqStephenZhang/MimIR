@@ -33,13 +33,13 @@ extern lam _default_compile (): compile.Phase =
         );
 
     compile.phases ff (
+        compile.named "tensor.raise_attention",
+        compile.named "tensor.group_attention",
         optimize,
         // regex
         compile.named "regex.lower_regex",
 
         // tensor
-        compile.named "tensor.raise_attention",
-        compile.named "tensor.group_attention",
         compile.named "tensor.reassoc",
         compile.named "tensor.lower_tensor",
         compile.named "tensor.fuse_tensor",

@@ -755,3 +755,11 @@ product-fold 提交前 CTest250/250，完整 lit695通过、9 unsupported。
 扩大到所有 fold 曾使 BLIS MLP 的乘法计数多4次，
 因此收回该无关扩展，既有 `blis_workloads.mim` 的精确计数保持通过。
 见 `product-commit-ctest.log`、`product-commit-lit.log`。
+
+product-fold 修复提交为 `67ce17188f`。
+early recognition 不新增全局 beta pass、不改变通用 optimize 的内部顺序，
+只把现有 attention 两阶段移到其前；
+`online_auto.mim` 改为从真实 decomposed diamond 进入默认 pipeline 并做数值检查，
+避免直接输入 sdpa 掩盖未 raising 的问题。
+early 提交前再次 CTest250/250、完整 lit695通过、9 unsupported，
+见 `early-commit-ctest.log`、`early-commit-lit.log`。
