@@ -1,0 +1,1 @@
+// RUN: python3 %S/region_inputs_invalid.py %mim %t.dir

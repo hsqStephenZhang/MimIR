@@ -63,11 +63,46 @@ fold init 使用、whole reader 或未证明完整的 data uses。
 producer 的 combiner/post 必须可证明纯；graph frontend 对捕获函数也检查调用纯性。
 因此，边界改写不是无条件把整个 producer 移入 body。
 
+`tensor.group` 只按 GraphView occurrence 的 region 路径判断 claimed，
+不再维护模板构造列表、free-variable hoisting 或 `read_by_regions` 例外。
+`group_hoist` 验证外部 product 仍获 BLIS schedule，而在 body 输入上重建的 product
+不会被另行分组；将 callback 输入 binder 换成匿名参数、重新捕获外部 product 时必须报错。
+`region_inputs_invalid` 覆盖三个 region、绕过已有输入参数、局部/外部混合数据输入和嵌套捕获。
+直接返回外部 tensor 及其 tuple 投影也属于数据转发，不能利用 view 的恒等归约绕过隔离。
+
 `tf_region_inputs` 在两个前端及 ASan 标量对照下覆盖 fold、嵌套异构输入、
 共享 producer 的两个 tile regions，以及同时用作 fold init 时拒绝移动的情况。
 已有 halo、BLIS、row、reverse 的执行与工作量断言继续约束融合结果。
 unmasked online attention 的显式输入不包含未使用的零 mask；
 masked 路径才传入 mask tensor，避免因显式 materialization 分配完整零 mask。
+
+### Task 31B 验收
+
+删除 workaround 后，CTest 为 **258/258**，完整 lit 为 **703 passed / 9 unsupported**。
+相对题给基线，captured-function 支持带入一个 unit 和一个 lit；
+本任务另加 region fusion 执行测试和包含六种拒绝情况的 isolation 测试。
+已有 `tf_reverse_exec`、BLIS workload 的动态工作量期望均未修改。
+
+`group_default` 的 budget=3 profile 中，`rule.rewrites` 从 8 变为 6，
+`tensor.group.requests` 仍为 6；这是 P5 改写次数，不是动态计算次数。
+旧检查要求的两个残留 `tile_of_box` 改写不再发生：
+边界 guard 要先证明 tiling 可成功，C++ constructor 则已直接构造 full/tail 两个 clipped consumer MRP。
+新结构检查验证这两个 MRP 和两个 tile regions；第一层 conv 仍作为共享输入预计算，
+没有把这个用例报告为已消除 whole producer 的 halo fusion。
+数值/ASan 检查以及其他用例的 exact work checks 保持原期望，未按新结果重新定标。
+
+L128 attention 使用题给 kernel、Homebrew clang `-O3 -mcpu=apple-m2` 和题给 `drv`，
+每次调用 `drv kernel.dylib 128 10`，单线程、nice 10。
+四次独立运行全部列入中位数；共享机器上的首轮偏慢，不据此宣称稳定加速。
+
+| 配置 | 题给参考 ms | 当前四次 ms | 中位数 ms | Mim 编译 wall s |
+| --- | ---: | --- | ---: | ---: |
+| online 开 | 19.4 | 18.85、16.78、16.61、16.55 | 16.70 | 4.19 |
+| online 关 | 13.5 | 15.34、12.63、12.53、12.69 | 12.66 | 10.39 |
+
+`-VVVV` 日志明确记录 QKV 的 `MR=4 NR=16 KC=128 NC=i8`，此时已无 grouping workaround。
+日志、LLVM/Mim、动态库和完整执行证据保存于
+`/Users/zc/courses/compiler/products/tile-fuse/results/task31b/`。
 
 ## 7. Cross-op grouping
 
@@ -500,8 +535,9 @@ physical cap metadata 随 enclosing scope 继承，避免 clipped tensor 的逻�
 
 只合并原始 region 中的相同节点还不够：fold 的 first/remaining step 会克隆闭包，
 且 outer tiled body 的 inner shape 在 β-reduction 前依赖其 extent 参数。
-已有 capture_producers 会先于该 reduction materialize invariant producers。
-现在这些已经发生的 pure captures 也登记到 scope-local template cache；
+原实现的 `capture_producers` 在该 reduction 前 materialize invariant producers；
+Task 31B 改为在相同位置 materialize 显式 `ins`。
+这些 pure 输入也登记到 scope-local template cache；
 后续 specialization 以严格 α-equivalence 查询，继承外层只读 storage，
 退出 region 时恢复 cache，不把不同 iteration 的 scratch 留给下一次 iteration。
 没有借此新增对未知 trip count region 的 speculative fill。

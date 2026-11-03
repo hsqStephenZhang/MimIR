@@ -40,7 +40,7 @@ struct MultiTilePlan {
 };
 
 MultiTilePlan multi_tile_plan(const App*);
-void check_region_inputs(const Def*);
+void check_region_inputs(const Def*, const Def*);
 
 class RegionInputs {
 public:

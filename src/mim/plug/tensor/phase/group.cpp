@@ -339,40 +339,12 @@ void Group::start() {
     pattern::GraphView source(old_world(), ops);
     auto scratch = old_world().inherit();
     Planner planner(source, *scratch, cache, budget, log());
-    // Reverse placement instantiates its producer and consumer per literal grid point, so they stay inside the region.
-    DefSet templates;
-    DefVec pending;
-    for (auto ext : old_world().externals().muts())
-        pending.push_back(ext);
-    for (DefSet seen; !pending.empty();) {
-        auto def = pending.back();
-        pending.pop_back();
-        if (!def || !seen.insert(def).second) continue;
-        if (auto app = Axm::isa<reverse_source>(def)) templates.insert(app->arg(3, 0));
-        if (auto app = Axm::isa<reverse_part>(def))
-            for (auto part : {app->arg(6, 0), app->arg(6, 1)}) {
-                templates.insert(part);
-                if (auto tuple = part->isa<Tuple>())
-                    for (auto p : tuple->ops())
-                        templates.insert(p);
-            }
-        for (auto op : def->ops())
-            pending.push_back(op);
-    }
-    // An operation that only depends on entry parameters is computed once, even if a region reads it.
-    auto hoisted = [&](const Def* op) {
-        if (templates.contains(op)) return false;
-        for (auto var : op->free_vars())
-            if (auto lam = var->binder()->isa<Lam>(); !lam || !lam->is_external()) return false;
-        return true;
-    };
-    DefSet claimed, read_by_regions;
+    DefSet claimed;
     for (auto op : source.operations()) {
         auto occurrences = source.occurrences(op);
         if (occurrences.empty()) claimed.insert(op);
         for (auto occurrence : occurrences)
             if (!occurrence.trips || !occurrence.regions.empty()) claimed.insert(op);
-        if (!occurrences.empty() && claimed.contains(op) && hoisted(op)) read_by_regions.insert(op);
     }
     for (auto op : source.operations())
         if (auto request = Axm::isa<group_req>(op)) {
@@ -380,17 +352,15 @@ void Group::start() {
             while (auto inner = Axm::isa<group_req>(value))
                 value = inner->arg(5, 0);
             claimed.insert(value);
-            read_by_regions.erase(value);
             if (Lit::isa(kind) == 2) {
                 for (auto c :
                      params->isa<Tuple>() ? DefVec(params->ops().begin(), params->ops().end()) : DefVec{params}) {
                     claimed.insert(c);
-                    read_by_regions.erase(c);
                 }
             }
         }
     for (auto op : source.operations()) {
-        if (!graph::map_reduce(op) || (claimed.contains(op) && !read_by_regions.contains(op))) continue;
+        if (!graph::map_reduce(op) || claimed.contains(op)) continue;
         auto imported = planner.import(op);
         auto mr       = btensor::MapRedPost::of(imported->as<App>()->callee()->as<App>());
         if (auto ranks = mr.ranks();

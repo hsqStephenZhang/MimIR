@@ -26,7 +26,7 @@ bool tensor_input_type(const Def* type) {
 
 } // namespace
 
-void check_region_inputs(const Def* function) {
+void check_region_inputs(const Def* function, const Def* region) {
     auto outer = function->isa<Lam>();
     if (!outer || !outer->is_set()) return;
     auto inner = outer->body()->isa<Lam>();
@@ -34,6 +34,27 @@ void check_region_inputs(const Def* function) {
     DefSet bound;
     if (auto var = outer->has_var()) bound.insert(var);
     if (auto var = inner->has_var()) bound.insert(var);
+    auto check = [&](const Def* operation, const Def* input) {
+        if (tensor_input_type(input->type()) && !input->is_closed()
+            && !std::ranges::any_of(input->free_vars(), [&](auto var) { return bound.contains(var); }))
+            operation
+                ->blame("tensor region operation {} reads outer tensor input {}; pass it explicitly",
+                        App::uncurry_callee(operation)->sym(), input)
+                .bail();
+    };
+    DefVec results{inner->body()};
+    for (size_t i = 0; i != results.size(); ++i) {
+        auto result = results[i];
+        if (auto tuple = result->isa<Tuple>()) {
+            for (auto op : tuple->ops())
+                results.push_back(op);
+        } else {
+            auto source = result;
+            while (auto extract = source->isa<Extract>())
+                source = extract->tuple();
+            if (source->isa<Var>()) check(region, result);
+        }
+    }
     auto& ops = function->driver().graph_operations();
     DefVec pending{inner->body()};
     DefSet seen;
@@ -43,13 +64,7 @@ void check_region_inputs(const Def* function) {
         if (auto view = ops.decode(def, 65536)) {
             for (auto input : view->inputs) {
                 if (!tensor_input_type(input.value->type()) || input.value->is_closed()) continue;
-                bool local = false;
-                for (auto var : input.value->free_vars())
-                    local |= bound.contains(var);
-                if (!local)
-                    def->blame("tensor region operation {} reads outer tensor input {}; pass it explicitly",
-                               App::uncurry_callee(def->as<App>())->sym(), input.value)
-                        .bail();
+                check(def, input.value);
                 pending.push_back(input.value);
             }
             continue;
@@ -340,7 +355,7 @@ const Def* normalize_tile_of_box(const Def*, const Def*, const Def* arg) {
 
 const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
     auto [meta, shapes, input_type, inputs] = c->as<App>()->uncurry_args<4>();
-    check_region_inputs(body);
+    check_region_inputs(body, c);
     auto [s, ts] = shapes->projs<2>();
     if (auto rank = Lit::isa(meta->proj(2, 1))) {
         for (size_t d = 0; d != *rank; ++d)
@@ -358,15 +373,15 @@ const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
 
 const Def* normalize_tile_fold(const Def*, const Def* c, const Def* body) {
     auto [meta, blocks, init, input_type, inputs] = c->as<App>()->uncurry_args<5>();
-    check_region_inputs(body);
+    check_region_inputs(body, c);
     auto [n, ks] = blocks->projs<2>();
     if (Lit::isa(n) == 0) return init;
     if (Lit::isa(ks) == 0) c->blame("tensor.tile_fold requires a positive block size").bail();
     return nullptr;
 }
 
-const Def* normalize_tiled_n(const Def*, const Def*, const Def* body) {
-    check_region_inputs(body);
+const Def* normalize_tiled_n(const Def*, const Def* c, const Def* body) {
+    check_region_inputs(body, c);
     return nullptr;
 }
 
