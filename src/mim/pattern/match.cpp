@@ -46,12 +46,7 @@ public:
     MatchStatus run(Pattern p, const Def* def) {
         if (!program_.is_current()) throw std::invalid_argument("pattern references a rebuilt World");
         program_.check(p);
-        if (def) {
-            auto snapshot         = std::make_shared<GraphSnapshot>();
-            snapshot->world_      = &def->world();
-            snapshot->generation_ = def->world().data_.storage_token;
-            snapshot_             = std::move(snapshot);
-        }
+        if (def) snapshot_ = GraphSnapshot::capture(def->world());
         return visit(p, def, 0, [&] { return complete_types(0, 0); });
     }
 
@@ -686,7 +681,10 @@ GraphMatches MatchEngine::search(const GraphPattern& pattern, const GraphView& g
         } else {
             DefSet read;
             auto pending = assigned;
-            auto values  = std::make_shared<std::vector<const Def*>>();
+            // Type captures can refer back to data nodes without a raw path from an anchor.
+            for (auto def : captures_)
+                if (def) pending.push_back(def);
+            auto values = std::make_shared<std::vector<const Def*>>();
             for (size_t i = 0; i != pending.size(); ++i) {
                 if (is_exhausted(0)) return MatchStatus::Budget_Exceeded;
                 auto def = pending[i];

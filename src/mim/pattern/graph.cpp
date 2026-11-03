@@ -46,7 +46,7 @@ GraphView::GraphView(World& world, const OpRegistry& ops)
     unknown_uses_.clear();
     for (const auto& state : mutables_)
         for (auto op : state.ops)
-            if (op && indices_.contains(op)) {
+            if (op && contained_.contains(op)) {
                 auto fn = state.def->isa<Lam>();
                 if (!fn || op != fn->body()) unknown_uses_.insert(op);
             }
@@ -179,7 +179,7 @@ GraphView::GraphView(Defs roots, GraphOptions options)
     }
 
     auto enqueue = [&](const Def* def) {
-        if (indices_.emplace(def, nodes_.size()).second) nodes_.push_back(def);
+        if (contained_.insert(def).second) nodes_.push_back(def);
     };
     for (auto root : roots_)
         enqueue(root);
@@ -219,9 +219,9 @@ GraphView::GraphView(Defs roots, GraphOptions options)
                     def->type(),
                     {def->ops().begin(), def->ops().end()}
                 });
-            if (unknown_uses && def != scope_ && !indices_.contains(def))
+            if (unknown_uses && def != scope_ && !contained_.contains(def))
                 for (auto op : def->ops())
-                    if (op && indices_.contains(op)) unknown_uses_.insert(op);
+                    if (op && contained_.contains(op)) unknown_uses_.insert(op);
             for (auto dep : def->deps())
                 if (dep) pending.push_back(dep);
         }

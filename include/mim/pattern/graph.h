@@ -81,7 +81,7 @@ public:
         return roots_;
     }
     std::span<const UseEdge> uses(const Def*) const;
-    bool is_contained(const Def* def) const { return snapshot_->is_live() && def && indices_.contains(def); }
+    bool is_contained(const Def* def) const { return snapshot_->is_live() && def && contained_.contains(def); }
     /// Number of raw operand occurrences, excluding callee and type edges.
     size_t use_count(const Def*) const;
     size_t consumer_count(const Def*) const;
@@ -131,7 +131,7 @@ private:
     std::vector<const Def*> roots_;
     DefSet outputs_;
     std::vector<const Def*> nodes_;
-    DefMap<size_t> indices_;
+    DefSet contained_;
     DefMap<std::vector<UseEdge>> uses_;
     UseCoverage coverage_;
     World* world_ = nullptr;

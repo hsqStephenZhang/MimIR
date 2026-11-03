@@ -175,3 +175,13 @@ axm single_erasure: Phase;
 /// Drops params that recursive calls merely forward, turning them into loops (mim::StaticArgOpt).
 ///
 axm static_arg_opt: Phase;
+///
+/// ### rule_app1 and graph_rule_app1
+///
+/// Universe-1 variants of rule_app and graph_rule_app, sharing the same implementations.
+/// These accept Rule telescopes that quantify over types, such as `(T: *, x: T)`.
+/// For graph_rule_app1, both the Rule list and the pure-axiom list have types in `□`.
+/// Universe-0 inputs continue to use rule_app / graph_rule_app; universe cumulativity is not assumed.
+///
+axm rule_app1: {T: □} → T → Phase;
+axm graph_rule_app1: {R O: □} → [rules: R, pure_ops: O] → Phase;

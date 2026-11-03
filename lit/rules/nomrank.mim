@@ -1,0 +1,23 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin compile;
+
+nom Tensor (r: Nat) (s: «r; Nat») (T: *) =
+    [indices: «(r, s, ⊥:T)», data: «s; T»];
+
+axm make_a: Nat -> Tensor 3 (2, 3, 4) Nat;
+axm make_b: Bool -> Tensor 3 (5, 6, 7) Nat;
+axm summary: [T: *, r: Nat, sa: «r; Nat», sb: «r; Nat»] ->
+    [Tensor r sa T, Tensor r sb T];
+
+rule type_join (T: *, r: Nat, sa: «r; Nat», sb: «r; Nat»,
+                a: Tensor r sa T, b: Tensor r sb T):
+    (a, b) => summary (T, r, sa, sb);
+
+extern lam result (x: Nat, flag: Bool):
+    [Tensor 3 (2, 3, 4) Nat, Tensor 3 (5, 6, 7) Nat] = (make_a x, make_b flag);
+extern lam _compile (): compile.Phase =
+    compile.phases tt (compile.graph_rule_app1 (type_join, (make_a, make_b, summary)),);
+
+// CHECK-LABEL: extern lam result
+// CHECK: summary (Nat, 3, (2, 3, 4), (5, 6, 7));

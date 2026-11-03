@@ -101,6 +101,7 @@ private:
     std::shared_ptr<const std::vector<const Def*>> reads_;
     std::vector<const Def*> matched_;
     friend class MatchEngine;
+    friend class RewritePlan;
 };
 
 enum class SearchStatus { Complete, Unknown, Budget_Exceeded, Result_Limit };

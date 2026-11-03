@@ -24,6 +24,8 @@ RewritePlan::RewritePlan(const GraphMatch& match)
     if (!snapshot_->is_live()) throw std::invalid_argument("match snapshot has already been published");
     for (auto def : match.nodes())
         matched_.insert(def);
+    for (auto def : match.captures_.captures_)
+        if (def) captured_.insert(def);
 }
 
 void RewritePlan::check(Recipe recipe) const {
@@ -101,6 +103,9 @@ public:
         if (auto axm = def->isa<Axm>(); axm && axm->plugin() == Annex::Global_Plugin) return nullptr;
         if (auto flags = graph_.world().annexes().opaque(def)) return map(def, world().annex(*flags));
         return nullptr;
+    }
+    const Def* rewrite_imm_Axm(const Axm* axm) override {
+        return share_axiom(Rewriter::rewrite_imm_Axm(axm)->as<Axm>());
     }
 
 private:
@@ -195,8 +200,7 @@ public:
         : DAGRewriter(target, options.max_source_nodes)
         , graph_(graph)
         , budget_{options}
-        , importer_(graph, target, budget_)
-        , options_(options) {
+        , importer_(graph, target, budget_) {
         if (!graph.is_current()) throw std::invalid_argument("graph snapshot is stale");
         size_t count = 0;
         for (auto plan : plans) {
@@ -218,7 +222,8 @@ public:
                     && (!plan->witness_world_ || &entry.def->world() != plan->witness_world_.get()
                         || !is_witness_data(entry.def)))
                     throw std::invalid_argument("recipe has an invalid frozen witness value");
-                if (entry.kind == RewritePlan::Kind::Import && !graph.is_contained(entry.def))
+                if (entry.kind == RewritePlan::Kind::Import && !graph.is_contained(entry.def)
+                    && !plan->captured_.contains(entry.def))
                     throw std::invalid_argument("recipe imports a value outside the graph");
                 if (entry.kind == RewritePlan::Kind::Call && !graph.has_purity(entry.def->flags()))
                     throw std::invalid_argument("recipe calls an operator without a purity guarantee");
@@ -397,6 +402,7 @@ public:
     }
 
     const Def* rewrite_mut(Def* def) override { return map(def, importer_.rewrite(def)); }
+    const Def* rewrite_imm_Axm(const Axm* def) override { return importer_.rewrite(def); }
     const Def* rewrite_imm_Lam(const Lam* def) override { return importer_.rewrite(def); }
     const Def* rewrite_imm_Pi(const Pi* def) override { return importer_.rewrite(def); }
 
@@ -549,7 +555,7 @@ private:
     }
 
     const Def* evaluate(const RewritePlan* plan, size_t index, size_t depth) {
-        if (depth >= options_.max_depth) throw RebuildLimit("recipe evaluation depth exceeded");
+        if (depth >= budget_.options.max_depth) throw RebuildLimit("recipe evaluation depth exceeded");
         auto& value = memo_.at(plan)[index];
         if (value) return value;
         const auto& entry = plan->entries_[index];
@@ -637,7 +643,6 @@ private:
     const GraphView& graph_;
     RebuildBudget budget_;
     GraphImporter importer_;
-    RewriteOptions options_;
     DefMap<std::pair<const RewritePlan*, size_t>> replacements_;
     std::unordered_map<const RewritePlan*, std::vector<const Def*>> memo_;
     DefMap<const Def*> results_;

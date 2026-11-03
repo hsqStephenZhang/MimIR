@@ -44,6 +44,10 @@ public:
         return rewrite_stub(fn, stub);
     }
 
+    const Def* rewrite_imm_Axm(const Axm* axm) override {
+        return share_axiom(Rewriter::rewrite_imm_Axm(axm)->as<Axm>());
+    }
+
 private:
     const fe::SymMap<const Def*>& selected_;
 };

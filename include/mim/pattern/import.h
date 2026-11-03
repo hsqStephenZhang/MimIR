@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+#include "mim/axm.h"
+#include "mim/check.h"
 #include "mim/rewrite.h"
 
 namespace mim::pattern {
@@ -45,6 +47,19 @@ public:
     }
 
 protected:
+    const Def* share_axiom(const Axm* value) {
+        if (value->plugin() == Annex::Global_Plugin || !value->is_closed()) return value;
+        auto& copies = axioms_[value->flags()];
+        for (auto existing : copies) {
+            if (!remaining_) throw RebuildLimit("graph axiom import work budget exceeded");
+            --remaining_;
+            if (existing->normalizer() == value->normalizer() && existing->curry() == value->curry()
+                && existing->trip() == value->trip() && Check::test_alpha(existing->type(), value->type()))
+                return existing;
+        }
+        copies.push_back(value);
+        return value;
+    }
     virtual bool descend(const Def*) const { return true; }
     virtual const Def* rewrite_ready(const Def* def) { return Rewriter::rewrite(def); }
     virtual DefVec dependencies(const Def* def) const {
@@ -57,6 +72,7 @@ protected:
 
 private:
     size_t remaining_;
+    ankerl::unordered_dense::map<flags_t, fe::Vector<const Axm*>> axioms_;
 };
 
 } // namespace mim::pattern

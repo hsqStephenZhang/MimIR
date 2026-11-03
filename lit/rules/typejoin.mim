@@ -1,0 +1,52 @@
+// RUN: %mim %s -o - | %FileCheck %s
+// RUN: mkdir -p %t.dir
+// RUN: %mim %s -o %t.dir/typejoin.mim
+// RUN: %mim %t.dir/typejoin.mim -o - | %FileCheck %s
+
+plugin compile;
+
+axm make_a: Nat -> «2, 3; Nat»;
+axm make_b: Bool -> «3, 4; Nat»;
+axm wrong_k: Bool -> «5, 4; Nat»;
+axm wrong_t: Bool -> «3, 4; Bool»;
+axm bool_a: Nat -> «2, 3; Bool»;
+axm bool_b: Bool -> «3, 4; Bool»;
+axm from_a: {m k: Nat} -> «m, k; Nat» -> «m, k; Nat»;
+axm from_b: {k n: Nat} -> «k, n; Nat» -> «k, n; Nat»;
+axm summary: [T: *, m: Nat, k: Nat, n: Nat] -> [«m, k; T», «k, n; T»];
+
+// m/k/n/T occur only in the parameter types, not as data arguments in the LHS.
+rule type_join (T: *, m: Nat, k: Nat, n: Nat, a: «m, k; T», b: «k, n; T»):
+    (a, b) => summary (T, m, k, n);
+rule identity (T: *, x: T): x => x;
+
+extern lam result (x: Nat, flag: Bool): [«2, 3; Nat», «3, 4; Nat»] =
+    (make_a x, make_b flag);
+extern lam bad_k (x: Nat, flag: Bool): [«2, 3; Nat», «5, 4; Nat»] =
+    (make_a x, wrong_k flag);
+extern lam bad_t (x: Nat, flag: Bool): [«2, 3; Nat», «3, 4; Bool»] =
+    (make_a x, wrong_t flag);
+extern lam bool_result (x: Nat, flag: Bool): [«2, 3; Bool», «3, 4; Bool»] =
+    (bool_a x, bool_b flag);
+extern lam symbolic (m: Nat, k: Nat, n: Nat, x: «m, k; Nat», y: «k, n; Nat»):
+    [«m, k; Nat», «k, n; Nat»] = (from_a x, from_b y);
+
+extern lam _compile (): compile.Phase =
+    compile.phases tt (
+        compile.rule_app1 identity,
+        compile.graph_rule_app1 (type_join, (make_a, make_b, wrong_k, wrong_t, bool_a, bool_b, from_a, from_b, summary)),
+    );
+
+// CHECK: axm summary:
+// CHECK-NOT: axm summary:
+// CHECK-LABEL: extern lam bad_k
+// CHECK: (make_a {{.*}}, wrong_k {{.*}});
+// CHECK-LABEL: extern lam bad_t
+// CHECK: (make_a {{.*}}, wrong_t {{.*}});
+// CHECK-LABEL: extern lam bool_result
+// CHECK: summary (Bool, 2, 3, 4)
+// CHECK-LABEL: extern lam result
+// CHECK: summary (Nat, 2, 3, 4)
+// CHECK-LABEL: extern lam symbolic
+// CHECK-SAME: ([[M:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat, [[K:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat, [[N:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat,
+// CHECK: summary (Nat, [[M]], [[K]], [[N]])

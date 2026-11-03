@@ -34,6 +34,20 @@ RulePattern::RulePattern(const Rule* rule)
         for (auto dep : def->deps())
             if (dep) pending.push_back(dep);
     }
+    pending = {rule->lhs()};
+    seen.clear();
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i >= 100000) throw std::invalid_argument("Rule term metavariable discovery budget exceeded");
+        auto def = pending[i];
+        if (!seen.insert(def).second) continue;
+        if (is_meta(def)) {
+            term_metas_.insert(def);
+            continue;
+        }
+        if (def->isa<Var>() || def->isa<Axm>()) continue;
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
     root_        = lower(rule->lhs());
     auto lambdas = [](const Def* root) {
         std::vector<std::pair<const Lam*, size_t>> result;
@@ -201,6 +215,7 @@ Pattern RulePattern::lower(const Def* def) {
     if (auto var = def->isa<Var>(); var && var->binder()->isa<Lam>())
         if (auto i = captures_.find(var); i != captures_.end()) return i->second;
 
+    std::optional<Pattern> dependent_type;
     if (def->type() && def->type()->isa<Type>() && !def->is_closed() && !is_meta(def)) {
         DefVec pending{def}, metas;
         DefSet seen;
@@ -216,7 +231,9 @@ Pattern RulePattern::lower(const Def* def) {
             for (auto dep : term->deps())
                 if (dep) pending.push_back(dep);
         }
-        if (!metas.empty()) {
+        if (!metas.empty() && (def->is_mutable() || std::ranges::all_of(metas, [&](auto meta) {
+                                   return term_metas_.contains(meta);
+                               }))) {
             auto value = program_.capture();
             std::vector<Pattern> inputs{value};
             for (auto meta : metas) {
@@ -232,8 +249,11 @@ Pattern RulePattern::lower(const Def* def) {
                 auto actual   = importer.rewrite(values[0]);
                 return Check::test_alpha(expected, actual) ? CheckResult::True : CheckResult::False;
             });
-            lowered_.emplace(def, result);
-            return result;
+            if (def->is_mutable()) {
+                lowered_.emplace(def, result);
+                return result;
+            }
+            dependent_type = result;
         }
     }
 
@@ -266,6 +286,7 @@ Pattern RulePattern::lower(const Def* def) {
             operands[1]  = program_.either(operands[1], swapped);
         }
     auto result = program_.node(def->node(), operands, def->flags());
+    if (dependent_type) result = program_.either(result, *dependent_type);
     if (def->isa<Tuple>() && !operands.empty()) {
         auto body = operands.front();
         for (size_t i = 1; i != operands.size(); ++i)

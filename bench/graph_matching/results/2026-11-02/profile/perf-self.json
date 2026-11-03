@@ -1,0 +1,162 @@
+{
+  "mimir-many": [
+    {
+      "self_percent": 24.03,
+      "symbol": "std::_Function_handler<bool (mim::pattern::Pattern, mim::Def const*, unsigned long), mim::pattern::MatchEngine::search(mim::pattern::GraphPattern const&, mim::pattern::GraphView const&, mim::pattern::GraphMatchOptions)::{lambda(mim::pattern::Pattern, mim::Def const*, unsigned long)#1}>::_M_invoke(std::_Any_data const&, mim::pattern::Pattern&&, mim::Def const*&&, unsigned long&&)"
+    },
+    {
+      "self_percent": 13.37,
+      "symbol": "mim::pattern::MatchEngine::search(mim::pattern::GraphPattern const&, mim::pattern::GraphView const&, mim::pattern::GraphMatchOptions)::{lambda(unsigned long)#2}::operator()(unsigned long) const"
+    },
+    {
+      "self_percent": 5.48,
+      "symbol": "cfree"
+    },
+    {
+      "self_percent": 4.27,
+      "symbol": "mim::pattern::MatchEngine::search(mim::pattern::GraphPattern const&, mim::pattern::GraphView const&, mim::pattern::GraphMatchOptions)::{lambda()#2}::operator()() const"
+    },
+    {
+      "self_percent": 3.26,
+      "symbol": "malloc"
+    },
+    {
+      "self_percent": 3.18,
+      "symbol": "std::_Function_handler<mim::pattern::MatchStatus (), mim::pattern::MatchEngine::operands(mim::pattern::PatternProgram::Entry const&, mim::Def const*, unsigned long, unsigned long, std::function<mim::pattern::MatchStatus ()> const&)::{lambda()#1}>::_M_invoke(std::_Any_data const&)"
+    },
+    {
+      "self_percent": 2.9,
+      "symbol": "mim::pattern::MatchEngine::visit_entry(mim::pattern::Pattern, mim::Def const*, unsigned long, std::function<mim::pattern::MatchStatus ()> const&)"
+    },
+    {
+      "self_percent": 2.9,
+      "symbol": "std::_Rb_tree_insert_and_rebalance(bool, std::_Rb_tree_node_base*, std::_Rb_tree_node_base*, std::_Rb_tree_node_base&)"
+    },
+    {
+      "self_percent": 2.86,
+      "symbol": "std::_Function_handler<std::optional<std::vector<unsigned long, std::allocator<unsigned long> > > (mim::pattern::Pattern, unsigned long), mim::pattern::MatchEngine::search(mim::pattern::GraphPattern const&, mim::pattern::GraphView const&, mim::pattern::GraphMatchOptions)::{lambda(mim::pattern::Pattern, unsigned long)#1}>::_M_invoke(std::_Any_data const&, mim::pattern::Pattern&&, unsigned long&&)"
+    },
+    {
+      "self_percent": 2.38,
+      "symbol": "mim::pattern::MatchEngine::visit(mim::pattern::Pattern, mim::Def const*, unsigned long, std::function<mim::pattern::MatchStatus ()> const&)"
+    },
+    {
+      "self_percent": 1.77,
+      "symbol": "ankerl::unordered_dense::v5_2_0::detail::table<mim::Def const*, void, mim::GIDHash<mim::Def const*>, std::equal_to<mim::Def const*>, std::allocator<mim::Def const*>, ankerl::unordered_dense::v5_2_0::bucket_type::basic_group<unsigned int>, false>::allocate_buckets_from_shift(unsigned char)"
+    },
+    {
+      "self_percent": 1.73,
+      "symbol": "std::_Rb_tree<std::pair<unsigned long, mim::Def const*>, std::pair<std::pair<unsigned long, mim::Def const*> const, bool>, std::_Select1st<std::pair<std::pair<unsigned long, mim::Def const*> const, bool> >, std::less<std::pair<unsigned long, mim::Def const*> >, std::allocator<std::pair<std::pair<unsigned long, mim::Def const*> const, bool> > >::_M_erase(std::_Rb_tree_node<std::pair<std::pair<unsigned long, mim::Def const*> const, bool> >*) [clone .isra.0]"
+    },
+    {
+      "self_percent": 1.37,
+      "symbol": "mim::pattern::GraphView::uses(mim::Def const*) const"
+    },
+    {
+      "self_percent": 1.29,
+      "symbol": "std::_Rb_tree_decrement(std::_Rb_tree_node_base*)"
+    },
+    {
+      "self_percent": 1.13,
+      "symbol": "0x00000000000a347e"
+    },
+    {
+      "self_percent": 1.01,
+      "symbol": "mim::pattern::MatchEngine::operands(mim::pattern::PatternProgram::Entry const&, mim::Def const*, unsigned long, unsigned long, std::function<mim::pattern::MatchStatus ()> const&)"
+    }
+  ],
+  "port-many": [
+    {
+      "self_percent": 15.82,
+      "symbol": "<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>> as portmatching::indexing::BindMap>::get_binding"
+    },
+    {
+      "self_percent": 6.27,
+      "symbol": "<portmatching::constraint::evaluator::inner::InnerEvaluator<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::concrete::portgraph::predicate::PGPredicate> as portmatching::constraint::evaluator::EvaluateConstraints<portgraph::portgraph::PortGraph, portgraph::NodeIndex>>::eval"
+    },
+    {
+      "self_percent": 4.78,
+      "symbol": "<portgraph::portgraph::PortGraph as portmatching::indexing::IndexedData<portmatching::concrete::portgraph::indexing::PGIndexKey>>::bind_all::<core::iter::adapters::copied::Copied<core::slice::iter::Iter<portmatching::concrete::portgraph::indexing::PGIndexKey>>>"
+    },
+    {
+      "self_percent": 4.48,
+      "symbol": "cfree"
+    },
+    {
+      "self_percent": 4.48,
+      "symbol": "malloc"
+    },
+    {
+      "self_percent": 4.18,
+      "symbol": "<alloc::collections::btree::map::BTreeMap<u64, alloc::collections::btree::set_val::SetValZST>>::insert"
+    },
+    {
+      "self_percent": 4.18,
+      "symbol": "<core::iter::adapters::flatten::FlatMap<alloc::vec::into_iter::IntoIter<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>>, alloc::vec::Vec<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>>, <portmatching::matcher::single_pattern::SinglePatternMatcher<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::constraint::evaluator::det::DeterministicConstraintEvaluator<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::concrete::portgraph::predicate::PGPredicate>>>::get_all_bindings<portgraph::portgraph::PortGraph>::{closure#0}> as core::iter::traits::iterator::Iterator>::next"
+    },
+    {
+      "self_percent": 3.28,
+      "symbol": "<hashbrown::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>>::insert"
+    },
+    {
+      "self_percent": 2.99,
+      "symbol": "<portgraph::portgraph::PortGraph as portgraph::view::PortView>::port_index"
+    },
+    {
+      "self_percent": 2.39,
+      "symbol": "<alloc::vec::Vec<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>> as alloc::vec::spec_from_iter::SpecFromIter<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>, core::iter::adapters::flatten::FlatMap<alloc::vec::into_iter::IntoIter<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>>, alloc::vec::Vec<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>>, <portmatching::matcher::single_pattern::SinglePatternMatcher<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::constraint::evaluator::det::DeterministicConstraintEvaluator<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::concrete::portgraph::predicate::PGPredicate>>>::get_all_bindings<portgraph::portgraph::PortGraph>::{closure#0}>>>::from_iter"
+    },
+    {
+      "self_percent": 2.39,
+      "symbol": "<portgraph::portgraph::PortGraph as portgraph::view::PortView>::port_offset::<portgraph::PortIndex>"
+    },
+    {
+      "self_percent": 2.39,
+      "symbol": "portmatching::indexing::bindings_hash::<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>, core::iter::adapters::copied::Copied<alloc::collections::btree::set::Iter<portmatching::concrete::portgraph::indexing::PGIndexKey>>>"
+    },
+    {
+      "self_percent": 2.09,
+      "symbol": "__rustc::__rust_dealloc"
+    },
+    {
+      "self_percent": 2.09,
+      "symbol": "0xffffffff82001280"
+    },
+    {
+      "self_percent": 1.79,
+      "symbol": "<hashbrown::raw::RawTable<(portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>)>>::reserve_rehash::<hashbrown::map::make_hasher<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>::{closure#0}>"
+    },
+    {
+      "self_percent": 1.79,
+      "symbol": "__rustc::__rust_alloc"
+    },
+    {
+      "self_percent": 1.49,
+      "symbol": "<alloc::vec::Vec<&portgraph::NodeIndex> as alloc::vec::spec_from_iter::SpecFromIter<&portgraph::NodeIndex, core::iter::adapters::GenericShunt<core::iter::adapters::map::Map<core::slice::iter::Iter<usize>, <portmatching::constraint::evaluator::inner::InnerEvaluator<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::concrete::portgraph::predicate::PGPredicate> as portmatching::constraint::evaluator::EvaluateConstraints<portgraph::portgraph::PortGraph, portgraph::NodeIndex>>::eval::{closure#0}>, core::result::Result<core::convert::Infallible, ()>>>>::from_iter"
+    },
+    {
+      "self_percent": 1.49,
+      "symbol": "<core::iter::sources::from_fn::FromFn<portmatching::concrete::portgraph::indexing::walk_path::{closure#0}> as core::iter::traits::iterator::Iterator>::next"
+    },
+    {
+      "self_percent": 1.49,
+      "symbol": "<portgraph::portgraph::PortGraph as portmatching::indexing::IndexedData<portmatching::concrete::portgraph::indexing::PGIndexKey>>::bind_all::<core::iter::adapters::copied::Copied<alloc::collections::btree::set::Iter<portmatching::concrete::portgraph::indexing::PGIndexKey>>>"
+    },
+    {
+      "self_percent": 1.19,
+      "symbol": "<alloc::vec::Vec<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>>>::retain::<<portmatching::matcher::single_pattern::SinglePatternMatcher<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::constraint::evaluator::det::DeterministicConstraintEvaluator<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::concrete::portgraph::predicate::PGPredicate>>>::get_all_bindings<portgraph::portgraph::PortGraph>::{closure#1}>::{closure#0}"
+    },
+    {
+      "self_percent": 1.19,
+      "symbol": "<core::iter::adapters::flatten::FlatMap<alloc::vec::into_iter::IntoIter<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>>, alloc::vec::Vec<std::collections::hash::map::HashMap<portmatching::concrete::portgraph::indexing::PGIndexKey, core::option::Option<portgraph::NodeIndex>, core::hash::BuildHasherDefault<rustc_hash::FxHasher>>>, <portmatching::matcher::single_pattern::SinglePatternMatcher<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::constraint::evaluator::det::DeterministicConstraintEvaluator<portmatching::concrete::portgraph::indexing::PGIndexKey, portmatching::concrete::portgraph::predicate::PGPredicate>>>::get_all_bindings<portgraph::portgraph::PortGraph>::{closure#2}> as core::iter::traits::iterator::Iterator>::next"
+    },
+    {
+      "self_percent": 1.19,
+      "symbol": "__rustc::__rust_no_alloc_shim_is_unstable_v2"
+    },
+    {
+      "self_percent": 1.19,
+      "symbol": "mimir_port_bench::main"
+    }
+  ]
+}

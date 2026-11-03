@@ -70,6 +70,7 @@ private:
     std::optional<Pattern> root_;
     DefMap<Pattern> lowered_;
     DefMap<Pattern> captures_;
+    DefSet term_metas_;
     size_t lowering_depth_ = 0;
     friend class GraphRulePattern;
 };
