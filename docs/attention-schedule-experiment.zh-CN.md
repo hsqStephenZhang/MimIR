@@ -1043,3 +1043,102 @@ QKV 没有同样的请求；优化后仍是普通 scalar reduction nest。
 CTest257/257、完整 lit700通过/9 unsupported，
 见 `step4-build.log`、`step4-ctest.log`、`step4-lit.log`。
 这些集成验证不替换性能表的固定18aab8fc9e版本标识。
+
+## 步骤 5：规则表达能力与 IREE pipeline 的边界
+
+步骤4报告提交为 `883bdae8c7`。
+这里区分“规则已经表达”“还没有实现相应规则”和
+“当前 tensor/pattern 接口不能只靠局部规则保证”；
+没有把后两者都解释成 P5 原则上不能表达，也没有把 C++ lowering 算成纯规则成果。
+
+### 已经用规则表达的部分
+
+`src/mim/plug/tensor/tensor.mim` 的 raising Rules 识别原始稳定 softmax diamond，
+保留 logical Q/K/V、scale 和可选 additive mask，
+再由 schedule Rules 选择 `sdpa_online`。
+online 的数学递推、tile/fold、最终归一化和静态尾块分解也在 Mim 中，
+不是 C++ attention 专用循环生成器。
+`src/mim/plug/tensor/phase/group_rules.cpp` 的
+`AttentionRaise::start` 注册纯操作并驱动 graph rules，
+`AttentionSchedule::start` 提供策略参数并调用同一组 Mim Rules；
+手写 schedule 没有另一套 attention 实现。
+
+对应 IREE 的源码职责如下，路径均相对
+`/Users/zc/courses/compiler/iree/compiler/src/iree/compiler/`：
+
+| IREE 源码 | 本实验对应物 | 已验证的边界 |
+|---|---|---|
+| `Dialect/LinalgExt/Transforms/TileAttention.cpp`，创建 online op 与外部最终归一化 | `sdpa`→`sdpa_online`，三元 carry 和 fold 外除 sum | 算法与小型 causal/non-causal 标量参考一致；不宣称字面 IR 相同 |
+| `Dialect/LinalgExt/IR/AggregatedOpInterfaceImpl.cpp:534–631`，online recurrence 分解 | Mim 的 block 函数及已有 dot/reduce/elementwise op | FP32有限结果满足2e-4；首块全 mask 和整行全 mask 有独立回归 |
+| `Codegen/LLVMCPU/KernelDispatch.cpp:2163` 起，batch/M/N/K1/K2 配置 | batch1、M tile、K1整体、K2 fold；规则内算 BM | D64 的 BM2/BK8及参数变体已验证，不等于复现完整 target 配置 |
+| `Codegen/LLVMCPU/Passes.cpp:436` 起，tile/fuse 后才 decompose | 先保留复合 op，再展开 tile 内计算 | tile-first/decompose-inside 已实现；不等于拥有其 producer fusion/vectorization 全流程 |
+
+算法边界也不应混同：
+IREE 的 `TileAttention.cpp` 用 finite maximum identity 初始化 max，
+本实现用负无穷并显式处理无有效 score 的前缀。
+共同目标是稳定的 online 更新；全 mask 行在本实验中保持原 stable softmax 的 NaN，
+没有为了测试通过擅自定义成零。
+
+### 不能仅靠当前 attention Rules 保证的部分
+
+| 能力 | 当前缺口及证据 | 为什么不归为一条已完成的规则 |
+|---|---|---|
+| 异构 carry 的存储与释放 | CPS fallback 原来泄漏；`67ce17188f` 增加 native Sigma fold、双 bank 和 tile pool 生命周期 | tensor Rules 构造值，不决定 buffer 所有权、初始化 memory 链或 free；这些必须由现有 bufferization 执行器保证 |
+| 跨 region producer 单次 realization 与 group 准入 | 完整模型优化后仍多一次 QKV projection，且没有 QKV 的 kind-1 请求 | 正确的局部值替换不自动证明 placement、共享及执行次数；只移除 region blacklist 会绕开安全条件，需要可检查的跨 region 契约 |
+| 寄存器驻留 | core仍有1056字节额外heap和1536字节显式alloca；1184理想值未兑现 | 不可变 tensor/carry 值没有“必须置于某组物理寄存器”的语义；需要 leaf/vector lowering 与寄存器分配器，不是 graph rewrite 的等价性结论 |
+| IREE完整目标预算与 vector legality | 只实现 `BM*(max(K,N)+BK+2)` 算术；IREE分别检查QK/PV operand maps、register bits和large-vector限制 | 当前 Rules 没有这些目标事实/合法性证明接口；`vec_width 8`是策略查询及fallback值，不是本实验探测出的物理SIMD宽度 |
+| IREE多级M/N配置及大/动态K1 | 本实验N整体保留；K1未增加>128或动态维的再切分 | `KernelDispatch.cpp` 明确区分这些情况；当前BM候选即使只剩1也不证明预算足够，不能把D64实验外推为所有K/N的寄存器界 |
+| 真正CPU分布 | batch/M是运行时顺序grid；只测单线程 | tile=1并不自动形成workgroup、线程启动、同步及并行scratch所有权；这些依赖目标运行时和执行原语，未在此实验接入 |
+| pipeline执行时机 | 原先通用优化先行使core不raising，`18aab8fc9e`明确前移识别 | 阶段顺序可由Mim的phase列表编排，但一个局部等价规则不负责让自己先于破坏pattern的优化运行 |
+
+这张表不意味着需要把数学算法重新写进 C++。
+新增的 product-fold lowering 是通用 immutable Sigma carry 支持，
+由 attention-free 的跨字段依赖/零轮数/释放回归验证；
+它不是识别模型或决定 attention tile 的隐藏调度。
+相反，跨 region QKV 的负面计数表明，只检查 rule LHS/RHS 或最终数值还不够：
+若把工作量作为预测的一部分，producer placement/realization 也必须进入可验证的机制契约。
+
+### 尚未实现，但不能据此称为规则不可表达
+
+`Preprocessing/Common/FoldAttentionWithTranspose.cpp`
+验证特定 expand/transpose 的单使用关系及 indexing maps，
+再折入 attention map。
+本实验能识别 packed QKV 的 per-head views，
+但没有实现与其等价的通用 output-map 折叠或任意布局组合证明；
+保留逻辑 view 不代表物理上不复制或不重算。
+可以研究有 witness 的布局规则，但当前32份模型代码的正确性
+不能当作已经具备任意 affine/reshape 布局能力。
+
+IREE 的 `DecomposeAttention.cpp` 把 `use_exp2` 传给
+`OnlineAttentionOp::decomposeOperation`；
+`AggregatedOpInterfaceImpl.cpp` 在换底时同时修正 scale/mask。
+这个数学替换本身可以写成规则，本实验没有实现或验证它，
+更没有用孤立替换 exp→exp2 而漏掉换底因子。
+更好的 BK/BM/N 组合、causal 专用少算和 mask generator 的 tile 内融合
+同样属于未实现的策略/规则，不是已证明的表达能力障碍。
+这些新状态若继续实验，仍须先写预测，再测数值、工作量和资源。
+
+`Passes.cpp` 在 decompose 之后继续 generic vectorization、
+canonicalization/CSE、tensor slice 优化、bufferization 和 CPU vector lowering。
+本轮“先插桩再优化”与“先优化再插桩”的差异也说明，
+不能跳过这些实际执行层，再把 tensor IR 的计数冒充最终 native 行为。
+规则机制的可行性结论必须标明观测所在层次。
+
+### P5 与 schedule 表示的发现
+
+此前闭合 schedule 常量、重复 alpha 等价闭包、matcher任务深度、
+浮点 literal recipe、交换律、捕获 literal 与 parametric purity 的修复，
+都是第一个大型真实 diamond 暴露的通用机制缺口，已在前文逐项记录，
+没有通过放宽预算或 attention 名称特例绕开。
+op内嵌 schedule closure 同时造成闭合高阶匹配和参数化纯度两类障碍；
+外部 `sched_decoupling_note.md` 保留该设计问题，
+本任务没有启动 op/schedule 解耦重构。
+
+最终结论是**有边界的可行，而非 IREE CPU pipeline 等价复刻**：
+数学结构、尾块、数值语义、手动/自动选择和线性空间已经兑现；
+端到端主要工作量、跨 region BLIS 准入及寄存器驻留没有全部兑现。
+在 placement/realization 与目标合法性进入可验证契约之前，
+不能从“规则匹配成功”推出“调度完整兑现”，也不能从降低内存推出性能改善。
+
+步骤5提交前再次完整重建，CTest257/257、完整 lit700通过/9 unsupported，
+见 `step5-build.log`、`step5-ctest.log`、`step5-lit.log`。
