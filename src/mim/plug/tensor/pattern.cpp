@@ -346,6 +346,8 @@ void register_operations(pattern::OpRegistry& ops) {
     ops.add(Annex::base<tiled_n>(), decode_tiled_n, false);
     ops.add(Annex::base<tile_fold>(), decode_fold, false);
     ops.add(Annex::base<stage>(), 5, {{4}}, true);
+    ops.add(Annex::base<frozen>(), 3, {{2}}, true);
+    ops.add(Annex::base<prepack>(), 4, {{3}}, true);
     ops.add(Annex::base<buf>(), 2, {{1}}, true);
 }
 

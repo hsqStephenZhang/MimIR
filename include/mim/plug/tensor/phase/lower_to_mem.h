@@ -55,6 +55,7 @@ private:
     const Def* lower_tile_fold(const App*);
     const Def* lower_product_fold(const App*);
     const Def* lower_stage(const App*);
+    const Def* lower_prepack(const App*);
     std::pair<DefVec, DefVec> capture_producers(const Def*);
     bool linear_step(const Def*, const Def*, const Def*);
     const Def* lower_into(const Def*, const Destination&);

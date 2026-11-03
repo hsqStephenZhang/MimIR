@@ -1,0 +1,10 @@
+// RUN: (! %mim %s -p ll 2>&1) | %FileCheck %s
+// CHECK: tensor.prepack requires a frozen whole function input
+
+plugin opt;
+plugin tensor;
+plugin math;
+
+extern fun invalid (x: tensor.Tensor 2 (5, 7) math.F32): math.F32 =
+    let p = tensor.prepack @(math.F32, 2, 1) (5, 7) (1, 4, (ff, tt), 0.0:math.F32) (tensor.buf x);
+    return (tensor.get (p, (4₅, 1₂, 2₄)));

@@ -2067,6 +2067,14 @@ axm stage: {T: *, r k: Nat}
          → [input: Tensor r s T]
          → Tensor (r + k) (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) T, normalize_stage;
 
+axm frozen: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Tensor r s T;
+
+axm prepack: {T: *, r k: Nat}
+           → [s: «r; Nat»]
+           → [inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T]
+           → [input: Tensor r s T]
+           → Tensor (r + k) (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) T;
+
 priv anx lam stage_read_impl {T: *, r k ri: Nat} (s_source s: «r; Nat», si: «ri; Nat»)
     (map: «r; affine.Index» → «ri; affine.Index»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)

@@ -119,7 +119,7 @@ bool wants_fresh_mem(const App* app) {
         || Axm::isa<tensor::generate>(app) || Axm::isa<tensor::broadcast>(app) || Axm::isa<tensor::map_reduce_post>(app)
         || Axm::isa<tensor::pad>(app) || Axm::isa<tensor::concat>(app) || Axm::isa<tensor::gather>(app)
         || Axm::isa<tensor::scatter>(app) || Axm::isa<tensor::set>(app) || Axm::isa<tensor::from_array>(app)
-        || Axm::isa<tensor::scalar>(app) || Axm::isa<tensor::splat>(app);
+        || Axm::isa<tensor::scalar>(app) || Axm::isa<tensor::splat>(app) || Axm::isa<tensor::prepack>(app);
 }
 
 /// Is `app` one of the tensor ops this phase bufferizes?
@@ -593,6 +593,8 @@ void LowerToMem::prepare_realizations(const Def* root, const Lam* region, Defs d
 
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
     auto& w = new_world();
+    if (Axm::isa<tensor::frozen>(app)) return rewrite(app->arg());
+    if (Axm::isa<tensor::prepack>(app)) return lower_prepack(app);
     if (Axm::isa<tensor::group_req>(app)) {
         report_group_request(app, "request reached bufferization without realization");
         return rewrite(app->arg(5, 0));
@@ -1257,6 +1259,53 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
         auto zero = w.tuple(DefVec(rank, [&](size_t d) { return w.lit_idx(Lit::as(shape->proj(rank, d)), 0); }));
         return buffer::op_read(done, result, zero)->proj(2, 1);
     }));
+}
+
+const Def* LowerToMem::lower_prepack(const App* app) {
+    auto& old                          = old_world();
+    auto& w                            = new_world();
+    auto [meta, shape, layout, marked] = app->uncurry_args<4>();
+    auto frozen                        = Axm::isa<tensor::frozen>(marked);
+    if (!frozen) app->blame("tensor.prepack requires a frozen whole function input").bail();
+    auto source = Axm::peel<tensor::buf>(frozen->arg());
+    auto base   = source;
+    while (auto ex = base->isa<Extract>())
+        base = ex->tuple();
+    auto variable = base->isa<Var>();
+    if (!variable || !variable->binder()->isa<Lam>() || !variable->binder()->as<Lam>()->is_external())
+        app->blame("tensor.prepack requires a frozen whole function input").bail();
+    auto [r, s, T] = Axm::isa<buffer::Buf>(buf_of(app->type()))->args<3>();
+    if (!lit_projs(s, Lit::as(r))) app->blame("tensor.prepack requires a literal packed shape").bail();
+    auto input   = rewrite(source);
+    auto persist = w.app(w.app(w.app(w.annex<buffer::persist>(), {r, s, T}), input->type()), {fresh_mem(), input});
+    auto [memory, buffer, fresh] = persist->projs<3>();
+    auto impl                    = old.app(old.app(old.app(old.annex<tensor::stage_impl>(), meta), shape), layout);
+    auto generated               = old.app(old.app(impl, old.lit_nat_0()), marked);
+    auto generate                = Axm::isa<tensor::generate>(generated);
+    if (!generate) app->blame("tensor.prepack reference must produce generate").bail();
+    auto [gm, gs]      = generate->callee()->as<App>()->uncurry_args<2>();
+    auto rank          = Lit::as(gm->proj(2, 1));
+    auto state         = w.tuple({memory, buffer, input});
+    auto [run, call]   = btensor::ds_splice(state, state->type(), "prepack");
+    auto [m, dst, src] = run->var(2, 0)->projs<3>();
+    const Def* acc     = w.tuple({m, dst, src});
+    const Def* exit    = run->ret_var();
+    auto cur           = run;
+    auto trips         = w.select(fresh, w.lit_nat_1(), w.lit_nat_0());
+    affine::counting_nest(cur, exit, acc, Defs{trips}, "prepackFresh");
+    auto [loop_mem, loop_dst, loop_src] = acc->projs<3>();
+    auto filled = btensor::build_pointwise(w.sigma({loop_mem->type(), loop_dst->type()}), loop_mem, loop_dst, loop_src,
+                                           rewrite(gs), rank, "prepackFill",
+                                           [&](Defs indices, const Def* value, const Def* mem) {
+                                               push();
+                                               map(source, value);
+                                               auto element = w.call(rewrite(generate->arg()), indices);
+                                               pop();
+                                               return std::pair{mem, element};
+                                           });
+    auto [next, result] = filled->projs<2>();
+    cur->app(true, exit, w.tuple({next, result, loop_src}));
+    return call->proj(3, 1);
 }
 
 const Def* LowerToMem::lower_stage(const App* app) {
