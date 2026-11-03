@@ -135,7 +135,14 @@ GraphRulePattern::plan(const GraphMatch& match, const GraphView& graph, const Gu
                     auto term = pending[i];
                     if (!seen.insert(term).second || bindings.contains(term)) continue;
                     if (auto app = term->isa<App>()) {
-                        auto axm = App::uncurry_callee(app)->isa<Axm>();
+                        auto callee = App::uncurry_callee(app);
+                        auto axm    = callee->isa<Axm>();
+                        auto bound  = bindings.find(callee);
+                        if (!axm && bound != bindings.end() && graph.is_pure_function(bound->second)) {
+                            for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+                                pending.push_back(cur->arg());
+                            continue;
+                        }
                         if (!axm || !graph.has_purity(axm->flags()))
                             throw std::invalid_argument("graph Rule RHS calls an operator without a purity guarantee");
                         for (auto cur = app; cur; cur = cur->callee()->isa<App>())

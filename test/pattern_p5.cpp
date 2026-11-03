@@ -817,3 +817,44 @@ TEST_CASE("Review opacity: mutable arity never proves structural mismatch") {
     }
     CHECK(view.is_current());
 }
+
+TEST_CASE("Graph purity: captured functions are callable when their evaluated calls are pure") {
+    IR ir;
+    auto callback    = ir.w.pi(ir.nat, ir.nat);
+    auto effect      = ir.w.axm(callback);
+    auto scope       = ir.w.mut_lam(ir.w.pi(ir.w.sigma({ir.nat, callback}), ir.nat));
+    auto fn          = ir.w.mut_lam(callback);
+    const Def* input = fn;
+    bool allowed     = true;
+    SUBCASE("registered pure call on the parameter") { fn->set(false, ir.call(ir.q, fn->var())); }
+    SUBCASE("impure outer value is not evaluated by the call") {
+        fn->set(false, ir.call(ir.q, ir.w.app(effect, scope->var(2, 0))));
+    }
+    SUBCASE("own function parameter") {
+        auto higher = ir.w.mut_lam(ir.w.pi(callback, ir.nat));
+        higher->set(false, ir.w.app(higher->var(), ir.w.lit_nat(3)));
+        input = higher;
+    }
+    SUBCASE("nested lambda calls the outer parameter") {
+        auto outer = ir.w.mut_lam(ir.w.pi(callback, callback));
+        auto inner = ir.w.mut_lam(callback);
+        inner->set(false, ir.w.app(outer->var(), inner->var()));
+        outer->set(false, inner);
+        input = outer;
+    }
+    SUBCASE("free unknown function") {
+        fn->set(false, ir.w.app(scope->var(2, 1), fn->var()));
+        allowed = false;
+    }
+    SUBCASE("unregistered axiom on the parameter") {
+        fn->set(false, ir.w.app(effect, fn->var()));
+        allowed = false;
+    }
+    SUBCASE("not a lambda") {
+        fn->set(false, fn->var());
+        input   = effect;
+        allowed = false;
+    }
+    GraphView view({ir.call(ir.q, ir.w.lit_nat(1))}, {.operators = &ir.ops});
+    CHECK(view.is_pure_function(input) == allowed);
+}

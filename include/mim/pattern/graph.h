@@ -108,6 +108,8 @@ public:
     bool is_pure(flags_t axm) const;
     bool has_purity(flags_t axm) const;
     bool is_pure_call(flags_t axm, std::span<const Def* const> argument_groups) const;
+    /// Calling @p fn only evaluates pure operator calls and calls of its own nested lambdas or their parameters.
+    bool is_pure_function(const Def* fn) const;
     std::span<const DataEdge> data_uses(const Def*) const;
     CheckResult data_used_by(const Def* producer, const Def* consumer) const;
     CheckResult data_only_used_by(const Def* producer, const Def* consumer) const;

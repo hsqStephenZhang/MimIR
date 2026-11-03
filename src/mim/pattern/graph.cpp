@@ -349,6 +349,45 @@ bool GraphView::is_pure_call(flags_t axm, std::span<const Def* const> args) cons
     return operators_ && operators_->is_pure_call(axm, args);
 }
 
+bool GraphView::is_pure_function(const Def* fn) const {
+    auto root = fn->isa<Lam>();
+    if (!root || !root->is_set() || root->is_external()) return false;
+    DefVec pending{root};
+    DefSet seen;
+    LamSet locals;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        if (i > 64 * (world_->curr_gid() + 1)) return false;
+        auto def = pending[i];
+        if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>() || def->isa<Pi>()) continue;
+        if (auto lam = def->isa_mut<Lam>(); lam && !lam->is_external()) locals.emplace(lam);
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+    auto local = [&](const Def* def) {
+        if (auto extract = def->isa<Extract>()) def = extract->tuple();
+        if (auto var = def->isa<Var>()) return locals.contains(var->binder()->isa_mut<Lam>());
+        if (auto lam = def->isa_mut<Lam>()) return locals.contains(lam);
+        return false;
+    };
+    // Only computations that depend on a local parameter run when @p fn is called.
+    auto evaluated = [&](const Def* def) {
+        return std::ranges::any_of(locals,
+                                   [&](Lam* lam) { return lam->has_var() && def->has_free_var(lam->has_var()); });
+    };
+    for (auto def : seen)
+        if (auto app = def->isa<App>(); app && evaluated(app)) {
+            auto callee = App::uncurry_callee(app);
+            if (local(callee)) continue;
+            auto axm = callee->isa<Axm>();
+            DefVec args;
+            for (auto cur = app; cur; cur = cur->callee()->isa<App>())
+                args.push_back(cur->arg());
+            std::ranges::reverse(args);
+            if (!axm || !is_pure_call(axm->flags(), args)) return false;
+        }
+    return true;
+}
+
 std::span<const DataEdge> GraphView::data_uses(const Def* def) const {
     if (!snapshot_->is_live()) throw std::invalid_argument("graph snapshot is stale");
     if (!def) return {};

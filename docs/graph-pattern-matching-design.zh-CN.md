@@ -115,6 +115,11 @@ RHS 可以调用 RHS lambda 或已匹配源 lambda 的参数；调用其他未�
 `?F x` 形式的元变量调用只做语法匹配，不做高阶合一。
 `rules/grho.mim` 与 `rules/schedarg.mim` 覆盖这一点，后者从调度闭包 `λ T.λ mk.mk t` 中取出 `t`。
 
+graph Rule 的 RHS 可以调用捕获到的函数值，前提是 `GraphView::is_pure_function` 证明调用它只求值纯算子调用，
+或调用它内部 lambda 及其参数；不依赖这些参数的外部值不算在调用中求值。
+这让融合写成整区域改写：捕获区域 body，在新 lambda 的显式输入上重建 producer 后调用原 body。
+`rules/grfnfuse.mim` 覆盖纯 body 的融合，以及调用未注册 axiom 或外部函数时 graph 前端的拒绝。
+
 导入的 immutable 子图也参与替换依赖检查，因此 `a → import(b)`、`b → import(a)`，以及通过更深子表达式形成的循环都会在构建目标图前被拒绝。带排他使用条件或 native Where 的匹配保守地记录更宽的读取范围，避免批量提交使分析条件失效。
 
 有 scope 时，目前要求一个已定义、闭合的 mutable Lam。重建为它建立新 stub 和 Var 映射，并为其他函数使用独立 importer：同一个 hash-consed Def 在其他函数内保留原实现。所有原 external roots 都被保留。无 scope 时只重建显式的闭合 roots，结果可供调用方继续处理，不允许将其直接发布为整个程序。

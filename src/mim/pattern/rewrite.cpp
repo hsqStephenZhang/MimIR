@@ -143,6 +143,9 @@ public:
         auto axm  = head->isa<Axm>();
         if (!axm && app->type()->isa<Type>()) return Rewriter::rewrite_imm_App(app);
         if (auto binder = param_binder(head); binder && locals_.contains(binder)) return Rewriter::rewrite_imm_App(app);
+        if (captures && pattern && pattern->is_capture(head))
+            if (auto i = captures->find(head); i != captures->end() && graph_.is_pure_function(i->second))
+                return Rewriter::rewrite_imm_App(app);
         if (!axm) throw InstantiationFailure("graph Rule RHS may only introduce axiom calls");
         std::vector<const Def*> source;
         for (auto cur = app; cur; cur = cur->callee()->isa<App>())

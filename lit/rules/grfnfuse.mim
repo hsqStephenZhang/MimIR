@@ -1,0 +1,30 @@
+// RUN: python3 %S/tf_run.py %mim %s %t rule tt > %t.rule 2> %t.rule.log
+// RUN: %FileCheck %s --check-prefixes=CHECK,RULE < %t.rule
+// RUN: python3 %S/tf_run.py %mim %s %t graph tt > %t.graph 2> %t.graph.log
+// RUN: %FileCheck %s --check-prefixes=CHECK,GRAPH < %t.graph
+// TF-RULES: (fuse)
+// TF-PURE: prod, reg, reg2, consume
+
+plugin compile;
+axm prod: [Nat, Nat] → Nat;
+axm reg: [Nat] → (Nat → Nat) → Nat;
+axm reg2: [Nat, Nat] → ([Nat, Nat] → Nat) → Nat;
+axm consume: [Nat, Nat] → Nat;
+axm effect: [Nat, Nat] → Nat;
+rule fuse (a b: Nat, body: Nat → Nat):
+    reg (prod (a, b)) body => reg2 (a, b) (λ (x y: Nat): Nat = body (prod (x, y)));
+extern lam pure (a b c: Nat): Nat = reg (prod (a, b)) (λ (p: Nat): Nat = consume (p, c));
+extern lam impure (a b c: Nat): Nat = reg (prod (a, b)) (λ (p: Nat): Nat = effect (p, c));
+extern lam unknown (g: Nat → Nat, a b: Nat): Nat = reg (prod (a, b)) (λ (p: Nat): Nat = g p);
+
+// CHECK-LABEL: extern lam impure
+// RULE: reg2
+// GRAPH: reg {{[a-zA-Z_0-9]+}} {{[a-zA-Z_0-9]+}};
+// CHECK-LABEL: extern lam pure
+// CHECK: lam [[BODY:[a-zA-Z_][a-zA-Z_0-9]*]] ({{.*}}) as [[IN:[a-zA-Z_][a-zA-Z_0-9]*]]: Nat
+// CHECK: prod [[IN]]
+// CHECK: consume
+// CHECK: reg2 ({{.*}}) [[BODY]]
+// CHECK-LABEL: extern lam unknown
+// RULE: reg2
+// GRAPH: reg {{[a-zA-Z_0-9]+}} {{[a-zA-Z_0-9]+}};
