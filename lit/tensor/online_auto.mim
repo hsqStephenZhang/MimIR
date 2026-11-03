@@ -1,4 +1,4 @@
-// RUN: %mim -p opt %s -p ll
+// RUN: %mim -p opt %s -p ll -X tensor:attention-online=1
 // RUN: %FileCheck %s < %{s:stem}.ll
 // RUN: clang++ -O2 -std=c++23 %S/sdpa_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t

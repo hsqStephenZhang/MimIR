@@ -507,7 +507,7 @@ void GroupDefault::start() {
 void AttentionSchedule::start() {
     if (driver().is_loaded("gpu") || !driver().arg_nat("tensor", "group").value_or(1)
         || !driver().arg_nat("tensor", "attention").value_or(1)
-        || !driver().arg_nat("tensor", "attention-online").value_or(1))
+        || !driver().arg_nat("tensor", "attention-online").value_or(0))
         return;
     auto& w     = world();
     auto params = w.tuple({w.lit_nat(16), w.app(w.annex<vec_width>(), w.lit_nat(8)),

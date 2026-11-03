@@ -1,4 +1,4 @@
-// RUN: %mim -p opt %s -p ll
+// RUN: %mim -p opt %s -p ll -X tensor:attention-online=1
 // RUN: %FileCheck %s < %{s:stem}.ll
 
 plugin tensor;
