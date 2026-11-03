@@ -198,6 +198,33 @@ std::optional<pattern::OpView> decode_fold(const Def* def, size_t limit) {
     return view;
 }
 
+std::optional<pattern::OpView> decode_tiled_multi(const Def* def, size_t limit) {
+    auto args = groups(def, 6);
+    if (args.empty()) return {};
+    auto rank  = Lit::isa(slot(args[0], 4, 1));
+    auto shape = slot(args[1], 3, 1), tiles = slot(args[1], 3, 2);
+    std::optional<u64> trips = 1;
+    if (!rank || !shape || !tiles)
+        trips.reset();
+    else
+        for (u64 d = 0; d != *rank; ++d) {
+            auto n = Lit::isa(slot(shape, *rank, d)), k = Lit::isa(slot(tiles, *rank, d));
+            if (!n || !k || !*k) {
+                trips.reset();
+                break;
+            }
+            auto count = *n / *k + (*n % *k != 0);
+            if (count && *trips > std::numeric_limits<u64>::max() / count) {
+                trips.reset();
+                break;
+            }
+            *trips *= count;
+        }
+    pattern::OpView view{.inputs = {}, .regions = {{args[5], trips}}};
+    region_data(view, args[4], 4, {}, limit);
+    return view;
+}
+
 std::optional<pattern::OpView> decode_reverse(const Def* def, size_t limit) {
     auto args = groups(def, 2);
     if (args.empty()) return {};
@@ -291,6 +318,7 @@ void register_operations(pattern::OpRegistry& ops) {
     ops.add(Annex::base<group_req>(), decode_group, true);
     ops.add(Annex::base<group_region>(), decode_group, true);
     ops.add(Annex::base<tiled>(), decode_tiled, false);
+    ops.add(Annex::base<tiled_multi>(), decode_tiled_multi, false);
     ops.add(Annex::base<tiled_n>(), decode_tiled_n, false);
     ops.add(Annex::base<tile_fold>(), decode_fold, false);
     ops.add(Annex::base<stage>(), 5, {{4}}, true);

@@ -1,0 +1,31 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O3 -fsanitize=address %S/tiled_multi_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+// RUN: %mim -X tensor:reference-tiles=1 -p opt %s -p ll -X ll:o=%t.ref.ll
+// RUN: clang++ -O3 -fsanitize=address %S/tiled_multi_aux.cpp %t.ref.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
+
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+
+fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+fun add (a b: I64)@tt: I64 = return (core.wrap.add 0 (a, b));
+lam first (i _: affine.Index): affine.Index = i;
+
+extern fun paired (x: «5, 3; I64»): [«5, 3; I64», «5; I64»] =
+    return (tiled_multi @(2, 1, (I64, I64), (2, 1)) (((5, 3), 5), 5, 2) (0_2, 0_1)
+        (buf x)
+        (λ (off ext: Nat) (x): [«ext, 3; I64», «ext; I64»] =
+            let p = map_reduce ((ext, 3), (ext, 3)) (twice, 0I64) (affine.id @2) (affine.id @2,)
+                (slice (5, 3) ((off, 0), (1, 1), (ext, 3)) x);
+            let q = map_reduce (ext, (ext, 3)) (add, 0I64) first (affine.id @2,) p;
+            (p, q)));
+
+extern fun mixed (x: «5, 3; I64»): [«5, 3; I64», «3, 5; I32»] =
+    return (tiled_multi @(2, 2, (I64, I32), (2, 2))
+        (((5, 3), (3, 5)), (5, 3), (2, 2)) ((0_2, 1_2), (1_2, 0_2)) (buf x)
+        (λ (off ext: «2; Nat») (x): [«ext; I64», «ext#tt, ext#ff; I32»] =
+            let p = slice (5, 3) (off, (1, 1), ext) x;
+            (p, unary (core.conv.s 4294967296) (transpose (1_2, 0_2) p))));

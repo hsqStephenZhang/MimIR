@@ -1,5 +1,35 @@
 # Tensor-level tiling constructs（Task 7 / destination lowering）
 
+## Multi-result loop tiles（Task 32B）
+
+`tiled` 保留原单结果接口，并与多结果 `tiled_multi` 共用同一 loop/scratch lowering。
+`tiled_n` 保留 literal-point 和一般 owned-box 的原语义，不用于下面的规则网格。
+
+```mim
+tiled_multi {n, g, Ts, rs} (shapes, s, ts) axes {I} ins body
+```
+
+`s/ts` 是 g 维网格的元素范围/块大小，不是展开后的 point 列表。
+`axes#i : «g; Idx (rs#i)»` 将每个 grid 维度映射到第 i 个结果的一个轴；
+每行必须是 injection，每个 grid 维度都出现一次，映射轴的结果 extent 必须等于 `s`。
+未映射的结果维度每 tile 全量写入；允许 permutation，不允许丢弃 grid 轴、
+stride、offset 或一般 affine write box。
+body 的参数仍为 `(off, ext)` 和显式 `ins`，返回各结果 tile 的 tuple：
+第 i 个类型为 `«tile_shape (shapes#i, axes#i, ext); Ts#i»`。
+`tile_shape` 也可显式写出 rank 参数 `@(rs#i, g)`。
+
+normalizer 检查 B1 和 body 隔离性，不枚举所有 grid points 做 ownership proof。
+每个结果拥有自己的完整 output buffer，full/tail tile 沿映射轴写入；
+slot 按返回 tuple 的顺序写入，后续 slot 对先前结果 tile 的读取改为已写 output 的 slice，
+不因 yield 和 consumer 共用同一个 tile 而重复计算。
+scratch 的生命周期仍在整个顺序 grid 外，释放在所有结果完成以后。
+reference implementation 使用同一 box 关系，并分别 specialize full/tail extent，避免动态 inner stride。
+此基线无 `omp` plugin 或 `lower_parallel_tiled`；本任务不从其它 worktree 移植并行运行时。
+
+`tiled_multi_exec` 对 ASan destination/reference 两条 pipeline 验证不整除尾块、
+两个不同 rank 的共享 producer/result、额外 whole 维度、转置 permutation 和异构元素类型。
+`tiled_multi_invalid` 检查重复/缺失 grid 维度、extent 不一致与零 tile。
+
 ## Region 的显式输入（Task 31B）
 
 当前接口如下；`I` 可以是单个 tensor、嵌套 tuple 或空 tuple `[]`，空输入传 `()`。

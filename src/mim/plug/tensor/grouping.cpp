@@ -73,7 +73,7 @@ std::optional<InputRegion> input_region(const Def* def) {
             3
         };
     }
-    if (auto app = Axm::isa<tiled_n>(def)) {
+    if (auto app = def->isa<App>(); app && (Axm::isa<tiled_n>(app) || Axm::isa<tiled_multi>(app))) {
         auto args = app->uncurry_args<6>();
         return InputRegion{
             app,
@@ -204,9 +204,10 @@ public:
     DefVec points;
 
     bool collect(const InputRegion& call) {
-        if (Axm::isa<tiled>(call.app)) {
-            auto [shape, tiles] = call.args[1]->projs<2>();
-            auto rank           = Lit::isa(shape->arity());
+        if (Axm::isa<tiled>(call.app) || Axm::isa<tiled_multi>(call.app)) {
+            auto plan  = grid_tile_plan(call.app);
+            auto shape = plan.shape, tiles = plan.tiles;
+            auto rank = Lit::isa(shape->arity());
             if (!rank || *rank > 8) return false;
             DefVec off(*rank), ext(*rank);
             return grid(shape, tiles, off, ext, 0);
@@ -271,11 +272,10 @@ public:
             verify_ = true;
             for (auto point : grid.points) {
                 auto [first, second] = point->projs<2>();
-                if (Axm::isa<tiled>(call.app) && !extents.insert(second).second) continue;
-                auto variable
-                    = w_.mut_lam(Axm::isa<tiled>(call.app) ? first->type() : second->type(), w_.type_nat())->var();
-                auto coordinate
-                    = Axm::isa<tiled>(call.app) ? w_.tuple({variable, second}) : w_.tuple({first, variable});
+                auto grid            = Axm::isa<tiled>(call.app) || Axm::isa<tiled_multi>(call.app);
+                if (grid && !extents.insert(second).second) continue;
+                auto variable   = w_.mut_lam(grid ? first->type() : second->type(), w_.type_nat())->var();
+                auto coordinate = grid ? w_.tuple({variable, second}) : w_.tuple({first, variable});
                 if (!body(call.body(), coordinate, inputs)) {
                     verify_ = false;
                     return false;
@@ -491,13 +491,16 @@ private:
             auto n                                   = Lit::isa(importer_.rewrite(blocks->proj(2, 0)));
             return mul(n, region(occurrence, reader, whole, i + 1));
         }
-        auto tiled = Axm::isa<tensor::tiled>(call);
-        if (!tiled) return {};
-        auto [meta, shapes, it, ins, body] = tiled->uncurry_args<5>();
-        auto rank                          = Lit::isa(meta->proj(2, 1));
-        auto fn                            = body->isa<Lam>();
+        auto tiled = call->isa<App>();
+        if (!tiled || (!Axm::isa<tensor::tiled>(call) && !Axm::isa<tiled_multi>(call))) return {};
+        auto multiple = Axm::isa<tiled_multi>(call) != nullptr;
+        auto args     = input_region(tiled)->args;
+        auto rank     = Lit::isa(args[0]->proj(multiple ? 4 : 2, 1));
+        auto ins      = args[args.size() - 2];
+        auto fn       = args.back()->isa<Lam>();
         if (!rank || *rank > 8 || !fn || !fn->is_set()) return {};
-        auto [shape, tile] = shapes->projs<2>();
+        auto shape = args[1]->proj(multiple ? 3 : 2, multiple ? 1 : 0);
+        auto tile  = args[1]->proj(multiple ? 3 : 2, multiple ? 2 : 1);
         DefVec extents(*rank);
         DefVec origins(*rank, world_.bot(world_.type_nat()));
         auto axis = [&](this auto&& axis, size_t d) -> std::optional<u64> {
@@ -837,8 +840,8 @@ void FuseRegionInputs::start() {
     }
     if (rules.empty()) return;
     if (graph_) {
-        for (auto name : {"tensor.tiled", "tensor.tile_fold", "tensor.tiled_n", "tensor.map_reduce_post",
-                          "tensor.tile_of", "tensor.tile_of_box", "btensor.clip_sched"})
+        for (auto name : {"tensor.tiled", "tensor.tiled_multi", "tensor.tile_fold", "tensor.tiled_n",
+                          "tensor.map_reduce_post", "tensor.tile_of", "tensor.tile_of_box", "btensor.clip_sched"})
             pure.push_back(world().annex(driver().sym(name))->as<Axm>());
         GraphRuleRewrite phase(world(), std::move(rules), pure, true);
         GraphRuleRewrite inner(world(), std::move(reads), std::move(pure), true);

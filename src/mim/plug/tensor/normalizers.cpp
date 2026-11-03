@@ -371,6 +371,64 @@ const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
     return nullptr;
 }
 
+GridTilePlan grid_tile_plan(const App* app) {
+    if (Axm::isa<tiled>(app)) {
+        auto [meta, shapes, it, ins, body] = app->uncurry_args<5>();
+        auto [type, rank]                  = meta->projs<2>();
+        auto [shape, tiles]                = shapes->projs<2>();
+        auto& w                            = app->world();
+        auto r                             = Lit::expect(rank, "a literal tensor.tiled grid rank");
+        auto axes                          = w.tuple(DefVec(r, [&](size_t d) { return w.lit_idx(r, d); }));
+        return {type, rank, shape, shape, tiles, axes, ins, body, 1, r, false};
+    }
+    auto [meta, shapes_grid, axes, it, ins, body] = app->uncurry_args<6>();
+    auto [n, g, types, ranks]                     = meta->projs<4>();
+    auto [shapes, shape, tiles]                   = shapes_grid->projs<3>();
+    auto count                                    = Lit::expect(n, "a literal tensor.tiled_multi result count");
+    auto rank                                     = Lit::expect(g, "a literal tensor.tiled_multi grid rank");
+    for (u64 d = 0; d != rank; ++d)
+        if (Lit::isa(tiles->proj(rank, d)) == 0) app->blame("tensor.tiled_multi requires positive tile sizes").bail();
+    for (u64 i = 0; i != count; ++i) {
+        auto r            = Lit::expect(ranks->proj(count, i), "a literal tensor.tiled_multi result rank");
+        auto result_shape = shapes->proj(count, i);
+        auto mapping      = axes->proj(count, i);
+        fe::Vector<bool> seen(r, false);
+        for (u64 d = 0; d != rank; ++d) {
+            auto a = Lit::expect(mapping->proj(rank, d), "a literal tensor.tiled_multi axis");
+            if (a >= r || seen[a])
+                app->blame("tensor.tiled_multi requires each grid dimension on a distinct result axis").bail();
+            seen[a]     = true;
+            auto extent = result_shape->proj(r, a);
+            auto grid   = shape->proj(rank, d);
+            if (!Check::test_alpha(extent, grid))
+                app->blame("tensor.tiled_multi result extent must equal its mapped grid extent").bail();
+        }
+    }
+    return {types, ranks, shapes, shape, tiles, axes, ins, body, count, rank, true};
+}
+
+std::pair<const Def*, const Def*> GridTilePlan::box(u64 i, const Def* off, const Def* ext) const {
+    auto& w      = off->world();
+    auto r       = Lit::as(ranks->proj(count, i));
+    auto origin  = DefVec(r, w.lit_nat_0());
+    auto extent  = shapes->proj(count, i)->projs(r);
+    auto mapping = axes->proj(count, i);
+    for (u64 d = 0; d != rank; ++d) {
+        auto axis    = Lit::as(mapping->proj(rank, d));
+        origin[axis] = off->proj(rank, d);
+        extent[axis] = ext->proj(rank, d);
+    }
+    return {w.tuple(origin), w.tuple(extent)};
+}
+
+const Def* normalize_tiled_multi(const Def* type, const Def* c, const Def* body) {
+    check_region_inputs(body, c);
+    auto& w  = c->world();
+    auto app = w.raw_app(type, c, body);
+    grid_tile_plan(app->as<App>());
+    return nullptr;
+}
+
 const Def* normalize_tile_fold(const Def*, const Def* c, const Def* body) {
     auto [meta, blocks, init, input_type, inputs] = c->as<App>()->uncurry_args<5>();
     check_region_inputs(body, c);

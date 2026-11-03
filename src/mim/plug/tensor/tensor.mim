@@ -1777,6 +1777,53 @@ axm tiled: {T: *, r: Nat}
          → [body: [off ext: «r; Nat»] → I → «ext; T»]
          → «s; T», normalize_tiled;
 
+anx lam tile_shape {r g: Nat} (s: «r; Nat», axes: «g; Idx r», ext: «g; Nat»): «r; Nat» =
+    ‹d: r; vec.fold.r @(Nat, Idx g) @g
+        (λ (j: Idx g, value: Nat): Nat = (value, ext#j)#(core.icmp.e (axes#j, d)))
+        (‹j: g; j›, s#d)›;
+
+axm tiled_multi: {n g: Nat, Ts: «n; *», rs: «n; Nat»}
+               → [shapes: «i: n; «rs#i; Nat»», s ts: «g; Nat»]
+               → [axes: «i: n; «g; Idx (rs#i)»»]
+               → {I: *} → [ins: I]
+               → [body: [off ext: «g; Nat»] → I
+                   → «i: n; «tile_shape (shapes#i, axes#i, ext); Ts#i»»]
+               → «i: n; «shapes#i; Ts#i»», normalize_tiled_multi;
+
+priv anx lam tiled_multi_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
+    (shapes: «i: n; «rs#i; Nat»», s ts: «g; Nat»)
+    (axes: «i: n; «g; Idx (rs#i)»») {I: *} (ins: I)
+    (body: [off ext: «g; Nat»] → I
+        → «i: n; «tile_shape (shapes#i, axes#i, ext); Ts#i»»): «i: n; «shapes#i; Ts#i»» =
+    ‹i: n;
+        lam at (x: «rs#i; I64»): Ts#i =
+            let off = ‹d: g;
+                let axis = axes#i#d;
+                let tile = (ts#d, s#d)#(s#d < ts#d);
+                core.bitcast Nat (x#axis) / tile * tile›;
+            lam read (ext: «g; Nat»): Ts#i =
+                let origin = tile_shape (‹rs#i; 0›, axes#i, off);
+                let extent = tile_shape (shapes#i, axes#i, ext);
+                (body (off, ext) ins)#i#‹d: rs#i;
+                    core.idx 0 (extent#d) (core.bitcast Nat (x#d) - origin#d)›;
+            lam peel (d: Nat, ext: «g; Nat»)@core.pe.is_closed (g, s, ts): Ts#i =
+                (λ (): Ts#i = read ext,
+                 λ (): Ts#i =
+                    let axis = core.idx 0 g d;
+                    let rem = s#axis % ts#axis;
+                    let tail = (ts#axis, rem)#(rem != 0);
+                    let short = ‹j: g; (ext#j, tail)#(core.idx2nat j == d)›;
+                    fun choose (): Ts#i =
+                        (short_case, full_case)#(off#axis < s#axis - rem) ()
+                        where
+                            con short_case () = return (peel (d + 1, short));
+                            con full_case () = return (peel (d + 1, ext));
+                        end;
+                    cps.cps2ds choose ()
+                )#(d < g) ();
+            peel (0, ‹d: g; (ts#d, s#d)#(s#d < ts#d)›);
+        generate (shapes#i) at›;
+
 axm tile_fold: {Acc: *}
              → [n ks: Nat]
              → [init: Acc]

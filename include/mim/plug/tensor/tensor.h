@@ -40,6 +40,13 @@ struct MultiTilePlan {
 };
 
 MultiTilePlan multi_tile_plan(const App*);
+struct GridTilePlan {
+    const Def *types, *ranks, *shapes, *shape, *tiles, *axes, *inputs, *body;
+    u64 count, rank;
+    bool multiple;
+    std::pair<const Def*, const Def*> box(u64, const Def*, const Def*) const;
+};
+GridTilePlan grid_tile_plan(const App*);
 void check_region_inputs(const Def*, const Def*);
 
 class RegionInputs {

@@ -4,6 +4,10 @@
 #include <mim/lam.h>
 #include <mim/phase.h>
 
+namespace mim::plug::tensor {
+struct GridTilePlan;
+}
+
 namespace mim::plug::tensor::phase {
 
 /// Bufferizes the low-level tensor axioms onto the shared `buffer` layer.
@@ -69,7 +73,8 @@ private:
     std::pair<DefVec, DefVec> capture_producers(const Def*);
     bool linear_step(const Def*, const Def*, const Def*);
     const Def* lower_into(const Def*, const Destination&);
-    const Def* lower_tile_body(const Def*, const Def*, const Def*, const Def*, const Destination&, Scratch*);
+    const Def*
+    lower_tile_body(const GridTilePlan&, const Def*, const Def*, const Def*, Defs, Scratch*, const Destination*);
     const Def* region_input(const Def*);
     std::pair<const Def*, const Def*> allocate(const Def*, const Def*, const Def*, bool = true);
     void record_instance(const Def*);

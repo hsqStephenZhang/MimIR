@@ -119,6 +119,11 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     }
     if (Axm::isa<tensor::tiled>(app) && driver().arg_nat("tensor", "reference-tiles").value_or(0))
         return lower_via_impl(app, impl<tensor::tiled_impl>());
+    if (Axm::isa<tensor::tiled_multi>(app)) {
+        grid_tile_plan(app);
+        if (driver().arg_nat("tensor", "reference-tiles").value_or(0))
+            return lower_via_impl(app, impl<tensor::tiled_multi_impl>());
+    }
     if (Axm::isa<tensor::tiled_n>(app)) {
         multi_tile_plan(app);
         if (driver().arg_nat("tensor", "reference-tiles").value_or(0))
