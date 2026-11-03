@@ -1707,6 +1707,8 @@ axm region_yield_ok: {P R B A: *}
 
 priv axm yield_tiles: {T: *, r: Nat, C: *} → {s: «r; Nat»}
     → [producer: Tensor r s T, off ext: «r; Nat», value: C] → [Tensor r ext T, C], normalize_yield_tiles;
+priv axm split_rows: {R: *} → [region: R, slot tile: Nat] → R, normalize_split_rows;
+priv axm outer_rows_ok: {R: *} → [region: R, slot tile: Nat] → Bool;
 
 priv anx lam group_request_rule (P C: *): Rule [p: P, kind dim tile: Nat, params: C] =
     rule request (p: P, kind dim tile: Nat, params: C):

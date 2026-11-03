@@ -1,0 +1,96 @@
+// RUN: %mim %s -X tensor:group-cache=8192 -VVVV -o - > %t.mim 2> %t.log
+// RUN: %FileCheck %s < %t.mim
+// RUN: %FileCheck %s --check-prefix=GUARD < %t.log
+// RUN: %mim %s -X tensor:group-cache=8192 -p ll -X ll:o=%t.ll
+// RUN: python3 %S/realization_count.py %t.ll %t.mul.ll
+// RUN: python3 %S/realization_count.py %t.ll %t.center.ll --center
+// RUN: clang++ -O3 -fsanitize=address %S/outer_rows_aux.cpp %t.mul.ll -o %t.mul -Wno-override-module
+// RUN: clang++ -O3 -fsanitize=address -DCOUNT_CENTER %S/outer_rows_aux.cpp %t.center.ll -o %t.center -Wno-override-module
+// RUN: %t.mul
+// RUN: %t.center
+// RUN: %mim %s -X tensor:group-cache=8192 -X tensor:outer-rows=0 -p ll -X ll:o=%t.off.ll
+// RUN: python3 %S/realization_count.py %t.off.ll %t.off.mul.ll
+// RUN: clang++ -O3 -fsanitize=address %S/outer_rows_aux.cpp %t.off.mul.ll -o %t.off.mul -Wno-override-module
+// RUN: %t.off.mul
+
+plugin opt;
+plugin compile;
+plugin tensor;
+plugin affine;
+plugin math;
+plugin core;
+use tensor;
+let F32 = math.F32;
+let mode = math.mode.fast;
+fun center (_: F32, (a b: F32))@tt: F32 = return (math.arith.sub mode (a, b));
+fun residual (_: F32, (a b: F32))@tt: F32 = return (math.arith.add math.mode.none (a, b));
+fun bias_post (a b: F32)@tt: F32 = return (math.arith.add mode (a, b));
+fun mac (acc: F32, (a b: F32))@tt: F32 =
+    return (math.arith.add mode (acc, math.arith.mul mode (a, b)));
+lam rows (m k: Nat) (x: Tensor 2 (m, k) F32): Tensor 2 (m, k) F32 =
+    let totals = reduce (math.arith.add mode, 0.0:F32) 1₂ x;
+    map_reduce @2 @(F32, 2, 2) ((m, k), (m, k)) @((F32, F32), (2, 1), ((m, k), m))
+        (center, 0.0:F32) (affine.id @2)
+        ((affine.id @2, λ (i _: affine.Index): affine.Index = i)) (x, totals);
+lam gemm (m k n: Nat) (p: Tensor 2 (m, k) F32, b: Tensor 2 (k, n) F32): Tensor 2 (m, n) F32 =
+    map_reduce ((m, n), (m, n, k)) (mac, 0.0:F32)
+        (λ (i j _: affine.Index): «2; affine.Index» = (i, j))
+        ((λ (i _ q: affine.Index): «2; affine.Index» = (i, q)),
+         (λ (_ j q: affine.Index): «2; affine.Index» = (q, j))) (p, b);
+
+lam compute (m: Nat) (x: Tensor 2 (m, 768) F32, b: Tensor 2 (768, 8) F32, bias: Tensor 1 8 F32):
+    [Tensor 2 (m, 768) F32, Tensor 2 (m, 8) F32] =
+    let p = rows (m, 768) (buf x);
+    let y = map_reduce_post @(2, 1) @(F32, F32, 2, 3, SchedT)
+        ((m, 8), (m, 8, 768), mk_sched (3, 0))
+        @((F32, F32), (2, 2), ((m, 768), (768, 8)), F32, 1, 8)
+        (mac, 0.0:F32, bias_post)
+        (λ (i j _: affine.Index): «2; affine.Index» = (i, j))
+        (((λ (i _ q: affine.Index): «2; affine.Index» = (i, q)),
+          (λ (_ j q: affine.Index): «2; affine.Index» = (q, j))),
+          λ (_ j: affine.Index): affine.Index = j) ((p, buf b), buf bias);
+    let y = group_req (y, 1, 0, 4, (4, 128, 4));
+    let z = map_reduce ((m, 768), (m, 768)) (residual, 0.0:F32)
+        (affine.id @2) (affine.id @2, affine.id @2) (p, buf x);
+    (z, y);
+
+extern fun accepted (x: Tensor 2 (33, 768) F32, b: Tensor 2 (768, 8) F32, bias: Tensor 1 8 F32):
+    [Tensor 2 (33, 768) F32, Tensor 2 (33, 8) F32] = return (compute 33 (x, b, bias));
+
+extern fun whole (x: Tensor 2 (7, 768) F32, b: Tensor 2 (768, 8) F32, bias: Tensor 1 8 F32):
+    [Tensor 2 (7, 768) F32, Tensor 2 (7, 8) F32] = return (compute 7 (x, b, bias));
+
+extern fun no_outside (x: Tensor 2 (33, 768) F32, b: Tensor 2 (768, 8) F32): Tensor 2 (33, 8) F32 =
+    let p = rows (33, 768) (buf x);
+    return (group_req (gemm (33, 768, 8) (p, buf b), 1, 0, 4, (4, 128, 4)));
+
+extern fun inefficient (x: Tensor 2 (33, 768) F32, b: Tensor 2 (768, 8) F32):
+    [Tensor 2 (33, 768) F32, Tensor 2 (33, 8) F32] =
+    let p = rows (33, 768) (buf x);
+    let y = group_req (gemm (33, 768, 8) (p, buf b), 1, 0, 32, (4, 128, 4));
+    return (p, y);
+
+extern fun restream (x: Tensor 2 (33, 768) F32, b: Tensor 2 (768, 64) F32):
+    [Tensor 2 (33, 768) F32, Tensor 2 (33, 64) F32] =
+    let p = rows (33, 768) (buf x);
+    let y = group_req (gemm (33, 768, 64) (p, buf b), 1, 0, 4, (4, 128, 16));
+    return (p, y);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (group_default, compile.cond "ll" (opt._default_compile ()), compile.cleanup);
+
+// CHECK: lam [[OUTER:_[0-9]+]] ({{_[0-9]+}}: Nat, [[EXT:_[0-9]+]]: Nat)
+// CHECK: let [[PRODUCER:_[0-9]+]] = tensor.map_reduce_post
+// CHECK: lam [[INNER:_[0-9]+]]
+// CHECK: tensor.tile_fold
+// CHECK: let [[RESULT:_[0-9]+]] = tensor.tiled @ {{.*}} (([[EXT]], 8), ([[EXT]], 4)) {{.*}} ([[PRODUCER]], {{.*}}) [[INNER]];
+// CHECK-NEXT: ([[PRODUCER]], [[RESULT]]);
+// CHECK-LABEL: extern fun accepted
+// CHECK: tensor.tiled_multi @ (2, 1, {{.*}} (((33, 768), (33, 8)), 33, 8) {{.*}} [[OUTER]];
+// CHECK-LABEL: extern fun whole
+// CHECK: tensor.tiled_multi @ (2, 1, {{.*}} (((7, 768), (7, 8)), 7, 7)
+// GUARD-DAG: tensor outer-rows candidate {{.*}}: accept tile=8 MR=4 KC=128 extra-weight-bytes=98304
+// GUARD-DAG: tensor outer-rows candidate {{.*}}: accept tile=7 MR=4 KC=128 extra-weight-bytes=0
+// GUARD-DAG: reject row split needs a proven outside reader
+// GUARD-DAG: reject row split efficiency: cache cannot hold an MR-aligned M block
+// GUARD-DAG: reject row split weight re-streaming exceeds one producer buffer

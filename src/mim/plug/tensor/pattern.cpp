@@ -322,6 +322,11 @@ void register_operations(pattern::OpRegistry& ops) {
     },
             true);
     ops.add(Annex::base<item>(), 2, {{1}}, true);
+    ops.add(Annex::base<split_rows>(), 2,
+            {
+                {1, 0}
+    },
+            true);
     ops.add(Annex::base<reverse_at>(), decode_reverse, true);
     ops.add(Annex::base<group_req>(), decode_group, true);
     ops.add(Annex::base<group_region>(), decode_group, true);

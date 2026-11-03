@@ -125,14 +125,20 @@ struct YieldRead {
 
 class YieldReads {
 public:
-    YieldReads(const Def* producer, const Def* root) {
+    YieldReads(const Def* producer, const Def* root, const Def* owned_extent) {
         DefVec pending{root};
         DefSet seen;
         for (size_t i = 0; i != pending.size(); ++i) {
             if (i > 65536) return;
             auto def = pending[i];
             if (!seen.insert(def).second) continue;
-            if (def == producer) return;
+            if (def == producer) {
+                auto type = TensorType::isa(producer->type());
+                if (!type || type->s != owned_extent) return;
+                reads.push_back({producer->as<App>(), producer->world().pack(type->r, producer->world().lit_nat_0()),
+                                 type->s, type->s});
+                continue;
+            }
             if (auto app = def->isa<App>();
                 app && (Axm::isa<slice>(app) || Axm::isa<slice_box>(app)) && app->arg() == producer) {
                 auto [meta, shape, params, source] = app->uncurry_args<4>();
@@ -162,7 +168,7 @@ public:
 
 ProducerTile
 yield_tiles_value(const Def* producer, const Def* off, const Def* ext, const Def* value, bool proof, u64& work) {
-    YieldReads uses(producer, value);
+    YieldReads uses(producer, value, ext);
     if (!uses.complete || uses.reads.size() != 1) return {nullptr, "yield needs one shared tileable slice/box read"};
     auto& w   = producer->world();
     auto rank = Lit::isa(ext->arity());
@@ -172,7 +178,8 @@ yield_tiles_value(const Def* producer, const Def* off, const Def* ext, const Def
         rw.map(var, var);
     const Def* owned = nullptr;
     for (auto read : uses.reads) {
-        auto tile = producer_tile(producer, read.off, read.ext, Axm::isa<slice_box>(read.app) ? read.cap : nullptr);
+        auto tile = producer_tile(producer, read.off, read.ext,
+                                  Axm::isa<slice_box>(read.app) || input_region(value) ? read.cap : nullptr);
         if (!tile.value) return tile;
         rw.map(read.app, tile.value);
         if (proof) {
@@ -242,6 +249,164 @@ private:
     fe::Vector<bool> used_;
     DefVec axes_;
 };
+
+class RowInputs : public Rewriter {
+public:
+    RowInputs(World& w, const Def* source, const Def* rows, const Def* origin)
+        : Rewriter(w)
+        , source_(source)
+        , rows_(rows)
+        , origin_(origin) {}
+
+private:
+    const Def* expand(const Def* value) {
+        auto type = value->type();
+        if (!TensorType::isa(type) && (type->isa<Sigma>() || type->isa<Arr>())) {
+            auto n = Lit::isa(type->arity());
+            if (n) return world().tuple(DefVec(*n, [&](size_t i) { return expand(value->proj(*n, i)); }));
+        }
+        return rewrite(value);
+    }
+
+    void leaves(const Def* shape, const Def* parameter, DefVec& values) {
+        auto type = shape->type();
+        if (!TensorType::isa(type) && (type->isa<Sigma>() || type->isa<Arr>())) {
+            if (auto n = Lit::isa(type->arity())) {
+                for (u64 i = 0; i != *n; ++i)
+                    leaves(shape->proj(*n, i), parameter->proj(*n, i), values);
+                return;
+            }
+        }
+        values.push_back(parameter);
+    }
+
+    const Def* rewrite(const Def* def) override {
+        if (def == source_) return rows_;
+        if (auto mapped = lookup(def)) return mapped;
+        if (auto var = def->isa<Var>()) {
+            if (auto binder = lookup(var->binder())) return world().var(binder->as_mut());
+            return def;
+        }
+        return Rewriter::rewrite(def);
+    }
+
+    const Def* rewrite_imm_App(const App* app) override {
+        auto& w = world();
+        if ((Axm::isa<slice>(app) || Axm::isa<slice_box>(app)) && app->arg() == source_) {
+            auto [meta, shape, params, source] = app->uncurry_args<4>();
+            auto [off, middle, last]           = params->projs<3>();
+            auto [row, col]                    = off->projs<2>();
+            auto offset = w.tuple({w.call(core::nat::sub, Defs{rewrite(row), origin_}), rewrite(col)});
+            auto local  = TensorType::isa(rows_->type())->s;
+            auto callee = w.app(w.app(App::uncurry_callee(app), meta), local);
+            return w.app(w.app(callee, {offset, rewrite(middle), rewrite(last)}), rows_);
+        }
+        if (auto region = input_region(app)) {
+            auto args        = region->args;
+            auto original    = region->values();
+            auto values      = expand(original);
+            const Def* build = App::uncurry_callee(app);
+            for (size_t i = 0; i + 1 != args.size(); ++i)
+                build = w.app(build, i == region->input - 1 ? values->type()
+                                     : i == region->input   ? values
+                                                            : rewrite(args[i]));
+            auto body  = w.mut_lam(build->type()->as<Pi>()->dom()->as<Pi>());
+            auto inner = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());
+            DefVec old, parameters;
+            leaves(original, original, old);
+            leaves(values, inner->var(), parameters);
+            RowInputs child(w, source_, rows_, origin_);
+            for (size_t i = 0; i != old.size(); ++i)
+                if (old[i] == source_ || old[i] == rows_)
+                    child.rows_ = parameters[i];
+                else
+                    child.map(old[i], parameters[i]);
+            auto value = w.app(w.app(region->body(), body->var()), original);
+            inner->set(true, child.rewrite(value));
+            body->set(true, inner);
+            return w.app(build, body);
+        }
+        return Rewriter::rewrite_imm_App(app);
+    }
+
+    const Def* rewrite_imm_Tuple(const Tuple* tuple) override { return world().tuple(Rewriter::rewrite(tuple->ops())); }
+
+    const Def *source_, *rows_, *origin_;
+};
+
+const Def* outer_rows(const App* app, size_t slot, u64 tile) {
+    auto& w     = app->world();
+    auto region = *input_region(app);
+    auto plan   = grid_tile_plan(app);
+    DefVec leaves;
+    input_leaves(region.values(), leaves);
+    auto source     = leaves[slot];
+    auto type       = *TensorType::isa(source->type());
+    auto [m, n]     = plan.shape->projs<2>();
+    auto k          = type.s->proj(2, 1);
+    auto build      = w.app(w.annex<tiled_multi>(), {w.lit_nat_1(), w.lit_nat_1(), plan.types, plan.ranks});
+    build           = w.app(w.app(build, {plan.shapes, m, w.lit_nat(tile)}), w.lit_idx(2, 0));
+    build           = w.app(w.app(build, region.values()->type()), region.values());
+    auto body       = w.mut_lam(build->type()->as<Pi>()->dom()->as<Pi>());
+    auto inner      = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());
+    auto [off, ext] = body->vars<2>();
+    DefVec parameters;
+    input_parameters(region.values(), inner->var(), parameters);
+    auto p     = parameters[slot];
+    auto slice = w.app(w.app(w.annex<tensor::slice>(), {type.T, type.r}), type.s);
+    auto rows  = w.app(w.app(slice, {w.tuple({off, w.lit_nat_0()}), w.pack(2, w.lit_nat_1()), w.tuple({ext, k})}), p);
+    RowInputs crop(w, p, rows, off);
+    auto args          = region.args;
+    args[1]            = w.tuple({w.tuple({ext, n}), w.tuple({ext, plan.tiles->proj(2, 1)})});
+    size_t cursor      = 0;
+    args[region.input] = input_tree(region.values(), parameters, cursor);
+    const Def* nested  = App::uncurry_callee(app);
+    for (size_t i = 0; i + 1 != args.size(); ++i)
+        nested = w.app(nested, args[i]);
+    auto nbody        = w.mut_lam(nested->type()->as<Pi>()->dom()->as<Pi>());
+    auto ninner       = w.mut_lam(nbody->type()->reduce(nbody->var())->as<Pi>());
+    auto [noff, next] = nbody->vars<2>();
+    auto [row, col]   = noff->projs<2>();
+    auto global       = w.tuple({w.call(core::nat::add, Defs{off, row}), col});
+    ninner->set(true, w.app(w.app(region.body(), {global, next}), ninner->var()));
+    nbody->set(true, ninner);
+    nested = w.app(nested, nbody);
+    inner->set(true, crop.Rewriter::rewrite(nested));
+    body->set(true, inner);
+    return w.app(build, body);
+}
+
+const Rule* outer_rows_rule(const InputRegion& region, size_t slot, u64 tile) {
+    auto& w = region.app->world();
+    DefVec vars;
+    for (auto var : region.app->free_vars())
+        vars.push_back(var);
+    auto count  = vars.size() + 2;
+    auto domain = w.mut_sigma(count);
+    VarRewriter types(w);
+    for (size_t i = 0; i != vars.size(); ++i) {
+        domain->set(i, types.rewrite(vars[i]->type()));
+        types.add(vars[i]->as<Var>(), domain->var()->proj(count, i));
+    }
+    domain->set(count - 2, types.rewrite(region.values()->type()));
+    domain->set(count - 1, types.rewrite(region.body()->type()));
+    auto rule   = w.mut_rule(w.reform(domain))->set("outerRows");
+    auto fields = rule->vars(count);
+    VarRewriter values(w);
+    for (size_t i = 0; i != vars.size(); ++i)
+        values.add(vars[i]->as<Var>(), fields[i]);
+    auto args          = values.Rewriter::rewrite(region.args);
+    args[region.input] = fields[count - 2];
+    args.back()        = fields.back();
+    const Def* lhs     = App::uncurry_callee(region.app);
+    for (auto arg : args)
+        lhs = w.app(lhs, arg);
+    auto rhs   = w.app(w.annex<split_rows>(), lhs->type());
+    rhs        = w.app(rhs, {lhs, w.lit_nat(slot), w.lit_nat(tile)});
+    auto guard = w.app(w.annex<outer_rows_ok>(), lhs->type());
+    guard      = w.app(guard, {lhs, w.lit_nat(slot), w.lit_nat(tile)});
+    return rule->set(lhs, rhs, guard);
+}
 
 const Rule* yield_rule(const InputRegion& region, size_t slot, const Def* axes, u64 budget) {
     auto& w   = region.app->world();
@@ -993,7 +1158,239 @@ const Def* normalize_yield_tiles(const Def*, const Def*, const Def* arg) {
     return yield_tiles_value(producer, off, ext, value, false, work).value;
 }
 
-static pattern::WitnessResult check_region_yield(const pattern::GraphView& source, Defs inputs, World& target) {
+const Def* normalize_split_rows(const Def*, const Def*, const Def* arg) {
+    auto [value, index, size] = arg->projs<3>();
+    auto region               = input_region(value);
+    auto slot = Lit::isa(index), tile = Lit::isa(size);
+    if (!region || !Axm::isa<tiled>(value) || !slot || !tile || !*tile) return nullptr;
+    DefVec leaves;
+    input_leaves(region->values(), leaves);
+    if (*slot >= leaves.size() || !graph::map_reduce(leaves[*slot])) return nullptr;
+    return outer_rows(region->app, *slot, *tile);
+}
+
+namespace {
+
+struct RowPolicy {
+    u64 tile = 0, mr = 0, kc = 0, extra = 0;
+    std::string reason;
+};
+
+RowPolicy row_policy(const InputRegion& region, size_t slot) {
+    RowPolicy policy;
+    auto plan = grid_tile_plan(region.app);
+    DefVec leaves;
+    input_leaves(region.values(), leaves);
+    auto type = slot < leaves.size() ? TensorType::isa(leaves[slot]->type()) : std::nullopt;
+    if (!Axm::isa<tiled>(region.app) || plan.rank != 2 || !type || Lit::isa(type->r) != 2) {
+        policy.reason = "row split needs a two-dimensional consumer and producer";
+        return policy;
+    }
+    auto shape = lit_projs(plan.shape, 2), tiles = lit_projs(plan.tiles, 2), ps = lit_projs(type->s, 2);
+    if (!shape || !tiles || !ps || (*ps)[0] != (*shape)[0] || (*tiles)[0] != (*shape)[0] || slot != 0) {
+        policy.reason = "row split needs an unsplit M axis and a whole-width left operand";
+        return policy;
+    }
+    auto weights = leaves.size() > 1 ? TensorType::isa(leaves[1]->type()) : std::nullopt;
+    auto ws      = weights && Lit::isa(weights->r) == 2 ? lit_projs(weights->s, 2) : std::nullopt;
+    if (!ws || weights->T != type->T || (*ws)[0] != (*ps)[1] || (*ws)[1] != (*shape)[1]) {
+        policy.reason = "row split needs a same-element-type K-by-N weight operand";
+        return policy;
+    }
+    DefVec pending{region.body()};
+    DefSet seen;
+    u64 nr = 0;
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (!seen.insert(def).second || def->isa<Axm>() || def->isa<Var>() || def->isa<Pi>()) continue;
+        if (auto nested = Axm::isa<tiled>(def)) {
+            auto micro = grid_tile_plan(nested);
+            if (micro.rank == 2)
+                if (auto blocks = lit_projs(micro.tiles, 2)) {
+                    if (policy.mr && (policy.mr != (*blocks)[0] || nr != (*blocks)[1])) {
+                        policy.reason = "row split needs one consistent BLIS micro-tile";
+                        return policy;
+                    }
+                    policy.mr = (*blocks)[0];
+                    nr        = (*blocks)[1];
+                }
+        }
+        if (auto fold = input_region(def); fold && Axm::isa<tile_fold>(def))
+            policy.kc = std::max(policy.kc, Lit::isa(fold->args[1]->proj(2, 1)).value_or(0));
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+    auto& w    = region.app->world();
+    auto size  = Lit::isa(w.app(w.annex(core::trait::size), type->T));
+    auto denom = mul(mul(2, policy.kc ? policy.kc : (*ps)[1]), size);
+    auto cache = w.driver().arg_nat("tensor", "group-cache").value_or(262144);
+    auto mc    = denom && *denom && policy.mr ? cache / *denom / policy.mr * policy.mr : 0;
+    if (!mc || !nr) {
+        policy.reason = "row split efficiency: cache cannot hold an MR-aligned M block";
+        return policy;
+    }
+    auto m = (*shape)[0], n = (*shape)[1], k = (*ps)[1];
+    policy.tile = std::min(m, mc);
+    if ((m - 1) / policy.tile >= 65536) {
+        policy.reason = "row split grid exceeds the proof limit";
+        return policy;
+    }
+    if (n > std::numeric_limits<u64>::max() - (nr - 1)) {
+        policy.reason = "row split weight re-streaming arithmetic overflow";
+        return policy;
+    }
+    auto extra = mul(mul(mul((m - 1) / policy.tile, k), (n + nr - 1) / nr * nr), size);
+    auto owned = mul(mul(m, k), size);
+    if (!extra || !owned || *extra > *owned) {
+        policy.reason = "row split weight re-streaming exceeds one producer buffer";
+        return policy;
+    }
+    policy.extra = *extra;
+    return policy;
+}
+
+class RowReadProof {
+public:
+    RowReadProof(World& w, const Def* source, u64 first, u64 rows, u64 width)
+        : w_(w)
+        , source_(source)
+        , first_(first)
+        , rows_(rows)
+        , width_(width) {}
+
+    bool visit(const Def* value) {
+        if (!depends(value)) return true;
+        if (!seen_.insert(value).second) return true;
+        if (++work_ > 262144) return false;
+        if (value == source_) return false;
+        if (auto region = input_region(value)) {
+            RegionCoordinates coordinates(w_);
+            if (!coordinates.collect(*region)) return false;
+            for (auto point : coordinates.points)
+                if (!visit(w_.app(w_.app(region->body(), point), region->values()))) return false;
+            return true;
+        }
+        if (auto app = value->isa<App>();
+            app && (Axm::isa<slice>(app) || Axm::isa<slice_box>(app)) && app->arg() == source_) {
+            auto [meta, shape, params, source] = app->uncurry_args<4>();
+            if (Lit::isa(meta->proj(2, 1)) != 2) return false;
+            auto [off, middle, last] = params->projs<3>();
+            auto origin              = lit_projs(off, 2);
+            auto extent              = lit_projs(Axm::isa<slice>(app) ? last : middle, 2);
+            if (Axm::isa<slice>(app)) {
+                auto step = lit_projs(middle, 2);
+                if (!step || (*step)[0] != 1 || (*step)[1] != 1) return false;
+            }
+            if (!origin || !extent || (*origin)[0] < first_ || (*origin)[0] - first_ > rows_
+                || (*extent)[0] > rows_ - ((*origin)[0] - first_) || (*origin)[1] > width_
+                || (*extent)[1] > width_ - (*origin)[1])
+                return false;
+            ++reads;
+            return true;
+        }
+        if (value->isa<Var>() || value->isa<Axm>() || value->isa<Pi>()) return true;
+        if (auto lam = value->isa<Lam>(); lam && lam->is_external()) return true;
+        for (auto op : value->ops())
+            if (op && !visit(op)) return false;
+        return true;
+    }
+    u64 reads = 0;
+    u64 work() const { return work_; }
+
+private:
+    bool depends(const Def* value) {
+        if (value == source_) return true;
+        if (auto known = dependencies_.find(value); known != dependencies_.end()) return known->second;
+        dependencies_[value] = false;
+        if (value->isa<Var>() || value->isa<Axm>() || value->isa<Pi>()) return false;
+        for (auto op : value->ops())
+            if (op && depends(op)) return dependencies_[value] = true;
+        return false;
+    }
+
+    World& w_;
+    const Def* source_;
+    u64 first_, rows_, width_, work_ = 0;
+    DefSet seen_;
+    DefMap<bool> dependencies_;
+};
+
+} // namespace
+
+static pattern::WitnessResult check_region_yield(const pattern::GraphView&, Defs, World&, bool = false);
+
+pattern::WitnessResult outer_rows_witness(const pattern::GraphView& source, Defs inputs, World& target) {
+    using pattern::CheckResult;
+    auto reject = [&](std::string reason) -> pattern::WitnessResult {
+        target.log().d("tensor outer-rows candidate {}: reject {}", inputs[0], reason);
+        return {CheckResult::False, nullptr, std::move(reason)};
+    };
+    auto region = input_region(inputs[0]);
+    auto slot = Lit::isa(inputs[1]), tile = Lit::isa(inputs[2]);
+    if (!region || !Axm::isa<tiled>(region->app) || !slot || !tile)
+        return reject("row split requires a literal tiled policy");
+    DefVec leaves;
+    input_leaves(region->values(), leaves);
+    auto producer = *slot < leaves.size() ? graph::map_reduce(leaves[*slot]) : nullptr;
+    if (!producer) return reject("row split requires a direct MRP producer");
+    bool outside = source.complete_data_uses(producer) != CheckResult::True;
+    for (auto use : source.data_uses(producer))
+        outside |= use.consumer != region->app;
+    if (!outside || source.complete_data_uses(producer, true) != CheckResult::True)
+        return reject("row split needs a proven outside reader");
+    auto policy = row_policy(*region, *slot);
+    if (!policy.reason.empty()) return reject(policy.reason);
+    if (*tile != policy.tile) return reject("row split efficiency: tile differs from the cache-aligned policy");
+    auto eligible = check_region_yield(
+        source, DefVec{producer, region->app, region->body(), target.lit_idx(2, 0), inputs[1], target.lit_nat_1()},
+        target, true);
+    if (eligible.status != CheckResult::True) return reject(eligible.reason);
+    auto occurrences = source.occurrences(region->app);
+    if (occurrences.size() != 1 || !occurrences.front().regions.empty() || occurrences.front().trips != 1)
+        return reject("row split needs one non-nested occurrence");
+    auto scratch = target.inherit();
+    pattern::ParameterImporter importer(*scratch);
+    auto imported  = *input_region(importer.rewrite(region->app));
+    auto p         = importer.rewrite(producer);
+    auto plan      = grid_tile_plan(imported.app);
+    auto shape     = *lit_projs(plan.shape, 2);
+    auto width     = Lit::as(TensorType::isa(p->type())->s->proj(2, 1));
+    auto outer     = *input_region(outer_rows(imported.app, *slot, *tile));
+    u64 work       = 0;
+    u64 proof_work = 0;
+    auto limit     = mul(shape[0], width);
+    if (!limit) return reject("row split producer work overflows");
+    auto panel  = Lit::as(plan.tiles->proj(2, 1));
+    auto column = scratch->mut_lam(scratch->type_nat(), scratch->type_nat())->var();
+    DefVec widths{scratch->lit_nat(std::min(panel, shape[1]))};
+    if (shape[1] % panel) widths.push_back(scratch->lit_nat(shape[1] % panel));
+    for (u64 off = 0; off < shape[0]; off += std::min(*tile, shape[0] - off)) {
+        auto ext = std::min(*tile, shape[0] - off);
+        for (auto columns : widths) {
+            auto value = scratch->app(scratch->app(imported.body(), {scratch->tuple({scratch->lit_nat(off), column}),
+                                                                     scratch->tuple({scratch->lit_nat(ext), columns})}),
+                                      imported.values());
+            RowReadProof proof(*scratch, p, off, ext, width);
+            if (!proof.visit(value) || !proof.reads)
+                return reject("row split producer reads escape the owned whole-width rows or exceed proof limits");
+            proof_work += proof.work();
+            if (proof_work > 262144) return reject("row split exceeds the total read-proof limit");
+        }
+        auto coordinate = scratch->tuple({scratch->lit_nat(off), scratch->lit_nat(ext)});
+        auto nested     = scratch->app(scratch->app(outer.body(), coordinate), outer.values());
+        auto owned      = scratch->tuple({scratch->lit_nat(ext), scratch->lit_nat(width)});
+        auto origin     = scratch->tuple({scratch->lit_nat(off), scratch->lit_nat_0()});
+        auto tiled      = yield_tiles_value(p, origin, owned, nested, true, work);
+        if (!tiled.value || work > *limit)
+            return reject(tiled.value ? "row split exceeds one producer evaluation" : tiled.reason);
+    }
+    target.log().d("tensor outer-rows candidate {}: accept tile={} MR={} KC={} extra-weight-bytes={}", inputs[0], *tile,
+                   policy.mr, policy.kc, policy.extra);
+    return {CheckResult::True, target.lit_tt(), {}};
+}
+
+static pattern::WitnessResult
+check_region_yield(const pattern::GraphView& source, Defs inputs, World& target, bool inputs_only) {
     using pattern::CheckResult;
     auto producer = graph::map_reduce(inputs[0]);
     auto region   = input_region(inputs[1]);
@@ -1039,6 +1436,7 @@ static pattern::WitnessResult check_region_yield(const pattern::GraphView& sourc
     auto occurrences = source.occurrences(region->app);
     if (occurrences.size() != 1 || !occurrences.front().regions.empty() || occurrences.front().trips != 1)
         return {CheckResult::Unknown, nullptr, "yield requires one non-nested grid occurrence"};
+    if (inputs_only) return {CheckResult::True, target.lit_tt(), {}};
     auto scratch = target.inherit();
     pattern::ParameterImporter importer(*scratch);
     auto p        = importer.rewrite(producer);
@@ -1140,9 +1538,18 @@ void FuseAndYield::start() {
                     continue;
                 }
                 YieldAxes axes(plan, mr);
-                if (axes.choices.empty())
+                if (axes.choices.empty()) {
                     log().d("tensor fuse-and-yield candidate {} input {}: reject B1 grid shape {} producer shape {}",
                             def, i, plan.shape, mr.So);
+                    if (driver().arg_nat("tensor", "outer-rows").value_or(1) && Axm::isa<tiled>(def) && plan.rank == 2
+                        && Lit::isa(mr.Ro) == 2 && mr.So->proj(2, 0) == plan.shape->proj(2, 0)) {
+                        auto policy = row_policy(region, i);
+                        if (!policy.reason.empty())
+                            log().d("tensor outer-rows candidate {} input {}: reject {}", def, i, policy.reason);
+                        else
+                            rules.push_back(outer_rows_rule(region, i, policy.tile));
+                    }
+                }
                 for (auto mapping : axes.choices)
                     rules.push_back(yield_rule(region, i, mapping, budget_));
             } else {
@@ -1159,9 +1566,10 @@ void FuseAndYield::start() {
             if (auto axm = node->isa<Axm>())
                 if (scalar_operator(axm) || axm->sym().view().starts_with("affine.")) pure.push_back(axm);
     }
-    for (auto name : {"tensor.tiled", "tensor.tiled_multi", "tensor.map_reduce_post", "tensor.slice",
-                      "tensor.slice_box", "tensor.tile_of", "tensor.tile_of_box", "tensor.yield_tiles",
-                      "tensor.generate", "tensor.transpose", "btensor.clip_sched", "core.idx", "math.F"})
+    for (auto name :
+         {"tensor.tiled", "tensor.tiled_multi", "tensor.map_reduce_post", "tensor.slice", "tensor.slice_box",
+          "tensor.tile_of", "tensor.tile_of_box", "tensor.yield_tiles", "tensor.split_rows", "tensor.tile_fold",
+          "tensor.splat", "tensor.generate", "tensor.transpose", "btensor.clip_sched", "core.idx", "math.F"})
         pure.push_back(world().annex(driver().sym(name))->as<Axm>());
     GraphRuleRewrite phase(world(), std::move(rules), std::move(pure), true);
     phase.run();

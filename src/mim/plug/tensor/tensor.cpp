@@ -50,6 +50,7 @@ pattern::WitnessResult group_fusion_witness(const pattern::GraphView&, Defs, Wor
 pattern::WitnessResult group_reverse_witness(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult region_fusion_witness(const pattern::GraphView&, Defs, World&);
 pattern::WitnessResult region_yield_witness(const pattern::GraphView&, Defs, World&);
+pattern::WitnessResult outer_rows_witness(const pattern::GraphView&, Defs, World&);
 static pattern::WitnessResult permuted_box(Defs inputs, std::span<const u64> axes, World& target) {
     DefVec offset, extent;
     for (auto axis : axes) {
@@ -120,6 +121,7 @@ static void reg_witnesses(pattern::Witnesses& witnesses) {
     witnesses.emplace(Annex::base<group_reverse_supported>(), pattern::Witness{3, group_reverse_witness});
     witnesses.emplace(Annex::base<region_fusion_ok>(), pattern::Witness{6, region_fusion_witness});
     witnesses.emplace(Annex::base<region_yield_ok>(), pattern::Witness{6, region_yield_witness});
+    witnesses.emplace(Annex::base<outer_rows_ok>(), pattern::Witness{3, outer_rows_witness});
 }
 
 static void reg_phases(Flags2Phases& phases) {

@@ -219,7 +219,7 @@ private:
                     auto name = axm->sym().str();
                     if (!(name.starts_with("tensor.") || name.starts_with("core.") || name.starts_with("math.")
                           || name.starts_with("affine.") || name.starts_with("vec.") || name.starts_with("tuple.")
-                          || name.starts_with("cps.cps2ds"))
+                          || name.starts_with("cps.cps2ds") || name == "btensor.clip_sched")
                         || name == "core.abs")
                         return pure_[value] = false;
                 } else {
@@ -569,9 +569,11 @@ std::pair<const Def*, const Def*> LowerToMem::allocate(const Def* rank, const De
     return {fresh_mem(), buffer};
 }
 
-void LowerToMem::prepare_realizations(const Def* root, const Lam* region) {
+void LowerToMem::prepare_realizations(const Def* root, const Lam* region, Defs destinations) {
     for (auto group : RealizationRequests(root).shared()) {
         auto value = group.front();
+        if (std::ranges::any_of(destinations, [&](const Def* output) { return Check::test_alpha(output, value); }))
+            continue;
         if (region) {
             bool available = true;
             for (auto var : value->free_vars())
@@ -1038,9 +1040,15 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
     push();
     bind_old(parameter->has_var());
     map(origin, off);
-    prepare_realizations(root);
     const Def* mem = state[0];
     DefVec outputs;
+    auto shared = RealizationRequests(root).shared();
+    DefVec destinations;
+    for (u64 i = 0; i != plan.count; ++i) {
+        auto value = plan.multiple ? root->proj(plan.count, i) : root;
+        if (Axm::isa<tensor::map_reduce_post>(value) || Axm::isa<tensor::tiled>(value)) destinations.push_back(value);
+    }
+    prepare_realizations(root, nullptr, destinations);
     Rewriter substitutions(old);
     for (auto var : root->free_vars())
         substitutions.map(var, var);
@@ -1065,8 +1073,12 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
             bind_old(parameter->has_var());
             map(parameter->var(), outputs.back());
             auto read = old.app(old.app(old.annex<tensor::slice>(), {plan.types->proj(plan.count, i), r}), shape);
-            substitutions.map(value,
-                              old.app(old.app(read, {origin, old.pack(r, old.lit_nat_1()), extent}), parameter->var()));
+            auto view = old.app(old.app(read, {origin, old.pack(r, old.lit_nat_1()), extent}), parameter->var());
+            substitutions.map(value, view);
+            for (auto& group : shared)
+                if (Check::test_alpha(value, group.front()))
+                    for (auto alias : group)
+                        substitutions.map(alias, view);
         }
     }
     DefVec result_fields{mem};

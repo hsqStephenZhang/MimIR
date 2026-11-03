@@ -38,7 +38,28 @@ halo 的计算使用整个 over-box，额外结果仅复制其中的 owned box�
 `-VVVV` 记录候选的 B1 shape 不符、非 MRP 输入以及 witness 的具体拒绝原因。
 现有 BLIS 网格同时包含输出行和输出列；LayerNorm 的宽度若不等于 BLIS 输出列数，
 便不能将这两个 grid 轴都写回 LayerNorm 结果。
-Q/K/V 的列偏移切片也不是 QKV 全结果的 B1 permutation；这些情况保持预计算，不放宽写回关系。
+Q/K/V 的列偏移切片也不是 QKV 全结果的 B1 permutation；这种情况保持预计算，不放宽写回关系。
+
+对 BLIS 的二维 `(M,N)` 区域，P5 `outerRows` 结构规则可先提取只含 M 的外层
+`tiled_multi`，再由原 fuse-and-yield 规则写回生产者的整行；N/K 循环留在内层。
+候选必须有已证明的外部读取者、无别名和循环、同元素类型的 K×N 权重，
+且所有生产者读取在符号 N-panel offset 下仍落在 owned 行内。
+full/tail N-panel 分别验证，不能依赖列号选择生产者行。
+行块为 `min(M, floor(cache/(2*KC*sizeof(T))/MR)*MR)`，
+额外权重串流上界 `(ceil(M/tm)-1)*K*ceil(N/NR)*NR*sizeof(T)` 不得超过生产者整张输出字节数。
+不满足这些条件、没有保留下来的 BLIS 外层区域或超出有界证明容量时拒绝拆分。
+可用 `-X tensor:outer-rows=0` 单独关闭该结构规则，而保留普通 fuse-and-yield。
+
+拆分后的循环顺序是 M-outer → NC → KC → MR/NR。
+内层保留原 MR/NR/KC/NC；B panel 每个 M-outer 块重新 stage，A panel 仍按原微块打包。
+默认 F32/MR4/KC128/cache256KiB 得到 MC256；M≤256 时不额外重复 B panel。
+跨结果共享的 clipped producer 按纯计算的 alpha 等价请求映射到已写输出，
+不在写第一个 slot 前额外实现一个临时副本。
+`outer_rows.mim` 检查 residual、非整除行尾块、结构与三个 guard 拒绝分支；
+ASan 对照标量参考，中心化次数恰为 33×768，开关两侧 contraction 乘法均为 33×768×8。
+同一测试还覆盖 M=7≤MC 的整行块，以及非空 bias epilogue 的嵌套显式输入。
+整域 identity slice 在规范化后可能消失；仅当 owned extent 等于生产者完整 shape 时，
+yield 的读取检查才把这种直接输入视为完整盒，不放宽 partial tile 的 whole-reader 限制。
 
 ## Multi-result loop tiles（Task 32B）
 
