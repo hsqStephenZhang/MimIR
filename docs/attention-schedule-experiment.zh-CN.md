@@ -763,3 +763,283 @@ early recognition 不新增全局 beta pass、不改变通用 optimize 的内部
 避免直接输入 sdpa 掩盖未 raising 的问题。
 early 提交前再次 CTest250/250、完整 lit695通过、9 unsupported，
 见 `early-commit-ctest.log`、`early-commit-lit.log`。
+
+## 步骤 4：四种长度的动态验证
+
+计数与计时版本为 `18aab8fc9ec0c8cf4ddb8bcea85448d6253ba1c3`。
+所有文件均位于上述 task28a 结果目录：
+`measure_core.py`、`core_results.json`、`core-matrix.log` 保存孤立 core；
+`measure_models.py`、`models_<L>_<variant>_18aab8fc9e*/results.json`
+保存完整 attention/transformer。
+`current` 禁用 attention raising，`raised` 只 raising 后普通分解，
+`auto` 是 BM2/BK8 online，`manual` 显式应用相同规则。
+计时使用未插桩的 LLVM，以 clang `-O3` 编译：
+core 为 `-mcpu=native`，完整模型为配置中的 `-mcpu=apple-m2`；
+计数库不用于延迟比较。
+
+复用已完整验证的本地 Debug 编译器，而非 gemm-bench 默认远端 fresh Release 构建。
+这是工具链准备方式的偏离，不把 host 编译器的 Debug 开销算入 kernel 时间；
+生成的 native kernel 仍经过上述相同 clang 优化。
+机器为 Apple M2 Pro；所有运行单线程、预热3次、3组样本取中位数，
+每组至少运行200ms，重任务串行并使用 nice。
+macOS 没有绑核或隔离核心，不能解释小幅跨进程波动。
+
+### 孤立 core 的时间与正确性
+
+单位 ms。core 在同一进程内交替正反 backend 顺序；
+eager 明确执行 matmul、stable softmax、matmul，不调用 fused SDPA。
+
+| L | group=0 | current | raised | auto | manual | eager |
+|---|---:|---:|---:|---:|---:|---:|
+| 128 | 1.379 | 1.473 | 1.479 | 5.579 | 5.638 | 0.366 |
+| 512 | 23.934 | 24.350 | 24.213 | 90.982 | 90.531 | 5.519 |
+| 1024 | 115.304 | 107.399 | 107.889 | 386.252 | 385.967 | 26.607 |
+| 2048 | 444.123 | 409.647 | 463.656 | 1495.800 | 1524.200 | 92.836 |
+
+所有有限输出满足原定 atol=rtol=2e-4，最大绝对误差小于1e-7。
+auto/manual 时间比依次为0.9895/1.0050/1.0007/0.9814，
+同进程相差不超过2%，符合原10%预测。
+每个 L 的 raised/current 原始 LLVM SHA256 完全相同；
+L2048 的时间差不能归因为 raising 改变了执行结构。
+
+auto/current 延迟比为3.79/3.74/3.60/3.65，
+落在最初宽范围0.7–5内，但没有获得性能收益。
+按 QK+PV 理论 FLOP 计算只有8.34–9.02 GFLOPS，
+明显低于“leaf 同等有效”条件下40–100 GFLOPS的假设。
+小 BK、carry 读写和 fallback leaf 使该条件不成立；
+这验证了规则能实现 online 结构，不验证现有 leaf 足以实现 IREE 的吞吐。
+
+### 第一轮计数：bufferized LLVM 的动态上界
+
+**本小节不是最终 native 计数。**
+第一轮先把 malloc/exp 改为带副作用 wrapper，再交给 clang 优化。
+后续交叉检查发现这会阻止部分分配消除和 exp CSE；
+因此保留这些数值作为 bufferized IR 的动态证据，
+但不能用它们声称未插桩 native 确实有同样的冗余。
+后面的“优化后计数”才用于最终预测判定。
+
+以下 peak 均不计调用者已持有的 Q/K/V。
+group=0/current 两列为动态 heap peak；online 列另包含原始 LLVM alloca payload。
+没有把 payload 当作 ABI 对齐后的真实栈帧大小，也不包含 LLVM 后端新增 spill。
+每次返回后释放最终输出，所有路径 outstanding heap 字节均为0。
+
+| L | group=0 exp | current exp | auto/manual exp | group=0 heap peak | current heap peak | online heap+stack peak |
+|---|---:|---:|---:|---:|---:|---:|
+| 128 | 196608 | 393216 | 221184 | 2758656 | 3676160 | 396760 |
+| 512 | 3145728 | 6291456 | 3538944 | 39346176 | 53108736 | 1576408 |
+| 1024 | 12582912 | 12582912 | 14155776 | 154189824 | 158466048 | 3149272 |
+| 2048 | 50331648 | 50331648 | 56623104 | 610369536 | 627179520 | 6295000 |
+
+online 四个 L 均为7次 heap 分配，累计字节等于 heap peak，
+即输出 `4*12*L*64` 加1056字节；最大单笔申请就是输出。
+另有17个 stack slot，payload 总计2488字节。
+因此活动峰值精确为输出加3544字节，auto/manual 逐项相同。
+原始 LLVM 中没有完整 S/P；修复后的动态计数也没有二次方活动中间量。
+分配次数、额外 heap 和 stack 对 L 不变的后续预测全部 confirmed；
+原先理想1184字节的 register-resident 工作区预测仍是 deviates，不能回填预测。
+
+online exp 恰为 `E+12*L*ceil(L/8)=1.125E`，包括首块 correction，
+没有把被乘零的首块 exp 假设成已经消除。
+current 的插桩 IR 在128/512为2E，在1024/2048为E；
+这提示 lowering 中存在 shape-dependent 的重复 exp，但不证明 native 也重复。
+优化后交叉检查在 L128 将2E消为E，不能把前一轮观察写成最终运行时缺陷。
+插桩把 scalar exp intrinsic 替换为带副作用 wrapper，
+遇到未处理的向量 exp 或动态/未知 alloca 会明确失败，不默认为零。
+
+### 完整 attention/transformer 时间
+
+单位 ms。每个变体的 gemm-bench runner 都与自身 eager 交替计时；
+下表 eager 取 auto 那次运行的配对基线，其余 eager 样本仍保留在各 results.json。
+完整模型 eager 是 native ATen 循环，使用元数据注明的
+OpenBLAS 0.3.34 interposed BLAS，不是 core 的 Python eager 调用口径；
+不把两张表的 eager 差值当作某个调度的收益。
+
+| 模型 | L | group=0 | current | auto | manual | eager |
+|---|---:|---:|---:|---:|---:|---:|
+| attention | 128 | 14.953 | 13.500 | 347.763 | 346.119 | 7.229 |
+| attention | 512 | 105.585 | 75.374 | 1509.945 | 1470.987 | 38.891 |
+| attention | 1024 | 371.026 | 201.875 | 3184.325 | 3152.465 | 101.249 |
+| attention | 2048 | 1269.349 | 620.372 | 6837.130 | 7025.229 | 304.140 |
+| transformer | 128 | 47.181 | 28.050 | 355.855 | 382.144 | 20.335 |
+| transformer | 512 | 226.601 | 124.813 | 1571.006 | 1529.136 | 85.494 |
+| transformer | 1024 | 625.428 | 323.711 | 3323.390 | 3293.429 | 203.700 |
+| transformer | 2048 | 1760.238 | 873.887 | 7100.819 | 7574.678 | 501.455 |
+
+汇总逐项检查 status，而非只看 runner 的进程退出码。
+成功运行的数值检查均满足2e-4容差，attention 最大绝对误差小于1.72e-7，
+transformer 不超过3.82e-6。
+完整模型 auto/current 时间比：attention 为25.76/20.03/15.77/11.02，
+transformer 为12.69/12.59/10.27/8.13。
+这不能由孤立 core 的3.6–3.8倍 slowdown 单独解释，也不能称为“仅仅 leaf 较慢”。
+
+运行中并发集成把主 worktree HEAD 从18aab8fc9e推进到了ffac206211。
+版本 guard 拒绝了当时尚未开始的 L2048 current/manual；
+即使 runner 退出码为0，两份失败结果也没有作为有效测量使用。
+没有回退或覆盖他人提交，而在结果目录建立 detached 的
+`compiler-18aab8fc9e`，恢复相同 host compiler、SDK、Debug/checks 配置，
+完整构建并通过 CTest250/250、lit695通过/9 unsupported，再补齐缺项。
+独立构建不启用 Python bindings，不影响生成的 kernel。
+补测采用新的 `_r2` 目录，保留失败尝试供追溯。
+
+随后 `verify_compiler_provenance.py` 用固定 SHA 的编译器重新生成四个 L、
+两个模型和所有四种 MimIR 对照的32份 LLVM。
+`compiler_provenance.json` 中32份原始/重生成 SHA256 全部相同，
+因此并发 HEAD 变化没有使表中的 kernel 混成不同版本。
+这验证的是生成程序的一致性，不证明运行时没有系统噪声。
+完整模型 auto/manual 的严格同进程交替比较另列，不用上面的跨进程表代替。
+
+### 手动与自动的同进程模型比较
+
+`compare_model_schedules.py` 在一个进程内加载同版本的 auto/manual 库，
+使用相同输入和参数，分别先做数值检查与3次预热，再交替执行3组。
+仍为单线程，每组至少200ms，包含调用和释放输出；
+此处不重新编译或使用计数库。结果为 `model_schedule_comparison.json`。
+
+| 模型 | L | auto ms | manual ms | auto/manual |
+|---|---:|---:|---:|---:|
+| attention | 128 | 343.612 | 347.074 | 0.99002 |
+| attention | 512 | 1442.900 | 1441.470 | 1.00099 |
+| attention | 1024 | 3085.653 | 3081.542 | 1.00133 |
+| attention | 2048 | 6875.997 | 6898.036 | 0.99681 |
+| transformer | 128 | 356.573 | 358.149 | 0.99560 |
+| transformer | 512 | 1496.217 | 1497.126 | 0.99939 |
+| transformer | 1024 | 3177.394 | 3193.835 | 0.99485 |
+| transformer | 2048 | 7091.937 | 7087.751 | 1.00059 |
+
+8项均相差不超过1%，原10%预测 confirmed。
+这排除了“自动入口选择了另一套 online 实现”作为 slowdown 的解释，
+但不能排除两条路径共同存在的低效。
+
+### 优化后计数：先排除插桩观察者效应
+
+对 L128 完整 attention 的诊断预测单独保存为
+`native_counter_crosscheck_prediction.json`，之后才做交叉检查。
+先对**未插桩** LLVM 做正常 clang `-O3` 优化、输出 LLVM，
+再替换 allocator/exp 并插入动态乘法计数。
+移除原 intrinsic/allocator 的 memory 属性，避免 wrapper 被错误当成无副作用；
+向量 exp 按 lane 计数，FMA 计一个乘项，未知 alloca 明确失败。
+`crosscheck_native_counts.py` 与 `native_counter_crosscheck.json` 保存最初两例。
+
+结果推翻了诊断中“current native 仍执行2E次 exp”的预测：
+current 的393216降至196608，分配也从14116次/峰值12982272
+降为13964次/峰值4724736字节。
+auto 的 exp221184和乘法555442176则保持，
+分配从9285次/峰值4718592降为9255次/峰值1968888。
+因此“exp 在 native 重复”这一判断撤回；
+“online 令完整模型额外执行一次 QKV projection”仍有优化后证据。
+不能用插桩抑制 CSE/分配消除来解释未插桩库的时间。
+
+最终用 `measure_native_counts.py` 对所有 core/完整模型重做该口径，
+结果另存 `native_counts.json`，不覆盖前一轮 IR 计数。
+这里的 heap 是优化后程序实际经过 wrapper 的申请/释放；
+stack 仍只核算 LLVM 显式 alloca 容量，不计 ABI padding、slot 重用和后端 spill，
+不是测得的整个进程 RSS 或物理 native 栈峰值。
+
+#### 优化后的 core 结果
+
+52项计数全部完成，所有输出满足原容差，最大绝对误差小于3.34e-6，
+释放输出后均无 heap 泄漏；每个模型/长度的 auto/manual 各字段完全相同。
+core 的 raised/current 计数也完全相同。
+普通 group=0/current 在四个 L 的 exp 都为E，online 都为1.125E。
+下表最后一列为 heap peak 加显式 alloca 容量，非物理栈测量。
+
+| L | current exp | online exp | group=0 heap peak | current heap peak | online heap+alloca |
+|---|---:|---:|---:|---:|---:|
+| 128 | 196608 | 221184 | 2758656 | 2857984 | 395808 |
+| 512 | 3145728 | 3538944 | 39346176 | 40461312 | 1575456 |
+| 1024 | 12582912 | 14155776 | 154189824 | 158401536 | 3148320 |
+| 2048 | 50331648 | 56623104 | 610369536 | 627115008 | 6294048 |
+
+online 仍是7次 heap 申请，累计=峰值=输出加1056字节；
+优化后只剩3个显式 alloca，合计1536字节。
+因此该口径下的固定额外容量为2592字节，而非前一轮3544字节。
+原始1184字节理想工作区预测仍 deviates：
+carry 的双 bank 和 leaf 临时值没有全部留在寄存器。
+“无完整 S/P、额外空间不随 L 增长”则 confirmed。
+这里只验证静态输入形状、运行时 tile grid 的非 causal 实验；
+外部输入或程序自身生成的完整 causal mask 不能从存储账目中隐去，
+本矩阵没有验证完整 causal 模型也满足同一峰值。
+
+#### 优化后的完整模型存储与计算
+
+均不计调用者持有的输入/参数；本矩阵完整模型无剩余显式 LLVM alloca，
+不意味着最终机器码没有 spill。字节为十进制整数。
+
+| 模型 | L | group=0 heap peak | current heap peak | online heap peak | online 申请次数 | online 累计字节 |
+|---|---:|---:|---:|---:|---:|---:|
+| attention | 128 | 5505536 | 4724736 | 1968888 | 9255 | 23595768 |
+| attention | 512 | 50333696 | 46752768 | 7867128 | 36903 | 87296760 |
+| attention | 1024 | 176164864 | 170984448 | 15731448 | 73767 | 172231416 |
+| attention | 2048 | 654319616 | 652280832 | 31460088 | 147495 | 342100728 |
+| transformer | 128 | 8651264 | 6684672 | 3935480 | 9424 | 47977208 |
+| transformer | 512 | 62916608 | 54592512 | 15733496 | 37072 | 128199416 |
+| transformer | 1024 | 201330688 | 186713088 | 31464184 | 73936 | 235162360 |
+| transformer | 2048 | 704651264 | 683746304 | 62925560 | 147664 | 449088248 |
+
+online 的 peak 线性增长，完整 scores/probabilities 的二次方空间被消除；
+但不应把 core 的固定7次申请套到完整模型。
+这组形状下完整 attention/transformer 分别为 `72*L+39`、`72*L+208` 次申请。
+上下文中的 producer/leaf realization 仍影响分配，不能只看局部 op 的循环形状。
+两个完整模型的普通 exp 均为E，online 为1.125E，与 core 一致。
+
+下表计乘法/FMA的乘项，不把 layer norm 或 scale 的乘法误记成 GEMM FLOP。
+current 的主要 GEMM 乘项预测为
+`4*L*768² + 2*12*L²*64`，
+transformer 再加 `2*L*768*3072`；
+表中还包含 elementwise 算术。
+
+| L | attention current | attention online | transformer current | transformer online |
+|---|---:|---:|---:|---:|
+| 128 | 327352320 | 555442176 | 931725312 | 1159815168 |
+| 512 | 1613758464 | 2545287168 | 4031250432 | 4962779136 |
+| 1024 | 4039114752 | 5953290240 | 8874098688 | 10788274176 |
+| 2048 | 11324620800 | 15357444096 | 20994588672 | 25027411968 |
+
+两种模型、四种长度的差值都**精确**为：
+
+```text
+online-current = 3*L*768² + 12*L*ceil(L/8)*(64+1)
+```
+
+后项是原来已经预测的 output/row-sum carry rescale；
+前项恰为额外一次完整 QKV projection，违反“主要 GEMM 量不变”的预测。
+L128 的未插桩优化后 LLVM 中仍有两组128×2304×768的 projection nest；
+原始 LLVM 两组读取相同 x/p0，并写入相同 QKV buffer，分别服务不同 views。
+故这里不是凭时间猜重算，也不是插桩抑制优化产生的假象。
+该诊断假设写在 `model_count_predictions.json` 后才测乘法；
+它是看到时间偏离后的归因实验，不冒充最初的先验预测。
+
+`model128-trace.log` 的 kind-1 日志只给输出 projection 选择了 BLIS，
+QKV 没有同样的请求；优化后仍是普通 scalar reduction nest。
+`src/mim/plug/tensor/phase/group.cpp` 的 `Group::start`
+把具有 region occurrence 的候选预先 claimed，保守地不自动调度它们。
+这与 online 分解后跨 tile region 的 QKV producer 未获准入相符。
+此外 bufferization 并未保持跨这些 views 的 producer 单次 realization。
+额外工作量与失去 BLIS 是直接证据；没有分别计时 projection，
+不能把总 slowdown 精确分摊成它们各占多少。
+完整模型 online 的分配次数反而少于 current，不能把25倍 slowdown
+简单归因为“malloc 更多”。
+
+此处不按 L/模型名加特例，也不靠改 iteration budget 隐藏偏离。
+要恢复预测，需要让跨 region producer 的 placement、group 准入和
+单次 realization 保持一致，而不是仅在 attention op 内再换一个 BK。
+
+### 逐步骤判定
+
+| 步骤 | 预测 | 测得 | 判定 |
+|---|---|---|---|
+| 1 raising | 真实 diamond 命中，near miss 不误吸收，普通分解保持语义 | 两模型命中；正反例及标量参考通过；core raised/current LLVM 完全相同，时间在0.8–1.25内 | confirmed（完整模型未另测 raised-only 时间） |
+| 2 online | tile 内 recurrence，主要 GEMM 不变，exp增加12.5% | core 符合；完整模型额外一次 QKV projection | core confirmed，完整模型 deviates |
+| 2 存储 | 消除完整 S/P，理想 workspace1184字节 | core 显式容量输出+2592；完整模型峰值线性 | 空间阶数 confirmed，理想常数 deviates |
+| 3 入口等价 | 手动/自动同结构、同计数，同进程时间相差≤10% | realized IR一致，52项中配对计数相同；core≤2%，两完整模型≤1% | confirmed |
+| 4 时间 | leaf 同等有效时40–100 GFLOPS；初始 core允许0.7–5倍 | core8.34–9.02 GFLOPS且慢3.6–3.8倍；完整模型慢8.1–25.8倍 | core宽范围内，leaf假设及端到端效果 deviates |
+| 4 计数方法 | 插桩反映实际执行 | pre-clang插桩阻止CSE/分配消除；post-clang复测纠正 | 第一轮方法 deviates，最终采用优化后口径 |
+
+**结论：**P5规则、tile/fold和group入口能正确表达并自动选择这组 online 算法，
+但当前跨 region producer 调度/realization 未兑现整模型的工作量预测。
+空间改善不是性能成功的替代指标；本实验不支持把该策略称为可用的默认 CPU 性能策略。
+
+步骤4报告提交前，在已经集成其他 P5 改动的主 worktree 完整重建，
+CTest257/257、完整 lit700通过/9 unsupported，
+见 `step4-build.log`、`step4-ctest.log`、`step4-lit.log`。
+这些集成验证不替换性能表的固定18aab8fc9e版本标识。
