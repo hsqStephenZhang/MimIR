@@ -1750,11 +1750,12 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
         return std::pair{old.tuple(dimensions), t};
     };
     const Def* mem = fresh_mem();
-    DefVec spare;
+    DefVec primary, spare;
     fe::Vector<bool> pooled;
     auto initialize = [&](const Def* t, const Def* value) -> const Def* {
         if (!t->isa<Arr>()) {
             auto scalar = rewrite(value);
+            primary.push_back(scalar);
             spare.push_back(scalar);
             pooled.push_back(false);
             return scalar;
@@ -1772,6 +1773,7 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
             std::tie(mem, next)    = buffer::op_alloc(rank, rewrite(shape), rewrite(element), mem)->projs<2>();
         }
         pooled.push_back(owned);
+        primary.push_back(current);
         spare.push_back(next);
         mem = copy_buffer(mem, current, make_buffer(value, rank, rewrite(shape)), rewrite(shape));
         return current;
@@ -1830,15 +1832,28 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
     auto [final_mem, result, unused] = finish->var(2, 0)->projs<3>();
     const Def* released              = final_mem;
     cursor                           = 0;
-    auto release                     = [&](const Def* t, const Def* value) {
-        if (!pooled[cursor++] && t->isa<Arr>()) {
-            auto [rank, shape, element] = Axm::isa<buffer::Buf>(value->type())->args<3>();
-            released                    = buffer::op_free(rank, shape, element, released, value);
+    auto stable                      = [&](const Def* t, const Def* value) {
+        auto i = cursor++;
+        if (pooled[i] || !t->isa<Arr>()) return value;
+        auto [rank, shape, element] = Axm::isa<buffer::Buf>(primary[i]->type())->args<3>();
+        const Def* target;
+        std::tie(released, target) = buffer::op_alloc(rank, shape, element, released)->projs<2>();
+        released                   = copy_buffer(released, target, value, shape);
+        return target;
+    };
+    auto output  = fields(fields, type, result, stable);
+    cursor       = 0;
+    auto release = [&](const Def* t, const Def* value) {
+        auto i = cursor++;
+        if (!pooled[i] && t->isa<Arr>()) {
+            auto [rank, shape, element] = Axm::isa<buffer::Buf>(primary[i]->type())->args<3>();
+            released                    = buffer::op_free(rank, shape, element, released, primary[i]);
+            released                    = buffer::op_free(rank, shape, element, released, spare[i]);
         }
         return value;
     };
     fields(fields, type, unused, release);
-    finish->app(true, finish->ret_var(), w.tuple({released, result}));
+    finish->app(true, finish->ret_var(), w.tuple({released, output}));
     return finished->proj(2, 1);
 }
 

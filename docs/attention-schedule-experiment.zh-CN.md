@@ -1046,6 +1046,9 @@ CTest257/257、完整 lit700通过/9 unsupported，
 
 ## 步骤 5：规则表达能力与 IREE pipeline 的边界
 
+本节的实测依据仍是18aab8fc9e；并发集成181a6db1e4后的准入变化，
+在后文作为独立新状态验证，不倒改这里的原始发现。
+
 步骤4报告提交为 `883bdae8c7`。
 这里区分“规则已经表达”“还没有实现相应规则”和
 “当前 tensor/pattern 接口不能只靠局部规则保证”；
@@ -1142,3 +1145,108 @@ op内嵌 schedule closure 同时造成闭合高阶匹配和参数化纯度两类
 
 步骤5提交前再次完整重建，CTest257/257、完整 lit700通过/9 unsupported，
 见 `step5-build.log`、`step5-ctest.log`、`step5-lit.log`。
+
+## 并发修复后的新状态：先记录预测
+
+主 worktree 在报告整理期间集成了
+`181a6db1e44908216569edf902853e8ffbda8c87`
+（`fix(tensor): schedule contractions read by tile regions`）。
+该提交允许仅依赖 external lambda 参数、虽被 region 读取但不属于 reverse
+placement 模板的 contraction 参与 BLIS group。
+因此前文“未获 QKV BLIS 准入”是18aab8fc9e测量快照的发现，
+不是对最新 HEAD 的实测结论；也不能未经计数就认定重复 projection 已消失。
+
+以下预测在新状态计时/计数之前写下，并另存结果目录
+`region_hoist_predictions.json`。
+用独立固定181a6db1e4的构建，避免再次受并发 HEAD 变化影响。
+维持全部形状、模式、容差、单线程和3次中位数协议，不调 BM2/BK8。
+
+结构预测：完整 attention 的 group 日志应新增 QKV kind-1 请求，
+两个模型仍各一个 online construct，tile/fold 不变。
+孤立 core 不含这种外部 projection，预测原始 LLVM 完全不变；
+旧 group=0/current 模型的 LLVM 也应不变，若 hash 不同则不能直接复用旧时间。
+新 auto/manual 应保持相同动态计数和同进程≤10%时间差。
+
+计数预测：exp仍为1.125E，core仍7次heap/额外1056字节和1536字节alloca。
+本次只改group准入，保守预测尚未自动消除QKV重算：
+完整模型乘项保持前表online列，
+相对current仍多 `3*L*768² + 12*L*ceil(L/8)*65`。
+BLIS改写和后端优化可能改变分配常数，但预测不恢复完整S/P，
+峰值仍为O(L)加可能的固定weight-panel存储。
+若重算也消失，必须记录这一超出预测的实际效果，不能倒改预测。
+
+性能预测：QKV恢复已有BLIS后，应不再承担原scalar projection的吞吐。
+以下宽范围来自current全模型时间、online/core差值和可能仍重复一次的
+BLIS projection成本，不代表已分别测量各层。
+
+| L | attention online ms预测 | transformer online ms预测 |
+|---|---:|---:|
+| 128 | 15–45 | 30–70 |
+| 512 | 120–250 | 160–330 |
+| 1024 | 400–850 | 500–1000 |
+| 2048 | 1400–2800 | 1700–3200 |
+
+### 基线复用校验：原始 hash 预测偏离，结构不变
+
+固定181a6db1e4重新生成全部20份core和16份旧模型基线LLVM，
+36份原始SHA256均不同，因此“原始LLVM完全不变”的预测判为偏离，
+不能继续声称逐字节复现。
+进一步对每对模块只运行LLVM的 `opt -S -passes=strip`，
+通过标准输入统一模块路径，不运行计算优化或删除任意数值常量；
+去除非语义名称/调试信息后，36对模块逐字节相同。
+这是指令、控制流和常量都不变的证据，而不只是运行结果接近：
+变化来自中间版本集成后生成的名称，不是181修复改变了这些调度。
+
+因此新状态沿用原core和group=0/current基线的计时、优化后计数，
+只重新测量发生变化的完整模型auto/manual。
+原始差异和strip后的双hash都保留在
+`hoist_baseline_provenance.json`，
+生成与比较脚本分别为 `verify_hoist_baselines.py`、
+`canonicalize_hoist_baselines.py`。
+这也修正了验证方法：严格比较保留全部语义的结构，
+而非把无关的生成名称当作调度变化。
+
+### 新准入暴露的 product-fold 结果所有权问题
+
+181a6db1e4的16个完整模型计时均通过数值检查，
+QKV日志也新增了contraction请求；但优化后计数不能通过：
+L128 attention释放输出后仍留405504字节，即768个row tile各528字节。
+首次插桩还暴露LLVM将初始化变为 `calloc`；
+计数器补上calloc追踪后，泄漏才得到完整定位。
+旧52个优化后模块没有calloc调用，旧计数不受此补充影响。
+这些失败记录保留为 `hoist-native-counts-first-abort.log`、
+`hoist-leak-sites.json`、`hoist-leak-sites.log`，
+不能把计时成功当成资源验证成功。
+
+最小复现不含attention或group：异构 `tile_fold` 的结果经过unary再返回，
+动态零轮数也泄漏28字节；直接返回fold结果则由调用者释放而不泄漏。
+根因是未池化carry通过循环参数交替两组指针；
+lowering显式释放unused bank，却把result bank保留为Phi别名，
+下游保守的escape analysis无法将其识别为可释放的具体allocation。
+新QKV tiled region使原先满足顺序scratch准入的外层不再池化，
+于是暴露了此前由pool统一释放遮住的缺口。
+
+修复预测：不改规则或pool准入，保持两组bank；
+静态轮数按奇偶直接返回已知allocation，动态轮数把结果复制回固定primary bank，
+随后释放spare，标量field仍返回实际SSA值。
+静态情况不增加copy或allocation；动态情况最多增加一次carry大小的copy，
+额外容量不随轮数增长，消费后的所有owned结果应可释放。
+`product_fold.mim`同时覆盖直接返回、消费结果、动态0/1/2/5轮及静态奇偶，
+之后重新固定修复版本测量，不能沿用有泄漏的181计数判定。
+
+第一次修复的定向回归仍泄漏28字节，预测偏离：
+即使返回具体bank，内部指针Phi已经使保守分析把这两组allocation标为逃逸，
+不会因下游引用变得具体而撤销。
+因此不放宽escape analysis，而为每个未池化Arr field分配独立owned结果，
+把最终carry复制到其中，再显式释放两组bank。
+修订预测是在fold结束时增加一份carry容量、每Arr field一次allocation/copy，
+与迭代轮数无关；pooled路径不变。
+attention的BM2 carry共528字节，故每个row tile增加3次allocation及528字节累计分配，
+但不再留下这528字节；这是明确的实现成本，不冒充寄存器结果。
+
+修复后的L128真实模型预检通过：优化后66135次allocation，
+比失败版本63831次恰好多2304次，累计多405504字节；
+释放输出后剩余0字节，数值最大绝对误差2.24e-7。
+这符合修订预测，见 `ownership-preview/counts.json`。
+定向回归8/8、CTest257/257、完整lit700通过/9 unsupported，
+见 `ownership-targeted.log`、`ownership-ctest.log`、`ownership-lit.log`。
