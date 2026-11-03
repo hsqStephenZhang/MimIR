@@ -1,6 +1,6 @@
 // RUN: %mim %s -p ll -X ll:rt=embed -X ll:o=%t.ll
 // RUN: python3 %S/prepack_count.py %t.ll %t.count.ll
-// RUN: clang++ -O3 -fsanitize=address %S/prepack_aux.cpp %t.count.ll -o %t -Wno-override-module
+// RUN: clang++ -O3 -std=c++23 -fsanitize=address %S/prepack_aux.cpp %t.count.ll -o %t -Wno-override-module
 // RUN: %t
 
 plugin opt;

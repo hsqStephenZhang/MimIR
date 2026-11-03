@@ -2,12 +2,12 @@
 // RUN: %FileCheck %s --check-prefix=RULE < %t.mim
 // RUN: %mim %s -p ll -X ll:rt=embed -X ll:o=%t.ll
 // RUN: python3 %S/prepack_count.py %t.ll %t.count.ll
-// RUN: clang++ -O3 -fsanitize=address %S/prepack_rule_aux.cpp %t.count.ll -o %t -Wno-override-module
+// RUN: clang++ -O3 -std=c++23 -fsanitize=address %S/prepack_rule_aux.cpp %t.count.ll -o %t -Wno-override-module
 // RUN: %t
 // RUN: %mim %s -X tensor:prepack=0 -o %t.off.mim
 // RUN: %FileCheck %s --check-prefix=OFF < %t.off.mim
 // RUN: %mim %s -p ll -X tensor:prepack=0 -X ll:rt=embed -X ll:o=%t.off.ll
-// RUN: clang++ -O3 -fsanitize=address -DPREPACK_OFF %S/prepack_rule_aux.cpp %t.off.ll -o %t.off -Wno-override-module
+// RUN: clang++ -O3 -std=c++23 -fsanitize=address -DPREPACK_OFF %S/prepack_rule_aux.cpp %t.off.ll -o %t.off -Wno-override-module
 // RUN: %t.off
 
 plugin opt;

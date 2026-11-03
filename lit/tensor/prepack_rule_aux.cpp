@@ -1,18 +1,11 @@
-#include <cassert>
 #include <cmath>
-#include <cstdlib>
+
+#include "prepack_counter.h"
 
 extern "C" float* gemm(float*, float*);
 extern "C" float* batch(float*, float*);
 extern "C" float* mutable_weight(float*, float*);
 extern "C" float* prepared_a(float*, float*);
-static int packs;
-extern "C" void* record_pack(size_t alignment, size_t size) {
-    ++packs;
-    void* pointer;
-    assert(posix_memalign(&pointer, alignment, size) == 0);
-    return pointer;
-}
 
 void check(float* (*kernel)(float*, float*), int batches, bool frozen, float shift = 0) {
     float a[30], b[70], c[70];
@@ -22,9 +15,10 @@ void check(float* (*kernel)(float*, float*), int batches, bool frozen, float shi
         b[i] = (i - 12) * 0.125f;
         c[i] = -b[i];
     }
-    float* weights[] = {b, b, c, b};
-    int expected[]   = {1, 1, 2, 3};
-    int start        = packs;
+    float* weights[]  = {b, b, c, b};
+    int expected[]    = {1, 1, 2, 3};
+    int start         = packs;
+    auto start_writes = packed_writes;
     for (int call = 0; call != 4; ++call) {
         auto out = kernel(a, weights[call]);
         for (int z = 0; z != batches; ++z)
@@ -38,8 +32,10 @@ void check(float* (*kernel)(float*, float*), int batches, bool frozen, float shi
         std::free(out);
 #ifdef PREPACK_OFF
         assert(packs == 0);
+        assert(packed_writes == 0);
 #else
         assert(packs == start + (frozen ? expected[call] : 0));
+        assert(packed_writes == start_writes + (frozen ? expected[call] * batches * 40 : 0));
 #endif
     }
 }
