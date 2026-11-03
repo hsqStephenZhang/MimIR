@@ -8,7 +8,8 @@
 plugin tensor;
 plugin core;
 
-extern fun singleton_reshape (x: «2, 3, 4; I64»): «2, 3, 4; I64» =
-    let x = tensor.transpose @(I64, 4) (0₄, 2₄, 1₄, 3₄) @(1, 2, 3, 4) (tensor.buf x);
+extern fun singleton_reshape (x: tensor.Tensor 3 (2, 3, 4) I64): tensor.Tensor 3 (2, 3, 4) I64 =
+    let x = tensor.reshape (2, 3, 4) (1, 2, 3, 4) (tensor.buf x);
+    let x = tensor.transpose @(I64, 4) (0₄, 2₄, 1₄, 3₄) @(1, 2, 3, 4) x;
     let x = tensor.reshape (1, 3, 2, 4) (3, 2, 4) x;
     return (tensor.transpose @(I64, 3) (1₃, 0₃, 2₃) @(3, 2, 4) x);

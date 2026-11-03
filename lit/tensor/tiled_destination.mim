@@ -7,10 +7,10 @@ plugin affine;
 plugin compile;
 use tensor;
 fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
-extern fun partition (x: «8; I64»): «8; I64» =
+extern fun partition (x: tensor.Tensor 1 8 I64): tensor.Tensor 1 8 I64 =
     return (tiled @(I64, 1) (8, 2)
         x
-        (λ (off ext: «1; Nat») (x): «ext; I64» =
+        (λ (off ext: «1; Nat») (x): tensor.Tensor 1 ext I64 =
             map_reduce_post @(1, 0) @(I64, I64, 1, 1, SchedT)
                 (ext, ext, mk_sched (1, 0)) @(I64, 1, 8, (), (), ())
                 (add, 0I64, id @I64) (affine.id @1)

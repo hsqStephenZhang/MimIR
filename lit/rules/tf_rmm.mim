@@ -8,28 +8,28 @@ plugin tensor;
 plugin core;
 let Ring = (Nat, 0, core.nat.add, core.nat.mul);
 // stage packs a 2x2 panel; tiled assembles a 4x4 result from column strips.
-axm stage: «2, 2; Nat» → «2, 2; Nat»;
-axm mark: «4, 4; Nat» → «4, 4; Nat»;
-axm tiled: (Nat → «4, 2; Nat») → «4, 4; Nat»;
-axm rows: (Nat → «2, 2; Nat») → «4, 2; Nat»;
-axm fold: ([Nat, «4, 2; Nat»] → «4, 2; Nat») → «4, 2; Nat»;
-axm add: [«2, 2; Nat», «2, 2; Nat»] → «2, 2; Nat»;
+axm stage: (tensor.Tensor 2 (2, 2) Nat) → tensor.Tensor 2 (2, 2) Nat;
+axm mark: (tensor.Tensor 2 (4, 4) Nat) → tensor.Tensor 2 (4, 4) Nat;
+axm tiled: (Nat → tensor.Tensor 2 (4, 2) Nat) → tensor.Tensor 2 (4, 4) Nat;
+axm rows: (Nat → tensor.Tensor 2 (2, 2) Nat) → tensor.Tensor 2 (4, 2) Nat;
+axm fold: ([Nat, tensor.Tensor 2 (4, 2) Nat] → tensor.Tensor 2 (4, 2) Nat) → tensor.Tensor 2 (4, 2) Nat;
+axm add: [tensor.Tensor 2 (2, 2) Nat, tensor.Tensor 2 (2, 2) Nat] → tensor.Tensor 2 (2, 2) Nat;
 
-rule cache (a b: «4, 4; Nat», unused: Nat): mark (tensor.product_2d Ring @(4, 4, 4) (a, b)) =>
-    tiled (λ (jo: Nat): «4, 2; Nat» =
-        fold (λ (ko: Nat, acc: «4, 2; Nat»): «4, 2; Nat» =
+rule cache (a b: tensor.Tensor 2 (4, 4) Nat, unused: Nat): mark (tensor.product_2d Ring @(4, 4, 4) (a, b)) =>
+    tiled (λ (jo: Nat): tensor.Tensor 2 (4, 2) Nat =
+        fold (λ (ko: Nat, acc: tensor.Tensor 2 (4, 2) Nat): tensor.Tensor 2 (4, 2) Nat =
             let bp = stage (tensor.slice @(Nat, 2) (4, 4) ((ko, jo), (1, 1), (2, 2)) b);
-            rows (λ (io: Nat): «2, 2; Nat» =
+            rows (λ (io: Nat): tensor.Tensor 2 (2, 2) Nat =
                 let ap = tensor.slice @(Nat, 2) (4, 4) ((io, ko), (1, 1), (2, 2)) a;
                 let cp = tensor.slice @(Nat, 2) (4, 2) ((io, 0), (1, 1), (2, 2)) acc;
                 add (cp, tensor.product_2d Ring @(2, 2, 2) (ap, bp)))));
-extern lam result (a b: «4, 4; Nat», salt: Nat): «4, 4; Nat» =
+extern lam result (a b: tensor.Tensor 2 (4, 4) Nat, salt: Nat): tensor.Tensor 2 (4, 4) Nat =
     mark (tensor.product_2d Ring @(4, 4, 4) (a, b));
 
 
 // BUILD-LABEL: extern lam result
-// BUILD: stage
 // BUILD: tensor.product_2d {{.*}} @ {{.*}}2
+// BUILD-SAME: stage
 // BUILD: rows
 // BUILD: fold
 // BUILD: tiled

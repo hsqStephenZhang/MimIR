@@ -38,40 +38,40 @@ fun mac (acc: I64, (x y: I64))@tt: I64 =
     return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
 fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
 lam rows (i _: affine.Index): affine.Index = i;
-lam product (a: «5, 3; I64», b: «3, 7; I64»): «5, 7; I64» =
+lam product (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 7) I64): tensor.Tensor 2 (5, 7) I64 =
     map_reduce ((5, 7), (5, 7, 3)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
 
-extern fun reverse (a: «5, 3; I64», b: «3, 7; I64»): [«5, 7; I64», «5; I64»] =
+extern fun reverse (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 7) I64): [tensor.Tensor 2 (5, 7) I64, tensor.Tensor 1 5 I64] =
     let p = product (a, b);
     let c = map_reduce (5, (5, 7)) (add, 0I64) rows (affine.id @2,) p;
     return (p, c);
 
-extern fun reduction (a: «5, 3; I64», b: «3, 7; I64»): [«5, 7; I64», «1; I64»] =
+extern fun reduction (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 7) I64): [tensor.Tensor 2 (5, 7) I64, tensor.Tensor 1 1 I64] =
     let p = product (a, b);
     let c = map_reduce (1, (1, 5, 7)) (add, 0I64) (proj_map @(3, 1) (0))
         (proj_map @(3, 2) (1, 2),) p;
     return (p, c);
 
-extern fun outer (a: «6, 4, 3; I64»): «4; I64» =
+extern fun outer (a: tensor.Tensor 3 (6, 4, 3) I64): tensor.Tensor 1 4 I64 =
     let p = map_reduce ((6, 4), (6, 4, 3)) (add, 0I64) (proj_map @(3, 2) (0, 1)) (affine.id @3,) (buf a);
     return (map_reduce (4, (4, 6)) (add, 0I64) rows
         ((λ (j i: affine.Index): «2; affine.Index» = (i, j)),) p);
 
-extern fun inner (a: «4, 1024, 3; I64»): «4, 1024; I64» =
+extern fun inner (a: tensor.Tensor 3 (4, 1024, 3) I64): tensor.Tensor 2 (4, 1024) I64 =
     let p = map_reduce ((4, 1024), (4, 1024, 3)) (add, 0I64) (proj_map @(3, 2) (0, 1)) (affine.id @3,) (buf a);
     return (map_reduce ((4, 1024), (4, 1024, 2)) (add, 0I64)
         (proj_map @(3, 2) (0, 1)) (proj_map @(3, 2) (0, 1),) p);
 
-extern fun gemm_epilogue (a: «5, 3; I64», b: «3, 7; I64»): «5, 7; I64» =
+extern fun gemm_epilogue (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 7) I64): tensor.Tensor 2 (5, 7) I64 =
     return (map_reduce ((5, 7), (5, 7)) (inc, 0I64) (affine.id @2) (affine.id @2,) (product (a, b)));
 
-extern fun mlp (a: «5, 3; I64», b: «3, 7; I64», c: «7, 11; I64»): «5, 11; I64» =
+extern fun mlp (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 7) I64, c: tensor.Tensor 2 (7, 11) I64): tensor.Tensor 2 (5, 11) I64 =
     let p = product (a, b);
     return (map_reduce ((5, 11), (5, 11, 7)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (p, buf c));
 
-extern fun conv_chain (a: «2, 2, 9, 8; I64», w: «3, 2, 3, 3; I64», v: «2, 3, 3, 3; I64»): «2, 2, 5, 4; I64» =
+extern fun conv_chain (a: tensor.Tensor 4 (2, 2, 9, 8) I64, w: tensor.Tensor 4 (3, 2, 3, 3) I64, v: tensor.Tensor 4 (2, 3, 3, 3) I64): tensor.Tensor 4 (2, 2, 5, 4) I64 =
     let ring = (I64, 0I64, core.wrap.add 0 @0, core.wrap.mul 0 @0);
     let p = conv ring ((1, 1), (1, 1), (0, 0)) (buf a, buf w);
     let p = map_reduce ((2, 3, 7, 6), (2, 3, 7, 6)) (inc, 0I64)

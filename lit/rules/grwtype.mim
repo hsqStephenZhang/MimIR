@@ -5,7 +5,7 @@
 
 plugin compile;
 plugin tensor;
-rule dynamic (f: Nat → Nat, x: «8, 6; Nat»):
+rule dynamic (f: Nat → Nat, x: tensor.Tensor 2 (8, 6) Nat):
     tensor.slice @(Nat, 2) (6, 8) ((1, 4), (1, 1), (2, 3))
         (tensor.transpose @(Nat, 2) (tt, ff) @(8, 6)
             (tensor.unary @(Nat, Nat) f @(2, (8, 6)) x)) =>
@@ -16,7 +16,7 @@ rule dynamic (f: Nat → Nat, x: «8, 6; Nat»):
         (tensor.unary @(Nat, Nat) f @(2, box#tt)
             (tensor.slice @(Nat, 2) (8, 6) (box#ff, (1, 1), box#tt) x));
 
-extern lam result (f: Nat → Nat, x: «8, 6; Nat»): «2, 3; Nat» =
+extern lam result (f: Nat → Nat, x: tensor.Tensor 2 (8, 6) Nat): tensor.Tensor 2 (2, 3) Nat =
     tensor.slice @(Nat, 2) (6, 8) ((1, 4), (1, 1), (2, 3))
         (tensor.transpose @(Nat, 2) (tt, ff) @(8, 6)
             (tensor.unary @(Nat, Nat) f @(2, (8, 6)) x));

@@ -4,10 +4,10 @@ plugin tensor;
 plugin core;
 plugin compile;
 use tensor;
-extern lam f (x: «2, 3; Nat»): «2, 3; Nat» =
+extern lam f (x: tensor.Tensor 2 (2, 3) Nat): tensor.Tensor 2 (2, 3) Nat =
     unary (λ (v: Nat): Nat = core.nat.add (v, 1))
         (stage @(Nat, 2, 0) (2, 3) ((), (), (0₂, 1₂), 0) 0 x);
-extern lam g (x: «2, 3; Nat»): «3, 2; Nat» =
+extern lam g (x: tensor.Tensor 2 (2, 3) Nat): tensor.Tensor 2 (3, 2) Nat =
     unary (λ (v: Nat): Nat = core.nat.add (v, 1))
         (stage @(Nat, 2, 0) (2, 3) ((), (), (1₂, 0₂), 0) 0 x);
 extern lam _compile (): compile.Phase =

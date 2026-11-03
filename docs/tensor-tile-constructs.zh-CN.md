@@ -1,5 +1,18 @@
 # Tensor-level tiling constructs（Task 7 / destination lowering）
 
+## 名义张量（Task 33B）
+
+数据张量统一使用 `tensor.Tensor r s T`，不再以 `«s; T»` 表示。
+张量 tuple 与真正的高维张量具有不同类型；形状、索引、标量参数数组仍使用 Arr。
+`from_array` 只用于静态 literal ingress，外部数据直接通过 Tensor 参数传入。
+元素访问使用 `get/set`，rank-0 与标量之间使用 `scalar/item`。
+零 extent 张量按 #641 拒绝；零次 `tile_fold` 仍可携带非空 accumulator。
+
+区域的 DATA-edge 隔离检查识别名义 Tensor，不把形状数组视为数据张量。
+bufferization 删除 Arr 角色猜测及按类型推断张量参数的表，按名义类型统一改写接口。
+张量读取也必须参与 memory threading：`get/item` 请求当前 memory，
+使 pinned callback 在 ABI 转换后仍保持初始化与读取的先后关系。
+
 ## Multi-result loop tiles（Task 32B）
 
 `tiled` 保留原单结果接口，并与多结果 `tiled_multi` 共用同一 loop/scratch lowering。
@@ -15,7 +28,7 @@ tiled_multi {n, g, Ts, rs} (shapes, s, ts) axes {I} ins body
 未映射的结果维度每 tile 全量写入；允许 permutation，不允许丢弃 grid 轴、
 stride、offset 或一般 affine write box。
 body 的参数仍为 `(off, ext)` 和显式 `ins`，返回各结果 tile 的 tuple：
-第 i 个类型为 `«tile_shape (shapes#i, axes#i, ext); Ts#i»`。
+第 i 个类型为 `Tensor (rs#i) (tile_shape (shapes#i, axes#i, ext)) (Ts#i)`。
 `tile_shape` 也可显式写出 rank 参数 `@(rs#i, g)`。
 
 normalizer 检查 B1 和 body 隔离性，不枚举所有 grid points 做 ownership proof。
@@ -37,11 +50,11 @@ reference implementation 使用同一 box 关系，并分别 specialize full/tai
 
 ```mim
 tiled {T, r} (s, ts) {I} ins
-    (body: [off ext: «r; Nat»] → I → «ext; T»)
+    (body: [off ext: «r; Nat»] → I → Tensor r ext T)
 tile_fold {Acc} (n, ks) init {I} ins
     (step: [acc: Acc, off: Nat] → I → Acc)
 tiled_n {n, g, Ts, rs} (shapes, grid) boxes {I} ins
-    (body: [point: «g; Nat»] → I → «i: n; «(boxes point)#i#tt; Ts#i»»)
+    (body: [point: «g; Nat»] → I → «i: n; Tensor (rs#i) ((boxes point)#i#tt) (Ts#i)»)
 ```
 
 `ins` 表示进入 region 前已经计算的完整数据值，不包含 access map；

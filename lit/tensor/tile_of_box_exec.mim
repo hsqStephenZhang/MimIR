@@ -11,16 +11,16 @@ plugin affine;
 use tensor;
 
 fun scale (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 3I64));
-extern fun edge (input: «7; I64», off: Nat): I64 =
+extern fun edge (input: tensor.Tensor 1 7 I64, off: Nat): I64 =
     let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf input);
     let size = core.nat.sub (7, off);
     let values = tile_of_box (p, off, size, 3);
-    return (core.wrap.add 0 (values#(core.idx 0 size 0), values#(core.idx 0 size (core.nat.sub (size, 1)))));
+    return (core.wrap.add 0 (get (values, core.idx 0 size 0), get (values, core.idx 0 size (core.nat.sub (size, 1)))));
 
-extern fun tiles (input: «7; I64»): «7; I64» =
+extern fun tiles (input: tensor.Tensor 1 7 I64): tensor.Tensor 1 7 I64 =
     let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf input);
     return (tiled @(I64, 1) (7, 3)
         input
-        (λ (off ext: «1; Nat») (input): «ext; I64» =
+        (λ (off ext: «1; Nat») (input): tensor.Tensor 1 ext I64 =
             let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf input);
             tile_of_box (p, off, ext, ext)));

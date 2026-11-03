@@ -9,23 +9,23 @@ plugin math;
 let F = math.F32;
 let add = math.arith.add math.mode.contract;
 let mul = math.arith.mul math.mode.contract;
-lam carry (n: Nat, a: «4; F», b: «3; F»): [«4; F», «3; F»] =
-    let Acc = [«4; F», «3; F», F];
+lam carry (n: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] =
+    let Acc = [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F, F];
     let (a, b, _) = tensor.tile_fold @Acc (n, 1) (tensor.buf a, tensor.buf b, 1.0:F)
-        () (λ ((a: «4; F», b: «3; F», step: F), _: Nat) (): Acc =
-            let sum_a = tensor.reduce (add, 0:F) @1 0₁ @4 a;
-            let sum_b = tensor.reduce (add, 0:F) @1 0₁ @3 b;
+        () (λ ((a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F, step: F), _: Nat) (): Acc =
+            let sum_a = tensor.item (tensor.reduce (add, 0:F) @1 0₁ @4 a);
+            let sum_b = tensor.item (tensor.reduce (add, 0:F) @1 0₁ @3 b);
             (tensor.unary (λ x: F: F = add (x, mul (sum_b, step))) a,
              tensor.unary (λ x: F: F = add (x, mul (sum_a, step))) b,
              add (step, 1.0:F)));
     (a, b);
 
-lam doubled (n: Nat, a: «4; F», b: «3; F»): [«4; F», «3; F»] =
+lam doubled (n: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] =
     let (a, b) = carry (n, a, b);
     (tensor.unary (λ x: F: F = mul (x, 2.0:F)) a,
      tensor.unary (λ x: F: F = mul (x, 2.0:F)) b);
 
-extern fun fold (n: Nat, a: «4; F», b: «3; F»): [«4; F», «3; F»] = return (carry (n, a, b));
-extern fun consume (n: Nat, a: «4; F», b: «3; F»): [«4; F», «3; F»] = return (doubled (n, a, b));
-extern fun even (_: Nat, a: «4; F», b: «3; F»): [«4; F», «3; F»] = return (doubled (2, a, b));
-extern fun odd (_: Nat, a: «4; F», b: «3; F»): [«4; F», «3; F»] = return (doubled (5, a, b));
+extern fun fold (n: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] = return (carry (n, a, b));
+extern fun consume (n: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] = return (doubled (n, a, b));
+extern fun even (_: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] = return (doubled (2, a, b));
+extern fun odd (_: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] = return (doubled (5, a, b));

@@ -7,8 +7,8 @@ extern "C" float* rule_full(float*, float*);
 extern "C" float* hand_full(float*, float*);
 extern "C" float* rule_tail(float*, float*);
 extern "C" float* hand_tail(float*, float*);
-extern "C" float rule_skinny(float*, float*);
-extern "C" float hand_skinny(float*, float*);
+extern "C" float* rule_skinny(float*, float*);
+extern "C" float* hand_skinny(float*, float*);
 extern "C" float* rule_register_tail(float*, float*);
 extern "C" float* hand_register_tail(float*, float*);
 
@@ -37,5 +37,9 @@ int main() {
     check(5, 9, 19, rule_register_tail);
     check(5, 9, 19, hand_register_tail);
     float a[7] = {1, 2, 3, 4, 5, 6, 7};
-    assert(rule_skinny(a, a) == 140 && hand_skinny(a, a) == 140);
+    auto rule  = rule_skinny(a, a);
+    auto hand  = hand_skinny(a, a);
+    assert(rule[0] == 140 && hand[0] == 140);
+    std::free(rule);
+    std::free(hand);
 }

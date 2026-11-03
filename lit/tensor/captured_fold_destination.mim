@@ -6,14 +6,14 @@ plugin affine;
 plugin compile;
 use tensor;
 fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
-extern fun folded_reader (x: «3; I64»): «3; I64» =
+extern fun folded_reader (x: tensor.Tensor 1 3 I64): tensor.Tensor 1 3 I64 =
     let acc = tile_fold (3, 1) (buf x) ()
-        (λ (acc: «3; I64», _: Nat) (): «3; I64» =
+        (λ (acc: tensor.Tensor 1 3 I64, _: Nat) (): tensor.Tensor 1 3 I64 =
         map_reduce_post @(1, 0) @(I64, I64, 1, 1, SchedT)
             (3, 3, mk_sched (1, 0)) @(I64, 1, 3, (), (), ())
             (add, outs_default @(I64, 1) 3 acc, id @I64) (affine.id @1)
             (affine.id @1, ()) (splat (3, 1I64), ()));
-    return (generate 3 (λ (i: I64): I64 = acc#(core.conv.u @0 @3 i)));
+    return (generate 3 (λ (i: I64): I64 = get (acc, core.conv.u @0 @3 i)));
 extern lam _compile (): compile.Phase =
     compile.phases ff (lower_tensor, fuse_tensor, lower_to_mem, compile.cleanup);
 

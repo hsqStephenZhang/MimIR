@@ -14,25 +14,25 @@ use tensor;
 
 fun scale (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
 fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
-lam producer (a: «7; I64»): «7; I64» =
+lam producer (a: tensor.Tensor 1 7 I64): tensor.Tensor 1 7 I64 =
     map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf a);
-lam window (p: «7; I64»): «5; I64» =
+lam window (p: tensor.Tensor 1 7 I64): tensor.Tensor 1 5 I64 =
     map_reduce (5, (5, 3)) (add, 0I64) (proj_map @(2, 1) 0)
         ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
-lam tiled_window (p: «7; I64», ts: Nat): «5; I64» =
+lam tiled_window (p: tensor.Tensor 1 7 I64, ts: Nat): tensor.Tensor 1 5 I64 =
     tiled @(I64, 1) (5, ts)
         p
-        (λ (off ext: «1; Nat») (p): «ext; I64» = tile_of_box (window p, off, ext, ext));
+        (λ (off ext: «1; Nat») (p): tensor.Tensor 1 ext I64 = tile_of_box (window p, off, ext, ext));
 
-extern fun accepted (a: «7; I64»): «5; I64» = return (tiled_window (producer a, 2));
-extern fun overlap_exceeds_budget (a: «7; I64»): «5; I64» = return (tiled_window (producer a, 1));
-extern fun shared_whole (a: «7; I64»): [«5; I64», «7; I64»] =
+extern fun accepted (a: tensor.Tensor 1 7 I64): tensor.Tensor 1 5 I64 = return (tiled_window (producer a, 2));
+extern fun overlap_exceeds_budget (a: tensor.Tensor 1 7 I64): tensor.Tensor 1 5 I64 = return (tiled_window (producer a, 1));
+extern fun shared_whole (a: tensor.Tensor 1 7 I64): [tensor.Tensor 1 5 I64, tensor.Tensor 1 7 I64] =
     let p = producer a;
     return (tiled_window (p, 2), p);
-extern fun unknown_count (a: «7; I64», count: Nat): «5; I64» =
+extern fun unknown_count (a: tensor.Tensor 1 7 I64, count: Nat): tensor.Tensor 1 5 I64 =
     let p = producer a;
     return (tile_fold (count, 1) (splat (5, 0I64)) p
-        (λ (_: «5; I64», _: Nat) (p): «5; I64» = tiled_window (p, 2)));
+        (λ (_: tensor.Tensor 1 5 I64, _: Nat) (p): tensor.Tensor 1 5 I64 = tiled_window (p, 2)));
 
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (7,
 // CHECK: btensor.clip_sched

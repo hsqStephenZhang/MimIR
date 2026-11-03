@@ -9,7 +9,7 @@ plugin affine;
 import compile;
 
 fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
-extern fun stacked (x: «5; I64»): «5; I64» =
+extern fun stacked (x: tensor.Tensor 1 5 I64): tensor.Tensor 1 5 I64 =
     let p = tensor.map_reduce (5, 5) (inc, 0I64) (affine.id @1) (affine.id @1,) (tensor.buf x);
     let p = tensor.group_req (p, 0, 0, 2, 1);
     return (tensor.group_req (p, 0, 0, 2, 1));

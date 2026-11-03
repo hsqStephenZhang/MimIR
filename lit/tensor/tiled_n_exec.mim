@@ -19,11 +19,11 @@ lam boxes (point: Nat): [TileBox 2, TileBox 1] =
     let rows = (2, 1)#(point == 2);
     (((point * 2, 0), (rows, 3)), (point * 2, rows));
 
-lam paired_value (x: «5, 3; I64»): [«5, 3; I64», «5; I64»] =
+lam paired_value (x: tensor.Tensor 2 (5, 3) I64): [tensor.Tensor 2 (5, 3) I64, tensor.Tensor 1 5 I64] =
     let x = buf x;
     tiled_n @(2, 1, (I64, I64), (2, 1)) (((5, 3), 5), 3) boxes
         x
-        (λ (point: Nat) (x): [«(boxes point)#ff#tt; I64», «(boxes point)#tt#tt; I64»] =
+        (λ (point: Nat) (x): [tensor.Tensor 2 ((boxes point)#ff#tt) I64, tensor.Tensor 1 ((boxes point)#tt#tt) I64] =
             let (off, ext) = (boxes point)#ff;
             let p = map_reduce (ext, ext) (twice, 0I64) (affine.id @2) (affine.id @2,)
                 (slice (5, 3) (off, (1, 1), ext) x);
@@ -31,28 +31,24 @@ lam paired_value (x: «5, 3; I64»): [«5, 3; I64», «5; I64»] =
             let q = map_reduce (rows, (rows, 3)) (add, 0I64) first (affine.id @2,) p;
             (p, q));
 
-extern fun paired (x: «5, 3; I64»): [«5, 3; I64», «5; I64»] = return (paired_value x);
+extern fun paired (x: tensor.Tensor 2 (5, 3) I64): [tensor.Tensor 2 (5, 3) I64, tensor.Tensor 1 5 I64] = return (paired_value x);
 
-extern fun whole_reader (x: «5, 3; I64»): «5; I64» =
+extern fun whole_reader (x: tensor.Tensor 2 (5, 3) I64): tensor.Tensor 1 5 I64 =
     let (p, _) = paired_value x;
     return (map_reduce (5, (5, 3)) (add, 0I64) first (affine.id @2,) p);
 
-extern fun empty (x: «0; I64»): [«0; I64», «0; I64»] =
-    return (tiled_n @(2, 1, (I64, I64), (1, 1)) ((0, 0), 0)
-        (λ (_: Nat): [TileBox 1, TileBox 1] = ((0, 0), (0, 0)))
-        x (λ (_: Nat) (x: «0; I64»): [«0; I64», «0; I64»] = (x, x)));
-
-extern fun singleton (x: I64): [I64, I64] =
+extern fun singleton (x: I64): [tensor.Tensor 0 () I64, tensor.Tensor 1 1 I64] =
     return (tiled_n @(2, 0, (I64, I64), (0, 1)) (((), 1), ())
         (λ (_: []): [TileBox 0, TileBox 1] = (((), ()), (0, 1)))
-        () (λ (_: []) (): [I64, I64] = (x, core.wrap.mul 0 (x, 2I64))));
+        () (λ (_: []) (): [tensor.Tensor 0 () I64, tensor.Tensor 1 1 I64] =
+            (scalar x, splat (1, core.wrap.mul 0 (x, 2I64)))));
 
 lam mixed_boxes (point: «2; Nat»): [TileBox 2, TileBox 2] =
     ((point, (1, 1)), ((point#tt, point#ff), (1, 1)));
-extern fun mixed (x: «2, 3; I64»): [«2, 3; I64», «3, 2; I32»] =
+extern fun mixed (x: tensor.Tensor 2 (2, 3) I64): [tensor.Tensor 2 (2, 3) I64, tensor.Tensor 2 (3, 2) I32] =
     let x = buf x;
     return (tiled_n @(2, 2, (I64, I32), (2, 2)) (((2, 3), (3, 2)), (2, 3)) mixed_boxes
         x
-        (λ (point: «2; Nat») (x: «2, 3; I64»): [I64, I32] =
-            let value = x#(core.idx 0 2 (point#ff), core.idx 0 3 (point#tt));
-            (value, core.conv.s 4294967296 (core.wrap.add 0 (value, 1I64)))));
+        (λ (point: «2; Nat») (x: tensor.Tensor 2 (2, 3) I64): [tensor.Tensor 2 (1, 1) I64, tensor.Tensor 2 (1, 1) I32] =
+            let value = get (x, (core.idx 0 2 (point#ff), core.idx 0 3 (point#tt)));
+            (splat ((1, 1), value), splat ((1, 1), core.conv.s 4294967296 (core.wrap.add 0 (value, 1I64))))));

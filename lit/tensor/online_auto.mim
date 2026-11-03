@@ -9,23 +9,23 @@ plugin math;
 let F = math.F32;
 let mode = math.mode.contract;
 let R: tensor.Ring = (F, 0:F, math.arith.add mode, math.arith.mul mode);
-lam probabilities (q: «2, 5, 3; F», k: «2, 7, 3; F», mask: «2, 5, 7; F»): «2, 5, 7; F» =
+lam probabilities (q: tensor.Tensor 3 (2, 5, 3) F, k: tensor.Tensor 3 (2, 7, 3) F, mask: tensor.Tensor 3 (2, 5, 7) F): tensor.Tensor 3 (2, 5, 7) F =
     let scores = tensor.dot_product R @(3, 3) @(1, 1)
         (2₃, 2₃, 0₃, 0₃) @((2, 5, 3), (2, 7, 3)) (q, k);
     let scores = tensor.unary (λ x: F: F = math.arith.mul mode (x, 0.5:F)) scores;
     tensor.softmax mode @math.f32 @3 2₃ @(2, 5, 7)
         (tensor.binary (math.arith.add mode) (scores, mask));
 
-extern fun plain (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
-                  v: «2, 7, 4; math.F32»): «2, 5, 4; math.F32» =
+extern fun plain (q: tensor.Tensor 3 (2, 5, 3) math.F32, k: tensor.Tensor 3 (2, 7, 3) math.F32,
+                  v: tensor.Tensor 3 (2, 7, 4) math.F32): tensor.Tensor 3 (2, 5, 4) math.F32 =
     let scores = tensor.dot_product R @(3, 3) @(1, 1)
         (2₃, 2₃, 0₃, 0₃) @((2, 5, 3), (2, 7, 3)) (tensor.buf q, tensor.buf k);
     let scores = tensor.unary (λ x: F: F = math.arith.mul mode (x, 0.5:F)) scores;
     let p = tensor.softmax mode @math.f32 @3 2₃ @(2, 5, 7) scores;
     return (tensor.dot_product R @(3, 3) @(1, 1)
         (2₃, 1₃, 0₃, 0₃) @((2, 5, 7), (2, 7, 4)) (p, tensor.buf v));
-extern fun masked (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
-                   v: «2, 7, 4; math.F32», mask: «2, 5, 7; math.F32»): «2, 5, 4; math.F32» =
+extern fun masked (q: tensor.Tensor 3 (2, 5, 3) math.F32, k: tensor.Tensor 3 (2, 7, 3) math.F32,
+                   v: tensor.Tensor 3 (2, 7, 4) math.F32, mask: tensor.Tensor 3 (2, 5, 7) math.F32): tensor.Tensor 3 (2, 5, 4) math.F32 =
     let p = probabilities (tensor.buf q, tensor.buf k, tensor.buf mask);
     return (tensor.dot_product R @(3, 3) @(1, 1)
         (2₃, 1₃, 0₃, 0₃) @((2, 5, 7), (2, 7, 4)) (p, tensor.buf v));

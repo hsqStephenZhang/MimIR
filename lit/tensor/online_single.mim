@@ -7,11 +7,11 @@ plugin math;
 import opt;
 plugin compile;
 
-extern fun singleton (q: «1, 3, 1; math.F32», k: «1, 1, 1; math.F32»,
-                      v: «1, 1, 2; math.F32»): «1, 3, 2; math.F32» =
+extern fun singleton (q: tensor.Tensor 3 (1, 3, 1) math.F32, k: tensor.Tensor 3 (1, 1, 1) math.F32,
+                      v: tensor.Tensor 3 (1, 1, 2) math.F32): tensor.Tensor 3 (1, 3, 2) math.F32 =
     return (tensor.sdpa math.mode.contract @(1, 3, 1, 1, 2)
         (0.5:math.F32, tensor.buf q, tensor.buf k, tensor.buf v));
-extern fun scalar (q k v: «1, 1, 1; math.F32»): «1, 1, 1; math.F32» =
+extern fun scalar (q k v: tensor.Tensor 3 (1, 1, 1) math.F32): tensor.Tensor 3 (1, 1, 1) math.F32 =
     return (tensor.sdpa math.mode.contract @(1, 1, 1, 1, 1)
         (0.5:math.F32, tensor.buf q, tensor.buf k, tensor.buf v));
 

@@ -11,7 +11,7 @@ plugin core;
 plugin math;
 
 let R: tensor.Ring = (math.F32, 0:math.F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
-extern fun dot (a: «256, 2, 2; math.F32», b: «256, 2, 2; math.F32»): «256, 2, 2; math.F32» =
+extern fun dot (a: tensor.Tensor 3 (256, 2, 2) math.F32, b: tensor.Tensor 3 (256, 2, 2) math.F32): tensor.Tensor 3 (256, 2, 2) math.F32 =
     return (tensor.bmm R @(256, 2, 2, 2) (tensor.buf a, tensor.buf b));
 
 // CHECK: tensor.group contraction

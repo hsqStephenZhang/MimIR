@@ -8,8 +8,7 @@ struct Pair {
 };
 extern "C" Pair paired(int64_t*);
 extern "C" int64_t* whole_reader(int64_t*);
-extern "C" Pair empty(int64_t*);
-extern "C" int64_t* singleton(int64_t);
+extern "C" Pair singleton(int64_t);
 struct Mixed {
     int64_t* full;
     int32_t* transposed;
@@ -34,10 +33,10 @@ int main() {
     std::free(result.full);
     std::free(result.rows);
     std::free(rows);
-    empty(input);
     auto scalar = singleton(-9);
-    assert(scalar[0] == -9 && scalar[1] == -18);
-    std::free(scalar);
+    assert(scalar.full[0] == -9 && scalar.rows[0] == -18);
+    std::free(scalar.full);
+    std::free(scalar.rows);
     auto hetero = mixed(input);
     for (int i = 0; i != 2; ++i)
         for (int j = 0; j != 3; ++j) {

@@ -7,21 +7,20 @@ plugin compile;
 plugin tensor;
 // tiled is a tile iterator; read uses a real sliced tensor; stage is still a modeled resource.
 axm tiled: (Nat → Nat) → Nat;
-axm read: «2; Nat» → Nat;
-axm stage: «2; Nat» → «2; Nat»;
-rule cache (b: «8; Nat»):
+axm read: (tensor.Tensor 1 2 Nat) → Nat;
+axm stage: (tensor.Tensor 1 2 Nat) → tensor.Tensor 1 2 Nat;
+rule cache (b: tensor.Tensor 1 8 Nat):
     tiled (λ (jo: Nat): Nat =
         tiled (λ (io: Nat): Nat = read (tensor.slice @(Nat, 1) 8 (jo, 1, 2) b))) =>
     tiled (λ (jo: Nat): Nat =
         let bp = stage (tensor.slice @(Nat, 1) 8 (jo, 1, 2) b);
         tiled (λ (io: Nat): Nat = read bp));
-extern lam result (b: «8; Nat», salt: Nat): Nat =
+extern lam result (b: tensor.Tensor 1 8 Nat, salt: Nat): Nat =
     tiled (λ (jo: Nat): Nat =
         tiled (λ (io: Nat): Nat = read (tensor.slice @(Nat, 1) 8 (jo, 1, 2) b)));
 
 // POST-LABEL: extern lam result
 // POST: lam {{.*}} (jo: Nat)
-// POST: tensor.slice
-// POST: let [[BP:[a-zA-Z_][a-zA-Z_0-9]*]] = stage
+// POST: let [[TILE:[a-zA-Z_][a-zA-Z_0-9]*]] = tensor.slice
 // POST: lam
-// POST: read [[BP]]
+// POST: read (stage [[TILE]])

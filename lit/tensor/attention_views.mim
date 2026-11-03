@@ -9,13 +9,13 @@ let F = math.F32;
 let mode = math.mode.contract;
 let R: tensor.Ring = (F, 0:F, math.arith.add mode, math.arith.mul mode);
 
-lam heads (column: Nat, qkv: «5, 24; F»): «2, 5, 4; F» =
+lam heads (column: Nat, qkv: tensor.Tensor 2 (5, 24) F): tensor.Tensor 3 (2, 5, 4) F =
     let t = tensor.slice @(F, 2) (5, 24) ((0, column), (1, 1), (5, 8)) qkv;
     let t = tensor.reshape (5, 8) (1, 5, 2, 4) t;
     let t = tensor.transpose @(F, 4) (0₄, 2₄, 1₄, 3₄) @(1, 5, 2, 4) t;
     tensor.reshape (1, 2, 5, 4) (2, 5, 4) t;
 
-lam attention (qkv: «5, 24; F»): «2, 5, 4; F» =
+lam attention (qkv: tensor.Tensor 2 (5, 24) F): tensor.Tensor 3 (2, 5, 4) F =
     let (q, k, v) = (heads (0, qkv), heads (8, qkv), heads (16, qkv));
     let s = tensor.dot_product R @(3, 3) @(1, 1) (2₃, 2₃, 0₃, 0₃)
         @((2, 5, 4), (2, 5, 4)) (q, k);
@@ -24,9 +24,9 @@ lam attention (qkv: «5, 24; F»): «2, 5, 4; F» =
     tensor.dot_product R @(3, 3) @(1, 1) (2₃, 1₃, 0₃, 0₃)
         @((2, 5, 5), (2, 5, 4)) (p, v);
 
-extern fun attention_model (qkv: «5, 24; F»): «2, 5, 4; F» =
+extern fun attention_model (qkv: tensor.Tensor 2 (5, 24) F): tensor.Tensor 3 (2, 5, 4) F =
     return (attention (tensor.buf qkv));
-extern fun transformer_model (qkv: «5, 24; F», residual: «2, 5, 4; F»): «2, 5, 4; F» =
+extern fun transformer_model (qkv: tensor.Tensor 2 (5, 24) F, residual: tensor.Tensor 3 (2, 5, 4) F): tensor.Tensor 3 (2, 5, 4) F =
     return (tensor.binary (math.arith.add mode) @(3, (2, 5, 4))
         (attention (tensor.buf qkv), tensor.buf residual));
 

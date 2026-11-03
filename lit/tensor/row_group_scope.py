@@ -26,9 +26,9 @@ if mode == "cross":
     let sum = row_sum exp;""",
     )
     text += "\nfun copy (_ x: F32)@tt: F32 = return x;\n"
-result_type = "[«5, 7; F32», «5, 7; F32»]" if mode == "escape" else "«5, 7; F32»"
+result_type = "[tensor.Tensor 2 (5, 7) F32, tensor.Tensor 2 (5, 7) F32]" if mode == "escape" else "tensor.Tensor 2 (5, 7) F32"
 result = "(result, exp)" if mode == "escape" else "result"
-text += f"\nextern fun probe (x: «5, 7; F32»): {result_type} =\n{values}    return {result};\n"
+text += f"\nextern fun probe (x: tensor.Tensor 2 (5, 7) F32): {result_type} =\n{values}    return {result};\n"
 text += """
 extern lam _compile (): compile.Phase =
     compile.phases ff (tensor.lower_tensor, tensor.fuse_tensor, tensor.group, compile.cleanup);

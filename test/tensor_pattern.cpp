@@ -24,7 +24,7 @@ TEST_CASE("Tensor witnesses: transpose box follows source-axis permutation in th
     auto nat         = w.type_nat();
     auto rank        = w.lit_nat(3);
     auto dims        = w.tuple({w.lit_nat(5), w.lit_nat(7), w.lit_nat(11)});
-    auto input       = w.axm(w.arr(Defs{w.lit_nat(5), w.lit_nat(7), w.lit_nat(11)}, nat));
+    auto input       = w.axm(tensor::type_tensor(rank, dims, nat));
     auto permutation = w.tuple({w.lit_idx(3, 1), w.lit_idx(3, 2), w.lit_idx(3, 0)});
     auto op          = w.app(w.app(w.app(w.annex<tensor::transpose>(), {nat, rank}), permutation), dims);
     auto source      = w.app(op, input);
@@ -72,7 +72,7 @@ struct TensorIR {
         return w.app(w.app(w.app(w.annex<tensor::product_2d>(), R), dims), {a, b});
     }
     const Def* matrix(const Def* m, const Def* n, const Def* type = nullptr) {
-        return w.arr(Defs{m, n}, type ? type : w.type_nat());
+        return tensor::type_tensor(w.lit_nat(2), w.tuple({m, n}), type ? type : w.type_nat());
     }
     Lam* function(std::array<const Def*, 3> widths,
                   const Def* R           = nullptr,
@@ -133,7 +133,7 @@ TEST_CASE("Tensor witnesses: reverse geometry is frozen and preserves shared-gri
         plugin affine;
         use tensor;
         fun inc (_ x: Nat)@tt: Nat = return (core.nat.add (x, 1));
-        extern lam f (x: «6, 5; Nat», dim size: Nat): [«6, 5; Nat», «5, 6; Nat»] =
+        extern lam f (x: tensor.Tensor 2 (6, 5) Nat, dim size: Nat): [tensor.Tensor 2 (6, 5) Nat, tensor.Tensor 2 (5, 6) Nat] =
             let p = map_reduce ((6, 5), (6, 5)) (inc, 0) (affine.id @2) (affine.id @2,) x;
             let c = map_reduce ((5, 6), (5, 6)) (inc, 0) (affine.id @2)
                 ((λ (j i: affine.Index): «2; affine.Index» = (i, j)),) p;
@@ -206,7 +206,7 @@ TEST_CASE("Tensor grouping: requests preserve provenance, identity, and metadata
         fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
         fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
         lam row (i _: affine.Index): affine.Index = i;
-        extern lam f (x: «5, 7; I64»): [«5, 7; I64», «5; I64»] =
+        extern lam f (x: tensor.Tensor 2 (5, 7) I64): [tensor.Tensor 2 (5, 7) I64, tensor.Tensor 1 5 I64] =
             let p = map_reduce ((5, 7), (5, 7)) (inc, 0I64) (affine.id @2) (affine.id @2,) x;
             let c = map_reduce (5, (5, 7)) (add, 0I64) row (affine.id @2,) p;
             (p, c);
@@ -263,12 +263,13 @@ TEST_CASE("Tensor pattern: product schema excludes ring and shape metadata") {
     CHECK(ir.w.curr_gid() == gid);
 }
 
-TEST_CASE("Tensor pattern: concat expands input slots but preserves tensor-valued Packs") {
+TEST_CASE("Tensor pattern: concat expands input slots with nominal tensor literals") {
     TensorIR ir;
     auto& w     = ir.w;
-    auto a      = w.pack(Defs{w.lit_nat(3), w.lit_nat(4)}, w.lit_nat(7));
-    auto b      = w.pack(Defs{w.lit_nat(3), w.lit_nat(4)}, w.lit_nat(8));
-    auto c      = w.pack(Defs{w.lit_nat(3), w.lit_nat(4)}, w.lit_nat(9));
+    auto type   = ir.matrix(w.lit_nat(3), w.lit_nat(4));
+    auto a      = tensor::op_from_array(type, w.pack(Defs{w.lit_nat(3), w.lit_nat(4)}, w.lit_nat(7)));
+    auto b      = tensor::op_from_array(type, w.pack(Defs{w.lit_nat(3), w.lit_nat(4)}, w.lit_nat(8)));
+    auto c      = tensor::op_from_array(type, w.pack(Defs{w.lit_nat(3), w.lit_nat(4)}, w.lit_nat(9)));
     auto concat = w.app(
         w.app(w.app(w.app(w.annex<tensor::concat>(), {w.type_nat(), w.lit_nat(3), w.lit_nat(2)}), w.lit_idx(2, 1)),
               w.pack(3, ir.shape(3, 4))),
@@ -294,7 +295,7 @@ TEST_CASE("Tensor pattern: map-reduce schemas handle singleton and three-input p
         plugin affine;
         use tensor;
         fun fold (acc: Nat, xs: «3; Nat»)@tt: Nat = return (core.nat.add (xs#0_3, core.nat.add (xs#1_3, xs#2_3)));
-        extern lam f (a b c: «2, 3, 4; Nat», unused: Bool): «2, 3, 4; Nat» =
+        extern lam f (a b c: tensor.Tensor 3 (2, 3, 4) Nat, unused: Bool): tensor.Tensor 3 (2, 3, 4) Nat =
             map_reduce ((2, 3, 4), (2, 3, 4)) (fold, 0) (affine.id @3)
                 ‹3; affine.id @3› (a, b, c);
     )");
@@ -324,7 +325,7 @@ TEST_CASE("Tensor pattern: tensor accumulators are declared data inputs") {
             plugin affine;
             use tensor;
             fun add (acc: Nat, x: Nat)@tt: Nat = return (core.nat.add (acc, x));
-            extern lam f (x: «3; Nat», values: «3, 5; Nat»): «3; Nat» =
+            extern lam f (x: tensor.Tensor 1 3 Nat, values: tensor.Tensor 2 (3, 5) Nat): tensor.Tensor 1 3 Nat =
                 map_reduce_post @(1, 0) @(Nat, Nat, 1, 2, SchedT)
                     (3, (3, 5), mk_sched (2, 0)) @(Nat, 2, (3, 5), (), (), ())
                     (add, outs @(Nat, 1, 2) 3 (proj_map @(2, 1) 0) x, id @Nat)
@@ -350,7 +351,7 @@ TEST_CASE("Tensor halo: image caps survive runtime clipping and recursive produc
         use tensor;
         fun scale (_ x: Nat)@tt: Nat = return (core.nat.mul (x, 2));
         fun add (acc x: Nat)@tt: Nat = return (core.nat.add (acc, x));
-        extern lam f (a: «7; Nat», off: Nat): «5; Nat» =
+        extern lam f (a: tensor.Tensor 1 7 Nat, off: Nat): tensor.Tensor 1 5 Nat =
             let p = map_reduce (7, 7) (scale, 0) (affine.id @1) (affine.id @1,) a;
             map_reduce (5, (5, 3)) (add, 0) (proj_map @(2, 1) 0)
                 ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
@@ -456,7 +457,7 @@ TEST_CASE("Tensor graph rewrite: symbolic width and overflowing total width are 
 TEST_CASE("Tensor graph rewrite: singleton axes and symbolic rows preserve declared shapes") {
     TensorIR ir;
     auto rows = ir.w.lit_nat(1);
-    SUBCASE("rank collapses to scalar for the first output") {
+    SUBCASE("singleton matrix axes remain nominal") {
         ir.function({ir.w.lit_nat(1), ir.w.lit_nat(2), ir.w.lit_nat(3)}, nullptr, true, rows, ir.w.lit_nat(1));
     }
     SUBCASE("symbolic rows") {
@@ -494,7 +495,7 @@ TEST_CASE("Tensor graph rewrite: conditional purity is checked for newly constru
 TEST_CASE("Tensor pattern: broadcast exposes only its tensor operand") {
     TensorIR ir;
     auto& w        = ir.w;
-    auto input     = w.axm(w.arr(3, w.type_nat()));
+    auto input     = w.axm(ir.matrix(w.lit_nat(1), w.lit_nat(3)));
     auto broadcast = w.app(w.app(w.annex<tensor::broadcast>(), {w.type_nat(), w.lit_nat(2)}),
                            {ir.shape(1, 3), ir.shape(2, 3), input});
     auto gid       = w.curr_gid();
@@ -508,15 +509,16 @@ TEST_CASE("Tensor pattern: broadcast exposes only its tensor operand") {
     CHECK(w.curr_gid() == gid);
 }
 
-TEST_CASE("Tensor pattern: opaque and fused input wrappers remain explicitly incomplete") {
+TEST_CASE("Tensor pattern: opaque input wrappers remain explicitly incomplete") {
     TensorIR ir;
     auto& w     = ir.w;
     auto meta   = w.tuple({w.type_nat(), w.lit_nat(3), w.lit_nat(2)});
     auto callee = w.app(w.app(w.app(w.annex<tensor::concat>(), meta), w.lit_idx(2, 1)), w.pack(3, ir.shape(3, 4)));
     const Def* values = nullptr;
     SUBCASE("opaque aggregate") { values = w.axm(callee->type()->as<Pi>()->dom()); }
-    SUBCASE("fused tensor-valued Pack") {
-        values = w.pack(Defs{w.lit_nat(3), w.lit_nat(3), w.lit_nat(4)}, w.lit_nat(7));
+    SUBCASE("opaque computed aggregate") {
+        auto producer = w.axm(w.pi(w.type_nat(), callee->type()->as<Pi>()->dom()));
+        values        = w.app(producer, w.lit_nat(7));
     }
     auto concat  = w.app(callee, values);
     auto gid     = w.curr_gid();
@@ -537,7 +539,7 @@ TEST_CASE("Tensor pattern: combiner and multiple epilogue slots are distinct dat
         fun fold (acc x: Nat)@tt: Nat = return (core.nat.add (acc, x));
         fun post (x: Nat, extras: «2; Nat»)@tt: Nat =
             return (core.nat.add (x, core.nat.add (extras#0_2, extras#1_2)));
-        extern lam f (a: «2; Nat», unused: Bool): «2; Nat» =
+        extern lam f (a: tensor.Tensor 1 2 Nat, unused: Bool): tensor.Tensor 1 2 Nat =
             map_reduce_post (2, 2, mk_sched (1, 0)) (fold, 0, post)
                 (proj_map 0) (proj_map 0, ‹2; proj_map 0›) (a, (a, a));
     )");
@@ -572,17 +574,19 @@ TEST_CASE("Tensor graph rewrite: wrapping integer rings are accepted and checked
     CHECK(ir.count(Product) == (mode == 0 ? 1 : 3));
 }
 
-TEST_CASE("Tensor graph rewrite: identical tensor types do not prove logical shape equality") {
+TEST_CASE("Tensor graph rewrite: fold-equivalent arrays have distinct nominal tensor shapes") {
     TensorIR ir;
     auto& w     = ir.w;
     auto R      = ir.ring();
-    auto x      = w.axm(w.arr(3, w.type_nat()));
+    auto x      = w.axm(ir.matrix(w.lit_nat(1), w.lit_nat(3)));
+    auto tall   = w.axm(ir.matrix(w.lit_nat(3), w.lit_nat(1)));
     auto wide   = w.axm(ir.matrix(w.lit_nat(3), w.lit_nat(4)));
     auto wide2  = w.axm(wide->type());
-    auto narrow = w.axm(w.arr(4, w.type_nat()));
+    auto narrow = w.axm(ir.matrix(w.lit_nat(1), w.lit_nat(4)));
     auto a      = ir.product(R, w.tuple({w.lit_nat(1), w.lit_nat(3), w.lit_nat(4)}), x, wide);
     auto b      = ir.product(R, w.tuple({w.lit_nat(1), w.lit_nat(3), w.lit_nat(4)}), x, wide2);
-    auto c      = ir.product(R, w.tuple({w.lit_nat(3), w.lit_nat(1), w.lit_nat(4)}), x, narrow);
+    auto c      = ir.product(R, w.tuple({w.lit_nat(3), w.lit_nat(1), w.lit_nat(4)}), tall, narrow);
+    CHECK(x->type() != tall->type());
     auto body   = w.tuple({a, b, c});
     auto fn     = w.mut_lam(w.pi(w.sigma({}), body->type()))->set("f");
     fn->set(false, body)->externalize();
@@ -618,7 +622,7 @@ TEST_CASE("Tensor fusion: repeating a reduction in two slots never duplicates th
         plugin core;
         use tensor;
         let Ring = (Nat, 0, core.nat.add, core.nat.mul);
-        extern lam f (a: «2, 3; Nat», b: «3, 4; Nat»): «2, 4; Nat» =
+        extern lam f (a: tensor.Tensor 2 (2, 3) Nat, b: tensor.Tensor 2 (3, 4) Nat): tensor.Tensor 2 (2, 4) Nat =
             let product = product_2d Ring (a, b);
             binary core.nat.add (product, product);
     )");

@@ -17,35 +17,35 @@ lam first2 (i j _: affine.Index): «2; affine.Index» = (i, j);
 lam first (i _: affine.Index): affine.Index = i;
 lam transposed (j i: affine.Index): «2; affine.Index» = (i, j);
 
-extern fun rows (a: «6, 4, 3; I64»): «4; I64» =
+extern fun rows (a: tensor.Tensor 3 (6, 4, 3) I64): tensor.Tensor 1 4 I64 =
     let p = map_reduce ((6, 4), (6, 4, 3)) (add, 0I64) first2 (affine.id @3,) (buf a);
     return (tiled @(I64, 1) (4, 1)
         a
-        (λ (off ext: «1; Nat») (a): «ext; I64» =
+        (λ (off ext: «1; Nat») (a): tensor.Tensor 1 ext I64 =
             let p = map_reduce ((6, 4), (6, 4, 3)) (add, 0I64) first2 (affine.id @3,) (buf a);
             let limit = off + ext;
             let width = core.select (limit < 4, limit, 4) - off;
             let q = tile_of (p, (0, off), (6, width));
             map_reduce (ext, (ext, 6)) (twice, 0I64) first (transposed,) q));
 
-extern fun tail (a: «6, 5, 3; I64»): «5; I64» =
+extern fun tail (a: tensor.Tensor 3 (6, 5, 3) I64): tensor.Tensor 1 5 I64 =
     let p = map_reduce ((6, 5), (6, 5, 3)) (add, 0I64) first2 (affine.id @3,) (buf a);
     return (tiled @(I64, 1) (5, 2)
         a
-        (λ (off ext: «1; Nat») (a): «ext; I64» =
+        (λ (off ext: «1; Nat») (a): tensor.Tensor 1 ext I64 =
             let p = map_reduce ((6, 5), (6, 5, 3)) (add, 0I64) first2 (affine.id @3,) (buf a);
             let limit = off + ext;
             let width = core.select (limit < 5, limit, 5) - off;
             let q = tile_of (p, (0, off), (6, width));
             map_reduce (ext, (ext, 6)) (twice, 0I64) first (transposed,) q));
 
-extern fun seeded (a: «6, 5, 3; I64»): «5; I64» =
+extern fun seeded (a: tensor.Tensor 3 (6, 5, 3) I64): tensor.Tensor 1 5 I64 =
     let p = map_reduce (5, (5, 6, 3)) (add, 0I64)
         (λ (j _ _: affine.Index): affine.Index = j)
         ((λ (j i k: affine.Index): «3; affine.Index» = (i, j, k)),) (buf a);
     return (tiled @(I64, 1) (5, 2)
         a
-        (λ (off ext: «1; Nat») (a): «ext; I64» =
+        (λ (off ext: «1; Nat») (a): tensor.Tensor 1 ext I64 =
             let p = map_reduce (5, (5, 6, 3)) (add, 0I64)
                 (λ (j _ _: affine.Index): affine.Index = j)
                 ((λ (j i k: affine.Index): «3; affine.Index» = (i, j, k)),) (buf a);

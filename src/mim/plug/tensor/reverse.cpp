@@ -256,7 +256,8 @@ ProducerTile reverse_tiles(const Def* producer, const Def* consumers, const Def*
     })));
     auto result_types = [&](const Def* point) {
         auto owned = w.app(boxes, point);
-        return w.sigma(DefVec(count, [&](size_t i) { return w.arr(owned->proj(count, i)->proj(2, 1), types[i]); }));
+        return w.sigma(DefVec(
+            count, [&](size_t i) { return type_tensor(ranks[i], owned->proj(count, i)->proj(2, 1), types[i]); }));
     };
     auto pi = w.mut_pi(w.type())->set_dom(w.type_nat());
     RegionInputs inputs(plan.ops);

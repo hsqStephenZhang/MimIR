@@ -88,10 +88,8 @@ public:
                              w.tuple({slots(inputs, mr.nis), slots(posts, mr.nps)})})
                 result = w.app(result, arg);
         } else {
-            auto rank    = leaves.at(value);
-            auto element = value->type();
-            while (auto arr = element->isa<Arr>())
-                element = arr->body();
+            auto rank         = leaves.at(value);
+            auto element      = TensorType::isa(value->type())->T;
             auto source_shape = rank == 1 ? shape->proj(2, 0) : shape;
             auto slice        = w.app(w.annex<tensor::slice>(), {element, w.lit_nat(rank)});
             slice             = w.app(slice, source_shape);

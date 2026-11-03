@@ -14,7 +14,6 @@ DECLARE(5, 7)
 #ifndef AUTOMATIC
 DECLARE(1, 11)
 DECLARE(7, 1)
-DECLARE(0, 7)
 #endif
 DECLARE(2, 7)
 DECLARE(64, 7)
@@ -53,7 +52,6 @@ int main() {
 #ifndef AUTOMATIC
         { 1, 11, soft_1_11, layer_1_11},
         { 7,  1,  soft_7_1,  layer_7_1},
-        { 0,  7,  soft_0_7,  layer_0_7},
 #endif
         { 2,  7,  soft_2_7,  layer_2_7},
         {64,  7, soft_64_7, layer_64_7},

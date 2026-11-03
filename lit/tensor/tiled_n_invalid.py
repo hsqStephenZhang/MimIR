@@ -15,12 +15,12 @@ for box, shape, grid, expected in cases:
     source = directory / "probe.mim"
     source.write_text(
         "plugin tensor;\nplugin core;\nuse tensor;\nuse core.ops.n;\n"
-        f"extern fun invalid (): «{shape}; I64» =\n"
+        f"extern fun invalid (): tensor.Tensor 1 {shape} I64 =\n"
         f"    return (tiled_n @(1, 1, I64, 1) ({shape}, {grid})\n"
         f"        (λ (point: Nat): TileBox 1 = {box})\n"
-        "        () (λ (point: Nat) (): «"
+        "        () (λ (point: Nat) (): tensor.Tensor 1 ("
         f"({box})#tt"
-        "; I64» = splat ("
+        ") I64 = splat ("
         f"({box})#tt, 0I64)));\n"
     )
     for flags in ([], ["-X", "tensor:reference-tiles=1"]):

@@ -8,8 +8,8 @@ plugin tensor;
 plugin math;
 plugin compile;
 
-extern fun plain (q: «12, 512, 64; math.F32», k: «12, 512, 64; math.F32»,
-                  v: «12, 512, 64; math.F32»): «12, 512, 64; math.F32» =
+extern fun plain (q: tensor.Tensor 3 (12, 512, 64) math.F32, k: tensor.Tensor 3 (12, 512, 64) math.F32,
+                  v: tensor.Tensor 3 (12, 512, 64) math.F32): tensor.Tensor 3 (12, 512, 64) math.F32 =
     return (tensor.sdpa math.mode.contract @(12, 512, 512, 64, 64) (0.125:math.F32, q, k, v));
 
 extern lam _compile (): compile.Phase =

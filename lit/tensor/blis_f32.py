@@ -36,9 +36,9 @@ for name, m, k, n in shapes:
                 else f"packed_with_post @({m}, {k}, {n}) ({config}, buf a, buf b, "
                 "math.arith.add math.mode.fast, math.arith.mul math.mode.fast, buf bias, bias_relu, tt)"
             )
-        bias = f", bias: «{n}; F32»" if post else ""
+        bias = f", bias: tensor.Tensor 1 {n} F32" if post else ""
         text += (
-            f"extern fun {kind}_{name} (a: «{m}, {k}; F32», b: «{k}, {n}; F32»{bias}): «{m}, {n}; F32» =\n"
+            f"extern fun {kind}_{name} (a: tensor.Tensor 2 ({m}, {k}) F32, b: tensor.Tensor 2 ({k}, {n}) F32{bias}): tensor.Tensor 2 ({m}, {n}) F32 =\n"
             f"    return ({value});\n"
         )
 text += """
@@ -52,7 +52,7 @@ extern lam _compile (): compile.Phase =
 if workloads:
     text = text.replace(
         "compile.rule_app (pack, pack_post)",
-        "compile.phases tt (compile.rule_app (pack_post, pack, tensor.group_outer («5, 11; F32», 2), "
+        "compile.phases tt (compile.rule_app (pack_post, pack, tensor.group_outer (tensor.Tensor 2 (5, 11) F32, 2), "
         "tensor.fuse_producer (F32, 1), tensor.fuse_producer (F32, 2)), "
         "tensor.fuse_region_inputs (0, 1, ff), compile.cleanup)",
     )

@@ -12,8 +12,8 @@ extern "C" float* rule_register_tail(float*, float*, float*);
 extern "C" float* hand_register_tail(float*, float*, float*);
 extern "C" float* rule_nc_tail(float*, float*, float*);
 extern "C" float* hand_nc_tail(float*, float*, float*);
-extern "C" float rule_skinny(float*, float*, float);
-extern "C" float hand_skinny(float*, float*, float);
+extern "C" float* rule_skinny(float*, float*, float*);
+extern "C" float* hand_skinny(float*, float*, float*);
 
 static void check(int m, int k, int n, float* (*compute)(float*, float*, float*)) {
     std::vector<float> a(m * k), b(k * n), bias(n);
@@ -44,6 +44,12 @@ int main() {
     check(5, 11, 21, rule_nc_tail);
     check(5, 11, 21, hand_nc_tail);
     float a[7] = {1, -2, 3, -4, 5, -6, 7};
-    assert(rule_skinny(a, a, -200) == 0 && hand_skinny(a, a, -200) == 0);
-    assert(rule_skinny(a, a, 3) == 143 && hand_skinny(a, a, 3) == 143);
+    for (float bias : {-200.0f, 3.0f}) {
+        auto rule     = rule_skinny(a, a, &bias);
+        auto hand     = hand_skinny(a, a, &bias);
+        auto expected = bias < 0 ? 0.0f : 143.0f;
+        assert(rule[0] == expected && hand[0] == expected);
+        std::free(rule);
+        std::free(hand);
+    }
 }

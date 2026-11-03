@@ -3,4 +3,5 @@
 
 plugin tensor;
 plugin core;
-let invalid = tensor.stage @(I64, 2, 1) (2, 2) (1, 2, (0₂, 0₂), 0I64) 0 ((1I64, 2I64), (3I64, 4I64));
+let invalid = tensor.stage @(I64, 2, 1) (2, 2) (1, 2, (0₂, 0₂), 0I64) 0
+    (tensor.from_array @(2, (2, 2), I64) ((1I64, 2I64), (3I64, 4I64)));

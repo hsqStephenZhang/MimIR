@@ -9,8 +9,8 @@ let Ring = (Nat, 0, core.nat.add, core.nat.mul);
 let `* = product_2d Ring;
 
 // Distinct widths require correct prefix sums and per-result types.
-extern con f (x: «2, 3; Nat», wq: «3, 4; Nat», wk: «3, 5; Nat», wv: «3, 6; Nat»,
-              return: Cn [«2, 4; Nat», «2, 5; Nat», «2, 6; Nat»]) =
+extern con f (x: tensor.Tensor 2 (2, 3) Nat, wq: tensor.Tensor 2 (3, 4) Nat, wk: tensor.Tensor 2 (3, 5) Nat, wv: tensor.Tensor 2 (3, 6) Nat,
+              return: Cn [tensor.Tensor 2 (2, 4) Nat, tensor.Tensor 2 (2, 5) Nat, tensor.Tensor 2 (2, 6) Nat]) =
     return (x * wq, x * wk, x * wv);
 
 extern lam _compile (): compile.Phase =

@@ -17,7 +17,7 @@ fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
 lam first (i _: affine.Index): affine.Index = i;
 lam window (i k: affine.Index): affine.Index = affine.op.add (i, k);
 
-extern fun sliding (x: «7; I64»): «5; I64» =
+extern fun sliding (x: tensor.Tensor 1 7 I64): tensor.Tensor 1 5 I64 =
     let p = map_reduce (7, 7) (inc, 0I64) (affine.id @1) (affine.id @1,) (buf x);
     return (map_reduce (5, (5, 3)) (add, 0I64) first (window,) p);
 

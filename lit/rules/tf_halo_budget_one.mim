@@ -15,13 +15,13 @@ use tensor;
 fun scale (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
 fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
 
-extern fun rejected (a: «7; I64»): «5; I64» =
+extern fun rejected (a: tensor.Tensor 1 7 I64): tensor.Tensor 1 5 I64 =
     let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf a);
     let q = map_reduce (5, (5, 3)) (add, 0I64) (proj_map @(2, 1) 0)
         ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
     return (tiled @(I64, 1) (5, 2)
         p
-        (λ (off ext: «1; Nat») (p): «ext; I64» =
+        (λ (off ext: «1; Nat») (p): tensor.Tensor 1 ext I64 =
             let q = map_reduce (5, (5, 3)) (add, 0I64) (proj_map @(2, 1) 0)
                 ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
             tile_of_box (q, off, ext, ext)));

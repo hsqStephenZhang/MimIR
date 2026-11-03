@@ -6,10 +6,10 @@
 
 extern "C" int64_t* square(int64_t*, int64_t*);
 extern "C" int64_t* tailed(int64_t*, int64_t*);
-extern "C" int64_t skinny(int64_t*, int64_t*);
+extern "C" int64_t* skinny(int64_t*, int64_t*);
 extern "C" int64_t* hand_square(int64_t*, int64_t*);
 extern "C" int64_t* hand_tailed(int64_t*, int64_t*);
-extern "C" int64_t hand_skinny(int64_t*, int64_t*);
+extern "C" int64_t* hand_skinny(int64_t*, int64_t*);
 
 static bool check(const char* name, int m, int k, int n, int64_t* (*compute)(int64_t*, int64_t*), int seed) {
     std::vector<int64_t> a(m * k), b(k * n);
@@ -48,11 +48,13 @@ int main() {
         expected += a[i] * b[i];
     auto rule = skinny(a, b);
     auto hand = hand_skinny(a, b);
-    if (rule != expected || hand != expected) {
+    if (rule[0] != expected || hand[0] != expected) {
         std::fprintf(stderr, "1x7x1: expected %lld, rule %lld, hand %lld\n", static_cast<long long>(expected),
-                     static_cast<long long>(rule), static_cast<long long>(hand));
+                     static_cast<long long>(rule[0]), static_cast<long long>(hand[0]));
         ok = false;
     }
+    std::free(rule);
+    std::free(hand);
     if (ok) std::puts("packed GEMM rule/hand: 8x8x8, 13x7x11, 1x7x1 passed");
     return ok ? 0 : 1;
 }

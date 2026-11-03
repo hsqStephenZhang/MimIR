@@ -16,9 +16,9 @@ for name, grid, tiles, shape, axes, message in [
     source = directory / f"{name}.mim"
     source.write_text(
         "plugin tensor;\nuse tensor;\n"
-        f"extern fun invalid (): «{shape}; I64» =\n"
+        f"extern fun invalid (): tensor.Tensor {rank} {shape} I64 =\n"
         f"    return (tiled_multi @(1, {g}, I64, {rank}) ({shape}, {grid}, {tiles}) {axes} ()\n"
-        f"        (λ (off ext: «{g}; Nat») (): «tile_shape @({rank}, {g}) ({shape}, {axes}, ext); I64» =\n"
+        f"        (λ (off ext: «{g}; Nat») (): tensor.Tensor {rank} (tile_shape @({rank}, {g}) ({shape}, {axes}, ext)) I64 =\n"
         f"            splat (tile_shape @({rank}, {g}) ({shape}, {axes}, ext), 0I64)));\n"
     )
     result = subprocess.run([mim, str(source)], capture_output=True, text=True)

@@ -20,26 +20,26 @@ lam leaf_schedule (m n k: Nat): [kt: Nat, sched: Sched] =
     let kt = core.select (core.bit2.and 0 (4 <= vw, k / 4 * 4 == k), 4, 1);
     let vd = core.select (core.bit2.and 0 (1 < vw, 1 < n), 1, 4);
     (kt, (vd, 1));
-axm mark: {M K N: Nat, ts: «3; Nat»} → [leaf: LeafSchedule, «M, N; I64»] → «M, N; I64»;
+axm mark: {M K N: Nat, ts: «3; Nat»} → [leaf: LeafSchedule, tensor.Tensor 2 (M, N) I64] → tensor.Tensor 2 (M, N) I64;
 lam valid (M K N MR KR NR: Nat): Bool =
     core.bit2.and 0 (core.bit2.and 0 (M > 0, K > 0),
         core.bit2.and 0 (core.bit2.and 0 (N > 0, MR > 0), core.bit2.and 0 (KR > 0, NR > 0)));
 
 lam packed {M K N MR KR NR: Nat}
-    (a: «M, K; I64», b: «K, N; I64», add mul: «2; I64» → I64, leaf: LeafSchedule): «M, N; I64» =
+    (a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64, add mul: «2; I64» → I64, leaf: LeafSchedule): tensor.Tensor 2 (M, N) I64 =
     fun combine (acc: I64, pair: «2; I64»)@tt: I64 =
         return (add (acc, mul pair));
     tiled @(I64, 2) ((M, N), (M, NR)) (a, b)
-        (λ (off ext: «2; Nat») (a: «M, K; I64», b: «K, N; I64»): «ext; I64» =
+        (λ (off ext: «2; Nat») (a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64): tensor.Tensor 2 ext I64 =
             let j = off#tt;
             let rows = ext#ff;
             let n = ext#tt;
-            lam block (a: «M, K; I64», b: «K, N; I64»)
-                (k ko: Nat, acc: «rows, n; I64»): «rows, n; I64» =
+            lam block (a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64)
+                (k ko: Nat, acc: tensor.Tensor 2 (rows, n) I64): tensor.Tensor 2 (rows, n) I64 =
                 let bp = stage @(I64, 2, 1) (k, n) (1, NR, (1₂, 0₂), 0I64) 0
                     (slice @(I64, 2) (K, N) ((ko, j), (1, 1), (k, n)) b);
                 tiled @(I64, 2) ((rows, n), (MR, n)) (a, bp, acc)
-                    (λ (row size: «2; Nat») (a, bp, acc): «size; I64» =
+                    (λ (row size: «2; Nat») (a, bp, acc): tensor.Tensor 2 size I64 =
                         let m = size#ff;
                         let cols = size#tt;
                         let (kt, sched) = leaf (m, cols, k);
@@ -61,27 +61,27 @@ lam packed {M K N MR KR NR: Nat}
                             ((ap, bp), ()));
             let blocks = (K - 1) / KR;
             let acc = tile_fold (blocks, KR) (splat ((rows, n), 0I64)) (a, b)
-                (λ (acc: «rows, n; I64», ko: Nat) (a, b): «rows, n; I64» =
+                (λ (acc: tensor.Tensor 2 (rows, n) I64, ko: Nat) (a, b): tensor.Tensor 2 (rows, n) I64 =
                     block (a, b) (KR, ko, acc));
             block (a, b) (K - blocks * KR, blocks * KR, acc));
 
-pub rule pack (M K N: Nat, ts: «3; Nat», a: «M, K; I64», b: «K, N; I64», add mul: «2; I64» → I64, leaf: LeafSchedule):
+pub rule pack (M K N: Nat, ts: «3; Nat», a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64, add mul: «2; I64» → I64, leaf: LeafSchedule):
     mark @(M, K, N, ts) (leaf, product_2d (I64, 0I64, add, mul) @(M, K, N) (a, b))
     when valid (M, K, N, ts#0₃, ts#1₃, ts#2₃) =>
     packed @(M, K, N, ts#0₃, ts#1₃, ts#2₃) (a, b, add, mul, leaf);
 
-extern fun square (a b: «8, 8; I64»): «8, 8; I64» =
+extern fun square (a b: tensor.Tensor 2 (8, 8) I64): tensor.Tensor 2 (8, 8) I64 =
     return (mark @(8, 8, 8, (4, 4, 4)) (leaf_schedule, product_2d Ring @(8, 8, 8) (buf a, buf b)));
-extern fun tailed (a: «13, 7; I64», b: «7, 11; I64»): «13, 11; I64» =
+extern fun tailed (a: tensor.Tensor 2 (13, 7) I64, b: tensor.Tensor 2 (7, 11) I64): tensor.Tensor 2 (13, 11) I64 =
     return (mark @(13, 7, 11, (4, 3, 4)) (leaf_schedule, product_2d Ring @(13, 7, 11) (buf a, buf b)));
-extern fun skinny (a b: «7; I64»): «1, 1; I64» =
+extern fun skinny (a: tensor.Tensor 2 (1, 7) I64, b: tensor.Tensor 2 (7, 1) I64): tensor.Tensor 2 (1, 1) I64 =
     return (mark @(1, 7, 1, (2, 3, 4)) (leaf_schedule, product_2d Ring @(1, 7, 1) (buf a, buf b)));
 
-extern fun hand_square (a b: «8, 8; I64»): «8, 8; I64» =
+extern fun hand_square (a b: tensor.Tensor 2 (8, 8) I64): tensor.Tensor 2 (8, 8) I64 =
     return (packed @(8, 8, 8, 4, 4, 4) (buf a, buf b, core.wrap.add 0 @0, core.wrap.mul 0 @0, leaf_schedule));
-extern fun hand_tailed (a: «13, 7; I64», b: «7, 11; I64»): «13, 11; I64» =
+extern fun hand_tailed (a: tensor.Tensor 2 (13, 7) I64, b: tensor.Tensor 2 (7, 11) I64): tensor.Tensor 2 (13, 11) I64 =
     return (packed @(13, 7, 11, 4, 3, 4) (buf a, buf b, core.wrap.add 0 @0, core.wrap.mul 0 @0, leaf_schedule));
-extern fun hand_skinny (a b: «7; I64»): «1, 1; I64» =
+extern fun hand_skinny (a: tensor.Tensor 2 (1, 7) I64, b: tensor.Tensor 2 (7, 1) I64): tensor.Tensor 2 (1, 1) I64 =
     return (packed @(1, 7, 1, 2, 3, 4) (buf a, buf b, core.wrap.add 0 @0, core.wrap.mul 0 @0, leaf_schedule));
 
 // CHECK: tensor.stage

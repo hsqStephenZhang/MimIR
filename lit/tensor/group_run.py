@@ -7,8 +7,8 @@ mim, filename, temporary, *options = sys.argv[1:]
 text = pathlib.Path(filename).read_text()
 if "normalization" in options:
     text += """
-extern fun grouped_softmax (x: «5, 7; F32»): «5, 7; F32» = return (row_soft (buf x));
-extern fun grouped_layernorm (x: «5, 7; F32»): «5, 7; F32» = return (row_layer (buf x));
+extern fun grouped_softmax (x: tensor.Tensor 2 (5, 7) F32): tensor.Tensor 2 (5, 7) F32 = return (row_soft (buf x));
+extern fun grouped_layernorm (x: tensor.Tensor 2 (5, 7) F32): tensor.Tensor 2 (5, 7) F32 = return (row_layer (buf x));
 """
 directory = pathlib.Path(f"{temporary}.dir")
 directory.mkdir()

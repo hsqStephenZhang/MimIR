@@ -20,38 +20,38 @@ use tensor;
 
 fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
 fun add (_: I64, (a b: I64))@tt: I64 = return (core.wrap.add 0 (a, b));
-lam producer (a: «8; I64»): «8; I64» =
+lam producer (a: tensor.Tensor 1 8 I64): tensor.Tensor 1 8 I64 =
     map_reduce (8, 8) (twice, 0I64) (affine.id @1) (affine.id @1,) (buf a);
-lam plus (a b: «4; I64»): «4; I64» =
+lam plus (a b: tensor.Tensor 1 4 I64): tensor.Tensor 1 4 I64 =
     map_reduce @2 (4, 4) (add, 0I64) (affine.id @1) (affine.id @1, affine.id @1) (a, b);
 
-extern fun fold_inputs (a: «8; I64»): «4; I64» =
+extern fun fold_inputs (a: tensor.Tensor 1 8 I64): tensor.Tensor 1 4 I64 =
     let p = producer a;
     return (tile_fold (2, 4) (splat (4, 0I64)) p
-        (λ (acc: «4; I64», off: Nat) (p): «4; I64» =
+        (λ (acc: tensor.Tensor 1 4 I64, off: Nat) (p): tensor.Tensor 1 4 I64 =
             plus (acc, slice @(I64, 1) 8 (off, 1, 4) p)));
 
-extern fun multi_inputs (a: «8; I64», b: «4; I64»): «8; I64» =
+extern fun multi_inputs (a: tensor.Tensor 1 8 I64, b: tensor.Tensor 1 4 I64): tensor.Tensor 1 8 I64 =
     let p = producer a;
     lam boxes (point: Nat): TileBox 1 = (core.nat.mul (point, 4), 4);
     return (tiled_n @(1, 1, I64, 1) (8, 2) boxes
         (buf b, (1, p))
-        (λ (point: Nat) (b: «4; I64», (_: Nat, p: «8; I64»)): «4; I64» =
+        (λ (point: Nat) (b: tensor.Tensor 1 4 I64, (_: Nat, p: tensor.Tensor 1 8 I64)): tensor.Tensor 1 4 I64 =
             plus (slice @(I64, 1) 8 (core.nat.mul (point, 4), 1, 4) p, b)));
 
-extern fun retained_init (a: «8; I64»): «8; I64» =
+extern fun retained_init (a: tensor.Tensor 1 8 I64): tensor.Tensor 1 8 I64 =
     let p = producer a;
     return (tile_fold (2, 1) p p
-        (λ (acc: «8; I64», _: Nat) (p): «8; I64» =
+        (λ (acc: tensor.Tensor 1 8 I64, _: Nat) (p): tensor.Tensor 1 8 I64 =
             map_reduce @2 (8, 8) (add, 0I64) (affine.id @1)
                 (affine.id @1, affine.id @1) (acc, slice @(I64, 1) 8 (0, 1, 8) p)));
 
-extern fun shared_tiles (a: «8; I64»): «8; I64» =
+extern fun shared_tiles (a: tensor.Tensor 1 8 I64): tensor.Tensor 1 8 I64 =
     let p = producer a;
     let left = tiled (4, 2) p
-        (λ (off ext: Nat) (p): «ext; I64» = slice @(I64, 1) 8 (off, 1, ext) p);
+        (λ (off ext: Nat) (p): tensor.Tensor 1 ext I64 = slice @(I64, 1) 8 (off, 1, ext) p);
     let right = tiled (4, 2) p
-        (λ (off ext: Nat) (p): «ext; I64» =
+        (λ (off ext: Nat) (p): tensor.Tensor 1 ext I64 =
             slice @(I64, 1) 8 (core.nat.add (off, 4), 1, ext) p);
     return (concat @(I64, 2, 1) 0_1 (left, right));
 

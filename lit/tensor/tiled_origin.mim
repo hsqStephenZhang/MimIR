@@ -9,11 +9,11 @@ fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
 lam packed (i j k _: affine.Index): «3; affine.Index» =
     let merged = affine.op.add (i, j);
     (affine.semiop.floordiv (merged, 1), affine.semiop.rem (merged, 1), k);
-extern fun origin (x: «4, 1, 5, 3; I64»): «4, 1, 5; I64» =
+extern fun origin (x: tensor.Tensor 4 (4, 1, 5, 3) I64): tensor.Tensor 3 (4, 1, 5) I64 =
     let p = map_reduce ((4, 1, 5), (4, 1, 5, 3)) (add, 0I64) packed (affine.id @4,) (buf x);
     return (tiled @(I64, 3) ((4, 1, 5), (4, 1, 3))
         x
-        (λ (off ext: «3; Nat») (x): «ext; I64» =
+        (λ (off ext: «3; Nat») (x): tensor.Tensor 3 ext I64 =
             let p = map_reduce ((4, 1, 5), (4, 1, 5, 3)) (add, 0I64) packed (affine.id @4,) (buf x);
             tile_of_box @(I64, 3) @(4, 1, 5) (p, off, ext, (4, 1, 3))));
 

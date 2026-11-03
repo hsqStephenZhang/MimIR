@@ -14,7 +14,7 @@ let `* = product_2d Ring;
 
 // Concatenate the three observable results to expose a simple pointer ABI. The only shared
 // input is x; weights and outputs are tensors, not scalar stand-ins for matrix multiplication.
-extern fun qkv (x: «2, 3; I64», wq: «3, 4; I64», wk: «3, 5; I64», wv: «3, 6; I64»): «2, 15; I64» =
+extern fun qkv (x: tensor.Tensor 2 (2, 3) I64, wq: tensor.Tensor 2 (3, 4) I64, wk: tensor.Tensor 2 (3, 5) I64, wv: tensor.Tensor 2 (3, 6) I64): tensor.Tensor 2 (2, 15) I64 =
     let (x, wq, wk, wv) = (buf x, buf wq, buf wk, buf wv);
     return (concat 1₂ (x * wq, x * wk, x * wv));
 

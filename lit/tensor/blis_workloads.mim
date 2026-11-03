@@ -18,29 +18,29 @@ fun shift (_: F32, (a b: F32))@tt: F32 = return (math.arith.sub math.mode.fast (
 lam first (i _: affine.Index): affine.Index = i;
 lam row (i _: affine.Index): affine.Index = i;
 
-extern fun mlp (a: «13, 7; F32», b: «7, 11; F32», w: «11, 5; F32»): «13, 5; F32» =
+extern fun mlp (a: tensor.Tensor 2 (13, 7) F32, b: tensor.Tensor 2 (7, 11) F32, w: tensor.Tensor 2 (11, 5) F32): tensor.Tensor 2 (13, 5) F32 =
     let h = mark_post @(13, 7, 11) (config, product_2d Ring @(13, 7, 11) (buf a, buf b), splat (11, 0.0:F32));
     return (mark @(13, 11, 5) (config, product_2d Ring @(13, 11, 5) (h, buf w)));
 
-extern fun mlp_fold (a: «13, 13; F32», b: «13, 11; F32», w: «11, 5; F32»): «13, 5; F32» =
+extern fun mlp_fold (a: tensor.Tensor 2 (13, 13) F32, b: tensor.Tensor 2 (13, 11) F32, w: tensor.Tensor 2 (11, 5) F32): tensor.Tensor 2 (13, 5) F32 =
     let h = mark_post @(13, 13, 11) (config, product_2d Ring @(13, 13, 11) (buf a, buf b), splat (11, 0.0:F32));
     return (mark @(13, 11, 5) (config, product_2d Ring @(13, 11, 5) (h, buf w)));
 
-extern fun ew_a (a: «5, 9; F32», b: «9, 19; F32»): «5, 19; F32» =
+extern fun ew_a (a: tensor.Tensor 2 (5, 9) F32, b: tensor.Tensor 2 (9, 19) F32): tensor.Tensor 2 (5, 19) F32 =
     let p = map_reduce ((5, 9), (5, 9)) (inc, 0.0:F32) (affine.id @2) (affine.id @2,) (buf a);
     return (mark @(5, 9, 19) (config, product_2d Ring @(5, 9, 19) (p, buf b)));
 
-extern fun ew_a_fused (a: «5, 3; F32», b: «3, 11; F32»): «5, 11; F32» =
+extern fun ew_a_fused (a: tensor.Tensor 2 (5, 3) F32, b: tensor.Tensor 2 (3, 11) F32): tensor.Tensor 2 (5, 11) F32 =
     let p = map_reduce ((5, 3), (5, 3)) (inc, 0.0:F32) (affine.id @2) (affine.id @2,) (buf a);
     return (mark @(5, 3, 11) (config, product_2d Ring @(5, 3, 11) (p, buf b)));
 
-extern fun row_sum (a: «5, 7; F32», b: «5, 11; F32»): «5, 11; F32» =
+extern fun row_sum (a: tensor.Tensor 2 (5, 7) F32, b: tensor.Tensor 2 (5, 11) F32): tensor.Tensor 2 (5, 11) F32 =
     let p = map_reduce (5, (5, 7)) (sum, 0.0:F32) first (affine.id @2,) (buf a);
     return (map_reduce @2 @(F32, 2, 2) ((5, 11), (5, 11))
         @((F32, F32), (1, 2), (5, (5, 11))) (shift, 0.0:F32)
         (affine.id @2) (row, affine.id @2) (p, buf b));
 
-extern fun row_max (a: «5, 7; F32», b: «5, 11; F32»): «5, 11; F32» =
+extern fun row_max (a: tensor.Tensor 2 (5, 7) F32, b: tensor.Tensor 2 (5, 11) F32): tensor.Tensor 2 (5, 11) F32 =
     let p = map_reduce (5, (5, 7)) (maximum, math.neg_inf math.f32) first (affine.id @2,) (buf a);
     return (map_reduce @2 @(F32, 2, 2) ((5, 11), (5, 11))
         @((F32, F32), (1, 2), (5, (5, 11))) (shift, 0.0:F32)

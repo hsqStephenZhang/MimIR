@@ -4,17 +4,17 @@ plugin tensor;
 plugin math;
 plugin compile;
 
-extern fun plain (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
-                  v: «2, 7, 4; math.F32»): «2, 5, 4; math.F32» =
+extern fun plain (q: tensor.Tensor 3 (2, 5, 3) math.F32, k: tensor.Tensor 3 (2, 7, 3) math.F32,
+                  v: tensor.Tensor 3 (2, 7, 4) math.F32): tensor.Tensor 3 (2, 5, 4) math.F32 =
     return (tensor.sdpa math.mode.contract @(2, 5, 7, 3, 4) (0.5:math.F32, q, k, v));
-extern fun masked (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
-                   v: «2, 7, 4; math.F32», mask: «2, 5, 7; math.F32»): «2, 5, 4; math.F32» =
+extern fun masked (q: tensor.Tensor 3 (2, 5, 3) math.F32, k: tensor.Tensor 3 (2, 7, 3) math.F32,
+                   v: tensor.Tensor 3 (2, 7, 4) math.F32, mask: tensor.Tensor 3 (2, 5, 7) math.F32): tensor.Tensor 3 (2, 5, 4) math.F32 =
     return (tensor.sdpa_masked math.mode.contract @(2, 5, 7, 3, 4) (0.5:math.F32, q, k, v, mask));
-extern fun empty (q: «2, 5, 3; math.F32», k: «2, 0, 3; math.F32»,
-                  v: «2, 0, 4; math.F32»): «2, 5, 4; math.F32» =
+extern fun empty (q: tensor.Tensor 3 (2, 5, 3) math.F32, k: tensor.Tensor 3 (2, 0, 3) math.F32,
+                  v: tensor.Tensor 3 (2, 0, 4) math.F32): tensor.Tensor 3 (2, 5, 4) math.F32 =
     return (tensor.sdpa math.mode.contract @(2, 5, 0, 3, 4) (0.5:math.F32, q, k, v));
-extern fun no_features (q: «2, 5, 3; math.F32», k: «2, 7, 3; math.F32»,
-                        v: «2, 7, 0; math.F32»): «2, 5, 0; math.F32» =
+extern fun no_features (q: tensor.Tensor 3 (2, 5, 3) math.F32, k: tensor.Tensor 3 (2, 7, 3) math.F32,
+                        v: tensor.Tensor 3 (2, 7, 0) math.F32): tensor.Tensor 3 (2, 5, 0) math.F32 =
     return (tensor.sdpa math.mode.contract @(2, 5, 7, 3, 0) (0.5:math.F32, q, k, v));
 
 extern lam _compile (): compile.Phase =
@@ -27,6 +27,7 @@ extern lam _compile (): compile.Phase =
 // CHECK: tensor.sdpa_online (16, tt, 2, 3)
 // CHECK-LABEL: extern fun no_features
 // CHECK-NOT: tensor.sdpa_online
-// CHECK: return ‹2, 5; ()›;
+// CHECK: let [[EMPTY:[a-zA-Z_][a-zA-Z_0-9]*]] = tensor.sdpa 16 @ (2, 5, 7, 3, 0)
+// CHECK: return [[EMPTY]];
 // CHECK-LABEL: extern fun plain
 // CHECK: tensor.sdpa_online (16, ff, 2, 3)

@@ -4,9 +4,8 @@
 
 extern "C" int64_t* tiled_tail(int64_t*);
 extern "C" int64_t* tiled_one(int64_t*);
-extern "C" void tiled_empty();
 extern "C" int64_t* tiled_full(int64_t*);
-extern "C" int64_t tiled_scalar(int64_t);
+extern "C" int64_t* tiled_scalar(int64_t*);
 extern "C" int64_t* packed(int64_t*);
 extern "C" int64_t* packed_both(int64_t*);
 extern "C" int64_t* packed_one(int64_t*);
@@ -27,9 +26,8 @@ int main() {
         x[i] = i * 7 - 9;
     auto tile = tiled_tail(x);
     auto one  = tiled_one(x);
-    tiled_empty();
     auto full       = tiled_full(x);
-    auto scalar     = tiled_scalar(x[0]);
+    auto scalar     = tiled_scalar(x);
     auto p          = packed(x);
     auto q          = packed_both(x);
     auto s          = packed_one(x);
@@ -56,7 +54,8 @@ int main() {
     for (int i = 0; i != 4; ++i)
         for (int j = 0; j != 6; ++j)
             ok &= full[i * 6 + j] == x[i * 7 + j];
-    ok &= scalar == x[0];
+    ok &= scalar[0] == x[0];
+    std::free(scalar);
     for (int j = 0; j != 3; ++j)
         for (int i = 0; i != 5; ++i)
             for (int lane = 0; lane != 3; ++lane) {

@@ -1,21 +1,23 @@
 // RUN: %mim %s -p opt -o - | %FileCheck %s --implicit-check-not=tensor.gather --implicit-check-not=tensor.scatter
 
-// Gather lowers to indexed reads; scatter lowers to an ordered sequence of
-// reads and writes. Their element formulas remain visible as plain extracts and inserts.
+// Element reads and ordered writes remain visible after value lowering.
 // CHECK-DAG: extern fun gather2d
 // CHECK-DAG: extern fun scatter2d
-// CHECK-DAG: core.bitcast @ (Idx 3) I64
-// CHECK-DAG: ←
+// CHECK-DAG: tensor.get @ (2, ‹2; 2›, Idx 3) (index,
+// CHECK-DAG: tensor.get @ (2, (2, 3), I32) (input,
+// CHECK-DAG: ((#_{{[0-9]+}})#tt)#{{.*}} ←
+// CHECK-DAG: tensor.get @ (2, ‹2; 2›, I32) (updates,
+// CHECK-DAG: tensor.set @ (2, (2, 3), I32) (acc,
 
 plugin tensor;
 plugin compile;
 
-extern fun gather2d (input: «2, 3; I32», index: «2, 2; Idx 3»): «2, 2; I32» =
-    return (tensor.gather ((2, 3), (2, 2)) 1₂ (tensor.buf input, tensor.buf index));
+extern fun gather2d (input: tensor.Tensor 2 (2, 3) I32, index: tensor.Tensor 2 (2, 2) (Idx 3)): tensor.Tensor 2 (2, 2) I32 =
+    return (tensor.gather ((2, 3), (2, 2)) 1₂ (input, index));
 
 extern fun scatter2d
-    (input: «2, 3; I32», index: «2, 2; Idx 3», updates: «2, 2; I32»): «2, 3; I32» =
-    return (tensor.scatter ((2, 3), (2, 2), (2, 2)) 1₂ (tensor.buf input, tensor.buf index, tensor.buf updates));
+    (input: tensor.Tensor 2 (2, 3) I32, index: tensor.Tensor 2 (2, 2) (Idx 3), updates: tensor.Tensor 2 (2, 2) I32): tensor.Tensor 2 (2, 3) I32 =
+    return (tensor.scatter ((2, 3), (2, 2), (2, 2)) 1₂ (input, index, updates));
 
 extern lam _compile (): compile.Phase =
     compile.phases ff (

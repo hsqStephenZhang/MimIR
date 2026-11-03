@@ -8,7 +8,7 @@
 // RUN: python3 %S/tf_run.py %mim %s %t graph tt lower > %t.graph.out 2> %t.graph.exec.log
 // RUN: clang++ -O3 %S/tf_group_strategy_aux.cpp %t.graph.ll -o %t.graph.exec -Wno-override-module
 // RUN: %t.graph.exec
-// TF-RULES: (tensor.group_outer («4; I64», 1), tensor.group_outer («6, 5; I64», 1), tensor.fuse_producer (I64, 2), tensor.fuse_producer (I64, 3))
+// TF-RULES: (tensor.group_outer (tensor.Tensor 1 4 I64, 1), tensor.group_outer (tensor.Tensor 2 (6, 5) I64, 1), tensor.fuse_producer (I64, 2), tensor.fuse_producer (I64, 3))
 // TF-REGION-FUSION: 0, 1
 // TF-PURE: tensor.group_build, tensor.tile_of, tensor.slice, tensor.map_reduce_post
 
@@ -26,17 +26,17 @@ lam first3 (i j k _: affine.Index): «3; affine.Index» = (i, j, k);
 lam first (i _: affine.Index): affine.Index = i;
 lam transposed (j i: affine.Index): «2; affine.Index» = (i, j);
 
-extern fun rows (a: «6, 4, 3; I64»): «4; I64» =
+extern fun rows (a: tensor.Tensor 3 (6, 4, 3) I64): tensor.Tensor 1 4 I64 =
     let p = map_reduce ((6, 4), (6, 4, 3)) (add, 0I64) first2 (affine.id @3,) (buf a);
     return (map_reduce (4, (4, 6)) (twice, 0I64) first (transposed,) p);
 
-extern fun contraction (a: «5, 3; I64», b: «3, 4; I64»): «4; I64» =
+extern fun contraction (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 1 4 I64 =
     let p = map_reduce ((5, 4), (5, 4, 3)) (mac, 0I64) first2
         ((λ (i _ k: affine.Index): «2; affine.Index» = (i, k)),
          (λ (_ j k: affine.Index): «2; affine.Index» = (k, j))) (buf a, buf b);
     return (map_reduce (4, (4, 5)) (add, 0I64) first (transposed,) p);
 
-extern fun repeated (a: «6, 5, 3, 2; I64»): «4, 5; I64» =
+extern fun repeated (a: tensor.Tensor 4 (6, 5, 3, 2) I64): tensor.Tensor 2 (4, 5) I64 =
     let q = map_reduce ((6, 5, 3), (6, 5, 3, 2)) (add, 0I64) first3 (affine.id @4,) (buf a);
     let p = map_reduce ((6, 5), (6, 5, 3)) (add, 0I64) first2 (affine.id @3,) q;
     return (map_reduce ((4, 5), (4, 5, 6)) (add, 0I64) first2

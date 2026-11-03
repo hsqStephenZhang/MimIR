@@ -167,8 +167,8 @@ const Def* outer_parts(const Def* producer, const btensor::MapRedPost& mr, u64 a
         boxes->set(true, w.tuple({w.tuple(off), ext}));
         RegionInputs inputs(Defs{producer});
         auto values = inputs.values(w);
-        auto body   = w.mut_lam(w.type_nat(), w.pi(values->type(), w.arr(ext, mr.Tp)));
-        auto inner  = w.mut_lam(values->type(), w.arr(ext, mr.Tp));
+        auto body   = w.mut_lam(w.type_nat(), w.pi(values->type(), type_tensor(mr.Ro, ext, mr.Tp)));
+        auto inner  = w.mut_lam(values->type(), type_tensor(mr.Ro, ext, mr.Tp));
         off[axis]   = w.call(core::nat::add, Defs{w.call(core::nat::mul, Defs{body->var(), w.lit_nat(tile)}),
                                                   w.lit_nat(remainder ? full * tile : 0)});
         auto read   = w.app(w.app(w.annex<tile_of_box>(), {mr.Tp, mr.Ro}), mr.So);

@@ -6,10 +6,10 @@
 
 extern "C" int64_t* square(int64_t*, int64_t*);
 extern "C" int64_t* tailed(int64_t*, int64_t*);
-extern "C" int64_t skinny(int64_t*, int64_t*);
+extern "C" int64_t* skinny(int64_t*, int64_t*);
 extern "C" int64_t* hand_square(int64_t*, int64_t*);
 extern "C" int64_t* hand_tailed(int64_t*, int64_t*);
-extern "C" int64_t hand_skinny(int64_t*, int64_t*);
+extern "C" int64_t* hand_skinny(int64_t*, int64_t*);
 extern "C" int64_t* register_tails(int64_t*, int64_t*);
 
 static bool check(int m, int k, int n, int64_t* (*compute)(int64_t*, int64_t*)) {
@@ -37,7 +37,11 @@ static bool check(int m, int k, int n, int64_t* (*compute)(int64_t*, int64_t*)) 
 
 int main() {
     int64_t a[7] = {1, 2, 3, 4, 5, 6, 7};
-    auto ok = check(8, 8, 8, square) && check(13, 7, 11, tailed) && skinny(a, a) == 140 && check(8, 8, 8, hand_square)
-           && check(13, 7, 11, hand_tailed) && hand_skinny(a, a) == 140 && check(5, 9, 19, register_tails);
+    auto rule    = skinny(a, a);
+    auto hand    = hand_skinny(a, a);
+    auto ok      = check(8, 8, 8, square) && check(13, 7, 11, tailed) && rule[0] == 140 && check(8, 8, 8, hand_square)
+                && check(13, 7, 11, hand_tailed) && hand[0] == 140 && check(5, 9, 19, register_tails);
+    std::free(rule);
+    std::free(hand);
     return ok ? 0 : 1;
 }

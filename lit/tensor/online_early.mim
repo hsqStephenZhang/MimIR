@@ -8,7 +8,7 @@ let F = math.F32;
 let mode = math.mode.contract;
 let R: tensor.Ring = (F, 0:F, math.arith.add mode, math.arith.mul mode);
 
-extern fun core (q k v: «12, 128, 64; F»): «12, 128, 64; F» =
+extern fun core (q k v: tensor.Tensor 3 (12, 128, 64) F): tensor.Tensor 3 (12, 128, 64) F =
     let scores = tensor.dot_product R @(3, 3) @(1, 1)
         (2₃, 2₃, 0₃, 0₃) @((12, 128, 64), (12, 128, 64)) (tensor.buf q, tensor.buf k);
     let scores = tensor.unary (λ x: F: F = math.arith.mul mode (x, 0.125:F)) @(3, (12, 128, 128)) scores;

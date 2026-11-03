@@ -1,0 +1,20 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O2 -fsanitize=address %S/nominal_region_abi_plain_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+// RUN: %mim -X tensor:reference-tiles=1 -p opt %s -p ll -X ll:o=%t.ref.ll
+// RUN: clang++ -O2 -fsanitize=address %S/nominal_region_abi_plain_aux.cpp %t.ref.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
+
+plugin tensor;
+plugin math;
+use tensor;
+let F32 = math.F32;
+
+extern fun plain (y z: Tensor 1 10 F32): Tensor 1 10 F32 =
+    return (tiled @(F32, 1) (10, 4) (buf y, buf z)
+        (λ (off ext: Nat) (y, z): Tensor 1 ext F32 =
+            binary (math.arith.add math.mode.fast)
+                (slice @(F32, 1) 10 (off, 1, ext) y, slice @(F32, 1) 10 (off, 1, ext) z)));
+
+extern fun matrix (x: Tensor 2 (2, 10) F32): Tensor 2 (2, 10) F32 =
+    return (unary (λ (x: F32): F32 = math.arith.add math.mode.fast (x, 1.0:F32)) (buf x));

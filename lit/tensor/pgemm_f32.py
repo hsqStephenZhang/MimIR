@@ -10,7 +10,7 @@ text = text.replace("I64", "F32").replace("0F32", "0.0:F32")
 text = text.replace("core.wrap.add 0 @0", "math.arith.add math.mode.fast")
 text = text.replace("core.wrap.mul 0 @0", "math.arith.mul math.mode.fast")
 text += """
-extern fun vector_leaf (a: «8, 64; F32», b: «64, 32; F32»): «8, 32; F32» =
+extern fun vector_leaf (a: tensor.Tensor 2 (8, 64) F32, b: tensor.Tensor 2 (64, 32) F32): tensor.Tensor 2 (8, 32) F32 =
     return (mark @(8, 64, 32, (4, 16, 32))
         (leaf_schedule, product_2d Ring @(8, 64, 32) (buf a, buf b)));
 import opt;

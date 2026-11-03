@@ -16,7 +16,7 @@ let F32 = math.F32;
 let mode = math.mode.contract;
 let add = math.arith.add mode;
 
-lam normalize {M N: Nat} (x: «M, N; F32», w b: «N; F32»): «M, N; F32» =
+lam normalize {M N: Nat} (x: tensor.Tensor 2 (M, N) F32, w b: tensor.Tensor 1 N F32): tensor.Tensor 2 (M, N) F32 =
     let count = math.conv.u2f math.f32 (core.bitcast I64 N);
     let mean = tensor.unary (λ x: F32: F32 = math.arith.div mode (x, count))
         (tensor.reduce (add, 0:F32) 1₂ x);
@@ -26,13 +26,13 @@ lam normalize {M N: Nat} (x: «M, N; F32», w b: «N; F32»): «M, N; F32» =
     let denom = tensor.unary (λ x: F32: F32 =
         math.rt.sq mode (add (math.arith.div mode (x, count), 0.00001:F32))) variance;
     let normalized = tensor.binary_ax (math.arith.div mode) 1₂ (centered, denom);
-    let weights = tensor.broadcast @ (F32, 2) ((1, N), (M, N), w);
-    let bias = tensor.broadcast @ (F32, 2) ((1, N), (M, N), b);
+    let weights = tensor.broadcast_in_dim @(F32, 1, 2) (N, (M, N), w, 1₂);
+    let bias = tensor.broadcast_in_dim @(F32, 1, 2) (N, (M, N), b, 1₂);
     tensor.binary add (tensor.binary (math.arith.mul mode) (normalized, weights), bias);
 
-extern fun rows_17 (x: «17, 8; F32», w b: «8; F32»): «17, 8; F32» =
+extern fun rows_17 (x: tensor.Tensor 2 (17, 8) F32, w b: tensor.Tensor 1 8 F32): tensor.Tensor 2 (17, 8) F32 =
     return (normalize (tensor.buf x, tensor.buf w, tensor.buf b));
-extern fun rows_33 (x: «33, 8; F32», w b: «8; F32»): «33, 8; F32» =
+extern fun rows_33 (x: tensor.Tensor 2 (33, 8) F32, w b: tensor.Tensor 1 8 F32): tensor.Tensor 2 (33, 8) F32 =
     return (normalize (tensor.buf x, tensor.buf w, tensor.buf b));
 
 // CHECK-DAG: kind=2 dim=0

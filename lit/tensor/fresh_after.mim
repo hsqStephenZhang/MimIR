@@ -7,10 +7,10 @@ plugin mem;
 plugin buffer;
 plugin affine;
 plugin cps;
-extern fun folded (x: «3; I64»): «3; I64» =
+extern fun folded (x: tensor.Tensor 1 3 I64): tensor.Tensor 1 3 I64 =
     return (tensor.tile_fold (3, 2) (tensor.buf x)
         ()
-        (λ (acc: «3; I64», off: Nat) (): «3; I64» =
+        (λ (acc: tensor.Tensor 1 3 I64, off: Nat) (): tensor.Tensor 1 3 I64 =
             tensor.binary (core.wrap.add 0 @0) @(1, 3)
                 (acc, tensor.splat (3, core.bitcast I64 off))));
 extern lam _compile (): compile.Phase =

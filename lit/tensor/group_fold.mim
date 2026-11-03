@@ -11,9 +11,9 @@ plugin math;
 use tensor;
 let F32 = math.F32;
 let Ring = (F32, 0.0:F32, math.arith.add math.mode.fast, math.arith.mul math.mode.fast);
-extern fun folded (a: «13, 257; F32», b: «257, 35; F32»): «13, 35; F32» =
+extern fun folded (a: tensor.Tensor 2 (13, 257) F32, b: tensor.Tensor 2 (257, 35) F32): tensor.Tensor 2 (13, 35) F32 =
     return (product_2d Ring (buf a, buf b));
-extern fun aligned (a: «8, 256; F32», b: «256, 32; F32»): «8, 32; F32» =
+extern fun aligned (a: tensor.Tensor 2 (8, 256) F32, b: tensor.Tensor 2 (256, 32) F32): tensor.Tensor 2 (8, 32) F32 =
     return (product_2d Ring (buf a, buf b));
 
 // LOG: tensor.group contraction

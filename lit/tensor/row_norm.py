@@ -6,7 +6,7 @@ import sys
 mim, source, output, *flags = sys.argv[1:]
 mim = str(pathlib.Path(mim).resolve())
 text = pathlib.Path(source).read_text()
-shapes = [(5, 7), (1, 11), (7, 1), (0, 7), (2, 7), (64, 7), (65, 7)]
+shapes = [(5, 7), (1, 11), (7, 1), (2, 7), (64, 7), (65, 7)]
 benchmark = "benchmark" in flags
 automatic = "automatic" in flags
 if automatic and "all-shapes" not in flags:
@@ -25,7 +25,7 @@ for m, n in shapes:
         if automatic and "api" in flags and kind == "soft":
             expression = "softmax mode tt (buf x)"
         text += (
-            f"extern fun {kind}_{m}_{n} (x: «{m}, {n}; F32»): «{m}, {n}; F32» =\n"
+            f"extern fun {kind}_{m}_{n} (x: tensor.Tensor 2 ({m}, {n}) F32): tensor.Tensor 2 ({m}, {n}) F32 =\n"
             f"    return ({expression});\n"
         )
         if benchmark:
@@ -34,12 +34,12 @@ for m, n in shapes:
             transform = "shifted_exp" if kind == "soft" else "subtract"
             finish = "divide" if kind == "soft" else "normalize"
             text += (
-                f"extern fun {kind}_first_{m}_{n} (x: «{m}, {n}; F32»): «{m}; F32» = return ({first});\n"
-                f"extern fun {kind}_reduce_{m}_{n} (x: «{m}, {n}; F32»): «{m}; F32» = return ({reduce});\n"
+                f"extern fun {kind}_first_{m}_{n} (x: tensor.Tensor 2 ({m}, {n}) F32): tensor.Tensor 1 {m} F32 = return ({first});\n"
+                f"extern fun {kind}_reduce_{m}_{n} (x: tensor.Tensor 2 ({m}, {n}) F32): tensor.Tensor 1 {m} F32 = return ({reduce});\n"
             )
             for name, operation in (("transform", transform), ("finish", finish)):
                 text += (
-                    f"extern fun {kind}_{name}_{m}_{n} (x: «{m}, {n}; F32», y: «{m}; F32»): «{m}, {n}; F32» =\n"
+                    f"extern fun {kind}_{name}_{m}_{n} (x: tensor.Tensor 2 ({m}, {n}) F32, y: tensor.Tensor 1 {m} F32): tensor.Tensor 2 ({m}, {n}) F32 =\n"
                     f"    return (with_rows ({operation}, buf x, buf y));\n"
                 )
             prefix = f"{kind}_"

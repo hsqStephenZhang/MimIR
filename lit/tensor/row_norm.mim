@@ -52,46 +52,46 @@ fun square_sum (acc x: F32)@tt: F32 =
 fun normalize (_: F32, (x variance: F32))@tt: F32 =
     return (math.arith.div mode (x, math.rt.sq mode (math.arith.add mode (variance, 0.00001:F32))));
 
-lam with_rows {M N: Nat} (combine: Fn [F32, «2; F32»] → F32, x: «M, N; F32», rows: «M; F32»): «M, N; F32» =
+lam with_rows {M N: Nat} (combine: Fn [F32, «2; F32»] → F32, x: tensor.Tensor 2 (M, N) F32, rows: tensor.Tensor 1 M F32): tensor.Tensor 2 (M, N) F32 =
     map_reduce_post @(2, 0) @(F32, F32, 2, 2, SchedT) ((M, N), (M, N), mk_sched (2, 0))
         @((F32, F32), (2, 1), ((M, N), M), (), (), ())
         (combine, 0.0:F32, id @F32) (affine.id @2) ((affine.id @2, row), ()) ((x, rows), ());
-lam retained {M N: Nat} (x: «M, N; F32»): «M, N; F32» =
+lam retained {M N: Nat} (x: tensor.Tensor 2 (M, N) F32): tensor.Tensor 2 (M, N) F32 =
     stage @(F32, 2, 0) (M, N) ((), (), (ff, tt), 0.0:F32) 0 x;
-lam row_max {M N: Nat} (x: «M, N; F32»): «M; F32» =
+lam row_max {M N: Nat} (x: tensor.Tensor 2 (M, N) F32): tensor.Tensor 1 M F32 =
     map_reduce_post @(1, 0) @(F32, F32, 1, 2, SchedT) (M, (M, N), mk_sched (2, 0))
         @(F32, 2, (M, N), (), (), ())
         (maximum, math.neg_inf math.f32, id @F32) row ((affine.id @2,), ()) ((x,), ());
-lam row_sum {M N: Nat} (x: «M, N; F32»): «M; F32» =
+lam row_sum {M N: Nat} (x: tensor.Tensor 2 (M, N) F32): tensor.Tensor 1 M F32 =
     map_reduce_post @(1, 0) @(F32, F32, 1, 2, SchedT) (M, (M, N), mk_sched (2, 0))
         @(F32, 2, (M, N), (), (), ())
         (add, 0.0:F32, id @F32) row ((affine.id @2,), ()) ((x,), ());
-lam row_average {M N: Nat} (squares: Bool, x: «M, N; F32»): «M; F32» =
+lam row_average {M N: Nat} (squares: Bool, x: tensor.Tensor 2 (M, N) F32): tensor.Tensor 1 M F32 =
     let divisor = math.conv.u2f math.f32 (core.idx 0 0 N);
     fun mean (value: F32, _: [])@tt: F32 = return (math.arith.div mode (value, divisor));
     map_reduce_post @(1, 0) @(F32, F32, 1, 2, SchedT) (M, (M, N), mk_sched (2, 0))
         @(F32, 2, (M, N), (), (), ())
         ((add, square_sum)#squares, 0.0:F32, mean) row ((affine.id @2,), ()) ((x,), ());
-lam row_soft {M N: Nat} (x: «M, N; F32»): «M, N; F32» =
+lam row_soft {M N: Nat} (x: tensor.Tensor 2 (M, N) F32): tensor.Tensor 2 (M, N) F32 =
     let maximum = row_max x;
     let exp = retained (with_rows (shifted_exp, x, maximum));
     let sum = row_sum exp;
     with_rows (divide, exp, sum);
-lam row_layer {M N: Nat} (x: «M, N; F32»): «M, N; F32» =
+lam row_layer {M N: Nat} (x: tensor.Tensor 2 (M, N) F32): tensor.Tensor 2 (M, N) F32 =
     let mean = row_average (ff, x);
     let centered = retained (with_rows (subtract, x, mean));
     let variance = row_average (tt, centered);
     with_rows (normalize, centered, variance);
 
-axm mark_soft: {M N: Nat} → [rows: Nat, «M, N; F32»] → «M, N; F32»;
-axm mark_layer: {M N: Nat} → [rows: Nat, «M, N; F32»] → «M, N; F32»;
-pub rule group_soft (M N rows: Nat, x: «M, N; F32»):
+axm mark_soft: {M N: Nat} → [rows: Nat, tensor.Tensor 2 (M, N) F32] → tensor.Tensor 2 (M, N) F32;
+axm mark_layer: {M N: Nat} → [rows: Nat, tensor.Tensor 2 (M, N) F32] → tensor.Tensor 2 (M, N) F32;
+pub rule group_soft (M N rows: Nat, x: tensor.Tensor 2 (M, N) F32):
     mark_soft @(M, N) (rows, x) when core.bit2.and 0 (0 < N, 0 < rows) =>
     tiled ((M, N), (rows, N))
         x
-        (λ (off ext: «2; Nat») (x): «ext; F32» = row_soft (slice (M, N) (off, (1, 1), ext) x));
-pub rule group_layer (M N rows: Nat, x: «M, N; F32»):
+        (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext F32 = row_soft (slice (M, N) (off, (1, 1), ext) x));
+pub rule group_layer (M N rows: Nat, x: tensor.Tensor 2 (M, N) F32):
     mark_layer @(M, N) (rows, x) when core.bit2.and 0 (0 < N, 0 < rows) =>
     tiled ((M, N), (rows, N))
         x
-        (λ (off ext: «2; Nat») (x): «ext; F32» = row_layer (slice (M, N) (off, (1, 1), ext) x));
+        (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext F32 = row_layer (slice (M, N) (off, (1, 1), ext) x));

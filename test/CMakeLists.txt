@@ -57,6 +57,7 @@ add_mim_test(mim-test
         pattern.cpp
         pattern_depth.cpp
         restricted_dep_types.cpp
+        tensor.cpp
         test.cpp
         variant.cpp
 )

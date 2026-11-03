@@ -20,21 +20,21 @@ fun inc (_ x: F32)@tt: F32 = return (math.arith.add math.mode.fast (x, 1.0:F32))
 fun subtract (_: F32, (a b: F32))@tt: F32 = return (math.arith.sub math.mode.fast (b, a));
 fun sum (a b: F32)@tt: F32 = return (math.arith.add math.mode.fast (a, b));
 lam rows (i _: affine.Index): affine.Index = i;
-lam increment (x: «5, 7; F32»): «5, 7; F32» =
+lam increment (x: tensor.Tensor 2 (5, 7) F32): tensor.Tensor 2 (5, 7) F32 =
     map_reduce ((5, 7), (5, 7)) (inc, 0.0:F32) (affine.id @2) (affine.id @2,) x;
-lam row_sum (x: «5, 7; F32»): «5; F32» =
+lam row_sum (x: tensor.Tensor 2 (5, 7) F32): tensor.Tensor 1 5 F32 =
     map_reduce (5, (5, 7)) (sum, 0.0:F32) rows (affine.id @2,) x;
 
-extern fun gemm (a: «13, 7; F32», b: «7, 11; F32»): «13, 11; F32» =
+extern fun gemm (a: tensor.Tensor 2 (13, 7) F32, b: tensor.Tensor 2 (7, 11) F32): tensor.Tensor 2 (13, 11) F32 =
     return (group_req (product_2d Ring (buf a, buf b), 1, 0, 4, (16, 4, 32)));
 
-extern fun outer (a b: «5, 7; F32»): «5, 7; F32» =
+extern fun outer (a b: tensor.Tensor 2 (5, 7) F32): tensor.Tensor 2 (5, 7) F32 =
     let p = increment (buf a);
     let c = map_reduce ((5, 7), (5, 7)) (subtract, 0.0:F32)
         (affine.id @2) (affine.id @2, affine.id @2) (p, buf b);
     return (group_req (c, 0, 0, 2, 1));
 
-extern fun reverse (a: «5, 3; F32», b: «3, 7; F32»): «5; F32» =
+extern fun reverse (a: tensor.Tensor 2 (5, 3) F32, b: tensor.Tensor 2 (3, 7) F32): tensor.Tensor 1 5 F32 =
     let p = product_2d Ring (buf a, buf b);
     let c = row_sum p;
     let p = group_req (p, 2, 0, 2, c);

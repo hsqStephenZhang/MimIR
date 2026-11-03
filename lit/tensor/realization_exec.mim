@@ -16,30 +16,30 @@ let F32 = math.F32;
 
 fun scale (_ x: F32)@tt: F32 = return (math.arith.mul math.mode.fast (x, 3.125:F32));
 fun sum (_: F32, (a b: F32))@tt: F32 = return (math.arith.add math.mode.fast (a, b));
-lam scaled {n: Nat} (x: «n; F32»): «n; F32» =
+lam scaled {n: Nat} (x: tensor.Tensor 1 n F32): tensor.Tensor 1 n F32 =
     map_reduce (n, n) (scale, 0.0:F32) (affine.id @1) (affine.id @1,) x;
-lam reader {n: Nat} (size: Nat, x: «n; F32»): «n; F32» =
+lam reader {n: Nat} (size: Nat, x: tensor.Tensor 1 n F32): tensor.Tensor 1 n F32 =
     tiled (n, size) x
-        (λ (off ext: Nat) (x): «ext; F32» = slice n (off, 1, ext) x);
-lam joined {n: Nat} (a b: «n; F32»): «n; F32» =
+        (λ (off ext: Nat) (x): tensor.Tensor 1 ext F32 = slice n (off, 1, ext) x);
+lam joined {n: Nat} (a b: tensor.Tensor 1 n F32): tensor.Tensor 1 n F32 =
     map_reduce @2 @(F32, 1, 1) (n, n) @((F32, F32), (1, 1), (n, n))
         (sum, 0.0:F32) (affine.id @1) (affine.id @1, affine.id @1) (a, b);
-lam shared_value {n: Nat} (x: «n; F32»): «n; F32» =
+lam shared_value {n: Nat} (x: tensor.Tensor 1 n F32): tensor.Tensor 1 n F32 =
     let p = scaled x;
     joined (reader (4, p), reader (2, p));
 
-extern fun shared (x: «8; F32»): «8; F32» = return (shared_value (buf x));
-extern fun nested (x: «8; F32»): «8; F32» =
+extern fun shared (x: tensor.Tensor 1 8 F32): tensor.Tensor 1 8 F32 = return (shared_value (buf x));
+extern fun nested (x: tensor.Tensor 1 8 F32): tensor.Tensor 1 8 F32 =
     let x = buf x;
     return (tiled (8, 4)
         x
-        (λ (off ext: Nat) (x): «ext; F32» = shared_value (slice 8 (off, 1, ext) x)));
-extern fun boxes (x: «8; F32»): «4; F32» =
+        (λ (off ext: Nat) (x): tensor.Tensor 1 ext F32 = shared_value (slice 8 (off, 1, ext) x)));
+extern fun boxes (x: tensor.Tensor 1 8 F32): tensor.Tensor 1 4 F32 =
     let x = buf x;
     let a = scaled (slice 8 (0, 1, 4) x);
     let b = scaled (slice 8 (4, 1, 4) x);
     return (joined (reader (2, a), reader (2, b)));
-extern fun distinct (x: «8; F32»): «8; F32» =
+extern fun distinct (x: tensor.Tensor 1 8 F32): tensor.Tensor 1 8 F32 =
     let p = scaled (buf x);
     let q = scaled p;
     return (joined (reader (4, p), reader (2, q)));

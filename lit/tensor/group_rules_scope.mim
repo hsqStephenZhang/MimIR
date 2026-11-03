@@ -8,19 +8,19 @@ use tensor;
 
 fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
 fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
-lam first (x: «5, 7; I64»): «5, 7; I64» =
+lam first (x: tensor.Tensor 2 (5, 7) I64): tensor.Tensor 2 (5, 7) I64 =
     map_reduce ((5, 7), (5, 7)) (inc, 0I64) (affine.id @2) (affine.id @2,) x;
-lam second (x: «5, 7; I64»): «5, 7; I64» =
+lam second (x: tensor.Tensor 2 (5, 7) I64): tensor.Tensor 2 (5, 7) I64 =
     map_reduce ((5, 7), (5, 7)) (twice, 0I64) (affine.id @2) (affine.id @2,) x;
 
-extern fun fused (x: «5, 7; I64»): «5, 7; I64» =
+extern fun fused (x: tensor.Tensor 2 (5, 7) I64): tensor.Tensor 2 (5, 7) I64 =
     return (group_req (second (first (buf x)), 0, 0, 2, 1));
 
-extern fun shared (x: «5, 7; I64»): [«5, 7; I64», «5, 7; I64»] =
+extern fun shared (x: tensor.Tensor 2 (5, 7) I64): [tensor.Tensor 2 (5, 7) I64, tensor.Tensor 2 (5, 7) I64] =
     let p = first (buf x);
     return (group_req (second p, 0, 0, 2, 1), p);
 
-extern fun boundary (x: «5, 7; I64»): «5, 7; I64» =
+extern fun boundary (x: tensor.Tensor 2 (5, 7) I64): tensor.Tensor 2 (5, 7) I64 =
     let p = group_req (first (buf x), 0, 0, 2, 1);
     return (group_req (second p, 0, 0, 2, 1));
 

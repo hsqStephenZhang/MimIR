@@ -11,9 +11,10 @@ plugin affine;
 use tensor;
 
 fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
-extern fun folded (x: «2, 3; I64»): «2, 3; I64» =
+extern fun folded (x: tensor.Tensor 2 (2, 3) I64): tensor.Tensor 2 (2, 3) I64 =
     let p = map_reduce @1 @(I64, 3, 3) ((2, 1, 3), (2, 1, 3)) @(I64, 2, (2, 3))
         (add, 0I64) (affine.id @3)
         ((λ (i _ j: affine.Index): «2; affine.Index» = (i, j)),) (buf x);
+    let p = reshape (2, 1, 3) (2, 3) p;
     return (map_reduce @1 @(I64, 2, 2) ((2, 3), (2, 3)) @(I64, 2, (2, 3))
         (add, 0I64) (affine.id @2) (affine.id @2,) p);

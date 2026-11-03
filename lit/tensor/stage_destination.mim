@@ -8,12 +8,12 @@ plugin affine;
 plugin compile;
 use tensor;
 fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
-extern fun shared_stage (x: «7, 9; I64»): «5, 7; I64» =
+extern fun shared_stage (x: tensor.Tensor 2 (7, 9) I64): tensor.Tensor 2 (5, 7) I64 =
     let cropped = slice @(I64, 2) (7, 9) ((1, 1), (1, 1), (5, 7)) (buf x);
     let p = stage @(I64, 2, 0) (5, 7) ((), (), (0₂, 1₂), 0I64) 0 cropped;
     return (tiled @(I64, 2) ((5, 7), (2, 3))
         p
-        (λ (off ext: «2; Nat») (p): «ext; I64» =
+        (λ (off ext: «2; Nat») (p): tensor.Tensor 2 ext I64 =
             map_reduce_post @(1, 0) @(I64, I64, 2, 2, SchedT)
                 (ext, ext, mk_sched (2, 0)) @(I64, 2, (5, 7), (), (), ())
                 (add, 0I64, id @I64) (affine.id @2)
