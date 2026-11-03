@@ -613,6 +613,14 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     }
     if (Axm::isa<tensor::item>(app)) return buffer::op_read(fresh_mem(), rewrite(app->arg()), w.tuple())->proj(2, 1);
     if (Axm::isa<tensor::splat>(app)) return lower_splat(app);
+    if (Axm::isa<tensor::reshape>(app)) {
+        auto input = rewrite(app->arg());
+        if (input->type() == buf_of(app->type())) return input;
+        const Def* value = old_world().annex<tensor::reshape_impl>();
+        for (auto arg : app->uncurry_args<4>())
+            value = old_world().app(value, arg);
+        return rewrite(value);
+    }
     if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app);
     if (Axm::isa<tensor::tiled_multi>(app)) return lower_tiled(app);
     if (Axm::isa<tensor::tiled_n>(app)) return lower_tiled_n(app);

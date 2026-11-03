@@ -10,6 +10,8 @@
 
 区域的 DATA-edge 隔离检查识别名义 Tensor，不把形状数组视为数据张量。
 bufferization 删除 Arr 角色猜测及按类型推断张量参数的表，按名义类型统一改写接口。
+只增删 literal size-1 轴的 `reshape` 在物理 buffer 类型相同时保留为无分配视图。
+若 cap 导致物理布局不同，则仍使用原有复制实现，不能仅按逻辑 shape 判定别名。
 张量读取也必须参与 memory threading：`get/item` 请求当前 memory，
 使 pinned callback 在 ABI 转换后仍保持初始化与读取的先后关系。
 

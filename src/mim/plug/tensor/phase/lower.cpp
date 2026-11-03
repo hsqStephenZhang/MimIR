@@ -91,7 +91,11 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::binary>(app)) return lower_via_impl(app, impl<tensor::binary_impl>());
     if (Axm::isa<tensor::select>(app)) return lower_via_impl(app, impl<tensor::select_impl>());
     if (Axm::isa<tensor::repeat>(app)) return lower_via_impl(app, impl<tensor::repeat_impl>());
-    if (Axm::isa<tensor::reshape>(app)) return lower_via_impl(app, impl<tensor::reshape_impl>());
+    if (Axm::isa<tensor::reshape>(app)) {
+        auto [meta, input_shape, output_shape, input] = app->uncurry_args<4>();
+        if (*Shape(input_shape).fold() != *Shape(output_shape).fold())
+            return lower_via_impl(app, impl<tensor::reshape_impl>());
+    }
     if (Axm::isa<tensor::slice>(app)) return lower_via_impl(app, impl<tensor::slice_impl>());
     if (Axm::isa<tensor::flip>(app)) return lower_via_impl(app, impl<tensor::flip_impl>());
     if (Axm::isa<tensor::conv>(app)) return lower_via_impl(app, impl<tensor::conv_impl>());
