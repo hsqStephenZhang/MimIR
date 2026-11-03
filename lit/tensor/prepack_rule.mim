@@ -1,0 +1,58 @@
+// RUN: %mim %s -VVVV -o %t.mim 2> %t.log
+// RUN: %FileCheck %s --check-prefix=RULE < %t.mim
+// RUN: %mim %s -p ll -X ll:rt=embed -X ll:o=%t.ll
+// RUN: python3 %S/prepack_count.py %t.ll %t.count.ll
+// RUN: clang++ -O3 -fsanitize=address %S/prepack_rule_aux.cpp %t.count.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim %s -X tensor:prepack=0 -o %t.off.mim
+// RUN: %FileCheck %s --check-prefix=OFF < %t.off.mim
+// RUN: %mim %s -p ll -X tensor:prepack=0 -X ll:rt=embed -X ll:o=%t.off.ll
+// RUN: clang++ -O3 -fsanitize=address -DPREPACK_OFF %S/prepack_rule_aux.cpp %t.off.ll -o %t.off -Wno-override-module
+// RUN: %t.off
+
+plugin opt;
+plugin compile;
+plugin tensor;
+plugin affine;
+plugin math;
+use tensor;
+let F32 = math.F32;
+fun multiply (acc: F32, (a b: F32))@tt: F32 =
+    return (math.arith.add math.mode.contract (acc, math.arith.mul math.mode.contract (a, b)));
+
+extern fun gemm (a: Tensor 2 (3, 5) F32, b: Tensor 2 (7, 5) F32): Tensor 2 (3, 7) F32 =
+    let c = map_reduce ((3, 7), (3, 7, 5)) (multiply, 0.0:F32)
+        (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (1, 2))
+        (buf a, frozen (buf b));
+    return (group_req (c, 1, 0, 2, (4, 3, 4)));
+
+extern fun batch (a: Tensor 3 (2, 3, 5) F32, b: Tensor 3 (2, 7, 5) F32): Tensor 3 (2, 3, 7) F32 =
+    let c = map_reduce ((2, 3, 7), (2, 3, 7, 5)) (multiply, 0.0:F32)
+        (proj_map @(4, 3) (0, 1, 2))
+        (proj_map @(4, 3) (0, 1, 3), proj_map @(4, 3) (0, 2, 3))
+        (buf a, frozen (buf b));
+    return (group_req (c, 1, 0, 2, (4, 3, 4)));
+
+extern fun mutable_weight (a: Tensor 2 (3, 5) F32, b: Tensor 2 (7, 5) F32): Tensor 2 (3, 7) F32 =
+    let c = map_reduce ((3, 7), (3, 7, 5)) (multiply, 0.0:F32)
+        (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (1, 2))
+        (buf a, buf b);
+    return (group_req (c, 1, 0, 2, (4, 3, 4)));
+
+extern fun prepared_a (a: Tensor 2 (3, 5) F32, b: Tensor 2 (7, 5) F32): Tensor 2 (3, 7) F32 =
+    let a = unary (λ x: F32: F32 = math.arith.add math.mode.contract (x, 0.125:F32)) (buf a);
+    let c = map_reduce ((3, 7), (3, 7, 5)) (multiply, 0.0:F32)
+        (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (1, 2))
+        (a, frozen (buf b));
+    return (group_req (c, 1, 0, 2, (4, 3, 4)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (group_default, compile.cond "ll" (opt._default_compile ()), compile.cleanup);
+
+// RULE: tensor.prepack
+// OFF-NOT: tensor.prepack
+// OFF: extern fun gemm
+// OFF-NOT: tensor.prepack

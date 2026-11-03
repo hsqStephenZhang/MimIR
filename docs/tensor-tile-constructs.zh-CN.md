@@ -13,6 +13,24 @@ bufferization 删除 Arr 角色猜测及按类型推断张量参数的表，按�
 只增删 literal size-1 轴的 `reshape` 在物理 buffer 类型相同时保留为无分配视图。
 若 cap 导致物理布局不同，则仍使用原有复制实现，不能仅按逻辑 shape 判定别名。
 
+## Frozen 权重与持久预打包（Task 34B）
+
+`frozen (buf weight)` 标记整张外部函数参数：其数据地址不变时，内容也不得改变。
+`prepack` 使用与 `stage` 相同的 shape/layout/padding 参数，参考语义为整张输入的 `stage`。
+destination lowering 每个静态站点保留上次地址与 packed buffer；
+首次调用或地址变化时填充，A→A→B→A 恰好打包三次，不是多地址缓存。
+只支持单线程、不重叠调用；持久 buffer 不交给调用者释放，生存期为进程生存期。
+
+默认 grouping 后的 P5 `prepack_rule` 将 BLIS B panel 的 stage 改成整输入 prepack 的 slice。
+guard 检查 frozen whole input、纯 permutation、literal packed shape、常量 padding、
+NR 对齐、N 尾部 padding 等价、K 范围和大小预算；`-VVVV` 记录每个候选的判定。
+区域遍历从 `tiled/tile_fold` 的结构建立 offset/extent 事实，
+把整张 packed buffer 提升为显式输入，把 panel slice 留在 body 内供 read-map 合成。
+不改变 BLIS 的 MR/NR/KC/NC，也不在 LowerToMem 中作调度决策。
+同样支持 batch 坐标固定、矩阵轴为 permutation 的 batched B：所有 batch 共用一个持久 buffer。
+不缓存一般 affine/strided/计算依赖的视图，未标记 frozen 的权重保持原路径。
+`-X tensor:prepack=0` 禁用自动规则；`tensor:prepack-budget` 默认为每副本 64 MiB。
+
 ## 共享生产者的 fuse-and-yield
 
 `tensor.fuse_and_yield budget` 用 P5 multi-root Rule 同时替换显式区域输入中的

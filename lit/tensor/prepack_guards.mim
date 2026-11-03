@@ -1,0 +1,46 @@
+// RUN: %mim %s -VVVV -o %t.mim 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: %mim %s -X tensor:prepack-budget=1 -VVVV -o %t.small.mim 2> %t.small.log
+// RUN: %FileCheck %s --check-prefix=BUDGET < %t.small.log
+// RUN: %FileCheck %s --check-prefix=NO-PACK < %t.small.mim
+
+plugin opt;
+plugin compile;
+plugin tensor;
+plugin core;
+plugin math;
+use tensor;
+let F32 = math.F32;
+
+extern fun whole (x: Tensor 2 (5, 7) F32): F32 =
+    let p = stage @(F32, 2, 1) (5, 7) (1, 4, (tt, ff), 0.0:F32) 0 (frozen (buf x));
+    return (get (p, (0₂, 0₅, 0₄)));
+
+extern fun unaligned (x: Tensor 2 (5, 7) F32): F32 =
+    let p = stage @(F32, 2, 1) (5, 3) (1, 4, (tt, ff), 0.0:F32) 0
+        (slice (5, 7) ((0, 1), (1, 1), (5, 3)) (frozen (buf x)));
+    return (get (p, (0₁, 0₅, 0₄)));
+
+extern fun interior_tail (x: Tensor 2 (5, 7) F32): F32 =
+    let p = stage @(F32, 2, 1) (5, 3) (1, 4, (tt, ff), 0.0:F32) 0
+        (slice (5, 7) ((0, 0), (1, 1), (5, 3)) (frozen (buf x)));
+    return (get (p, (0₁, 0₅, 0₄)));
+
+extern fun mutable_pad (x: Tensor 2 (5, 7) F32, pad: F32): F32 =
+    let p = stage @(F32, 2, 1) (5, 7) (1, 4, (tt, ff), pad) 0 (frozen (buf x));
+    return (get (p, (0₂, 0₅, 0₄)));
+
+extern fun not_whole (x: Tensor 2 (5, 7) F32): F32 =
+    let source = frozen (slice (5, 7) ((0, 0), (1, 1), (5, 3)) (buf x));
+    let p = stage @(F32, 2, 1) (5, 3) (1, 4, (tt, ff), 0.0:F32) 0 source;
+    return (get (p, (0₁, 0₅, 0₄)));
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (group_default, compile.cleanup);
+
+// CHECK-DAG: panel alignment, tail padding or K range is unproved
+// CHECK-DAG: padding depends on another value
+// CHECK-DAG: frozen source is not a whole function input
+// CHECK-DAG: accepted
+// BUDGET: packed copy exceeds the size budget
+// NO-PACK-NOT: tensor.prepack

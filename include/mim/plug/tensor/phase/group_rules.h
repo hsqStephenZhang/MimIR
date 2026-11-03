@@ -36,6 +36,14 @@ private:
     void start() override;
 };
 
+class PrepackWeights : public Phase {
+public:
+    using Phase::Phase;
+
+private:
+    void start() override;
+};
+
 class FuseRegionInputs : public Phase {
 public:
     using Phase::Phase;

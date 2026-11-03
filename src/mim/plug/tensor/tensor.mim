@@ -2075,6 +2075,17 @@ axm prepack: {T: *, r k: Nat}
            → [input: Tensor r s T]
            → Tensor (r + k) (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) T;
 
+priv axm prepack_panel: {C: *} → C → C, normalize_prepack_panel;
+priv axm prepack_supported: {C: *, n: Nat} → [C, «n; [value multiple bound: Nat]»] → Bool;
+
+priv anx lam prepack_rule (T: *, r k n: Nat) (facts: «n; [value multiple bound: Nat]»): Rule [
+    s: «r; Nat», pos tiles: «k; Nat», perm: «r; Idx r», pad: T, scope: Nat, input: Tensor r s T] =
+    rule pack (s: «r; Nat», pos tiles: «k; Nat», perm: «r; Idx r», pad: T, scope: Nat, input: Tensor r s T):
+        stage @(T, r, k) s (pos, tiles, perm, pad) scope input
+        when prepack_supported (stage @(T, r, k) s (pos, tiles, perm, pad) scope input, facts) =>
+        prepack_panel (stage @(T, r, k) s (pos, tiles, perm, pad) scope input);
+    pack;
+
 priv anx lam stage_read_impl {T: *, r k ri: Nat} (s_source s: «r; Nat», si: «ri; Nat»)
     (map: «r; affine.Index» → «ri; affine.Index»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)

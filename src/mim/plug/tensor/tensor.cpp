@@ -18,6 +18,7 @@ using namespace mim;
 using namespace mim::plug;
 
 namespace mim::plug::tensor {
+pattern::WitnessResult prepack_witness(const pattern::GraphView&, Defs, World&);
 RegionInputs::RegionInputs(Defs roots) {
     DefSet internal(roots.begin(), roots.end()), seen;
     for (auto root : roots)
@@ -111,6 +112,7 @@ static pattern::WitnessResult transpose_box_witness(const pattern::GraphView& so
 }
 
 static void reg_witnesses(pattern::Witnesses& witnesses) {
+    witnesses.emplace(Annex::base<prepack_supported>(), pattern::Witness{2, prepack_witness});
     witnesses.emplace(Annex::base<input_box>(), pattern::Witness{3, input_box_witness});
     witnesses.emplace(Annex::base<transpose_box>(), pattern::Witness{3, transpose_box_witness});
     witnesses.emplace(Annex::base<within_budget>(), pattern::Witness{3, fusion_budget});
@@ -145,6 +147,8 @@ static void reg_phases(Flags2Phases& phases) {
 
 // clang-format off
 static constexpr PluginArg known_args[] = {
+    {"prepack=<n>", "Prepack explicitly frozen weight inputs after BLIS grouping (default 1)."},
+    {"prepack-budget=<bytes>", "Maximum size of each persistent packed copy (default 67108864)."},
     {"attention=<n>", "Enable attention raising before tensor lowering (default 1; grouping must also be enabled)."},
     {"group=<n>", "Enable automatic grouping and in-group rules in the default pipeline (default 1; disabled for GPU)."},
     {"group-cache=<bytes>", "Scratch working-set budget for tensor.group and BLIS block selection (default 262144)."},

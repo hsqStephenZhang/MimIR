@@ -503,6 +503,7 @@ void GroupDefault::start() {
         fusion.apply(true, std::move(stages));
         fusion.run();
     }
+    if (driver().arg_nat("tensor", "prepack").value_or(1)) PrepackWeights(world(), "tensor.prepack_weights").run();
 }
 
 void AttentionSchedule::start() {
