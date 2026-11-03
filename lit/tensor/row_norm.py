@@ -69,7 +69,9 @@ if benchmark:
     (directory / "cases.h").write_text(
         "\n".join(declarations) + "\nCase cases[] = {\n" + ",\n".join(cases) + "\n};\n"
     )
-options = ["-X", "tensor:reference-tiles=1"] if "reference" in flags else []
+# realization_count.py counts exponentials as `llvm.exp` calls.
+options = ["-X", "math:exp-poly=0"]
+options += ["-X", "tensor:reference-tiles=1"] if "reference" in flags else []
 if automatic:
     options += ["-X", "tensor:strict=1"]
 subprocess.run([mim, *options, "-p", "opt", str(generated), "-p", "ll"], cwd=directory, check=True)

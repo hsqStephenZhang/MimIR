@@ -1,0 +1,22 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: %FileCheck %s < %{s:stem}.ll
+// RUN: clang -std=c11 -fsanitize=address %S/lower_exp_aux.c %{s:stem}.ll -o %t -Wno-override-module -lm
+// RUN: %t
+// RUN: %mim -p opt %s -p ll -X math:exp-poly=0 -X ll:o=%t.off.ll
+// RUN: %FileCheck %s --check-prefix=OFF < %t.off.ll
+
+// The F32 exp becomes vectorizable arithmetic; the harness compares it with expf.
+plugin core;
+plugin math;
+
+extern fun exp_f32 (x: math.F32): math.F32 = return (math.exp.exp math.mode.contract x);
+extern fun exp_f64 (x: math.F64): math.F64 = return (math.exp.exp math.mode.contract x);
+
+// CHECK-LABEL: define float @exp_f32
+// CHECK-NOT: @llvm.exp.f32
+// CHECK: fptosi
+// CHECK: bitcast
+// CHECK-LABEL: define double @exp_f64
+// CHECK: @llvm.exp.f64
+// OFF: @llvm.exp.f32
