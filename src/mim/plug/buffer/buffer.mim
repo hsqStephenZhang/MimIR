@@ -82,6 +82,9 @@ axm copy: [r: Nat, s: «r; Nat», T: *] as rsT
 ///
 axm free: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT] → mem.M 0;
 ///
+/// Persistent storage with the lifetime and pointer-key contract of `mem.persist`.
+axm persist: [r: Nat, s: «r; Nat», T: *] as rsT → [S: *] → [mem.M 0, src: S] → [mem.M 0, Buf rsT, fresh: Bool];
+///
 /// ## Phases
 ///
 /// ### lower_ptr

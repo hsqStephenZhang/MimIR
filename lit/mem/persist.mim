@@ -1,0 +1,17 @@
+// RUN: %mim %s -p opt -p ll -X ll:rt=embed -X ll:o=%t.ll
+// RUN: clang++ -O3 -fsanitize=address %S/persist_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin opt;
+plugin mem;
+plugin core;
+plugin compile;
+
+extern fun cached (p: mem.Ptr (I64, 0)): Bool =
+    con run (m: mem.M 0)@tt =
+        let (_, _, fresh) = mem.persist (I64, mem.Ptr (I64, 0)) (m, p);
+        return fresh;
+    mem.fresh (0, run);
+
+extern lam _compile (): compile.Phase =
+    compile.phases ff (mem.add_mem, opt._default_compile ());

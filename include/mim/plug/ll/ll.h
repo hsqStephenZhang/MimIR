@@ -420,8 +420,12 @@ inline void Emitter::start() {
     section(type_decls_.str());
 
     std::ostringstream decls;
-    for (auto&& decl : decls_)
-        std::println(decls, "{}", decl);
+    for (auto&& decl : decls_) {
+        auto at       = decl.find('@');
+        auto embedded = rt_used_ && rt_ == Rt::embed && at != std::string::npos
+                     && rt_module_.find(decl.substr(at, decl.find('(', at) - at + 1)) != std::string::npos;
+        if (!embedded) std::println(decls, "{}", decl);
+    }
     section(decls.str());
 
     section(func_decls_.str());
