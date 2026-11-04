@@ -11,11 +11,12 @@ plugin core;
 plugin math;
 
 extern fun exp_f32 (x: math.F32): math.F32 = return (math.exp.exp math.mode.contract x);
+extern fun exp_f32_fast (x: math.F32): math.F32 = return (math.exp.exp math.mode.fast x);
 extern fun exp_f64 (x: math.F64): math.F64 = return (math.exp.exp math.mode.contract x);
 
 // CHECK-LABEL: define float @exp_f32
 // CHECK-NOT: @llvm.exp.f32
-// CHECK: fptosi
+// CHECK-NOT: fptosi
 // CHECK: bitcast
 // CHECK-LABEL: define double @exp_f64
 // CHECK: @llvm.exp.f64

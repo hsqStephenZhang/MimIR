@@ -4,6 +4,7 @@
 #include <string.h>
 
 float exp_f32(float);
+float exp_f32_fast(float);
 double exp_f64(double);
 
 static int64_t ord(float f) {
@@ -17,6 +18,7 @@ int main(void) {
         float a = exp_f32(x), b = expf(x);
         if (b >= 0x1p-126f && llabs(ord(a) - ord(b)) > 1) return 1;
         if (b < 0x1p-126f && fabsf(a - b) > 0x1p-148f) return 2;
+        if (exp_f32_fast(x) != a) return 6;
     }
     float special[] = {INFINITY, -INFINITY, 0.f, 88.7229f, 89.f, -104.f, 1e30f, -1e30f};
     for (unsigned i = 0; i != sizeof special / sizeof *special; ++i)
