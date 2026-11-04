@@ -119,15 +119,20 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     }
     auto a_read   = w.app(maps[0], fn->var());
     auto direct_a = batch == 0 && ranks->rr == 1 && (*nr)[0] == 2 && a_read == w.tuple({vars[0], vars[2]});
+    auto in_place = [&](size_t i) {
+        return (*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var();
+    };
     if (batch == 0) {
+        // A copied by blis_operand is already row-major (M, K) and needs no second pack.
+        auto pack_a  = !direct_a && in_place(0);
         auto builder = w.app(w.annex<group_blis_impl>(), {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps});
         builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
-                                       w.lit_nat(nc), w.lit_nat(kc), w.lit_bool(!direct_a)});
+                                       w.lit_nat(nc), w.lit_nat(kc), w.lit_bool(pack_a)});
         builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps});
         auto [inputs, extras] = app->args<2>();
         auto data             = inputs->projs<2>();
         for (size_t i = 0; i != 2; ++i) {
-            if ((*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var()) continue;
+            if (in_place(i)) continue;
             auto view = w.app(w.annex<blis_operand>(), {types[i], w.lit_nat((*nr)[i])});
             view      = w.app(view, shapes[i]);
             view      = w.app(view, {w.tuple({w.lit_nat(i ? k : m), w.lit_nat(i ? n : k)}), reads[i]});

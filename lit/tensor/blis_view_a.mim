@@ -1,0 +1,17 @@
+// RUN: %mim -p opt -p ll -X tensor:strict=1 -VVVV %s -X ll:o=%t.ll 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: clang++ -O3 -std=c++23 -fsanitize=address %S/blis_view_a_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+
+// A transposed A with M, N and K tails, copied row-major once and read without a second pack.
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let mode = math.mode.contract;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add mode, math.arith.mul mode);
+
+// CHECK: tensor.group contraction {{.*}}: MR=4 NR=16 KC=128
+extern fun view_a (a: tensor.Tensor 2 (300, 13) F32, b: tensor.Tensor 2 (300, 37) F32): tensor.Tensor 2 (13, 37) F32 =
+    return (tensor.dot_product R @(2, 2) @(1, 0) (0₂, 0₂, (), ()) (tensor.buf a, tensor.buf b));
