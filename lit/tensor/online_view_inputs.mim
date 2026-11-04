@@ -1,0 +1,29 @@
+// RUN: %mim %s -p ll -X tensor:attention-online=1 -X ll:o=%t.ll
+// RUN: clang++ -O3 -std=c++23 -fsanitize=address %S/online_view_inputs_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim %s -p ll -X tensor:attention-online=0 -X ll:o=%t.off.ll
+// RUN: clang++ -O3 -std=c++23 -fsanitize=address %S/online_view_inputs_aux.cpp %t.off.ll -o %t.off -Wno-override-module
+// RUN: %t.off
+
+plugin opt;
+plugin tensor;
+plugin math;
+use tensor;
+let F32 = math.F32;
+
+lam view (x: Tensor 2 (17, 8) F32): Tensor 3 (2, 17, 4) F32 =
+    let x = reshape (17, 8) (1, 17, 2, 4) (buf x);
+    let x = transpose @(F32, 4) (0₄, 2₄, 1₄, 3₄) @(1, 17, 2, 4) x;
+    reshape (1, 2, 17, 4) (2, 17, 4) x;
+
+lam plain (x: Tensor 2 (17, 8) F32): Tensor 3 (2, 17, 4) F32 =
+    reshape (17, 8) (2, 17, 4) (buf x);
+
+extern fun qk (q k v: Tensor 2 (17, 8) F32): Tensor 3 (2, 17, 4) F32 =
+    return (sdpa math.mode.contract (0.5:F32, view q, view k, plain v));
+extern fun kv (q k v: Tensor 2 (17, 8) F32): Tensor 3 (2, 17, 4) F32 =
+    return (sdpa math.mode.contract (0.5:F32, plain q, view k, view v));
+extern fun qv (q k v: Tensor 2 (17, 8) F32): Tensor 3 (2, 17, 4) F32 =
+    return (sdpa math.mode.contract (0.5:F32, view q, plain k, view v));
+extern fun qkv (q k v: Tensor 2 (17, 8) F32): Tensor 3 (2, 17, 4) F32 =
+    return (sdpa math.mode.contract (0.5:F32, view q, view k, view v));

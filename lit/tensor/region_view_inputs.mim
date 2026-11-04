@@ -1,0 +1,39 @@
+// RUN: %mim %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O3 -std=c++23 -fsanitize=address %S/region_view_inputs_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+
+plugin opt;
+plugin tensor;
+plugin math;
+plugin affine;
+use tensor;
+let F32 = math.F32;
+let sub = math.arith.sub math.mode.contract;
+fun difference (_: F32, (x y: F32))@tt: F32 = return (sub (x, y));
+fun sum (_: F32, (x y: F32))@tt: F32 = return (math.arith.add math.mode.contract (x, y));
+lam combine {s: «2; Nat»} (x y: Tensor 2 s F32): Tensor 2 s F32 =
+    map_reduce @2 (s, s) (difference, 0.0:F32) (affine.id @2) (affine.id @2, affine.id @2) (x, y);
+
+lam view (x: Tensor 2 (3, 5) F32): Tensor 2 (5, 3) F32 =
+    transpose @(F32, 2) (tt, ff) @(3, 5) (buf x);
+
+extern fun tiled_views (x y: Tensor 2 (3, 5) F32): Tensor 2 (5, 3) F32 =
+    return (tiled ((5, 3), (2, 3)) (view x, view y)
+        (λ (off ext: «2; Nat») (x y: Tensor 2 (5, 3) F32): Tensor 2 ext F32 =
+            combine (slice (5, 3) (off, (1, 1), ext) x, slice (5, 3) (off, (1, 1), ext) y)));
+
+extern fun multi_views (x y: Tensor 2 (3, 5) F32): Tensor 2 (5, 3) F32 =
+    return (tiled_multi @(1, 2, F32, 2) ((5, 3), (5, 3), (2, 3)) (ff, tt) (view x, view y)
+        (λ (off ext: «2; Nat») (x y: Tensor 2 (5, 3) F32): Tensor 2 ext F32 =
+            combine (slice (5, 3) (off, (1, 1), ext) x, slice (5, 3) (off, (1, 1), ext) y)));
+
+extern fun fold_views (x y: Tensor 2 (3, 5) F32): Tensor 2 (5, 3) F32 =
+    return (tile_fold (2, 1) (splat ((5, 3), 0.0:F32)) (view x, view y)
+        (λ (acc: Tensor 2 (5, 3) F32, _: Nat) (x y: Tensor 2 (5, 3) F32): Tensor 2 (5, 3) F32 =
+            map_reduce @2 ((5, 3), (5, 3)) (sum, 0.0:F32) (affine.id @2)
+                (affine.id @2, affine.id @2) (acc, combine (x, y))));
+
+extern fun points_views (x y: Tensor 2 (3, 5) F32): Tensor 2 (5, 3) F32 =
+    return (tiled_n @(1, 1, F32, 2) ((5, 3), 1)
+        (λ (_: Nat): TileBox 2 = ((0, 0), (5, 3))) (view x, view y)
+        (λ (_: Nat) (x y: Tensor 2 (5, 3) F32): Tensor 2 (5, 3) F32 = combine (x, y)));

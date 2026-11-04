@@ -26,8 +26,9 @@ namespace mim::plug::mem::phase {
 ///   mappings passed to `btensor.map_reduce_post`) keep their signature.
 /// - A pi whose leading parameter carries the memory *grouped* (the `Fn [mem.M 0, To, ins] → …` shape of
 ///   a mem-threaded combiner) counts as already mem-threaded.
-/// - Lams reachable from axm-app arguments are preserved untouched: axioms pin their arguments' ABI
+/// - Lams reachable from axm-app arguments retain their signatures: axioms pin their arguments' ABI
 ///   (e.g. the combiner slot of `btensor.map_reduce_post`), so mem-extending them would be ill-typed.
+/// Captured effects using an outer `mem.fresh` parameter join the outer memory chain before the callback runs.
 class AddMem : public RWPhase {
 public:
     using RWPhase::RWPhase;
@@ -46,11 +47,12 @@ private:
 
     /// The current memory token in the continuation being rewritten (new world), or `nullptr` outside any mem context.
     const Def* curr_mem_ = nullptr;
-    /// `true` while rewriting a pinned-ABI subtree (an axm-app argument): no memory is threaded or added there.
+    /// `true` while rewriting a pinned-ABI subtree: callback-local memory effects remain deferred.
     bool preserving_ = false;
     /// Lams (transitively) reachable from axm-app arguments: their ABI is pinned by the axiom.
     LamSet preserved_;
     DefSet fresh_parameters_;
+    Vars pinned_vars_;
 };
 
 } // namespace mim::plug::mem::phase

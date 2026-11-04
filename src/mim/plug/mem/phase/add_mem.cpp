@@ -58,7 +58,14 @@ bool AddMem::analyze() {
 }
 
 const Def* AddMem::rewrite(const Def* old_def) {
-    if (curr_mem_ && fresh_parameters_.contains(old_def)) return curr_mem_;
+    // Outer fresh effects must be threaded before their values become pinned closure captures.
+    if (preserving_ && curr_mem_ && !old_def->has_free_vars_in(pinned_vars_))
+        for (auto parameter : fresh_parameters_)
+            if (old_def->has_free_var(parameter->as<Var>())) {
+                auto preserve = fe::Restore(preserving_, false);
+                return rewrite(old_def);
+            }
+    if (curr_mem_ && !preserving_ && fresh_parameters_.contains(old_def)) return curr_mem_;
     // Type rewriting is MODE-DEPENDENT: outside a pinned ABI every continuation pi gains a leading
     // mem, inside one it must not - but the rewrite memo is shared. Whichever mode first touches a
     // shared type (e.g. a plain 'Cn F32' return pi) would poison the other, hash-order-dependently.
@@ -118,11 +125,11 @@ const Def* AddMem::rewrite_imm_Pi(const Pi* pi) {
 }
 
 const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
-    if (preserving_) return Rewriter::rewrite_mut_Lam(old_lam);
-
-    // Pinned ABI (an axm-app argument and everything below it): rewrite verbatim - no memory threaded or added.
-    if (preserved_.contains(old_lam)) {
-        auto _ = fe::Restore(preserving_, true);
+    // Pinned callbacks retain their ABI and defer local memory effects.
+    if (preserving_ || preserved_.contains(old_lam)) {
+        auto _    = fe::Restore(preserving_, true);
+        auto vars = fe::Restore(pinned_vars_, pinned_vars_);
+        if (auto var = old_lam->has_var()) pinned_vars_ = old_world().vars().insert(pinned_vars_, var);
         return Rewriter::rewrite_mut_Lam(old_lam);
     }
 
