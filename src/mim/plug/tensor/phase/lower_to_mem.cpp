@@ -864,6 +864,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
             return w.tuple(DefVec(n, [&](size_t d) -> const Def* {
                 if (d >= ro) return extent->proj(n, d);
                 if (Lit::isa(cap->proj(n, d))) return cap->proj(n, d);
+                if (auto upper = nat_upper(cap->proj(n, d))) return w.lit_nat(*upper);
                 if (auto upper = nat_upper(extent->proj(n, d))) return w.lit_nat(*upper);
                 return cap->proj(n, d);
             }));

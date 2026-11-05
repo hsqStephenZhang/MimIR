@@ -1733,6 +1733,7 @@ anx lam TileLevel (n: Nat): * = [kind: Nat, sizes: «n; Nat», tail promote: Nat
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
 axm tile_req: {P M C K: *} → [op: P, members: M, levels: C, control: K] → P;
+axm tile_fuse: compile.Phase;
 ///
 /// Fuses exactly the group's members; parallel levels yield members that have users outside the group,
 /// reduction levels fuse only members without such users and never yield.

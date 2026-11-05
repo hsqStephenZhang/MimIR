@@ -1,0 +1,62 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:tile-ref=1 %s -p ll -X ll:o=%t.ref.ll
+// RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_aux.cpp %t.ref.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
+
+// The tile-and-fuse driver tiles each requested root and fuses the members of its group into the tiles.
+
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+
+fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
+fun relu (_ x: I64)@tt: I64 = return ((x, 0I64)#(core.icmp.sl (x, 0I64)));
+fun add (_: I64, xy: [I64, I64])@tt: I64 = let (x, y) = xy; return (core.wrap.add 0 (x, y));
+fun mac (acc: I64, xy: [I64, I64])@tt: I64 =
+    let (x, y) = xy;
+    return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
+lam never (_: FuseQuery): FuseDecision = (ff, ff);
+
+lam chained (n: Nat) (x y: tensor.Tensor 2 (n, 4) I64) (control: FuseQuery → FuseDecision, grouped: Bool)
+    : tensor.Tensor 2 (n, 4) I64 =
+    let p1   = map_reduce ((n, 4), (n, 4)) (twice, 0I64) (affine.id @2) (affine.id @2,) x;
+    let p2   = map_reduce ((n, 4), (n, 4)) (inc, 0I64) (affine.id @2) (affine.id @2,) p1;
+    let root = map_reduce ((n, 4), (n, 4)) (add, 0I64) (affine.id @2) (affine.id @2, affine.id @2) (p2, y);
+    (λ (): tensor.Tensor 2 (n, 4) I64 = tile_req (root, (), ((0, (2, 0), 1, 0),), control),
+     λ (): tensor.Tensor 2 (n, 4) I64 = tile_req (root, (p1, p2), ((0, (2, 0), 1, 0),), control))#grouped ();
+
+extern fun chain (x y: tensor.Tensor 2 (6, 4) I64): tensor.Tensor 2 (6, 4) I64 =
+    return (chained 6 (buf x, buf y) (default_control, tt));
+extern fun chain_sym (n: Nat, x y: tensor.Tensor 2 (n, 4) I64): tensor.Tensor 2 (n, 4) I64 =
+    return (chained n (buf x, buf y) (default_control, tt));
+extern fun excluded (x y: tensor.Tensor 2 (6, 4) I64): tensor.Tensor 2 (6, 4) I64 =
+    return (chained 6 (buf x, buf y) (default_control, ff));
+extern fun rejected (x y: tensor.Tensor 2 (6, 4) I64): tensor.Tensor 2 (6, 4) I64 =
+    return (chained 6 (buf x, buf y) (never, tt));
+
+lam shared_ (n: Nat) (x y: tensor.Tensor 2 (n, 4) I64): [tensor.Tensor 2 (n, 4) I64, tensor.Tensor 2 (n, 4) I64] =
+    let p1   = map_reduce ((n, 4), (n, 4)) (twice, 0I64) (affine.id @2) (affine.id @2,) x;
+    let p2   = map_reduce ((n, 4), (n, 4)) (inc, 0I64) (affine.id @2) (affine.id @2,) p1;
+    let root = map_reduce ((n, 4), (n, 4)) (add, 0I64) (affine.id @2) (affine.id @2, affine.id @2) (p2, y);
+    (tile_req (root, (p1, p2), ((0, (2, 0), 1, 0),), default_control), p1);
+
+extern fun shared (x y: tensor.Tensor 2 (6, 4) I64): [tensor.Tensor 2 (6, 4) I64, tensor.Tensor 2 (6, 4) I64] =
+    return (shared_ 6 (buf x, buf y));
+extern fun shared_sym (n: Nat, x y: tensor.Tensor 2 (n, 4) I64): [tensor.Tensor 2 (n, 4) I64, tensor.Tensor 2 (n, 4) I64] =
+    return (shared_ n (buf x, buf y));
+
+extern fun rows (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    let r    = map_reduce ((5, 3), (5, 3)) (relu, 0I64) (affine.id @2) (affine.id @2,) (buf a);
+    let root = map_reduce ((5, 4), (5, 4, 3)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (r, buf b);
+    return (tile_req (root, r, ((0, (2, 0, 0), 1, 0),), default_control));
+
+// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) inputs=2 fused=2 yielded=0
+// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) inputs=2 fused=0 yielded=0
+// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) inputs=2 fused=1 yielded=0
+// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) inputs=2 fused=2 yielded=1
