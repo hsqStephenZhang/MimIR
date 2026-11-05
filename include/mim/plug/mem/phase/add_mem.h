@@ -38,6 +38,8 @@ private:
     const Def* rewrite(const Def*) override;
     const Def* rewrite_mut_Lam(Lam*) override;
     const Def* rewrite_imm_App(const App*) override;
+    const Def* rewrite_imm_Var(const Var*) override;
+    const Def* rewrite_imm_Extract(const Extract*) override;
     const Def* rewrite_imm_Tuple(const Tuple*) override;
     const Def* rewrite_imm_Pi(const Pi*) override;
 

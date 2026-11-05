@@ -194,6 +194,28 @@ const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
     return new_lam;
 }
 
+const Def* AddMem::rewrite_imm_Var(const Var* var) {
+    // A lam's var reached before its binder: rebuilding the binder maps the var to its shifted components.
+    if (auto lam = var->binder()->isa_mut<Lam>(); lam && !preserving_ && !preserved_.contains(lam)) {
+        rewrite(lam);
+        if (auto mapped = lookup(var)) return mapped;
+    }
+    return Rewriter::rewrite_imm_Var(var);
+}
+
+const Def* AddMem::rewrite_imm_Extract(const Extract* ex) {
+    // Likewise a projection of such a var: the component index shifts by the prepended mem.
+    if (auto var = ex->tuple()->isa<Var>(); var && !preserving_)
+        if (auto lam = var->binder()->isa_mut<Lam>(); lam && !preserved_.contains(lam))
+            if (auto i = Lit::isa(ex->index())) {
+                auto new_lam = rewrite(lam)->as_mut<Lam>();
+                if (auto mapped = lookup(ex)) return mapped;
+                auto offset = new_lam->num_doms() - lam->num_doms();
+                return new_lam->var(new_lam->num_vars(), *i + offset);
+            }
+    return Rewriter::rewrite_imm_Extract(ex);
+}
+
 const Def* AddMem::rewrite_imm_App(const App* app) {
     if (preserving_ || !curr_mem_) return Rewriter::rewrite_imm_App(app);
 
