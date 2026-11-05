@@ -1,0 +1,15 @@
+// RUN: %mim %s -p opt -o - | %FileCheck %s
+
+// A tensor whose extent is a parameter is not closed, so store elimination's free-variable walk descends into its type.
+
+plugin tensor;
+plugin math;
+
+use tensor;
+
+let F32 = math.F32;
+
+extern fun dynamic_relu (n: Nat, input: Tensor 1 n F32): Tensor 1 n F32 =
+    return (unary (λ (x: F32): F32 = math.extrema.fmax math.mode.none (x, 0:F32)) input);
+
+// CHECK: extern con dynamic_relu
