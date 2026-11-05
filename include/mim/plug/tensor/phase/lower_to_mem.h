@@ -26,6 +26,7 @@ private:
     const Def* rewrite_imm_Struc(const Struc*) override;
     const Def* rewrite_imm_App(const App*) override;
     const Def* buf_of(const Def*);
+    const Def* uncurry(Lam*);
 
     const Def* lower_from_array(const App*);
     const Def* lower_get(const App*);
@@ -67,6 +68,7 @@ private:
 
     flags_t tensor_key_ = 0;
     bool tensors_seen_  = false;
+    LamSet shape_poly_;
     /// The fresh-memory continuations minted while the current lam's body is being rewritten.
     fe::Vector<Lam*> pending_;
     /// Per-lam memo for the ops that consume a fresh memory (see LowerToMem::rewrite).

@@ -1547,8 +1547,9 @@ axm fuse_tensor: compile.Phase;
 /// `get` / `set` / `generate` / `map_reduce` become `buffer.read` / `buffer.write` / `buffer.alloc`
 /// threading `mem.M`.
 /// The nominal `Tensor` key identifies tensor values; shape vectors remain ordinary arrays.
-/// Tensor types are rewritten throughout function signatures, aggregates and calls while preserving parameter groups and curry structure.
-/// Rank must be literal; literal zero extents are unsupported, and only the outermost extent may be a runtime value.
+/// Tensor types are rewritten throughout function signatures, aggregates and calls.
+/// Fully applied shape-polymorphic functions become first-order CPS functions with explicit extent parameters.
+/// Rank must be literal; extents may be runtime values.
 /// `mem.add_mem` (scheduled next in the pipeline) threads the memory; run `buffer.lower_ptr`
 /// afterwards to reach `mem.Ptr`.
 ///

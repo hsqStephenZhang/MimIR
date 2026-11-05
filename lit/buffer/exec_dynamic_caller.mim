@@ -1,0 +1,30 @@
+// RUN: rm -f %{s:stem}.ll
+// RUN: %mim -p opt %s -p ll
+// RUN: clang %{s:stem}.ll -o %t -Wno-override-module
+// RUN: %t ; test $? -eq 2
+// RUN: %t x y z ; test $? -eq 8
+
+// A kernel with a runtime extent called from a caller whose shapes are literal: `twice` takes `n` as a value and
+// returns a «n; I32», `main` passes n = 4 and a continuation typed «4; I32».
+// Below bufferization the callee's result is the erased `mem.Ptr («⊤; I32», 0)`, so `buffer.lower_ptr` adapts
+// the caller's continuation (an η-wrapper casting erased→precise) just as it casts a precise argument to an
+// erased parameter.
+// Probe: twice (1, 2, 3, 4) # argc - 1, i.e. 2 for no argument and 8 for three.
+plugin core;
+plugin tensor;
+plugin affine;
+plugin mem;
+plugin cps;
+plugin btensor;
+plugin buffer;
+
+use core.ops.u.w;
+use tensor;
+
+extern con twice (n: Nat, a: tensor.Tensor 1 n I32, return: Cn [tensor.Tensor 1 n I32]) =
+    return (unary (λ (x: I32): I32 = x + x) (a));
+
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
+    let a = tensor.from_array (1I32, 2I32, 3I32, 4I32);
+    con done (o: tensor.Tensor 1 4 I32) = return (m, tensor.get (o, core.conv.u 4 (argc - 1I32)));
+    twice (4, a, done);

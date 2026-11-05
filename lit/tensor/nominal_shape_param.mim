@@ -1,0 +1,30 @@
+// RUN: %mim %s -X ll:o=%t.ll
+// RUN: clang %t.ll -o %t -Wno-override-module
+// RUN: %t ; test $? -eq 27
+// RUN: %t x x x ; test $? -eq 60
+
+plugin core;
+plugin mem;
+plugin tensor;
+plugin ll;
+use tensor;
+use core.ops.u.w;
+
+extern con forward2 (s: «2; Nat», a: Tensor 2 s I32, return: Cn [Tensor 2 s I32]) = return a;
+extern con check2 (m: mem.M 0, s: «2; Nat», a: Tensor 2 s I32, b: Tensor 2 s I32, return: Cn [mem.M 0, I32]) =
+    let i = (core.idx 0 (s#0₂) (core.nat.sub (s#0₂, 1)), core.idx 0 (s#1₂) 2);
+    let x = get (a, i);
+    let y = get (b, i);
+    let z = core.bitcast I32 (s#0₂);
+    let w = 17I32;
+    return (m, x + y + z + w);
+
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
+    let n = core.bitcast Nat argc;
+    let s = (n, 3);
+    let a = generate s (λ (i j: I64): I32 = core.conv.u 4294967296 i * 10I32 + core.conv.u 4294967296 j);
+    con done (t: Tensor 2 s I32) =
+        let i = (core.idx 0 n (core.nat.sub (n, 1)), 2₃);
+        let b = set (t, i, 7I32);
+        check2 (m, s, t, b, return);
+    forward2 (s, a, done);

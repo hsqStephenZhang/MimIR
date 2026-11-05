@@ -1,0 +1,8 @@
+// RUN: rm -f exec_dynamic.ll
+// RUN: FILE=%s;%mim -p opt -o - ${FILE%_run.mim}.mim -p ll
+// RUN: clang exec_dynamic.ll -o %t -Wno-override-module
+// RUN: %t ; test $? -eq 155
+// RUN: %t x ; test $? -eq 186
+// RUN: %t x y z ; test $? -eq 248
+
+// Row 3 of the «4, n» tensor holds 31 everywhere, so the exit code is 31 · n for n = 5, 6, 8.

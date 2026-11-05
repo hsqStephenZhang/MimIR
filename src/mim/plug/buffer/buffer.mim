@@ -87,5 +87,10 @@ axm free: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT] → mem.M 
 /// ### lower_ptr
 ///
 /// Lowers `Buf` / `alloc` / `read` / `write` / `free` to `mem.Ptr` + `mem.lea` / `mem.load` / `mem.store` / `mem.free`.
+/// Requires a literal rank; static shapes retain precise pointer types, while runtime shapes use `mem.Ptr («⊤; T», 0)`.
+/// Extents remain explicit scalar values for allocation and row-major addressing; pointers carry no shape metadata.
+/// Calls adapt compatible precise and erased pointers in arguments and continuation parameters.
+/// Whole-array `init`, `lit` and `copy` require static extents at this phase; runtime fills must first lower to loops.
+/// Runtime-sized device transfers are unsupported.
 ///
 axm lower_ptr: compile.Phase;
