@@ -1,0 +1,26 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A generate body that reads a tensor still awaiting its memory: the read's producer is lowered in the
+// enclosing continuation, not in front of the direct-style body.
+
+plugin core;
+plugin mem;
+plugin tensor;
+plugin math;
+plugin compile;
+
+use tensor;
+
+let F32 = math.F32;
+
+extern con flip_sum (x: Tensor 2 (5, 4) F32, return: Cn (Tensor 2 (5, 4) F32)) =
+    let doubled = binary (math.arith.add math.mode.none) (x, x);
+    let flipped = generate @(F32, 2) (5, 4) (λ (i: «2; I64»): F32 =
+        get (doubled, (core.conv.u 5 (core.wrap.sub 0 (4I64, i#0₂)), core.conv.u 4 (i#1₂))));
+    return flipped;
+
+extern lam _compile (): compile.Phase = compile.phases ff (
+    tensor.lower_tensor, tensor.lower_to_mem, mem.add_mem, compile.cleanup);
+
+// CHECK: extern con flip_sum
+// CHECK-NOT: mem.fresh

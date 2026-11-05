@@ -218,6 +218,10 @@ const Def* LowerToMem::rewrite(const Def* old_def) {
 }
 
 const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
+    // A direct-style lam - a `generate`'s element body, say - cannot carry a `mem.fresh` in front of its body,
+    // so an op lowered inside it stays with the enclosing continuation.
+    if (!Pi::isa_cn(lam->type())) return RWPhase::rewrite_mut_Lam(lam);
+
     // Scope the fresh-memory bookkeeping: ops lowered while this body is rewritten mint their receiving
     // continuations into pending_, which are chained in front of the finished body. Nested lams anchor
     // their own requests (and their own per-lam op memo).
