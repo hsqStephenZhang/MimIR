@@ -29,5 +29,6 @@ private:
 };
 
 void report_group_request(const App*, std::string_view reason);
+void report_tile_request(const App*, std::string_view reason);
 
 } // namespace mim::plug::tensor::phase

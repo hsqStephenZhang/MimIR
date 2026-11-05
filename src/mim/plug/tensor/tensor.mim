@@ -1686,6 +1686,33 @@ priv axm group_reverse_supported: {P C A: *}
     → [fields: [op: P, kind dim tile: Nat, params: C], actual: A, slot: Nat] → Bool;
 axm group: compile.Phase;
 axm report_groups: compile.Phase;
+///
+/// ### tile_req
+///
+/// Identity request for multi-level tile-and-fuse of root `op`.
+/// `members` are the producers the partition placed in `op`'s group; only they are fused.
+/// `levels: «L; TileLevel n»` lists the levels outermost first, where `n` is `op`'s loop count.
+/// `control: FuseQuery → FuseDecision` decides, per candidate, whether to fuse and whether to yield.
+/// `report_groups` removes residual requests with a warning, failing under `tensor:strict=1`.
+///
+/// A level's `kind` is 0 for parallel (a `tiled_multi` region), 1 for reduction (`tile_fold`), 2 for vector (`sched`).
+/// `sizes#d = 0` leaves loop `d` untiled at that level.
+/// `tail` is 0 for one capped body over a runtime tail and 1 for peeling full tiles from the tail.
+/// `promote` is reserved and must be 0.
+///
+anx lam TileLevel (n: Nat): * = [kind: Nat, sizes: «n; Nat», tail promote: Nat];
+anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
+anx let FuseDecision = [fuse yield: Bool];
+axm tile_req: {P M C K: *} → [op: P, members: M, levels: C, control: K] → P;
+///
+/// Fuses exactly the group's members; parallel levels yield members that have users outside the group,
+/// reduction levels fuse only members without such users and never yield.
+///
+anx lam default_control (q: FuseQuery): FuseDecision =
+    let parallel = core.ncmp.e (q#kind, 0);
+    let inside   = core.bit2.xor 0 (q#outside_use, tt);
+    (core.bit2.and 0 (q#in_group, core.bit2.or 0 (parallel, inside)),
+     core.bit2.and 0 (core.bit2.and 0 (q#in_group, parallel), q#outside_use));
 
 anx lam group_blocks (bytes lanes registers cache_bytes: Nat): «4; Nat» =
     let nr = lanes * 4;

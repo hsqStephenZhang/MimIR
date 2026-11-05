@@ -1,0 +1,35 @@
+// RUN: %mim %s -o - | %FileCheck %s --check-prefix=CONTROL
+// RUN: %mim -p opt %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+// RUN: not %mim -p opt -X tensor:strict=1 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=STRICT
+
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+
+// Query fields: level, kind, role, reduces, outside_use, in_group, tile_bytes.
+extern fun outside (): [Bool, Bool] = return (default_control (0, 1, 0, ff, ff, ff, 64));
+extern fun parallel_private (): [Bool, Bool] = return (default_control (0, 0, 0, ff, ff, tt, 64));
+extern fun parallel_shared (): [Bool, Bool] = return (default_control (0, 0, 0, ff, tt, tt, 64));
+extern fun reduction_private (): [Bool, Bool] = return (default_control (1, 1, 0, ff, ff, tt, 64));
+extern fun reduction_shared (): [Bool, Bool] = return (default_control (1, 1, 0, ff, tt, tt, 64));
+
+// CONTROL-LABEL: extern fun outside
+// CONTROL: return ({{.*}}, ff, ff);
+// CONTROL-LABEL: extern fun parallel_private
+// CONTROL: return ({{.*}}, tt, ff);
+// CONTROL-LABEL: extern fun parallel_shared
+// CONTROL: return ({{.*}}, tt, tt);
+// CONTROL-LABEL: extern fun reduction_private
+// CONTROL: return ({{.*}}, tt, ff);
+// CONTROL-LABEL: extern fun reduction_shared
+// CONTROL: return ({{.*}}, ff, ff);
+
+fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+
+extern fun requested (x: tensor.Tensor 2 (4, 3) I64): tensor.Tensor 2 (4, 3) I64 =
+    let y = map_reduce ((4, 3), (4, 3)) (twice, 0I64) (affine.id @2) (affine.id @2,) (buf x);
+    return (tile_req (y, (), ((0, (2, 0), 0, 0),), default_control));
+
+// WARN: unrealized tensor.tile_req
+// STRICT: error: unrealized tensor.tile_req

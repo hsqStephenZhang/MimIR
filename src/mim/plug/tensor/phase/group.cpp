@@ -515,10 +515,22 @@ void report_group_request(const App* app, std::string_view reason) {
         .w("unrealized tensor.group_req kind={} dim={} tile={} at {}: {}", kind, dim, tile, app->err_loc(), reason);
 }
 
+void report_tile_request(const App* app, std::string_view reason) {
+    auto& w = app->world();
+    if (w.driver().arg_nat("tensor", "strict").value_or(0))
+        app->blame("unrealized tensor.tile_req at {}: {}", app->err_loc(), reason).bail();
+    auto report = w.log();
+    report.set(fe::Log::Level::Warn).w("unrealized tensor.tile_req at {}: {}", app->err_loc(), reason);
+}
+
 const Def* ReportGroups::rewrite_imm_App(const App* app) {
     if (Axm::isa<group_req>(app)) {
         report_group_request(app, "no in-group rule realized this request");
         return rewrite(app->arg(5, 0));
+    }
+    if (Axm::isa<tile_req>(app)) {
+        report_tile_request(app, "no tile-and-fuse phase realized this request");
+        return rewrite(app->arg(4, 0));
     }
     return RWPhase::rewrite_imm_App(app);
 }

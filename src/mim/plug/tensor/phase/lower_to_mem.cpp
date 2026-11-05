@@ -599,6 +599,10 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
         report_group_request(app, "request reached bufferization without realization");
         return rewrite(app->arg(5, 0));
     }
+    if (Axm::isa<tensor::tile_req>(app)) {
+        report_tile_request(app, "request reached bufferization without realization");
+        return rewrite(app->arg(4, 0));
+    }
     if (Axm::isa<cps::cps2ds_dep>(app)) return cps::op_cps2ds_dep(rewrite(app->arg()));
     if (Axm::isa<tensor::buf>(app)) {
         auto value = rewrite(app->arg());
