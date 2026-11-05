@@ -6,8 +6,7 @@
 /// [TOC]
 ///
 /// This plugin provides the building blocks for MimIR's optimization pipeline: its axioms denote mim::Phase%s and the combinators that assemble them into a pipeline.
-/// Invoke the pipeline by defining a function `_compile: [] → compile.Phase`
-/// (or rely on a plugin-provided `_default_compile` such as the one in the `opt` plugin).
+/// Invoke the pipeline by defining a function `_compile: [] → compile.Phase` (or rely on a plugin-provided `_default_compile` such as the one in the `opt` plugin).
 ///
 /// ## Types
 ///
@@ -22,8 +21,7 @@ axm Phase: *;
 /// ### aggr
 ///
 /// Makes a fixed-point flag switchable from the command line.
-/// `compile.aggr fallback` yields `tt` if `-X compile:aggr` was passed, `ff` if `-X compile:no-aggr` was passed,
-/// and otherwise the given `fallback`.
+/// `compile.aggr fallback` yields `tt` if `-X compile:aggr` was passed, `ff` if `-X compile:no-aggr` was passed, and otherwise the given `fallback`.
 /// Use it as the Bool of a `compile.phases` to make that pipeline's fixed-point iteration switchable via the CLI.
 ///
 axm aggr: Bool → Bool, normalize_aggr;
@@ -44,10 +42,8 @@ axm is_loaded: {n: Nat} → «n; I8» → Bool, normalize_is_loaded;
 /// ### named
 ///
 /// Resolves to the `compile.Phase` annex with the given fully-qualified name (e.g. `"clos.clos_conv"`).
-/// Resolution is deferred until the phase pipeline is built so that the referenced plugin's `.mim` file does not
-/// have to be imported by users of this axm.
-/// If the named annex is missing at pipeline build time (its plugin is not loaded), it is silently elided, i.e. the
-/// enclosing `compile.phases` simply skips it.
+/// Resolution is deferred until the phase pipeline is built so that the referenced plugin's `.mim` file does not have to be imported by users of this axm.
+/// If the named annex is missing at pipeline build time (its plugin is not loaded), it is silently elided, i.e. the enclosing `compile.phases` simply skips it.
 ///
 axm named: {n: Nat} → «n; I8» → Phase;
 ///
@@ -61,8 +57,7 @@ axm phases: {n: Nat} → Bool → «n; Phase» → Phase;
 ///
 /// ## Phases
 ///
-/// The phases this plugin itself registers; every other one is contributed by the plugin that
-/// implements it.
+/// The phases this plugin itself registers; every other one is contributed by the plugin that implements it.
 ///
 /// ### adce
 ///
@@ -76,17 +71,17 @@ axm adce: Phase;
 ///
 axm beta_red: Phase;
 ///
-/// ### branch_normalize
-///
-/// η-expands non-Lam branch targets so both sides of a branch are Lam%s (mim::BranchNormalize).
-///
-axm branch_normalize: Phase;
-///
 /// ### cleanup
 ///
 /// Removes dead and unreachable code by rebuilding the World (mim::Cleanup).
 ///
 axm cleanup: Phase;
+///
+/// ### dispatch_normalize
+///
+/// η-expands non-Lam dispatch targets so every target of a jump table is a Lam (mim::DispatchNormalize).
+///
+axm dispatch_normalize: Phase;
 ///
 /// ### eta_conv
 ///
@@ -94,11 +89,25 @@ axm cleanup: Phase;
 ///
 axm eta_conv: Phase;
 ///
+/// ### join2variant
+///
+/// Rewrites each union type `A ∪ B` into the variant `| A | B` (mim::Join2Variant).
+/// Values that inhabit a union by subsumption are explicitly injected into their case.
+///
+axm join2variant: Phase;
+///
 /// ### lam_spec
 ///
 /// Specializes a Lam at its call site by inlining higher-order arguments (mim::LamSpec).
 ///
 axm lam_spec: Phase;
+///
+/// ### nom_erasure
+///
+/// Eliminates all nominal newtypes so that none reaches a backend (mim::NomErasure).
+/// `nom N = T` degrades to `T`, and both `v inj N` and `#v` to `v`.
+///
+axm nom_erasure: Phase;
 ///
 /// ### null
 ///
@@ -137,9 +146,3 @@ axm single_erasure: Phase;
 /// Drops params that recursive calls merely forward, turning them into loops (mim::StaticArgOpt).
 ///
 axm static_arg_opt: Phase;
-///
-/// ### unload
-///
-/// Unloads a plugin and nukes its annexes on the next World swap.
-///
-axm unload: {n: Nat} → «n; I8» → Phase;

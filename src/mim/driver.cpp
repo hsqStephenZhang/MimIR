@@ -1,12 +1,12 @@
 #include "mim/driver.h"
 
+#include <charconv>
 #include <cstring>
 
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
 
 #include <fe/dl.h>
@@ -25,8 +25,7 @@ namespace {
 /// Install tree @p libmim_path belongs to, i.e. the directory whose `<MIM_LIBDIR>/mim` holds the plugins.
 std::optional<fs::path> prefix_of(const fs::path& libmim_path) {
     for (auto dir = libmim_path.parent_path(); !dir.empty(); dir = dir.parent_path()) {
-        std::error_code ignore;
-        if (fs::is_directory(dir / MIM_LIBDIR / "mim", ignore) && !ignore) return dir;
+        if (std::error_code ec; fs::is_directory(dir / MIM_LIBDIR / "mim", ec)) return dir;
         if (dir == dir.root_path()) break;
     }
 
@@ -70,19 +69,6 @@ Driver::Driver(std::string name)
     MIM_SUBST(CODE)
 #undef CODE
 
-    auto from_env = [](const char* var, auto&& add) {
-        if (auto env = std::getenv(var)) {
-            auto stream = std::stringstream{env};
-            auto path   = std::string{};
-            while (std::getline(stream, path, fe::sys::Path_Sep))
-                add(fs::path{path});
-        }
-    };
-
-    from_env("MIM_PLUGIN_PATH", [this](fs::path path) { add_plugin_path(std::move(path)); });
-    from_env("MIM_IMPORT_PATH", [this](fs::path path) { add_import_path(std::move(path)); });
-    from_env("MIM_PREFIX_PATH", [this](fs::path path) { add_prefix_path(std::move(path)); });
-
     if (auto path = path_to_libmim()) {
         // A layout that keeps the plugins right next to libmim has no prefix to derive them from.
         add_plugin_path(path->parent_path() / "mim");
@@ -91,7 +77,7 @@ Driver::Driver(std::string name)
 
     add_prefix_path(fs::path{MIM_INSTALL_PREFIX});
 
-    // User paths are added later and must be searched before the environment and derived ones.
+    // User paths are added later and must be searched before these derived ones.
     plugin_dirs_.seal();
     import_dirs_.seal();
     prefixes_.seal();
@@ -138,9 +124,16 @@ std::string Driver::plugin_name(std::string_view name) {
     return stem;
 }
 
+void Driver::move_to_library(World& world) {
+    library_ = world.inherit();
+    swap(world, *library_);
+    for (auto mut : library_->externals().muts())
+        world.import(mut)->as_mut()->externalize();
+}
+
 void Driver::add_static_plugin(const char* name, Plugin (*get_plugin)()) { static_plugins()[name] = get_plugin; }
 
-void Driver::load(std::string_view spec) {
+void Driver::load(std::string_view spec, Loc loc) {
     auto name = plugin_name(spec);
     log().i("💾 load plugin `{}`", spec);
 
@@ -179,19 +172,19 @@ void Driver::load(std::string_view spec) {
             dir = path.parent_path();
         if (!handle) dir = find(std::format("libmim_{}{}", name, ext), open);
 
-        if (!handle) fe::throwf("cannot open plugin `{}`", spec);
+        if (!handle) error().e(loc, "cannot open plugin `{}`", spec).bail();
         get_info = reinterpret_cast<decltype(&mim_get_plugin)>(fe::dl::get(handle.get(), "mim_get_plugin"));
-        if (!get_info) fe::throwf("plugin `{}` has no `mim_get_plugin()`", name);
     }
 
     auto plugin = get_info();
     if (version() != plugin.version) {
-        std::ostringstream oss;
-        std::print(oss, "plugin {} has version {} while MimIR has version {}", plugin.name, plugin.version, version());
-        if (flags().force_load)
-            std::cerr << "warning: " << oss.str() << '\n';
-        else
-            throw std::logic_error(oss.str());
+        if (!flags().force_load)
+            error()
+                .e(loc, "plugin `{}` has version {} while MimIR has version {}", plugin.name, plugin.version, version())
+                .n("use `--force-load` to load it anyway")
+                .bail();
+        std::println(std::cerr, "warning: plugin {} has version {} while MimIR has version {}", plugin.name,
+                     plugin.version, version());
     }
     fe::assert_emplace(plugins_, name,
                        Loaded{std::move(handle), std::move(dir), fe::View<PluginSym>(plugin.syms, plugin.num_syms)});
@@ -213,8 +206,20 @@ void* Driver::get_fun_ptr(std::string_view plugin, const char* name) {
 
 const fe::Vector<std::string>& Driver::args(std::string_view plugin) const {
     static const fe::Vector<std::string> empty;
-    if (auto i = plugin_args_.find(plugin); i != plugin_args_.end()) return i->second;
+    if (auto args = fe::lookup(plugin_args_, plugin)) return *args;
     return empty;
+}
+
+std::optional<nat_t> Driver::arg_nat(std::string_view plugin, std::string_view key) {
+    auto val = arg_value(args(plugin), key);
+    if (!val) return {};
+    auto n   = nat_t(0);
+    auto end = val->data() + val->size();
+    if (auto [ptr, ec] = std::from_chars(val->data(), end, n); ec != std::errc() || ptr != end) {
+        log().w("ignoring `-X {}:{}={}`: not a number", plugin, key, *val);
+        return {};
+    }
+    return n;
 }
 
 PlainNames::PlainNames(const Driver* driver)

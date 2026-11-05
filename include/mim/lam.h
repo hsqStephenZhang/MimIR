@@ -24,11 +24,9 @@ public:
     /// @name Get/Set implicit
     ///@{
     bool is_implicit() const { return flags(); }
-    Pi* make_implicit() { return flags_ = (flags_t) true, this; }
-    Pi* make_explicit() { return flags_ = (flags_t) false, this; }
-    /// Is @p d an Pi::is_implicit (mutable) Pi?
-    static Pi* isa_implicit(const Def* d) {
-        if (auto pi = d->isa_mut<Pi>(); pi && pi->is_implicit()) return pi;
+    /// Is @p d an Pi::is_implicit Pi?
+    static const Pi* isa_implicit(const Def* d) {
+        if (auto pi = d->isa<Pi>(); pi && pi->is_implicit()) return pi;
         return nullptr;
     }
     ///@}
@@ -104,6 +102,7 @@ public:
     ///@{
     const Def* filter() const { return op(0); }
     const Def* body() const { return op(1); }
+    Lam* forwardee() const; ///< `λ x = f arg` where `f` is a mut Lam that is_set();
     ///@}
 
     /// @name type
@@ -139,7 +138,7 @@ public:
         auto n = num_vars(); // compute the arity once and hand it to the (a, i) projection
         return var(n, n - 1);
     }
-    /// Yields the `y` of `lm (x, ret) = ret y` - the argument @p d's body hands to its Lam::ret_var.
+    /// Yields the `y` of `λ (x, ret) = ret y` - the argument @p d's body hands to its Lam::ret_var.
     /// `nullptr` if @p d is not a set, mutable Lam with such a body.
     static const Def* isa_ret_arg(const Def* d);
     ///@}
@@ -178,9 +177,12 @@ public:
     ///@{
     static Lam* eta_expand(Filter, const Def* f);
     static Lam* eta_expand(const Def* f) { return eta_expand(true, f); } ///< Use `true` Filter.
-    /// Yields the callee of body(), if eta-convertible and `nullptr` otherwise.
-    /// η-convertible means: `lm x = f x` where `x` ∉ `f`.
-    const Def* eta_reduce() const;
+    /// Fast-forwards @p def along its chain of η-redexes `λ x = f x` where `x` ∉ `FV(f)`.
+    /// Yields the end of the chain or `nullptr` if @p def is no η-redex.
+    /// A chain running into an η-cycle like `ping = λn.pong n; pong = λn.ping n` ends at the cycle's entry.
+    /// Hence, a Lam on such a cycle is no η-redex.
+    /// Neither is a Lam whose reduct mentions an η-redex, like `b = λx.(e, b)#c x`: reducing might unfold a recursion.
+    static const Def* eta_reduce(const Def* def);
     ///@}
 
     /// @name Rewritable

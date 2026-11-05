@@ -6,7 +6,6 @@
 
 #include "mim/driver.h"
 #include "mim/nest.h"
-#include "mim/schedule.h"
 
 #include "mim/ast/lexer.h"
 #include "mim/ast/tok.h"
@@ -24,6 +23,9 @@ namespace {
 
 using Srcs = ankerl::unordered_dense::set<const fe::Src*>;
 
+/// An `anx nom` carries its qualified `<file>.<name>` sym, which no identifier can spell; see Annexes::attach.
+bool is_anx_nom(const Def* def) { return def->isa<Nom>() && def->sym().view().contains('.'); }
+
 Def* isa_decl(const Def* def) {
     if (auto mut = def->isa_mut()) {
         if (mut->isa<Hole>()) return nullptr; // a Hole stands for what it was set to, or for `?`
@@ -32,16 +34,20 @@ Def* isa_decl(const Def* def) {
     return nullptr;
 }
 
+/// Each curried argument of an application and whether its Pi is implicit.
+using Args = fe::Vector<std::pair<DefVec, bool>>;
+
 /// What the running dump decided about the Def%s it emits; `nullptr` where a diagnostic formats a bare Def.
 struct Ctx {
     /// Names the dump binds itself: a `fun` calls its `ret` continuation `return`, whatever its Def::sym.
     /// Keyed by Var and index, because the projection itself need not exist as a Def while the World is frozen.
     DefMap<std::string> names;
     DefMap<nat_t> ret_projs; ///< Var -> index of the `ret` component within it.
-    DefSet opaque;           ///< Def%s no pattern took apart, so their components have no name of their own.
-    DefSet destructured;     ///< Def%s a pattern took apart, so their components print by name.
+    DefMap<bool> split;      ///< Whether a pattern took a Def apart, so that its components print by name.
+    DefSet bound;            ///< Projections of a dependent Sigma's Var a pattern binds in place of a dead component.
     DefSet whole_vars;       ///< Var%s used as a whole; see isa_fun.
     DefSet arms;             ///< Lam%s a `match` spells out as its arms instead of declaring them.
+    DefSet spelled;          ///< Arms already spelled out; a re-read dump binds fresh names for each further spelling.
     DefSet header;           ///< Def%s a Lam's header prints inline, as it precedes the block that `let`s them.
     DefSet inlined;          ///< Def%s inside a binder the dump prints *inline* - they have no block to `let` them.
     /// A Lam's codomain refers to its Pi's Var - or its dependent domain's - but only the Lam's Var is bound by name.
@@ -57,7 +63,29 @@ struct Ctx {
     /// What the dumped roots reach; `nullptr` dumps whatever exists.
     /// A dead projection left behind by normalization must not bind a name a re-read dump would not bind.
     const DefSet* live = nullptr;
+    /// An instance of a generic `anx nom` from elsewhere: its annex's qualified name and arguments.
+    /// Each curried argument holds either the whole argument or the components a re-read dump tuples up again.
+    DefMap<std::pair<Sym, Args>> insts;
 };
+
+const std::pair<Sym, Args>* isa_inst(const Ctx* ctx, const Def* def) {
+    return ctx && def->isa<Nom>() ? fe::lookup(ctx->insts, def) : nullptr;
+}
+
+/// Does @p def print by name, bound by a declaration of its own - be it a decl or a `nom`?
+bool has_decl(const Ctx* ctx, const Def* def) {
+    return isa_decl(def) || (def->isa<Nom>() && !is_anx_nom(def) && !isa_inst(ctx, def));
+}
+
+/// The name an annex prints by: the dumped file's own annexes drop the `<file>.` - and the `<mod>.` - prefix.
+std::string annex_sym(Ctx* ctx, Sym annex) {
+    auto sym = annex.view(); // a short Sym is stored inline, so this view must not outlive @p annex
+    if (ctx && !ctx->self.empty() && sym.starts_with(ctx->self)) {
+        sym.remove_prefix(ctx->self.size());
+        if (!ctx->mod.empty() && sym.starts_with(ctx->mod)) sym.remove_prefix(ctx->mod.size());
+    }
+    return std::string(sym);
+}
 
 /// @p def's @p i-th of @p n projections, if it exists and the dump reaches it.
 const Def* live_proj(Ctx* ctx, const Def* def, nat_t n, nat_t i) {
@@ -65,43 +93,77 @@ const Def* live_proj(Ctx* ctx, const Def* def, nat_t n, nat_t i) {
     return proj && ctx && ctx->live && !ctx->live->contains(proj) ? nullptr : proj;
 }
 
+/// A numbered variant of @p base that no other name of the dump takes.
+std::string fresh_name(Ctx* ctx, const std::string& base) {
+    auto sep  = base == "_" ? "" : "_";
+    auto& i   = ctx->counters[base];
+    auto name = std::string();
+    do
+        name = std::format("{}{}{}", base, sep, ++i);
+    while (ctx->taken.contains(name));
+    ctx->taken.emplace(name);
+    return name;
+}
+
 std::string pick_name(Ctx* ctx, const Def* def) {
     auto sym  = def->sym();
     auto base = sym && sym != '_' && ast::Lexer::is_id(sym.view()) ? sym.str() : "_"s;
-    auto name = base;
     // A numbered variant of an identifier is an identifier and never a keyword.
-    if (base == "_" || def->world().driver().keys().find(sym) || ctx->taken.contains(name)) {
-        auto sep = base == "_" ? "" : "_";
-        auto& i  = ctx->counters[base];
-        do
-            name = std::format("{}{}{}", base, sep, ++i);
-        while (ctx->taken.contains(name));
-    }
+    auto name = base == "_" || def->world().driver().keys().find(sym) || ctx->taken.contains(base)
+                  ? fresh_name(ctx, base)
+                  : base;
     ctx->taken.emplace(name);
     return ctx->names.emplace(def, name).first->second;
+}
+
+/// Forgets the names of @p var and its projections, so that the next spelling picks fresh ones.
+void unname(Ctx* ctx, const Var* var) {
+    std::erase_if(ctx->names, [var](const auto& entry) {
+        const Def* root = entry.first;
+        while (auto ex = root->isa<Extract>())
+            root = ex->tuple();
+        return root == var;
+    });
+}
+
+/// Did a pattern keep @p def whole?
+bool is_opaque(Ctx* ctx, const Def* def) {
+    auto split = fe::lookup(ctx->split, def);
+    return split && !*split;
 }
 
 /// The projection of the aliased Var that @p def - a projection of a Pi's Var - stands for; see Ctx::aliases.
 const Def* alias_proj(Ctx* ctx, const Def* def) {
     if (auto ex = def->isa<Extract>())
-        if (auto i = ctx->aliases.find(ex->tuple()); i != ctx->aliases.end() && !ctx->opaque.contains(i->second))
-            if (auto l = Lit::isa(ex->index())) return live_proj(ctx, i->second, ex->tuple()->num_tprojs(), *l);
+        if (auto var = fe::lookup(ctx->aliases, ex->tuple()); var && !is_opaque(ctx, var))
+            if (auto l = Lit::isa(ex->index())) return live_proj(ctx, var, ex->tuple()->num_tprojs(), *l);
     return nullptr;
+}
+
+/// Whether @p ex prints as a bare name rather than `tuple#index`.
+bool by_name(Ctx* ctx, const Extract* ex) {
+    if (!ex->index()->isa<Lit>()) return false;
+    if (!ctx) return ex->tuple()->isa<Var>();
+    if (ctx->bound.contains(ex)) return true;
+    // A Var's component prints by name - unless the pattern that would have bound that name kept the Var whole.
+    if (is_opaque(ctx, ex->tuple())) return false;
+    // An aliased Var's component the Lam's Var does not hand out is spelled via the Lam's Var instead.
+    if (ctx->aliases.contains(ex->tuple()) && !alias_proj(ctx, ex)) return false;
+    return ex->tuple()->isa<Var>() || ctx->split.contains(ex->tuple());
 }
 
 /// Def::unique_name - or a plain name while a World is dumped or a diagnostic is being formatted, where a gid is noise.
 /// @p ctx is `nullptr` outside a running dump: there are no dump-bound names to consult then.
 std::string name(Ctx* ctx, const Def* def) {
     if (ctx) {
-        if (auto i = ctx->names.find(def); i != ctx->names.end()) return i->second;
-        if (auto i = ctx->aliases.find(def); i != ctx->aliases.end()) return name(ctx, i->second);
+        if (auto n = fe::lookup(ctx->names, def)) return *n;
+        if (auto alias = fe::lookup(ctx->aliases, def)) return name(ctx, alias);
         if (auto proj = alias_proj(ctx, def)) {
             auto res = name(ctx, proj);
             return ctx->names.emplace(def, std::move(res)).first->second;
         }
         if (auto ex = def->isa<Extract>())
-            if (auto i = ctx->ret_projs.find(ex->tuple()); i != ctx->ret_projs.end())
-                if (Lit::isa(ex->index()) == i->second) return "return"s;
+            if (auto i = fe::lookup(ctx->ret_projs, ex->tuple()); i && Lit::isa(ex->index()) == *i) return "return"s;
         if (ctx->plain) return pick_name(ctx, def);
     }
     if (auto sym = def->sym(); sym && sym != '_' && PlainNames::claim(def->world().driver(), sym, def->gid()))
@@ -124,10 +186,22 @@ using ast::Assoc;
 using ast::Prec;
 using ast::prec_assoc;
 
-Prec def2prec(const Def* def) {
-    // A Var's projection prints as its name and hence is atomic; see the Extract case in operator<<.
-    if (auto ex = def->isa<Extract>())
-        return ex->tuple()->isa<Var>() && ex->index()->isa<Lit>() ? Prec::Lit : Prec::Extract;
+/// The name the surface syntax has for `Idx size`.
+std::optional<std::string_view> idx_name(nat_t size) {
+    // clang-format off
+    switch (size) {
+        case 0x0'0000'0002_n: return "Bool";
+        case 0x0'0000'0100_n: return "I8";
+        case 0x0'0001'0000_n: return "I16";
+        case 0x1'0000'0000_n: return "I32";
+        case             0_n: return "I64";
+        default:              return std::nullopt;
+    }
+    // clang-format on
+}
+
+Prec def2prec(Ctx* ctx, const Def* def) {
+    if (auto ex = def->isa<Extract>()) return by_name(ctx, ex) ? Prec::Lit : Prec::Extract;
     if (def->isa<Insert>()) return Prec::Ins;
     if (def->isa<Join>()) return Prec::Union;
     if (auto inj = def->isa<Inj>()) {
@@ -135,27 +209,17 @@ Prec def2prec(const Def* def) {
             return variant->op(inj->index()) == def->world().sigma() ? Prec::Extract : Prec::App;
         return Prec::Inj;
     }
+    if (def->isa<Name>()) return Prec::Inj;
+    if (def->isa<Struc>()) return Prec::Prefix;
     if (def->isa<Variant>()) return Prec::Lit; // always parenthesized
-    if (def->isa<Reform>()) return Prec::App;
+    if (isa_inst(ctx, def) || def->isa<Reform>()) return Prec::App;
     // `Cn e` parses its domain at Prec::Bot, so it swallows whatever follows and only ever fits a closed context.
     if (auto pi = def->isa<Pi>()) return Pi::isa_cn(pi) ? Prec::Bot : Prec::Arrow;
     if (def->isa<Lam>() || def->isa<Match>())
         return Prec::Bot; // a λ- or match-expression swallows what follows it, too
     if (auto app = def->isa<App>()) {
-        if (auto size = Idx::isa(app)) {
-            if (auto l = Lit::isa(size)) {
-                // clang-format off
-                switch (*l) {
-                    case 0x0'0000'0002_n:
-                    case 0x0'0000'0100_n:
-                    case 0x0'0001'0000_n:
-                    case 0x1'0000'0000_n:
-                    case             0_n: return Prec::Lit;
-                    default: break;
-                }
-                // clang-format on
-            }
-        }
+        if (auto size = Idx::isa(app))
+            if (auto l = Lit::isa(size); l && idx_name(*l)) return Prec::Lit;
         return Prec::App;
     }
 
@@ -216,14 +280,13 @@ public:
 
     /// Does the Def always print Full - instead of by name?
     bool is_full() const {
+        // Only a `nom` declaration spells out a Nom; World::dump declares the annex ones.
+        if (def()->isa<Nom>()) return is_anx_nom(def()) || isa_inst(ctx(), def());
         if (auto ctx = this->ctx()) {
             if (ctx->inlined.contains(def())) return true;
             if (ctx->in_header && ctx->header.contains(def())) return true;
         }
-        if (auto mut = def()->isa_mut()) {
-            if (isa_decl(mut)) return false;
-            return true;
-        }
+        if (auto mut = def()->isa_mut()) return !isa_decl(mut);
 
         if (def()->is_closed()) return true;
 
@@ -240,7 +303,7 @@ public:
     bool needs_parens() const {
         if (!is_full()) return false;
 
-        auto child_prec = def2prec(def());
+        auto child_prec = def2prec(ctx(), def());
         if (child_prec < prec()) return true;
         if (child_prec > prec()) return false;
 
@@ -249,7 +312,7 @@ public:
             case Assoc::L: return !is_left();
             case Assoc::N: return false;
         }
-        fe::unreachable();
+        std::unreachable();
     }
 
     friend std::ostream& operator<<(std::ostream&, Full);
@@ -287,6 +350,7 @@ std::string shape(Ctx* ctx, const Seq* seq) {
 
 /// As above but each axis binds its index - `i: 2, j: 3`; a fused Seq binds one Var per axis.
 std::string shape(Ctx* ctx, const Seq* seq, const Def* var) {
+    if (!var) return shape(ctx, seq);
     auto s = seq->shape();
     auto r = s.rank();
     if (!r || *r <= 1) return std::format("{}: {}", Op(ctx, var), Op(ctx, *s));
@@ -303,48 +367,83 @@ std::string shape(Ctx* ctx, const Seq* seq, const Def* var) {
     return res;
 }
 
+/// Does @p var occur in @p t only as projections, which a pattern binds by name?
+bool only_projs(const Def* t, const Var* var, DefSet& done) {
+    if (!t->has_free_var(var) || !done.emplace(t).second) return true;
+    if (t == var) return false;
+    if (auto ex = t->isa<Extract>(); ex && ex->tuple() == var) return ex->index()->isa<Lit>();
+    return std::ranges::all_of(t->deps(), [&](const Def* d) { return only_projs(d, var, done); });
+}
+
+/// The projection of @p type's binder that names its dead @p i-th component, if anything refers to it.
+const Def* binder_proj(const Def* type, size_t n, size_t i) {
+    if (auto [_, var] = type->isa_binder<Sigma>(); var) return var->proj(n, i);
+    return nullptr;
+}
+
 /// May @p def of @p type be taken apart into @p n components?
 /// A component the frozen World does not hand out has no name, so it has to fall back to @p type - and that
 /// spells a *dependent* component with the domain's binders instead of this pattern's. That is where
 /// destructuring stops: @p def stays opaque and its components print as `def#i` rather than by a dangling name.
 bool destructible(Ctx* ctx, const Def* def, const Def* type, size_t n) {
     if (!def || n <= 1) return false;
-    auto var = type->isa_mut<Sigma>() ? type->has_var() : nullptr;
+    auto var  = type->isa_mut<Sigma>() ? type->has_var() : nullptr;
+    auto done = DefSet();
 
     for (size_t i = 0; i != n; ++i) {
         if (live_proj(ctx, def, n, i)) continue; // it exists and hence brings its own name and type
         auto t = type->proj(n, i);
-        if (!t || (var && t->has_free_var(var))) {
-            if (ctx) ctx->opaque.emplace(def);
-            return false;
-        }
+        if (!t || (var && !only_projs(t, var, done))) return false;
     }
     return true;
 }
 
+/// destructible, recorded in Ctx::split so that by_name agrees with the pattern.
+bool split(Ctx* ctx, const Def* def, const Def* type, size_t n) {
+    if (!ctx || !def) return destructible(ctx, def, type, n);
+    if (auto res = fe::lookup(ctx->split, def)) return *res;
+    auto res = destructible(ctx, def, type, n);
+    // Def::num_tprojs keeps a Seq above Flags::scalarize_threshold whole, so its components have no name either.
+    if (res || n > 1 || def->num_projs() > 1) ctx->split.emplace(def, res);
+    return res;
+}
+
+/// Taken apart, a dependent Sigma no longer binds its Var itself; see Ctx::aliases.
+void alias_sigma(Ctx* ctx, const Def* type, const Def* def) {
+    if (auto [_, var] = type->isa_binder<Sigma>(); ctx && var) ctx->aliases.emplace(var, def);
+}
+
+void ptrn(std::ostream&, Ctx*, const Def*, const Def*, bool = false, const Def* = nullptr);
+
+/// The first @p limit of @p def%'s @p n components as sub-patterns; @p def may be `nullptr`.
+void ptrns(std::ostream& os, Ctx* ctx, const Def* def, const Def* type, size_t n, size_t limit, bool brckt) {
+    for (auto sep = ""; auto i : std::views::iota(size_t(0), limit)) {
+        auto proj = def ? live_proj(ctx, def, n, i) : nullptr;
+        os << sep;
+        // A projection's own type is the one where the binder has already been substituted for this Var.
+        ptrn(os, ctx, proj, proj ? proj->type() : type->proj(n, i), brckt, binder_proj(type, n, i));
+        sep = ", ";
+    }
+}
+
 /// @p brckt selects the `[]` sub-patterns of a type over the `()` sub-patterns of a Lam's parameter list.
-void ptrn(std::ostream& os, Ctx* ctx, const Def* def, const Def* type, bool brckt = false) {
-    if (!def) return std::print(os, "_: {}", Op(ctx, type));
+/// @p binder names a dead component that a dependent Sigma refers to; see binder_proj.
+void ptrn(std::ostream& os, Ctx* ctx, const Def* def, const Def* type, bool brckt, const Def* binder) {
+    if (!def) {
+        if (!binder || !ctx) return std::print(os, "_: {}", Op(ctx, type));
+        ctx->bound.emplace(binder);
+        return std::print(os, "{}: {}", name(ctx, binder), Op(ctx, type));
+    }
 
     auto n = def->num_tprojs();
     // Unless some component exists, nothing refers to one and the whole reads back the same.
     auto used
         = std::ranges::any_of(std::views::iota(size_t(0), n), [&](size_t i) { return live_proj(ctx, def, n, i); });
-    if (!used || !destructible(ctx, def, type, n)) return std::print(os, "{}: {}", name(ctx, def), Op(ctx, type));
-    if (ctx) {
-        ctx->destructured.emplace(def);
-        // Taken apart, a dependent Sigma no longer binds its Var itself; see Ctx::aliases.
-        if (auto [_, var] = type->isa_binder<Sigma>(); var) ctx->aliases.emplace(var, def);
-    }
+    if (!used || !split(ctx, def, type, n)) return std::print(os, "{}: {}", name(ctx, def), Op(ctx, type));
+    alias_sigma(ctx, type, def);
 
     os << (brckt ? '[' : '(');
-    for (auto sep = ""; auto i : std::views::iota(size_t(0), n)) {
-        auto proj = live_proj(ctx, def, n, i);
-        os << sep;
-        // A projection's own type is the one where the binder has already been substituted for this Var.
-        ptrn(os, ctx, proj, proj ? proj->type() : type->proj(n, i), brckt);
-        sep = ", ";
-    }
+    ptrns(os, ctx, def, type, n, n, brckt);
     // The alias keeps a name for the entity as a whole - which the body may well refer to.
     std::print(os, "{} as {}", brckt ? ']' : ')', name(ctx, def));
 }
@@ -354,24 +453,15 @@ void dom_ptrn(std::ostream& os, Ctx* ctx, const Def* var, const Def* type, bool 
     auto l = implicit ? '{' : '[';
     auto r = implicit ? '}' : ']';
     auto n = var->num_tprojs();
-    if (!destructible(ctx, var, type, n)) return std::print(os, "{}{}: {}{}", l, name(ctx, var), Op(ctx, type), r);
+    if (!split(ctx, var, type, n)) return std::print(os, "{}{}: {}{}", l, name(ctx, var), Op(ctx, type), r);
 
     os << l;
-    for (auto sep = ""; auto i : std::views::iota(size_t(0), n)) {
-        os << sep;
-        auto proj = live_proj(ctx, var, n, i);
-        ptrn(os, ctx, proj, proj ? proj->type() : type->proj(n, i), true);
-        sep = ", ";
-    }
+    ptrns(os, ctx, var, type, n, n, true);
     std::print(os, "{} as {}", r, name(ctx, var));
 }
 
-void bndr(std::ostream& os, Ctx* ctx, const Def* def, const Def* type) {
-    if (def) return ptrn(os, ctx, def, def->type());
-    std::print(os, "_: {}", Op(ctx, type));
-}
-
 /// @p num is how many binders the domain has; @p limit how many of them to print - a returning Lam hides its last.
+/// @p split tells whether the parameter list comes apart; see mim::split.
 void curry(std::ostream& os,
            Ctx* ctx,
            const Def* def,
@@ -379,24 +469,19 @@ void curry(std::ostream& os,
            bool implicit,
            size_t num,
            size_t limit,
+           bool split,
            bool alias) {
     auto l = implicit ? '{' : '(';
     auto r = implicit ? '}' : ')';
 
     if (limit == 0) return (void)(os << l << r);
-    // Same as in ptrn: a parameter list only comes apart if every parameter is there to be named.
-    if (limit == num && !destructible(ctx, def, type, num)) {
+    if (!split) {
         if (def) return std::print(os, "{}{}: {}{}", l, name(ctx, def), Op(ctx, type), r);
         return std::print(os, "{}_: {}{}", l, Op(ctx, type), r);
     }
 
     os << l;
-    for (auto sep = ""; auto i : std::views::iota(size_t(0), limit)) {
-        os << sep;
-        auto proj = def ? live_proj(ctx, def, num, i) : nullptr;
-        bndr(os, ctx, proj, proj ? proj->type() : type->proj(num, i));
-        sep = ", ";
-    }
+    ptrns(os, ctx, def, type, num, limit, false);
     os << r;
     if (alias && def) std::print(os, " as {}", name(ctx, def));
 }
@@ -421,16 +506,15 @@ bool isa_fun(Ctx* ctx, const Lam* lam) {
 void lam_ptrn(std::ostream& os, Ctx* ctx, Lam* lam, bool fun, bool con, bool last, bool alias) {
     auto num   = num_binders(lam->type()->dom());
     auto limit = fun && last ? num - 1 : num;
-    if (ctx) {
-        if (auto var = lam->has_var()) {
-            if (auto pi_var = lam->type()->has_var()) ctx->aliases.emplace(pi_var, var);
-            // Kept whole, the domain prints as a Sigma that binds its Var itself.
-            if (auto [_, sigma_var] = lam->dom()->isa_binder<Sigma>();
-                sigma_var && (limit != num || destructible(ctx, var, lam->dom(), num)))
-                ctx->aliases.emplace(sigma_var, var);
-        }
+    auto var   = lam->has_var();
+    // A parameter list only comes apart if every parameter is there to be named - unless a `fun` hides its `ret`.
+    auto parts = limit != num || (limit != 0 && split(ctx, var, lam->dom(), num));
+    if (ctx && var) {
+        if (auto pi_var = lam->type()->has_var()) ctx->aliases.emplace(pi_var, var);
+        // Kept whole, the domain prints as a Sigma that binds its Var itself.
+        if (parts) alias_sigma(ctx, lam->dom(), var);
     }
-    curry(os, ctx, lam->has_var(), lam->type()->dom(), lam->type()->is_implicit(), num, limit, alias);
+    curry(os, ctx, var, lam->type()->dom(), lam->type()->is_implicit(), num, limit, parts, alias);
     auto& w = lam->world();
     if (auto dflt = last && (fun || con) ? w.lit_ff() : w.lit_tt(); lam->filter() != dflt)
         std::print(os, "@({})", Op(ctx, lam->filter()));
@@ -462,6 +546,11 @@ std::ostream& operator<<(std::ostream& os, Op op) {
     return os << id(op.ctx(), *op);
 }
 
+/// A block's tail has no `let`, so it is spelled out unless it has a declaration of its own.
+std::string tail(Ctx* ctx, const Def* def) {
+    return has_decl(ctx, def) ? std::format("{}", Op(ctx, def)) : std::format("{}", Full(ctx, def));
+}
+
 /// Streams @p d with all of its operands; Full::is_full decides who gets here.
 void full(std::ostream& os, Full d) {
     if (auto hole = d->isa_mut<Hole>()) {
@@ -488,22 +577,26 @@ void full(std::ostream& os, Full d) {
         return std::print(os, "Type {}", d.r(type->level(), Prec::App));
     } else if (auto reform = d->isa<Reform>()) {
         return std::print(os, "Rule {}", d.r(reform->dom(), Prec::App));
-    } else if (d->isa<Univ>()) {
-        return std::print(os, "Univ");
+    } else if (d->isa<Level>()) {
+        return std::print(os, "Level");
     } else if (d->isa<Nat>()) {
         return std::print(os, "Nat");
     } else if (d->isa<Idx>()) {
         return std::print(os, "Idx");
     } else if (auto ext = d->isa<Ext>()) {
         return std::print(os, "{}:{}", ext->isa<Bot>() ? bot : top, d.r(ext->type(), Prec::Lit));
-    } else if (auto axm = d->isa<Axm>()) {
-        auto axm_sym = axm->sym(); // a short Sym is stored inline, so its view must not outlive it
-        auto sym     = axm_sym.view();
-        if (auto ctx = d.ctx(); ctx && !ctx->self.empty() && sym.starts_with(ctx->self)) {
-            sym.remove_prefix(ctx->self.size());
-            if (!ctx->mod.empty() && sym.starts_with(ctx->mod)) sym.remove_prefix(ctx->mod.size());
+    } else if (d->isa<Axm>() || is_anx_nom(*d)) {
+        return std::print(os, "{}", annex_sym(d.ctx(), d->sym()));
+    } else if (auto inst = isa_inst(d.ctx(), *d)) {
+        std::print(os, "{}", annex_sym(d.ctx(), inst->first));
+        for (const auto& [arg, implicit] : inst->second) {
+            os << (implicit ? " @ " : " ");
+            if (arg.size() == 1)
+                std::print(os, "{}", d.r(arg.front(), Prec::App));
+            else
+                std::print(os, "({})", Op::map(d.ctx(), arg));
         }
-        return std::print(os, "{}", sym);
+        return;
     } else if (auto lit = d->isa<Lit>()) {
         if (lit->type()->isa<Nat>()) {
             // clang-format off
@@ -516,46 +609,28 @@ void full(std::ostream& os, Full d) {
             // clang-format on
         } else if (auto size = Idx::isa(lit->type())) {
             if (auto s = Lit::isa(size)) {
-                // clang-format off
-                switch (*s) {
-                    case 0x0'0000'0002_n: return std::print(os, "{}", lit->get<bool>() ? "tt" : "ff");
-                    case 0x0'0000'0100_n: return std::print(os, "{}I8" , lit->get());
-                    case 0x0'0001'0000_n: return std::print(os, "{}I16", lit->get());
-                    case 0x1'0000'0000_n: return std::print(os, "{}I32", lit->get());
-                    case             0_n: return std::print(os, "{}I64", lit->get());
-                    default: {
-                        std::print(os, "{}", lit->get());
-                        std::vector<uint8_t> digits;
-                        for (auto z = *s; z; z /= 10) digits.emplace_back(z % 10);
-
-                        // Raw UTF-8 units of a subscript - bytes to stream, not numbers to format.
-                        if (ascii) {
-                            os << '_';
-                            for (auto d : digits | std::views::reverse)
-                                os << char('0' + d);
-                        } else {
-                            for (auto d : digits | std::views::reverse)
-                                os << uint8_t(0xE2) << uint8_t(0x82) << (uint8_t(0x80 + d));
-                        }
-                        return;
-                    }
+                if (*s == 2) return std::print(os, "{}", lit->get<bool>() ? "tt" : "ff");
+                if (auto suffix = idx_name(*s)) return std::print(os, "{}{}", lit->get(), *suffix);
+                std::print(os, "{}", lit->get());
+                auto digits = std::to_string(*s);
+                if (ascii) {
+                    os << '_' << digits;
+                } else {
+                    // Raw UTF-8 units of a subscript - bytes to stream, not numbers to format.
+                    for (auto d : digits)
+                        os << "\xE2\x82" << char(0x80 + d - '0');
                 }
-                // clang-format on
+                return;
             }
         }
         return std::print(os, "{}:{}", lit->get(), d.r(lit->type(), Prec::Lit));
     } else if (auto ex = d->isa<Extract>()) {
-        // A Var's component prints by name - unless the pattern that would have bound that name kept the Var whole.
-        auto opaque = d.ctx() && d.ctx()->opaque.contains(ex->tuple());
-        // An aliased Var's component the Lam's Var does not hand out is spelled via the Lam's Var instead.
-        if (d.ctx() && d.ctx()->aliases.contains(ex->tuple()) && !alias_proj(d.ctx(), ex)) opaque = true;
-        auto bound = ex->tuple()->isa<Var>() || (d.ctx() && d.ctx()->destructured.contains(ex->tuple()));
-        if (!opaque && bound && ex->index()->isa<Lit>()) return std::print(os, "{}", name(d.ctx(), ex));
+        if (by_name(d.ctx(), ex)) return std::print(os, "{}", name(d.ctx(), ex));
         return std::print(os, "{}#{}", d.l(ex->tuple(), Prec::Extract), d.r(ex->index(), Prec::Extract));
     } else if (auto ins = d->isa<Insert>()) {
         auto tup = d.l(ins->tuple(), Prec::Extract);
         // `←` updates the whole `#`-path, so an Extract target needs parens to re-parse.
-        if (auto ex = ins->tuple()->isa<Extract>(); ex && !(ex->tuple()->isa<Var>() && ex->index()->isa<Lit>()))
+        if (auto ex = ins->tuple()->isa<Extract>(); ex && !by_name(d.ctx(), ex))
             std::print(os, "({})", tup);
         else
             std::print(os, "{}", tup);
@@ -578,59 +653,43 @@ void full(std::ostream& os, Full d) {
         lam_ptrn(os, d.ctx(), lam, fun, con, true, true);
         lam_codom(os, d.ctx(), lam, fun, con);
         // Like any tail, the body is spelled out - there is no block here that could `let`-bind it.
-        if (isa_decl(lam->body())) return std::print(os, " = {}", d.op(lam->body()));
-        return std::print(os, " = {}", Full(d.ctx(), lam->body()));
+        return std::print(os, " = {}", tail(d.ctx(), lam->body()));
     } else if (auto app = d->isa<App>()) {
-        if (auto size = Idx::isa(app)) {
-            if (auto l = Lit::isa(size)) {
-                // clang-format off
-                switch (*l) {
-                    case 0x0'0000'0002_n: return std::print(os, "Bool");
-                    case 0x0'0000'0100_n: return std::print(os, "I8");
-                    case 0x0'0001'0000_n: return std::print(os, "I16");
-                    case 0x1'0000'0000_n: return std::print(os, "I32");
-                    case             0_n: return std::print(os, "I64");
-                    default: break;
-                }
-                // clang-format on
-            }
-        }
+        if (auto size = Idx::isa(app))
+            if (auto l = Lit::isa(size))
+                if (auto name = idx_name(*l)) return std::print(os, "{}", *name);
 
         if (Pi::isa_implicit(app->callee()->unfold_type())) {
             // An argument that is still a Hole is what the parser inserts anyway - and `?` has no spelling.
-            if (app->arg()->has_dep(Dep::Hole)) return std::print(os, "{}", d.op(app->callee(), d.prec(), d.is_left()));
+            if (app->arg()->has_hole()) return std::print(os, "{}", d.op(app->callee(), d.prec(), d.is_left()));
             // Spelling out an implicit argument needs `@`; juxtaposition would insert a Hole in front of it.
             return std::print(os, "{} @ {}", d.l(app->callee(), Prec::App), d.r(app->arg(), Prec::App));
         }
         return std::print(os, "{} {}", d.l(app->callee(), Prec::App), d.r(app->arg(), Prec::App));
-    } else if (auto [sigma, var] = d->isa_binder<Sigma>(); sigma) {
+    } else if (auto sigma = d->isa<Sigma>()) {
+        auto var  = sigma->has_var();
         size_t i  = 0;
         auto elem = fe::StreamFn{[&](std::ostream& os) -> std::ostream& {
             auto sep = "";
             for (auto op : sigma->ops()) {
                 os << sep;
-                if (auto v = sigma->var(sigma->num_ops(), i++))
+                if (auto v = var ? var->proj(sigma->num_ops(), i) : nullptr)
                     std::print(os, "{}: {}", d.op(v), d.op(op));
                 else
                     os << d.op(op);
+                ++i;
                 sep = ", ";
             }
             return os;
         }};
 
         return std::print(os, "[{}]", elem);
-    } else if (auto sigma = d->isa<Sigma>()) {
-        return std::print(os, "[{}]", Op::map(d.ctx(), sigma->ops()));
     } else if (auto tuple = d->isa<Tuple>()) {
         return std::print(os, "({})", Op::map(d.ctx(), tuple->ops()));
-    } else if (auto [arr, var] = d->isa_binder<Arr>(); arr) {
-        return std::print(os, "{}{}; {}{}", al, shape(d.ctx(), arr, var), d.op(arr->body()), ar);
     } else if (auto arr = d->isa<Arr>()) {
-        return std::print(os, "{}{}; {}{}", al, shape(d.ctx(), arr), d.op(arr->body()), ar);
-    } else if (auto [pack, var] = d->isa_binder<Pack>(); pack) {
-        return std::print(os, "{}{}; {}{}", pl, shape(d.ctx(), pack, var), d.op(pack->body()), pr);
+        return std::print(os, "{}{}; {}{}", al, shape(d.ctx(), arr, arr->has_var()), d.op(arr->body()), ar);
     } else if (auto pack = d->isa<Pack>()) {
-        return std::print(os, "{}{}; {}{}", pl, shape(d.ctx(), pack), d.op(pack->body()), pr);
+        return std::print(os, "{}{}; {}{}", pl, shape(d.ctx(), pack, pack->has_var()), d.op(pack->body()), pr);
     } else if (auto proxy = d->isa<Proxy>()) {
         return std::print(os, "(proxy#{} {})", proxy->tag(), Op::map(d.ctx(), proxy->ops()));
     } else if (auto join = d->isa<Join>()) {
@@ -644,27 +703,37 @@ void full(std::ostream& os, Full d) {
             return std::print(os, "{} {}", ctor, d.r(inj->value(), Prec::App));
         }
         return std::print(os, "{} inj {}", d.l(inj->value(), Prec::Inj), d.r(inj->type(), Prec::Inj));
+    } else if (auto name = d->isa<Name>()) {
+        return std::print(os, "{} inj {}", d.l(name->op(), Prec::Inj), d.r(name->nom(), Prec::Inj));
+    } else if (auto struc = d->isa<Struc>()) {
+        return std::print(os, "#{}", d.r(struc->op(), Prec::Prefix));
     } else if (auto single = d->isa<Single>()) {
         return std::print(os, "{}{}{}", al, d.op(single->op()), ar);
     } else if (auto wrap = d->isa<Wrap>()) {
         return std::print(os, "{}{}{}", pl, d.op(wrap->op()), pr);
-    } else if (auto match = d->isa<Match>();
-               match && d.ctx() && match->num_arms() != 0 && d.ctx()->arms.contains(match->arm(0))) {
+    } else if (auto match = d->isa<Match>(); match && d.ctx() && match->num_arms() != 0) {
         std::print(os, "match {} with", d.op(match->scrutinee()));
         auto variant = match->scrutinee()->type()->isa<Variant>();
         auto& tab    = d.ctx()->tab;
         ++tab;
         for (size_t i = 0; auto arm : match->arms()) {
-            auto lam = arm->as_mut<Lam>();
+            auto dom = arm->type()->as<Pi>()->dom();
             std::print(os, "\n{}| ", tab);
             // A variant's arms are its constructors, in order; a constructor without payload binds nothing.
             if (variant) std::print(os, "_{}", i++);
-            if (!variant || lam->dom() != d->world().sigma()) {
-                if (variant) os << ' ';
-                ptrn(os, d.ctx(), lam->has_var(), lam->dom());
+            auto binds = !variant || dom != d->world().sigma();
+            if (binds && variant) os << ' ';
+            if (d.ctx()->arms.contains(arm)) {
+                auto lam = arm->as_mut<Lam>();
+                if (auto var = lam->has_var(); var && !d.ctx()->spelled.emplace(lam).second) unname(d.ctx(), var);
+                if (binds) ptrn(os, d.ctx(), lam->has_var(), dom);
+                // Another `match` would swallow the arms that follow.
+                std::print(os, " => {}", d.op(lam->body(), Prec::Where));
+            } else {
+                auto x = binds ? fresh_name(d.ctx(), "_") : "()"s;
+                if (binds) std::print(os, "{}: {}", x, d.op(dom));
+                std::print(os, " => {} {}", d.l(arm, Prec::App), x);
             }
-            // Another `match` would swallow the arms that follow.
-            std::print(os, " => {}", d.op(lam->body(), Prec::Where));
         }
         --tab;
         return;
@@ -685,22 +754,6 @@ std::ostream& operator<<(std::ostream& os, Full d) {
  * Dumper
  */
 
-/// The Def%s the dump prints @p def with: a type nobody prints must not drag in a `let` that nothing refers to.
-/// A Lam spells out its Pi, so only the components of that one are referenced.
-template<class F>
-void printed_deps(const Def* def, bool typed_let, F f) {
-    if (auto lam = def->isa_mut<Lam>()) {
-        f(lam->type()->dom());
-        f(lam->type()->codom());
-        for (auto op : lam->ops())
-            f(op);
-        return;
-    }
-    if (typed_let || def->isa<Lit>() || def->isa<Ext>() || def->isa<Inj>()) f(def->type());
-    for (auto op : def->ops())
-        f(op);
-}
-
 /// The Lam%s a curried declaration folds into one: `lam f (a) (b) = e`.
 fe::Vector<Lam*> curry_chain(Lam* lam) {
     auto chain = fe::Vector<Lam*>();
@@ -716,12 +769,139 @@ fe::Vector<Lam*> curry_chain(Lam* lam) {
     return chain;
 }
 
+/// Recovers the arguments of an instance of a generic Nom by matching it against the generic one.
+/// The generic Nom may live in Driver::library, so even closed parts are compared structurally.
+class Instantiation {
+public:
+    /// @p chain is the curry_chain of the annex Lam whose body is the generic Nom.
+    explicit Instantiation(const fe::Vector<Lam*>& chain)
+        : chain_(chain) {
+        for (auto lam : chain)
+            if (auto var = lam->has_var()) vars_.emplace(var);
+    }
+
+    /// `std::nullopt` if a parameter is not recoverable.
+    std::optional<Args> args(const Nom* inst) {
+        auto generic = chain_.back()->body()->as<Nom>();
+        if (inst == generic || !match(generic->op(), inst->op())) return {};
+
+        auto res = Args();
+        for (auto lam : chain_) {
+            auto var      = lam->has_var();
+            auto implicit = lam->type()->is_implicit();
+            if (!var) return {};
+            if (auto whole = fe::lookup(subst_, var)) {
+                res.emplace_back(DefVec{whole}, implicit);
+                continue;
+            }
+            auto n = Lit::isa(var->arity());
+            if (!n || *n < 2) return {};
+            auto comps = DefVec(*n, nullptr);
+            for (auto [g, i] : subst_)
+                if (auto ex = g->isa<Extract>(); ex && ex->tuple() == var) comps[*Lit::isa(ex->index())] = i;
+            if (std::ranges::contains(comps, nullptr)) return {};
+            res.emplace_back(std::move(comps), implicit);
+        }
+        return res;
+    }
+
+private:
+    bool is_param(const Def* def) const {
+        if (auto ex = def->isa<Extract>(); ex && ex->index()->isa<Lit>()) def = ex->tuple();
+        return vars_.contains(def);
+    }
+
+    /// Appends the axes of @p shape that World::seq keeps; `false` for a dynamic rank.
+    static bool axes(Shape shape, DefVec& res) {
+        if (shape.is_dim()) {
+            if (Shape::extent(*shape) != 1) res.emplace_back(*shape);
+            return true;
+        }
+        auto r = shape.rank();
+        if (!r) return false;
+        for (nat_t k = 0; k != *r; ++k)
+            if (auto a = shape[k]; !a)
+                return false;
+            else if (Shape::extent(a) != 1)
+                res.emplace_back(a);
+        return true;
+    }
+
+    /// Is @p i what World::arr normalizes `«shape; g»` to, with @p shape already in the World of @p i?
+    /// Building that Arr would mix in the generic @p g, which may live in Driver::library.
+    bool is_arr(Shape shape, const Def* g, const Def* i) {
+        auto dims = DefVec();
+        if (!axes(shape, dims)) return false;
+        auto inst = fe::lookup(subst_, g);
+        auto gen  = DefVec();
+        if (auto zero = std::ranges::find(dims, 0, [](const Def* a) { return Shape::extent(a); }); zero != dims.end()) {
+            dims.erase(zero, dims.end());
+            inst = i->world().sigma();
+        } else if (inst) {
+            for (auto arr = inst->isa_imm<Arr>(); arr; arr = inst->isa_imm<Arr>()) {
+                if (!axes(arr->shape(), dims)) return false;
+                inst = arr->body();
+            }
+        } else {
+            for (auto arr = g->isa_imm<Arr>(); arr; arr = g->isa_imm<Arr>()) {
+                if (!axes(arr->shape(), gen)) return false;
+                g = arr->body();
+            }
+        }
+
+        auto body = [&](const Def* ib) { return inst ? inst == ib : match(g, ib); };
+        if (dims.empty() && gen.empty()) return body(i);
+        auto arr  = i->isa_imm<Arr>();
+        auto idim = DefVec();
+        if (!arr || !axes(arr->shape(), idim) || idim.size() != dims.size() + gen.size()) return false;
+        for (size_t k = 0, n = dims.size(); k != n; ++k)
+            if (dims[k] != idim[k]) return false;
+        for (size_t k = 0, n = gen.size(); k != n; ++k)
+            if (!match(gen[k], idim[dims.size() + k])) return false;
+        return body(arr->body());
+    }
+
+    bool match(const Def* g, const Def* i) {
+        if (g == i) return true;
+        // Only a Level has no type.
+        if (!g || !i) return false;
+        // A substitution maps each generic subterm to exactly one instance subterm.
+        if (auto [j, ins] = subst_.emplace(g, i); !ins) return j->second == i;
+        if (is_param(g)) return true;
+        if (auto arr = g->isa_imm<Arr>()) {
+            auto shape      = fe::lookup(subst_, *arr->shape());
+            auto body       = arr->body();
+            auto same_shape = shape && i->isa_imm<Arr>() && *i->as<Arr>()->shape() == shape;
+            if (shape && (subst_.contains(body) || body->is_closed()) && !same_shape) return is_arr(shape, body, i);
+        }
+        if (auto sig = g->isa_imm<Sigma>())
+            if (auto arr = i->isa_imm<Arr>();
+                arr && arr->shape().is_dim() && Lit::isa(*arr->shape()) == sig->num_ops()) {
+                for (auto op : sig->ops())
+                    if (!match(op, arr->body())) return false;
+                return match(g->type(), i->type());
+            }
+        if (g->node() != i->node() || g->flags() != i->flags() || g->num_ops() != i->num_ops()) return false;
+        for (size_t k = 0, n = g->num_ops(); k != n; ++k)
+            if (!match(g->op(k), i->op(k))) return false;
+        return match(g->type(), i->type());
+    }
+
+    const fe::Vector<Lam*>& chain_;
+    DefSet vars_;
+    DefMap<const Def*> subst_;
+};
+
+/// An annex of the dumped file itself; its name is split into the `mod` it nests in and its own name.
+struct DumpAnnex {
+    std::string mod, name;
+    const Def* def;
+};
+
 /// Emits Def%s as Mim declarations.
 ///
-/// Dump::Expr and Dump::Local walk Def::deps and nothing else - which is what makes them safe to call from a
-/// debugger, where the World is usually half-built. Dump::Scope and Dump::All buy a better layout with a Nest:
-/// it nests the mutables, and Scheduler::smart places everything else. Should that analysis choke on the very
-/// program you wanted to look at, World::dot still shows it - its tooltips only ever use Dump::Expr.
+/// Dump::Scope and Dump::All place everything into the block of the innermost binder its free Var%s refer to.
+/// Dump::Expr asks no analysis at all, and neither do the tooltips of World::dot.
 class Dumper {
 public:
     /// @p srcs are the files an `import` pulls in: they declare their own content, so a dump must not repeat it.
@@ -734,39 +914,62 @@ public:
     /// Only @p live Def%s - what the dumped roots reach - count as existing.
     void live(const DefSet& live) { ctx_.live = &live; }
 
+    void insts(DefMap<std::pair<Sym, Args>> insts) { ctx_.insts = std::move(insts); }
+
     /// Switches to plain names; @p reserved are names the dump refers to verbatim and hence must not pick.
     void plain(std::span<const std::string> reserved) {
         ctx_.plain = true;
         ctx_.taken.insert(reserved.begin(), reserved.end());
     }
 
-    /// Declares the Axm%s of the dumped file itself as `axm`s, grouped into the `mod` their @p names nest them in.
-    void dump_axms(std::string self, std::span<const std::pair<std::string, const Axm*>> axms) {
-        ctx_.self = std::move(self);
-        for (auto [_, axm] : axms)
-            for (auto mut : axm->type()->local_muts())
-                if (isa_decl(mut)) dump_muts(mut);
+    /// Declares the annexes of the dumped file itself - Axm%s as `axm`s, Nom%s as `nom`s - grouped into the
+    /// `mod` their names nest them in.
+    void dump_annexes(std::string self, std::span<const DumpAnnex> annexes) {
+        ctx_.self    = std::move(self);
+        auto content = [](const Def* def) { return def->isa<Axm>() ? def->type() : def->as<Nom>()->op(); };
+        auto muts    = fe::Vector<Def*>();
+        for (const auto& [_, __, annex] : annexes)
+            for (auto mut : content(annex)->local_muts())
+                if (isa_decl(mut)) muts.emplace_back(mut);
+        dump_muts(muts);
 
         sep(Prev::Decl);
+        auto noms   = DefVec();
+        auto names  = DefMap<std::string_view>();
+        auto bodies = fe::Vector<Def*>();
+        for (const auto& a : annexes)
+            if (auto nom = a.def->isa<Nom>()) {
+                noms.emplace_back(nom);
+                names[nom] = a.name;
+                for (auto mut : nom->local_muts())
+                    bodies.emplace_back(mut);
+            }
+        if (!bodies.empty()) group_noms(Nest(bodies.front()->world(), bodies, true), noms);
         std::string_view curr_mod;
-        for (auto [name, axm] : axms) {
-            auto view = std::string_view(name);
-            auto dot  = view.find('.');
-            auto mod  = dot == std::string_view::npos ? std::string_view() : view.substr(0, dot);
+        for (const auto& [mod, name, def] : annexes) {
             if (mod != curr_mod) {
-                if (!curr_mod.empty()) std::println(os_, "{}}}", --ctx_.tab);
-                if (!mod.empty()) std::println(os_, "{}mod {} {{", ctx_.tab, mod), ++ctx_.tab;
+                if (!curr_mod.empty()) std::println(os_, "{}end", --ctx_.tab);
+                if (!mod.empty()) std::println(os_, "{}mod {}", ctx_.tab, mod), ++ctx_.tab;
                 curr_mod = mod;
                 ctx_.mod = mod.empty() ? std::string() : std::string(mod) + ".";
             }
-            std::print(os_, "{}axm {}: {}", ctx_.tab, mod.empty() ? view : view.substr(dot + 1),
-                       Op(&ctx_, axm->type()));
+            if (deferred_.contains(def)) continue;
+            if (auto group = fe::lookup(mutual_, def)) {
+                emit_mutual(*group, [&](const Def* m) { emit_nom("anx nom", names[m], m->as<Nom>()); });
+                continue;
+            }
+            if (auto nom = def->isa<Nom>()) {
+                emit_nom("anx nom", name, nom);
+                continue;
+            }
+            auto axm = def->as<Axm>();
+            std::print(os_, "{}axm {}: {}", ctx_.tab, name, Op(&ctx_, axm->type()));
             auto [curry, trip] = Axm::infer_curry_and_trip(axm->type());
             if (axm->curry() != curry || axm->trip() != trip) std::print(os_, ", {}", axm->curry());
             if (axm->trip() != trip) std::print(os_, ", {}", axm->trip());
             std::println(os_, ";");
         }
-        if (!curr_mod.empty()) std::println(os_, "{}}}", --ctx_.tab);
+        if (!curr_mod.empty()) std::println(os_, "{}end", --ctx_.tab);
         ctx_.mod.clear();
     }
 
@@ -774,67 +977,69 @@ public:
     ///@{
     /// @p def and whatever Dumper::mode_ reaches from it.
     void dump(const Def* def) {
-        if (auto mut = isa_decl(def)) return dump_muts(mut);
+        if (auto mut = isa_decl(def)) return dump_muts({mut});
 
-        if (mode_ != Dump::Local)
-            for (auto mut : def->local_muts())
-                if (isa_decl(mut)) dump_muts(mut);
-
-        block_ = nullptr; // a non-decl opens no block, so nothing can be entered or placed into one
-        emit_block(def);
-        sep(Prev::Let);
-        emit_tail(def, "");
+        auto muts = fe::Vector<Def*>();
+        for (auto mut : def->local_muts())
+            if (isa_decl(mut)) muts.emplace_back(mut);
+        dump_muts(muts, def);
     }
 
+    void dump(fe::View<Def*> muts) { dump_muts(muts); }
     ///@}
 
 private:
     /// What the current block emitted last; only a declaration is worth setting apart.
     enum class Prev { None, Let, Decl };
 
-    /// One scope: the Nest of a single closed mutable - which is the only thing a Scheduler can place into.
-    void visit_scope(const Nest& nest) {
-        auto root = nest.root()->mut();
-        // An `import` re-declares what it *exports* - but a plain `let` in that file stays local to it, so the
-        // dump has to spell that one out or nothing binds the name it refers to.
-        if (root->is_external() && srcs_.contains(root->loc().src)) return;
+    /// An `import` re-declares what it *exports* - but a plain `let` in that file stays local to it, so the dump has
+    /// to spell that one out or nothing binds the name it refers to.
+    bool is_imported(Def* mut) const { return mut->is_external() && srcs_.contains(mut->loc().src); }
 
-        auto sched = Scheduler(nest);
-        auto _     = fe::Restore(nest_, &nest);
-        auto __    = fe::Restore(sched_, &sched);
-        block_     = root;
-        emit_block(root);
-    }
-
-    /// Schedules @p root into the current Dumper::block_ and emits whatever landed there.
-    void emit_block(const Def* root) {
-        schedule_(root, nullptr);
+    /// Schedules @p roots and emits what lands at the top level.
+    void emit_top(const auto& roots) {
+        for (auto root : roots)
+            schedule_(root);
         bucket();
         emit(nullptr);
     }
 
     /// @name schedule
     ///@{
-    /// The closed mutables @p mut reaches, callees first: Mim binds a name before its uses.
-    void dump_muts(Def* mut) {
+    /// The closed mutables @p muts reach, callees first: Mim binds a name before its uses.
+    /// A non-decl @p tail ends the dump; it is spelled out after the `let`s it needs.
+    void dump_muts(fe::View<Def*> muts, const Def* tail = nullptr) {
+        if (muts.empty() && !tail) return;
         auto todo = fe::Vector<Def*>();
-        post_order(mut, todo);
+        for (auto mut : muts)
+            post_order(mut, todo);
+        for (auto [lam, match] : arm_of_)
+            if (match && is_spellable(lam)) ctx_.arms.emplace(lam);
 
-        for (auto curr : todo) {
-            if (mode_ == Dump::Local) {
-                block_ = curr;
-                emit_block(curr);
-            } else {
-                visit_scope(Nest(curr));
-            }
+        // Nest::Node::topo_ breaks ties by gid, which a re-read dump need not reproduce.
+        auto roots = fe::Vector<Def*>();
+        for (auto mut : todo) {
+            if (!mut->is_closed() || ctx_.arms.contains(mut)) continue;
+            if (is_imported(mut))
+                done_.emplace(mut);
+            else
+                roots.emplace_back(mut);
+        }
+        if (mode_ == Dump::Scope) scope_.insert(muts.begin(), muts.end());
+
+        const auto nest = Nest(tail ? tail->world() : muts.front()->world(), muts, true);
+        auto _          = fe::Restore(nest_, &nest);
+        emit_top(roots);
+        if (tail) {
+            emit_top(std::array{tail});
+            sep(Prev::Let);
+            emit_tail(tail, "");
         }
     }
 
-    static bool is_spellable(const Match* match) {
-        return std::ranges::all_of(match->arms(), [](const Def* arm) {
-            auto lam = arm->isa_mut<Lam>();
-            return lam && lam->is_set() && lam->filter() == lam->world().lit_tt();
-        });
+    static bool is_spellable(const Def* arm) {
+        auto lam = arm->isa_mut<Lam>();
+        return lam && lam->is_set() && lam->filter() == lam->world().lit_tt();
     }
 
     /// Like mim::post_order, but visits the mutables in the order the operands reach them.
@@ -842,129 +1047,208 @@ private:
     void post_order(Def* mut, fe::Vector<Def*>& todo) {
         if (!scheduled_.emplace(mut).second) return;
 
-        if (mode_ == Dump::All || mode_ == Dump::Local) {
-            auto muts = fe::Vector<Def*>();
-            auto seen = DefSet();
-            printed_deps(mut, typed_let_, [&](const Def* op) { local_muts(op, seen, muts); });
-            for (auto local_mut : muts)
-                post_order(local_mut, todo);
-        }
+        auto muts = fe::Vector<Def*>();
+        auto seen = DefSet();
+        printed_deps(mut, [&](const Def* op) {
+            note_use(op, nullptr);
+            local_muts(op, seen, muts);
+        });
+        for (auto local_mut : muts)
+            post_order(local_mut, todo);
 
-        if ((mut->is_closed() && !ctx_.arms.contains(mut)) || mode_ == Dump::Local) todo.emplace_back(mut);
+        todo.emplace_back(mut);
     }
 
     void local_muts(const Def* def, DefSet& seen, fe::Vector<Def*>& muts) {
         if (!def || def->local_muts().empty() || !seen.emplace(def).second) return;
         if (auto mut = def->isa_mut()) return (void)muts.emplace_back(mut);
-        if (auto match = def->isa<Match>(); match && is_spellable(match))
-            for (auto arm : match->arms())
-                ctx_.arms.emplace(arm);
-        printed_deps(def, typed_let_, [&](const Def* op) { local_muts(op, seen, muts); });
+        auto match = def->isa<Match>();
+        printed_deps(def, [&](const Def* op) {
+            // An arm twice in the same `match` cannot be spelled out at both places.
+            auto arm = match && std::ranges::count(match->arms(), op) == 1;
+            note_use(op, arm ? match : nullptr);
+            local_muts(op, seen, muts);
+        });
     }
 
-    /// @name schedule
-    ///@{
+    /// Records that @p op is an arm of @p match or, if `nullptr`, used otherwise.
+    void note_use(const Def* op, const Match* match) {
+        if (!op || !op->isa_mut<Lam>()) return;
+        if (auto [i, ins] = arm_of_.emplace(op, match); !ins && !match) i->second = nullptr;
+    }
+
+    /// The Def%s the dump prints @p def with: a type nobody prints must not drag in a `let` that nothing refers to.
+    /// A Lam spells out its Pi, so only the components of that one are referenced.
+    void printed_deps(const Def* def, auto f) const {
+        if (auto inst = isa_inst(&ctx_, def)) {
+            for (const auto& [arg, _] : inst->second)
+                for (auto op : arg)
+                    f(op);
+            return;
+        }
+        if (auto lam = def->isa_mut<Lam>()) {
+            f(lam->type()->dom());
+            f(lam->type()->codom());
+            for (auto op : lam->ops())
+                f(op);
+            return;
+        }
+        if (typed_let_ || def->isa<Lit>() || def->isa<Ext>() || def->isa<Inj>() || def->isa<Name>()) f(def->type());
+        for (auto op : def->ops())
+            f(op);
+    }
+
     void note_vars(const Def* def) {
+        if (auto inst = isa_inst(&ctx_, def)) {
+            for (const auto& [arg, _] : inst->second)
+                for (auto op : arg)
+                    if (op->isa<Var>()) ctx_.whole_vars.emplace(op);
+            return;
+        }
         auto ex = def->isa<Extract>();
         for (auto op : def->ops())
             if (op && op->isa<Var>() && !(ex && op == ex->tuple() && ex->index()->isa<Lit>()))
                 ctx_.whole_vars.emplace(op);
     }
 
-    void schedule_(const Def* def, Def* curr) {
+    void schedule_(const Def* def) {
         if (!def) return;
-        if (auto mut = isa_decl(def); mut && !ctx_.arms.contains(mut)) return schedule_mut(mut, curr);
-        if (!done_.emplace(def).second) return;
+        if (auto mut = isa_decl(def); mut && !ctx_.arms.contains(mut)) return schedule_mut(mut);
+        if (!done_.emplace(def).second) return finish(def);
         if (ctx_.arms.contains(def)) {
             // An arm has no block of its own either.
             auto lam = def->as_mut<Lam>();
             if (lam->body()->isa<Var>()) ctx_.whole_vars.emplace(lam->body());
-            schedule_inline(lam->dom(), curr, ctx_.inlined);
-            schedule_inline(lam->body(), curr, ctx_.inlined);
+            schedule_inline(lam->dom(), ctx_.inlined);
+            schedule_inline(lam->body(), ctx_.inlined);
             return;
         }
         note_vars(def);
-        printed_deps(def, typed_let_, [&](const Def* op) { schedule_(op, curr); });
-        if (!Full(&ctx_, def)) order_.emplace_back(def, curr);
+        schedule_deps(def);
+        if (!Full(&ctx_, def)) order_.emplace_back(def);
     }
 
-    void schedule_mut(Def* mut, Def* curr) {
-        if (open_.contains(mut)) recursive_.emplace(mut);
-        if (!enter(mut)) return;
-        if (!done_.emplace(mut).second) return;
+    void schedule_deps(const Def* def) {
+        pending_.emplace(def);
+        printed_deps(def, [&](const Def* op) { schedule_(op); });
+        pending_.erase(def);
+    }
 
+    /// A mutable reached through @p def%'s deps may need @p def - and hence all of its deps - before they are done.
+    void finish(const Def* def) {
+        if (pending_.erase(def)) printed_deps(def, [&](const Def* op) { schedule_(op); });
+    }
+
+    void schedule_mut(Def* mut) {
+        if (!enter(mut) || done_.contains(mut)) return;
+
+        auto group = sibling_group(mut);
+        for (auto m : group)
+            done_.emplace(m);
+        for (auto m : group)
+            schedule_body(m);
+        order_.emplace_back(group.front());
+        if (group.size() > 1) mutual_.emplace(group.front(), DefVec(group.begin(), group.end()));
+    }
+
+    /// A block only sees what precedes it, so the mutually recursive siblings of @p mut print as one `mutual` group.
+    fe::Vector<Def*> sibling_group(Def* mut) const {
+        auto node = (*nest_)[mut];
+        if (!node || !node->is_mutually_recursive()) return {mut};
+        if (auto key = owner(node->inest()); key && inlines(key)) return {mut};
+
+        auto group = fe::Vector<Def*>();
+        for (auto member : node->scc())
+            if (auto m = member->mut(); m == mut || !done_.contains(m)) group.emplace_back(m);
+        if (group.size() < 2 || !std::ranges::all_of(group, [this](Def* m) { return groupable(m); })) return {mut};
+        return group;
+    }
+
+    bool groupable(Def* mut) const {
+        if (!isa_decl(mut) || ctx_.arms.contains(mut) || mut->isa<Rule>() || !mut->is_set()) return false;
+        if (auto lam = mut->isa_mut<Lam>()) return curry_chain(lam).back()->is_set();
+        return true;
+    }
+
+    void schedule_body(Def* mut) {
         auto chain = mut->isa_mut<Lam>() ? curry_chain(mut->as_mut<Lam>()) : fe::Vector<Lam*>();
-        open_.emplace(mut);
 
         if (auto rule = mut->isa_mut<Rule>()) {
             // The surface syntax has no block for a rule's parts, so whatever depends on its meta variable is inlined.
-            printed_deps(rule->type(), typed_let_, [&](const Def* op) { schedule_inline(op, mut, ctx_.inlined); });
-            printed_deps(rule, typed_let_, [&](const Def* op) { schedule_inline(op, mut, ctx_.inlined); });
+            printed_deps(rule->type(), [&](const Def* op) { schedule_inline(op, ctx_.inlined); });
+            printed_deps(rule, [&](const Def* op) { schedule_inline(op, ctx_.inlined); });
         } else if (chain.empty()) {
             for (auto op : mut->deps())
-                schedule_(op, mut);
+                schedule_(op);
         } else {
             for (auto* lam : chain)
                 if (lam != mut) done_.emplace(lam), absorbed_.emplace(lam, mut);
             // The chain spells out its Pi%s, so only their components are referenced.
             for (auto* lam : chain) {
-                schedule_inline(lam->type()->dom(), mut, ctx_.header);
-                if (auto var = lam->has_var()) schedule_ptrn(var, num_binders(lam->type()->dom()), mut);
-                schedule_inline(lam->filter(), mut, ctx_.header);
+                schedule_inline(lam->type()->dom(), ctx_.header);
+                if (auto var = lam->has_var()) schedule_proj_types(var);
+                schedule_inline(lam->filter(), ctx_.header);
                 if (lam == chain.back()) {
-                    schedule_inline(lam->type()->codom(), mut, ctx_.header);
-                    schedule_tail(lam->body(), mut);
+                    schedule_inline(lam->type()->codom(), ctx_.header);
+                    schedule_tail(lam->body());
                 }
             }
         }
-
-        open_.erase(mut);
-        order_.emplace_back(mut, curr);
     }
 
-    /// Schedules what @p def needs; @p def itself, noted in @p inline_set, prints inline.
-    void schedule_inline(const Def* def, Def* curr, DefSet& inline_set) {
-        if (!def || def->is_closed() || isa_decl(def)) return schedule_(def, curr);
-        if (!inline_set.emplace(def).second) return;
-        note_vars(def);
-        printed_deps(def, typed_let_, [&](const Def* op) { schedule_inline(op, curr, inline_set); });
-    }
-
-    /// A pattern ascribes each component its own type, where a dependent one has the binder substituted.
-    void schedule_ptrn(const Def* def, nat_t n, Def* curr) {
-        for (nat_t i = 0; n > 1 && i != n; ++i)
-            if (auto proj = live_proj(&ctx_, def, n, i)) {
-                schedule_inline(proj->type(), curr, ctx_.header);
-                schedule_ptrn(proj, proj->num_tprojs(), curr);
+    /// A destructured parameter prints the types of its projections, where the Lam's own Var is already substituted.
+    void schedule_proj_types(const Def* def) {
+        auto n = def->num_tprojs();
+        if (n <= 1) return;
+        for (size_t i = 0; i != n; ++i)
+            if (auto proj = def->proj(n, i)) {
+                schedule_inline(proj->type(), ctx_.header);
+                schedule_proj_types(proj);
             }
     }
 
-    /// A Lam's body is the tail of its block, so it is emitted there instead of as a `let` of its own.
-    void schedule_tail(const Def* def, Def* curr) {
-        if (def && def->isa<Var>()) ctx_.whole_vars.emplace(def);
-        if (!def || isa_decl(def)) return schedule_(def, curr);
-        if (!done_.emplace(def).second) return;
+    /// Schedules what @p def needs; @p def itself, noted in @p inline_set, prints inline.
+    void schedule_inline(const Def* def, DefSet& inline_set) {
+        if (!def || def->is_closed() || has_decl(&ctx_, def)) return schedule_(def);
+        if (!inline_set.emplace(def).second) return;
         note_vars(def);
-        printed_deps(def, typed_let_, [&](const Def* op) { schedule_(op, curr); });
+        printed_deps(def, [&](const Def* op) { schedule_inline(op, inline_set); });
+    }
+
+    /// A Lam's body is the tail of its block, so it is emitted there instead of as a `let` of its own.
+    void schedule_tail(const Def* def) {
+        if (def && def->isa<Var>()) ctx_.whole_vars.emplace(def);
+        if (!def || has_decl(&ctx_, def)) return schedule_(def);
+        if (!done_.emplace(def).second) return finish(def);
+        note_vars(def);
+        schedule_deps(def);
     }
 
     /// Is @p mut ours to emit - or does it only get referenced by name?
-    bool enter(Def* mut) const { return nest_ ? (*nest_)[mut] != nullptr : mut == block_; }
+    /// Dump::Scope only enters what nests in one of Dumper::scope_.
+    bool enter(Def* mut) const {
+        auto node = (*nest_)[mut];
+        if (!node || mode_ != Dump::Scope) return node != nullptr;
+        while (!node->inest()->is_root())
+            node = node->inest();
+        return scope_.contains(node->mut());
+    }
 
-    /// Turns the schedule into one list per block: the Nest nests the mutables, Scheduler::smart places the rest.
+    /// Turns the schedule into one list per block.
     void bucket() {
-        for (auto [def, curr] : order_) {
+        for (auto def : order_) {
             auto mut = isa_decl(def);
-            auto key = curr; // Dump::Local has one block per root and asks no analysis where anything belongs
-            if (nest_) {
-                // Nest::idom, not Nest::inest: a mutable only one sibling reaches belongs into *its* block.
-                auto in = curr ? curr : block_;
-                key     = mut ? owner((*nest_)[mut]->idom()) : owner(sched_->smart(in, def));
-                // A binder that prints inline has no block of its own, so what belongs into it is inlined as well.
-                if (key && inlines(key) && !(mut && recursive_.contains(mut))) {
-                    ctx_.inlined.emplace(def);
-                    continue;
-                }
+            auto key = owner(nest_->inest(def));
+            // A Nom is the one immutable with a declaration of its own, so it never inlines.
+            if (def->isa<Nom>()) {
+                while (key && inlines(key))
+                    key = owner((*nest_)[key]->inest());
+                // TODO A Nom over a Var in its own Lam's signature has no valid place: `lam k (n: Nat, x: V n)`.
+            }
+            // A binder that prints inline has no block of its own, so what belongs into it is inlined as well.
+            if (key && inlines(key) && !(mut && is_recursive(mut))) {
+                ctx_.inlined.emplace(def);
+                continue;
             }
             (key ? bucket_[key] : top_).emplace_back(def);
         }
@@ -978,12 +1262,14 @@ private:
         return false;
     }
 
+    bool is_recursive(Def* mut) const { return (*nest_)[mut]->is_recursive(); }
+
     /// The mutable whose block @p node stands for; `nullptr` for the top level.
     Def* owner(const Nest::Node* node) const {
         if (!node) return nullptr;
         auto mut = node->mut();
-        if (!mut) return nullptr;                                                 // a *virtual* root is the top level
-        if (auto i = absorbed_.find(mut); i != absorbed_.end()) return i->second; // a curried chain shares a block
+        if (!mut) return nullptr;                                  // a *virtual* root is the top level
+        if (auto outer = fe::lookup(absorbed_, mut)) return outer; // a curried chain shares a block
         return mut;
     }
     ///@}
@@ -992,14 +1278,88 @@ private:
     ///@{
     void emit(Def* key) {
         auto defs = key ? std::move(bucket_[key]) : std::move(top_);
+        group_noms(*nest_, defs);
         for (auto def : defs) {
-            auto mut = isa_decl(def);
-            sep(mut ? Prev::Decl : Prev::Let);
-            if (mut)
-                emit_decl(mut);
+            if (deferred_.contains(def)) continue;
+            auto group = fe::lookup(mutual_, def);
+            sep(group || isa_decl(def) ? Prev::Decl : Prev::Let);
+            if (group)
+                emit_mutual(*group, [this](const Def* m) { emit_item(m); });
             else
-                emit_let(def);
+                emit_item(def);
         }
+    }
+
+    void emit_item(const Def* def) {
+        if (auto mut = isa_decl(def)) return emit_decl(mut);
+        emit_let(def);
+    }
+
+    // Only a bare variant may refer back to the `nom`.
+    void emit_nom(std::string_view kw, std::string_view name, const Nom* nom) {
+        if (auto variant = nom->op()->isa<Variant>())
+            return std::println(os_, "{}{} {} = {};", ctx_.tab, kw, name, ctors(&ctx_, variant));
+        std::println(os_, "{}{} {} = {};", ctx_.tab, kw, name, Op(&ctx_, nom->op()));
+    }
+
+    /// Groups the Nom%s among @p defs that lie on a cycle, in the order of @p defs.
+    /// No immutable refers back to itself, so such a cycle runs through a recursive SCC.
+    /// Everything a cycle needs precedes its last member, so that is where the group goes.
+    void group_noms(const Nest& nest, const DefVec& defs) {
+        auto grouped = DefSet();
+        for (auto def : defs) {
+            auto nom = def->isa<Nom>();
+            if (!nom || grouped.contains(nom)) continue;
+            for (auto mut : nom->local_muts()) {
+                auto node = nest[mut];
+                if (!node || !node->is_recursive()) continue;
+                auto on_cycle = scc_noms(nest, node->scc());
+                auto cycle    = DefVec();
+                for (auto d : defs)
+                    if (on_cycle.contains(d)) cycle.emplace_back(d);
+                if (cycle.size() > 1) {
+                    grouped.insert(cycle.begin(), cycle.end());
+                    deferred_.insert(cycle.begin(), cycle.end() - 1);
+                    mutual_.emplace(cycle.back(), std::move(cycle));
+                }
+                break;
+            }
+        }
+    }
+
+    /// The Nom%s @p scc reaches that reach it back.
+    static DefSet scc_noms(const Nest& nest, const Nest::Node::SCC& scc) {
+        auto reaches_scc = [&](const Def* nom) {
+            return std::ranges::any_of(nom->local_muts(), [&](Def* mut) { return scc.contains(nest[mut]); });
+        };
+        auto res  = DefSet();
+        auto todo = DefVec();
+        auto seen = DefSet();
+        for (auto node : scc)
+            for (auto dep : node->mut()->deps())
+                if (dep && seen.emplace(dep).second) todo.emplace_back(dep);
+        while (!todo.empty()) {
+            auto def = todo.back();
+            todo.pop_back();
+            if (def->isa_mut()) continue;
+            if (def->isa<Nom>() && reaches_scc(def)) res.emplace(def);
+            for (auto dep : def->deps())
+                if (dep && seen.emplace(dep).second) todo.emplace_back(dep);
+        }
+        return res;
+    }
+
+    void emit_mutual(const DefVec& group, auto emit_member) {
+        std::println(os_, "{}mutual", ctx_.tab);
+        ++ctx_.tab;
+        {
+            auto _ = fe::Restore(prev_, Prev::None);
+            for (auto def : group) {
+                sep(isa_decl(def) ? Prev::Decl : Prev::Let);
+                emit_member(def);
+            }
+        }
+        std::println(os_, "{}end", --ctx_.tab);
     }
 
     /// A declaration spans several lines, so a blank line sets it apart from its neighbors within the same block.
@@ -1009,6 +1369,7 @@ private:
     }
 
     void emit_let(const Def* def) {
+        if (auto nom = def->isa<Nom>()) return emit_nom("nom", name(&ctx_, nom), nom);
         auto type = typed_let_ ? std::format(": {}", Op(&ctx_, def->type())) : std::string();
         std::println(os_, "{}let {}{} = {};", ctx_.tab, name(&ctx_, def), type, Full(&ctx_, def));
     }
@@ -1018,18 +1379,19 @@ private:
         if (auto rule = mut->isa_mut<Rule>(); rule && rule->is_set()) return emit_rule(rule);
         if (!mut->is_set()) return emit_unset(mut);
         // `rec` binds the name for the body - which only a self-referential mutable needs; `extern` is out either way.
-        auto kw = recursive_.contains(mut) ? "rec" : "let";
+        auto kw = is_recursive(mut) ? "rec " : "let ";
         // A `rec` only takes a bare variant.
         if (auto variant = mut->isa<Variant>())
-            return std::println(os_, "{}{} {} = {};", ctx_.tab, kw, id(&ctx_, mut), ctors(&ctx_, variant));
-        std::println(os_, "{}{} {} = {};", ctx_.tab, kw, id(&ctx_, mut), Full(&ctx_, mut));
+            return std::println(os_, "{}{}{} = {};", ctx_.tab, kw, id(&ctx_, mut), ctors(&ctx_, variant));
+        std::println(os_, "{}{}{} = {};", ctx_.tab, kw, id(&ctx_, mut), Full(&ctx_, mut));
     }
 
     void emit_rule(Rule* rule) {
         auto dom = rule->dom();
         auto num = num_binders(dom);
         std::print(os_, "{}rule {} ", ctx_.tab, id(&ctx_, rule));
-        curry(os_, &ctx_, rule->has_var(), dom, false, num, num, false);
+        auto var = rule->has_var();
+        curry(os_, &ctx_, var, dom, false, num, num, num != 0 && split(&ctx_, var, dom, num), false);
         std::print(os_, ": {}", Full(&ctx_, rule->lhs()));
         if (rule->guard() != rule->world().lit_tt()) std::print(os_, " when {}", Full(&ctx_, rule->guard()));
         std::println(os_, " => {};", Full(&ctx_, rule->rhs()));
@@ -1096,24 +1458,19 @@ private:
         std::print(os_, "{}extern {} {}", ctx_.tab, fun ? "fun" : con ? "con" : "lam", id(&ctx_, lam));
         auto num = num_binders(dom);
         if (fun) {
-            os_ << '[';
-            for (auto sep = ""; auto i : std::views::iota(size_t(0), num - 1)) {
-                std::print(os_, "{}{}", sep, Op(&ctx_, dom->proj(num, i)));
-                sep = ", ";
-            }
-            std::println(os_, "]: {};", Op(&ctx_, last->ret_dom()));
+            std::println(os_, "[{}]: {};", Op(&ctx_, dom->proj(num, 0)), Op(&ctx_, last->ret_dom()));
+        } else if (auto [_, var] = dom->isa_binder<Sigma>(); var) {
+            // Flattened, its components would refer to binders nothing prints.
+            std::println(os_, "{}{};", Op(&ctx_, dom),
+                         con ? std::string() : std::format(": {}", Op(&ctx_, last->type()->codom())));
         } else {
             std::println(os_, "[{}]{};", Op::map(&ctx_, dom->projs(num)),
                          con ? std::string() : std::format(": {}", Op(&ctx_, last->type()->codom())));
         }
     }
 
-    /// Tail position: what a block ends with is spelled out - it has no `let` of its own.
     void emit_tail(const Def* def, std::string_view end) {
-        if (isa_decl(def))
-            std::println(os_, "{}{}{}", ctx_.tab, Op(&ctx_, def), end);
-        else
-            std::println(os_, "{}{}{}", ctx_.tab, Full(&ctx_, def), end);
+        std::println(os_, "{}{}{}", ctx_.tab, tail(&ctx_, def), end);
     }
 
     /// Would a `fun` here hide the `return` of an enclosing one @p lam might still refer to?
@@ -1129,20 +1486,23 @@ private:
     Dump mode_;
     bool typed_let_;
     const Nest* nest_ = nullptr; ///< Nests the mutables of the scope being emitted.
-    Scheduler* sched_ = nullptr; ///< Places everything else in it.
-    Def* block_       = nullptr; ///< The mutable whose block we are filling; the only one in Dump::Local.
     Prev prev_        = Prev::None;
     fe::Vector<const Var*> rets_;
-    fe::Vector<std::pair<const Def*, Def*>> order_; ///< What to emit, in dependency order, with its block's mutable.
+    DefVec order_; ///< What to emit, in dependency order.
     DefVec top_;
     MutMap<DefVec> bucket_;
     MutMap<Def*> absorbed_; ///< Inner Lam of a curried chain -> the chain's outermost one.
     DefSet done_;
-    MutSet open_; ///< On the schedule stack - a Def reaching one of these is recursive.
-    MutSet recursive_;
+    DefSet scope_;          ///< The closed mutables Dump::Scope dumps.
+    DefSet pending_;        ///< Def%s whose deps are being scheduled.
+    DefMap<DefVec> mutual_; ///< The member a `mutual` group prints at -> the whole group.
+    DefSet deferred_;       ///< The other members of a `mutual` group, which print with it.
     Ctx ctx_;
     Srcs srcs_;
     MutSet scheduled_;
+    /// A `match` a Lam is an arm of, or `nullptr` if it is used otherwise and hence needs a declaration.
+    /// Re-reading spells out an arm per `match` anyway, so one shared by several is spelled out in each.
+    DefMap<const Match*> arm_of_;
 };
 
 } // namespace
@@ -1186,13 +1546,12 @@ void Def::write(Dump mode) const {
 static std::string file_stem(World& world) { return (world.name() ? world.name() : world.sym("_default")).str(); }
 
 void World::dump(std::ostream& os) {
-    auto _       = freeze();
-    auto old_gid = curr_gid();
-    auto srcs    = Srcs();
-    for (const auto& import : driver().imports())
-        srcs.emplace(import.src);
+    auto _        = freeze();
+    auto old_gid  = curr_gid();
+    auto srcs     = Srcs();
     auto reserved = fe::Vector<std::string>{"return"};
     for (const auto& import : driver().imports()) {
+        srcs.emplace(import.src);
         auto kw     = import.tag == ast::Tok::Tag::K_plugin ? "plugin" : "import";
         auto module = import.src->path().stem().string();
         // A stem that is no identifier names no module, so the file has to be spliced instead.
@@ -1214,31 +1573,49 @@ void World::dump(std::ostream& os) {
 
     // An `import` declares its own annexes; those of the dumped file itself only exist if the dump declares them.
     auto self = file_stem(*this) + ".";
+    // An instance of a generic `anx nom` shares the key of the Nom its annex Lam returns.
+    auto generics = ankerl::unordered_dense::map<flags_t, std::pair<Sym, fe::Vector<Lam*>>>();
+    auto lib      = driver().library();
+    for (auto world : {this, lib == this ? nullptr : lib})
+        if (world)
+            for (auto [sym, def] : world->annexes().entries())
+                if (auto lam = def->isa_mut<Lam>(); lam && !sym.view().starts_with(self)) {
+                    auto chain = curry_chain(lam);
+                    if (auto body = chain.back()->body())
+                        if (auto nom = body->isa<Nom>()) generics.emplace(nom->key(), std::pair{sym, std::move(chain)});
+                }
+    auto insts = DefMap<std::pair<Sym, Args>>();
+
     // Only a loaded plugin registers its annexes, so find them by what the externals reach.
-    auto axms = fe::Vector<std::pair<std::string, const Axm*>>();
-    auto todo = DefVec(externals().muts().begin(), externals().muts().end());
-    auto seen = DefSet(todo.begin(), todo.end());
+    auto annexes = fe::Vector<DumpAnnex>();
+    auto todo    = DefVec(externals().muts().begin(), externals().muts().end());
+    auto seen    = DefSet(todo.begin(), todo.end());
     while (!todo.empty()) {
         auto def = todo.back();
         todo.pop_back();
-        if (auto axm = def->isa<Axm>(); axm && axm->sym().view().starts_with(self)) {
-            auto name = axm->sym().str().substr(self.size());
-            reserved.emplace_back(name.substr(0, name.find('.')));
-            axms.emplace_back(std::move(name), axm);
+        if ((def->isa<Axm>() || is_anx_nom(def)) && def->sym().view().starts_with(self)) {
+            auto sym  = def->sym(); // a short Sym is stored inline, so its view must not outlive it
+            auto name = sym.view().substr(self.size());
+            auto dot  = name.find('.');
+            auto mod  = dot == std::string_view::npos ? std::string_view() : name.substr(0, dot);
+            reserved.emplace_back(mod.empty() ? name : mod);
+            annexes.emplace_back(std::string(mod), std::string(mod.empty() ? name : name.substr(dot + 1)), def);
         }
+        if (auto nom = def->isa<Nom>())
+            if (auto generic = fe::lookup(generics, nom->key()))
+                if (auto args = Instantiation(generic->second).args(nom))
+                    insts.emplace(nom, std::pair{generic->first, std::move(*args)});
         for (auto dep : def->deps())
             if (dep && seen.emplace(dep).second) todo.emplace_back(dep);
     }
-    std::ranges::sort(axms, {}, [](const auto& p) { return p.second->flags(); });
+    std::ranges::sort(annexes, {}, [](const auto& a) { return a.def->flags(); });
 
-    // The local dump keeps every mutable to itself: no Nest that a broken program could trip over.
-    auto mode   = flags().mim_local ? Def::Dump::Local : Def::Dump::All;
-    auto dumper = Dumper(os, mode, flags().mim_typed_let, std::move(srcs));
+    auto dumper = Dumper(os, Def::Dump::All, flags().mim_typed_let, std::move(srcs));
     dumper.plain(reserved);
     dumper.live(seen);
-    if (!axms.empty()) dumper.dump_axms(std::move(self), axms);
-    for (auto mut : externals().muts())
-        dumper.dump(mut);
+    dumper.insts(std::move(insts));
+    if (!annexes.empty()) dumper.dump_annexes(std::move(self), annexes);
+    dumper.dump(externals().mutate());
 
     assertf(old_gid == curr_gid(), "new nodes created during dump. old_gid: {}; curr_gid: {}", old_gid, curr_gid());
 }

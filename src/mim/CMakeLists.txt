@@ -9,6 +9,7 @@ target_sources(libmim
         driver.cpp
         dump.cpp
         lam.cpp
+        manifest.cpp
         nest.cpp
         phase.cpp
         plugin.cpp
@@ -32,15 +33,22 @@ target_sources(libmim
         phase/static_arg_opt.cpp
         phase/beta_red.cpp
         phase/eta_conv.cpp
-        phase/branch_normalize.cpp
+        phase/dispatch_normalize.cpp
         phase/single_erasure.cpp
+        phase/nom_erasure.cpp
+        phase/join2variant.cpp
         phase/ret_wrap.cpp
         phase/sccp_analysis.cpp
         phase/sccp_transform.cpp
-        phase/unload.cpp
 )
 
-set_target_properties(libmim PROPERTIES PREFIX "")
+# Every 0.x minor release breaks the ABI.
+set_target_properties(libmim
+    PROPERTIES
+        PREFIX ""
+        VERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+        SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+)
 target_compile_features(libmim PUBLIC cxx_std_23)
 
 # In a shared libmim every intra-library call to an exported function goes through the PLT by default
@@ -79,11 +87,15 @@ target_link_libraries(libmim
 
 install(
     FILES "${CMAKE_BINARY_DIR}/include/mim/config.h"
-    DESTINATION include/mim
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mim
 )
 install(
     DIRECTORY ${PROJECT_SOURCE_DIR}/include/mim
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "*.in" EXCLUDE
+    # They need automaton, which is linked into the regex plugin only.
+    PATTERN "dfa2matcher.h" EXCLUDE
+    PATTERN "regex2nfa.h" EXCLUDE
 )
 
 add_subdirectory(cli)

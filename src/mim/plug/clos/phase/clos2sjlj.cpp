@@ -60,10 +60,9 @@ void Clos2SJLJ::get_exn_closures(const Def* def, DefSet& visited) {
     }
 }
 
-void Clos2SJLJ::get_exn_closures(Lam* lam) {
+void Clos2SJLJ::get_exn_closures(const Def* body) {
     lam2tag_.clear();
-    if (!lam->is_set() || !Lam::isa_cn(lam)) return;
-    auto app = lam->body()->isa<App>();
+    auto app = body->isa<App>();
     if (!app) return;
     if (auto p = app->callee()->isa<Extract>(); p && isa_clos_type(p->tuple()->type())) {
         auto p2 = p->tuple()->isa<Extract>();
@@ -88,7 +87,7 @@ Lam* Clos2SJLJ::get_throw(const Def* dom) {
     auto& w            = new_world();
     auto [p, inserted] = dom2throw_.emplace(dom, nullptr);
     auto& tlam         = p->second;
-    if (inserted || !tlam) {
+    if (inserted) {
         tlam = w.mut_con(clos_sub_env(Sjlj_Env_Param, dom, w.sigma({jb_type(), rb_type(), tag_type()})))->set("throw");
         auto [m0, env, var]    = split(tlam->var());
         auto [jbuf, rbuf, tag] = env->projs<3>();
@@ -106,24 +105,25 @@ Lam* Clos2SJLJ::get_lpad(Lam* lam, const Def* rb) {
     auto& w            = new_world();
     auto [p, inserted] = lam2lpad_.emplace(w.tuple({lam, rb}), nullptr);
     auto& lpad         = p->second;
-    if (inserted || !lpad) {
+    if (inserted) {
         auto [_, env_type, dom] = split(lam->dom());
         lpad                    = mem::mut_con(env_type)->set("lpad");
         auto [m, env, __]       = split(lpad->var());
         auto [m1, arg_ptr]      = w.call<mem::load>(Defs{m, rb})->projs<2>();
         arg_ptr                 = w.call<core::bitcast>(w.call<mem::Ptr0>(dom), arg_ptr);
         auto [m2, args]         = w.call<mem::load>(Defs{m1, arg_ptr})->projs<2>();
-        auto full_args          = (lam->num_doms() == 3) ? rebuild(m2, env, {args}) : rebuild(m2, env, args->ops());
+        auto full_args          = (lam->num_doms() == 3) ? rebuild(m2, env, {args}) : rebuild(m2, env, args->projs());
         lpad->app(false, lam, full_args);
         ignore_.emplace(lpad);
     }
     return lpad;
 }
 
-void Clos2SJLJ::convert(Lam* lam) {
+std::pair<const Def*, const Def*> Clos2SJLJ::convert(Lam* lam, const Def* filter, const Def* body) {
     auto& w = new_world();
-    get_exn_closures(lam);
-    if (lam2tag_.empty()) return;
+    if (!Lam::isa_cn(lam)) return {filter, body};
+    get_exn_closures(body);
+    if (lam2tag_.empty()) return {filter, body};
 
     {
         auto m0       = mem::mem_var(lam);
@@ -131,27 +131,28 @@ void Clos2SJLJ::convert(Lam* lam) {
         auto [m2, rb] = mem::op_alloc(void_ptr(), m1)->projs<2>();
         auto new_args = lam->vars();
         new_args[0]   = m2;
-        auto new_defs = lam->reduce(w.tuple(new_args));
-        lam->unset()->set(new_defs);
+        auto rw       = VarRewriter(lam->has_var(), w.tuple(new_args));
+        filter        = rw.rewrite(filter);
+        body          = rw.rewrite(body);
 
         cur_jbuf_ = jb;
         cur_rbuf_ = rb;
 
-        // apparently the reduce can change the id of the closures, so we have to do it again :(
-        get_exn_closures(lam);
+        // The substitution rebuilds the closures, so collect them again.
+        get_exn_closures(body);
     }
 
-    auto body = lam->body()->as<App>();
+    auto app = body->as<App>();
 
     auto branch_type = clos_type(w.cn(w.call<mem::M>(0)));
     auto branches    = DefVec(lam2tag_.size() + 1);
     {
-        auto env             = w.tuple(body->args().view().subspan(1));
+        auto env             = w.tuple(app->args().view().subspan(1));
         auto new_callee      = mem::mut_con(env->type())->set("sjlj_wrap");
         auto [m, env_var, _] = split(new_callee->var());
         auto ne              = env->num_projs();
         auto new_args        = DefVec(ne + 1, [&](size_t i) { return (i == 0) ? m : env_var->proj(ne, i - 1); });
-        new_callee->app(false, body->callee(), new_args);
+        new_callee->app(false, app->callee(), new_args);
         branches[0] = clos_pack(env, new_callee, branch_type);
     }
 
@@ -160,19 +161,18 @@ void Clos2SJLJ::convert(Lam* lam) {
         branches[i]   = clos_pack(env, get_lpad(exn_lam, cur_rbuf_), branch_type);
     }
 
-    auto m0 = body->arg(body->num_args(), 0);
+    auto m0 = app->arg(app->num_args(), 0);
     assert(m0->type() == w.call<mem::M>(0));
     auto [m1, tag] = w.call<setjmp>(Defs{m0, cur_jbuf_})->projs<2>();
     tag            = w.call(core::conv::s, branches.size(), tag);
-    auto filter    = lam->filter();
     auto branch    = w.extract(w.tuple(branches), tag);
-    lam->unset()->set({filter, clos_apply(branch, m1)});
 
     // Finally, replace the exception closures (which now live in the branch envs) with throw closures.
-    push(); // cur_jbuf_/cur_rbuf_ are per-Lam, so the substitution must not outlive this convert()
-    auto new_body = subst_exn_closures(lam->body());
+    push({},
+         Vars(lam->has_var())); // cur_jbuf_/cur_rbuf_ are per-Lam, so the substitution must not outlive this convert()
+    body = subst_exn_closures(clos_apply(branch, m1));
     pop();
-    lam->unset()->set({filter, new_body});
+    return {filter, body};
 }
 
 // convert() substitutes within the *already rewritten* body, so a new-world Def means "substitute in place".
@@ -188,15 +188,20 @@ const Def* Clos2SJLJ::subst_exn_closures(const Def* def) {
         auto tlam   = get_throw(c.fnc_as_lam()->dom());
         return map(def, clos_pack(w.tuple({cur_jbuf_, cur_rbuf_, w.lit_idx(i)}), tlam, c.type()));
     }
-    if (def->isa_mut() || !def->is_term()) return def;
+    if (def->isa_mut() || (!def->is_term() && def->is_closed())) return def; // a type may depend on a rewritten term
     if (def->isa<Var>()) return def; // atomic; binder is in binder_ and not descended into here
     return rewrite_imm(def)->set(def->dbg_key());
 }
 
-const Def* Clos2SJLJ::rewrite_mut_Lam(Lam* old) {
-    auto new_def = RWPhase::rewrite_mut_Lam(old);
-    if (auto lam = new_def->isa_mut<Lam>(); lam && !is_bootstrapping()) convert(lam);
-    return new_def;
+const Def* Clos2SJLJ::rewrite_mut_Lam(Lam* old_lam) {
+    auto new_lam = new_world().mut_lam(rewrite(old_lam->type())->as<Pi>());
+    map(old_lam, new_lam);
+    if (!old_lam->is_set()) return new_lam;
+
+    auto _              = enter(old_lam);
+    auto [filter, body] = convert(new_lam, rewrite(old_lam->filter()), rewrite(old_lam->body()));
+    new_lam->set(filter, body);
+    return seal(old_lam, new_lam);
 }
 
 } // namespace mim::plug::clos::phase

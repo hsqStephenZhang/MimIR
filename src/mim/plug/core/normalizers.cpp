@@ -1,7 +1,6 @@
 #include <type_traits>
 
 #include <mim/plug/math/math.h>
-#include <mim/plug/mem/mem.h>
 
 #include "mim/plug/core/core.h"
 
@@ -9,11 +8,7 @@ namespace mim::plug::core {
 
 namespace {
 
-constexpr nat_t idx_shift_width(u64 size) {
-    if (size == 0) return 64;
-    auto width = Idx::size2bitwidth(size);
-    return width == 0 ? 1 : width;
-}
+constexpr nat_t idx_shift_width(u64 size) { return std::max(1_n, Idx::size2bitwidth(size)); }
 
 constexpr std::optional<unsigned> idx_shift_amount(u64 size, u64 b) {
     auto width = idx_shift_width(size);
@@ -38,7 +33,7 @@ constexpr s64 idx_neg(u64 abs) {
     return -static_cast<s64>(abs);
 }
 
-constexpr u64 idx_pow2(unsigned k) { return k == 0 ? 1_u64 : Idx::bitwidth2size(static_cast<nat_t>(k)); }
+constexpr u64 idx_pow2(unsigned k) { return 1_u64 << k; }
 
 constexpr bool idx_sign(u64 size, u64 x) {
     // Pre: x is already in range.
@@ -88,13 +83,7 @@ constexpr bool idx_mul_nuw(u64 size, u64 a, u64 b) {
 
 constexpr u64 idx_add(u64 size, u64 a, u64 b) {
     if (size == 0) return a + b;
-    return (a + b) % size;
-}
-
-constexpr u64 idx_mul_pow2(u64 size, u64 a, unsigned k) {
-    while (k--)
-        a = idx_add(size, a, a);
-    return a;
+    return a >= size - b ? a - (size - b) : a + b;
 }
 
 constexpr u64 idx_sub(u64 size, u64 a, u64 b) {
@@ -140,8 +129,8 @@ constexpr bool idx_mul_nsw(u64 size, u64 a, u64 b) {
     const s64 min_val = size == 0 ? std::numeric_limits<s64>::min() : -static_cast<s64>(size / 2);
     const s64 max_val = size == 0 ? std::numeric_limits<s64>::max() : static_cast<s64>((size - 1) / 2);
 
-    if (x == -1) return y == min_val;
-    if (y == -1) return x == min_val;
+    if (x == -1) return size % 2 == 0 && y == min_val;
+    if (y == -1) return size % 2 == 0 && x == min_val;
 
     if (x > 0)
         if (y > 0)
@@ -187,7 +176,7 @@ constexpr bool idx_sdivrem_ub(u64 size, u64 a, u64 b) {
         return -static_cast<s64>(size / 2);
     }();
 
-    return x == min_val && y == -1;
+    return size % 2 == 0 && x == min_val && y == -1;
 }
 
 constexpr u64 idx_sdiv(u64 size, u64 a, u64 b) {
@@ -242,7 +231,7 @@ constexpr std::optional<u64> idx_shl(u64 size, u64 a, u64 b, bool nsw, bool nuw)
     if (nuw && idx_shl_nuw(size, a, *k)) return {};
     if (nsw && idx_shl_nsw(size, a, *k)) return {};
 
-    return idx_mul_pow2(size, a, *k);
+    return idx_mul(size, a, idx_pow2(*k));
 }
 
 constexpr std::optional<u64> idx_lshr(u64 size, u64 a, u64 b) {
@@ -370,9 +359,10 @@ const Def* fold(World& world, const Def* type, const Def*& a, const Def*& b, con
 
             bool nsw = false, nuw = false;
             if constexpr (std::is_same_v<Id, wrap>) {
-                auto m = mode ? static_cast<Mode>(Lit::as(mode)) : Mode::none;
-                nsw    = fe::has_flag(m, Mode::nsw);
-                nuw    = fe::has_flag(m, Mode::nuw);
+                auto lm = Lit::isa(mode);
+                if (!lm) return nullptr;
+                nsw = fe::has_flag(static_cast<Mode>(*lm), Mode::nsw);
+                nuw = fe::has_flag(static_cast<Mode>(*lm), Mode::nuw);
             }
 
             if (size == 1) {
@@ -406,9 +396,7 @@ const Def* fold(World& world, const Def* type, const Def*& a) {
             if (x >= 0) return world.lit(type, static_cast<u64>(x));
 
             auto y = idx_signed_abs(x);
-            if ((size == 0 && x == std::numeric_limits<s64>::min())
-                || (size % 2_u64 == 0 && y == idx_signed_min_abs(size)))
-                return world.lit(type, *la);
+            if (size % 2_u64 == 0 && y == idx_signed_min_abs(size)) return world.lit(type, *la);
 
             return world.lit(type, y);
         } else {
@@ -589,7 +577,7 @@ const Def* normalize_ncmp(const Def* type, const Def* callee, const Def* arg) {
                 case ncmp::le: return world.lit_bool(*la <= *lb);
                 case ncmp::g : return world.lit_bool(*la >  *lb);
                 case ncmp::ge: return world.lit_bool(*la >= *lb);
-                default: fe::unreachable();
+                default: std::unreachable();
             }
             // clang-format on
         }
@@ -648,7 +636,7 @@ const Def* normalize_bit1(const Def* type, const Def* c, const Def* a) {
         switch (id) {
             case bit1::f: return world.lit_idx(*ls, 0);
             case bit1::t: return world.lit_idx(*ls, *ls - 1_u64);
-            case bit1::id: fe::unreachable();
+            case bit1::id: std::unreachable();
             default: break;
         }
 
@@ -701,7 +689,7 @@ const Def* normalize_bit2(const Def* type, const Def* c, const Def* arg) {
             case bit2::nxor: return world.lit_idx_mod(*ls, ~(*la ^  *lb));
             case bit2:: iff: return world.lit_idx_mod(*ls, ~ *la |  *lb);
             case bit2::niff: return world.lit_idx    (*ls,   *la & ~*lb);
-            default: fe::unreachable();
+            default: std::unreachable();
         }
     }
 
@@ -744,18 +732,13 @@ const Def* normalize_idx(const Def* type, const Def* c, const Def* arg) {
     auto& world = type->world();
     auto callee = c->as<App>();
     if (auto i = Lit::isa(arg)) {
+        if (*i == 0) return world.lit(type, 0); // inhabits every `Idx s`, even a symbolic one
         if (auto s = Lit::isa(Idx::isa(type))) {
-            if (*i < *s) return world.lit_idx(*s, *i);
+            if (*s == 0 || *i < *s) return world.lit_idx(*s, *i);
             if (auto m = Lit::isa(callee->decurry()->arg())) return *m ? world.bot(type) : world.lit_idx_mod(*s, *i);
         }
     }
 
-    return {};
-}
-
-const Def* normalize_idx_unsafe(const Def*, const Def*, const Def* arg) {
-    auto& world = arg->world();
-    if (auto i = Lit::isa(arg)) return world.lit_idx_unsafe(*i);
     return {};
 }
 
@@ -766,26 +749,16 @@ const Def* normalize_shr(const Def* type, const Def* c, const Def* arg) {
     auto [a, b] = arg->projs<2>();
     auto s      = Idx::isa(a->type());
     auto ls     = Lit::isa(s);
-    auto width  = ls ? std::optional<nat_t>(idx_shift_width(*ls)) : std::optional<nat_t>();
+    auto width  = ls.transform(idx_shift_width);
 
     if (auto result = fold<shr, id>(world, type, a, b)) return result;
 
-    if (auto la = Lit::isa(a); la && *la == 0) {
-        switch (id) {
-            case shr::a: return a;
-            case shr::l: return a;
-        }
-    }
+    if (auto la = Lit::isa(a); la && *la == 0) return a;
 
     if (auto lb = Lit::isa(b)) {
         if (width && *lb >= *width) return world.bot(type);
 
-        if (*lb == 0) {
-            switch (id) {
-                case shr::a: return a;
-                case shr::l: return a;
-            }
-        }
+        if (*lb == 0) return a;
     }
 
     return world.raw_app(type, callee, {a, b});
@@ -825,22 +798,24 @@ const Def* normalize_wrap(const Def* type, const Def* c, const Def* arg) {
     if (auto lb = Lit::isa(b)) {
         if (*lb == 0) {
             switch (id) {
+                case wrap::add: return a;    // a  + 0 -> a
                 case wrap::sub: return a;    // a  - 0 -> a
-                case wrap::shl: return a;    // a >> 0 -> a
-                default: fe::unreachable();
-                // add, mul are commutative, the literal has been normalized to the left
+                case wrap::mul: return b;    // a  * 0 -> 0
+                case wrap::shl: return a;    // a << 0 -> a
             }
         }
 
         if (auto lm = Lit::isa(mode); lm && ls && *lm == 0 && id == wrap::sub)
-            return world.call(wrap::add, mode, Defs{a, world.lit_idx_mod(*ls, ~*lb + 1_u64)}); // a - lb -> a + (~lb + 1)
+            return world.call(wrap::add, mode, Defs{a, world.lit_idx(*ls, idx_sub(*ls, 0, *lb))}); // a - lb -> a + (0 - lb)
         else if (id == wrap::shl && width && *lb >= *width)
             return world.bot(type);
     }
 
     if (a == b) {
         switch (id) {
-            case wrap::add: return world.call(wrap::mul, mode, Defs{world.lit(type, 2), a}); // a + a -> 2 * a
+            case wrap::add:
+                if (ls && (*ls == 0 || *ls > 2)) return world.call(wrap::mul, mode, Defs{world.lit(type, 2), a}); // a + a -> 2 * a
+                break;
             case wrap::sub: return world.lit(type, 0);                                       // a - a -> 0
             case wrap::mul: break;
             case wrap::shl: break;
@@ -882,8 +857,11 @@ const Def* normalize_div(const Def* full_type, const Def*, const Def* arg) {
 
     if (a == b) {
         switch (id) {
-            case div::sdiv: return make_res(world.lit(type, 1)); // a / a -> 1
-            case div::udiv: return make_res(world.lit(type, 1)); // a / a -> 1
+            case div::sdiv:
+            case div::udiv:
+                if (auto ls = Lit::isa(Idx::isa(type)); ls && *ls != 1)
+                    return make_res(world.lit(type, 1)); // a / a -> 1
+                break;
             case div::srem: return make_res(world.lit(type, 0)); // a % a -> 0
             case div::urem: return make_res(world.lit(type, 0)); // a % a -> 0
         }
@@ -923,9 +901,42 @@ const Def* normalize_conv(const Def* dst_t, const Def*, const Def* x) {
         if (auto c1 = Axm::isa(id, x)) {
             auto x1 = c1->arg();
             if (auto ls1 = Lit::isa(x1->type()->as<App>()->arg()))
-                if (*ls > *ls1 || *ls == 0)     // the intermediate conv is widening
-                    if (*ld == *ls1) return x1; // conv(conv(x)) -> x
+                if (*ls == 0 || (*ls1 != 0 && *ls > *ls1)) // the intermediate conv is widening
+                    if (*ld == *ls1) return x1;            // conv(conv(x)) -> x
         }
+
+    return {};
+}
+
+const Def* normalize_rem(const Def* type, const Def* callee, const Def* x) {
+    auto& world = type->world();
+    auto d      = Lit::isa(callee->as<App>()->arg());
+    if (!d || *d == 0) return {};
+
+    if (x->isa<Bot>()) return world.bot(type);
+    if (auto l = Lit::isa(x)) return world.lit(type, *l % *d);
+    if (auto s = Idx::isa_lit(type); s && *s != 0 && *s <= *d) return x;
+    return {};
+}
+
+const Def* normalize_mulrem(const Def* type, const Def* callee, const Def* arg) {
+    auto& world = type->world();
+    auto d      = Lit::isa(callee->as<App>()->arg());
+    if (!d || *d == 0) return {};
+
+    auto [a, b] = arg->projs<2>();
+    if (a->isa<Bot>() || b->isa<Bot>()) return world.bot(type);
+    if (Lit::isa(a) == 0 || Lit::isa(b) == 0 || *d == 1) return world.lit(type, 0);
+    if (auto la = Lit::isa(a), lb = Lit::isa(b); la && lb) return world.lit(type, idx_mul(*d, *la % *d, *lb % *d));
+    return {};
+}
+
+const Def* normalize_idx2nat(const Def* type, const Def*, const Def* x) {
+    auto& world = type->world();
+
+    if (x->isa<Bot>()) return world.bot(type);
+    if (auto l = Lit::isa(x)) return world.lit_nat(*l);
+    if (Idx::isa_lit(x->type()) == 1) return world.lit_nat_0();
 
     return {};
 }
@@ -940,25 +951,31 @@ const Def* normalize_bitcast(const Def* dst_t, const Def*, const Def* src) {
     if (auto other = Axm::isa<bitcast>(src))
         return other->arg()->type() == dst_t ? other->arg() : world.call<bitcast>(dst_t, other->arg());
 
+    if (auto i2n = Axm::isa<idx2nat>(src); i2n && Idx::isa(dst_t))
+        return i2n->arg()->type() == dst_t ? i2n->arg() : world.call<bitcast>(dst_t, i2n->arg());
+
     if (auto l = Lit::isa(src)) {
         if (dst_t->isa<Nat>()) return world.lit(dst_t, *l);
-        if (Idx::isa(dst_t)) return world.lit(dst_t, *l);
+        if (auto size = Idx::isa(dst_t)) {
+            if (auto s = Lit::isa(size)) return world.lit_idx_mod(*s, *l);
+            return world.lit(dst_t, *l);
+        }
     }
 
     return {};
 }
 
 // TODO this currently hard-codes x86_64 ABI
-// TODO in contrast to C, we might want to give singleton types like 'Idx 1' or '[]' a size of 0 and simply nuke each
+// TODO in contrast to C, we might want to give singleton types like 'Idx 1' a size of 0 and simply nuke each
 // and every occurance of these types in a later phase
 // TODO Pi and others
 template<trait id>
 const Def* normalize_trait(const Def*, const Def*, const Def* type) {
     auto& world = type->world();
-    if (auto ptr = Axm::isa<mem::Ptr>(type)) {
-        return world.lit_nat(8);
-    } else if (type->isa<Pi>()) {
-        return world.lit_nat(8); // Gets lowered to function ptr
+    if (Axm::isa<M>(type)) {
+        return world.lit_nat(id == trait::size ? 0 : 1); // the ll backend drops it
+    } else if (Axm::isa<Ptr>(type) || type->isa<Nat>() || type->isa<Pi>()) {
+        return world.lit_nat(8); // a Pi gets lowered to a function pointer
     } else if (auto size = Idx::isa(type)) {
         if (auto w = Idx::size2bitwidth(size)) return world.lit_nat(std::max(1_n, std::bit_ceil(*w) / 8_n));
     } else if (auto w = math::isa_f(type)) {
@@ -966,27 +983,26 @@ const Def* normalize_trait(const Def*, const Def*, const Def* type) {
             case 16: return world.lit_nat(2);
             case 32: return world.lit_nat(4);
             case 64: return world.lit_nat(8);
-            default: fe::unreachable();
+            default: return {};
         }
-    } else if (type->isa<Sigma>()) {
-        u64 offset = 0;
-        u64 align  = 1;
-        for (auto t : type->ops()) {
+    } else if (auto u = Axm::isa<Union>(type); u || type->isa<Sigma>()) {
+        auto n = u ? Lit::isa(u->arg()->arity()) : std::optional<nat_t>(type->num_ops());
+        if (!n) return {};
+        auto projs = u ? u->arg()->projs(*n) : DefVec();
+
+        u64 size  = 0;
+        u64 align = 1;
+        for (auto t : u ? Defs(projs) : type->ops()) {
             auto a = Lit::isa(core::op(trait::align, t));
             auto s = Lit::isa(core::op(trait::size, t));
             if (!a || !s) return {};
 
-            align  = std::max(align, *a);
-            offset = fe::pad(offset, *a) + *s;
+            align = std::max(align, *a);
+            // A Sigma places its members one after another, a Union all at the same offset.
+            size = u ? std::max(size, *s) : fe::pad(size, *a) + *s;
         }
 
-        offset   = fe::pad(offset, align);
-        u64 size = std::max(1_u64, offset);
-
-        switch (id) {
-            case trait::align: return world.lit_nat(align);
-            case trait::size: return world.lit_nat(size);
-        }
+        return world.lit_nat(id == trait::align ? align : fe::pad(size, align));
     } else if (auto arr = type->isa_imm<Arr>()) {
         // One axis at a time, so a fused Arr multiplies in every extent: `«a, b; T»` is `a * size «b; T»`.
         auto elem = arr->elem();
@@ -994,7 +1010,7 @@ const Def* normalize_trait(const Def*, const Def*, const Def* type) {
         auto align = op(trait::align, elem);
         if constexpr (id == trait::align) return align;
         auto b = op(trait::size, elem);
-        if (b->isa<Lit>()) return world.call(nat::mul, Defs{arr->arity(), b});
+        if (!Axm::isa(trait::size, b)) return world.call(nat::mul, Defs{arr->arity(), b});
     }
 
     return {};

@@ -21,7 +21,8 @@ bool AddMem::analyze() {
 
         // `mem.fresh`'s return continuation is *not* pinned: it receives the current memory (see
         // rewrite_imm_App below), so its body must be mem-threaded like any other continuation.
-        if (auto app = def->isa<App>(); app && app->axm() && !Axm::isa<mem::fresh>(app))
+        if (auto app = def->isa<App>();
+            app && app->axm() && !Axm::isa<mem::fresh>(app) && !Axm::isa<mem::slot>(app) && !Axm::isa<mem::mslot>(app))
             for (auto arg : app->arg()->projs())
                 if (auto lam = arg->isa_mut<Lam>()) pinned.push(lam);
 
@@ -101,12 +102,12 @@ const Def* AddMem::rewrite(const Def* old_def) {
     // mem, inside one it must not - but the rewrite memo is shared. Whichever mode first touches a
     // shared type (e.g. a plain 'Cn F32' return pi) would poison the other, hash-order-dependently.
     // While preserving, rebuild immutable types fresh, neither reading nor storing the memo.
-    if (preserving_ && !is_bootstrapping()) {
+    if (preserving_) {
         if (auto pi = old_def->isa_imm<Pi>()) return rewrite_imm_Pi(pi);
         if (auto sigma = old_def->isa_imm<Sigma>()) return rewrite_imm_Sigma(sigma);
         if (auto arr = old_def->isa_imm<Arr>()) return rewrite_imm_Seq(arr);
     }
-    if (curr_mem_ && !preserving_ && !is_bootstrapping()) {
+    if (curr_mem_ && !preserving_) {
         // A tuple with a direct memory operand is context-dependent: the operand splices to the memory
         // current *at this use*. Two ops with hash-consed identical argument tuples (e.g. two `(⊥, val)`
         // buffer fills) must splice *different* memories - so never store or reuse such a tuple via the
@@ -120,14 +121,13 @@ const Def* AddMem::rewrite(const Def* old_def) {
     auto new_def = Rewriter::rewrite(old_def);
     // Rewrite every memory operand to the current memory - after threading the operand's producers, which
     // advances curr_mem_ along the way. Placeholders (`⊥`/`⊤ : mem.M 0`) are thereby spliced into the chain.
-    if (curr_mem_ && !preserving_ && !is_bootstrapping() && !old_def->isa_mut() && old_def->type() && isa_mem(old_def))
-        return curr_mem_;
+    if (curr_mem_ && !preserving_ && !old_def->isa_mut() && old_def->type() && isa_mem(old_def)) return curr_mem_;
     return new_def;
 }
 
 const Def* AddMem::rewrite_imm_Pi(const Pi* pi) {
     auto new_pi = Rewriter::rewrite_imm_Pi(pi)->as<Pi>();
-    if (is_bootstrapping() || preserving_) return new_pi;
+    if (preserving_) return new_pi;
 
     // Only continuations are mem-extended; a pi that already threads memory is left alone.
     if (Pi::isa_cn(pi) && !has_leading_mem(pi)) {
@@ -153,17 +153,13 @@ const Def* AddMem::rewrite_imm_Pi(const Pi* pi) {
             return w.cn(new_sigma);
         }
 
-        auto new_dom = DefVec();
-        new_dom.emplace_back(mem);
-        for (size_t i = 0, e = new_pi->num_doms(); i != e; ++i)
-            new_dom.emplace_back(new_pi->dom(e, i));
-        return w.cn(new_dom);
+        return w.cn(Def::cat(mem, new_pi->doms()));
     }
     return new_pi;
 }
 
 const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
-    if (is_bootstrapping()) return Rewriter::rewrite_mut_Lam(old_lam);
+    if (preserving_) return Rewriter::rewrite_mut_Lam(old_lam);
 
     // Pinned ABI (an axm-app argument and everything below it): rewrite verbatim - no memory threaded or added.
     if (preserved_.contains(old_lam)) {
@@ -176,18 +172,18 @@ const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
     auto p = fe::Restore(preserving_, false);
 
     auto new_lam = new_world().mut_lam(rewrite(old_lam->type())->as<Pi>())->set(old_lam->dbg_key());
-    map_for(old_lam, old_lam, new_lam);
+    map(old_lam, new_lam);
 
     // Map the parameters, accounting for a possibly inserted leading mem var.
     if (auto n = old_lam->num_vars(); n != 0) {
         auto offset = new_lam->num_doms() - old_lam->num_doms(); // 1 iff we prepended a mem var
         auto new_n  = new_lam->num_vars();
         for (size_t i = 0; i != n; ++i)
-            map_for(old_lam, old_lam->var(n, i), new_lam->var(new_n, i + offset)->set(old_lam->var(n, i)->dbg_key()));
+            map(old_lam->var(n, i), new_lam->var(new_n, i + offset)->set(old_lam->var(n, i)->dbg_key()));
         // A use of the whole parameter tuple is reconstructed from the new (shifted) components.
         if (n > 1)
-            map_for(old_lam, old_lam->var(),
-                    new_world().tuple(DefVec(n, [&](size_t i) { return new_lam->var(new_n, i + offset); })));
+            map(old_lam->var(),
+                new_world().tuple(DefVec(n, [&](size_t i) { return new_lam->var(new_n, i + offset); })));
     }
 
     if (!old_lam->is_set()) return new_lam;
@@ -198,24 +194,8 @@ const Def* AddMem::rewrite_mut_Lam(Lam* old_lam) {
     return new_lam;
 }
 
-const Def* AddMem::rewrite_stub(Def* old_mut, Def* new_mut) {
-    map_for(old_mut, old_mut, new_mut);
-    if (!old_mut->is_set()) return new_mut;
-
-    auto _ = enter(old_mut);
-    for (size_t i = 0, e = old_mut->num_ops(); i != e; ++i)
-        new_mut->set(i, rewrite(old_mut->op(i)));
-
-    return seal_stub(old_mut, new_mut);
-}
-
-const Def* AddMem::map_for(Def* old_mut, const Def* old_def, const Def* new_def) {
-    if (!spliced_.empty() && !old_mut->has_free_vars_in(spliced_)) return map_root(old_def, new_def);
-    return map(old_def, new_def);
-}
-
 const Def* AddMem::rewrite_imm_App(const App* app) {
-    if (is_bootstrapping() || preserving_ || !curr_mem_) return Rewriter::rewrite_imm_App(app);
+    if (preserving_ || !curr_mem_) return Rewriter::rewrite_imm_App(app);
 
     auto& w = new_world();
 
@@ -229,7 +209,7 @@ const Def* AddMem::rewrite_imm_App(const App* app) {
             lam && lam->is_set() && lam->filter() == old_world().lit_tt() && !recursive_.contains(lam)) {
             auto var = lam->has_var();
             push();
-            auto _ = fe::Restore(spliced_, var ? old_world().vars().insert(spliced_, var) : spliced_);
+            bind_old(var);
             if (var) map(var, curr_mem_);
             auto res = rewrite(lam->body());
             pop();
@@ -249,12 +229,7 @@ const Def* AddMem::rewrite_imm_App(const App* app) {
     auto new_pi = new_callee->type()->isa<Pi>();
     if (old_pi && new_pi && new_pi->num_doms() == old_pi->num_doms() + 1) {
         // The callee gained a leading mem parameter: splice the current memory in front of the arguments.
-        auto n    = old_pi->num_doms();
-        auto args = DefVec(n + 1);
-        args[0]   = mem;
-        for (size_t i = 0; i != n; ++i)
-            args[i + 1] = new_arg->proj(n, i);
-        new_arg = w.tuple(args);
+        new_arg = w.tuple(Def::cat(mem, new_arg->projs(old_pi->num_doms())));
     }
 
     auto new_app = w.app(new_callee, new_arg);
@@ -263,7 +238,7 @@ const Def* AddMem::rewrite_imm_App(const App* app) {
 }
 
 const Def* AddMem::rewrite_imm_Tuple(const Tuple* tuple) {
-    if (is_bootstrapping() || preserving_ || !curr_mem_) return Rewriter::rewrite_imm_Tuple(tuple);
+    if (preserving_ || !curr_mem_) return Rewriter::rewrite_imm_Tuple(tuple);
 
     // The current memory must be threaded through the operands in the right order, because a memory operand
     // (which resolves to the *current* memory) is positioned freely relative to the operands that establish
@@ -274,7 +249,7 @@ const Def* AddMem::rewrite_imm_Tuple(const Tuple* tuple) {
     //   3. continuation values last - their bodies run later, so a shared memory operation they capture must
     //      already have been anchored (threaded) in this scope by the memory operands above.
     auto rank = [](const Def* op) {
-        if (!op->type()) return 0; // Univ has no type and is neither memory nor a continuation
+        if (!op->type()) return 0; // Level has no type and is neither memory nor a continuation
         return isa_mem(op) ? 1 : (Pi::isa_cn(op->type()) ? 2 : 0);
     };
 

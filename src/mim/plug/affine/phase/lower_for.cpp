@@ -22,8 +22,6 @@ const Def* merge(bool term, const Def* elem, const Def* prod, const Def* mem) {
 } // namespace
 
 const Def* LowerFor::rewrite_imm_App(const App* app) {
-    if (is_bootstrapping()) return RWPhase::rewrite_imm_App(app);
-
     if (auto for_ax = Axm::isa<affine::For>(app)) {
         log().d("lower for: {}", for_ax);
         auto [old_body, old_exit, args]               = for_ax->uncurry_args<3>();
@@ -33,6 +31,9 @@ const Def* LowerFor::rewrite_imm_App(const App* app) {
         if (auto ll_vec = Axm::isa<ll::vec>(old_body)) {
             old_body = ll_vec->arg();
             if (old_world().driver().is_loaded("ll")) vec_axm = ll_vec->axm();
+        } else if (auto ll_novec = Axm::isa<ll::novec>(old_body)) {
+            old_body = ll_novec->arg();
+            if (old_world().driver().is_loaded("ll")) vec_axm = ll_novec->axm();
         }
 
         auto old_body_lam = old_body->isa_mut<Lam>();
@@ -71,14 +72,14 @@ const Def* LowerFor::rewrite_imm_App(const App* app) {
             return new_world().tuple(elems);
         };
 
-        push();
+        push(Vars(old_body_lam->has_var()));
         map(old_body_lam->var(), {new_iter, acc_for(new_body), new_yield});
         auto new_body_filter = rewrite(old_body_lam->filter());
         auto new_body_value  = rewrite(old_body_lam->body());
         new_body->set({new_body_filter, new_body_value});
         pop();
 
-        push();
+        push(Vars(old_exit_lam->has_var()));
         map(old_exit_lam->var(), acc_for(new_exit));
         auto new_exit_filter = rewrite(old_exit_lam->filter());
         auto new_exit_value  = rewrite(old_exit_lam->body());

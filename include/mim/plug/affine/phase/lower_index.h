@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstdint>
+
+#include <optional>
+
 #include <mim/phase.h>
 
 namespace mim::plug::affine::phase {
@@ -18,19 +22,55 @@ namespace mim::plug::affine::phase {
 /// `core.conv.u`, apply the (now core-arithmetic) function `f`, and
 /// narrow each result back to its target `Idx (sout#j)` via `core.conv.u`.
 ///
-/// The division-based semiops (`ceildiv`, `floordiv`, `mod`) lower to `core.div`, which threads a `mem.M`. The mem is
+/// The division-based semiops (`ceildiv`, `floordiv`, `rem`) lower to `core.div`, which threads a `mem.M`. The mem is
 /// taken from the enclosing `affine.map`'s mem operand (tracked in #mem_), advanced through the div chain, and
 /// returned alongside the result.
 class LowerIndex : public RWPhase {
 public:
-    LowerIndex(World& world, flags_t annex)
-        : RWPhase(world, annex) {}
+    using RWPhase::RWPhase;
 
     const Def* rewrite(const Def*) final;
     const Def* rewrite_imm_App(const App*) final;
 
 private:
-    const Def* mem_ = nullptr; ///< The current mem while lowering the body of a `affine.map`
+    /// Inclusive range of the values a lowered `Idx 0` expression can take, proven not to wrap.
+    struct Range {
+        int64_t lo, hi;
+    };
+
+    /// The body sees every index as a bare `Idx 0`, so this is the only place the domain is still known.
+    struct Domain {
+        const Def* idxs = nullptr;
+        fe::Vector<std::optional<int64_t>> extents;
+    };
+
+    /// The addends of an expression that are multiples of `c`, and whether the rest can carry into a division by it.
+    struct Split {
+        DefVec even, rest;
+        bool carries;
+    };
+
+    /// `x = q·k + r` with `0 ≤ r < k` for a proper divisor `k` of the divisor at hand.
+    struct Peel {
+        const Def *q, *r;
+        int64_t k;
+    };
+
+    std::optional<Range> range_of(const Def*) const;
+    Split split(const Def*, int64_t);
+    std::optional<Peel> peel(const Def*, int64_t);
+    const Def* fold_udiv(const Def*, int64_t);
+    const Def* fold_urem(const Def*, int64_t);
+    const Def* udiv(const Def*, const Def*);
+    const Def* urem(const Def*, const Def*);
+
+    const Def* mem_ = nullptr;
+    Domain dom_;
+
+    /// Rewritten access-map lams, keyed by `f` and then `sin`: shared annex lams like `tensor.proj_map` are reached
+    /// from `affine.map`s over different domains, and a fold only holds for the extents that justified it.
+    DefMap<DefMap<Lam*>> specialized_;
+    DefMap<Lam*> etas_;
 };
 
 } // namespace mim::plug::affine::phase

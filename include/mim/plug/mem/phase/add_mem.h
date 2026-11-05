@@ -31,8 +31,7 @@ namespace mim::plug::mem::phase {
 ///   (e.g. the combiner slot of `btensor.map_reduce_post`), so mem-extending them would be ill-typed.
 class AddMem : public RWPhase {
 public:
-    AddMem(World& world, flags_t annex)
-        : RWPhase(world, annex) {}
+    using RWPhase::RWPhase;
 
 private:
     bool analyze() final;
@@ -41,10 +40,6 @@ private:
     const Def* rewrite_imm_App(const App*) override;
     const Def* rewrite_imm_Tuple(const Tuple*) override;
     const Def* rewrite_imm_Pi(const Pi*) override;
-    const Def* rewrite_stub(Def*, Def*) override;
-
-    /// Maps @p old_def of @p old_mut; a mutable reading no spliced var maps at the root, outliving the splice scope.
-    const Def* map_for(Def* old_mut, const Def* old_def, const Def* new_def);
 
     /// Advances AddMem::curr_mem_ if @p def produces a memory (a bare `mem.M` or a `[mem.M, …]` tuple).
     void advance_mem(const Def* def);
@@ -57,8 +52,6 @@ private:
     LamSet preserved_;
     /// Mutables that reach themselves; such a fresh-memory continuation is a loop and stays a call.
     LamSet recursive_;
-    /// Vars of the fresh-memory continuations spliced in around the current point.
-    Vars spliced_;
 };
 
 } // namespace mim::plug::mem::phase

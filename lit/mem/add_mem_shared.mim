@@ -17,11 +17,11 @@ extern con g (m: mem.M 0) = mem.fresh (0, k);
 extern con h (m: mem.M 0) = mem.fresh (0, j);
 extern con i (m: mem.M 0) = mem.fresh (0, j);
 
-// CHECK:      extern con f ([[MF:_[0-9]+]]: mem.M 0)
+// CHECK:      extern con f ([[MF:_[0-9]+]]: {{(mem|core)}}.M 0)
 // CHECK-NEXT: exit [[MF]]
-// CHECK:      extern con g ([[MG:_[0-9]+]]: mem.M 0)
+// CHECK:      extern con g ([[MG:_[0-9]+]]: {{(mem|core)}}.M 0)
 // CHECK-NEXT: exit [[MG]]
-// CHECK:      extern con h ([[MH:_[0-9]+]]: mem.M 0)
+// CHECK:      extern con h ([[MH:_[0-9]+]]: {{(mem|core)}}.M 0)
 // CHECK-NEXT: j [[MH]]
-// CHECK:      extern con i ([[MI:_[0-9]+]]: mem.M 0)
+// CHECK:      extern con i ([[MI:_[0-9]+]]: {{(mem|core)}}.M 0)
 // CHECK-NEXT: j [[MI]]

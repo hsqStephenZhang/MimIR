@@ -4,8 +4,8 @@ Constructs one instance of every core node reachable from a bare `World` and
 invokes a method or two, so a broken or missing binding surfaces immediately.
 
 Deliberately not exercised: nodes that need rewrite/lattice/plugin state beyond
-a smoke test (`Axm`, `Proxy`, `Match`, `Reform`, `Rule`, `UMax`,
-`UInc`), and the abstract bases reached only via their subclasses (`Def`, `Prod`, `Seq`,
+a smoke test (`Axm`, `Proxy`, `Match`, `Reform`, `Rule`, `LMax`,
+`LSucc`), and the abstract bases reached only via their subclasses (`Def`, `Prod`, `Seq`,
 `Ext`).
 """
 
@@ -20,9 +20,11 @@ def _every_node(w) -> list[tuple[mim.Def, type]]:
     lam = w.mut_con([b, i8])
     var = lam.var()
     join = w.join([b, i8])
+    nom = w.nom(1, i8)
+    nom_var = w.mut_con(nom).var() # an opaque value, so `struc` does not cancel a `name`
     return [
-        (w.univ(), mim.Univ),
-        (w.type(w.lit_univ_0()), mim.Type),
+        (w.type_level(), mim.Level),
+        (w.type(w.lit_level_0()), mim.Type),
         (w.type_nat(), mim.Nat),
         (i8v, mim.Lit),
         (b, mim.App),
@@ -35,7 +37,6 @@ def _every_node(w) -> list[tuple[mim.Def, type]]:
         (w.pack(n4, i8v), mim.Pack),
         (w.extract(var, 0), mim.Extract),
         (w.insert(var, 1, i8v), mim.Insert),
-        (getattr(w, "global")(i8, False), mim.Global),
         (join, mim.Join),
         (w.bot(i8), mim.Bot),
         (w.top(i8), mim.Top),
@@ -44,6 +45,9 @@ def _every_node(w) -> list[tuple[mim.Def, type]]:
         (w.wrap(i8v), mim.Wrap),
         (w.inj(join, tt), mim.Inj),
         (w.variant([b, i8]), mim.Variant),
+        (nom, mim.Nom),
+        (w.name(nom, i8v), mim.Name),
+        (w.struc(nom_var), mim.Struc),
     ]
 
 

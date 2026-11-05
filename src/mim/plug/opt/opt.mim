@@ -8,12 +8,13 @@
 ///
 /// ## Dependencies
 ///
-/// `opt` only depends on `compile`.
-/// Every other plugin is referenced *by name* through `compile.named` (which resolves to the plugin's
-/// annex iff it is loaded) and `compile.cond` (which gates a whole sub-pipeline on a plugin being loaded).
+/// `opt` depends on `compile` and on `mem`, whose SEO is the general-purpose optimizer, so it references their phases directly.
+/// Every other plugin is referenced *by name* through `compile.named` (which resolves to the plugin's annex iff it is loaded) and `compile.cond` (which gates a whole sub-pipeline on a plugin being loaded).
 /// This way the default pipeline does not have to import any of the optional plugins.
 ///
 plugin compile;
+plugin core;
+plugin mem;
 ///
 /// ## The default pipeline
 ///
@@ -26,7 +27,8 @@ extern lam _default_compile (): compile.Phase =
                 compile.beta_red,
                 compile.eta_conv,
             ),
-            compile.named "mem.seo",
+            mem.heap2stack,
+            mem.seo,
             compile.adce,
             compile.static_arg_opt,
         );
@@ -35,21 +37,18 @@ extern lam _default_compile (): compile.Phase =
         optimize,
         // regex
         compile.named "regex.lower_regex",
-        compile.unload "regex",
 
         // tensor
         compile.named "tensor.reassoc",
         compile.named "tensor.lower_tensor",
         compile.named "tensor.fuse_tensor",
         compile.named "tensor.lower_to_mem",
-        compile.unload "tensor",
-        // Only run add_mem if the tensor plugin is loaded: tensor bufferization emits mem.M placeholders that must be stitched into a global mem chain.
-        compile.cond "tensor" (compile.named "mem.add_mem"),
+        // tensor bufferization emits mem.M placeholders that need a mem chain.
+        compile.cond "tensor" mem.add_mem,
 
         // btensor
         compile.named "gpu.lower_btensor_map_reduce",
         compile.named "btensor.lower_map_reduce",
-        compile.unload "btensor",
 
         // gpu
         compile.named "gpu.mem_checks",
@@ -57,25 +56,21 @@ extern lam _default_compile (): compile.Phase =
         // autodiff
         compile.named "autodiff.eval",
         compile.named "autodiff.zero_repl",
-        compile.unload "autodiff",
 
         // buffer
         compile.named "buffer.lower_ptr",
-        compile.unload "buffer",
 
         // affine + cps
         compile.named "affine.lower_index",
         compile.named "cps.conv",
-        compile.unload "cps",
         compile.named "affine.lower_for",
-        compile.unload "affine",
 
         // clos conv
         let clos_opt_phases =
             compile.phases ff (
                 compile.scalarize,
                 compile.named "clos.branch_clos",
-                compile.named "mem.seo",
+                mem.seo,
             );
         compile.cond "clos" (
             compile.phases ff (
@@ -93,17 +88,20 @@ extern lam _default_compile (): compile.Phase =
         compile.lam_spec, // replace with lam-lifting
 
         // type legalization
+        compile.nom_erasure,
+        compile.join2variant,
         compile.single_erasure,
+        core.lower_variant,
+        core.legalize_idx,
 
-        //  prepare codegen
+        // prepare codegen
         optimize,
-        compile.branch_normalize,
+        compile.dispatch_normalize,
         compile.ret_wrap,
-        compile.named "nvptx.stream_impl_repl",
-        compile.named "mem.alloc2malloc_repl",
+        mem.free_locals,
+        mem.alloc2malloc_repl,
         compile.named "refly.remove_dbg_repl",
-        compile.unload "refly",
         compile.named "gpu.check_addr_spaces_repl",
         compile.named "ll.emit",
-        compile.named "ll_nvptx.emit",
+        compile.named "nvptx.emit",
     );

@@ -7,9 +7,10 @@
 plugin tensor;
 plugin core;
 
-con add_step (x: «3; I32», state: «3; I32», return: Cn [«3; I32», «3; I32»]) =
+con add_step (x: tensor.Tensor 1 3 I32, state: tensor.Tensor 1 3 I32,
+              return: Cn [tensor.Tensor 1 3 I32, tensor.Tensor 1 3 I32]) =
     let next = tensor.binary @(I32, I32, I32) (core.wrap.add 0) @(1, 3) (x, state);
     return (next, next);
 
-extern fun prefix_sum (input: «5, 3; I32»): «5, 3; I32» =
-    return ((tensor.scan @(I32, «3; I32», 5, 1, 1) (3, 3) add_step (tensor.buf input, ‹3; 0I32›))#ff);
+extern fun prefix_sum (input: tensor.Tensor 2 (5, 3) I32): tensor.Tensor 2 (5, 3) I32 =
+    return ((tensor.scan @(I32, tensor.Tensor 1 3 I32, 5, 1, 1) (3, 3) add_step (input, tensor.splat @(I32, 1) (3, 0I32)))#ff);

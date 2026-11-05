@@ -8,15 +8,16 @@
 
 #include <mim/phase/adce.h>
 #include <mim/phase/beta_red.h>
-#include <mim/phase/branch_normalize.h>
+#include <mim/phase/dispatch_normalize.h>
 #include <mim/phase/eta_conv.h>
+#include <mim/phase/join2variant.h>
 #include <mim/phase/lam_spec.h>
+#include <mim/phase/nom_erasure.h>
 #include <mim/phase/ret_wrap.h>
 #include <mim/phase/scalarize.h>
 #include <mim/phase/sccp.h>
 #include <mim/phase/single_erasure.h>
 #include <mim/phase/static_arg_opt.h>
-#include <mim/phase/unload.h>
 
 #include "mim/plug/compile/autogen.h"
 
@@ -33,7 +34,7 @@ public:
     Named(World& w, flags_t a)
         : Phase(w, a) {}
 
-    void start() final { fe::unreachable(); } // a Named always redirects and never runs itself
+    void start() final { std::unreachable(); } // a Named always redirects and never runs itself
 
     void apply(const App* app) final {
         if (!app) return;
@@ -57,20 +58,21 @@ private:
 static void reg_phases(Flags2Phases& phases) {
     // clang-format off
     fe::assert_emplace(phases, Annex::base<compile::null>(), [](World&) { return std::unique_ptr<Phase>{}; });
-    Phase::hook<compile::adce,             ADCE           >(phases);
-    Phase::hook<compile::beta_red,         BetaRed        >(phases);
-    Phase::hook<compile::branch_normalize, BranchNormalize>(phases);
-    Phase::hook<compile::cleanup,          Cleanup        >(phases);
-    Phase::hook<compile::eta_conv,         EtaConv        >(phases);
-    Phase::hook<compile::lam_spec,         LamSpec        >(phases);
-    Phase::hook<compile::named,            Named          >(phases);
-    Phase::hook<compile::phases,           PhaseMan       >(phases);
-    Phase::hook<compile::unload,           Unload         >(phases);
-    Phase::hook<compile::ret_wrap,         RetWrap        >(phases);
-    Phase::hook<compile::scalarize,        Scalarize      >(phases);
-    Phase::hook<compile::sccp,             SCCP           >(phases);
-    Phase::hook<compile::single_erasure,   SingleErasure  >(phases);
-    Phase::hook<compile::static_arg_opt,   StaticArgOpt   >(phases);
+    Phase::hook<compile::adce,               ADCE             >(phases);
+    Phase::hook<compile::beta_red,           BetaRed          >(phases);
+    Phase::hook<compile::cleanup,            Cleanup          >(phases);
+    Phase::hook<compile::dispatch_normalize, DispatchNormalize>(phases);
+    Phase::hook<compile::eta_conv,           EtaConv          >(phases);
+    Phase::hook<compile::join2variant,       Join2Variant     >(phases);
+    Phase::hook<compile::lam_spec,           LamSpec          >(phases);
+    Phase::hook<compile::named,              Named            >(phases);
+    Phase::hook<compile::nom_erasure,        NomErasure       >(phases);
+    Phase::hook<compile::phases,             PhaseMan         >(phases);
+    Phase::hook<compile::ret_wrap,           RetWrap          >(phases);
+    Phase::hook<compile::scalarize,          Scalarize        >(phases);
+    Phase::hook<compile::sccp,               SCCP             >(phases);
+    Phase::hook<compile::single_erasure,     SingleErasure    >(phases);
+    Phase::hook<compile::static_arg_opt,     StaticArgOpt     >(phases);
     // clang-format on
 }
 

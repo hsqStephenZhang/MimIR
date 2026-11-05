@@ -1,0 +1,15 @@
+// RUN: (! %mim -p opt %s 2>&1) | %FileCheck %s
+
+// A `pub` alias exports a private `nom` as an abstract type; `inj` stays private.
+mod units
+    nom Meter = I32;
+    pub let Meter = Meter;
+
+    pub lam of_i32 (x: I32): Meter = x inj Meter;
+end
+
+extern lam ok (i: I32): units.Meter = units.of_i32 i;
+extern lam bad (i: I32): units.Meter = i inj units.Meter;
+
+// CHECK: {{.*}}nom_intro.mim:12:40-12:56: error: the representation of private nominal type `Meter` is only accessible within module `units`
+// CHECK: {{.*}}nom_intro.mim:5:5-5:19: note: declared here

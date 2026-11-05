@@ -11,11 +11,10 @@ namespace mim::plug::clos::phase {
 /// depending on whether their environment escapes.
 class LowerTypedClosPrep : public RWPhase {
 public:
-    LowerTypedClosPrep(World& world, flags_t annex)
-        : RWPhase(world, annex) {}
+    using RWPhase::RWPhase;
 
 private:
-    /// One escape-propagation round over the old world; RWBase::start() iterates until fixpoint.
+    /// One escape-propagation round over the old world; RWPhase::start() iterates until fixpoint.
     bool analyze() final;
     const Def* rewrite_imm_Tuple(const Tuple*) final;
 

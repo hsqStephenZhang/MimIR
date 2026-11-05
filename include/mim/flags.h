@@ -19,9 +19,9 @@ struct Flags {
 
     uint64_t scalarize_threshold = 32;
     uint32_t max_fp_iters        = 1024; // max number of fixed-point iterations before a Phase errors out
+    uint32_t pe_fuel             = 1024; // max nesting depth of partial evaluations before World::app errors out
 
     bool ascii               = false;
-    bool mim_local           = false;
     bool mim_typed_let       = false;
     bool bootstrap           = false;
     bool force_load          = false;

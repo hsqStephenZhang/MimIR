@@ -29,7 +29,7 @@ TEST_CASE("World: one-tuples fold away") {
     type->set(Defs{w.type_nat(), w.type_nat()});
     CHECK(w.sigma({type}) == type);
 
-    auto v = w.tuple(type, {w.lit_idx(42), w.lit_idx(1337)});
+    auto v = w.tuple(type, {w.lit_nat(42), w.lit_nat(1337)});
     CHECK(w.tuple({v}) == v);
 }
 
@@ -76,6 +76,16 @@ TEST_CASE("World: dependent projection with a mutable op") {
     World& w = driver.world();
     auto a   = w.axm(dep_sigma(w))->set("a");
     CHECK(w.extract(a, 3, 2) == w.extract(a, 3, 2));
+}
+
+TEST_CASE("World: β-reduce a Lam that is its own body") {
+    Driver driver;
+    World& w = driver.world();
+    auto rec = w.mut_pi(w.type())->set_dom(w.type_nat());
+    rec->set_codom(rec);
+    auto lam = w.mut_lam(rec);
+    lam->set(true, lam);
+    CHECK(w.app(lam, w.lit_nat(0)) == lam);
 }
 
 TEST_CASE("Annex") {
@@ -202,7 +212,7 @@ TEST_CASE("Type: level") {
     CHECK(Lit::as(pi->type()->isa<Type>()->level()) == 8);
 }
 
-TEST_CASE("Checker: alpha") {
+TEST_CASE("Check: alpha") {
     Driver driver;
     World& w = driver.world();
     auto pi  = w.pi(w.type_nat(), w.type_nat());
@@ -230,10 +240,10 @@ TEST_CASE("Checker: alpha") {
         auto l_1 = w.lam(pi, false, w.lit_nat_1());
 
         auto check = [](const Def* l1, const Def* l2, bool infer_res, bool non_infer_res) {
-            CHECK(Checker::alpha<Checker::Check>(l1, l2) == infer_res);
-            CHECK(Checker::alpha<Checker::Check>(l2, l1) == infer_res);
-            CHECK(Checker::alpha<Checker::Test>(l1, l2) == non_infer_res);
-            CHECK(Checker::alpha<Checker::Test>(l2, l1) == non_infer_res);
+            CHECK(Check::alpha(l1, l2) == infer_res);
+            CHECK(Check::alpha(l2, l1) == infer_res);
+            CHECK(Check::test_alpha(l1, l2) == non_infer_res);
+            CHECK(Check::test_alpha(l2, l1) == non_infer_res);
         };
 
         check(lxx, lxx, true, true);
@@ -291,9 +301,52 @@ TEST_CASE("Checker: alpha") {
         l1->set(false, h);
         auto l2 = w.mut_lam(dep)->set(false, h);
 
-        CHECK(Checker::alpha<Checker::Check>(l1, l2));
-        CHECK(Checker::alpha<Checker::Test>(l1, l2));
+        CHECK(Check::alpha(l1, l2));
+        CHECK(Check::test_alpha(l1, l2));
     }
+}
+
+TEST_CASE("Lam: eta_reduce fast-forwards to the end of the η-chain") {
+    Driver driver;
+    World& w = driver.world();
+    auto pi  = w.pi(w.type_nat(), w.type_nat());
+
+    // x → y → z, where z is no η-redex
+    auto x = w.mut_lam(pi);
+    auto y = w.mut_lam(pi);
+    auto z = w.mut_lam(pi);
+    x->set(false, w.app(y, x->var()));
+    y->set(false, w.app(z, y->var()));
+    z->set(false, z->var());
+    CHECK(Lam::eta_reduce(x) == z);
+    CHECK(Lam::eta_reduce(y) == z);
+    CHECK(Lam::eta_reduce(z) == nullptr);
+
+    // a → b → c → b
+    auto a = w.mut_lam(pi);
+    auto b = w.mut_lam(pi);
+    auto c = w.mut_lam(pi);
+    a->set(false, w.app(b, a->var()));
+    b->set(false, w.app(c, b->var()));
+    c->set(false, w.app(b, c->var()));
+    CHECK(Lam::eta_reduce(a) == b);
+    CHECK(Lam::eta_reduce(b) == nullptr);
+    CHECK(Lam::eta_reduce(c) == nullptr);
+
+    auto s = w.mut_lam(pi);
+    s->set(false, w.app(s, s->var()));
+    CHECK(Lam::eta_reduce(s) == nullptr);
+
+    // l[0] → l[1] → l[2] → l[3] → l[4] → l[5] → l[2]: an even cycle the hare must not skip over
+    auto l = std::array<Lam*, 6>{};
+    for (auto& lam : l)
+        lam = w.mut_lam(pi);
+    for (size_t i = 0; i != l.size(); ++i)
+        l[i]->set(false, w.app(l[i + 1 == l.size() ? 2 : i + 1], l[i]->var()));
+    CHECK(Lam::eta_reduce(l[0]) == l[2]);
+    CHECK(Lam::eta_reduce(l[1]) == l[2]);
+    for (size_t i = 2; i != l.size(); ++i)
+        CHECK(Lam::eta_reduce(l[i]) == nullptr);
 }
 
 TEST_CASE("free vars") {

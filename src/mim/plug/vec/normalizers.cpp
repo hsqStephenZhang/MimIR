@@ -9,47 +9,40 @@
 
 namespace mim::plug::vec {
 
-/// How many elements @p vec holds, if that is statically known and small enough to unfold.
-/// A Pack only unfolds for a @p type of `Nat`: anything wider is tensor data that has to stay a loop.
-static std::optional<nat_t> isa_num_elems(const Def* vec, const Def* type) {
-    if (auto tuple = vec->isa<Tuple>()) return tuple->num_ops();
+namespace {
 
-    if (auto seq = vec->isa<Seq>()) {
-        if (!seq->shape().is_fused())
-            if (auto n = Lit::isa<u64>(seq->arity()); n && type->isa<Nat>()) return n;
-        return {};
-    }
-
-    if (vec->isa<Lit>()) return 1; // `«1; E»` is `E`
-
-    // A value that is neither a Tuple nor a Pack - a bufferized tensor, say - still unfolds into extracts,
-    // but only while it is small enough to scalarize.
-    auto n = std::optional<nat_t>();
-    if (auto arr = vec->type()->isa<Arr>())
-        n = arr->shape().is_fused() ? std::nullopt : Lit::isa<u64>(arr->arity());
-    else if (auto sigma = vec->type()->isa<Sigma>())
-        n = sigma->num_ops();
-
-    return n && *n <= vec->world().flags().scalarize_threshold ? n : std::nullopt;
+/// The elements of the `n`-vector @p vec, if they are known.
+std::optional<DefVec> elems(const Def* n, const Def* vec) {
+    auto l = Lit::isa(n);
+    if (l == 0) return DefVec();
+    if (l == 1) return DefVec{vec}; // `«1; E»` ≡ `E`, even if `E` is itself an aggregate
+    if (auto tuple = vec->isa<Tuple>()) return DefVec(tuple->ops().begin(), tuple->ops().end());
+    if (auto seq = vec->isa<Seq>(); seq && !seq->shape().is_fused())
+        if (auto a = Lit::isa(seq->arity())) return seq->projs(*a);
+    // A value that is neither - a bufferized tensor, say - still unfolds into extracts while it is small enough to
+    // scalarize.
+    if (l && *l <= vec->world().flags().scalarize_threshold) return vec->projs(*l);
+    return {};
 }
 
+} // namespace
+
 template<fold id>
-const Def* normalize_fold(const Def* type, const Def* c, const Def* arg) {
+const Def* normalize_fold(const Def*, const Def* c, const Def* arg) {
     auto& w         = c->world();
-    auto f          = c->as<App>()->arg();
+    auto [_, n, f]  = App::uncurry_args<3>(c);
     auto [acc, vec] = arg->projs<2>();
     if constexpr (id == fold::r) std::swap(acc, vec);
 
-    auto n = isa_num_elems(vec, type);
-    if (!n) return nullptr;
+    auto es = elems(n, vec);
+    if (!es) return nullptr;
 
     if constexpr (id == fold::l)
-        for (nat_t i = 0; i != *n; ++i)
-            acc = w.app(f, {acc, vec->proj(*n, i)});
+        for (auto e : *es)
+            acc = w.app(f, {acc, e});
     else // fold::r
-        for (nat_t i = *n; i-- != 0;)
-            acc = w.app(f, {vec->proj(*n, i), acc});
-
+        for (auto e : *es | std::views::reverse)
+            acc = w.app(f, {e, acc});
     return acc;
 }
 
@@ -77,26 +70,41 @@ const Def* normalize_zip(const Def* type, const Def* c, const Def* arg) {
 
 template<scan id>
 const Def* normalize_scan(const Def*, const Def* c, const Def* vec) {
-    auto& w     = c->world();
-    auto callee = c->as<App>();
-    auto p      = callee->arg();
+    auto& w        = c->world();
+    auto [_, n, p] = App::uncurry_args<3>(c);
+    if (Lit::isa(n) == 1) return w.app(p, vec);
 
-    if (auto tuple = vec->isa<Tuple>()) {
-        const Def* acc = w.lit_bool(id != scan::exists);
-        for (auto op : tuple->ops())
-            acc = w.call(id == scan::exists ? core::bit2::or_ : core::bit2::and_, 0_n, Defs{acc, w.app(p, op)});
-        return acc;
+    // All elements of `‹s; x›` are `x`, so besides `p x` only whether `s` is empty matters.
+    if (auto pack = vec->isa_imm<Pack>()) {
+        auto shape = pack->shape();
+        auto r     = shape.rank();
+        if (!r) return nullptr;
+
+        auto res = w.app(p, pack->body());
+        for (nat_t i = 0; i != *r; ++i) {
+            // World::seq folds literal-`0` extents away.
+            if (Lit::isa(shape[i])) continue;
+            auto cmp = w.call(id == scan::exists ? core::ncmp::ne : core::ncmp::e, Defs{shape[i], w.lit_nat_0()});
+            res      = w.call(id == scan::exists ? core::bit2::and_ : core::bit2::or_, 0_n, Defs{cmp, res});
+        }
+        return res;
     }
 
-    if (auto pack = vec->isa_imm<Pack>()) w.log().w("Pack not yet implemented: {}", pack);
+    auto es = elems(n, vec);
+    if (!es) return nullptr;
 
-    return nullptr;
+    const Def* acc = w.lit_bool(id != scan::exists);
+    for (auto e : *es)
+        acc = w.call(id == scan::exists ? core::bit2::or_ : core::bit2::and_, 0_n, Defs{acc, w.app(p, e)});
+    return acc;
 }
 
-const Def* normalize_is_unique(const Def*, const Def*, const Def* vec) {
+const Def* normalize_is_unique(const Def*, const Def* callee, const Def* vec) {
     auto& w = vec->world();
+    auto n  = Lit::isa(callee->as<App>()->arg());
+    if (n && *n <= 1) return w.lit_tt();
 
-    if (auto tuple = vec->isa<Tuple>()) {
+    if (auto tuple = vec->isa<Tuple>(); tuple && n) {
         auto seen = DefSet();
         for (auto op : tuple->ops()) {
             auto [_, ins] = seen.emplace(op);
@@ -106,10 +114,8 @@ const Def* normalize_is_unique(const Def*, const Def*, const Def* vec) {
     }
 
     if (auto pack = vec->isa_imm<Pack>()) {
-        if (auto l = Lit::isa(pack->arity())) return w.lit_ff();
+        if (Lit::isa(pack->arity())) return w.lit_ff();
     }
-
-    if (vec->isa<Lit>()) return w.lit_tt();
 
     return nullptr;
 }

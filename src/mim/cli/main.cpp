@@ -1,5 +1,6 @@
 #include <cstdlib>
 
+#include <sstream>
 #include <string>
 
 #include <fe/cli.h>
@@ -9,6 +10,7 @@
 #include <mim/config.h>
 #include <mim/driver.h>
 #include <mim/flags.h>
+#include <mim/manifest.h>
 #include <mim/phase.h>
 #include <mim/plugin.h>
 
@@ -86,41 +88,46 @@ int compile(Driver& driver, Opts& opts) {
 
         auto ast    = ast::AST(world);
         auto parser = ast::Parser(ast);
-        auto file   = parser.import_main(opts.input, opts.plugins, outs[Md].os());
+        // Outputs are buffered until binding succeeded, so an error leaves no partial file behind.
+        auto md   = std::ostringstream();
+        auto file = parser.import_main(opts.input, opts.plugins, outs[Md].name().empty() ? nullptr : &md);
 
         if (!file) {
             ast.error().ack(); // prefer the parser's own diagnostic, if it recorded one
             fe::throwf("could not read file `{}`", opts.input);
         }
 
-        if (auto s = outs[AST].os()) {
+        auto ast_out = std::ostringstream();
+        if (!outs[AST].name().empty()) {
             auto tab = fe::Tab::spaces();
-            file->stream(tab, *s);
-
-            // Md is emitted while parsing, so nothing else needs a World; binding still catches scoping errors.
-            auto only_parse = opts.plugin_args.empty()
-                           && std::ranges::none_of(std::views::iota(0, int(Num_Emits)),
-                                                   [&](int i) { return i != AST && i != Md && outs[i].os(); });
-            if (only_parse) {
-                file->bind(ast);
-                ast.error().ack();
-                return EXIT_SUCCESS;
-            }
+            file->stream(tab, ast_out);
         }
 
-        if (auto h = outs[H].os(), py = outs[PY].os(); h || py) {
-            file->bind(ast);
-            ast.error().ack();
+        file->bind(ast);
+        ast.error().ack();
+        if (auto s = outs[Md].os()) *s << md.str();
+
+        if (auto s = outs[AST].os()) {
+            *s << ast_out.str();
+            // Md is emitted while parsing, so nothing else needs a World.
+            auto only_parse
+                = opts.plugin_args.empty() && std::ranges::none_of(std::views::iota(0, int(Num_Emits)), [&](int i) {
+                      return i != AST && i != Md && !outs[i].name().empty();
+                  });
+            if (only_parse) return EXIT_SUCCESS;
+        }
+
+        if (!outs[H].name().empty() || !outs[PY].name().empty()) {
             auto plugin = world.sym(name);
-            if (h) ast.bootstrap(plugin, *h);
-            if (py) ast.bootstrap_py(plugin, *py);
+            if (auto h = outs[H].os()) ast.bootstrap(plugin, *h);
+            if (auto py = outs[PY].os()) ast.bootstrap_py(plugin, *py);
             return EXIT_SUCCESS;
         }
 
         file->compile(ast);
         std::exception_ptr opt_error;
         if (opts.no_opt)
-            Cleanup(world).run(); // resolves the Hole%s elaboration solved, as optimize would first
+            driver.move_to_library(world);
         else
             try {
                 optimize(world);
@@ -152,7 +159,8 @@ int main(int argc, char** argv) {
         bool show_help_md      = false;
         bool show_version      = false;
         bool list_search_paths = false;
-        int verbose            = 0;
+        std::string config_path;
+        int verbose = 0;
         Opts opts;
         auto& flags      = driver.flags();
         auto& diag       = driver.diag();
@@ -189,11 +197,12 @@ int main(int argc, char** argv) {
             .opt(show_help_md              , ""          , ""  , "--help-md"             , "Displays this help as Markdown and exits.")
             .opt(show_version              , ""          , "-v", "--version"             , "Displays version info and exits.")
             .opt(list_search_paths         , ""          , "-l", "--list-search-paths"   , "Lists the search paths in order and exits.")
-            .opt(opts.plugins              , "plugin"    , "-p", "--plugin"              , "Dynamically loads a plugin; `foo/bar` finds `libmim_bar` in each search path's `foo`.")
-            .opt(opts.search_paths         , "path"      , "-P", "--plugin-path"         , "Path to search for plugins; also searched for imports.")
-            .opt(opts.import_paths         , "path"      , "-I", "--import-path"         , "Path to search for imports.")
-            .opt(opts.prefix_paths         , "path"      , "-R", "--prefix-path"         , "Install prefix/root to derive plugin, import, and runtime directories from.")
-            .opt(opts.plugin_args          , "plugin:arg", "-X", "--plugin-arg"          , "Passes an argument to a plugin/phase, e.g. `-X ll:o=output.ll`. Repeatable.")
+            .opt(opts.plugins              , "plugin"    , "-p", "--"s + Plugin_Key      , "Dynamically loads a plugin; `foo/bar` finds `libmim_bar` in each search path's `foo`.")
+            .opt(opts.search_paths         , "path"      , "-P", "--"s + Plugin_Path_Key , "Path to search for plugins; also searched for imports.")
+            .opt(opts.import_paths         , "path"      , "-I", "--"s + Import_Path_Key , "Path to search for imports.")
+            .opt(opts.prefix_paths         , "path"      , "-R", "--"s + Prefix_Path_Key , "Install prefix/root to derive plugin, import, and runtime directories from.")
+            .opt(opts.plugin_args          , "plugin:arg", "-X", "--"s + Plugin_Arg_Key  , "Passes an argument to a plugin/phase, e.g. `-X ll:o=output.ll`. Repeatable.")
+            .opt(config_path               , "path"      , ""  , "--config"              , "Reads project configuration from `<path>`.")
             .opt(flags.force_load          , ""          , ""  , "--force-load"          , "Loads plugins even on version mismatch.")
             .opt(flags.bootstrap           , ""          , ""  , "--bootstrap"           , "Bootstrap mode: only read Mim AST, don't compile to MimIR.")
             .opt(inc_verbose               , ""          , "-V", "--verbose"             , "Raises the log level from error to warn, info, verbose, debug, trace; repeatable.").cardinality(0, 5)
@@ -207,7 +216,6 @@ int main(int argc, char** argv) {
             .opt(opts.outs[NestDot].name() , "file"      , ""  , "--output-nest"         , "Emits the program's nesting tree using Graphviz' DOT language.")
             .opt(opts.outs[PY].name()      , "file"      , ""  , "--output-py"           , "Emits a Python enum to be used to interface with a plugin in Python.")
             .grp("DOT Output")
-            .opt(opts.dot.all_annexes      , ""          , ""  , "--dot-all-annexes"     , "Emits all annexes in DOT output - even unused ones.")
             .opt(opts.dot.dark             , ""          , ""  , "--dot-dark"            , "Drops the white background of the DOT output and lightens its edges, so that it embeds into a dark backdrop.")
             .opt(opts.dot.default_filter   , ""          , ""  , "--dot-default-filter"  , "Always shows a lambda's filter in DOT output - even if it is the default one (`ff` for continuations, `tt` for direct-style functions).")
             .opt(opts.dot.follow_types     , ""          , ""  , "--dot-follow-types"    , "Follows type dependencies in DOT output.")
@@ -216,7 +224,6 @@ int main(int argc, char** argv) {
             .opt(opts.dot.no_tooltip       , ""          , ""  , "--dot-no-tooltip"      , "Omits the per-node tooltip from DOT output; it accounts for roughly two fifths of the file.")
             .opt(opts.dot.show_hidden      , ""          , ""  , "--dot-show-hidden"     , "Renders otherwise-transparent detached edges in DOT output - back-edges from a Var to its binder, shared literals/axioms, and type edges - in a subtle gray.")
             .grp("Mim Output")
-            .opt(flags.mim_local           , ""          , ""  , "--mim-local"           , "Dumps each mutable as its own flat block without scheduling; the result does not read back but works for broken programs.")
             .opt(flags.mim_typed_let       , ""          , ""  , "--mim-typed-let"       , "Ascribes the type of each `let`-bound name; it is inferable from the right-hand side and hence elided by default.")
             .grp("Diagnostics")
             .opt(diag.gutter               , "width"     , ""  , "--gutter"              , "Width of a diagnostic's line-number column.")
@@ -231,8 +238,9 @@ int main(int argc, char** argv) {
             .grp("Optimization")
             .opt(flags.aggressive_lam_spec , ""          , ""  , "--aggr-lam-spec"       , "Overrides LamSpec behavior to follow recursive calls.")
             .opt(flags.max_fp_iters        , "num"       , ""  , "--max-fp-iters"        , "Maximum number of fixed-point iterations before a phase errors out; guards against non-monotone analyses.")
+            .opt(flags.pe_fuel             , "num"       , ""  , "--pe-fuel"             , "Maximum nesting depth of partial evaluations before erroring out; guards against non-terminating specialization.")
             .opt(opts.no_opt               , ""          , ""  , "--no-opt"              , "Elaborates the input but skips the optimization pipeline, so no backend runs; `--output-*` still works.")
-            .opt(flags.scalarize_threshold , "threshold" , ""  , "--scalarize-threshold" , "MimIR will not scalarize tuples/packs/sigmas/arrays with a number of elements greater than or equal this threshold.")
+            .opt(flags.scalarize_threshold , "threshold" , ""  , "--scalarize-threshold" , "MimIR will not scalarize packs/arrays with a number of elements greater than or equal this threshold.")
 #ifdef MIM_ENABLE_CHECKS
             .grp("Developer Options")
             .opt(breakpoints               , "gid"       , "-b", "--break"               , "Triggers a breakpoint when a node with this global id is created.")
@@ -244,9 +252,9 @@ int main(int argc, char** argv) {
             .opt(watchpoints               , "gid"       , "-w", "--watch"               , "Triggers a breakpoint when a node with this global id is set.")
 #endif
             .section("Environment Variables", "Variable", {
-                {"MIM_PLUGIN_PATH", std::format("{}-separated list of plugin search paths, searched after those given via `-P`.", fe::sys::Path_Sep_Word)},
-                {"MIM_IMPORT_PATH", std::format("{}-separated list of import search paths, searched after those given via `-I`.", fe::sys::Path_Sep_Word)},
-                {"MIM_PREFIX_PATH", std::format("{}-separated list of install prefixes, searched after those given via `--prefix-path`.", fe::sys::Path_Sep_Word)},
+                {Plugin_Path_Env, std::format("{}-separated list of plugin search paths; adds to the `plugin-path`s of the `--config` file; `-P` paths are searched first.", fe::sys::Path_Sep_Word)},
+                {Import_Path_Env, std::format("{}-separated list of import search paths; adds to the `import-path`s of the `--config` file; `-I` paths are searched first.", fe::sys::Path_Sep_Word)},
+                {Prefix_Path_Env, std::format("{}-separated list of install prefixes; adds to the `prefix-path`s of the `--config` file; `-R` paths are searched first.", fe::sys::Path_Sep_Word)},
                 {"NO_COLOR"       , "Disables colored output if set to a non-empty value; wins over the two below."},
                 {"CLICOLOR_FORCE" , "Forces colored output if set to a non-empty value other than 0."},
                 {"CLICOLOR"       , "Disables colored output if set to 0."},
@@ -254,7 +262,34 @@ int main(int argc, char** argv) {
             .epilog(R"(Every output option accepts "-" to write to stdout.)");
         // clang-format on
 
-        if (auto err = cli.parse(argc, argv)) throw std::invalid_argument(*err);
+        if (auto err = cli.parse(argc, argv)) fe::throwf<std::invalid_argument>("{}", *err);
+
+        // A broken manifest must not block version output.
+        if (show_version) {
+            std::cout << "mim " << driver.version() << std::endl;
+            return EXIT_SUCCESS;
+        }
+
+        // Config sources add up, highest priority first: CLI, env, then `--config`; the file supplies the defaults.
+        opts.search_paths.append_range(paths_from_env(Plugin_Path_Env));
+        opts.import_paths.append_range(paths_from_env(Import_Path_Env));
+        opts.prefix_paths.append_range(paths_from_env(Prefix_Path_Env));
+
+        if (!config_path.empty()) {
+            try {
+                auto manifest = load_manifest(fs::path(config_path));
+                opts.plugins.append_range(manifest.plugins);
+                opts.search_paths.append_range(manifest.plugin_paths);
+                opts.import_paths.append_range(manifest.import_paths);
+                opts.prefix_paths.append_range(manifest.prefix_paths);
+                // The last occurrence wins, so the manifest goes first to act as the default.
+                opts.plugin_args.insert(opts.plugin_args.begin(), manifest.plugin_args.begin(),
+                                        manifest.plugin_args.end());
+            } catch (const std::invalid_argument&) {
+                // `--help` must work even if the project configuration is broken.
+                if (!show_help && !show_help_md) throw;
+            }
+        }
 
         // Resolved here and not in the handlers, so that the order of the two profiling options does not matter.
         auto& profile_file = opts.outs[Profile].name();
@@ -275,23 +310,18 @@ int main(int argc, char** argv) {
             return EXIT_SUCCESS;
         }
 
-        if (show_version) {
-            std::cout << "mim " << driver.version() << std::endl;
-            return EXIT_SUCCESS;
-        }
-
         for (auto&& pa : opts.plugin_args) {
             auto pos = pa.find(':');
             if (pos == std::string::npos)
-                throw std::invalid_argument("error: --plugin-arg expects <plugin>:<arg>, got '" + pa + "'");
+                fe::throwf<std::invalid_argument>("`--plugin-arg` expects `<plugin>:<arg>`, got `{}`", pa);
             driver.add_arg(std::string_view(pa).substr(0, pos), pa.substr(pos + 1));
         }
 
         if (list_search_paths) {
             auto list = [](std::string_view kind, const fe::Vector<fs::path>& paths) {
                 std::cout << kind << ':' << std::endl;
-                for (auto&& path : paths | std::views::drop(1)) // skip first empty path
-                    std::cout << "    " << path << std::endl;
+                for (auto&& path : paths)
+                    if (!path.empty()) std::cout << "    " << path << std::endl;
             };
             list("plugins", driver.plugin_paths());
             list("imports", driver.import_paths());
@@ -309,13 +339,15 @@ int main(int argc, char** argv) {
             driver.world().watchpoint(w);
 #endif
 
-        if (opts.input.empty()) throw std::invalid_argument("error: no input given");
+        if (opts.input.empty()) fe::throwf<std::invalid_argument>("no input given");
 
         return compile(driver, opts);
     } catch (const std::exception& e) {
+        driver.error().report();
         std::println(std::cerr, "{}", e.what());
         return EXIT_FAILURE;
     } catch (...) {
+        driver.error().report();
         std::println(std::cerr, "error: unknown exception");
         return EXIT_FAILURE;
     }

@@ -37,8 +37,7 @@ using Leaves = fe::Vector<Leaf>;
 /// comparison of their costs; a longer chain is only reassociated where one bracketing provably wins.
 class Reassoc : public RWPhase {
 public:
-    Reassoc(World& world, flags_t annex)
-        : RWPhase(world, annex) {}
+    using RWPhase::RWPhase;
 
 private:
     static constexpr u64 Default_max_dispatch = 4;
@@ -84,7 +83,7 @@ private:
     /// for a transposed operand, `dot_schedule_kvec` over its contraction.
     /// A literal extent is charged rounded up to a whole number of these, so a bracketing whose
     /// intermediates are too narrow to fill a vector pays for the lanes it leaves idle.
-    /// Set with `-X tensor:reassoc-vec=<n>`; `1` counts plain scalar multiplications again.
+    /// Taken from `tensor.vec_width`, i.e. `-X tensor:vec-width=<n>`.
     u64 vec_ = Default_vec;
 };
 

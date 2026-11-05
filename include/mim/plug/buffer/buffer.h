@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mim/axm.h>
 #include <mim/world.h>
 
 #include "mim/plug/buffer/autogen.h"
@@ -64,6 +65,30 @@ inline const Def* op_update_leading_slice(const Def* T,
                                           const Def* value) {
     auto& w = output->world();
     return w.app(w.app(w.annex<update_leading_slice>(), {T, n, ri, si, r, s}), {mem, output, index, value});
+}
+
+/// op_read with `(r, s, T)` read off the type of @p buf.
+inline const Def* op_read(const Def* mem, const Def* buf, const Def* idx) {
+    auto [r, s, T] = Axm::isa<Buf>(buf->type())->args<3>();
+    return op_read(r, s, T, mem, buf, idx);
+}
+
+/// op_write with `(r, s, T)` read off the type of @p buf.
+inline const Def* op_write(const Def* mem, const Def* buf, const Def* idx, const Def* val) {
+    auto [r, s, T] = Axm::isa<Buf>(buf->type())->args<3>();
+    return op_write(r, s, T, mem, buf, idx, val);
+}
+
+/// op_copy with `(r, s, T)` read off the type of @p dst.
+inline const Def* op_copy(const Def* mem, const Def* dst, const Def* src) {
+    auto [r, s, T] = Axm::isa<Buf>(dst->type())->args<3>();
+    return op_copy(r, s, T, mem, dst, src);
+}
+
+/// `buffer.free (r, s, T) (mem, buf)` ↦ `mem.M 0`.
+inline const Def* op_free(const Def* r, const Def* s, const Def* T, const Def* mem, const Def* buf) {
+    auto& w = mem->world();
+    return w.app(w.app(w.annex<free>(), {r, s, T}), {mem, buf});
 }
 
 /// `buffer.init (r, s, T) (mem, val)` ↦ `[mem.M 0, buffer.Buf (r, s, T)]` (initialised with the array value `val`).

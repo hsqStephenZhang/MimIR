@@ -26,6 +26,8 @@ add_custom_command(
     COMMENT "Generating the tutorial page from lit/docs/tutorial.mim"
 )
 
+set(MIM_DOC_EXAMPLES sq count dep iter)
+
 # The tour graphs are small and fit on the page, so we render them to *static* SVGs
 # (embedded via @image html) for tight margins.
 set(DOC_GRAPH_FLAGS --dot-inline-consts --dot-show-hidden)
@@ -93,6 +95,7 @@ set(DOXY_ASSETS
     "${CMAKE_CURRENT_SOURCE_DIR}/code.js"
     "${CMAKE_CURRENT_SOURCE_DIR}/ebnf.js"
     "${CMAKE_CURRENT_SOURCE_DIR}/llvm.js"
+    "${CMAKE_CURRENT_SOURCE_DIR}/share-link.js"
     "${CMAKE_CURRENT_SOURCE_DIR}/mim.js"
 )
 set(DOXY_FILTER     "${CMAKE_CURRENT_SOURCE_DIR}/fences.py")

@@ -5,7 +5,7 @@
 [![Discord](https://img.shields.io/discord/960975142459179068?style=social&logo=discord&logoColor=black)](https://discord.gg/FPp7hdj3fQ)
 
 [![Release](https://img.shields.io/github/v/release/mimir/mimir?style=flat-square&logo=starship&color=blue&label=Release)](https://github.com/mimir/mimir/releases)
-[![Docs](https://img.shields.io/badge/Docs-master/v0.3/v0.2/v0.1-blue?style=flat-square&logo=gitbook&logoColor=white)](https://mimir.github.io)
+[![Docs](https://img.shields.io/badge/Docs-master/v0.4/v0.3/v0.2/v0.1-blue?style=flat-square&logo=gitbook&logoColor=white)](https://mimir.github.io)
 [![License](https://img.shields.io/github/license/mimir/mimir?style=flat-square&color=blue&logo=opensourceinitiative&logoColor=white&label=License)](https://github.com/mimir/mimir/blob/master/LICENSE.TXT)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue?style=flat-square&logo=cplusplus)](https://en.wikipedia.org/wiki/C%2B%2B#Standardization)
 [![Python](https://img.shields.io/badge/Python-3.10-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
@@ -61,7 +61,7 @@ Watch what happens to `sq`.
 When `f` applies `sq nat.mul`, that application is [β-reduced](https://en.wikipedia.org/wiki/Lambda_calculus) **on the fly, during graph construction** — not in any later pass.
 This is permitted because `sq` carries the default `tt` [`filter`](@ref mim::Lam::filter) that every direct-style function gets, which greenlights inlining.
 What remains is the bare `x * x`, with **no trace** of `sq` or its abstraction over `T` and `` `* ``.
-The original `sq` lambda is now simply unreachable from the world's [roots](@ref mim::World::roots) (`sq` is not `extern`), so traversing the graph never reaches it; a [`Cleanup`](@ref mim::Cleanup) phase later drops it for good:
+The original `sq` lambda is now simply unreachable from the world's [roots](@ref mim::World::externals) (`sq` is not `extern`), so traversing the graph never reaches it; a [`Cleanup`](@ref mim::Cleanup) phase later drops it for good:
 
 @image html sq.svg "The MimIR graph of `f` — the abstraction has evaporated (type edges elided)"
 @image html sq-dark.svg "The MimIR graph of `f` — the abstraction has evaporated (type edges elided)"

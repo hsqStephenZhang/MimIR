@@ -4,13 +4,68 @@
 
 #include <fe/worklist.h>
 
+#include <mim/driver.h>
 #include <mim/lam.h>
+#include <mim/nom.h>
+#include <mim/plugin.h>
+#include <mim/single.h>
 #include <mim/tuple.h>
 #include <mim/world.h>
 
 #include "mim/plug/tensor/autogen.h"
 
 namespace mim::plug::tensor {
+
+inline const Nom* type_tensor(const Def* r, const Def* s, const Def* T) {
+    auto& w = r->world();
+    return w.app(w.app(w.app(w.annex<Tensor>(), r), s), T)->as<Nom>();
+}
+
+inline flags_t tensor_key(World& w) {
+    auto ctor = w.annex<Tensor>();
+    while (auto lam = ctor->isa_mut<Lam>())
+        ctor = lam->body();
+    return ctor->as<Nom>()->key();
+}
+
+struct TensorType {
+    const Def *r, *s, *T;
+
+    static std::optional<TensorType> isa(const Def* type) {
+        if (auto nom = type->isa<Nom>())
+            if (nom->key() == tensor_key(type->world())) return decode(nom);
+        return {};
+    }
+
+    static TensorType decode(const Nom* nom) {
+        auto [r, s, tag] = nom->op()->proj(2, 0)->as<Single>()->op()->projs<3>();
+        return {r, s, tag->type()};
+    }
+};
+
+inline const Def* op_from_array(const Def* type, const Def* array) {
+    auto [r, s, T] = *TensorType::isa(type);
+    auto& w        = array->world();
+    return w.app(w.app(w.annex<from_array>(), {r, s, T}), array);
+}
+
+inline const Def* op_get(const Def* tensor, const Def* index) {
+    auto [r, s, T] = *TensorType::isa(tensor->type());
+    auto& w        = tensor->world();
+    return w.app(w.app(w.annex<get>(), {r, s, T}), {tensor, index});
+}
+
+inline const Def* op_set(const Def* tensor, const Def* index, const Def* value) {
+    auto [r, s, T] = *TensorType::isa(tensor->type());
+    auto& w        = tensor->world();
+    return w.app(w.app(w.annex<set>(), {r, s, T}), {tensor, index, value});
+}
+
+/// Is @p map the identity access map `λ x. x`?
+inline bool is_identity_map(const Def* map) {
+    auto lam = map->isa_mut<Lam>();
+    return lam && lam->is_set() && lam->body() == lam->var();
+}
 
 /// Recognizes the (rebuilt) `tensor_copy` combiner `(acc, ys) ↦ ys#0`: the result is exactly the
 /// single input element, so a map_reduce built on it is a pure re-indexed read of that input.
@@ -50,8 +105,7 @@ inline std::optional<PureRead> is_pure_read(const Def* value) {
     if (Lit::isa(nis) != 1 || Lit::isa(nps) != 0 || meta->proj(5, 2) != meta->proj(5, 3)) return {};
     auto [So, Sr, sched] = shapes->projs<3>();
     if (Sr != So) return {};
-    auto id_lam = map_out->isa_mut<Lam>();
-    if (!id_lam || !id_lam->is_set() || id_lam->body() != id_lam->var()) return {};
+    if (!is_identity_map(map_out)) return {};
     auto [comb, init, post] = comb_init->projs<3>();
     if (!is_copy_comb(comb) || !is_identity_post(post)) return {};
 
@@ -110,7 +164,7 @@ DefMap<u64> count_consumers(const World& world, std::predicate<const Def*> auto 
     };
 
     auto wl = fe::BFSWorklist<DefSet>();
-    wl.push(world.roots());
+    wl.push(world.externals().muts());
 
     while (!wl.empty()) {
         auto def         = wl.pop();

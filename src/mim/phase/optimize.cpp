@@ -6,9 +6,7 @@
 namespace mim {
 
 void optimize(World& world) {
-    // The freshly compiled world may still contain solved-but-unresolved Hole%s, let's try to resolve them before
-    // running the optimization pipeline.
-    Cleanup(world).run();
+    world.driver().move_to_library(world);
 
     // clang-format off
     auto compilation_functions = {
@@ -40,17 +38,8 @@ void optimize(World& world) {
     } else {
         world.log().d("compile with {}: {}", compilation, compilation->type());
 
-        auto body   = compilation->as<Lam>()->body();
-        auto callee = App::uncurry_callee(body);
-
         world.log().d("build pipeline");
-        if (auto f = world.driver().phase(callee->flags())) {
-            auto stage = (*f)(world);
-            auto phase = stage.get()->as<Phase>();
-            if (auto app = body->isa<App>()) phase->apply(app);
-            phase->run();
-        } else
-            fe::throwf("no phase registered for stage `{}`; is its plugin loaded?", callee);
+        if (auto phase = Phase::create(world.driver().phases(), compilation->as<Lam>()->body())) phase->run();
     }
 }
 

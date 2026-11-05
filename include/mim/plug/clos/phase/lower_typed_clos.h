@@ -34,8 +34,7 @@ namespace mim::plug::clos::phase {
 /// A converted Lam's body is enqueued and rewritten later, seeded with that body's own initial mem token.
 class LowerTypedClos : public RWPhase {
 public:
-    LowerTypedClos(World& world, flags_t annex)
-        : RWPhase(world, annex) {}
+    using RWPhase::RWPhase;
 
 private:
     /// A pending body rewrite: the initial mem tokens (old @c lvm, new @c lcm) plus the old and new Lam.
@@ -46,7 +45,6 @@ private:
         Lam* new_lam;
     };
 
-    void rewrite_external(Def*) final;
     void finalize() final;
     const Def* rewrite(const Def* def) final;
     const Def* rewrite_imm(const Def* def) final;
@@ -67,8 +65,6 @@ private:
     const Def* env_type() { return new_world().call<mem::Ptr0>(new_world().sigma()); }
 
     /// Dummy return continuation.
-    /// @note Not cached: `mem::M` resolves through new_world()'s annex table, which is only populated once
-    /// bootstrapping is done - and by then everything is hash-consed anyway.
     const Def* dummy_ret() { return new_world().bot(new_world().cn(new_world().call<mem::M>(0))); }
 
     std::queue<Todo> worklist_;

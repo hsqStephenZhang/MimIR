@@ -5,7 +5,7 @@
 #include <fe/container.h>
 #include <fe/worklist.h>
 
-#include <mim/plug/mem/autogen.h>
+#include <mim/plug/mem/mem.h>
 
 using namespace std::literals;
 
@@ -15,9 +15,7 @@ namespace {
 
 bool is_memop_res(const Def* fd) {
     auto proj = fd->isa<Extract>();
-    if (!proj) return false;
-    auto types = proj->tuple()->type()->ops();
-    return std::ranges::any_of(types, [](auto d) { return Axm::isa<mem::M>(d); });
+    return proj && mem::has_mem_ty(proj->tuple()->type());
 }
 
 /// The free (non-closed, not-nested) Def%s directly reachable from @p nest's root.
@@ -60,7 +58,7 @@ void FreeDefAna::classify(Node* node, const Def* fd, bool& spawned_pred, NodeQue
             pnode->succs.emplace_back(node);
             spawned_pred |= inserted;
         }
-    } else if (fd->has_dep(Dep::Var) && !fd->isa<Tuple>()) {
+    } else if (fd->local_vars() && !fd->isa<Tuple>()) {
         // Note: a Var may still be closed if its type is a mut, so the isa_var_proj case above is not redundant.
         node->add_fvs(fd);
     } else if (is_memop_res(fd)) {
@@ -119,39 +117,36 @@ const DefSet& FreeDefAna::run(Lam* lam) {
  * Closure Conversion
  */
 
-void ClosConv::rewrite_external(Def* old_mut) {
-    push(); // each external gets its own substitution scope
-    auto new_def = rewrite_root(old_mut);
-    pop();
-    // Non-closure externals (e.g. data) carry their external-ness over directly;
-    // converted Lam%s are externalized through their wrapper inside make_stub instead.
-    if (auto new_mut = new_def->isa_mut(); new_mut && old_mut->is_external() && !new_mut->is_external())
-        new_mut->externalize();
-}
-
 void ClosConv::finalize() {
     // Rewrite the deferred closure bodies, each in isolation.
     while (!body_worklist_.empty()) {
         auto fn = body_worklist_.front();
         body_worklist_.pop();
-        push();
-        rewrite_body(closures_.at(fn));
+        auto& stub = closures_.at(fn);
+        auto& vs   = old_world().vars();
+        auto vars  = Vars();
+        for (auto fv : stub.fvs)
+            vars = vs.merge(vars, fv->free_vars());
+        push(vars);
+        bind_old(stub.old_fn->has_var());
+        rewrite_body(stub);
         pop();
     }
 }
 
 const Def* ClosConv::rewrite_imm_Pi(const Pi* pi) {
-    if (!is_bootstrapping() && Pi::isa_cn(pi)) return clos_type_of(pi);
+    if (is_telescope_cn(pi)) return rewrite_telescope_cn(pi);
+    if (Pi::isa_cn(pi)) return clos_type_of(pi);
     return RWPhase::rewrite_imm_Pi(pi);
 }
 
 const Def* ClosConv::rewrite_mut_Pi(Pi* pi) {
-    if (!is_bootstrapping() && Pi::isa_cn(pi)) return clos_type_of(pi);
+    if (Pi::isa_cn(pi) && !is_telescope_cn(pi)) return clos_type_of(pi);
     return RWPhase::rewrite_mut_Pi(pi);
 }
 
 const Def* ClosConv::rewrite_mut_Lam(Lam* old_lam) {
-    if (is_bootstrapping() || !Lam::isa_cn(old_lam)) return RWPhase::rewrite_mut_Lam(old_lam);
+    if (!Lam::isa_cn(old_lam) || is_telescope_cn(old_lam->type())) return RWPhase::rewrite_mut_Lam(old_lam);
 
     auto& w      = new_world();
     auto stub    = make_stub(old_lam);
@@ -165,8 +160,6 @@ const Def* ClosConv::rewrite_mut_Lam(Lam* old_lam) {
 }
 
 const Def* ClosConv::rewrite_imm_App(const App* app) {
-    if (is_bootstrapping()) return RWPhase::rewrite_imm_App(app);
-
     if (auto a = Axm::isa<anno>(app))
         if (auto handled = rewrite_anno(a)) return handled;
 
@@ -213,27 +206,31 @@ const Def* ClosConv::rewrite_imm_Extract(const Extract* ex) {
     // Map such a projection onto the corresponding var of the enclosing Lam's converted stub.
     // This is a known workaround; the principled fix is to capture escaping enclosing BBs/ret_vars in the
     // environment (tracked by issue #117).
-    if (!is_bootstrapping())
-        if (auto [var, lam] = isa_var_proj<Lam>(ex); var && lam && lam->ret_var() == var) {
-            auto new_fn  = make_stub(lam).fn;
-            auto new_idx = skip_env(env_param(new_fn->type()->as<Pi>()), Lit::as(var->index()));
-            return new_fn->var(new_fn->num_vars(), new_idx);
-        }
+    if (auto [var, lam] = isa_var_proj<Lam>(ex); var && lam && lam->ret_var() == var && !is_telescope_cn(lam->type())) {
+        auto new_fn  = make_stub(lam).fn;
+        auto new_idx = skip_env(env_param(new_fn->type()->as<Pi>()), Lit::as(var->index()));
+        return new_fn->var(new_fn->num_vars(), new_idx);
+    }
     return RWPhase::rewrite_imm_Extract(ex);
-}
-
-const Def* ClosConv::rewrite_mut_Global(Global* global) {
-    // Globals are rewritten once and shared, in isolation from any surrounding continuation scope.
-    if (auto i = glob_muts_.find(global); i != glob_muts_.end()) return i->second;
-    push();
-    auto new_global = RWPhase::rewrite_mut_Global(global);
-    pop();
-    return glob_muts_[global] = new_global;
 }
 
 const Pi* ClosConv::rewrite_ret_cn(const Pi* pi) {
     assert(Pi::isa_basicblock(pi));
     return new_world().cn(DefVec(pi->num_doms(), [&, nd = pi->num_doms()](auto i) { return rewrite(pi->dom(nd, i)); }));
+}
+
+const Pi* ClosConv::rewrite_telescope_cn(const Pi* pi) {
+    auto& w  = new_world();
+    auto sig = pi->dom()->as_mut<Sigma>();
+    if (auto new_sig = lookup(sig)) return w.cn(new_sig);
+
+    auto new_sig = w.mut_sigma(rewrite(sig->type()), sig->num_ops());
+    map(sig, new_sig);
+    auto _   = enter(sig);
+    auto ret = Pi::isa_returning(pi) ? sig->num_ops() - 1 : sig->num_ops();
+    for (size_t i = 0, e = sig->num_ops(); i != e; ++i)
+        new_sig->set(i, i == ret ? rewrite_ret_cn(sig->op(i)->as<Pi>()) : rewrite(sig->op(i)));
+    return w.cn(seal(sig, new_sig));
 }
 
 const Def* ClosConv::clos_type_of(const Pi* pi, const Def* env_type) {
@@ -276,7 +273,6 @@ ClosConv::Stub ClosConv::make_stub(const DefSet& fvs, Lam* old_lam) {
             new_ext_lam->app(false, new_fn, clos_insert_env(ep, env, new_ext_lam->var()));
             // new_fn's body is rewritten later via the body worklist.
         } else {
-            new_ext_lam->unset();
             new_fn->app(false, new_ext_lam, clos_remove_env(ep, new_fn->var()));
         }
     }

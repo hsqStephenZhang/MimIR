@@ -79,7 +79,7 @@ void File::stream(fe::Tab& tab, std::ostream& os) const { stream_decls(tab, os, 
 
 void ErrorPtrn::stream(fe::Tab&, std::ostream& os) const { os << "<error pattern>"; }
 void AliasPtrn::stream(fe::Tab& tab, std::ostream& os) const { std::print(os, "{} as {}", S(tab, ptrn()), dbg()); }
-void GrpPtrn::stream(fe::Tab&, std::ostream& os) const { os << dbg(); }
+void GrpPtrn::stream(fe::Tab& tab, std::ostream& os) const { std::print(os, "{}: {}", dbg(), S(tab, id()->type())); }
 
 void IdPtrn::stream(fe::Tab& tab, std::ostream& os) const {
     // clang-format off
@@ -90,12 +90,15 @@ void IdPtrn::stream(fe::Tab& tab, std::ostream& os) const {
     os << "<invalid identifier pattern>";
 }
 
+void IdDecl::stream(fe::Tab&, std::ostream& os) const { os << dbg(); }
+
 void TuplePtrn::stream(fe::Tab& tab, std::ostream& os) const {
     os << delim_l();
-    for (std::string_view sep{}; auto ptrn : ptrns()) {
-        std::print(os, "{}{}", sep, S(tab, ptrn.get()));
-        sep = ptrn->isa<GrpPtrn>() ? " " : ", ";
-    }
+    for (size_t i = 0, n = num_ptrns(); i != n; ++i)
+        if (i + 1 != n && ptrn(i + 1)->isa<GrpPtrn>())
+            std::print(os, "{} ", ptrn(i)->dbg());
+        else
+            std::print(os, "{}{}", S(tab, ptrn(i)), i + 1 != n ? ", " : "");
     os << delim_r();
 }
 
@@ -135,7 +138,7 @@ void LitExpr::stream(fe::Tab& tab, std::ostream& os) const {
         case Tag::L_str: std::print(os, "\"{}\"", Lexer::escape(tok().sym().view())); break;
         case Tag::T_bot:
         case Tag::T_top: os << tag(); break;
-        default: fe::unreachable();
+        default: std::unreachable();
     }
     if (type()) std::print(os, ":{}", S(tab, type()));
 }
@@ -168,9 +171,10 @@ void InfixExpr::stream(fe::Tab& tab, std::ostream& os) const {
 }
 
 void MatchExpr::Arm::stream(fe::Tab& tab, std::ostream& os) const {
-    auto sel = index() ? std::format("{}", *index()) : std::format("{}", S(tab, ptrn()));
-    if (payload()) return std::print(os, "{} {} => {}", sel, S(tab, payload()), S(tab, body()));
-    std::print(os, "{} => {}", sel, S(tab, body()));
+    if (index()) std::print(os, "{} ", *index());
+    if (ctor_) std::print(os, "{} ", ctor_);
+    if (ptrn()) std::print(os, "{} ", S(tab, ptrn()));
+    std::print(os, "=> {}", S(tab, body()));
 }
 
 void VariantExpr::Ctor::stream(fe::Tab& tab, std::ostream& os) const {
@@ -196,7 +200,7 @@ void MatchExpr::stream(fe::Tab& tab, std::ostream& os) const {
 
 void PiExpr::Dom::stream(fe::Tab& tab, std::ostream& os) const {
     std::print(os, "{}", S(tab, ptrn()));
-    if (ret()) std::print(os, " {} {}", Tag::T_arrow_r, S(tab, ret()->type()));
+    if (ret_type()) std::print(os, " {} {}", Tag::T_arrow_r, S(tab, ret_type()));
 }
 
 void PiExpr::stream(fe::Tab& tab, std::ostream& os) const {
@@ -205,7 +209,7 @@ void PiExpr::stream(fe::Tab& tab, std::ostream& os) const {
     if (codom()) std::print(os, " {} {}", Tag::T_arrow_r, S(tab, codom()));
 }
 
-void LamExpr::stream(fe::Tab& tab, std::ostream& os) const { lam()->stream_chain(tab, os); }
+void LamExpr::stream(fe::Tab& tab, std::ostream& os) const { lam()->stream_(tab, os); }
 
 void AppExpr::stream(fe::Tab& tab, std::ostream& os) const { std::print(os, "{} {}", S(tab, callee()), S(tab, arg())); }
 
@@ -218,7 +222,9 @@ void SigmaExpr::stream(fe::Tab& tab, std::ostream& os) const { ptrn()->stream(ta
 void TupleExpr::stream(fe::Tab& tab, std::ostream& os) const { std::print(os, "({})", R(tab, elems())); }
 
 void SeqExpr::stream(fe::Tab& tab, std::ostream& os) const {
-    std::print(os, "{}{}; {}{}", is_pack() ? "‹" : "«", S(tab, arity()), S(tab, body()), is_pack() ? "›" : "»");
+    os << (is_pack() ? "‹" : "«");
+    if (index()->dbg()) std::print(os, "{}: ", S(tab, index()));
+    std::print(os, "{}; {}{}", S(tab, shape()), S(tab, body()), is_pack() ? "›" : "»");
 }
 
 void SingleExpr::stream(fe::Tab& tab, std::ostream& os) const {
@@ -234,7 +240,7 @@ static std::string_view vis2str(Vis vis) {
         case Vis::Priv: return "priv";
         case Vis::Pub: return "pub";
     }
-    fe::unreachable();
+    std::unreachable();
 }
 
 /// Prints `vis`/`extern`/`anx`, skipping `vis` if it's the modifier-nudged Mods::default_vis.
@@ -254,73 +260,34 @@ struct std::formatter<mim::ast::Mods> : fe::ostream_formatter {};
 
 namespace mim::ast {
 
-/// The members of an `axm` group in @p decls, starting at @p i with its owning AxmDecl; see Parser::parse_axm_group.
-static size_t axm_group_end(fe::View<Ptr<ValDecl>> decls, size_t i) {
-    auto owner    = decls[i]->as<AxmDecl>();
-    auto prev     = owner->dbg().sym();
-    auto is_alias = [&](const ValDecl* decl) {
-        auto alias = decl->isa<AliasDecl>();
-        return alias && alias->vis() == Vis::Pub && alias->path()->dbgs().size() == 1
-            && alias->path()->front().sym() == prev;
-    };
-    for (++i; i != decls.size(); ++i)
-        if (auto sibling = decls[i]->isa<AxmDecl::Sibling>(); sibling && sibling->owner() == owner)
-            prev = sibling->dbg().sym();
-        else if (!is_alias(decls[i].get()))
-            break;
-    return i;
-}
-
-static void stream_axm_tail(fe::Tab& tab, std::ostream& os, const AxmDecl* axm) {
-    std::print(os, ": {}", S(tab, axm->type()));
-    if (axm->normalizer()) std::print(os, ", {}", axm->normalizer());
-    if (axm->curry()) std::print(os, ", {}", axm->curry().lit_u());
-    if (axm->trip()) std::print(os, ", {}", axm->trip().lit_u());
-    os << ';';
-}
-
-/// `axm [mod.](tag_0 = alias, ..., tag_n-1): ...;` of the `axm` group `decls[begin, end)`.
-static void
-stream_axm_group(fe::Tab& tab, std::ostream& os, fe::View<Ptr<ValDecl>> decls, size_t begin, size_t end, Dbg mod = {}) {
-    if (decls[begin]->vis() == Vis::Priv) os << "priv ";
-    os << "axm ";
-    if (mod) std::print(os, "{}.", mod);
-    os << '(';
-    for (auto i = begin; i != end; ++i)
-        if (decls[i]->isa<AliasDecl>())
-            std::print(os, " = {}", decls[i]->dbg());
-        else
-            std::print(os, "{}{}", i == begin ? "" : ", ", decls[i]->dbg());
-    os << ')';
-    stream_axm_tail(tab, os, decls[begin]->as<AxmDecl>());
-}
-
 static void stream_decls(fe::Tab& tab, std::ostream& os, fe::View<Ptr<ValDecl>> decls) {
     auto grouped = [](const ValDecl* prev, const ValDecl* curr) {
         return (prev->isa<UseDecl>() && curr->isa<UseDecl>()) || (prev->isa<LetDecl>() && curr->isa<LetDecl>());
     };
 
-    for (size_t i = 0, end; i != decls.size(); i = end) {
+    for (size_t i = 0; i != decls.size(); ++i) {
         if (i != 0 && !grouped(decls[i - 1].get(), decls[i].get())) os << '\n';
-        // Siblings share their owner's type, so they must stay in the group that introduces them.
-        end = decls[i]->isa<AxmDecl>() ? axm_group_end(decls, i) : i + 1;
-        os << tab;
-        if (end != i + 1)
-            stream_axm_group(tab, os, decls, i, end), os << '\n';
-        else
-            std::println(os, "{}", S(tab, decls[i].get()));
+        std::println(os, "{}{}", tab, S(tab, decls[i].get()));
     }
 }
 
-/// `axm` is always anx, so only `priv` is ever printed.
-static void stream_axm(fe::Tab& tab, std::ostream& os, const ValDecl* decl, const AxmDecl* owner) {
-    if (decl->vis() == Vis::Priv) os << "priv ";
-    std::print(os, "axm {}", decl->dbg());
-    stream_axm_tail(tab, os, owner);
-}
+void AxmDecl::Name::stream(fe::Tab&, std::ostream& os) const { os << fe::Join(names(), " = "); }
 
-void AxmDecl::stream(fe::Tab& tab, std::ostream& os) const { stream_axm(tab, os, this, this); }
-void AxmDecl::Sibling::stream(fe::Tab& tab, std::ostream& os) const { stream_axm(tab, os, this, owner()); }
+/// `axm` is always anx, so only `priv` is ever printed.
+void AxmDecl::stream(fe::Tab& tab, std::ostream& os) const {
+    if (vis() == Vis::Priv) os << "priv ";
+    os << "axm ";
+    if (mod_) std::print(os, "{}.", mod_);
+    if (is_family())
+        std::print(os, "({})", R(tab, names()));
+    else
+        std::print(os, "{}", S(tab, names().front().get()));
+    std::print(os, ": {}", S(tab, type()));
+    if (normalizer()) std::print(os, ", {}", normalizer());
+    if (curry()) std::print(os, ", {}", curry().lit_u());
+    if (trip()) std::print(os, ", {}", trip().lit_u());
+    os << ';';
+}
 
 void AliasDecl::stream(fe::Tab& tab, std::ostream& os) const {
     if (vis() == Vis::Priv) std::print(os, "priv ");
@@ -328,16 +295,11 @@ void AliasDecl::stream(fe::Tab& tab, std::ostream& os) const {
 }
 
 void ModDecl::stream(fe::Tab& tab, std::ostream& os) const {
-    // `axm tag.(sub_0, ..., sub_n-1): ...;` desugars to exactly such a `pub mod`.
-    if (!decls().empty() && decls().front()->isa<AxmDecl>() && vis() == Vis::Pub
-        && axm_group_end(decls(), 0) == decls().size())
-        return stream_axm_group(tab, os, decls(), 0, decls().size(), dbg());
-
-    std::println(os, "{}mod {} {{", mods(), dbg());
+    std::println(os, "{}mod {}", mods(), dbg());
     ++tab;
     stream_decls(tab, os, decls());
     --tab;
-    std::print(os, "{}}}", tab);
+    std::print(os, "{}end", tab);
 }
 
 void UseDecl::stream(fe::Tab& tab, std::ostream& os) const {
@@ -356,27 +318,29 @@ void LetDecl::stream(fe::Tab& tab, std::ostream& os) const {
 
 void RecDecl::stream(fe::Tab& tab, std::ostream& os) const {
     std::print(os, "{}", mods());
-    stream_chain(tab, os);
+    stream_(tab, os);
     os << ';';
 }
 
-void RecDecl::stream_chain(fe::Tab& tab, std::ostream& os) const {
-    if (!isa<LamDecl>()) os << "rec ";
-    stream_(tab, os);
-    for (auto curr = next(); curr; curr = curr->next()) {
-        std::println(os);
-        std::print(os, "{}and ", tab);
-        curr->stream_(tab, os);
-    }
-}
+void RecDecl::stream_(fe::Tab& tab, std::ostream& os) const { std::print(os, "rec {} = {}", dbg(), S(tab, body())); }
+void NomDecl::stream_(fe::Tab& tab, std::ostream& os) const { std::print(os, "nom {} = {}", dbg(), S(tab, body())); }
 
-void RecDecl::stream_(fe::Tab& tab, std::ostream& os) const { std::print(os, "{} = {}", dbg(), S(tab, body())); }
+void MutualDecl::stream(fe::Tab& tab, std::ostream& os) const {
+    os << "mutual\n";
+    ++tab;
+    for (std::string_view sep{}; auto decl : decls()) {
+        std::println(os, "{}{}{}", sep, tab, S(tab, decl.get()));
+        sep = "\n";
+    }
+    --tab;
+    std::print(os, "{}end", tab);
+}
 
 void LamDecl::Dom::stream(fe::Tab& tab, std::ostream& os) const {
     std::print(os, "{}", S(tab, ptrn()));
     if (filter()) std::print(os, "@{}", S(tab, filter()));
     // Parser::parse_lam_decl fills in an omitted codomain of a `fun`/`fn` as a hole.
-    if (ret() && !ret()->type()->isa<HoleExpr>()) std::print(os, ": {}", S(tab, ret()->type()));
+    if (ret_type() && !ret_type()->isa<HoleExpr>()) std::print(os, ": {}", S(tab, ret_type()));
 }
 
 /// Does @p expr span several statements and hence deserve an indented block of its own?
@@ -386,6 +350,13 @@ static bool is_block(const Expr* expr) {
 }
 
 void LamDecl::stream_(fe::Tab& tab, std::ostream& os) const {
+    if (auto nom = nom_sugar()) {
+        std::print(os, "nom {}", dbg());
+        for (auto dom : doms())
+            std::print(os, " {}", S(tab, dom.get()));
+        std::print(os, " = {}", S(tab, nom->body()));
+        return;
+    }
     std::print(os, "{}", tag());
     if (dbg()) std::print(os, " {}", dbg());
     for (auto dom : doms())

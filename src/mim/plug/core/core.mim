@@ -6,7 +6,28 @@
 ///
 /// ## Dependencies
 ///
-plugin mem;
+import compile;
+///
+/// ## Types
+///
+/// ### M {#coreM}
+///
+/// This type tracks all kinds of side effects in the given address space.
+/// The mem plugin re-exports it as `mem.M`.
+axm M: Nat → *;
+///
+/// ### Ptr {#corePtr}
+///
+/// Pointer type with *pointee* type `T` and *address space* `a`.
+/// At the moment, the *address space* is not really used and serves as a placeholder for future work.
+/// The mem plugin re-exports it as `mem.Ptr`.
+axm Ptr: [*, Nat] → *;
+///
+/// ### Union
+///
+/// An untagged union that is large and aligned enough to hold a value of each of the types `Ts`.
+/// Values go in and out via core.bitcast; the backend decides its layout.
+axm Union: {n: Nat} → «n; *» → *;
 ///
 /// ## Nat Operations
 ///
@@ -56,10 +77,8 @@ axm ncmp.(gle = f, glE =  e, gLe =  l, gLE = le,
 /// - **signed** interpretation is defined by choosing, for each residue class modulo \f$s\f$, its canonical signed representative.
 ///
 /// Concretely, a value \f$x : \mathrm{Idx}\;s\f$ is considered non-negative iff \f$ x \le \lfloor (s-1)/2 \rfloor \f$, and negative otherwise.
-/// Hence the signed range is
-/// \f$ \big[ -\lfloor s/2 \rfloor,\; \lceil s/2 \rceil - 1 \big] \f$.
-/// For powers of two, i.e. \f$ s = 2^w \f$, this coincides exactly with the usual
-/// \f$w\f$-bit two's-complement interpretation.
+/// Hence the signed range is \f$ \big[ -\lfloor s/2 \rfloor,\; \lceil s/2 \rceil - 1 \big] \f$.
+/// For powers of two, i.e. \f$ s = 2^w \f$, this coincides exactly with the usual \f$w\f$-bit two's-complement interpretation.
 ///
 /// ### Mode
 ///
@@ -67,7 +86,7 @@ axm ncmp.(gle = f, glE =  e, gLe =  l, gLE = le,
 /// All operations that may overflow take a leading parameter `m` - [mode](@ref mim::plug::core::Mode) - of type `Nat` that determines the exact desired behavior in the case of an overflow.
 /// It comes first so that currying it - `core.wrap.add 0` - still yields a value polymorphic in `s`.
 ///
-pub mod mode {
+pub mod mode
     anx let us = 0b00; // wrap around - both signed and unsigned
     anx let uS = 0b01; // no   signed wrap around
     anx let Us = 0b10; // no unsigned wrap around
@@ -75,19 +94,13 @@ pub mod mode {
     anx nsw  = uS;
     anx nuw  = Us;
     anx nsuw = US;
-}
+end
 ///
 /// ### idx
 ///
 /// Creates a literal of type `Idx s` from `l` while obeying mode `m`.
 ///
 axm idx: [m: Nat] → [s: Nat] → [l: Nat] → Idx s, normalize_idx;
-///
-/// ### idx_unsafe
-///
-/// Creates a literal of type `Idx ⊤`.
-///
-axm idx_unsafe: Nat → Idx ⊤:Nat, normalize_idx_unsafe;
 ///
 /// ### bit1
 ///
@@ -116,22 +129,22 @@ axm bit1.(f, neg, id, t): [m: Nat] → {s: Nat} → Idx s → Idx s, normalize_b
 /// | nfst   |  o |  o |  x |  x | not first argument           |
 /// | niff   |  o |  x |  o |  o | not implication              |
 /// | nsnd   |  o |  x |  o |  x | not second argument          |
-/// | xor_   |  o |  x |  x |  o | exclusive or                 |
+/// | xor    |  o |  x |  x |  o | exclusive or                 |
 /// | nand   |  o |  x |  x |  x | not and                      |
-/// | and_   |  x |  o |  o |  o | and                          |
+/// | and    |  x |  o |  o |  o | and                          |
 /// | nxor   |  x |  o |  o |  x | not exclusive or             |
 /// | snd    |  x |  o |  x |  o | second argument              |
-/// | iff    |  x |  o |  x |  x | implication (if and only if) |
+/// | iff    |  x |  o |  x |  x | implication                  |
 /// | fst    |  x |  x |  o |  o | first argument               |
 /// | ciff   |  x |  x |  o |  x | converse implication         |
-/// | or_    |  x |  x |  x |  o | or                           |
+/// | or     |  x |  x |  x |  o | or                           |
 /// | t      |  x |  x |  x |  x | always true                  |
 ///
 /// @todo Add type constraint that `bit2` is only allowed for powers of two.
 ///
-axm bit2.( f,      nor, nciff, nfst, niff, nsnd, xor_, nand,
-           and_,  nxor,   snd,  iff,  fst, ciff,  or_,    t):
-    [m: Nat] → {s: Nat} → «2; Idx s» → Idx s , normalize_bit2;
+axm bit2.( f,   nor, nciff, nfst, niff, nsnd, xor, nand,
+           and, nxor,  snd,  iff,  fst, ciff,  or,    t):
+    [m: Nat] → {s: Nat} → «2; Idx s» → Idx s, normalize_bit2;
 ///
 /// ### shr
 ///
@@ -140,8 +153,7 @@ axm bit2.( f,      nor, nciff, nfst, niff, nsnd, xor_, nand,
 /// - [`a`rithmetic shift right](https://en.wikipedia.org/wiki/Arithmetic_shift)
 /// - [`l`ogical shift right](https://en.wikipedia.org/wiki/Logical_shift)
 ///
-/// For `Idx s`, the shift count must be smaller than the minimal bit width needed to encode the carrier.
-/// For `Idx ⊤`, this width is `64`; otherwise it is `max(1, ceil(log2(s)))`.
+/// For `Idx s`, the shift count must be smaller than the minimal bit width needed to encode the carrier: `max(1, ceil(log2(s)))`.
 /// Larger counts are undefined behavior.
 ///
 /// - `shr.l` divides the unsigned representative by `2^b`.
@@ -160,17 +172,30 @@ axm shr.(a, l): {s: Nat} → «2; Idx s» → Idx s, normalize_shr;
 ///
 axm wrap.(add, sub, mul, shl): [m: Nat] → {s: Nat} → «2; Idx s» → Idx s, normalize_wrap;
 
-anx lam minus (m: Nat) {s: Nat} (a: Idx s): Idx s = wrap.sub m (0:(Idx s), a);
+anx lam minus (m: Nat) {s: Nat} (a: Idx s): Idx s = wrap.sub m (idx 0 s 0, a);
 ///
 /// ### div
 ///
 /// Signed and unsigned integer division/remainder.
 ///
 /// @warning Division by zero is *undefined behavior* and a visible side effect.
-/// For this reason, these axioms expect a `mem.M`.
+/// For this reason, these axioms expect an `M`.
 ///
 axm div.(sdiv, udiv, srem, urem):
-    {s a: Nat} → [mem.M a, «2; Idx s»] → [mem.M a, Idx s], normalize_div;
+    {s a: Nat} → [M a, «2; Idx s»] → [M a, Idx s], normalize_div;
+///
+/// ### rem
+///
+/// Unsigned remainder of `x` by the literal, non-zero `d`.
+/// Unlike core.div.urem it cannot divide by zero, so it needs no `M`.
+///
+axm rem: {s: Nat} → [d: Nat] → Idx s → Idx s, normalize_rem;
+///
+/// ### mulrem
+///
+/// The product of `a` and `b` modulo the literal, non-zero `d`, computed without overflowing `Idx s`.
+///
+axm mulrem: {s: Nat} → [d: Nat] → «2; Idx s» → Idx s, normalize_mulrem;
 ///
 /// ### icmp
 ///
@@ -244,7 +269,7 @@ axm icmp.(xygle = f,  xyglE = e,   xygLe,      xygLE,
           XyGle = sg, XyGlE = sge, XyGLe,      XyGLE,
           XYgle,      XYglE,       XYgLe,      XYgLE,
           XYGle,      XYGlE,       XYGLe = ne, XYGLE = t):
-    {s: Nat} → «2; Idx s» → Bool , normalize_icmp;
+    {s: Nat} → «2; Idx s» → Bool, normalize_icmp;
 ///
 /// ### extrema
 ///
@@ -253,15 +278,15 @@ axm icmp.(xygle = f,  xyglE = e,   xygLe,      xygLE,
 /// - un`s`igned or `S`igned
 /// - `m`inimum or `M`aximum
 ///
-axm extrema.(sm=umin, sM=umax, Sm=smin, SM=smax): {s: Nat} → «2; Idx s» → Idx s, normalize_extrema;
+axm extrema.(sm = umin, sM = umax, Sm = smin, SM = smax): {s: Nat} → «2; Idx s» → Idx s, normalize_extrema;
 ///
 /// ### abs
 ///
 /// Absolute value of an integer.
 ///
-/// @warning Computing the absolute value of the lowest possible value leads to *undefined behavior*, which is why this axiom expects a `mem.M`.
+/// @warning Computing the absolute value of the lowest possible value leads to *undefined behavior*, which is why this axiom expects an `M`.
 ///
-axm abs: {s a: Nat} → [mem.M a, Idx s] → [mem.M a, Idx s], normalize_abs;
+axm abs: {s a: Nat} → [M a, Idx s] → [M a, Idx s], normalize_abs;
 ///
 /// ## Conversions
 ///
@@ -274,10 +299,18 @@ axm abs: {s a: Nat} → [mem.M a, Idx s] → [mem.M a, Idx s], normalize_abs;
 ///
 axm conv.(s, u): {ss: Nat} → [ds: Nat] → Idx ss → Idx ds, normalize_conv;
 ///
+/// ### idx2nat
+///
+/// Yields the unsigned representative of an index as a `Nat`.
+/// In contrast to `bitcast`, this never truncates.
+///
+axm idx2nat: {s: Nat} → Idx s → Nat, normalize_idx2nat;
+///
 /// ### bitcast
 ///
 /// Bitcast to reinterpret a value as another type.
 /// Can be used for pointer / integer conversions as well as integer / nat conversions.
+/// A value that does not fit into a target `Idx s` is truncated modulo `s`.
 ///
 axm bitcast: {S: *} → [D: *] → S → D, normalize_bitcast;
 ///
@@ -293,11 +326,11 @@ axm trait.(size, align): * → Nat, normalize_trait;
 ///
 /// Steers the partial evaluator.
 ///
-pub mod pe {
+pub mod pe
     axm hlt:       {T: *} → T → T, normalize_pe;
     axm run:       {T: *} → T → T, normalize_pe;
     axm is_closed: {T: *} → T → Bool, normalize_pe;
-}
+end
 ///
 /// ### select
 ///
@@ -310,6 +343,22 @@ anx lam select {T: *} (cond: Bool, t f: T): T = (f, t)#cond;
 /// core.select one level up, to select between types.
 ///
 anx lam Select {T: □} (cond: Bool, t f: T): T = (f, t)#cond;
+///
+/// ## Phases
+///
+/// ### lower_variant
+///
+/// Lowers each Variant `| T_0 | ... | T_{n-1}` to a representation without sum types (mim::plug::core::LowerVariant).
+/// Where the cases leave room, the tag shares the bits of the payload; otherwise it is paired with a core.Union payload.
+///
+axm lower_variant: compile.Phase;
+///
+/// ### legalize_idx
+///
+/// Widens each `Idx s` with a literal size `s` that is no `Bool`, `I8`, `I16`, `I32`, or `I64` to the next of these (mim::plug::core::LegalizeIdx).
+/// Operations that depend on the modulus `s` reduce their results explicitly, so a backend may compute modulo its bit width.
+///
+axm legalize_idx: compile.Phase;
 ///
 /// ## Operators
 ///
@@ -325,10 +374,10 @@ anx lam Select {T: □} (cond: Bool, t f: T): T = (f, t)#cond;
 /// | `core.ops.u.nw` | unsigned `Idx s`, `core.mode.nuw`          |
 ///
 /// `core.ops.s`/`core.ops.u` offer only those operators that don't depend on the mode.
-/// `Idx s` has no `/` and `%`, since core.div expects a `mem.M`.
+/// `Idx s` has no `/` and `%`, since core.div expects an `M`.
 ///
-pub mod ops {
-    pub mod n {
+pub mod ops
+    pub mod n
         pub let `+  =  nat.add;
         pub let `-  =  nat.sub;
         pub let `*  =  nat.mul;
@@ -340,68 +389,68 @@ pub mod ops {
         pub let `<= = ncmp.le;
         pub let `>  = ncmp.g;
         pub let `>= = ncmp.ge;
-    }
+    end
 
-    mod eq {
+    mod eq
         pub let `== = icmp.e;
         pub let `!= = icmp.ne;
-    }
+    end
 
-    mod signed {
+    mod signed
         pub use eq;
         pub let `>> = shr.a;
         pub let `<  = icmp.sl;
         pub let `<= = icmp.sle;
         pub let `>  = icmp.sg;
         pub let `>= = icmp.sge;
-    }
+    end
 
-    mod unsigned {
+    mod unsigned
         pub use eq;
         pub let `>> = shr.l;
         pub let `<  = icmp.ul;
         pub let `<= = icmp.ule;
         pub let `>  = icmp.ug;
         pub let `>= = icmp.uge;
-    }
+    end
 
-    pub mod s {
+    pub mod s
         pub use signed;
 
-        pub mod w {
+        pub mod w
             pub use signed;
             pub let `+  = wrap.add mode.us;
             pub let `-  = wrap.sub mode.us;
             pub let `*  = wrap.mul mode.us;
             pub let `<< = wrap.shl mode.us;
-        }
+        end
 
-        pub mod nw {
+        pub mod nw
             pub use signed;
             pub let `+  = wrap.add mode.nsw;
             pub let `-  = wrap.sub mode.nsw;
             pub let `*  = wrap.mul mode.nsw;
             pub let `<< = wrap.shl mode.nsw;
-        }
-    }
+        end
+    end
 
-    pub mod u {
+    pub mod u
         pub use unsigned;
 
-        pub mod w {
+        pub mod w
             pub use unsigned;
             pub let `+  = wrap.add mode.us;
             pub let `-  = wrap.sub mode.us;
             pub let `*  = wrap.mul mode.us;
             pub let `<< = wrap.shl mode.us;
-        }
+        end
 
-        pub mod nw {
+        pub mod nw
             pub use unsigned;
             pub let `+  = wrap.add mode.nuw;
             pub let `-  = wrap.sub mode.nuw;
             pub let `*  = wrap.mul mode.nuw;
             pub let `<< = wrap.shl mode.nuw;
-        }
-    }
-}
+        end
+    end
+end

@@ -85,6 +85,16 @@ public:
     const Keys& keys() const { return keys_; }          ///< Interned once here: every ast::Lexer borrows them.
     ///@}
 
+    /// @name Library
+    ///@{
+    World* library() { return library_.get(); } ///< `nullptr` before move_to_library().
+    const World* library() const { return library_.get(); }
+    /// Moves everything of @p world into library() and imports only its externals back.
+    /// From then on, @p world imports an annex lazily when first looked up; @see World::import.
+    /// Importing also resolves the Hole%s elaboration solved.
+    void move_to_library(World& world);
+    ///@}
+
     /// @name Diagnostic Naming
     /// Scratch state for PlainNames: which plain Def::sym each gid claimed while one message is formatted.
     /// It lives here - not in a global - so that concurrent Driver%s never share it.
@@ -102,7 +112,7 @@ public:
     class Paths {
     public:
         void add(fs::path path) {
-            if (fs::exists(path) && fs::is_directory(path)) paths_.insert(insert_, std::move(path));
+            if (std::error_code ec; fs::is_directory(path, ec)) paths_.insert(insert_, std::move(path));
         }
 
         /// Later Paths::add calls insert in front of everything added so far.
@@ -120,7 +130,7 @@ public:
     /// A *plain directory* is probed as-is; a *prefix root* stands for an install tree and derives
     /// `<root>/<libdir>/mim` (plugins), `<root>/<datadir>/mim` (imports), and `<root>/<libdir>/mim/rt` (runtimes).
     /// Each lookup starts with the empty path, which probes the current working directory without an absolute path.
-    /// Within a list, paths added first are searched first; CLI paths precede the environment and derived ones.
+    /// Within a list, paths added first are searched first; user paths precede the derived ones.
     ///@{
     void add_plugin_path(fs::path path) { plugin_dirs_.add(std::move(path)); }
     void add_import_path(fs::path path) { import_dirs_.add(std::move(path)); }
@@ -172,9 +182,10 @@ public:
     /// Finds and loads a shared object file that implements the MimIR Plugin @p name.
     /// @p name may be a bare name (`bar`), a path (`foo/bar`), or a path to the shared object itself.
     /// Its directory part - if any - is prepended to every Driver::plugin_paths() entry,
-    /// where `libmim_<bar>.so` (Linux, Mac) / `mim_<bar>.dll` (Win) is searched for.
+    /// where `libmim_<bar>.so` (`.dll` on Windows) is searched for.
+    /// A failure is reported at @p loc and bails.
     ///@{
-    void load(std::string_view name);
+    void load(std::string_view name, Loc loc = {});
     /// Makes a Plugin linked into this binary available to Driver::load under @p name; see `cmake/Mim.cmake`.
     static void add_static_plugin(const char* name, Plugin (*get_plugin)());
     /// Bare plugin name of a possibly path-qualified @p name: `foo/libmim_bar.so` &rarr; `bar`.
@@ -210,6 +221,8 @@ public:
     void add_arg(std::string_view plugin, std::string arg) { plugin_args_[plugin].emplace_back(std::move(arg)); }
     /// Yields an empty fe::Vector if @p plugin has none.
     const fe::Vector<std::string>& args(std::string_view plugin) const;
+    /// The number passed as `-X <plugin>:<key>=<n>`, if any; warns about and ignores a non-number.
+    std::optional<nat_t> arg_nat(std::string_view plugin, std::string_view key);
 
     /// The PluginArg%s each loaded Plugin declares, in load order; only for listing them, see PluginArg.
     const auto& known_args() const { return known_args_; }
@@ -234,6 +247,7 @@ private:
     mutable Names names_;
     fe::Profiler profiler_;
     World world_;
+    std::unique_ptr<World> library_;
     Paths plugin_dirs_, import_dirs_, prefixes_;
     Flags2Phases phases_;
     Normalizers normalizers_;

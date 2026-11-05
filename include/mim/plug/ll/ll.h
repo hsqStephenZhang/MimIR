@@ -114,7 +114,7 @@ struct BB {
 class Emitter;
 
 /// The heavy, target-independent emitter methods are compiled once into `libmim_ll` (see ll.cpp).
-/// `libmim_ll_nvptx` reaches them through these `extern "C"` shims instead of recompiling the bodies;
+/// `libmim_nvptx` reaches them through these `extern "C"` shims instead of recompiling the bodies;
 /// Emitter caches the pointers via `GET_FUN_PTR` in its constructor.
 extern "C" {
 MIM_EXPORT void mim_ll_convert(Emitter&, const Def*, bool simd, std::string& res);
@@ -132,7 +132,7 @@ public:
         , ostream_(ostream) {
         auto& driver = world.driver();
         // Ensure libmim_ll is loaded so the shims below resolve (e.g. when a derived backend like
-        // ll_nvptx uses us). Loading merely registers ll.emit; it does not run it.
+        // nvptx uses us). Loading merely registers ll.emit; it does not run it.
         if (!driver.is_loaded("ll")) driver.load("ll");
         convert_       = driver.GET_FUN_PTR("ll", mim_ll_convert);
         finalize_      = driver.GET_FUN_PTR("ll", mim_ll_finalize);
@@ -170,13 +170,11 @@ public:
     };
 
     void rt_mode(Rt rt) { rt_ = rt; }
-    /// Provides the textual LLVM IR of the runtime module to splice in `Rt::embed` mode.
-    void rt_module(std::string ll) { rt_module_ = std::move(ll); }
 
     /// Locates the runtime module `rt/<filename>` (produced by `add_mim_runtime`) in the driver's
     /// search paths, reads it, and stores it for `Rt::embed` splicing.
-    /// Backends share this instead of duplicating the lookup: `ll` loads `ll_rt.ll`, `ll_nvptx`
-    /// loads `ll_nvptx_rt.ll`, and so on — one merged module per plugin.
+    /// Backends share this instead of duplicating the lookup: `ll` loads `ll_rt.ll`, `nvptx`
+    /// loads `nvptx_rt.ll`, and so on — one merged module per plugin.
     /// @returns whether the module was found.
     bool load_rt_module(std::string_view filename);
 
@@ -204,8 +202,7 @@ protected:
 
     /// As above but yielding an empty string is permitted.
     std::string emit_unsafe(const Def* def) {
-        if (auto i = globals_.find(def); i != globals_.end()) return i->second;
-        if (auto i = locals_.find(def); i != locals_.end()) return i->second;
+        if (auto s = fe::lookup(locals_, def)) return *s;
 
         auto place          = scheduler_.smart(curr_lam_, def);
         auto& bb            = lam2bb_[place->mut()->as<Lam>()];
@@ -217,6 +214,9 @@ protected:
     const Scheduler::Schedule& schedule() const { return schedule_; }
 
     std::string id(const Def*, bool force_bb = false) const;
+
+    /// Converts @p type to its LLVM representation as a value (@p simd) or in memory (`!simd`).
+    /// Only values use LLVM vectors; memory keeps the plain array layout C expects.
     virtual std::string convert(const Def* type, bool simd = true) {
         std::string res;
         convert_(*this, type, simd, res);
@@ -224,9 +224,19 @@ protected:
     }
     std::string convert_ret_pi(const Pi*);
 
+    /// Lane count and element type if a value of @p type is an LLVM vector.
+    std::optional<std::pair<nat_t, const Def*>> vectorize(const Def* type) const;
+    /// Whether @p type's value representation contains an LLVM vector and hence differs from its memory one.
+    bool has_vec(const Def* type) const;
+
     /// Registers @p arg as an incoming phi value for @p phi in @p callee, coming from predecessor @p pred.
     void emit_phi(Lam* callee, const Def* phi, std::string arg, Lam* pred) {
-        lam2bb_[callee].phis[phi].emplace_back(std::move(arg), id(pred, true));
+        // Inserting here would invalidate the `BB&` our caller holds.
+        auto i = lam2bb_.find(callee);
+        if (i == lam2bb_.end())
+            callee->blame(MIM_LL_BE "`{}` jumps to `{}`, which is not a basic block of `{}`", pred, callee, root())
+                .bail();
+        i->second.phis[phi].emplace_back(std::move(arg), id(pred, true));
         locals_[phi] = id(phi);
     }
 
@@ -256,8 +266,7 @@ protected:
     Scheduler scheduler_;
     Scheduler::Schedule schedule_;
     DefMap<std::string> locals_;
-    DefMap<std::string> globals_;
-    DefMap<std::string> types_;
+    std::array<DefMap<std::string>, 2> types_; ///< Indexed by the `simd` flag of Emitter::convert.
     LamMap<BB> lam2bb_;
 
     std::set<std::string> decls_;
@@ -267,12 +276,13 @@ protected:
     std::ostringstream func_impls_;
     LamMap<const Def*> simd_phi_;
 
-    /// Loop-metadata node id per `ll.vec`-annotated loop header (see `emit_epilogue_impl`);
-    /// numbered from `LoopMdBase + 1` to stay clear of the ids the embedded runtime module
-    /// brings along.
+    /// Loop-metadata node id per `ll.vec`/`ll.novec`-annotated loop header, and whether it may vectorize;
+    /// `LoopMdBase` and `LoopMdBase + 1` hold the shared enable/disable hints, the per-loop nodes follow,
+    /// clear of the ids the embedded runtime module brings along.
     static constexpr u64 LoopMdBase = 1000;
-    LamMap<u64> loop_md_;
+    LamMap<std::pair<u64, bool>> loop_md_;
 
+    bool simd_    = true;
     Rt rt_        = Rt::embed;
     bool rt_used_ = false;
     std::string rt_module_;
@@ -287,7 +297,17 @@ private:
     // Case groups of emit_bb_impl, split so one recursion level only pays the frame of the group it hits.
     MIM_NOINLINE std::string emit_lit(const Def*);
     MIM_NOINLINE std::string emit_tuple(BB&, const std::string& name, const Def* tuple);
-    MIM_NOINLINE std::pair<std::string, std::string> emit_gep_index(BB&, const std::string& name, const Def* index);
+    /// The typed GEP operands of @p index; a multi-index yields one per axis.
+    MIM_NOINLINE std::string emit_gep_index(BB&, const std::string& name, const Def* index);
+    /// Allocates the stack slot @p slot of @p type in the entry block, so that a loop does not allocate it again.
+    /// A non-zero @p align overrides the ABI alignment of @p type.
+    void entry_alloca(const std::string& slot, const std::string& type, nat_t align = 0) {
+        auto& os = lam2bb_[root()].body().emplace_front();
+        std::print(os, "{} = alloca {}", slot, type);
+        if (align != 0) std::print(os, ", align {}", align);
+    }
+    /// Stores the tuple @p v of type @p t in `name.alloca` and points `name.gep` at its element @p index.
+    void emit_slot_gep(BB&, const std::string& name, const std::string& t, const std::string& v, const Def* index);
     MIM_NOINLINE std::optional<std::string> emit_builtin(BB&, const std::string& name, const Def*);
     MIM_NOINLINE std::optional<std::string> emit_core(BB&, const std::string& name, const Def*);
     MIM_NOINLINE std::optional<std::string> emit_mem(BB&, const std::string& name, const Def*);
@@ -296,6 +316,9 @@ private:
 
     /// An `extractelement`/`insertelement` lane index; LLVM wants a plain `i32`, not the `Idx` carrier.
     std::string emit_simd_index(BB&, const std::string& name, const Def* index);
+    /// Converts the value @p v of @p type into its value (@p simd) or memory (`!simd`) representation.
+    std::string repack(BB&, const std::string& name, const Def* type, const std::string& v, bool simd);
+    const Def* find_common_simd_src(const App*) const;
 
     decltype(&mim_ll_convert) convert_             = nullptr;
     decltype(&mim_ll_finalize) finalize_           = nullptr;
@@ -307,6 +330,11 @@ private:
     friend void mim_ll_emit_epilogue(Emitter&, Lam*);
     friend void mim_ll_emit_bb(Emitter&, BB&, const Def*, std::string&);
 };
+
+/// Parses `-X <backend>:rt=extern|embed`; Emitter::Rt::embed is the default.
+inline Emitter::Rt arg_rt(fe::View<std::string> args) {
+    return arg_value(args, "rt") == "extern" ? Emitter::Rt::ext : Emitter::Rt::embed;
+}
 
 /*
  * convert
@@ -324,23 +352,26 @@ inline static std::optional<std::pair<nat_t, const Def*>> is_simd(const Def* typ
     return {};
 }
 
-inline static std::optional<std::pair<nat_t, const Def*>> is_simd_aggregate(Defs types) {
-    if (!std::has_single_bit(types.size())) return {};
-    if (std::ranges::all_of(types, [&](auto i) { return i == types[0]; })) {
-        if (types[0]->isa<Nat>() || Idx::isa(types[0]) || Axm::isa<math::F>(types[0]))
-            return std::pair{types.size(), types[0]};
-    }
-
-    return {};
+inline std::optional<std::pair<nat_t, const Def*>> Emitter::vectorize(const Def* type) const {
+    return simd_ ? is_simd(type) : std::nullopt;
 }
 
-inline static const Def* find_common_simd_src(const App* app) {
+inline bool Emitter::has_vec(const Def* type) const {
+    if (!simd_) return false;
+    if (is_simd(type)) return true;
+    if (auto arr = type->isa<Arr>()) return has_vec(arr->elem());
+    if (auto sigma = type->isa<Sigma>())
+        return std::ranges::any_of(sigma->ops(), [this](auto t) { return has_vec(t); });
+    return false;
+}
+
+inline const Def* Emitter::find_common_simd_src(const App* app) const {
     const Def* common_src = nullptr;
     size_t lane           = 0;
     for (auto arg : app->args()) {
         if (Axm::isa<mem::M>(arg->type())) continue;
         auto extract = arg->isa<Extract>();
-        if (!extract || !is_simd(extract->tuple()->type())) return nullptr;
+        if (!extract || !vectorize(extract->tuple()->type())) return nullptr;
         // Only devectorized args - lane i in position i - may forward the whole vector;
         // anything else (e.g. a Select with a non-literal index) must stay scalar.
         if (auto index = Lit::isa(extract->index()); !index || *index != lane++) return nullptr;
@@ -349,16 +380,11 @@ inline static const Def* find_common_simd_src(const App* app) {
         else if (common_src != extract->tuple())
             return nullptr;
     }
-    if (common_src) {
-        auto simd = is_simd(common_src->type());
-        if (!simd || simd->first != lane) return nullptr;
-    }
+    if (common_src && vectorize(common_src->type())->first != lane) return nullptr;
     return common_src;
 }
 
 inline std::string Emitter::id(const Def* def, bool force_bb /*= false*/) const {
-    if (auto global = def->isa<Global>()) return "@" + global->unique_name();
-
     if (auto lam = def->isa_mut<Lam>(); lam && !force_bb) {
         if (lam->type()->ret_pi()) {
             if (lam->is_external() || !lam->is_set())
@@ -412,12 +438,14 @@ inline void Emitter::start() {
     section(vars_decls_.str());
     section(func_impls_.str());
 
-    // One distinct `!llvm.loop` node per hinted loop header, sharing the vectorize-enable hint.
+    // One distinct `!llvm.loop` node per hinted loop header, sharing the vectorize-enable or -disable hint.
     if (!loop_md_.empty()) {
         std::ostringstream md_decls;
         std::println(md_decls, "!{} = !{{!\"llvm.loop.vectorize.enable\", i1 true}}", LoopMdBase);
+        std::println(md_decls, "!{} = !{{!\"llvm.loop.vectorize.enable\", i1 false}}", LoopMdBase + 1);
         for (const auto& [_, md] : loop_md_)
-            std::println(md_decls, "!{} = distinct !{{!{}, !{}}}", md, md, LoopMdBase);
+            std::println(md_decls, "!{} = distinct !{{!{}, !{}}}", md.first, md.first,
+                         md.second ? LoopMdBase : LoopMdBase + 1);
         section(md_decls.str());
     }
 }
@@ -501,8 +529,6 @@ inline std::string Emitter::prepare() {
     for (auto sep = ""; auto var : vars.view().rsubspan(1)) {
         if (Axm::isa<mem::M>(var->type())) continue;
         if (auto sigma = var->type()->isa<Sigma>(); sigma && sigma->num_ops() == 0) continue;
-        if (auto arr = var->type()->isa<Arr>())
-            if (is_simd(arr->body())) convert(arr->body()); // pre-add input vector to cache
         auto name    = id(var);
         locals_[var] = name;
         std::print(func_impls_, "{}{} {}", sep, convert(var->type()), name);

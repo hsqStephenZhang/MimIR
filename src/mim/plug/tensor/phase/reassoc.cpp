@@ -1,7 +1,5 @@
 #include "mim/plug/tensor/phase/reassoc.h"
 
-#include <charconv>
-
 #include <algorithm>
 #include <array>
 
@@ -23,9 +21,6 @@ namespace {
 
 /// Beyond this the eager enumeration of `Catalan(n − 1)` bracketings is worth a warning.
 constexpr u64 Loud_max_dispatch = 8;
-
-/// Sanity bound for `-X tensor:reassoc-vec`; it also keeps lanes() from wrapping.
-constexpr u64 Max_vec = 1024;
 
 /// @p n rounded up to a whole number of @p vec lanes; the tail iteration's idle lanes are charged.
 u64 lanes(u64 n, u64 vec) { return (n + vec - 1) / vec * vec; }
@@ -210,33 +205,16 @@ std::optional<std::pair<fe::Vector<u64>, Poly>> matrix_chain_order(fe::View<Leaf
 } // namespace
 
 void Reassoc::start() {
-    auto num = [this](const char* key) -> std::optional<u64> {
-        auto val = arg_value(args(), key);
-        if (!val) return {};
-        auto n   = 0_u64;
-        auto end = val->data() + val->size();
-        if (auto [ptr, ec] = std::from_chars(val->data(), end, n); ec != std::errc() || ptr != end) {
-            log().w("ignoring `-X tensor:{}={}`: not a number", key, *val);
-            return {};
-        }
-        return n;
-    };
-
-    if (auto n = num("reassoc-max")) {
+    if (auto n = driver().arg_nat("tensor", "reassoc-max")) {
         max_dispatch_ = *n;
         log().d("dispatch chains of up to {} matrices", *n);
         if (*n > Loud_max_dispatch)
             log().w("`-X tensor:reassoc-max={}` enumerates up to Catalan({}) bracketings", *n, *n - 1);
     }
 
-    if (auto n = num("reassoc-vec")) {
-        if (*n == 0 || *n > Max_vec) {
-            log().w("ignoring `-X tensor:reassoc-vec={}`: not between 1 and {} lanes", *n, Max_vec);
-        } else {
-            vec_ = *n;
-            log().d("charge the vector loop in units of {} lanes", vec_);
-        }
-    }
+    // Ask `tensor.vec_width`, so that the cost model charges the lanes the schedules actually use.
+    if (auto n = Lit::isa(old_world().call<tensor::vec_width>(old_world().lit_nat(Default_vec)))) vec_ = *n;
+    log().d("charge the vector loop in units of {} lanes", vec_);
 
     // flatten() may only pull a product apart where doing so cannot leave it materialized for another
     // consumer as well.
@@ -342,8 +320,8 @@ Reassoc::dispatch(const Def* head, const Def* res_ty, fe::View<Leaf> mats, Defs 
             best = thunk, best_cost = cost;
         } else {
             auto cheaper = w.app(w.annex(core::ncmp::l), {cost, best_cost});
-            best         = w.extract(w.tuple({best, (const Def*)thunk}), cheaper);
-            best_cost    = w.extract(w.tuple({best_cost, cost}), cheaper);
+            best         = w.select(cheaper, thunk, best);
+            best_cost    = w.select(cheaper, cost, best_cost);
         }
     }
 
