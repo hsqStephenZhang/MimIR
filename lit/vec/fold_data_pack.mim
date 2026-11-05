@@ -1,0 +1,20 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A fold over a large pack of tensor data stays a fold; only Nat packs and small packs unfold.
+
+plugin core;
+plugin math;
+plugin vec;
+
+let F32 = math.F32;
+
+extern lam sum_pack (x: F32): F32 =
+    vec.fold.l (math.arith.add math.mode.none) (0:F32, ‹4096; x›);
+
+extern lam sum_nats (): Nat =
+    vec.fold.l core.nat.add (0, ‹5; 2›);
+
+// CHECK:      extern lam sum_nats
+// CHECK-NEXT: 10;
+// CHECK:      extern lam sum_pack
+// CHECK-NEXT: vec.fold

@@ -12,13 +12,15 @@ namespace mim::plug::vec {
 namespace {
 
 /// The elements of the `n`-vector @p vec, if they are known.
-std::optional<DefVec> elems(const Def* n, const Def* vec) {
+std::optional<DefVec> elems(const Def* type, const Def* n, const Def* vec) {
     auto l = Lit::isa(n);
     if (l == 0) return DefVec();
     if (l == 1) return DefVec{vec}; // `«1; E»` ≡ `E`, even if `E` is itself an aggregate
     if (auto tuple = vec->isa<Tuple>()) return DefVec(tuple->ops().begin(), tuple->ops().end());
+    // A Pack of anything wider than Nat is tensor data that has to stay a loop unless it is small enough to scalarize.
     if (auto seq = vec->isa<Seq>(); seq && !seq->shape().is_fused())
-        if (auto a = Lit::isa(seq->arity())) return seq->projs(*a);
+        if (auto a = Lit::isa(seq->arity()); a && (type->isa<Nat>() || *a <= vec->world().flags().scalarize_threshold))
+            return seq->projs(*a);
     // A value that is neither - a bufferized tensor, say - still unfolds into extracts while it is small enough to
     // scalarize.
     if (l && *l <= vec->world().flags().scalarize_threshold) return vec->projs(*l);
@@ -28,13 +30,13 @@ std::optional<DefVec> elems(const Def* n, const Def* vec) {
 } // namespace
 
 template<fold id>
-const Def* normalize_fold(const Def*, const Def* c, const Def* arg) {
+const Def* normalize_fold(const Def* type, const Def* c, const Def* arg) {
     auto& w         = c->world();
     auto [_, n, f]  = App::uncurry_args<3>(c);
     auto [acc, vec] = arg->projs<2>();
     if constexpr (id == fold::r) std::swap(acc, vec);
 
-    auto es = elems(n, vec);
+    auto es = elems(type, n, vec);
     if (!es) return nullptr;
 
     if constexpr (id == fold::l)
@@ -90,7 +92,7 @@ const Def* normalize_scan(const Def*, const Def* c, const Def* vec) {
         return res;
     }
 
-    auto es = elems(n, vec);
+    auto es = elems(w.type_bool(), n, vec);
     if (!es) return nullptr;
 
     const Def* acc = w.lit_bool(id != scan::exists);
