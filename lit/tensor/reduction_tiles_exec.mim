@@ -1,0 +1,69 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 -fsanitize=address %S/reduction_tiles_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A tile of a reduction equals its epilogue applied to the chunks of its reduction loop folded in order.
+
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+use core.ops.n;
+
+fun mac (acc: I64, xy: [I64, I64])@tt: I64 =
+    let (x, y) = xy;
+    return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
+fun bias_add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (core.wrap.mul 0 (acc, 2I64), x));
+
+lam gemm (k: Nat) (a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, bias: tensor.Tensor 1 5 I64)
+    : tensor.Tensor 2 (4, 5) I64 =
+    map_reduce_post @(2, 1) @(I64, I64, 2, 3, SchedT)
+        ((4, 5), (4, 5, k), mk_sched (3, 0)) @((I64, I64), (2, 2), ((k, 4), (k, 5)), I64, 1, 5)
+        (mac, 1I64, bias_add) (proj_map @(3, 2) (0, 1))
+        ((proj_map @(3, 2) (2, 0), proj_map @(3, 2) (2, 1)), proj_map @(2, 1) 1) ((a, b), bias);
+
+lam gemm_into (k: Nat) (a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, c: tensor.Tensor 2 (4, 5) I64)
+    : tensor.Tensor 2 (4, 5) I64 =
+    map_reduce_post @(2, 0) @(I64, I64, 2, 3, SchedT)
+        ((4, 5), (4, 5, k), mk_sched (3, 0)) @((I64, I64), (2, 2), ((k, 4), (k, 5)), (), (), ())
+        (mac, outs_default @(I64, 2) (4, 5) c, id @I64) (proj_map @(3, 2) (0, 1))
+        ((proj_map @(3, 2) (2, 0), proj_map @(3, 2) (2, 1)), ()) ((a, b), ());
+
+lam chunked (k ks: Nat) (a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, bias: tensor.Tensor 1 5 I64)
+    : tensor.Tensor 2 (2, 3) I64 =
+    let off  = (1, 2);
+    let ext  = (2, 3);
+    let p    = gemm k (a, b, bias);
+    let full = tile_fold (k / ks, ks) (tile_of_init @(I64, I64, 2) (p, off, ext)) (a, b, bias)
+        (λ (acc: tensor.Tensor 2 ext I64, ko: Nat)
+           (a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, bias: tensor.Tensor 1 5 I64)
+           : tensor.Tensor 2 ext I64 =
+            tile_of_partial @(I64, I64, 2) (gemm k (a, b, bias), off, ext, 2, ko, ks, acc));
+    let acc  = tile_of_partial @(I64, I64, 2) (p, off, ext, 2, k / ks * ks, k % ks, full);
+    tile_of_post @(I64, I64, 2) (p, off, ext, acc);
+
+lam chunked_into (k ks: Nat) (a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, c: tensor.Tensor 2 (4, 5) I64)
+    : tensor.Tensor 2 (2, 3) I64 =
+    let off  = (1, 2);
+    let ext  = (2, 3);
+    let p    = gemm_into k (a, b, c);
+    let full = tile_fold (k / ks, ks) (tile_of_init @(I64, I64, 2) (p, off, ext)) (a, b, c)
+        (λ (acc: tensor.Tensor 2 ext I64, ko: Nat)
+           (a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, c: tensor.Tensor 2 (4, 5) I64)
+           : tensor.Tensor 2 ext I64 =
+            tile_of_partial @(I64, I64, 2) (gemm_into k (a, b, c), off, ext, 2, ko, ks, acc));
+    let acc  = tile_of_partial @(I64, I64, 2) (p, off, ext, 2, k / ks * ks, k % ks, full);
+    tile_of_post @(I64, I64, 2) (p, off, ext, acc);
+
+extern fun whole (k: Nat, a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, bias: tensor.Tensor 1 5 I64)
+    : tensor.Tensor 2 (2, 3) I64 =
+    return (tile_of (gemm k (buf a, buf b, buf bias), (1, 2), (2, 3)));
+extern fun split (k: Nat, a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, bias: tensor.Tensor 1 5 I64)
+    : tensor.Tensor 2 (2, 3) I64 =
+    return (chunked (k, 3) (buf a, buf b, buf bias));
+extern fun split7 (a: tensor.Tensor 2 (7, 4) I64, b: tensor.Tensor 2 (7, 5) I64, bias: tensor.Tensor 1 5 I64)
+    : tensor.Tensor 2 (2, 3) I64 =
+    return (chunked (7, 3) (buf a, buf b, buf bias));
+extern fun split_into (k: Nat, a: tensor.Tensor 2 (k, 4) I64, b: tensor.Tensor 2 (k, 5) I64, c: tensor.Tensor 2 (4, 5) I64)
+    : tensor.Tensor 2 (2, 3) I64 =
+    return (chunked_into (k, 2) (buf a, buf b, buf c));

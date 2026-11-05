@@ -1,0 +1,20 @@
+// RUN: %mim --no-opt %s -o - | %FileCheck %s
+
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+
+fun keep (_ x: I64)@tt: I64 = return x;
+
+extern fun dense (a: tensor.Tensor 1 8 I64): Bool =
+    let p = map_reduce (8, 8) (keep, 0I64) (affine.id @1) (affine.id @1,) (buf a);
+    return (tile_legal (p, 2, 3));
+
+// A producer that is not a map_reduce_post leaves the question open.
+extern fun opaque (a: tensor.Tensor 1 8 I64): Bool = return (tile_legal (buf a, 2, 3));
+
+// CHECK-LABEL: extern fun dense
+// CHECK: return tt;
+// CHECK-LABEL: extern fun opaque
+// CHECK: tensor.tile_legal

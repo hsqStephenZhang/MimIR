@@ -311,7 +311,8 @@ const Def* normalize_group_root(const Def*, const Def*, const Def* producer) {
     return w.lit_ff();
 }
 
-ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* box_cap) {
+ProducerTile
+producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* box_cap, const ReductionCut* cut) {
     auto app = graph::map_reduce(producer);
     if (!app) return {nullptr, "producer is not a map_reduce_post"};
     auto mr  = btensor::MapRedPost::of(app->callee()->as<App>());
@@ -353,6 +354,16 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, 
     for (u64 d = ro; d != rn; ++d)
         if (Lit::isa(lo->proj(rn, d)) != 0 || size->proj(rn, d) != mr.Sr->proj(rn, d))
             return {nullptr, "write preimage cuts a reduction dimension"};
+    if (cut) {
+        if (cut->loop < ro || cut->loop >= rn) return {nullptr, "reduction cut names no reduction loop"};
+        if (box_cap) return {nullptr, "a reduction cut takes no storage cap"};
+        auto at = [&](const Def* box, const Def* value) {
+            return w.tuple(DefVec(rn, [&](size_t d) { return d == cut->loop ? value : box->proj(rn, d); }));
+        };
+        lo   = at(lo, cut->k0);
+        size = at(size, cut->k);
+        cap  = at(cap, cut->k);
+    }
 
     auto output_cap = ext;
     if (box_cap) {
@@ -368,6 +379,7 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, 
     } else if (!lit_projs(ext, ro) || !lit_projs(size, rn)) {
         cap        = w.tuple(DefVec(rn, [&](size_t d) -> const Def* {
             auto bound = cap->proj(rn, d);
+            if (d >= ro) return size->proj(rn, d);
             if (Lit::isa(bound)) return bound;
             if (auto upper = nat_upper(bound)) return w.lit_nat(*upper);
             return source_loop_cap->proj(rn, d);
@@ -421,11 +433,14 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, 
     };
     if (!boxes(rks->nis, mr.Ris, mr.Sis, mr.maps, mr.Tis, values, mr.Rn, lo, size, cap, shapes, maps, inputs))
         return {nullptr, "input map does not beta-reduce or has symbolic rank"};
-    if (!boxes(rks->nps, mr.Rps, mr.Sps, mr.post_maps, mr.Tps, post_values, mr.Ro, off, ext, output_cap, post_shapes,
-               post_maps, post_inputs))
+    if (!cut
+        && !boxes(rks->nps, mr.Rps, mr.Sps, mr.post_maps, mr.Tps, post_values, mr.Ro, off, ext, output_cap, post_shapes,
+                  post_maps, post_inputs))
         return {nullptr, "post map does not beta-reduce or has symbolic rank"};
     auto init = mr.init;
-    if (auto outs = tensor_init(mr)) {
+    if (cut) {
+        init = w.app(w.app(w.app(w.annex<outs_default>(), {mr.To, mr.Ro}), ext), cut->acc);
+    } else if (auto outs = tensor_init(mr)) {
         auto cells = w.tuple(DefVec(rn, [&](size_t d) { return d < ro ? size->proj(rn, d) : w.lit_nat_1(); }));
         auto box   = image(outs->map, mr.Rn, mr.Ro, lo, cells, outs->shape);
         if (Axm::isa<affine::image>(box)) return {nullptr, "outs map does not beta-reduce"};
@@ -433,7 +448,11 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, 
         auto value = slice(mr.To, mr.Ro, outs->shape, outs->outs, start, extent);
         init       = w.tuple({extent, shift(outs->map, mr.Rn, mr.Ro, lo, start), value});
     }
-    auto ins   = w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), mr.Tps, mr.Rps, w.tuple(post_shapes)});
+    auto ins    = cut ? w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), w.tuple(), w.tuple(), w.tuple()})
+                      : w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), mr.Tps, mr.Rps, w.tuple(post_shapes)});
+    auto counts = cut ? w.tuple({mr.nis, w.lit_nat_0()}) : mr.nis_nps;
+    auto meta   = cut ? w.tuple({mr.To, mr.To, mr.Ro, mr.Rn, mr.TSched}) : mr.meta;
+    auto post   = cut ? w.app(w.annex<tensor::id>(), mr.To) : mr.post;
     auto write = shift(mr.map_out, mr.Rn, mr.Ro, lo, off);
     auto sched = schedule;
     if (cap != size || output_cap != ext) {
@@ -442,7 +461,7 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, 
     }
     const Def* result = w.annex<map_reduce_post>();
     for (auto arg :
-         {mr.nis_nps, mr.meta, w.tuple({ext, size, sched}), ins, init->type(), w.tuple({mr.comb, init, mr.post}), write,
+         {counts, meta, w.tuple({ext, size, sched}), ins, init->type(), w.tuple({mr.comb, init, post}), write,
           w.tuple({w.tuple(maps), w.tuple(post_maps)}), w.tuple({w.tuple(inputs), w.tuple(post_inputs)})})
         result = w.app(result, arg);
     return {result, {}};
@@ -471,6 +490,72 @@ const Def* normalize_tile_of_box(const Def*, const Def* callee, const Def* arg) 
     if (auto spec = tile_spec<tile_of_box_ref>(callee, arg)) return spec;
     auto [producer, off, ext, cap] = arg->projs<4>();
     return producer_tile(producer, off, ext, cap).value;
+}
+
+ProducerTile producer_init(const Def* producer, const Def* off, const Def* ext) {
+    auto app = graph::map_reduce(producer);
+    if (!app) return {nullptr, "producer is not a map_reduce_post"};
+    auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto& w = producer->world();
+    if (auto outs = tensor_init(mr)) {
+        if (outs->map != mr.map_out) return {nullptr, "accumulator is not stored in the output layout"};
+        auto call = w.app(w.app(w.annex<tensor::slice>(), {mr.To, mr.Ro}), outs->shape);
+        call      = w.app(call, {off, w.pack(mr.Ro, w.lit_nat_1()), ext});
+        return {w.app(call, outs->outs), {}};
+    }
+    return {w.app(w.app(w.annex<tensor::splat>(), {mr.To, mr.Ro}), {ext, mr.init}), {}};
+}
+
+ProducerTile producer_post(const Def* producer, const Def* off, const Def* ext, const Def* acc) {
+    auto app = graph::map_reduce(producer);
+    if (!app) return {nullptr, "producer is not a map_reduce_post"};
+    auto mr      = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto& w      = producer->world();
+    auto posts   = app->arg(2, 1);
+    auto builder = w.app(w.annex<post_tile>(), {mr.To, mr.Tp, mr.Ro, mr.nps, mr.Tps, mr.Rps, mr.Sps});
+    builder      = w.app(builder, {off, ext, mr.post, mr.post_maps, posts});
+    return {w.app(builder, acc), {}};
+}
+
+const Def* normalize_tile_legal(const Def*, const Def*, const Def* arg) {
+    auto [producer, off, ext] = arg->projs<3>();
+    if (!graph::map_reduce(producer)) return nullptr;
+    return arg->world().lit_bool(producer_tile(producer, off, ext).value != nullptr);
+}
+
+namespace {
+
+/// Whether @p producer is a `map_reduce_post` whose accumulator and element types are `T` and `U` of @p callee.
+bool reduction_types(const Def* callee, const Def* producer) {
+    auto app = graph::map_reduce(producer);
+    if (!app) return false;
+    auto mr        = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto [T, U, _] = callee->as<App>()->uncurry_args<2>()[0]->projs<3>();
+    if (!Check::test_alpha(T, mr.To) || !Check::test_alpha(U, mr.Tp))
+        callee->blame("reduction tile types {} and {} differ from the producer's {} and {}", T, U, mr.To, mr.Tp).bail();
+    return true;
+}
+
+} // namespace
+
+const Def* normalize_tile_of_init(const Def*, const Def* callee, const Def* arg) {
+    auto [producer, off, ext] = arg->projs<3>();
+    if (!reduction_types(callee, producer)) return nullptr;
+    return producer_init(producer, off, ext).value;
+}
+
+const Def* normalize_tile_of_partial(const Def*, const Def* callee, const Def* arg) {
+    auto [producer, off, ext, loop, k0, k, acc] = arg->projs<7>();
+    auto index                                  = Lit::isa(loop);
+    if (!index || !reduction_types(callee, producer)) return nullptr;
+    auto cut = ReductionCut{*index, k0, k, acc};
+    return producer_tile(producer, off, ext, nullptr, &cut).value;
+}
+
+const Def* normalize_tile_of_post(const Def*, const Def* callee, const Def* arg) {
+    auto [producer, off, ext, acc] = arg->projs<4>();
+    if (!reduction_types(callee, producer)) return nullptr;
+    return producer_post(producer, off, ext, acc).value;
 }
 
 namespace {

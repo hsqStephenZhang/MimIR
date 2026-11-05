@@ -1535,6 +1535,35 @@ priv anx lam tile_of_box_ref {T: *, r: Nat} {s: «r; Nat»}
                             (p: Tensor r s T, off ext cap: «r; Nat»): Tensor r ext T =
     tile_of_ref @(T, r) @s (p, off, ext);
 ///
+/// ### Reduction tiles
+///
+/// The output tile `(off, ext)` of a `map_reduce_post` `producer` also reads as
+/// `tile_of_post (…, fold (tile_of_partial (…, loop, k0, k, ·)) (tile_of_init (…)))`
+/// over consecutive chunks `[k0, k0 + k)` of reduction loop `loop`, folded in their original order.
+/// `T` is the producer's accumulator type and `U` its element type.
+/// `tile_legal` holds when `tile_of` computes the tile itself instead of slicing the whole producer.
+///
+axm tile_legal: {T: *, r: Nat} → {s: «r; Nat»}
+              → [producer: Tensor r s T, off ext: «r; Nat»] → Bool, normalize_tile_legal;
+axm tile_of_init: {T U: *, r: Nat} → {s: «r; Nat»}
+                → [producer: Tensor r s U, off ext: «r; Nat»] → Tensor r ext T, normalize_tile_of_init;
+axm tile_of_partial: {T U: *, r: Nat} → {s: «r; Nat»}
+                   → [producer: Tensor r s U, off ext: «r; Nat», loop k0 k: Nat, acc: Tensor r ext T]
+                   → Tensor r ext T, normalize_tile_of_partial;
+axm tile_of_post: {T U: *, r: Nat} → {s: «r; Nat»}
+                → [producer: Tensor r s U, off ext: «r; Nat», acc: Tensor r ext T] → Tensor r ext U,
+                  normalize_tile_of_post;
+
+priv anx lam post_tile {To Tp: *, ro nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+    (off ext: «ro; Nat», post: Fn [To, «j: nps; Tps#j»] → Tp,
+     post_maps: «j: nps; «ro; affine.Index» → «Rps#j; affine.Index»»,
+     post_is: «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)»)
+    (acc: Tensor ro ext To): Tensor ro ext Tp =
+    map_reduce_post @(1, nps) @(To, Tp, ro, ro, SchedT) (ext, ext, mk_sched (ro, 0))
+        @(To, ro, ext, Tps, Rps, Sps)
+        (tensor_copy @To, ⊥:To, post) (affine.id @ro)
+        (affine.id @ro, ‹j: nps; tile_shift @(ro, Rps#j) (post_maps#j) (off, ‹Rps#j; 0›)›) (acc, post_is);
+///
 /// ### slice_impl
 ///
 priv anx lam slice_impl {T: *, r: Nat} (s_in: «r; Nat»)

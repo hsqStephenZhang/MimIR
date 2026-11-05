@@ -73,7 +73,22 @@ struct ProducerTile {
     std::string reason;
 };
 
-ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* box_cap = nullptr);
+/// Restricts reduction loop `loop` of a tile to `[k0, k0 + k)`, continuing from the output tile `acc` without the
+/// epilogue.
+struct ReductionCut {
+    u64 loop;
+    const Def *k0, *k, *acc;
+};
+
+ProducerTile producer_tile(const Def* producer,
+                           const Def* off,
+                           const Def* ext,
+                           const Def* box_cap      = nullptr,
+                           const ReductionCut* cut = nullptr);
+/// The epilogue of @p producer applied to its folded output tile @p acc at `(off, ext)`.
+ProducerTile producer_post(const Def* producer, const Def* off, const Def* ext, const Def* acc);
+/// The accumulator a reduction over the output tile `(off, ext)` of @p producer starts from.
+ProducerTile producer_init(const Def* producer, const Def* off, const Def* ext);
 ProducerTile reverse_tiles(const Def* producer, const Def* consumers, const Def* dim, const Def* tile_size);
 ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params);
 ProducerTile row_group(const Def* producer, DefVec& members);

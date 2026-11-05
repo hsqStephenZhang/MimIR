@@ -857,17 +857,21 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         rewrite(old_mr.maps_all));
     if (auto clipped = Axm::isa<btensor::clip_sched>(mr.sched)) {
         auto [valid, output_cap, loop_cap, schedule] = clipped->args<4>();
+        auto ro = Lit::as(mr.Ro), rn = Lit::as(mr.Rn);
         // A cap fixed while the tile extent was still a variable may bound the specialized extent instead.
+        // The guard covers parallel loops only, so reduction loops run their exact extent.
         auto bounded = [&](const Def* cap, const Def* extent, u64 n) {
             return w.tuple(DefVec(n, [&](size_t d) -> const Def* {
+                if (d >= ro) return extent->proj(n, d);
                 if (Lit::isa(cap->proj(n, d))) return cap->proj(n, d);
                 if (auto upper = nat_upper(extent->proj(n, d))) return w.lit_nat(*upper);
                 return cap->proj(n, d);
             }));
         };
-        output_cap = bounded(output_cap, mr.So, Lit::as(mr.Ro));
-        loop_cap   = bounded(loop_cap, mr.Sr, Lit::as(mr.Rn));
-        if (!lit_projs(output_cap, Lit::as(mr.Ro)) || !lit_projs(loop_cap, Lit::as(mr.Rn)))
+        output_cap        = bounded(output_cap, mr.So, ro);
+        loop_cap          = bounded(loop_cap, mr.Sr, rn);
+        auto parallel_cap = w.tuple(DefVec(ro, [&](size_t d) { return loop_cap->proj(rn, d); }));
+        if (!lit_projs(output_cap, ro) || !lit_projs(parallel_cap, ro))
             app->blame("tensor tile storage and loop caps must be literal").bail();
         mr.So                = output_cap;
         mr.Sr                = loop_cap;
