@@ -1028,10 +1028,9 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
         auto component = off->proj(rank, d);
         return Lit::isa(component) == 0 ? old.lit_nat_0() : origin->proj(rank, d);
     }));
-    auto literal_extent = Rewriter(old).rewrite(ext);
     const Def* root;
     if (auto lam = plan.body->isa<Lam>(); lam && lam->is_set())
-        root = old.app(lam->reduce(old.tuple({specialized, literal_extent})).back(), inputs);
+        root = old.app(lam->reduce(old.tuple({specialized, ext})).back(), inputs);
     else
         plan.body->blame("tensor.tiled body must be a defined lambda").bail();
     auto pending = fe::Restore(pending_, {});
@@ -1056,7 +1055,7 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
         substitutions.map(var, var);
     for (u64 i = 0; i != plan.count; ++i) {
         auto value            = plan.multiple ? root->proj(plan.count, i) : root;
-        auto [origin, extent] = plan.box(i, specialized, literal_extent);
+        auto [origin, extent] = plan.box(i, specialized, ext);
         auto shape            = plan.shapes->proj(plan.count, i);
         auto r                = plan.ranks->proj(plan.count, i);
         auto target_origin    = rewrite(origin);
@@ -1103,13 +1102,14 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     auto shape = plan.shape, tiles = plan.tiles, inputs = plan.inputs;
     auto input_type = inputs->type();
     auto rank       = std::optional<u64>(plan.rank);
-    auto sizes = fe::Vector<u64>(*rank), steps = fe::Vector<u64>(*rank);
+    auto& old       = old_world();
+    auto sizes      = fe::Vector<std::optional<u64>>(*rank);
+    auto steps      = fe::Vector<u64>(*rank);
     for (size_t d = 0; d != *rank; ++d) {
-        auto size = Lit::isa(shape->proj(*rank, d)), tile = Lit::isa(tiles->proj(*rank, d));
-        if (!size || !tile)
-            app->blame("tensor.tiled destination lowering requires literal shapes and tile sizes").bail();
-        sizes[d] = *size;
-        steps[d] = std::min(*size, *tile);
+        auto tile = Lit::isa(tiles->proj(*rank, d));
+        if (!tile) app->blame("tensor.tiled lowering requires literal tile sizes").bail();
+        sizes[d] = Lit::isa(shape->proj(*rank, d));
+        steps[d] = sizes[d] ? std::min(*sizes[d], *tile) : *tile;
     }
     const Def* mem = destination ? destination->mem : fresh_mem();
     DefVec buffers(plan.count);
@@ -1136,30 +1136,50 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     bind_new(run->has_var());
     if (auto var = parameter->has_var()) bind_old(var);
     map(proxy, runtime->proj(2, 1));
+    // Offsets live in the new world; extents stay in the old one, where the body is specialized to them.
     DefVec offsets(*rank), extents(*rank);
     std::function<const Def*(size_t, const Def*, const Def*)> emit
         = [&](size_t d, const Def* acc, const Def* exit) -> const Def* {
         if (d == *rank) {
             auto off    = w.tuple(offsets);
-            auto extent = w.tuple(extents);
+            auto extent = old.tuple(extents);
             auto result = lower_tile_body(plan, off, extent, proxy, acc->projs(plan.count + 1), &scratch, destination);
             return w.app(exit, result);
         }
-        if (!sizes[d]) return w.app(exit, acc);
-        auto count      = sizes[d] / steps[d];
-        auto tail       = sizes[d] % steps[d];
+        if (sizes[d] == 0) return w.app(exit, acc);
+        const Def* count;
         const Def* next = exit;
-        if (tail) {
-            auto after = w.mut_con(acc->type())->set("tileTail");
-            offsets[d] = w.lit_nat(count * steps[d]);
-            extents[d] = w.lit_nat(tail);
-            after->set(true, emit(d + 1, after->var(), exit));
+        if (auto size = sizes[d]) {
+            count     = w.lit_i64(*size / steps[d]);
+            auto tail = *size % steps[d];
+            if (tail) {
+                auto after = w.mut_con(acc->type())->set("tileTail");
+                offsets[d] = w.lit_nat(*size - tail);
+                extents[d] = old.lit_nat(tail);
+                after->set(true, emit(d + 1, after->var(), exit));
+                next = after;
+            }
+        } else {
+            auto extent  = shape->proj(*rank, d);
+            auto step    = w.lit_nat(steps[d]);
+            auto runtime = rewrite(extent);
+            auto rem     = w.call(core::nat::rem, Defs{runtime, step});
+            count        = w.call<core::bitcast>(w.type_i64(), w.call(core::nat::div, Defs{runtime, step}));
+            auto after   = w.mut_con(acc->type())->set("tileTail");
+            auto tail    = w.mut_con(acc->type())->set("tileTailBody");
+            auto skip    = w.mut_con(acc->type())->set("tileTailSkip");
+            offsets[d]   = w.call(core::nat::sub, Defs{runtime, rem});
+            extents[d]   = old.call(core::nat::rem, Defs{extent, old.lit_nat(steps[d])});
+            tail->set(true, emit(d + 1, tail->var(), exit));
+            skip->app(true, exit, skip->var());
+            auto any = w.call(core::ncmp::ne, Defs{rem, w.lit_nat_0()});
+            after->app(true, w.extract(w.tuple({skip, tail}), any), after->var());
             next = after;
         }
-        auto [loop, loop_call]     = affine::counting_for(w.lit_i64(count), acc, next, w.sym("tileGrid"));
+        auto [loop, loop_call]     = affine::counting_for(count, acc, next, w.sym("tileGrid"));
         auto [index, state, yield] = loop->vars<3>();
         offsets[d] = w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), w.lit_nat(steps[d])});
-        extents[d] = w.lit_nat(steps[d]);
+        extents[d] = old.lit_nat(steps[d]);
         loop->set(true, emit(d + 1, state, yield));
         return loop_call;
     };

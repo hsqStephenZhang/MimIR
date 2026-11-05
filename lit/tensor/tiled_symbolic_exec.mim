@@ -1,0 +1,51 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 -fsanitize=address %S/tiled_symbolic_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Regions over a runtime extent: full tiles run in a loop of runtime length and the tail tile, if any, once.
+
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+use core.ops.n;
+
+fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+fun add (a b: I64)@tt: I64 = return (core.wrap.add 0 (a, b));
+lam first (i _: affine.Index): affine.Index = i;
+
+extern fun rows (n: Nat, x: tensor.Tensor 2 (n, 3) I64): tensor.Tensor 2 (n, 3) I64 =
+    return (tiled ((n, 3), (2, 3)) (buf x)
+        (λ (off ext: «2; Nat») (x: tensor.Tensor 2 (n, 3) I64): tensor.Tensor 2 ext I64 =
+            map_reduce (ext, ext) (twice, 0I64) (affine.id @2) (affine.id @2,) (slice (n, 3) (off, (1, 1), ext) x)));
+
+extern fun grid (n: Nat, x: tensor.Tensor 2 (n, 7) I64): tensor.Tensor 2 (n, 7) I64 =
+    return (tiled ((n, 7), (2, 3)) (buf x)
+        (λ (off ext: «2; Nat») (x: tensor.Tensor 2 (n, 7) I64): tensor.Tensor 2 ext I64 =
+            map_reduce (ext, ext) (twice, 0I64) (affine.id @2) (affine.id @2,) (slice (n, 7) (off, (1, 1), ext) x)));
+
+extern fun paired (n: Nat, x: tensor.Tensor 2 (n, 3) I64): [tensor.Tensor 2 (n, 3) I64, tensor.Tensor 1 n I64] =
+    return (tiled_multi @(2, 1, (I64, I64), (2, 1)) (((n, 3), n), n, 2) (0_2, 0_1) (buf x)
+        (λ (off ext: Nat) (x: tensor.Tensor 2 (n, 3) I64): [tensor.Tensor 2 (ext, 3) I64, tensor.Tensor 1 ext I64] =
+            let p = map_reduce ((ext, 3), (ext, 3)) (twice, 0I64) (affine.id @2) (affine.id @2,)
+                (slice (n, 3) ((off, 0), (1, 1), (ext, 3)) x);
+            let q = map_reduce (ext, (ext, 3)) (add, 0I64) first (affine.id @2,) p;
+            (p, q)));
+
+extern fun nested (n: Nat, x: tensor.Tensor 2 (n, 6) I64): tensor.Tensor 2 (n, 6) I64 =
+    return (tiled ((n, 6), (4, 6)) (buf x)
+        (λ (off ext: «2; Nat») (x: tensor.Tensor 2 (n, 6) I64): tensor.Tensor 2 ext I64 =
+            tiled (ext, (3, 4)) x
+                (λ (o e: «2; Nat») (x: tensor.Tensor 2 (n, 6) I64): tensor.Tensor 2 e I64 =
+                    map_reduce (e, e) (twice, 0I64) (affine.id @2) (affine.id @2,)
+                        (slice (n, 6) ((off#ff + o#ff, off#tt + o#tt), (1, 1), e) x))));
+
+extern fun folded (n: Nat): tensor.Tensor 1 3 I64 =
+    return (tile_fold (n, 2) (splat (3, 3I64)) ()
+        (λ (acc: tensor.Tensor 1 3 I64, off: Nat) (): tensor.Tensor 1 3 I64 =
+        fun combine (x value: I64)@tt: I64 =
+            return (core.wrap.add 0 (core.wrap.mul 0 (x, 10I64), value));
+        map_reduce_post @(1, 0) @(I64, I64, 1, 1, SchedT)
+            (3, 3, mk_sched (1, 0)) @(I64, 1, 3, (), (), ())
+            (combine, outs_default @(I64, 1) 3 acc, id @I64)
+            (affine.id @1) (affine.id @1, ()) (splat (3, core.bitcast I64 off), ())));
