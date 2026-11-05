@@ -983,7 +983,8 @@ const Def* World::inj(const Def* type, const Def* value) {
 
     if (type->isa<Variant>())
         value->blame("injecting into variant type `{}` requires the index of a case", type).bail();
-    if (type->isa<Nom>()) return name(type, value);
+    if (type->isa<Nom>())
+        return value->type() == type ? value : name(type, value); // a Match arm re-injects a narrow case
     if (auto join = type->isa<Join>()) {
         // Hole%s are resolved only once no case matches outright, so a mere search never commits to one.
         if (!join->find_case(value) && !join->find_case(value, true))

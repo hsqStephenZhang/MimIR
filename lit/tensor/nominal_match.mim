@@ -1,0 +1,18 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A match arm over one case of a union of nominal types receives the value as it is, not re-wrapped.
+
+plugin tensor;
+plugin math;
+
+use tensor;
+
+lam select (input: Tensor 1 2 I64 ∪ Tensor 1 2 math.F32): Nat =
+    match input with
+        | indices: Tensor 1 2 I64 => 0
+        | probabilities: Tensor 1 2 math.F32 => 1;
+
+extern fun reproduce (input: Tensor 1 2 I64): Nat =
+    return (select (input inj Tensor 1 2 I64 ∪ Tensor 1 2 math.F32));
+
+// CHECK: extern con reproduce
