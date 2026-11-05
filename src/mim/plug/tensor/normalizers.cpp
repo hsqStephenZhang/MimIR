@@ -448,12 +448,27 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, 
     return {result, {}};
 }
 
-const Def* normalize_tile_of(const Def*, const Def*, const Def* arg) {
+namespace {
+
+/// Under `tensor:tile-ref=1`, @p callee applied to @p arg as its specification @p Ref, a slice of the whole producer.
+template<class Ref>
+const Def* tile_spec(const Def* callee, const Def* arg) {
+    auto& w = arg->world();
+    if (!w.driver().arg_nat("tensor", "tile-ref").value_or(0)) return nullptr;
+    auto [meta, shape] = callee->as<App>()->uncurry_args<2>();
+    return w.app(w.app(w.app(w.annex<Ref>(), meta), shape), arg);
+}
+
+} // namespace
+
+const Def* normalize_tile_of(const Def*, const Def* callee, const Def* arg) {
+    if (auto spec = tile_spec<tile_of_ref>(callee, arg)) return spec;
     auto [producer, off, ext] = arg->projs<3>();
     return producer_tile(producer, off, ext).value;
 }
 
-const Def* normalize_tile_of_box(const Def*, const Def*, const Def* arg) {
+const Def* normalize_tile_of_box(const Def*, const Def* callee, const Def* arg) {
+    if (auto spec = tile_spec<tile_of_box_ref>(callee, arg)) return spec;
     auto [producer, off, ext, cap] = arg->projs<4>();
     return producer_tile(producer, off, ext, cap).value;
 }

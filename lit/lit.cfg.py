@@ -30,7 +30,8 @@ if roundtrip:
     # `UNSUPPORTED: roundtrip` opts out an input that only compiles with flags from its RUN lines.
     config.available_features.add('roundtrip')
 
-config.substitutions.append(('%mim', config.mim))
+# `--param mim=<executable>` substitutes another compiler, e.g. a wrapper that adds flags to select a reference path.
+config.substitutions.append(('%mim', lit_config.params.get('mim', config.mim)))
 config.substitutions.append(('%FileCheck', '"{}"'.format(config.filecheck)))
 # Parent of the plugin directory, so that a test can spell a plugin as the path `mim/<plugin>`.
 # os.path.join would mix in a backslash on Windows, which the external bash then swallows as an escape.
