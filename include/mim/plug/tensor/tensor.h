@@ -190,6 +190,9 @@ inline std::optional<fe::Vector<u64>> lit_projs(const Def* def, u64 n) {
     return res;
 }
 
+/// A literal `u` with `x ≤ u` for every value the `Nat` term @p x may take, if its structure bounds it.
+std::optional<u64> nat_upper(const Def* x);
+
 /// @p perm as literals, if it is literal.
 inline std::optional<fe::Vector<u64>> lit_perm(const Def* perm) {
     if (auto r = Lit::isa(perm->arity())) return lit_projs(perm, *r);

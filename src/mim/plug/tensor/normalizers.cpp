@@ -60,6 +60,74 @@ const Def* read_through(const Def* base, const Def* index) {
 
 } // namespace
 
+namespace {
+
+/// `min (a, b)` as built by `select (a < b, a, b)`.
+std::optional<std::pair<const Def*, const Def*>> isa_min(const Def* x) {
+    if (auto ex = x->isa<Extract>())
+        if (auto tuple = ex->tuple()->isa<Tuple>(); tuple && tuple->num_ops() == 2)
+            if (auto lt = Axm::isa(core::ncmp::l, ex->index())) {
+                auto [a, b] = lt->args<2>();
+                if (tuple->op(1) == a && tuple->op(0) == b) return std::pair{a, b};
+            }
+    return {};
+}
+
+std::optional<u64> min_upper(std::optional<u64> a, std::optional<u64> b) {
+    if (a && b) return std::min(*a, *b);
+    return a ? a : b;
+}
+
+/// An upper bound of `a − b`; tile bounds take the form `min (lo + ext, s) − lo`.
+std::optional<u64> sub_upper(const Def* a, const Def* b) {
+    if (auto add = Axm::isa(core::nat::add, a)) {
+        auto [x, y] = add->args<2>();
+        if (y == b) return nat_upper(x);
+        if (x == b) return nat_upper(y);
+    }
+    if (auto m = isa_min(a)) return min_upper(sub_upper(m->first, b), sub_upper(m->second, b));
+    return nat_upper(a);
+}
+
+} // namespace
+
+std::optional<u64> nat_upper(const Def* x) {
+    if (auto l = Lit::isa(x)) return l;
+    if (auto op = Axm::isa<core::nat>(x)) {
+        auto [a, b] = op->args<2>();
+        auto ua = nat_upper(a), ub = nat_upper(b);
+        auto lb = Lit::isa(b);
+        u64 r;
+        switch (op.id()) {
+            case core::nat::add:
+                if (ua && ub && !__builtin_add_overflow(*ua, *ub, &r)) return r;
+                return {};
+            case core::nat::mul:
+                if (ua && ub && !__builtin_mul_overflow(*ua, *ub, &r)) return r;
+                return {};
+            case core::nat::sub: return sub_upper(a, b);
+            case core::nat::div:
+                if (ua && lb && *lb) return *ua / *lb;
+                return {};
+            case core::nat::rem:
+                if (lb && *lb) return min_upper(ua, *lb - 1);
+                return {};
+        }
+    }
+    if (auto m = isa_min(x)) return min_upper(nat_upper(m->first), nat_upper(m->second));
+    if (auto ex = x->isa<Extract>())
+        if (auto tuple = ex->tuple()->isa<Tuple>()) {
+            std::optional<u64> result = 0;
+            for (auto op : tuple->ops()) {
+                auto u = nat_upper(op);
+                if (!u) return {};
+                result = std::max(*result, *u);
+            }
+            return result;
+        }
+    return {};
+}
+
 void check_region_inputs(const Def* function, const Def* region) {
     auto outer = function->isa<Lam>();
     if (!outer || !outer->is_set()) return;
@@ -298,12 +366,15 @@ ProducerTile producer_tile(const Def* producer, const Def* off, const Def* ext, 
         cap        = bound->proj(4, 2);
         output_cap = box_cap;
     } else if (!lit_projs(ext, ro) || !lit_projs(size, rn)) {
-        cap        = w.tuple(DefVec(rn, [&](size_t d) {
+        cap        = w.tuple(DefVec(rn, [&](size_t d) -> const Def* {
             auto bound = cap->proj(rn, d);
-            return Lit::isa(bound) ? bound : source_loop_cap->proj(rn, d);
+            if (Lit::isa(bound)) return bound;
+            if (auto upper = nat_upper(bound)) return w.lit_nat(*upper);
+            return source_loop_cap->proj(rn, d);
         }));
-        output_cap = w.tuple(DefVec(ro, [&](size_t d) {
+        output_cap = w.tuple(DefVec(ro, [&](size_t d) -> const Def* {
             if (auto requested = ext->proj(ro, d); Lit::isa(requested)) return requested;
+            if (auto upper = nat_upper(ext->proj(ro, d))) return w.lit_nat(*upper);
             return source_output_cap->proj(ro, d);
         }));
     } else {

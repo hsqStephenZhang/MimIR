@@ -10,6 +10,8 @@ extern "C" int64_t* grid(int64_t, int64_t*);
 extern "C" Pair paired(int64_t, int64_t*);
 extern "C" int64_t* nested(int64_t, int64_t*);
 extern "C" int64_t* folded(int64_t);
+extern "C" int64_t* fused(int64_t, int64_t*);
+extern "C" int64_t* fused_grid(int64_t, int64_t*);
 
 static int failures = 0;
 
@@ -26,11 +28,11 @@ static int64_t* input(int64_t cells) {
     return x;
 }
 
-static void doubled(int64_t* (*f)(int64_t, int64_t*), const char* what, int64_t n, int64_t cols) {
+static void doubled(int64_t* (*f)(int64_t, int64_t*), const char* what, int64_t n, int64_t cols, int64_t plus = 0) {
     auto x = input(n * cols);
     auto y = f(n, x);
     for (int64_t i = 0; i != n * cols; ++i)
-        expect(y[i] == 2 * x[i], what, n, i);
+        expect(y[i] == 2 * x[i] + plus, what, n, i);
     std::free(y);
     std::free(x);
 }
@@ -40,6 +42,8 @@ int main() {
         doubled(rows, "rows", n, 3);
         doubled(grid, "grid", n, 7);
         doubled(nested, "nested", n, 6);
+        doubled(fused, "fused", n, 3, 1);
+        doubled(fused_grid, "fused_grid", n, 5, 1);
 
         auto x    = input(n * 3);
         auto pair = paired(n, x);
