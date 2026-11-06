@@ -648,7 +648,8 @@ const Def* Levels::parallel(const Def* anchor,
         tiles[d] = sizes[d] ? w.lit_nat(sizes[d]) : mr.So->proj(ro, d);
         whole &= tiles[d] == mr.So->proj(ro, d);
     }
-    if (whole) return tile(anchor, rest, depth + 1);
+    // The outermost level stays a region even over the whole shape, so tile bodies own every intermediate buffer.
+    if (whole && depth) return tile(anchor, rest, depth + 1);
 
     auto box   = w.sigma({w.arr(mr.Ro, w.type_nat()), w.arr(mr.Ro, w.type_nat())});
     auto probe = w.mut_lam(box, w.type_nat());
@@ -917,6 +918,13 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
     auto group = members_of(members);
     DefSet in_group(group.begin(), group.end());
     Levels realizer(log(), request, in_group, outside, driver().arg_nat("tensor", "strict").value_or(0));
+    if (auto root = graph::map_reduce(op))
+        if (auto ranks = btensor::MapRedPost::of(root->callee()->as<App>()).ranks();
+            ranks && Lit::isa(level_list.front()->proj(4, 0)) != 0) {
+            auto& w = op->world();
+            level_list.insert(level_list.begin(), w.tuple({w.lit_nat_0(), w.pack(ranks->nloops(), w.lit_nat_0()),
+                                                           w.lit_nat_1(), w.lit_nat_0()}));
+        }
     auto value = realizer.tile(op, level_list, 0);
     if (!value) {
         report_tile_request(request, realizer.reason());

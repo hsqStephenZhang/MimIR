@@ -111,5 +111,5 @@ extern fun packed_ab (m: Nat, a: tensor.Tensor 2 (m, 7) I64, b: tensor.Tensor 2 
 // CHECK-DAG: L0 par tiles=(2, 6) tail=cap inputs=3 fused=1 yielded=0
 // CHECK-DAG: L2 par tiles=(1, 4) tail=cap inputs=3 fused=1 yielded=0
 // CHECK-DAG: L0 par tiles=(2, 4) tail=cap inputs=3 fused=0 yielded=0
-// CHECK-DAG: L0 red loop=2 ks=4 tail=peel inputs={{[0-9]+}} fused=1 tail_fused=1
+// CHECK-DAG: L1 red loop=2 ks=4 tail=peel inputs={{[0-9]+}} fused=1 tail_fused=1
 // CHECK-DAG: skip r{{.*}}: its tile storage (k{{.*}}, 2) has no constant bound
