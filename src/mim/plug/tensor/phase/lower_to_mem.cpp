@@ -467,6 +467,18 @@ const Def* LowerToMem::buf_of(const Def* type) {
     return buffer::type_buf(rewrite(r), rewrite(s), rewrite(T));
 }
 
+// Every tile ends within its region, so clamping its end to the region's extent yields the end itself.
+const Def* LowerToMem::rewrite_imm_Extract(const Extract* extract) {
+    auto result = RWPhase::rewrite_imm_Extract(extract);
+    if (auto clamp = result->isa<Extract>())
+        if (auto pair = clamp->tuple()->isa<Tuple>(); pair && pair->num_ops() == 2)
+            for (auto [end, bound] : tile_ends_)
+                if (pair->op(0) == bound && pair->op(1) == end
+                    && clamp->index() == new_world().call(core::ncmp::l, Defs{end, bound}))
+                    return end;
+    return result;
+}
+
 const Def* LowerToMem::rewrite_imm_Nom(const Nom* nom) {
     return is_tensor_type(nom) ? buf_of(nom) : RWPhase::rewrite_imm_Nom(nom);
 }
@@ -1099,11 +1111,10 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
     push();
     bind_old(parameter->has_var());
     map(origin, off);
-    // Every tile ends within its region, so clamping its end to the region's extent yields the end itself.
+    auto ends = fe::Restore(tile_ends_, tile_ends_);
     for (size_t d = 0; d != rank; ++d) {
-        auto end   = old.call(core::nat::add, Defs{specialized->proj(rank, d), ext->proj(rank, d)});
-        auto bound = plan.shape->proj(rank, d);
-        map(old.extract(old.tuple({bound, end}), old.call(core::ncmp::l, Defs{end, bound})), rewrite(end));
+        auto end = old.call(core::nat::add, Defs{specialized->proj(rank, d), ext->proj(rank, d)});
+        tile_ends_.emplace_back(rewrite(end), rewrite(plan.shape->proj(rank, d)));
     }
     const Def* mem = state[0];
     DefVec outputs;

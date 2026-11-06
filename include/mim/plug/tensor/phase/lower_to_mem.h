@@ -36,6 +36,7 @@ private:
     const Def* rewrite_imm_Name(const Name*) override;
     const Def* rewrite_imm_Struc(const Struc*) override;
     const Def* rewrite_imm_App(const App*) override;
+    const Def* rewrite_imm_Extract(const Extract*) override;
     const Def* buf_of(const Def*);
 
     const Def* lower_from_array(const App*);
@@ -90,6 +91,8 @@ private:
     DefMap<const Def*> fresh_memo_;
     DefMap<const Def*> realizations_;
     DefMap<const Def*> storage_shapes_;
+    /// The `(end, extent)` of each dimension of the tiles being lowered, in the new world.
+    std::vector<std::pair<const Def*, const Def*>> tile_ends_;
     Scratch* scratch_ = nullptr;
 };
 
