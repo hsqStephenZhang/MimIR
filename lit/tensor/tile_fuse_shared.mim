@@ -1,0 +1,46 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=2 -X tensor:strict=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_shared_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Fusing a producer must not copy the closed mutables of the fused value.
+// A copy forked the projection's request off its realization, which then reached bufferization unrealized.
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let mode = math.mode.contract;
+let add = math.arith.add mode;
+let R: tensor.Ring = (F32, 0:F32, add, math.arith.mul mode);
+
+lam linear (rows inputs outputs: Nat)
+    (x: tensor.Tensor 2 (rows, inputs) F32, w: tensor.Tensor 2 (outputs, inputs) F32, b: tensor.Tensor 1 (outputs) F32): tensor.Tensor 2 (rows, outputs) F32 =
+    let y = tensor.dot_product R @ (2, 2) @ (1, 0)
+        (1₂, 1₂, (), ()) @ ((rows, inputs), (outputs, inputs)) (x, w);
+    tensor.binary add @ (2, (rows, outputs))
+        (y, tensor.broadcast @ (F32, 2) ((1, outputs), (rows, outputs), tensor.reshape outputs (1, outputs) b));
+
+extern fun mim_model (x: tensor.Tensor 2 (8, 16) F32, p0: tensor.Tensor 2 (48, 16) F32, p1: tensor.Tensor 1 (48) F32): tensor.Tensor 2 (8, 16) F32 =
+    let x = tensor.buf x;
+    let p0 = tensor.frozen (tensor.buf p0);
+    let p1 = tensor.frozen (tensor.buf p1);
+    let qkv = linear (8, 16, 48) (x, p0, p1);
+    let q = tensor.slice @ (F32, 2) (8, 48) ((0, 0), (1, 1), (8, 16)) qkv;
+    let q = tensor.reshape (8, 16) (1, 8, 2, 8) q;
+    let q = tensor.transpose @ (F32, 4) (0₄, 2₄, 1₄, 3₄) @ (1, 8, 2, 8) q;
+    let q = tensor.reshape (1, 2, 8, 8) (2, 8, 8) q;
+    let k = tensor.slice @ (F32, 2) (8, 48) ((0, 16), (1, 1), (8, 16)) qkv;
+    let k = tensor.reshape (8, 16) (1, 8, 2, 8) k;
+    let k = tensor.transpose @ (F32, 4) (0₄, 2₄, 1₄, 3₄) @ (1, 8, 2, 8) k;
+    let k = tensor.reshape (1, 2, 8, 8) (2, 8, 8) k;
+    let v = tensor.slice @ (F32, 2) (8, 48) ((0, 32), (1, 1), (8, 16)) qkv;
+    let v = tensor.reshape (8, 16) (1, 8, 2, 8) v;
+    let v = tensor.transpose @ (F32, 4) (0₄, 2₄, 1₄, 3₄) @ (1, 8, 2, 8) v;
+    let v = tensor.reshape (1, 2, 8, 8) (2, 8, 8) v;
+    let scores = tensor.dot_product R @ (3, 3) @ (1, 1) (2₃, 2₃, 0₃, 0₃) @ ((2, 8, 8), (2, 8, 8)) (q, k);
+    let probabilities = tensor.softmax mode @ math.f32 @ 3 2₃ @ (2, 8, 8) scores;
+    let context = tensor.dot_product R @ (3, 3) @ (1, 1) (2₃, 1₃, 0₃, 0₃) @ ((2, 8, 8), (2, 8, 8)) (probabilities, v);
+    let context = tensor.reshape (2, 8, 8) (1, 2, 8, 8) context;
+    let context = tensor.transpose @ (F32, 4) (0₄, 2₄, 1₄, 3₄) @ (1, 2, 8, 8) context;
+    return (tensor.reshape (1, 8, 2, 8) (8, 16) context);

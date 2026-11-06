@@ -112,6 +112,33 @@ public:
     const Def* rewrite_mut(Def* mut) final { return map(mut, mut); }
 };
 
+/// Substitutes within one world and rebuilds only the mutables that reach a substituted Def.
+/// Rebuilding any other mutable, such as a record type, would fork the identity of every term built on it.
+class Substitute : public Rewriter {
+public:
+    using Rewriter::Rewriter;
+    const Def* substitute(const Def* old_def, const Def* new_def) {
+        targets_.insert(old_def);
+        return map(old_def, new_def);
+    }
+    const Def* rewrite_mut(Def* mut) final { return reaches(mut) ? Rewriter::rewrite_mut(mut) : map(mut, mut); }
+
+private:
+    bool reaches(const Def* root) {
+        DefSet seen{root};
+        for (DefVec pending{root}; !pending.empty();) {
+            auto def = pending.back();
+            pending.pop_back();
+            if (targets_.contains(def)) return true;
+            for (auto dep : def->deps())
+                if (dep && seen.insert(dep).second) pending.push_back(dep);
+        }
+        return false;
+    }
+
+    DefSet targets_;
+};
+
 /// @p value as the body of a region: @p var becomes @p binder and each of @p inputs a projection of @p ins.
 const Def* close(const Def* value, const Var* var, const Def* binder, const DefVec& inputs, const Def* ins) {
     DefVec composites;
@@ -375,6 +402,20 @@ const Def* build(const Def* builder, std::initializer_list<const Def*> groups) {
     return builder;
 }
 
+/// Whether the immutable term @p def is computed from @p target.
+bool depends_on(const Def* def, const Def* target) {
+    DefSet seen{def};
+    for (DefVec pending{def}; !pending.empty();) {
+        auto d = pending.back();
+        pending.pop_back();
+        if (d == target) return true;
+        if (d->isa_mut()) continue;
+        for (auto op : d->ops())
+            if (op && seen.insert(op).second) pending.push_back(op);
+    }
+    return false;
+}
+
 const Def* slice_box_of(const Def* tensor, const Def* off, const Def* ext, const Def* cap) {
     auto& w   = tensor->world();
     auto type = *TensorType::isa(tensor->type());
@@ -612,10 +653,10 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
             log_.d("tensor.tile_fuse {} skip {}: its tile storage {} has no constant bound", op_, p, storage(tile));
             continue;
         }
-        Rewriter substitute(w);
+        Substitute substitute(w);
         for (auto free : result.value->free_vars())
             substitute.map(free, free);
-        substitute.map(next->app, tile);
+        substitute.substitute(next->app, tile);
         result.value = substitute.rewrite(result.value);
         for (auto& made : tiles)
             made.first = substitute.rewrite(made.first);
@@ -696,7 +737,7 @@ const Def* Levels::parallel(const Def* anchor,
     auto fused = fuse(root_tile, var, depth, 0);
 
     struct Yield {
-        const Def *producer, *tile;
+        const Def *producer, *source, *tile;
         u64 rank;
         std::vector<u64> axes;
     };
@@ -731,7 +772,7 @@ const Def* Levels::parallel(const Def* anchor,
         // The fused reads of an aligned producer lie inside the region's box, so they become views of the handed tile,
         // which inner levels then tile and hand back in turn.
         if (aligned(p)) {
-            Rewriter views(w);
+            Substitute views(w);
             for (auto free : fused.value->free_vars())
                 views.map(free, free);
             for (auto [made, from] : fused.made)
@@ -740,7 +781,7 @@ const Def* Levels::parallel(const Def* anchor,
                     auto start = w.tuple(DefVec(r, [&](size_t d) {
                         return w.call(core::nat::sub, Defs{from.off->proj(r, d), origin.off->proj(r, d)});
                     }));
-                    views.map(made, slice_box_of(handed, start, from.ext, from.cap ? from.cap : from.ext));
+                    views.substitute(made, slice_box_of(handed, start, from.ext, from.cap ? from.cap : from.ext));
                 }
             fused.value = views.rewrite(fused.value);
             for (auto& [made, from] : fused.made)
@@ -748,7 +789,7 @@ const Def* Levels::parallel(const Def* anchor,
             origins_[handed]           = origin;
             escaping_[origin.producer] = handed;
         }
-        yields.push_back({p, handed, *rank, std::move(axes)});
+        yields.push_back({p, origin.producer, handed, *rank, std::move(axes)});
     }
     auto value = tile(fused.value, rest, depth + 1);
     scopes_.pop_back();
@@ -760,7 +801,11 @@ const Def* Levels::parallel(const Def* anchor,
     std::erase_if(yields, [&](const Yield& y) {
         bool read = std::ranges::find(unfused, y.producer) != unfused.end();
         if (read) log_.d("tensor.tile_fuse {} skip yield of {}: the region still reads it whole", op_, y.producer);
-        return read;
+        // The region's result would replace the producer that one of its own inputs is computed from.
+        bool cycle
+            = !read && std::ranges::any_of(unfused, [&](const Def* input) { return depends_on(input, y.source); });
+        if (cycle) log_.d("tensor.tile_fuse {} skip yield of {}: a region input depends on it", op_, y.producer);
+        return read || cycle;
     });
     // Handed tiles come first, so the region writes them before the root reads them through views.
     if (!yields.empty()) {
