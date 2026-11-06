@@ -467,13 +467,13 @@ const Def* LowerToMem::buf_of(const Def* type) {
     return buffer::type_buf(rewrite(r), rewrite(s), rewrite(T));
 }
 
-// Every tile ends within its region, so clamping its end to the region's extent yields the end itself.
+// Every tile ends within its region, so clamping its end (or last index) to the region's yields the end itself.
 const Def* LowerToMem::rewrite_imm_Extract(const Extract* extract) {
     auto result = RWPhase::rewrite_imm_Extract(extract);
     if (auto clamp = result->isa<Extract>())
         if (auto pair = clamp->tuple()->isa<Tuple>(); pair && pair->num_ops() == 2)
             for (auto [end, bound] : tile_ends_)
-                if (pair->op(0) == bound && pair->op(1) == end
+                if (bound && pair->op(0) == bound && pair->op(1) == end
                     && clamp->index() == new_world().call(core::ncmp::l, Defs{end, bound}))
                     return end;
     return result;
@@ -617,6 +617,12 @@ void LowerToMem::prepare_realizations(const Def* root, const Lam* region, Defs d
 
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
     auto& w = new_world();
+    if (Axm::isa(core::ncmp::e, app) && !tile_ends_.empty()) {
+        auto result = RWPhase::rewrite_imm_App(app);
+        for (auto [extent, none] : tile_ends_)
+            if (!none && result == w.call(core::ncmp::e, Defs{extent, w.lit_nat_0()})) return w.lit_ff();
+        return result;
+    }
     if (Axm::isa<tensor::frozen>(app)) return rewrite(app->arg());
     if (Axm::isa<tensor::prepack>(app)) return lower_prepack(app);
     if (Axm::isa<tensor::group_req>(app)) {
@@ -930,6 +936,11 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
             storage_shapes_[app] = output_cap;
         }
     }
+    if (auto storage = bounded_shape(mr.So); !destination && storage != mr.So) {
+        mr.So                = storage;
+        mr.shapes            = w.tuple({mr.So, mr.Sr, mr.sched});
+        storage_shapes_[app] = storage;
+    }
     const Def* seed = nullptr;
     if (initial) {
         if (auto scalar = splat_scalar(initial->outs)) {
@@ -1119,8 +1130,13 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
     map(origin, off);
     auto ends = fe::Restore(tile_ends_, tile_ends_);
     for (size_t d = 0; d != rank; ++d) {
-        auto end = old.call(core::nat::add, Defs{specialized->proj(rank, d), ext->proj(rank, d)});
-        tile_ends_.emplace_back(rewrite(end), rewrite(plan.shape->proj(rank, d)));
+        auto end   = old.call(core::nat::add, Defs{specialized->proj(rank, d), ext->proj(rank, d)});
+        auto last  = old.call(core::nat::sub, Defs{ext->proj(rank, d), old.lit_nat_1()});
+        auto high  = old.call(core::nat::add, Defs{specialized->proj(rank, d), last});
+        auto bound = plan.shape->proj(rank, d);
+        tile_ends_.emplace_back(rewrite(end), rewrite(bound));
+        tile_ends_.emplace_back(rewrite(ext->proj(rank, d)), nullptr);
+        tile_ends_.emplace_back(rewrite(high), rewrite(old.call(core::nat::sub, Defs{bound, old.lit_nat_1()})));
     }
     const Def* mem = state[0];
     DefVec outputs;
@@ -1236,10 +1252,16 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             return w.app(exit, result);
         }
         if (sizes[d] == 0) return w.app(exit, acc);
+        // An empty dimension has no tile, so every tile body may assume non-empty extents.
         if (whole[d]) {
             offsets[d] = w.lit_nat_0();
             extents[d] = shape->proj(*rank, d);
-            return emit(d + 1, acc, exit);
+            auto body  = w.mut_con(acc->type())->set("tileWhole");
+            auto skip  = w.mut_con(acc->type())->set("tileWholeSkip");
+            body->set(true, emit(d + 1, body->var(), exit));
+            skip->app(true, exit, skip->var());
+            auto empty = w.call(core::ncmp::e, Defs{rewrite(extents[d]), w.lit_nat_0()});
+            return w.app(w.extract(w.tuple({body, skip}), empty), acc);
         }
         // A single tile needs no loop, and its literal origin lets the body fold its clamps.
         if (sizes[d] && *sizes[d] == steps[d]) {

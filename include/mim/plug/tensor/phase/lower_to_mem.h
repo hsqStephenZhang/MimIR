@@ -91,7 +91,8 @@ private:
     DefMap<const Def*> fresh_memo_;
     DefMap<const Def*> realizations_;
     DefMap<const Def*> storage_shapes_;
-    /// The `(end, extent)` of each dimension of the tiles being lowered, in the new world.
+    /// Facts of the tiles being lowered, in the new world: `(end, extent)` and `(last, extent - 1)` pairs bound clamps,
+    /// and `(ext, nullptr)` marks a non-empty tile extent.
     std::vector<std::pair<const Def*, const Def*>> tile_ends_;
     Scratch* scratch_ = nullptr;
 };
