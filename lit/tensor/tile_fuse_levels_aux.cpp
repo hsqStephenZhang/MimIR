@@ -14,6 +14,7 @@ extern "C" int64_t* cap7(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap_n7(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* promoted(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* whole_m(int64_t, int64_t*, int64_t*, int64_t*);
+extern "C" int64_t* packed_ab(int64_t, int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* promoted_k(int64_t, int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap_k(int64_t, int64_t*, int64_t*, int64_t*);
 
@@ -73,6 +74,7 @@ int main() {
         check("cap_k", 5, n, true, n, nullptr, cap_k);
         check("promoted_k", 5, n, true, n, nullptr, promoted_k);
         check("whole_m", n, 7, false, n, nullptr, whole_m);
+        check("packed_ab", n, 7, false, n, nullptr, packed_ab);
     }
     return failures != 0;
 }
