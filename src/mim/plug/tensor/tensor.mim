@@ -1937,17 +1937,18 @@ axm tile_fold: {Acc: *}
 /// ### Tile-and-fuse builders
 ///
 /// `tile_fuse` builds every level from these, so each rewrite it applies is defined here.
-/// `tf_par` tiles a root on one grid (R1); `tf_par_n` also hands back `n - 1` member tiles ahead of the root (R4).
+/// `tf_par` tiles a root on one grid (R1); `tf_par_n` also hands back `n - 1` member tiles ahead of the root (R4), each whole off its grid `axes`.
 /// `tf_reduce` splits a reduction into `tile_fold` blocks of `ks`, a peeled last block and the epilogue (R3).
 /// `tf_chunk` is the extent of the block at `ko` and `tf_tail` the offset and extent of the peeled block.
 ///
 anx lam tf_par {T: *, r: Nat} {I: *} (s ts: «r; Nat», tail: Nat) (ins: I)
     (body: [off ext: «r; Nat»] → I → Tensor r ext T): Tensor r s T =
     tiled (s, ts, tail) ins body;
-anx lam tf_par_n {n r: Nat, Ts: «n; *»} {I: *} (s ts: «r; Nat», tail: Nat) (ins: I)
-    (body: [off ext: «r; Nat»] → I → «i: n; Tensor r (tile_shape (s, ‹d: r; d›, ext)) (Ts#i)»)
-    : «i: n; Tensor r s (Ts#i)» =
-    tiled_multi @(n, r, Ts, ‹n; r›) (‹n; s›, s, ts, tail) ‹n; ‹d: r; d›› ins body;
+anx lam tf_par_n {n g: Nat, Ts: «n; *», rs: «n; Nat»} {I: *}
+    (shapes: «i: n; «rs#i; Nat»», s ts: «g; Nat», tail: Nat) (axes: «i: n; «g; Idx (rs#i)»») (ins: I)
+    (body: [off ext: «g; Nat»] → I → «i: n; Tensor (rs#i) (tile_shape (shapes#i, axes#i, ext)) (Ts#i)»)
+    : «i: n; Tensor (rs#i) (shapes#i) (Ts#i)» =
+    tiled_multi @(n, g, Ts, rs) (shapes, s, ts, tail) axes ins body;
 anx lam tf_chunk (K ks tail ko: Nat): Nat =
     let rest = K - ko;
     ((rest, ks)#(ks < rest), ks)#(tail == 1);

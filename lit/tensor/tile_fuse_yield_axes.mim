@@ -1,0 +1,17 @@
+// RUN: %mim -X math:exp-poly=0 -p opt -X tensor:tile-fuse=2 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: %FileCheck %s --check-prefix=LL < %t.ll
+// RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_yield_axes_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// The row sum's region tiles only rows, so it hands the exponentials back whole along the reduced axis.
+
+plugin tensor;
+plugin core;
+plugin math;
+extern fun soft (x: tensor.Tensor 2 (5, 7) math.F32): tensor.Tensor 2 (5, 7) math.F32 =
+    return (tensor.softmax math.mode.fast 1₂ (tensor.buf x));
+
+// LOG: tensor.tile_fuse {{.*}} fused=1 yielded=1
+// LL-COUNT-1: call float @llvm.exp.f32
+// LL-NOT: call float @llvm.exp.f32

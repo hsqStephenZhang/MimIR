@@ -657,13 +657,17 @@ std::pair<const Def*, const Def*> GridTilePlan::box(u64 i, const Def* off, const
 
 const Def* normalize_tiled_multi(const Def* type, const Def* c, const Def* body) {
     check_region_inputs(body, c);
-    // A generic definition such as a builder is checked once it is applied to literal counts and ranks.
+    // A generic definition such as a builder is checked once it is applied to literal counts, ranks and axes.
     auto [meta, shapes, axes, input_type, inputs] = c->as<App>()->uncurry_args<5>();
     auto [n, g, types, ranks]                     = meta->projs<4>();
     auto count                                    = Lit::isa(n);
-    if (!count || !Lit::isa(g)) return nullptr;
-    for (u64 i = 0; i != *count; ++i)
+    auto grid                                     = Lit::isa(g);
+    if (!count || !grid) return nullptr;
+    for (u64 i = 0; i != *count; ++i) {
         if (!Lit::isa(ranks->proj(*count, i))) return nullptr;
+        for (u64 d = 0; d != *grid; ++d)
+            if (!Lit::isa(axes->proj(*count, i)->proj(*grid, d))) return nullptr;
+    }
     auto& w  = c->world();
     auto app = w.raw_app(type, c, body);
     grid_tile_plan(app->as<App>());

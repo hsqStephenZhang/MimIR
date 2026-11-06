@@ -184,31 +184,38 @@ bool canonical_write(const btensor::MapRedPost& mr, u64 ro, u64 rn) {
     return true;
 }
 
-/// Whether @p map sends loop d to axis d for each of its @p rank axes and reads no other loop.
-bool projects_loops(const Def* map, u64 rank) {
-    auto& w   = map->world();
-    auto pi   = map->type()->as<Pi>();
-    auto rn   = Lit::isa(pi->dom()->arity());
+/// The axes of an input of rank @p rank that read the first @p ro loops of @p map, in increasing order.
+std::optional<std::vector<u64>> grid_axes(const Def* map, u64 ro, u64 rank) {
+    auto& w = map->world();
+    auto pi = map->type()->as<Pi>();
+    auto rn = Lit::isa(pi->dom()->arity());
+    if (!rn) return {};
     auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
     auto read = w.app(map, var);
-    if (!rn) return false;
-    for (u64 d = 0; d != rank; ++d) {
+    auto axes = std::vector<u64>();
+    for (u64 d = 0, a = 0; d != ro; ++d, ++a) {
         Linear expected;
         expected.atoms[var->proj(*rn, d)] = 1;
-        if (!(Linear::of(read->proj(rank, d)) == expected)) return false;
+        while (a != rank && !(Linear::of(read->proj(rank, a)) == expected))
+            ++a;
+        if (a == rank) return {};
+        axes.push_back(a);
     }
-    return true;
+    return axes;
 }
 
-/// The members that every reader in the group reads pointwise on the root's grid.
-/// A root tile reads such a member only inside its own box, so one tile of the member serves all of them.
-DefSet aligned_members(const Def* op, const DefSet& members) {
+/// The members that every reader in the group reads pointwise on the root's grid, with the axes the grid maps to.
+/// A root tile reads such a member only inside its grid box, whole along its other axes, so one tile serves all.
+DefMap<std::vector<u64>> aligned_members(const Def* op, const DefSet& members) {
     auto root = graph::map_reduce(op);
     if (!root) return {};
     auto shape   = btensor::MapRedPost::of(root->callee()->as<App>()).So;
-    auto aligned = members;
+    auto aligned = DefMap<std::vector<u64>>();
+    for (auto member : members)
+        aligned.emplace(member, std::vector<u64>());
     for (bool changed = true; changed;) {
-        changed = false;
+        changed    = false;
+        auto found = DefMap<std::vector<u64>>();
         DefVec readers{op};
         readers.insert(readers.end(), members.begin(), members.end());
         for (auto reader : readers) {
@@ -224,7 +231,15 @@ DefSet aligned_members(const Def* op, const DefSet& members) {
                     auto input = inputs->proj(n, i);
                     if (!members.contains(input)) continue;
                     auto tensor = TensorType::isa(input->type());
-                    auto ok = trusted && tensor && tensor->s == shape && projects_loops(maps->proj(n, i), ranks->ro);
+                    auto rank   = tensor ? Lit::isa(tensor->r) : std::nullopt;
+                    auto axes   = trusted && rank ? grid_axes(maps->proj(n, i), ranks->ro, *rank) : std::nullopt;
+                    bool ok     = axes.has_value();
+                    for (u64 d = 0; ok && d != axes->size(); ++d)
+                        ok = tensor->s->proj(*rank, (*axes)[d]) == shape->proj(ranks->ro, d);
+                    if (ok) {
+                        auto [prev, fresh] = found.emplace(input, *axes);
+                        ok                 = fresh || prev->second == *axes;
+                    }
                     if (!ok && aligned.erase(input)) changed = true;
                 }
             };
@@ -236,7 +251,19 @@ DefSet aligned_members(const Def* op, const DefSet& members) {
             check(is, mr.maps, ranks->nis);
             check(post_is, mr.post_maps, ranks->nps);
         }
+        for (auto& [member, axes] : aligned)
+            if (auto i = found.find(member); i != found.end()) axes = i->second;
     }
+    // A member no aligned reader reads stays aligned only if it has the root's shape.
+    auto ro = Lit::isa(shape->arity()).value_or(0);
+    std::erase_if(aligned, [&](auto& entry) {
+        auto tensor = TensorType::isa(entry.first->type());
+        if (entry.second.size() == ro) return false;
+        if (!tensor || tensor->s != shape) return true;
+        for (u64 d = 0; d != ro; ++d)
+            entry.second.push_back(d);
+        return false;
+    });
     return aligned;
 }
 
@@ -460,9 +487,11 @@ private:
     }
     /// The request's members and the tiles that enclosing levels fused.
     bool in_group(const Def* producer) const { return members_.contains(producer) || origins_.contains(producer); }
-    bool aligned(const Def* producer) const {
+    bool aligned(const Def* producer) const { return axes_of(producer) != nullptr; }
+    const std::vector<u64>* axes_of(const Def* producer) const {
         auto origin = origins_.find(producer);
-        return aligned_.contains(origin == origins_.end() ? producer : origin->second.producer);
+        auto i      = aligned_.find(origin == origins_.end() ? producer : origin->second.producer);
+        return i == aligned_.end() ? nullptr : &i->second;
     }
     Origin compose(const Def* producer, const Def* off, const Def* ext, const Def* cap) const;
     const Def* tile_of(const Def* producer, const Def* off, const Def* ext, const Def* cap) const;
@@ -492,7 +521,7 @@ private:
     const App* request_;
     const Def *op_, *control_;
     const DefSet& members_;
-    DefSet aligned_;
+    DefMap<std::vector<u64>> aligned_;
     const DefSet& outside_;
     bool strict_;
     fe::Vector<const Var*> scopes_;
@@ -668,17 +697,37 @@ const Def* Levels::parallel(const Def* anchor,
 
     struct Yield {
         const Def *producer, *tile;
+        u64 rank;
+        std::vector<u64> axes;
     };
     std::vector<Yield> yields;
     auto enclosing = escaping_;
     for (auto p : fused.yields) {
         auto tensor = TensorType::isa(p->type());
-        if (!tensor || tensor->s != mr.So) {
-            log_.d("tensor.tile_fuse {} skip yield of {}: its shape is not the region's", op_, p);
+        auto rank   = tensor ? Lit::isa(tensor->r) : std::nullopt;
+        auto axes   = std::vector<u64>();
+        if (auto aligned = axes_of(p))
+            axes = *aligned;
+        else if (tensor && tensor->s == mr.So)
+            for (u64 d = 0; d != ro; ++d)
+                axes.push_back(d);
+        bool fits = rank && axes.size() == ro;
+        for (u64 d = 0; fits && d != ro; ++d)
+            fits = tensor->s->proj(*rank, axes[d]) == mr.So->proj(ro, d);
+        if (!fits) {
+            log_.d("tensor.tile_fuse {} skip yield of {}: the region's grid does not cover it", op_, p);
             continue;
         }
-        auto origin = compose(p, off, ext, w.tuple(tiles));
-        auto handed = tile_of(origin.producer, origin.off, ext, origin.cap);
+        // The member's box follows the grid along its grid axes and is whole along the others.
+        auto shape = tensor->s->projs(*rank);
+        DefVec start(*rank, w.lit_nat_0()), extent(shape.begin(), shape.end()), cap(shape.begin(), shape.end());
+        for (u64 d = 0; d != ro; ++d) {
+            start[axes[d]]  = off->proj(ro, d);
+            extent[axes[d]] = ext->proj(ro, d);
+            cap[axes[d]]    = tiles[d];
+        }
+        auto origin = compose(p, w.tuple(start), w.tuple(extent), w.tuple(cap));
+        auto handed = tile_of(origin.producer, origin.off, origin.ext, origin.cap);
         // The fused reads of an aligned producer lie inside the region's box, so they become views of the handed tile,
         // which inner levels then tile and hand back in turn.
         if (aligned(p)) {
@@ -699,7 +748,7 @@ const Def* Levels::parallel(const Def* anchor,
             origins_[handed]           = origin;
             escaping_[origin.producer] = handed;
         }
-        yields.push_back({p, handed});
+        yields.push_back({p, handed, *rank, std::move(axes)});
     }
     auto value = tile(fused.value, rest, depth + 1);
     scopes_.pop_back();
@@ -736,12 +785,21 @@ const Def* Levels::parallel(const Def* anchor,
     auto grid = w.tuple({mr.So, w.tuple(tiles), w.lit_nat(peel)});
     if (yields.empty()) return build(w.annex<tf_par>(), {w.tuple({mr.Tp, mr.Ro}), ins->type(), grid, ins, body});
     auto n     = yields.size() + 1;
-    auto types = DefVec();
-    for (const auto& y : yields)
-        types.push_back(TensorType::isa(y.producer->type())->T);
+    auto types = DefVec(), ranks = DefVec(), shapes = DefVec(), maps = DefVec();
+    for (const auto& y : yields) {
+        auto tensor = TensorType::isa(y.producer->type());
+        types.push_back(tensor->T);
+        ranks.push_back(w.lit_nat(y.rank));
+        shapes.push_back(tensor->s);
+        maps.push_back(w.tuple(DefVec(ro, [&](size_t d) { return w.lit_idx(y.rank, y.axes[d]); })));
+    }
     types.push_back(mr.Tp);
-    auto region
-        = build(w.annex<tf_par_n>(), {w.tuple({w.lit_nat(n), mr.Ro, w.tuple(types)}), ins->type(), grid, ins, body});
+    ranks.push_back(mr.Ro);
+    shapes.push_back(mr.So);
+    maps.push_back(w.tuple(DefVec(ro, [&](size_t d) { return w.lit_idx(ro, d); })));
+    auto meta   = w.tuple({w.lit_nat(n), mr.Ro, w.tuple(types), w.tuple(ranks)});
+    auto layout = w.tuple({w.tuple(shapes), mr.So, w.tuple(tiles), w.lit_nat(peel)});
+    auto region = build(w.annex<tf_par_n>(), {meta, ins->type(), layout, w.tuple(maps), ins, body});
     for (size_t i = 0; i != yields.size(); ++i)
         if (scopes_.empty() && members_.contains(yields[i].producer))
             yielded_.emplace_back(yields[i].producer, region->proj(n, i));
@@ -781,8 +839,8 @@ const Def* Levels::reduction(const Def* anchor,
     auto probe    = w.mut_lam(dom, w.type_nat());
     auto var      = probe->var()->as<Var>();
     auto acc = probe->var(2, 0), ko = probe->var(2, 1);
-    auto tail    = w.lit_nat(peel);
-    auto chunk   = build(w.annex<tf_chunk>(), {w.tuple({K, ks, tail, ko})});
+    auto tail  = w.lit_nat(peel);
+    auto chunk = build(w.annex<tf_chunk>(), {w.tuple({K, ks, tail, ko})});
     // Each promoted input (bit i of promote) is staged per block into panels as wide as the next parallel level's tile
     // of its axis.
     std::vector<std::tuple<u64, u64, u64>> panels;
