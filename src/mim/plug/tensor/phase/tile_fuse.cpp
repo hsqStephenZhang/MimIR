@@ -774,8 +774,9 @@ const Def* Levels::reduction(const Def* anchor,
     auto acc = probe->var(2, 0), ko = probe->var(2, 1);
     auto tail    = w.lit_nat(peel);
     auto chunk   = build(w.annex<tf_chunk>(), {w.tuple({K, ks, tail, ko})});
-    // A promoted input is staged per block into panels as wide as the next parallel level's tile of its axis.
-    std::function<const Def*(const Def*)> stage_block = [](const Def* block) { return block; };
+    // Each promoted input (bit i of promote) is staged per block into panels as wide as the next parallel level's tile
+    // of its axis.
+    std::vector<std::tuple<u64, u64, u64>> panels;
     if (promote) {
         auto tiles = fe::Vector<u64>(ro, 0);
         for (auto level : rest)
@@ -784,18 +785,25 @@ const Def* Levels::reduction(const Def* anchor,
                     tiles[d] = Lit::isa(inner->proj(rn, d)).value_or(0);
                 break;
             }
-        auto slot = promote - 1;
-        if (slot >= Lit::as(mr.nis)) return fail("the promoted input does not exist");
-        auto panel
-            = panel_axis(mr.maps->proj(Lit::as(mr.nis), slot), Lit::as(mr.Ris->proj(Lit::as(mr.nis), slot)), tiles);
-        if (!panel) return fail("the promoted input has no axis tiled by the next parallel level");
-        stage_block = [slot, panel](const Def* block) -> const Def* {
-            if (auto app = graph::map_reduce(block)) return promote_input(app, slot, panel->first, panel->second);
-            return nullptr;
-        };
-        log_.d("tensor.tile_fuse {} L{} promote input {} axis {} panel {}", op_, depth, slot, panel->first,
-               panel->second);
+        auto nis = Lit::as(mr.nis);
+        if (promote >> nis) return fail("a promoted input does not exist");
+        for (u64 slot = 0; slot != nis; ++slot) {
+            if (!(promote >> slot & 1)) continue;
+            auto panel = panel_axis(mr.maps->proj(nis, slot), Lit::as(mr.Ris->proj(nis, slot)), tiles);
+            if (!panel) return fail("a promoted input has no axis tiled by the next parallel level");
+            panels.emplace_back(slot, panel->first, panel->second);
+            log_.d("tensor.tile_fuse {} L{} promote input {} axis {} panel {}", op_, depth, slot, panel->first,
+                   panel->second);
+        }
     }
+    auto stage_block = [&](const Def* block) -> const Def* {
+        for (auto [slot, axis, tile] : panels) {
+            auto app = graph::map_reduce(block);
+            if (!app) return nullptr;
+            block = promote_input(app, slot, axis, tile);
+        }
+        return block;
+    };
     auto partial = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), ko, chunk, acc});
     if (!partial) return fail("the root has no reduction chunk");
     partial = stage_block(partial);

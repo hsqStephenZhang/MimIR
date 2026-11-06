@@ -1727,7 +1727,7 @@ axm report_groups: compile.Phase;
 /// A level's `kind` is 0 for parallel (a `tiled_multi` region), 1 for reduction (`tile_fold`), 2 for vector (`sched`).
 /// `sizes#d = 0` leaves loop `d` untiled at that level.
 /// `tail` is 0 for one capped body over a runtime tail and 1 for peeling full tiles from the tail.
-/// `promote` is reserved and must be 0.
+/// `promote` sets bit `i` to stage input `i` of a reduction level into panels as wide as the next parallel level's tile.
 ///
 anx lam TileLevel (n: Nat): * = [kind: Nat, sizes: «n; Nat», tail promote: Nat];
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
