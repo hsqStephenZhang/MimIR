@@ -717,7 +717,20 @@ const Def* LowerToMem::lower_set(const App* app) {
 }
 
 const Def* LowerToMem::lower_splat(const App* app) {
-    return splat_buffer(app->type(), rewrite(app->arg()->proj(2, 1)));
+    auto value     = rewrite(app->arg()->proj(2, 1));
+    auto [r, s, T] = TensorType::decode(app->type()->as<Nom>());
+    auto shape     = rewrite(s);
+    auto storage   = bounded_shape(shape);
+    if (storage == shape) return splat_buffer(app->type(), value);
+    storage_shapes_[app] = storage;
+    auto& w              = new_world();
+    auto rank = rewrite(r), element = rewrite(T);
+    if (!scratch_) return buffer::op_lit(rank, storage, element, fresh_mem(), value)->proj(2, 1);
+    auto [mem, buffer] = allocate(rank, storage, element);
+    return btensor::build_pointwise(
+               w.sigma({mem->type(), buffer->type()}), mem, buffer, value, storage, Lit::as(rank), "scratchSplat",
+               [](Defs, const Def* value, const Def* current) { return std::pair{current, value}; })
+        ->proj(2, 1);
 }
 
 const Def* LowerToMem::lower_generate(const App* app) {

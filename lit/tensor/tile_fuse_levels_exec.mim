@@ -73,6 +73,10 @@ extern fun cap_k (k: Nat, a: tensor.Tensor 2 (k, 5) I64, b: tensor.Tensor 2 (k, 
     : tensor.Tensor 2 (5, 6) I64 =
     return (gemm (5, k, tt) (((0, (2, 4, 0), 0, 0), (1, (0, 0, 3), 0, 0), (0, (1, 2, 0), 0, 0)), default_control)
         (buf a, buf b, buf bias));
+extern fun cap_n7 (a: tensor.Tensor 2 (5, 7) I64, b: tensor.Tensor 2 (7, 6) I64, bias: tensor.Tensor 1 6 I64)
+    : tensor.Tensor 2 (5, 6) I64 =
+    return (gemm (5, 7, ff) (((0, (2, 4, 0), 0, 0), (1, (0, 0, 3), 0, 0), (0, (1, 2, 0), 0, 0)), default_control)
+        (buf a, buf b, buf bias));
 
 // CHECK-DAG: L0 par tiles=(2, 6) tail=peel inputs=3 fused=1 yielded=0
 // CHECK-DAG: L1 red loop=2 ks=3 tail=peel inputs={{[0-9]+}} fused=1 tail_fused=1
