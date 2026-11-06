@@ -1241,11 +1241,12 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         mem        = destination->mem;
         buffers[0] = destination->buffer;
     } else {
-        for (u64 i = 0; i != plan.count; ++i)
-            std::tie(mem, buffers[i]) = buffer::op_alloc(rewrite(plan.ranks->proj(plan.count, i)),
-                                                         bounded_shape(rewrite(plan.shapes->proj(plan.count, i))),
-                                                         rewrite(plan.types->proj(plan.count, i)), mem)
-                                            ->projs<2>();
+        for (u64 i = 0; i != plan.count; ++i) {
+            auto rank = rewrite(plan.ranks->proj(plan.count, i)), type = rewrite(plan.types->proj(plan.count, i));
+            auto shape                = bounded_shape(rewrite(plan.shapes->proj(plan.count, i)));
+            std::tie(mem, buffers[i]) = buffer::op_alloc(rank, shape, type, mem)->projs<2>();
+            transient(rank, shape, type, buffers[i]);
+        }
     }
     auto captured  = materialize(input_type, inputs);
     auto parameter = old_world().mut_lam(input_type, old_world().type_nat());
