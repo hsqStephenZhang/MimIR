@@ -707,6 +707,7 @@ const Def* LowerToMem::splat_buffer(const Def* arr_ty, const Def* scalar) {
             ->proj(2, 1);
     }
     auto [m, out] = buffer::op_lit(bro, bso, boT, fresh_mem(), scalar)->projs<2>();
+    transient(bro, bso, boT, out);
     return out;
 }
 
@@ -754,7 +755,11 @@ const Def* LowerToMem::lower_splat(const App* app) {
     storage_shapes_[app] = storage;
     auto& w              = new_world();
     auto rank = rewrite(r), element = rewrite(T);
-    if (!scratch_) return buffer::op_lit(rank, storage, element, fresh_mem(), value)->proj(2, 1);
+    if (!scratch_) {
+        auto buffer = buffer::op_lit(rank, storage, element, fresh_mem(), value)->proj(2, 1);
+        transient(rank, storage, element, buffer);
+        return buffer;
+    }
     auto [mem, buffer] = allocate(rank, storage, element);
     return btensor::build_pointwise(
                w.sigma({mem->type(), buffer->type()}), mem, buffer, value, storage, Lit::as(rank), "scratchSplat",
