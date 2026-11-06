@@ -91,6 +91,9 @@ private:
     DefMap<const Def*> fresh_memo_;
     DefMap<const Def*> realizations_;
     DefMap<const Def*> storage_shapes_;
+    /// Runtime-shaped buffers the current tile body allocates, as `(rank, shape, type, buffer)`, freed at its end.
+    std::vector<std::array<const Def*, 4>>* transients_ = nullptr;
+    void transient(const Def* rank, const Def* shape, const Def* type, const Def* buffer);
     /// Facts of the tiles being lowered, in the new world: `(end, extent)` and `(last, extent - 1)` pairs bound clamps,
     /// and `(ext, nullptr)` marks a non-empty tile extent.
     std::vector<std::pair<const Def*, const Def*>> tile_ends_;
