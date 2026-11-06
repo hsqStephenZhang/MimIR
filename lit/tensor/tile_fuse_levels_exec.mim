@@ -1,5 +1,6 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
 // RUN: %FileCheck %s < %t.log
+// RUN: not grep "copies accumulator" %t.log
 // RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_levels_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 // RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:tile-ref=1 %s -p ll -X ll:o=%t.ref.ll

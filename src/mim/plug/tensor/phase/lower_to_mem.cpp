@@ -23,24 +23,40 @@ namespace mim::plug::tensor::phase {
 
 namespace {
 
-class UnitScale : public Rewriter {
-public:
-    using Rewriter::Rewriter;
+/// An affine index as integer coefficients of its opaque atoms plus a constant.
+/// Affine indices wrap around in two's complement, so equal forms denote equal indices.
+struct Linear {
+    DefMap<int64_t> atoms;
+    int64_t constant = 0;
 
-    const Def* rewrite(const Def* def) override {
-        if (def->isa<Var>() || def->isa<Axm>() || def->is_mutable()) return def;
-        return Rewriter::rewrite(def);
+    void add(const Linear& other, int64_t scale) {
+        for (auto [atom, coefficient] : other.atoms)
+            if ((atoms[atom] += scale * coefficient) == 0) atoms.erase(atom);
+        constant += scale * other.constant;
     }
+    bool operator==(const Linear&) const = default;
 
-    const Def* rewrite_imm_App(const App* app) override {
-        if (Axm::isa(affine::semiop::mul, app))
-            if (Lit::isa(app->arg(2, 1)) == 1) return rewrite(app->arg(2, 0));
-        if (Axm::isa(affine::op::add, app)) {
-            auto [left, right] = app->args<2>();
-            if (auto lit = Axm::isa<affine::lit>(left); lit && Lit::isa(lit->arg()) == 0) return rewrite(right);
-            if (auto lit = Axm::isa<affine::lit>(right); lit && Lit::isa(lit->arg()) == 0) return rewrite(left);
+    static Linear of(const Def* index) {
+        Linear result;
+        if (auto lit = Axm::isa<affine::lit>(index)) {
+            if (auto value = Lit::isa(lit->arg()))
+                result.constant = *value;
+            else
+                result.atoms[lit->arg()] = 1;
+        } else if (auto op = Axm::isa<affine::op>(index); op && op.id() != affine::op::mul) {
+            if (op.id() == affine::op::neg) {
+                result.add(of(op->arg()), -1);
+            } else {
+                auto [left, right] = op->args<2>();
+                result.add(of(left), 1);
+                result.add(of(right), op.id() == affine::op::sub ? -1 : 1);
+            }
+        } else if (auto mul = Axm::isa(affine::semiop::mul, index); mul && Lit::isa(mul->arg(2, 1))) {
+            result.add(of(mul->arg(2, 0)), *Lit::isa(mul->arg(2, 1)));
+        } else {
+            result.atoms[index] = 1;
         }
-        return Rewriter::rewrite_imm_App(app);
+        return result;
     }
 };
 
@@ -1502,22 +1518,27 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
     }
     if (Axm::peel<tensor::buf>(initial->outs) != accumulator) return false;
     auto rank       = Lit::as(mr.Ro);
-    auto map        = w.mut_lam(mr.map_out->type()->as<Pi>());
+    auto loops      = Lit::as(mr.Rn);
+    auto probe      = w.mut_lam(mr.map_out->type()->as<Pi>());
     auto output_map = mr.map_out->isa<Lam>();
-    if (!output_map || !output_map->is_set()) return false;
-    auto output   = output_map->reduce(map->var()).back();
-    auto simplify = UnitScale(w);
-    for (size_t d = 0; d != rank; ++d)
-        if (!Check::test_alpha(simplify.rewrite(output->proj(rank, d)), map->var(Lit::as(mr.Rn), d))
-            || !Check::test_alpha(mr.Sr->proj(Lit::as(mr.Rn), d), mr.So->proj(rank, d)))
-            return false;
-    map->set(true, w.tuple(DefVec(rank, [&](size_t d) {
-        return w.call(affine::op::add, Defs{output->proj(rank, d), w.call<affine::lit>(origin->proj(rank, d))});
-    })));
-    auto init_map = initial->map->isa<Lam>();
-    if (!init_map || !init_map->is_set()) return false;
-    if (!Check::test_alpha(simplify.rewrite(init_map->reduce(map->var()).back()), simplify.rewrite(map->body())))
-        return false;
+    auto init_map   = initial->map->isa<Lam>();
+    if (!output_map || !output_map->is_set() || !init_map || !init_map->is_set()) return false;
+    auto output = output_map->reduce(probe->var()).back();
+    auto read   = init_map->reduce(probe->var()).back();
+    // Each step reads its accumulator element exactly where it writes it, and no two iterations share one.
+    // A clipped step may iterate less than its storage; the elements it skips keep their accumulated values.
+    for (size_t d = 0; d != rank; ++d) {
+        auto written = Linear::of(output->proj(rank, d));
+        for (size_t l = 0; l != loops; ++l) {
+            auto atom = written.atoms.find(probe->var(loops, l));
+            if ((atom == written.atoms.end() ? 0 : atom->second) != (l == d ? 1 : 0)) return false;
+        }
+        auto extent = mr.Sr->proj(loops, d), size = mr.So->proj(rank, d);
+        auto upper = nat_upper(extent);
+        if (!Check::test_alpha(extent, size) && !(upper && Lit::isa(size) && *upper <= *Lit::isa(size))) return false;
+        written.add(Linear::of(w.call<affine::lit>(origin->proj(rank, d))), 1);
+        if (!(Linear::of(read->proj(rank, d)) == written)) return false;
+    }
     auto pending = DefVec{app->arg(), mr.comb, mr.post, mr.map_out, mr.maps_all, initial->map};
     auto seen    = DefSet();
     for (size_t i = 0; i != pending.size(); ++i) {
