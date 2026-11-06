@@ -14,6 +14,7 @@
 #include "mim/plug/tensor/phase/lower_to_mem.h"
 #include "mim/plug/tensor/phase/reassoc.h"
 #include "mim/plug/tensor/phase/tile_fuse.h"
+#include "mim/plug/tensor/phase/tile_group.h"
 
 using namespace mim;
 using namespace mim::plug;
@@ -144,6 +145,7 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<fuse_and_yield, phase::FuseAndYield>(phases);
     Phase::hook<report_groups, phase::ReportGroups>(phases);
     Phase::hook<tile_fuse, phase::TileFuse>(phases);
+    Phase::hook<tile_group, phase::TileGroup>(phases);
 }
 } // namespace mim::plug::tensor
 
@@ -159,7 +161,7 @@ static constexpr PluginArg known_args[] = {
     {"fuse-and-yield=<n>", "Yield shared producers from compatible tile grids before grouping (default 1)."},
     {"reference-tiles=<n>", "Lower regions, stage and prepack through their Mim reference implementations (default 0)."},
     {"tile-ref=<n>", "Normalize tile_of and tile_of_box to their specification, a slice of the whole producer (default 0)."},
-    {"tile-fuse=<n>", "Realize tensor.tile_req requests with the tile-and-fuse driver instead of grouping (default 0)."},
+    {"tile-fuse=<n>", "1: realize tensor.tile_req requests with the tile-and-fuse driver instead of grouping; 2: also partition into tile_req groups with default_tile_config (default 0)."},
     {"strict=<n>", "Fail on unrealized group_req markers instead of warning (default 0)."},
     {"reassoc-max=<n>", "Longest matrix chain whose `Catalan(n − 1)` bracketings `tensor.reassoc` enumerates and, failing one that provably wins for every extent, dispatches over at run time (default `4`; below `3` switches the dispatch off)."},
     {"vec-width=<n>", "Vector lanes the target's registers hold (`1`, `4`, `8` or `16`, default `8`). It caps the block of independent accumulators a vectorized loop body jams into its registers, and `tensor.reassoc` charges each product's vector loop in units of it; `1` means no lane-sized blocking and plain multiplication counts. See `tensor.vec_width`."},

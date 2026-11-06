@@ -1,0 +1,41 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=2 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: clang++ -O1 -fsanitize=address %S/tile_group_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// The automatic partition groups each root with the elementwise producers it reaches and requests default levels.
+// fuse_tensor already composes a singly read elementwise producer into its consumer, which then needs no member.
+
+plugin tensor;
+plugin core;
+plugin affine;
+use tensor;
+
+fun relu (_ x: I64)@tt: I64 = return ((x, 0I64)#(core.icmp.sl (x, 0I64)));
+fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+fun inc (_ x: I64)@tt: I64 = return (core.wrap.add 0 (x, 1I64));
+fun add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (acc, x));
+fun mac (acc: I64, xy: [I64, I64])@tt: I64 =
+    let (x, y) = xy;
+    return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
+lam row (i _: affine.Index): affine.Index = i;
+
+extern fun gemm (m: Nat, a: tensor.Tensor 2 (m, 70) I64, b: tensor.Tensor 2 (70, 20) I64): tensor.Tensor 2 (m, 20) I64 =
+    let r = map_reduce ((m, 70), (m, 70)) (relu, 0I64) (affine.id @2) (affine.id @2,) (buf a);
+    return (map_reduce ((m, 20), (m, 20, 70)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (r, buf b));
+
+extern fun rows (m: Nat, x: tensor.Tensor 2 (m, 9) I64): tensor.Tensor 1 m I64 =
+    let t = map_reduce ((m, 9), (m, 9)) (twice, 0I64) (affine.id @2) (affine.id @2,) (buf x);
+    return (map_reduce (m, (m, 9)) (add, 0I64) row (affine.id @2,) t);
+
+extern fun chain (m: Nat, x: tensor.Tensor 2 (m, 9) I64): tensor.Tensor 2 (m, 9) I64 =
+    let t = map_reduce ((m, 9), (m, 9)) (twice, 0I64) (affine.id @2) (affine.id @2,) (buf x);
+    return (map_reduce ((m, 9), (m, 9)) (inc, 0I64) (affine.id @2) (affine.id @2,) t);
+
+// CHECK-DAG: tensor.tile_group root {{.*}} kind 1 members 1
+// CHECK-DAG: tensor.tile_group root {{.*}} kind 2 members 0
+// CHECK-DAG: tensor.tile_group root {{.*}} kind 0 members 0
+// CHECK-DAG: L1 promote input 0 axis 0 panel 4
+// CHECK-DAG: L1 promote input 1 axis 1 panel 16
+// CHECK-DAG: L1 red loop=2 ks=64 tail=peel inputs=2 fused=1 tail_fused=1

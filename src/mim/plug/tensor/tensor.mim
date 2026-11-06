@@ -1734,6 +1734,7 @@ anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, t
 anx let FuseDecision = [fuse yield: Bool];
 axm tile_req: {P M C K: *} → [op: P, members: M, levels: C, control: K] → P;
 axm tile_fuse: compile.Phase;
+axm tile_group: compile.Phase;
 ///
 /// Fuses exactly the group's members; parallel levels yield members that have users outside the group,
 /// reduction levels fuse only members without such users and never yield.
@@ -1753,6 +1754,29 @@ anx lam group_blocks (bytes lanes registers cache_bytes: Nat): «4; Nat» =
     let kc_budget = cache_bytes / (nc * bytes * 2);
     let kc = core.select (kc_budget < 256, kc_budget, 256);
     (mr, nr, kc, nc);
+
+///
+/// The levels `tensor.tile_group` requests for a root with `ro` parallel and `rr` reduction loops:
+/// always parallel, reduction, parallel, vector, where a level of zeros changes nothing.
+/// `kind` 1 is a contraction (BLIS blocks, both operands packed, register-blocked micro tiles),
+/// 2 another reduction and 0 an elementwise root, both one tile per index of all parallel loops but the last
+/// (one per row for a row reduction).
+///
+anx lam default_tile_config (ro rr kind: Nat, bytes lanes registers cache_bytes: Nat): «4; TileLevel (ro + rr)» =
+    let n      = ro + rr;
+    let blocks = group_blocks (bytes, lanes, registers, cache_bytes);
+    let (mr, nr, kc, nc) = (blocks#0₄, blocks#1₄, blocks#2₄, blocks#3₄);
+    lam is (d: Idx n, k: Nat): Bool = core.idx2nat d == k;
+    lam below (d: Idx n, k: Nat): Bool = core.idx2nat d < k;
+    let none   = ‹n; 0›;
+    let lead   = (ro - 1, 1)#(core.bit2.and 0 (kind == 2, ro == 1));
+    let rows   = ‹d: n; (0, 1)#(below (d, lead))›;
+    let outer  = ‹d: n; ((0, nc)#(is (d, ro - 1)), 1)#(below (d, ro - 2))›;
+    let block  = ‹d: n; (0, kc)#(is (d, n - 1))›;
+    let micro  = ‹d: n; (((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2)), 1)#(below (d, ro - 2))›;
+    let vector = ‹d: n; (0, 1)#(is (d, ro - 2))›;
+    (((0, rows, 1, 0), (1, none, 1, 0), (0, none, 1, 0), (2, none, 1, 0)),
+     ((0, outer, 1, 0), (1, block, 1, 3), (0, micro, 1, 0), (2, vector, 1, 0)))#(kind == 1);
 
 axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
 axm region_fusion_ok: {P R B: *}

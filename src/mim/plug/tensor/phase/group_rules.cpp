@@ -10,6 +10,7 @@
 #include "mim/plug/tensor/phase/fuse.h"
 #include "mim/plug/tensor/phase/group.h"
 #include "mim/plug/tensor/phase/tile_fuse.h"
+#include "mim/plug/tensor/phase/tile_group.h"
 #include "mim/plug/tensor/tensor.h"
 
 namespace mim::plug::tensor {
@@ -491,7 +492,10 @@ void AttentionRaise::start() {
 
 void GroupDefault::start() {
     if (driver().is_loaded("gpu")) return;
-    if (driver().arg_nat("tensor", "tile-fuse").value_or(0)) return TileFuse(world(), Annex::base<tile_fuse>()).run();
+    if (auto mode = driver().arg_nat("tensor", "tile-fuse").value_or(0)) {
+        if (mode == 2) TileGroup(world(), Annex::base<tile_group>()).run();
+        return TileFuse(world(), Annex::base<tile_fuse>()).run();
+    }
     if (!driver().arg_nat("tensor", "group").value_or(1)) return;
     Phases stages;
     stages.push_back(std::make_unique<Group>(world(), Annex::base<group>()));
