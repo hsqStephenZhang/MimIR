@@ -208,6 +208,43 @@ inline std::optional<fe::Vector<u64>> lit_projs(const Def* def, u64 n) {
 /// A literal `u` with `x ≤ u` for every value the `Nat` term @p x may take, if its structure bounds it.
 std::optional<u64> nat_upper(const Def* x);
 
+/// An affine index as integer coefficients of its opaque atoms plus a constant.
+/// Affine indices wrap around in two's complement, so equal forms denote equal indices.
+struct Linear {
+    DefMap<int64_t> atoms;
+    int64_t constant = 0;
+
+    void add(const Linear& other, int64_t scale) {
+        for (auto [atom, coefficient] : other.atoms)
+            if ((atoms[atom] += scale * coefficient) == 0) atoms.erase(atom);
+        constant += scale * other.constant;
+    }
+    bool operator==(const Linear&) const = default;
+
+    static Linear of(const Def* index) {
+        Linear result;
+        if (auto lit = Axm::isa<affine::lit>(index)) {
+            if (auto value = Lit::isa(lit->arg()))
+                result.constant = *value;
+            else
+                result.atoms[lit->arg()] = 1;
+        } else if (auto op = Axm::isa<affine::op>(index); op && op.id() != affine::op::mul) {
+            if (op.id() == affine::op::neg) {
+                result.add(of(op->arg()), -1);
+            } else {
+                auto [left, right] = op->args<2>();
+                result.add(of(left), 1);
+                result.add(of(right), op.id() == affine::op::sub ? -1 : 1);
+            }
+        } else if (auto mul = Axm::isa(affine::semiop::mul, index); mul && Lit::isa(mul->arg(2, 1))) {
+            result.add(of(mul->arg(2, 0)), *Lit::isa(mul->arg(2, 1)));
+        } else {
+            result.atoms[index] = 1;
+        }
+        return result;
+    }
+};
+
 /// @p perm as literals, if it is literal.
 inline std::optional<fe::Vector<u64>> lit_perm(const Def* perm) {
     if (auto r = Lit::isa(perm->arity())) return lit_projs(perm, *r);

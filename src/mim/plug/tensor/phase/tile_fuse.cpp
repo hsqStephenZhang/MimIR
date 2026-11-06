@@ -184,6 +184,62 @@ bool canonical_write(const btensor::MapRedPost& mr, u64 ro, u64 rn) {
     return true;
 }
 
+/// Whether @p map sends loop d to axis d for each of its @p rank axes and reads no other loop.
+bool projects_loops(const Def* map, u64 rank) {
+    auto& w   = map->world();
+    auto pi   = map->type()->as<Pi>();
+    auto rn   = Lit::isa(pi->dom()->arity());
+    auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
+    auto read = w.app(map, var);
+    if (!rn) return false;
+    for (u64 d = 0; d != rank; ++d) {
+        Linear expected;
+        expected.atoms[var->proj(*rn, d)] = 1;
+        if (!(Linear::of(read->proj(rank, d)) == expected)) return false;
+    }
+    return true;
+}
+
+/// The members that every reader in the group reads pointwise on the root's grid.
+/// A root tile reads such a member only inside its own box, so one tile of the member serves all of them.
+DefSet aligned_members(const Def* op, const DefSet& members) {
+    auto root = graph::map_reduce(op);
+    if (!root) return {};
+    auto shape   = btensor::MapRedPost::of(root->callee()->as<App>()).So;
+    auto aligned = members;
+    for (bool changed = true; changed;) {
+        changed = false;
+        DefVec readers{op};
+        readers.insert(readers.end(), members.begin(), members.end());
+        for (auto reader : readers) {
+            auto app = graph::map_reduce(reader);
+            if (!app) continue;
+            auto mr            = btensor::MapRedPost::of(app->callee()->as<App>());
+            auto ranks         = mr.ranks();
+            auto trusted       = ranks && (reader == op || aligned.contains(reader)) && mr.So == shape
+                              && canonical_write(mr, ranks->ro, ranks->nloops());
+            auto [is, post_is] = app->arg()->projs<2>();
+            auto check         = [&](const Def* inputs, const Def* maps, u64 n) {
+                for (u64 i = 0; i != n; ++i) {
+                    auto input = inputs->proj(n, i);
+                    if (!members.contains(input)) continue;
+                    auto tensor = TensorType::isa(input->type());
+                    auto ok = trusted && tensor && tensor->s == shape && projects_loops(maps->proj(n, i), ranks->ro);
+                    if (!ok && aligned.erase(input)) changed = true;
+                }
+            };
+            if (!ranks) {
+                changed = !aligned.empty();
+                aligned.clear();
+                break;
+            }
+            check(is, mr.maps, ranks->nis);
+            check(post_is, mr.post_maps, ranks->nps);
+        }
+    }
+    return aligned;
+}
+
 /// The storage extents of @p tile: a clipped `map_reduce_post`'s storage cap, else its shape.
 const Def* storage(const Def* tile) {
     auto app = graph::map_reduce(tile);
@@ -224,6 +280,13 @@ const Def* with_sched(const App* app, const Def* sched) {
     return head;
 }
 
+const Def* slice_box_of(const Def* tensor, const Def* off, const Def* ext, const Def* cap) {
+    auto& w   = tensor->world();
+    auto type = *TensorType::isa(tensor->type());
+    auto view = w.app(w.app(w.annex<slice_box>(), {type.T, type.r}), type.s);
+    return w.app(w.app(view, {off, ext, cap}), tensor);
+}
+
 const Def* nat_min(const Def* a, const Def* b) {
     auto& w = a->world();
     return w.extract(w.tuple({b, a}), w.call(core::ncmp::l, Defs{a, b}));
@@ -238,6 +301,7 @@ public:
         , op_(request->arg(4, 0))
         , control_(request->arg(4, 3))
         , members_(members)
+        , aligned_(aligned_members(op_, members))
         , outside_(outside)
         , strict_(strict) {}
 
@@ -249,12 +313,13 @@ public:
 
 private:
     struct Origin {
-        const Def *producer, *off;
+        const Def *producer, *off, *ext, *cap;
     };
     struct Fused {
         const Def* value;
         size_t count = 0;
         DefVec yields;
+        std::vector<std::pair<const Def*, Origin>> made;
     };
 
     const Def* fail(std::string reason) {
@@ -268,6 +333,11 @@ private:
     }
     /// The request's members and the tiles that enclosing levels fused.
     bool in_group(const Def* producer) const { return members_.contains(producer) || origins_.contains(producer); }
+    bool aligned(const Def* producer) const {
+        auto origin = origins_.find(producer);
+        return aligned_.contains(origin == origins_.end() ? producer : origin->second.producer);
+    }
+    Origin compose(const Def* producer, const Def* off, const Def* ext, const Def* cap) const;
     const Def* tile_of(const Def* producer, const Def* off, const Def* ext, const Def* cap) const;
     template<class Id>
     const Def* reduction_tile(const btensor::MapRedPost& mr, const Def* anchor, DefVec args) const;
@@ -294,10 +364,14 @@ private:
     const App* request_;
     const Def *op_, *control_;
     const DefSet& members_;
+    DefSet aligned_;
     const DefSet& outside_;
     bool strict_;
     fe::Vector<const Var*> scopes_;
     DefMap<Origin> origins_;
+    /// Tiles that enclosing levels hand back, by their original producer, and the inner results that replace them.
+    DefMap<const Def*> escaping_;
+    DefMap<const Def*> handed_;
     std::string reason_;
     std::vector<std::pair<const Def*, const Def*>> yielded_;
 };
@@ -311,6 +385,20 @@ const Def* Levels::tile_of(const Def* producer, const Def* off, const Def* ext, 
         return w.app(meta, {producer, off, ext, cap});
     }
     return w.app(w.app(w.app(w.annex<tensor::tile_of>(), {tensor.T, tensor.r}), tensor.s), {producer, off, ext});
+}
+
+// A tile of a fused tile is a tile of the original producer at the composed offset.
+// The read lies within the fused tile, so the tile's storage bounds the new one.
+Levels::Origin Levels::compose(const Def* producer, const Def* off, const Def* ext, const Def* cap) const {
+    auto origin = origins_.find(producer);
+    if (origin == origins_.end()) return {producer, off, ext, cap};
+    auto& w    = world();
+    auto r     = *Lit::isa(TensorType::isa(producer->type())->r);
+    auto bound = storage(producer);
+    auto start = w.tuple(DefVec(
+        r, [&](size_t d) { return w.call(core::nat::add, Defs{origin->second.off->proj(r, d), off->proj(r, d)}); }));
+    cap = cap ? w.tuple(DefVec(r, [&](size_t d) { return nat_min(cap->proj(r, d), bound->proj(r, d)); })) : bound;
+    return {origin->second.producer, start, ext, cap};
 }
 
 template<class Id>
@@ -343,7 +431,9 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
                                    .value_or(btensor::MapRedPost::Ranks{0, 0, 0, 0})
                                    .rr
                                != 0;
-        auto outside_use = outermost(own) && outside_.contains(p);
+        auto origin      = compose(p, next->off, next->ext, next->cap);
+        auto escaping    = escaping_.find(origin.producer);
+        auto outside_use = (outermost(own) && outside_.contains(p)) || escaping != escaping_.end();
         auto query
             = w.tuple({w.lit_nat(depth), w.lit_nat(kind), w.lit_nat_0(), w.lit_bool(reduces), w.lit_bool(outside_use),
                        w.lit_bool(in_group(p)), w.lit_nat(std::numeric_limits<nat_t>::max())});
@@ -355,19 +445,7 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
             continue;
         }
         if (!*fuse) continue;
-        // A tile of a fused tile is a tile of the original producer at the composed offset.
-        // The read lies within the fused tile, so the tile's storage bounds the new one.
-        auto source = p, off = next->off, cap = next->cap;
-        if (auto origin = origins_.find(p); origin != origins_.end()) {
-            auto r     = *Lit::isa(TensorType::isa(p->type())->r);
-            source     = origin->second.producer;
-            off        = w.tuple(DefVec(r, [&](size_t d) {
-                return w.call(core::nat::add, Defs{origin->second.off->proj(r, d), next->off->proj(r, d)});
-            }));
-            auto bound = storage(p);
-            cap        = cap ? w.tuple(DefVec(r, [&](size_t d) { return nat_min(cap->proj(r, d), bound->proj(r, d)); }))
-                             : bound;
-        }
+        auto source = origin.producer, off = origin.off, cap = origin.cap;
         if (auto tile = producer_tile(source, off, next->ext, cap); !tile.value) {
             log_.d("tensor.tile_fuse {} skip {}: {}", op_, p, tile.reason);
             continue;
@@ -384,13 +462,14 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
         result.value = substitute.rewrite(result.value);
         for (auto& made : tiles)
             made.first = substitute.rewrite(made.first);
-        tiles.emplace_back(tile, Origin{source, off});
+        tiles.emplace_back(tile, origin);
         ++result.count;
         log_.d("tensor.tile_fuse {} fuse {}", op_, p);
-        if (*yield && outside_use) result.yields.push_back(p);
+        if (*yield && outside_use) result.yields.push_back(escaping != escaping_.end() ? escaping->second : p);
     }
     for (auto [tile, origin] : tiles)
         origins_.emplace(tile, origin);
+    result.made = std::move(tiles);
     return result;
 }
 
@@ -449,32 +528,60 @@ const Def* Levels::parallel(const Def* anchor,
     auto off = probe->var(2, 0), ext = probe->var(2, 1);
     scopes_.push_back(var);
     auto fused = fuse(tile_of(anchor, off, ext, w.tuple(tiles)), var, depth, 0);
-    auto value = tile(fused.value, rest, depth + 1);
-    scopes_.pop_back();
-    if (!value) return nullptr;
 
     struct Yield {
         const Def *producer, *tile;
     };
     std::vector<Yield> yields;
+    auto enclosing = escaping_;
     for (auto p : fused.yields) {
-        // The region hands back a member on its own grid; that tile is not shared with the fused read, whose box
-        // equals the region's only under `off + ext ≤ s`, which the clamped read box does not show syntactically.
-        if (auto tensor = TensorType::isa(p->type()); tensor && tensor->s == mr.So)
-            yields.push_back({p, tile_of(p, off, ext, w.tuple(tiles))});
-        else
+        auto tensor = TensorType::isa(p->type());
+        if (!tensor || tensor->s != mr.So) {
             log_.d("tensor.tile_fuse {} skip yield of {}: its shape is not the region's", op_, p);
+            continue;
+        }
+        auto origin = compose(p, off, ext, w.tuple(tiles));
+        auto handed = tile_of(origin.producer, origin.off, ext, origin.cap);
+        // The fused reads of an aligned producer lie inside the region's box, so they become views of the handed tile,
+        // which inner levels then tile and hand back in turn.
+        if (aligned(p)) {
+            Rewriter views(w);
+            for (auto free : fused.value->free_vars())
+                views.map(free, free);
+            for (auto [made, from] : fused.made)
+                if (from.producer == origin.producer) {
+                    auto r     = Lit::as(tensor->r);
+                    auto start = w.tuple(DefVec(r, [&](size_t d) {
+                        return w.call(core::nat::sub, Defs{from.off->proj(r, d), origin.off->proj(r, d)});
+                    }));
+                    views.map(made, slice_box_of(handed, start, from.ext, from.cap ? from.cap : from.ext));
+                }
+            fused.value = views.rewrite(fused.value);
+            for (auto& [made, from] : fused.made)
+                if (from.producer != origin.producer) origins_.emplace(made = views.rewrite(made), from);
+            origins_[handed]           = origin;
+            escaping_[origin.producer] = handed;
+        }
+        yields.push_back({p, handed});
     }
+    auto value = tile(fused.value, rest, depth + 1);
+    scopes_.pop_back();
+    escaping_ = std::move(enclosing);
+    if (!value) return nullptr;
+    for (auto& y : yields)
+        if (auto inner = handed_.find(y.tile); inner != handed_.end()) y.tile = inner->second;
     auto unfused = leaves(value, var);
     std::erase_if(yields, [&](const Yield& y) {
         bool read = std::ranges::find(unfused, y.producer) != unfused.end();
         if (read) log_.d("tensor.tile_fuse {} skip yield of {}: the region still reads it whole", op_, y.producer);
         return read;
     });
+    // Handed tiles come first, so the region writes them before the root reads them through views.
     if (!yields.empty()) {
-        DefVec results{value};
+        DefVec results;
         for (const auto& y : yields)
             results.push_back(y.tile);
+        results.push_back(value);
         value = w.tuple(results);
     }
     auto inputs = leaves(value, var);
@@ -497,11 +604,10 @@ const Def* Levels::parallel(const Def* anchor,
         return w.app(region, body);
     }
     auto n     = yields.size() + 1;
-    auto types = DefVec{mr.Tp}, shapes = DefVec{mr.So};
-    for (const auto& y : yields) {
+    auto types = DefVec(), shapes = DefVec(n, mr.So);
+    for (const auto& y : yields)
         types.push_back(TensorType::isa(y.producer->type())->T);
-        shapes.push_back(mr.So);
-    }
+    types.push_back(mr.Tp);
     auto axes   = w.tuple(DefVec(ro, [&](size_t d) { return w.lit_idx(ro, d); }));
     auto region = w.app(w.annex<tensor::tiled_multi>(),
                         {w.lit_nat(n), mr.Ro, w.tuple(types), w.tuple(DefVec(n, [&](size_t) { return mr.Ro; }))});
@@ -511,8 +617,11 @@ const Def* Levels::parallel(const Def* anchor,
     region      = w.app(region, ins);
     region      = w.app(region, body);
     for (size_t i = 0; i != yields.size(); ++i)
-        yielded_.emplace_back(yields[i].producer, region->proj(n, i + 1));
-    return region->proj(n, 0);
+        if (scopes_.empty() && members_.contains(yields[i].producer))
+            yielded_.emplace_back(yields[i].producer, region->proj(n, i));
+        else
+            handed_[yields[i].producer] = region->proj(n, i);
+    return region->proj(n, n - 1);
 }
 
 const Def* Levels::reduction(const Def* anchor,

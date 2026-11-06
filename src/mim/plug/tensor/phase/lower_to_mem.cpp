@@ -23,43 +23,6 @@ namespace mim::plug::tensor::phase {
 
 namespace {
 
-/// An affine index as integer coefficients of its opaque atoms plus a constant.
-/// Affine indices wrap around in two's complement, so equal forms denote equal indices.
-struct Linear {
-    DefMap<int64_t> atoms;
-    int64_t constant = 0;
-
-    void add(const Linear& other, int64_t scale) {
-        for (auto [atom, coefficient] : other.atoms)
-            if ((atoms[atom] += scale * coefficient) == 0) atoms.erase(atom);
-        constant += scale * other.constant;
-    }
-    bool operator==(const Linear&) const = default;
-
-    static Linear of(const Def* index) {
-        Linear result;
-        if (auto lit = Axm::isa<affine::lit>(index)) {
-            if (auto value = Lit::isa(lit->arg()))
-                result.constant = *value;
-            else
-                result.atoms[lit->arg()] = 1;
-        } else if (auto op = Axm::isa<affine::op>(index); op && op.id() != affine::op::mul) {
-            if (op.id() == affine::op::neg) {
-                result.add(of(op->arg()), -1);
-            } else {
-                auto [left, right] = op->args<2>();
-                result.add(of(left), 1);
-                result.add(of(right), op.id() == affine::op::sub ? -1 : 1);
-            }
-        } else if (auto mul = Axm::isa(affine::semiop::mul, index); mul && Lit::isa(mul->arg(2, 1))) {
-            result.add(of(mul->arg(2, 0)), *Lit::isa(mul->arg(2, 1)));
-        } else {
-            result.atoms[index] = 1;
-        }
-        return result;
-    }
-};
-
 /// Does `t` (recursively through immutable sigmas) contain a Pi?
 bool contains_pi(const Def* t) {
     if (t->isa<Pi>()) return true;
