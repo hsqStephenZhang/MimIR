@@ -1152,8 +1152,12 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     auto& old       = old_world();
     auto sizes      = fe::Vector<std::optional<u64>>(*rank);
     auto steps      = fe::Vector<u64>(*rank);
+    // A tile as large as its runtime extent leaves that dimension untiled.
+    auto whole = fe::Vector<bool>(*rank);
     for (size_t d = 0; d != *rank; ++d) {
         auto tile = Lit::isa(tiles->proj(*rank, d));
+        whole[d]  = !tile && Check::test_alpha(tiles->proj(*rank, d), shape->proj(*rank, d));
+        if (whole[d]) continue;
         if (!tile) app->blame("tensor.tiled lowering requires literal tile sizes").bail();
         sizes[d] = Lit::isa(shape->proj(*rank, d));
         steps[d] = sizes[d] ? std::min(*sizes[d], *tile) : *tile;
@@ -1196,6 +1200,11 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             return w.app(exit, result);
         }
         if (sizes[d] == 0) return w.app(exit, acc);
+        if (whole[d]) {
+            offsets[d] = w.lit_nat_0();
+            extents[d] = shape->proj(*rank, d);
+            return emit(d + 1, acc, exit);
+        }
         const Def* count;
         const Def* next   = exit;
         const Def* extent = old.lit_nat(steps[d]);

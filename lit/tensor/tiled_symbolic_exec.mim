@@ -5,6 +5,7 @@
 // Regions over a runtime extent: full tiles run in a loop of runtime length and the tail tile, if any, once.
 // A producer fused into the tail gets storage bounded by the tile size rather than by its runtime shape.
 // With `tail = 0` one capped body covers the tail, and intermediates of that body allocate their bound.
+// A tile size equal to its runtime extent leaves that dimension untiled.
 
 plugin tensor;
 plugin core;
@@ -92,3 +93,8 @@ extern fun staged_cap (n: Nat, x: tensor.Tensor 2 (n, 6) I64): tensor.Tensor 2 (
                     map_reduce (e, e) (twice, 0I64) (affine.id @2) (affine.id @2,)
                         (slice (n, 6) ((off#ff + o#ff, off#tt + o#tt), (1, 1), e) x));
             map_reduce (ext, ext) (inc, 0I64) (affine.id @2) (affine.id @2,) t));
+
+extern fun whole_rows (n: Nat, x: tensor.Tensor 2 (n, 6) I64): tensor.Tensor 2 (n, 6) I64 =
+    return (tiled ((n, 6), (n, 4), 0) (buf x)
+        (λ (off ext: «2; Nat») (x: tensor.Tensor 2 (n, 6) I64): tensor.Tensor 2 ext I64 =
+            map_reduce (ext, ext) (twice, 0I64) (affine.id @2) (affine.id @2,) (slice (n, 6) (off, (1, 1), ext) x)));

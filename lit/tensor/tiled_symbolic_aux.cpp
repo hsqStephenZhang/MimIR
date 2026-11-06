@@ -18,6 +18,7 @@ extern "C" int64_t* grid_cap(int64_t, int64_t*);
 extern "C" Pair paired_cap(int64_t, int64_t*);
 extern "C" int64_t* fused_grid_cap(int64_t, int64_t*);
 extern "C" int64_t* staged_cap(int64_t, int64_t*);
+extern "C" int64_t* whole_rows(int64_t, int64_t*);
 
 static int failures = 0;
 
@@ -53,6 +54,7 @@ int main() {
         doubled(grid_cap, "grid_cap", n, 7);
         doubled(fused_grid_cap, "fused_grid_cap", n, 5, 1);
         doubled(staged_cap, "staged_cap", n, 6, 1);
+        doubled(whole_rows, "whole_rows", n, 6);
 
         for (auto f : {paired, paired_cap}) {
             auto x    = input(n * 3);
