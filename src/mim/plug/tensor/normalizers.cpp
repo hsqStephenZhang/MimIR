@@ -78,15 +78,23 @@ std::optional<u64> min_upper(std::optional<u64> a, std::optional<u64> b) {
     return a ? a : b;
 }
 
-/// An upper bound of `a − b`; tile bounds take the form `min (lo + ext, s) − lo`.
+/// An upper bound of the truncated `a − b`; tile bounds take the form `(min (lo + ext − 1, s − 1) + 1) − lo`.
 std::optional<u64> sub_upper(const Def* a, const Def* b) {
+    if (a == b) return 0;
+    auto upper = nat_upper(a);
+    if (auto c = Lit::isa(b); upper && c) upper = *upper > *c ? *upper - *c : 0;
     if (auto add = Axm::isa(core::nat::add, a)) {
         auto [x, y] = add->args<2>();
-        if (y == b) return nat_upper(x);
-        if (x == b) return nat_upper(y);
+        if (y == b) return min_upper(upper, nat_upper(x));
+        if (x == b) return min_upper(upper, nat_upper(y));
+        if (auto c = Lit::isa(x))
+            if (auto rest = sub_upper(y, b)) upper = min_upper(upper, *rest + *c);
+        if (auto c = Lit::isa(y))
+            if (auto rest = sub_upper(x, b)) upper = min_upper(upper, *rest + *c);
     }
-    if (auto m = isa_min(a)) return min_upper(sub_upper(m->first, b), sub_upper(m->second, b));
-    return nat_upper(a);
+    if (auto sub = Axm::isa(core::nat::sub, a)) upper = min_upper(upper, sub_upper(sub->arg(2, 0), b));
+    if (auto m = isa_min(a)) upper = min_upper(upper, min_upper(sub_upper(m->first, b), sub_upper(m->second, b)));
+    return upper;
 }
 
 } // namespace
@@ -808,10 +816,58 @@ const Def* normalize_transpose(const Def*, const Def* c, const Def* arg) {
     return w.app(w.app(w.app(callee->callee(), w.tuple(comp)), app->decurry()->arg()), app->arg());
 }
 
+namespace {
+
+struct UnitView {
+    const Def *source, *shape, *start;
+};
+
+/// @p def as a unit-step `slice` or a `slice_box` of rank @p r, so a view of it is a view of its source.
+std::optional<UnitView> unit_view(const Def* def, u64 r) {
+    if (auto view = Axm::isa<slice_box>(def)) {
+        auto [_, shape, box] = view->callee()->as<App>()->uncurry_args<3>();
+        return UnitView{view->arg(), shape, box->proj(3, 0)};
+    }
+    if (auto view = Axm::isa<slice>(def)) {
+        auto [_, shape, box] = view->callee()->as<App>()->uncurry_args<3>();
+        auto step            = box->proj(3, 1);
+        for (u64 d = 0; d != r; ++d)
+            if (Lit::isa(step->proj(r, d)) != 1) return {};
+        return UnitView{view->arg(), shape, box->proj(3, 0)};
+    }
+    return {};
+}
+
+const Def* add_starts(const Def* a, const Def* b, u64 r) {
+    auto& w = a->world();
+    return w.tuple(DefVec(r, [&](size_t d) { return w.call(core::nat::add, Defs{a->proj(r, d), b->proj(r, d)}); }));
+}
+
+} // namespace
+
+const Def* normalize_slice_box(const Def*, const Def* c, const Def* arg) {
+    auto [meta, shape, box] = c->as<App>()->uncurry_args<3>();
+    auto r                  = Lit::isa(meta->proj(2, 1));
+    if (!r) return nullptr;
+    if (auto inner = unit_view(arg, *r)) {
+        auto& w              = arg->world();
+        auto [off, ext, cap] = box->projs<3>();
+        auto view            = w.app(w.app(w.annex<slice_box>(), meta), inner->shape);
+        return w.app(w.app(view, {add_starts(inner->start, off, *r), ext, cap}), inner->source);
+    }
+    return nullptr;
+}
+
 const Def* normalize_slice(const Def*, const Def* c, const Def* arg) {
-    // Identity slice: every axis starts at 0 with step 1 and keeps its full extent (s_out == s_in) -> the input itself.
     auto [Tr, s_in, params]   = c->as<App>()->uncurry_args<3>();
     auto [start, step, s_out] = params->projs<3>();
+    if (auto r = Lit::isa(Tr->proj(2, 1)))
+        if (auto inner = unit_view(arg, *r)) {
+            auto& w   = arg->world();
+            auto view = w.app(w.app(w.annex<slice>(), Tr), inner->shape);
+            return w.app(w.app(view, {add_starts(inner->start, start, *r), step, s_out}), inner->source);
+        }
+    // Identity slice: every axis starts at 0 with step 1 and keeps its full extent (s_out == s_in) -> the input itself.
     if (s_out != s_in) return nullptr;
     auto r = Lit::isa<u64>(Tr->proj(2, 1));
     if (!r) return nullptr;

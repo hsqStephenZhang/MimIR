@@ -862,7 +862,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         // The guard covers parallel loops only, so reduction loops run their exact extent.
         auto bounded = [&](const Def* cap, const Def* extent, u64 n) {
             return w.tuple(DefVec(n, [&](size_t d) -> const Def* {
-                if (d >= ro) return extent->proj(n, d);
+                if (d >= ro || Lit::isa(extent->proj(n, d))) return extent->proj(n, d);
                 if (Lit::isa(cap->proj(n, d))) return cap->proj(n, d);
                 if (auto upper = nat_upper(cap->proj(n, d))) return w.lit_nat(*upper);
                 if (auto upper = nat_upper(extent->proj(n, d))) return w.lit_nat(*upper);
@@ -873,11 +873,19 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         loop_cap          = bounded(loop_cap, mr.Sr, rn);
         auto parallel_cap = w.tuple(DefVec(ro, [&](size_t d) { return loop_cap->proj(rn, d); }));
         if (!lit_projs(output_cap, ro) || !lit_projs(parallel_cap, ro))
-            app->blame("tensor tile storage and loop caps must be literal").bail();
-        mr.So                = output_cap;
-        mr.Sr                = loop_cap;
-        mr.shapes            = w.tuple({mr.So, mr.Sr, mr.sched});
-        storage_shapes_[app] = output_cap;
+            app->blame("tensor tile storage and loop caps must be literal: {}, {} for {}", output_cap, parallel_cap,
+                       mr.So)
+                .bail();
+        // Caps that met specialized extents leave a guard that always holds.
+        if (output_cap == mr.So && loop_cap == mr.Sr) {
+            mr.sched  = schedule;
+            mr.shapes = w.tuple({mr.So, mr.Sr, mr.sched});
+        } else {
+            mr.So                = output_cap;
+            mr.Sr                = loop_cap;
+            mr.shapes            = w.tuple({mr.So, mr.Sr, mr.sched});
+            storage_shapes_[app] = output_cap;
+        }
     }
     const Def* seed = nullptr;
     if (initial) {

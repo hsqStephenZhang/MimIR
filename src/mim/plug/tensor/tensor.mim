@@ -1522,7 +1522,7 @@ anx lam tile_of_ref {T: *, r: Nat} {s: «r; Nat»}
     slice @(T, r) s (off, ‹r; 1›, ext) producer;
 
 axm slice_box: {T: *, r: Nat} → [s: «r; Nat»]
-             → [off ext cap: «r; Nat»] → Tensor r s T → Tensor r ext T;
+             → [off ext cap: «r; Nat»] → Tensor r s T → Tensor r ext T, normalize_slice_box;
 
 axm tile_of_box: {T: *, r: Nat} → {s: «r; Nat»}
                → [producer: Tensor r s T, off ext cap: «r; Nat»] → Tensor r ext T, normalize_tile_of_box;
