@@ -752,9 +752,13 @@ const Def* LowerToMem::lower_generate(const App* app) {
     auto r_l           = Lit::isa<u64>(r);
     auto rn            = *r_l;
 
-    auto out_ty              = buf_of(app->type());
+    auto storage = bounded_shape(s_out);
+    auto bounded = storage != s_out;
+    check_buffer_shape(r, storage);
+    auto out_ty              = buffer::type_buf(r, storage, T);
     auto [br, bs, bT]        = Axm::isa<buffer::Buf>(out_ty)->args<3>();
     auto result_ty           = w.sigma({w.call<mem::M>(0), out_ty});
+    if (bounded) storage_shapes_[app] = storage;
     auto [sources, captures] = capture_producers(app->arg());
     auto compute             = [&](Defs iters, const Def* input, const Def* m) -> std::pair<const Def*, const Def*> {
         push();
@@ -766,7 +770,9 @@ const Def* LowerToMem::lower_generate(const App* app) {
         return {m, value};
     };
     auto [am, dst] = allocate(br, bs, bT);
-    return btensor::build_pointwise(result_ty, am, dst, w.tuple(captures), s_out, rn, "generate", compute)->proj(2, 1);
+    return btensor::build_pointwise(result_ty, am, dst, w.tuple(captures), s_out, rn, "generate", compute,
+                                    bounded ? storage : nullptr)
+        ->proj(2, 1);
 }
 
 std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function) {
@@ -1491,7 +1497,9 @@ const Def* LowerToMem::lower_stage(const App* app) {
     auto generate = Axm::isa<tensor::generate>(impl);
     if (!generate) app->blame("tensor.stage reference reindexing did not produce a generate").bail();
 
-    return lower_generate(generate);
+    auto staged = lower_generate(generate);
+    if (auto storage = fe::lookup(storage_shapes_, generate)) storage_shapes_[app] = storage;
+    return staged;
 }
 
 bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def* origin) {
