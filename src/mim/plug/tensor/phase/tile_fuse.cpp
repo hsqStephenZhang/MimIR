@@ -280,6 +280,66 @@ const Def* with_sched(const App* app, const Def* sched) {
     return head;
 }
 
+/// @p app with its last reduction loop of literal extent `K` split into `(K / factor, factor)` and the inner one
+/// unrolled, so a micro tile reads `factor` consecutive elements of each row per step (the template's `kt`).
+const Def* split_reduction(const App* app, u64 factor, u64 vdim) {
+    auto& w = app->world();
+    DefVec args;
+    const Def* head = app;
+    for (auto curried = app; curried; curried = head->isa<App>()) {
+        args.push_back(curried->arg());
+        head = curried->callee();
+    }
+    std::ranges::reverse(args);
+    auto mr   = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ro   = Lit::as(mr.Ro);
+    auto rn   = Lit::as(mr.Rn);
+    auto loop = rn - 1;
+    auto K    = Lit::isa(mr.Sr->proj(rn, loop));
+    if (loop < ro || !K || *K % factor) return nullptr;
+    auto index = w.annex<affine::Index>();
+    auto split = w.mut_lam(w.pi(w.arr(rn + 1, index), w.arr(rn, index)));
+    split->set(true, w.tuple(DefVec(rn, [&](size_t d) -> const Def* {
+        if (d != loop) return split->var(rn + 1, d);
+        auto outer = w.call(affine::semiop::mul, Defs{split->var(rn + 1, d), w.lit_nat(factor)});
+        return w.call(affine::op::add, Defs{outer, split->var(rn + 1, d + 1)});
+    })));
+    auto compose = [&](const Def* map) {
+        auto pi  = map->type()->as<Pi>();
+        auto lam = w.mut_lam(w.pi(w.arr(rn + 1, index), pi->codom()));
+        lam->set(true, w.app(map, w.app(split, lam->var())));
+        return lam;
+    };
+    auto widen = [&](const Def* extents) {
+        return w.tuple(DefVec(rn + 1, [&](size_t d) -> const Def* {
+            if (d < loop) return extents->proj(rn, d);
+            if (d == loop) return w.lit_nat(*K / factor);
+            return w.lit_nat(factor);
+        }));
+    };
+    auto sched = w.app(w.annex<btensor::mk_sched>(), w.tuple({w.lit_nat(vdim), w.lit_nat_1()}));
+    if (auto clipped = Axm::isa<btensor::clip_sched>(mr.sched)) {
+        auto [valid, output_cap, loop_cap, _] = clipped->args<4>();
+        auto clip                             = w.app(w.annex<btensor::clip_sched>(), {mr.Ro, w.lit_nat(rn + 1)});
+        sched                                 = w.app(clip, {valid, output_cap, widen(loop_cap), sched});
+    }
+    auto init = mr.init;
+    if (auto initial = tensor_init(mr); initial && mr.init->num_projs() == 3)
+        init = w.tuple({initial->shape, compose(initial->map), initial->outs});
+    auto nis  = Lit::as(mr.nis);
+    auto maps = w.tuple(DefVec(nis, [&](size_t i) -> const Def* { return compose(mr.maps->proj(nis, i)); }));
+    auto [To, Tp, Ro, Rn, TSched] = mr.meta->projs<5>();
+    args[1]                       = w.tuple({To, Tp, Ro, w.lit_nat(rn + 1), TSched});
+    args[2]                       = w.tuple({mr.So, widen(mr.Sr), sched});
+    args[4]                       = init->type();
+    args[5]                       = w.tuple({mr.comb, init, mr.post});
+    args[6]                       = compose(mr.map_out);
+    args[7]                       = w.tuple({maps, mr.post_maps});
+    for (auto arg : args)
+        head = w.app(head, arg);
+    return head;
+}
+
 /// @p builder applied to each argument group in turn.
 const Def* build(const Def* builder, std::initializer_list<const Def*> groups) {
     for (auto group : groups)
@@ -783,13 +843,24 @@ const Def* Levels::reduction(const Def* anchor,
 const Def* Levels::vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const Def*> rest, u64 depth) {
     auto& w = world();
     if (!rest.empty()) return fail("a vector level must be the innermost");
-    auto vdim = rn;
+    auto ro   = Lit::as(btensor::MapRedPost::of(root->callee()->as<App>()).Ro);
+    auto vdim = rn, factor = u64(0);
     for (u64 d = 0; d != rn; ++d) {
         if (!sizes[d]) continue;
-        if (vdim != rn || sizes[d] != 1) return fail("a vector level marks a single loop with size 1");
+        if (d >= ro) {
+            if (d != rn - 1 || factor) return fail("a vector level splits only the last reduction loop");
+            factor = sizes[d];
+            continue;
+        }
+        if (vdim != rn || sizes[d] != 1) return fail("a vector level marks a single parallel loop with size 1");
         vdim = d;
     }
     if (vdim == rn) return root;
+    if (factor > 1)
+        if (auto split = split_reduction(root, factor, vdim)) {
+            log_.d("tensor.tile_fuse {} L{} vec vdim={} split={}", op_, depth, vdim, factor);
+            return split;
+        }
     log_.d("tensor.tile_fuse {} L{} vec vdim={}", op_, depth, vdim);
     return with_sched(root, w.app(w.annex<btensor::mk_sched>(), w.tuple({w.lit_nat(vdim), w.lit_nat_0()})));
 }
