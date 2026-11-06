@@ -280,6 +280,13 @@ const Def* with_sched(const App* app, const Def* sched) {
     return head;
 }
 
+/// @p builder applied to each argument group in turn.
+const Def* build(const Def* builder, std::initializer_list<const Def*> groups) {
+    for (auto group : groups)
+        builder = builder->world().app(builder, group);
+    return builder;
+}
+
 const Def* slice_box_of(const Def* tensor, const Def* off, const Def* ext, const Def* cap) {
     auto& w   = tensor->world();
     auto type = *TensorType::isa(tensor->type());
@@ -596,26 +603,15 @@ const Def* Levels::parallel(const Def* anchor,
 
     log_.d("tensor.tile_fuse {} L{} par tiles={} tail={} inputs={} fused={} yielded={}", op_, depth, w.tuple(tiles),
            peel ? "peel" : "cap", inputs.size(), fused.count, yields.size());
-    if (yields.empty()) {
-        auto region = w.app(w.annex<tensor::tiled>(), {mr.Tp, mr.Ro});
-        region      = w.app(region, {mr.So, w.tuple(tiles), w.lit_nat(peel)});
-        region      = w.app(region, ins->type());
-        region      = w.app(region, ins);
-        return w.app(region, body);
-    }
+    auto grid = w.tuple({mr.So, w.tuple(tiles), w.lit_nat(peel)});
+    if (yields.empty()) return build(w.annex<tf_par>(), {w.tuple({mr.Tp, mr.Ro}), ins->type(), grid, ins, body});
     auto n     = yields.size() + 1;
-    auto types = DefVec(), shapes = DefVec(n, mr.So);
+    auto types = DefVec();
     for (const auto& y : yields)
         types.push_back(TensorType::isa(y.producer->type())->T);
     types.push_back(mr.Tp);
-    auto axes   = w.tuple(DefVec(ro, [&](size_t d) { return w.lit_idx(ro, d); }));
-    auto region = w.app(w.annex<tensor::tiled_multi>(),
-                        {w.lit_nat(n), mr.Ro, w.tuple(types), w.tuple(DefVec(n, [&](size_t) { return mr.Ro; }))});
-    region      = w.app(region, {w.tuple(shapes), mr.So, w.tuple(tiles), w.lit_nat(peel)});
-    region      = w.app(region, w.tuple(DefVec(n, [&](size_t) { return axes; })));
-    region      = w.app(region, ins->type());
-    region      = w.app(region, ins);
-    region      = w.app(region, body);
+    auto region
+        = build(w.annex<tf_par_n>(), {w.tuple({w.lit_nat(n), mr.Ro, w.tuple(types)}), ins->type(), grid, ins, body});
     for (size_t i = 0; i != yields.size(); ++i)
         if (scopes_.empty() && members_.contains(yields[i].producer))
             yielded_.emplace_back(yields[i].producer, region->proj(n, i));
@@ -654,7 +650,8 @@ const Def* Levels::reduction(const Def* anchor,
     auto probe    = w.mut_lam(dom, w.type_nat());
     auto var      = probe->var()->as<Var>();
     auto acc = probe->var(2, 0), ko = probe->var(2, 1);
-    auto chunk   = peel ? ks : nat_min(ks, w.call(core::nat::sub, Defs{K, ko}));
+    auto tail    = w.lit_nat(peel);
+    auto chunk   = build(w.annex<tf_chunk>(), {w.tuple({K, ks, tail, ko})});
     auto partial = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), ko, chunk, acc});
     if (!partial) return fail("the root has no reduction chunk");
     scopes_.push_back(var);
@@ -670,25 +667,26 @@ const Def* Levels::reduction(const Def* anchor,
     inner->set(true, close(value, var, step->var(), inputs, inner->var()));
     step->set(true, inner);
 
-    auto blocks = peel ? w.call(core::nat::div, Defs{K, ks})
-                       : w.call(core::nat::div, Defs{w.call(core::nat::add, Defs{K, w.lit_nat(sizes[loop] - 1)}), ks});
-    auto folded = w.app(w.app(w.annex<tensor::tile_fold>(), acc_type), {blocks, ks});
-    folded      = w.app(w.app(w.app(w.app(folded, init), ins->type()), ins), step);
+    auto last       = w.mut_lam(acc_type, acc_type);
     auto tail_fused = size_t(0);
     if (peel) {
-        auto hole = w.mut_lam(acc_type, w.type_nat())->var()->as<Var>();
-        auto at   = w.call(core::nat::mul, Defs{blocks, ks});
-        auto last = reduction_tile<tile_of_partial>(
-            mr, anchor, {off, ext, w.lit_nat(loop), at, w.call(core::nat::rem, Defs{K, ks}), hole});
-        if (!last) return fail("the root has no reduction tail");
-        auto tail  = fuse(last, nullptr, depth, 1);
-        tail_fused = tail.count;
-        auto done  = tile(tail.value, rest, depth + 1);
+        auto [at, rem] = build(w.annex<tf_tail>(), {w.tuple({K, ks})})->projs<2>();
+        auto partial   = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), at, rem, last->var()});
+        if (!partial) return fail("the root has no reduction tail");
+        auto block = fuse(partial, nullptr, depth, 1);
+        tail_fused = block.count;
+        auto done  = tile(block.value, rest, depth + 1);
         if (!done) return nullptr;
-        folded = VarRewriter(hole, folded).rewrite(done);
+        last->set(true, done);
+    } else {
+        last->set(true, last->var());
     }
-    auto result = reduction_tile<tile_of_post>(mr, anchor, {off, ext, folded});
-    if (!result) return fail("the root's epilogue has no tile");
+    auto post     = w.mut_lam(acc_type, anchor->type());
+    auto epilogue = reduction_tile<tile_of_post>(mr, anchor, {off, ext, post->var()});
+    if (!epilogue) return fail("the root's epilogue has no tile");
+    post->set(true, epilogue);
+    auto result = build(w.annex<tf_reduce>(), {w.tuple({acc_type, anchor->type(), ins->type()}), w.tuple({K, ks, tail}),
+                                               init, ins, step, last, post});
     log_.d("tensor.tile_fuse {} L{} red loop={} ks={} tail={} inputs={} fused={} tail_fused={}", op_, depth, loop, ks,
            peel ? "peel" : "cap", inputs.size(), fused.count, tail_fused);
     return result;
