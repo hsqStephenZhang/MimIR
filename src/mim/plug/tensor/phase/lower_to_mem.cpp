@@ -1099,6 +1099,12 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
     push();
     bind_old(parameter->has_var());
     map(origin, off);
+    // Every tile ends within its region, so clamping its end to the region's extent yields the end itself.
+    for (size_t d = 0; d != rank; ++d) {
+        auto end   = old.call(core::nat::add, Defs{specialized->proj(rank, d), ext->proj(rank, d)});
+        auto bound = plan.shape->proj(rank, d);
+        map(old.extract(old.tuple({bound, end}), old.call(core::ncmp::l, Defs{end, bound})), rewrite(end));
+    }
     const Def* mem = state[0];
     DefVec outputs;
     auto shared = RealizationRequests(root).shared();
@@ -1216,6 +1222,12 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         if (whole[d]) {
             offsets[d] = w.lit_nat_0();
             extents[d] = shape->proj(*rank, d);
+            return emit(d + 1, acc, exit);
+        }
+        // A single tile needs no loop, and its literal origin lets the body fold its clamps.
+        if (sizes[d] && *sizes[d] == steps[d]) {
+            offsets[d] = w.lit_nat_0();
+            extents[d] = old.lit_nat(steps[d]);
             return emit(d + 1, acc, exit);
         }
         const Def* count;
