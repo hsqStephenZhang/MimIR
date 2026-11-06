@@ -105,7 +105,7 @@ std::optional<PureRead> tensor_read(const Def* value, const Def* shape) {
         auto [start, extent, cap] = box->projs<3>();
         auto [type, rank]         = meta->projs<2>();
         auto map = w.app(w.app(w.annex<tensor::slice_map>(), rank), {start, w.pack(rank, w.lit_nat_1())});
-        return adapt(PureRead{slice->arg(), map, type, rank, shape}, cap);
+        return adapt(PureRead{slice->arg(), map, type, rank, shape}, extent);
     }
     auto read = is_pure_read(value);
     return read ? adapt(read, btensor::MapRedPost::of(value->as<App>()->callee()->as<App>()).So) : read;
