@@ -9,12 +9,12 @@ plugin tensor;
 plugin core;
 use tensor;
 extern fun stage_share (x: tensor.Tensor 2 (5, 7) I64): tensor.Tensor 2 (5, 7) I64 =
-    return (tiled @(I64, 2) ((5, 7), (5, 3))
+    return (tiled @(I64, 2) ((5, 7), (5, 3), 1)
         x
         (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext I64 =
             let p = stage @(I64, 2, 0) ext ((), (), (0₂, 1₂), 0I64) 0
                 (slice (5, 7) (off, (1, 1), ext) (buf x));
-            tiled @(I64, 2) (ext, (2, ext#tt))
+            tiled @(I64, 2) (ext, (2, ext#tt), 1)
                 p
                 (λ (row size: «2; Nat») (p): tensor.Tensor 2 size I64 =
                     slice @(I64, 2) ext (row, (1, 1), size) p)));

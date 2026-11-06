@@ -87,11 +87,11 @@ axm mark_soft: {M N: Nat} → [rows: Nat, tensor.Tensor 2 (M, N) F32] → tensor
 axm mark_layer: {M N: Nat} → [rows: Nat, tensor.Tensor 2 (M, N) F32] → tensor.Tensor 2 (M, N) F32;
 pub rule group_soft (M N rows: Nat, x: tensor.Tensor 2 (M, N) F32):
     mark_soft @(M, N) (rows, x) when core.bit2.and 0 (0 < N, 0 < rows) =>
-    tiled ((M, N), (rows, N))
+    tiled ((M, N), (rows, N), 1)
         x
         (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext F32 = row_soft (slice (M, N) (off, (1, 1), ext) x));
 pub rule group_layer (M N rows: Nat, x: tensor.Tensor 2 (M, N) F32):
     mark_layer @(M, N) (rows, x) when core.bit2.and 0 (0 < N, 0 < rows) =>
-    tiled ((M, N), (rows, N))
+    tiled ((M, N), (rows, N), 1)
         x
         (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext F32 = row_layer (slice (M, N) (off, (1, 1), ext) x));

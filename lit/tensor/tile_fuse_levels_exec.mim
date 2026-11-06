@@ -60,11 +60,27 @@ extern fun outer7 (a: tensor.Tensor 2 (5, 7) I64, b: tensor.Tensor 2 (7, 6) I64,
     : tensor.Tensor 2 (5, 6) I64 =
     return (gemm (5, 7, ff) (four, outer) (buf a, buf b, buf bias));
 
-// CHECK-DAG: L0 par tiles=(2, 6) inputs=3 fused=1 yielded=0
+// Capped parallel levels run one body over the tail; a capped inner extent allocates its bound.
+let capfour = ((0, (2, 0, 0), 0, 0), (1, (0, 0, 3), 1, 0), (0, (1, 4, 0), 0, 0), (2, (0, 1, 0), 1, 0));
+extern fun cap_m (m: Nat, a: tensor.Tensor 2 (m, 7) I64, b: tensor.Tensor 2 (7, 6) I64, bias: tensor.Tensor 1 6 I64)
+    : tensor.Tensor 2 (m, 6) I64 =
+    return (gemm (m, 7, ff) (capfour, default_control) (buf a, buf b, buf bias));
+extern fun cap7 (a: tensor.Tensor 2 (5, 7) I64, b: tensor.Tensor 2 (7, 6) I64, bias: tensor.Tensor 1 6 I64)
+    : tensor.Tensor 2 (5, 6) I64 =
+    return (gemm (5, 7, ff) (capfour, default_control) (buf a, buf b, buf bias));
+extern fun cap_k (k: Nat, a: tensor.Tensor 2 (k, 5) I64, b: tensor.Tensor 2 (k, 6) I64, bias: tensor.Tensor 1 6 I64)
+    : tensor.Tensor 2 (5, 6) I64 =
+    return (gemm (5, k, tt) (((0, (2, 4, 0), 0, 0), (1, (0, 0, 3), 0, 0), (0, (1, 2, 0), 0, 0)), default_control)
+        (buf a, buf b, buf bias));
+
+// CHECK-DAG: L0 par tiles=(2, 6) tail=peel inputs=3 fused=1 yielded=0
 // CHECK-DAG: L1 red loop=2 ks=3 tail=peel inputs={{[0-9]+}} fused=1 tail_fused=1
 // CHECK-DAG: L1 red loop=2 ks=3 tail=cap inputs={{[0-9]+}} fused=1 tail_fused=0
-// CHECK-DAG: L2 par tiles=(1, 4) inputs={{[0-9]+}} fused=1 yielded=0
-// CHECK-DAG: L2 par tiles=(1, 4) inputs=3 fused=0 yielded=0
+// CHECK-DAG: L2 par tiles=(1, 4) tail=peel inputs={{[0-9]+}} fused=1 yielded=0
+// CHECK-DAG: L2 par tiles=(1, 4) tail=peel inputs=3 fused=0 yielded=0
 // CHECK-DAG: L3 vec vdim=1
+// CHECK-DAG: L0 par tiles=(2, 6) tail=cap inputs=3 fused=1 yielded=0
+// CHECK-DAG: L2 par tiles=(1, 4) tail=cap inputs=3 fused=1 yielded=0
+// CHECK-DAG: L0 par tiles=(2, 4) tail=cap inputs=3 fused=0 yielded=0
 // CHECK-DAG: L0 red loop=2 ks=4 tail=peel inputs={{[0-9]+}} fused=1 tail_fused=1
 // CHECK-DAG: skip r{{.*}}: its tile storage (k{{.*}}, 2) has no constant bound

@@ -20,7 +20,7 @@ lam window (p: tensor.Tensor 1 7 I64): tensor.Tensor 1 5 I64 =
     map_reduce (5, (5, 3)) (add, 0I64) (proj_map @(2, 1) 0)
         ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
 lam tiled_window (p: tensor.Tensor 1 7 I64, ts: Nat): tensor.Tensor 1 5 I64 =
-    tiled @(I64, 1) (5, ts)
+    tiled @(I64, 1) (5, ts, 1)
         p
         (λ (off ext: «1; Nat») (p): tensor.Tensor 1 ext I64 = tile_of_box (window p, off, ext, ext));
 

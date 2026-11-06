@@ -13,20 +13,20 @@ use core.ops.n;
 
 extern fun tiled_tail (x: tensor.Tensor 2 (5, 7) I64): tensor.Tensor 2 (5, 7) I64 =
     let x = buf x;
-    return (tiled @(I64, 2) ((5, 7), (2, 3))
+    return (tiled @(I64, 2) ((5, 7), (2, 3), 1)
         x
         (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext I64 = slice (5, 7) (off, (1, 1), ext) x));
 extern fun tiled_one (x: tensor.Tensor 2 (1, 5) I64): tensor.Tensor 2 (1, 5) I64 =
     let x = buf x;
-    return (tiled @(I64, 2) ((1, 5), (4, 2))
+    return (tiled @(I64, 2) ((1, 5), (4, 2), 1)
         x
         (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext I64 = slice @(I64, 2) (1, 5) (off, (1, 1), ext) x));
 extern fun tiled_full (x: tensor.Tensor 2 (5, 7) I64): tensor.Tensor 2 (4, 6) I64 =
-    return (tiled @(I64, 2) ((4, 6), (2, 3))
+    return (tiled @(I64, 2) ((4, 6), (2, 3), 1)
         x
         (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext I64 = slice (5, 7) (off, (1, 1), ext) (buf x)));
 extern fun tiled_scalar (x: tensor.Tensor 2 (1, 1) I64): tensor.Tensor 2 (1, 1) I64 =
-    return (tiled @(I64, 2) ((1, 1), (2, 3))
+    return (tiled @(I64, 2) ((1, 1), (2, 3), 1)
         x
         (λ (off ext: «2; Nat») (x): tensor.Tensor 2 ext I64 = slice @(I64, 2) (1, 1) (off, (1, 1), ext) (buf x)));
 

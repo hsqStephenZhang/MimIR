@@ -48,9 +48,9 @@ extern fun retained_init (a: tensor.Tensor 1 8 I64): tensor.Tensor 1 8 I64 =
 
 extern fun shared_tiles (a: tensor.Tensor 1 8 I64): tensor.Tensor 1 8 I64 =
     let p = producer a;
-    let left = tiled (4, 2) p
+    let left = tiled (4, 2, 1) p
         (λ (off ext: Nat) (p): tensor.Tensor 1 ext I64 = slice @(I64, 1) 8 (off, 1, ext) p);
-    let right = tiled (4, 2) p
+    let right = tiled (4, 2, 1) p
         (λ (off ext: Nat) (p): tensor.Tensor 1 ext I64 =
             slice @(I64, 1) 8 (core.nat.add (off, 4), 1, ext) p);
     return (concat @(I64, 2, 1) 0_1 (left, right));

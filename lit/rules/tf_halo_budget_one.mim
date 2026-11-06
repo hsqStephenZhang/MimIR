@@ -19,7 +19,7 @@ extern fun rejected (a: tensor.Tensor 1 7 I64): tensor.Tensor 1 5 I64 =
     let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf a);
     let q = map_reduce (5, (5, 3)) (add, 0I64) (proj_map @(2, 1) 0)
         ((λ (i k: affine.Index): affine.Index = affine.op.add (i, k)),) p;
-    return (tiled @(I64, 1) (5, 2)
+    return (tiled @(I64, 1) (5, 2, 1)
         p
         (λ (off ext: «1; Nat») (p): tensor.Tensor 1 ext I64 =
             let q = map_reduce (5, (5, 3)) (add, 0I64) (proj_map @(2, 1) 0)

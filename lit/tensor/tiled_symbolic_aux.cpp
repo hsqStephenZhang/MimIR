@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include <initializer_list>
+
 struct Pair {
     int64_t *full, *rows;
 };
@@ -12,6 +14,10 @@ extern "C" int64_t* nested(int64_t, int64_t*);
 extern "C" int64_t* folded(int64_t);
 extern "C" int64_t* fused(int64_t, int64_t*);
 extern "C" int64_t* fused_grid(int64_t, int64_t*);
+extern "C" int64_t* grid_cap(int64_t, int64_t*);
+extern "C" Pair paired_cap(int64_t, int64_t*);
+extern "C" int64_t* fused_grid_cap(int64_t, int64_t*);
+extern "C" int64_t* staged_cap(int64_t, int64_t*);
 
 static int failures = 0;
 
@@ -44,20 +50,25 @@ int main() {
         doubled(nested, "nested", n, 6);
         doubled(fused, "fused", n, 3, 1);
         doubled(fused_grid, "fused_grid", n, 5, 1);
+        doubled(grid_cap, "grid_cap", n, 7);
+        doubled(fused_grid_cap, "fused_grid_cap", n, 5, 1);
+        doubled(staged_cap, "staged_cap", n, 6, 1);
 
-        auto x    = input(n * 3);
-        auto pair = paired(n, x);
-        for (int64_t i = 0; i != n; ++i) {
-            int64_t sum = 0;
-            for (int64_t j = 0; j != 3; ++j) {
-                expect(pair.full[i * 3 + j] == 2 * x[i * 3 + j], "paired.full", n, i * 3 + j);
-                sum += 2 * x[i * 3 + j];
+        for (auto f : {paired, paired_cap}) {
+            auto x    = input(n * 3);
+            auto pair = f(n, x);
+            for (int64_t i = 0; i != n; ++i) {
+                int64_t sum = 0;
+                for (int64_t j = 0; j != 3; ++j) {
+                    expect(pair.full[i * 3 + j] == 2 * x[i * 3 + j], "paired.full", n, i * 3 + j);
+                    sum += 2 * x[i * 3 + j];
+                }
+                expect(pair.rows[i] == sum, "paired.rows", n, i);
             }
-            expect(pair.rows[i] == sum, "paired.rows", n, i);
+            std::free(pair.full);
+            std::free(pair.rows);
+            std::free(x);
         }
-        std::free(pair.full);
-        std::free(pair.rows);
-        std::free(x);
 
         int64_t seed = 3;
         for (int64_t k = 0; k != n; ++k)

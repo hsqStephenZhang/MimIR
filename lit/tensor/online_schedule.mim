@@ -19,4 +19,4 @@ extern lam _compile (): compile.Phase =
 // CHECK: tensor.tile_fold @
 // CHECK-SAME: (63, 8)
 // CHECK: tensor.tiled @
-// CHECK-SAME: ((12, 512, 64), (1, 2, 64))
+// CHECK-SAME: ((12, 512, 64), (1, 2, 64), 1)

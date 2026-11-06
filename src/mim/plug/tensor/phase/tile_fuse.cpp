@@ -277,6 +277,7 @@ private:
                         u64 ro,
                         u64 rn,
                         fe::Span<const u64> sizes,
+                        bool peel,
                         fe::Span<const Def*> rest,
                         u64 depth);
     const Def* reduction(const Def* anchor,
@@ -413,7 +414,7 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const Def*> levels, u64 dept
             return fail("tile sizes must be literals");
     auto rest = levels.subspan(1);
     switch (*k) {
-        case 0: return parallel(anchor, mr, ro, rn, literal, rest, depth);
+        case 0: return parallel(anchor, mr, ro, rn, literal, *t == 1, rest, depth);
         case 1: return reduction(anchor, mr, ro, rn, literal, *t == 1, rest, depth);
         case 2: return vector(root, rn, literal, rest, depth);
         default: return fail("level kinds are 0 (parallel), 1 (reduction) or 2 (vector)");
@@ -425,6 +426,7 @@ const Def* Levels::parallel(const Def* anchor,
                             u64 ro,
                             u64 rn,
                             fe::Span<const u64> sizes,
+                            bool peel,
                             fe::Span<const Def*> rest,
                             u64 depth) {
     auto& w = world();
@@ -485,11 +487,11 @@ const Def* Levels::parallel(const Def* anchor,
     inner->set(true, close(value, var, body->var(), inputs, inner->var()));
     body->set(true, inner);
 
-    log_.d("tensor.tile_fuse {} L{} par tiles={} inputs={} fused={} yielded={}", op_, depth, w.tuple(tiles),
-           inputs.size(), fused.count, yields.size());
+    log_.d("tensor.tile_fuse {} L{} par tiles={} tail={} inputs={} fused={} yielded={}", op_, depth, w.tuple(tiles),
+           peel ? "peel" : "cap", inputs.size(), fused.count, yields.size());
     if (yields.empty()) {
         auto region = w.app(w.annex<tensor::tiled>(), {mr.Tp, mr.Ro});
-        region      = w.app(region, {mr.So, w.tuple(tiles)});
+        region      = w.app(region, {mr.So, w.tuple(tiles), w.lit_nat(peel)});
         region      = w.app(region, ins->type());
         region      = w.app(region, ins);
         return w.app(region, body);
@@ -503,7 +505,7 @@ const Def* Levels::parallel(const Def* anchor,
     auto axes   = w.tuple(DefVec(ro, [&](size_t d) { return w.lit_idx(ro, d); }));
     auto region = w.app(w.annex<tensor::tiled_multi>(),
                         {w.lit_nat(n), mr.Ro, w.tuple(types), w.tuple(DefVec(n, [&](size_t) { return mr.Ro; }))});
-    region      = w.app(region, {w.tuple(shapes), mr.So, w.tuple(tiles)});
+    region      = w.app(region, {w.tuple(shapes), mr.So, w.tuple(tiles), w.lit_nat(peel)});
     region      = w.app(region, w.tuple(DefVec(n, [&](size_t) { return axes; })));
     region      = w.app(region, ins->type());
     region      = w.app(region, ins);

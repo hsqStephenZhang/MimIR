@@ -56,7 +56,7 @@ extern fun rows (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): 
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (r, buf b);
     return (tile_req (root, r, ((0, (2, 0, 0), 1, 0),), default_control));
 
-// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) inputs=2 fused=2 yielded=0
-// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) inputs=2 fused=0 yielded=0
-// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) inputs=2 fused=1 yielded=0
-// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) inputs=2 fused=2 yielded=1
+// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) tail=peel inputs=2 fused=2 yielded=0
+// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) tail=peel inputs=2 fused=0 yielded=0
+// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) tail=peel inputs=2 fused=1 yielded=0
+// CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) tail=peel inputs=2 fused=2 yielded=1

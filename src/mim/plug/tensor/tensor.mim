@@ -1845,8 +1845,11 @@ anx lam AccumulatorDefault {T: *, Ro: Nat}: * =
 anx lam outs_default {T: *, Ro: Nat} (shape: «Ro; Nat») (value: Tensor Ro shape T): AccumulatorDefault @(T, Ro) =
     (shape, value);
 
+///
+/// `tail` is 0 to cover a partial tile with one body of extent `min (ts, s - off)` and 1 to peel it.
+///
 axm tiled: {T: *, r: Nat}
-         → [s ts: «r; Nat»]
+         → [s ts: «r; Nat», tail: Nat]
          → {I: *} → [ins: I]
          → [body: [off ext: «r; Nat»] → I → Tensor r ext T]
          → Tensor r s T, normalize_tiled;
@@ -1857,7 +1860,7 @@ anx lam tile_shape {r g: Nat} (s: «r; Nat», axes: «g; Idx r», ext: «g; Nat�
         (‹j: g; j›, s#d)›;
 
 axm tiled_multi: {n g: Nat, Ts: «n; *», rs: «n; Nat»}
-               → [shapes: «i: n; «rs#i; Nat»», s ts: «g; Nat»]
+               → [shapes: «i: n; «rs#i; Nat»», s ts: «g; Nat», tail: Nat]
                → [axes: «i: n; «g; Idx (rs#i)»»]
                → {I: *} → [ins: I]
                → [body: [off ext: «g; Nat»] → I
@@ -1865,7 +1868,7 @@ axm tiled_multi: {n g: Nat, Ts: «n; *», rs: «n; Nat»}
                → «i: n; Tensor (rs#i) (shapes#i) (Ts#i)», normalize_tiled_multi;
 
 priv anx lam tiled_multi_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
-    (shapes: «i: n; «rs#i; Nat»», s ts: «g; Nat»)
+    (shapes: «i: n; «rs#i; Nat»», s ts: «g; Nat», tail: Nat)
     (axes: «i: n; «g; Idx (rs#i)»») {I: *} (ins: I)
     (body: [off ext: «g; Nat»] → I
         → «i: n; Tensor (rs#i) (tile_shape (shapes#i, axes#i, ext)) (Ts#i)»): «i: n; Tensor (rs#i) (shapes#i) (Ts#i)» =
@@ -1895,7 +1898,9 @@ priv anx lam tiled_multi_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
                         end;
                     cps.cps2ds choose ()
                 )#(d < g) ();
-            peel (0, ‹d: g; (ts#d, s#d)#(s#d < ts#d)›);
+            let full = ‹d: g; (ts#d, s#d)#(s#d < ts#d)›;
+            (λ (): Ts#i = peel (0, full),
+             λ (): Ts#i = read ‹d: g; (full#d, s#d - off#d)#(s#d - off#d < full#d)›)#(tail == 0) ();
         generate (shapes#i) at›;
 
 axm tile_fold: {Acc: *}
@@ -1952,7 +1957,7 @@ priv anx lam tiled_n_impl {n g: Nat, Ts: «n; *», rs: «n; Nat»}
 axm group_impl: {T: *, r: Nat, s: «r; Nat»} → [p: Tensor r s T, ts: «r; Nat»] → Tensor r s T,
     normalize_group_impl;
 
-priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat»)
+priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat», tail: Nat)
     {I: *} (ins: I) (body: [off ext: «r; Nat»] → I → Tensor r ext T): Tensor r s T =
     let ts = ‹d: r; (ts#d, s#d)#(s#d < ts#d)›;
     lam at (x: «r; I64»): T =
@@ -1974,7 +1979,9 @@ priv anx lam tiled_impl {T: *, r: Nat} (s ts: «r; Nat»)
                     end;
                 cps.cps2ds choose ()
             )#(d < r) ();
-        peel (0, ts);
+        let capped = ‹d: r; (ts#d, s#d - off#d)#(s#d - off#d < ts#d)›;
+        (λ (): T = peel (0, ts),
+         λ (): T = get (body (off, capped) ins, ‹j: r; core.idx 0 (capped#j) (local#j)›))#(tail == 0) ();
     generate s at;
 
 priv anx lam tile_fold_impl {Acc: *} (n ks: Nat) (init: Acc)
@@ -2052,7 +2059,7 @@ priv anx lam sdpa_online_inputs (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N
     let sub = math.arith.sub mode;
     let maximum = math.extrema.fmax mode;
     let R: Ring = (F, 0:F, add, mul);
-    tiled ((H, M, N), (1, bm, N)) (q, k, v, mask)
+    tiled ((H, M, N), (1, bm, N), 1) (q, k, v, mask)
         (λ (off ext: «3; Nat»)
             (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F, mask: Mask): Tensor 3 ext F =
             let rows = ext#1₃;
@@ -2197,7 +2204,7 @@ priv anx lam group_blis_impl {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps;
     (combine: Fn [T, [Ta, Tb]] → T, init: T, post: Fn [T, «i: nps; Tps#i»] → T,
      post_maps: «i: nps; «2; affine.Index» → «Rps#i; affine.Index»»)
     (a: Tensor 2 (M, K) Ta, b: Tensor 2 (K, N) Tb, extras: «i: nps; Tensor (Rps#i) (Sps#i) (Tps#i)»): Tensor 2 (M, N) T =
-    tiled ((M, N), (M, nc)) (a, b, extras)
+    tiled ((M, N), (M, nc), 1) (a, b, extras)
         (λ (off ext: «2; Nat»)
             (a: Tensor 2 (M, K) Ta, b: Tensor 2 (K, N) Tb, extras: «i: nps; Tensor (Rps#i) (Sps#i) (Tps#i)»): Tensor 2 ext T =
             let rows = ext#ff;
@@ -2206,7 +2213,7 @@ priv anx lam group_blis_impl {T Ta Tb: *, nps: Nat, Tps: «nps; *», Rps: «nps;
                 (k ko: Nat, acc: Tensor 2 (rows, n) T, last: Bool): Tensor 2 (rows, n) T =
                 let bp = stage @(Tb, 2, 1) (k, n) (1, nr, (tt, ff), ⊥:Tb) 0
                     (slice @(Tb, 2) (K, N) ((ko, off#tt), (1, 1), (k, n)) b);
-                tiled ((rows, n), (mr, nr)) (a, bp, acc, extras)
+                tiled ((rows, n), (mr, nr), 1) (a, bp, acc, extras)
                     (λ (row size: «2; Nat»)
                         (a: Tensor 2 (M, K) Ta, bp: Tensor 3 (stage_shape @(2, 1) (k, n) (1, nr, (tt, ff))) Tb,
                          acc: Tensor 2 (rows, n) T, extras: «i: nps; Tensor (Rps#i) (Sps#i) (Tps#i)»): Tensor 2 size T =
@@ -2265,7 +2272,7 @@ priv anx lam group_blis_batch_impl
     : Tensor (nb + 2) (vec.cat (batches, (M, N))) T =
     let shape = vec.cat (batches, (M, N));
     let extent = vec.cat (‹nb; 1›, (M, N));
-    tiled @(T, nb + 2) (shape, extent) (inputs, extras)
+    tiled @(T, nb + 2) (shape, extent, 1) (inputs, extras)
         (λ (off ext: «nb + 2; Nat»)
             (inputs: [Tensor (Ris#ff) (Sis#ff) Ta, Tensor (Ris#tt) (Sis#tt) Tb], extras: «i: nps; Tensor (Rps#i) (Sps#i) (Tps#i)»): Tensor (nb + 2) ext T =
             let prefix = ‹d: nb; affine.lit (off#(core.conv.u (nb + 2) d))›;

@@ -15,7 +15,7 @@ fun add (a b: I64)@tt: I64 = return (core.wrap.add 0 (a, b));
 lam first (i _: affine.Index): affine.Index = i;
 
 extern fun paired (x: tensor.Tensor 2 (5, 3) I64): [tensor.Tensor 2 (5, 3) I64, tensor.Tensor 1 5 I64] =
-    return (tiled_multi @(2, 1, (I64, I64), (2, 1)) (((5, 3), 5), 5, 2) (0_2, 0_1)
+    return (tiled_multi @(2, 1, (I64, I64), (2, 1)) (((5, 3), 5), 5, 2, 1) (0_2, 0_1)
         (buf x)
         (λ (off ext: Nat) (x): [tensor.Tensor 2 (ext, 3) I64, tensor.Tensor 1 ext I64] =
             let p = map_reduce ((ext, 3), (ext, 3)) (twice, 0I64) (affine.id @2) (affine.id @2,)
@@ -25,7 +25,7 @@ extern fun paired (x: tensor.Tensor 2 (5, 3) I64): [tensor.Tensor 2 (5, 3) I64, 
 
 extern fun mixed (x: tensor.Tensor 2 (5, 3) I64): [tensor.Tensor 2 (5, 3) I64, tensor.Tensor 2 (3, 5) I32] =
     return (tiled_multi @(2, 2, (I64, I32), (2, 2))
-        (((5, 3), (3, 5)), (5, 3), (2, 2)) ((0_2, 1_2), (1_2, 0_2)) (buf x)
+        (((5, 3), (3, 5)), (5, 3), (2, 2), 1) ((0_2, 1_2), (1_2, 0_2)) (buf x)
         (λ (off ext: «2; Nat») (x): [tensor.Tensor 2 ext I64, tensor.Tensor 2 (ext#tt, ext#ff) I32] =
             let p = slice (5, 3) (off, (1, 1), ext) x;
             (p, unary (core.conv.s 4294967296) (transpose (1_2, 0_2) p))));

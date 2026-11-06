@@ -19,7 +19,7 @@ extern fun edge (input: tensor.Tensor 1 7 I64, off: Nat): I64 =
 
 extern fun tiles (input: tensor.Tensor 1 7 I64): tensor.Tensor 1 7 I64 =
     let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf input);
-    return (tiled @(I64, 1) (7, 3)
+    return (tiled @(I64, 1) (7, 3, 1)
         input
         (λ (off ext: «1; Nat») (input): tensor.Tensor 1 ext I64 =
             let p = map_reduce (7, 7) (scale, 0I64) (affine.id @1) (affine.id @1,) (buf input);

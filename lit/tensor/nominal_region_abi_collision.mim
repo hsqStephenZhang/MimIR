@@ -15,11 +15,11 @@ let F32 = math.F32;
 extern fun collision (x: Tensor 2 (2, 10) F32): [Tensor 1 10 F32, Tensor 1 10 F32] =
     let p = slice @(F32, 2) (2, 10) ((0, 0), (1, 1), (1, 10)) (buf x);
     let p = reshape (1, 10) 10 p;
-    let pair = tiled_multi @(2, 1, (F32, F32), (1, 1)) ((10, 10), 10, 4) (0_1, 0_1) p
+    let pair = tiled_multi @(2, 1, (F32, F32), (1, 1)) ((10, 10), 10, 4, 1) (0_1, 0_1) p
         (λ (off ext: Nat) (p): [Tensor 1 ext F32, Tensor 1 ext F32] =
             let t = slice @(F32, 1) 10 (off, 1, ext) p;
             (t, t));
-    let a = tiled @(F32, 1) (10, 4) (p, p)
+    let a = tiled @(F32, 1) (10, 4, 1) (p, p)
         (λ (off ext: Nat) (a, b): Tensor 1 ext F32 =
             binary (math.arith.add math.mode.fast)
                 (slice @(F32, 1) 10 (off, 1, ext) a, slice @(F32, 1) 10 (off, 1, ext) b));

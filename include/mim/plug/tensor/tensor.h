@@ -103,7 +103,7 @@ struct MultiTilePlan {
 
 MultiTilePlan multi_tile_plan(const App*);
 struct GridTilePlan {
-    const Def *types, *ranks, *shapes, *shape, *tiles, *axes, *inputs, *body;
+    const Def *types, *ranks, *shapes, *shape, *tiles, *tail, *axes, *inputs, *body;
     u64 count, rank;
     bool multiple;
     std::pair<const Def*, const Def*> box(u64, const Def*, const Def*) const;

@@ -55,28 +55,28 @@ lam prepared (input: tensor.Tensor 4 (2, 2, 5, 6) I64): tensor.Tensor 4 (2, 2, 7
 
 extern fun stride_one (input: tensor.Tensor 4 (2, 2, 5, 6) I64, weight: tensor.Tensor 4 (3, 2, 3, 3) I64, bias: tensor.Tensor 1 3 I64): tensor.Tensor 4 (2, 3, 5, 6) I64 =
     let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias);
-    return (tiled @(I64, 4) ((2, 3, 5, 6), (2, 3, 2, 6))
+    return (tiled @(I64, 4) ((2, 3, 5, 6), (2, 3, 2, 6), 1)
         (input, weight, bias)
         (λ (off ext: «4; Nat») (input, weight, bias): tensor.Tensor 4 ext I64 =
             let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias); tile_of_box (p, off, ext, ext)));
 
 extern fun stride_two (input: tensor.Tensor 4 (2, 2, 5, 6) I64, weight: tensor.Tensor 4 (3, 2, 3, 3) I64, bias: tensor.Tensor 1 3 I64): tensor.Tensor 4 (2, 3, 3, 3) I64 =
     let p = convolution ((2, 2), (1, 1)) (prepared input, buf weight, buf bias);
-    return (tiled @(I64, 4) ((2, 3, 3, 3), (2, 3, 2, 3))
+    return (tiled @(I64, 4) ((2, 3, 3, 3), (2, 3, 2, 3), 1)
         (input, weight, bias)
         (λ (off ext: «4; Nat») (input, weight, bias): tensor.Tensor 4 ext I64 =
             let p = convolution ((2, 2), (1, 1)) (prepared input, buf weight, buf bias); tile_of_box (p, off, ext, ext)));
 
 extern fun one_row (input: tensor.Tensor 4 (2, 2, 5, 6) I64, weight: tensor.Tensor 4 (3, 2, 3, 3) I64, bias: tensor.Tensor 1 3 I64): tensor.Tensor 4 (2, 3, 5, 6) I64 =
     let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias);
-    return (tiled @(I64, 4) ((2, 3, 5, 6), (2, 3, 1, 6))
+    return (tiled @(I64, 4) ((2, 3, 5, 6), (2, 3, 1, 6), 1)
         (input, weight, bias)
         (λ (off ext: «4; Nat») (input, weight, bias): tensor.Tensor 4 ext I64 =
             let p = convolution ((1, 1), (1, 1)) (prepared input, buf weight, buf bias); tile_of_box (p, off, ext, ext)));
 
 extern fun dilated (input: tensor.Tensor 4 (2, 2, 5, 6) I64, weight: tensor.Tensor 4 (3, 2, 3, 3) I64, bias: tensor.Tensor 1 3 I64): tensor.Tensor 4 (2, 3, 3, 4) I64 =
     let p = convolution ((1, 1), (2, 2)) (prepared input, buf weight, buf bias);
-    return (tiled @(I64, 4) ((2, 3, 3, 4), (2, 3, 2, 4))
+    return (tiled @(I64, 4) ((2, 3, 3, 4), (2, 3, 2, 4), 1)
         (input, weight, bias)
         (λ (off ext: «4; Nat») (input, weight, bias): tensor.Tensor 4 ext I64 =
             let p = convolution ((1, 1), (2, 2)) (prepared input, buf weight, buf bias); tile_of_box (p, off, ext, ext)));
@@ -84,7 +84,7 @@ extern fun dilated (input: tensor.Tensor 4 (2, 2, 5, 6) I64, weight: tensor.Tens
 extern fun chain (input: tensor.Tensor 4 (2, 2, 9, 8) I64, first: tensor.Tensor 4 (3, 2, 3, 3) I64, second: tensor.Tensor 4 (2, 3, 3, 3) I64): tensor.Tensor 4 (2, 2, 5, 4) I64 =
     let p = convolution ((1, 1), (1, 1)) (buf input, buf first, splat (3, 0I64));
     let p = convolution ((1, 1), (1, 1)) (p, buf second, splat (2, 0I64));
-    return (tiled @(I64, 4) ((2, 2, 5, 4), (2, 2, 2, 4))
+    return (tiled @(I64, 4) ((2, 2, 5, 4), (2, 2, 2, 4), 1)
         (input, first, second)
         (λ (off ext: «4; Nat») (input, first, second): tensor.Tensor 4 ext I64 =
             let p = convolution ((1, 1), (1, 1)) (buf input, buf first, splat (3, 0I64));

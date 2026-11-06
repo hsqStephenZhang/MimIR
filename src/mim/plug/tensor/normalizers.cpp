@@ -588,7 +588,7 @@ bool nests_region(const Def* body) {
 const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
     auto [meta, shapes, input_type, inputs] = c->as<App>()->uncurry_args<4>();
     check_region_inputs(body, c);
-    auto [s, ts] = shapes->projs<2>();
+    auto [s, ts, tail] = shapes->projs<3>();
     if (auto rank = Lit::isa(meta->proj(2, 1))) {
         for (size_t d = 0; d != *rank; ++d)
             if (Lit::isa(ts->proj(*rank, d)) == 0) c->blame("tensor.tiled requires positive tile sizes").bail();
@@ -609,15 +609,15 @@ GridTilePlan grid_tile_plan(const App* app) {
     if (Axm::isa<tiled>(app)) {
         auto [meta, shapes, it, ins, body] = app->uncurry_args<5>();
         auto [type, rank]                  = meta->projs<2>();
-        auto [shape, tiles]                = shapes->projs<2>();
+        auto [shape, tiles, tail]          = shapes->projs<3>();
         auto& w                            = app->world();
         auto r                             = Lit::expect(rank, "a literal tensor.tiled grid rank");
         auto axes                          = w.tuple(DefVec(r, [&](size_t d) { return w.lit_idx(r, d); }));
-        return {type, rank, shape, shape, tiles, axes, ins, body, 1, r, false};
+        return {type, rank, shape, shape, tiles, tail, axes, ins, body, 1, r, false};
     }
     auto [meta, shapes_grid, axes, it, ins, body] = app->uncurry_args<6>();
     auto [n, g, types, ranks]                     = meta->projs<4>();
-    auto [shapes, shape, tiles]                   = shapes_grid->projs<3>();
+    auto [shapes, shape, tiles, tail]             = shapes_grid->projs<4>();
     auto count                                    = Lit::expect(n, "a literal tensor.tiled_multi result count");
     auto rank                                     = Lit::expect(g, "a literal tensor.tiled_multi grid rank");
     for (u64 d = 0; d != rank; ++d)
@@ -638,7 +638,7 @@ GridTilePlan grid_tile_plan(const App* app) {
                 app->blame("tensor.tiled_multi result extent must equal its mapped grid extent").bail();
         }
     }
-    return {types, ranks, shapes, shape, tiles, axes, ins, body, count, rank, true};
+    return {types, ranks, shapes, shape, tiles, tail, axes, ins, body, count, rank, true};
 }
 
 std::pair<const Def*, const Def*> GridTilePlan::box(u64 i, const Def* off, const Def* ext) const {
@@ -684,7 +684,7 @@ const Def* normalize_group_impl(const Def*, const Def* callee, const Def* arg) {
     if (!graph::map_reduce(producer) || !Lit::isa(rank)) return nullptr;
     RegionInputs inputs(Defs{producer});
     auto values     = inputs.values(w);
-    auto tiled      = w.app(w.app(w.annex<tensor::tiled>(), {type, rank}), {shape, tiles});
+    auto tiled      = w.app(w.app(w.annex<tensor::tiled>(), {type, rank}), {shape, tiles, w.lit_nat_1()});
     tiled           = w.app(w.app(tiled, values->type()), values);
     auto body       = w.mut_lam(tiled->type()->as<Pi>()->dom()->as<Pi>());
     auto inner      = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());

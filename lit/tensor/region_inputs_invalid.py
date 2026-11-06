@@ -8,13 +8,13 @@ directory.mkdir(exist_ok=True)
 cases = [
     (
         "tiled",
-        "tiled (8, 4) () (λ (off ext: Nat) (): tensor.Tensor 1 ext I64 = "
+        "tiled (8, 4, 1) () (λ (off ext: Nat) (): tensor.Tensor 1 ext I64 = "
         "slice @(I64, 1) 8 (off, 1, ext) outer_tensor)",
         "tensor.slice",
     ),
     (
         "bypass_parameter",
-        "tiled (8, 4) outer_tensor (λ (off ext: Nat) (p): tensor.Tensor 1 ext I64 = "
+        "tiled (8, 4, 1) outer_tensor (λ (off ext: Nat) (p): tensor.Tensor 1 ext I64 = "
         "slice @(I64, 1) 8 (off, 1, ext) outer_tensor)",
         "tensor.slice",
     ),
@@ -35,7 +35,7 @@ cases = [
     ),
     (
         "mixed_inputs",
-        "tiled (8, 4) local_tensor (λ (off ext: Nat) (local_tensor): tensor.Tensor 1 ext I64 = "
+        "tiled (8, 4, 1) local_tensor (λ (off ext: Nat) (local_tensor): tensor.Tensor 1 ext I64 = "
         "slice @(I64, 1) 8 (off, 1, ext) "
         "(map_reduce @2 (8, 8) (add, 0I64) (affine.id @1) "
         "(affine.id @1, affine.id @1) (local_tensor, outer_tensor)))",
@@ -43,8 +43,8 @@ cases = [
     ),
     (
         "nested",
-        "tiled (8, 4) outer_tensor (λ (off ext: Nat) (outer_tensor): tensor.Tensor 1 ext I64 = "
-        "tiled (ext, 2) () (λ (inner_off inner_ext: Nat) (): tensor.Tensor 1 inner_ext I64 = "
+        "tiled (8, 4, 1) outer_tensor (λ (off ext: Nat) (outer_tensor): tensor.Tensor 1 ext I64 = "
+        "tiled (ext, 2, 1) () (λ (inner_off inner_ext: Nat) (): tensor.Tensor 1 inner_ext I64 = "
         "slice @(I64, 1) 8 (inner_off, 1, inner_ext) outer_tensor))",
         "tensor.slice",
     ),

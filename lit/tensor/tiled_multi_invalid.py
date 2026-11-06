@@ -17,7 +17,7 @@ for name, grid, tiles, shape, axes, message in [
     source.write_text(
         "plugin tensor;\nuse tensor;\n"
         f"extern fun invalid (): tensor.Tensor {rank} {shape} I64 =\n"
-        f"    return (tiled_multi @(1, {g}, I64, {rank}) ({shape}, {grid}, {tiles}) {axes} ()\n"
+        f"    return (tiled_multi @(1, {g}, I64, {rank}) ({shape}, {grid}, {tiles}, 1) {axes} ()\n"
         f"        (λ (off ext: «{g}; Nat») (): tensor.Tensor {rank} (tile_shape @({rank}, {g}) ({shape}, {axes}, ext)) I64 =\n"
         f"            splat (tile_shape @({rank}, {g}) ({shape}, {axes}, ext), 0I64)));\n"
     )

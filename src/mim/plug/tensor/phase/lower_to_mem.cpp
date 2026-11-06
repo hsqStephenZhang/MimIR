@@ -187,7 +187,7 @@ private:
         if (app && wants_fresh_mem(app)) sites_[app].insert(site);
         if (app && Axm::isa<tensor::tiled>(app)) {
             auto [meta, shapes, it, ins, body] = app->uncurry_args<5>();
-            if (positive(shapes->proj(2, 0))) region(body);
+            if (positive(shapes->proj(3, 0))) region(body);
         } else if (app && Axm::isa<tensor::tiled_multi>(app)) {
             auto plan = grid_tile_plan(app);
             if (positive(plan.shape)) region(plan.body);
@@ -266,6 +266,39 @@ const Def* copy_buffer(const Def* mem, const Def* dst, const Def* src, const Def
             return std::pair{next, value};
         });
     return result->proj(2, 0);
+}
+
+// Runtime inner extents bounded by a capped tile allocate their bound, since buffers need literal inner extents.
+const Def* bounded_shape(const Def* shape) {
+    auto& w = shape->world();
+    auto r  = Lit::as(shape->arity());
+    return w.tuple(DefVec(r, [&](size_t d) -> const Def* {
+        auto extent = shape->proj(r, d);
+        if (d == 0 || Lit::isa(extent)) return extent;
+        if (auto upper = nat_upper(extent)) return w.lit_nat(*upper);
+        return extent;
+    }));
+}
+
+/// Copies the @p extent box of @p src, or splats it if it is no buffer, between buffers of different storage shapes.
+const Def* copy_box(const Def* mem,
+                    const Def* dst,
+                    const Def* dst_shape,
+                    const Def* src,
+                    const Def* src_shape,
+                    const Def* extent) {
+    auto& w = mem->world();
+    auto r  = Lit::as(extent->arity());
+    return btensor::build_pointwise(
+               w.sigma({mem->type(), dst->type()}), mem, dst, src, extent, r, "foldCopy",
+               [&](Defs iters, const Def* input, const Def* current) {
+                   if (!Axm::isa<buffer::Buf>(input->type())) return std::pair{current, input};
+                   auto [next, value]
+                       = buffer::op_read(current, input, btensor::folded_idx(src_shape, iters))->projs<2>();
+                   return std::pair{next, value};
+               },
+               dst_shape)
+        ->proj(2, 0);
 }
 
 bool full_output(const btensor::MapRedPost& mr) {
@@ -1041,19 +1074,25 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
 
 const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
                                        const Def* off,
-                                       const Def* ext,
+                                       Defs extents,
                                        const Def* inputs,
                                        Defs state,
                                        Scratch* pool,
                                        const Destination* destination) {
     auto& old           = old_world();
     auto& w             = new_world();
-    auto rank           = Lit::as(ext->arity());
+    auto rank           = extents.size();
     auto parameter      = old.mut_lam(old.pi(old.arr(rank, old.type_nat()), old.type_nat()));
     auto origin         = parameter->var();
     auto specialized    = old.tuple(DefVec(rank, [&](size_t d) {
         auto component = off->proj(rank, d);
         return Lit::isa(component) == 0 ? old.lit_nat_0() : origin->proj(rank, d);
+    }));
+    auto ext            = old.tuple(DefVec(rank, [&](size_t d) -> const Def* {
+        if (extents[d]) return extents[d];
+        auto tile = plan.tiles->proj(rank, d);
+        auto rest = old.call(core::nat::sub, Defs{plan.shape->proj(rank, d), specialized->proj(rank, d)});
+        return old.extract(old.tuple({tile, rest}), old.call(core::ncmp::l, Defs{rest, tile}));
     }));
     const Def* root;
     if (auto lam = plan.body->isa<Lam>(); lam && lam->is_set())
@@ -1090,9 +1129,9 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
             target_origin = w.tuple(DefVec(rank, [&](size_t d) {
                 return w.call(core::nat::add, Defs{destination->origin->proj(rank, d), off->proj(rank, d)});
             }));
-        auto result = lower_into(
-            substitutions.rewrite(value),
-            {mem, state[i + 1], destination ? destination->shape : rewrite(shape), target_origin, rewrite(extent)});
+        auto result = lower_into(substitutions.rewrite(value),
+                                 {mem, state[i + 1], destination ? destination->shape : bounded_shape(rewrite(shape)),
+                                  target_origin, rewrite(extent)});
         mem = result->proj(2, 0);
         outputs.push_back(result->proj(2, 1));
         if (plan.multiple) {
@@ -1100,6 +1139,8 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
                 type_tensor(plan.ranks->proj(plan.count, i), shape, plan.types->proj(plan.count, i)), old.type_nat());
             bind_old(parameter->has_var());
             map(parameter->var(), outputs.back());
+            if (auto storage = bounded_shape(rewrite(shape)); storage != rewrite(shape))
+                storage_shapes_[parameter->var()] = storage;
             auto read = old.app(old.app(old.annex<tensor::slice>(), {plan.types->proj(plan.count, i), r}), shape);
             auto view = old.app(old.app(read, {origin, old.pack(r, old.lit_nat_1()), extent}), parameter->var());
             substitutions.map(value, view);
@@ -1145,10 +1186,10 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         buffers[0] = destination->buffer;
     } else {
         for (u64 i = 0; i != plan.count; ++i)
-            std::tie(mem, buffers[i])
-                = buffer::op_alloc(rewrite(plan.ranks->proj(plan.count, i)), rewrite(plan.shapes->proj(plan.count, i)),
-                                   rewrite(plan.types->proj(plan.count, i)), mem)
-                      ->projs<2>();
+            std::tie(mem, buffers[i]) = buffer::op_alloc(rewrite(plan.ranks->proj(plan.count, i)),
+                                                         bounded_shape(rewrite(plan.shapes->proj(plan.count, i))),
+                                                         rewrite(plan.types->proj(plan.count, i)), mem)
+                                            ->projs<2>();
     }
     auto captured  = materialize(input_type, inputs);
     auto parameter = old_world().mut_lam(input_type, old_world().type_nat());
@@ -1165,28 +1206,39 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     map(proxy, runtime->proj(2, 1));
     forward_storage(inputs, proxy);
     // Offsets live in the new world; extents stay in the old one, where the body is specialized to them.
+    // A capped dimension leaves its extent null for the body to bound by its origin.
     DefVec offsets(*rank), extents(*rank);
+    auto cap = Lit::isa(plan.tail) == 0;
     std::function<const Def*(size_t, const Def*, const Def*)> emit
         = [&](size_t d, const Def* acc, const Def* exit) -> const Def* {
         if (d == *rank) {
             auto off    = w.tuple(offsets);
-            auto extent = old.tuple(extents);
-            auto result = lower_tile_body(plan, off, extent, proxy, acc->projs(plan.count + 1), &scratch, destination);
+            auto result = lower_tile_body(plan, off, extents, proxy, acc->projs(plan.count + 1), &scratch, destination);
             return w.app(exit, result);
         }
         if (sizes[d] == 0) return w.app(exit, acc);
         const Def* count;
-        const Def* next = exit;
+        const Def* next   = exit;
+        const Def* extent = old.lit_nat(steps[d]);
         if (auto size = sizes[d]) {
             count     = w.lit_i64(*size / steps[d]);
             auto tail = *size % steps[d];
-            if (tail) {
+            if (tail && cap) {
+                count  = w.lit_i64(*size / steps[d] + 1);
+                extent = nullptr;
+            } else if (tail) {
                 auto after = w.mut_con(acc->type())->set("tileTail");
                 offsets[d] = w.lit_nat(*size - tail);
                 extents[d] = old.lit_nat(tail);
                 after->set(true, emit(d + 1, after->var(), exit));
                 next = after;
             }
+        } else if (cap) {
+            auto step    = w.lit_nat(steps[d]);
+            auto runtime = rewrite(shape->proj(*rank, d));
+            auto padded  = w.call(core::nat::add, Defs{runtime, w.lit_nat(steps[d] - 1)});
+            count        = w.call<core::bitcast>(w.type_i64(), w.call(core::nat::div, Defs{padded, step}));
+            extent       = nullptr;
         } else {
             auto extent  = shape->proj(*rank, d);
             auto step    = w.lit_nat(steps[d]);
@@ -1207,7 +1259,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         auto [loop, loop_call]     = affine::counting_for(count, acc, next, w.sym("tileGrid"));
         auto [index, state, yield] = loop->vars<3>();
         offsets[d] = w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), w.lit_nat(steps[d])});
-        extents[d] = old.lit_nat(steps[d]);
+        extents[d] = extent;
         loop->set(true, emit(d + 1, state, yield));
         return loop_call;
     };
@@ -1230,6 +1282,11 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     }
     pop();
     if (destination) return call;
+    for (u64 i = 0; i != plan.count; ++i) {
+        auto shape = rewrite(plan.shapes->proj(plan.count, i));
+        if (auto storage = bounded_shape(shape); storage != shape)
+            storage_shapes_[plan.multiple ? app->proj(plan.count, i) : app] = storage;
+    }
     auto out_mem = call->proj(plan.count + 1, 0);
     if (!plan.multiple) return scalar_result(app, out_mem, call->proj(2, 1));
     return w.tuple(DefVec(plan.count, [&](size_t i) -> const Def* {
@@ -1433,7 +1490,7 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
         auto off   = param->var();
         auto next  = w.tuple(DefVec(
             rank, [&](size_t d) { return w.call(core::nat::add, Defs{origin->proj(rank, d), off->proj(rank, d)}); }));
-        return linear_step(w.app(lam->reduce(w.tuple({off, shapes->proj(2, 1)})).back(), ins), accumulator, next);
+        return linear_step(w.app(lam->reduce(w.tuple({off, shapes->proj(3, 1)})).back(), ins), accumulator, next);
     }
     if (!Axm::isa<tensor::map_reduce_post>(app)) return false;
     auto mr      = btensor::MapRedPost::of(app->callee()->as<App>());
@@ -1515,7 +1572,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     auto shape   = tensor ? tensor->s : old.tuple();
     auto element = tensor ? tensor->T : init->type();
     if (auto call = result->isa<App>()) {
-        if (Axm::isa<tensor::tiled>(call)) shape = call->uncurry_args<5>()[1]->proj(2, 0);
+        if (Axm::isa<tensor::tiled>(call)) shape = call->uncurry_args<5>()[1]->proj(3, 0);
         if (Axm::isa<tensor::map_reduce_post>(call)) shape = btensor::MapRedPost::of(call->callee()->as<App>()).So;
     }
     auto rank    = Lit::as(shape->arity());
@@ -1526,7 +1583,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
 
     auto literal_count = Lit::isa(count);
     auto first_scalar  = inplace && literal_count && *literal_count != 0 && splat_scalar(init);
-    auto [mem, buffer] = buffer::op_alloc(w.lit_nat(rank), rewrite(shape), rewrite(element), fresh_mem())->projs<2>();
+    auto extent        = rewrite(shape);
+    auto storage       = bounded_shape(extent);
+    auto bounded       = storage != extent;
+    auto [mem, buffer] = buffer::op_alloc(w.lit_nat(rank), storage, rewrite(element), fresh_mem())->projs<2>();
     if (first_scalar) {
         auto first_root = old.app(step->reduce(old.tuple({init, old.lit_nat(0)})).back(), input);
 
@@ -1540,13 +1600,19 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
         bind_new(first->has_var());
         prepare_realizations(first_root);
         first->app(true, first->ret_var(),
-                   lower_into(first_root, {first_mem, first_buffer, rewrite(shape), rewrite(zero), rewrite(shape)}));
+                   lower_into(first_root, {first_mem, first_buffer, storage, rewrite(zero), extent}));
         first->set(true, wrap_fresh_mem(first->body()));
         pop();
         std::tie(mem, buffer) = first_call->projs<2>();
-    } else {
+    } else if (!bounded) {
         auto initial = make_buffer(init, w.lit_nat(rank), rewrite(shape));
         mem          = copy_buffer(mem, buffer, initial, rewrite(shape));
+    } else if (auto scalar = splat_scalar(init)) {
+        mem = copy_box(mem, buffer, storage, rewrite(scalar), nullptr, extent);
+    } else {
+        auto initial = make_buffer(init, w.lit_nat(rank), extent);
+        auto source  = fe::lookup(storage_shapes_, init);
+        mem          = copy_box(mem, buffer, storage, initial, source ? source : extent, extent);
     }
     auto [run, call] = btensor::ds_splice(w.tuple({mem, buffer}), w.sigma({mem->type(), buffer->type()}), "tileFold");
     auto state       = run->var(2, 0);
@@ -1561,21 +1627,28 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     push();
     bind_old(parameter->has_var());
     map(accumulator, loop_buffer);
+    if (bounded) storage_shapes_[accumulator] = storage;
     auto iteration = w.call<core::bitcast>(w.type_nat(), index);
     if (first_scalar) iteration = w.call(core::nat::add, Defs{iteration, w.lit_nat(1)});
     map(offset, w.call(core::nat::mul, Defs{iteration, rewrite(stride)}));
     prepare_realizations(root);
     const Def* update;
     if (inplace) {
-        update = lower_into(root, {loop_mem, loop_buffer, rewrite(shape), rewrite(zero), rewrite(shape)});
-    } else {
+        update = lower_into(root, {loop_mem, loop_buffer, storage, rewrite(zero), extent});
+    } else if (!bounded) {
         auto value = make_buffer(root, w.lit_nat(rank), rewrite(shape));
         update     = w.tuple({copy_buffer(loop_mem, loop_buffer, value, rewrite(shape)), loop_buffer});
+    } else {
+        auto value  = make_buffer(root, w.lit_nat(rank), extent);
+        auto source = fe::lookup(storage_shapes_, root);
+        update
+            = w.tuple({copy_box(loop_mem, loop_buffer, storage, value, source ? source : extent, extent), loop_buffer});
     }
     loop->app(true, yield, update);
     loop->set(true, wrap_fresh_mem(loop->body()));
     pop();
     run->set(true, loop_call);
+    if (bounded) storage_shapes_[app] = storage;
     auto [out_mem, out] = call->projs<2>();
     return scalar_result(app, out_mem, out);
 }
@@ -1673,7 +1746,7 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
                 if (Axm::isa<tensor::map_reduce_post>(operation))
                     shape = btensor::MapRedPost::of(operation->callee()->as<App>()).So;
                 else if (Axm::isa<tensor::tiled>(operation))
-                    shape = operation->uncurry_args<5>()[1]->proj(2, 0);
+                    shape = operation->uncurry_args<5>()[1]->proj(3, 0);
             }
             auto rank    = Lit::as(shape->arity());
             auto zero    = w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat(0); }));

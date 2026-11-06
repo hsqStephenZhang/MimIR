@@ -345,7 +345,7 @@ const Def* outer_rows(const App* app, size_t slot, u64 tile) {
     auto [m, n]     = plan.shape->projs<2>();
     auto k          = type.s->proj(2, 1);
     auto build      = w.app(w.annex<tiled_multi>(), {w.lit_nat_1(), w.lit_nat_1(), plan.types, plan.ranks});
-    build           = w.app(w.app(build, {plan.shapes, m, w.lit_nat(tile)}), w.lit_idx(2, 0));
+    build           = w.app(w.app(build, {plan.shapes, m, w.lit_nat(tile), plan.tail}), w.lit_idx(2, 0));
     build           = w.app(w.app(build, region.values()->type()), region.values());
     auto body       = w.mut_lam(build->type()->as<Pi>()->dom()->as<Pi>());
     auto inner      = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());
@@ -357,7 +357,7 @@ const Def* outer_rows(const App* app, size_t slot, u64 tile) {
     auto rows  = w.app(w.app(slice, {w.tuple({off, w.lit_nat_0()}), w.pack(2, w.lit_nat_1()), w.tuple({ext, k})}), p);
     RowInputs crop(w, p, rows, off);
     auto args          = region.args;
-    args[1]            = w.tuple({w.tuple({ext, n}), w.tuple({ext, plan.tiles->proj(2, 1)})});
+    args[1]            = w.tuple({w.tuple({ext, n}), w.tuple({ext, plan.tiles->proj(2, 1)}), plan.tail});
     size_t cursor      = 0;
     args[region.input] = input_tree(region.values(), parameters, cursor);
     const Def* nested  = App::uncurry_callee(app);
@@ -460,7 +460,8 @@ const Rule* yield_rule(const InputRegion& region, size_t slot, const Def* axes, 
     }
     auto build = w.app(w.annex<tiled_multi>(),
                        {w.lit_nat(plan.count + 1), w.lit_nat(plan.rank), w.tuple(result_types), w.tuple(result_ranks)});
-    build      = w.app(w.app(build, {w.tuple(result_shapes), source_plan.shape, source_plan.tiles}), w.tuple(mappings));
+    build      = w.app(w.app(build, {w.tuple(result_shapes), source_plan.shape, source_plan.tiles, source_plan.tail}),
+                       w.tuple(mappings));
     build      = w.app(w.app(build, ins->type()), ins);
     auto body  = w.mut_lam(build->type()->as<Pi>()->dom()->as<Pi>());
     auto inner = w.mut_lam(body->type()->reduce(body->var())->as<Pi>());
@@ -472,9 +473,18 @@ const Rule* yield_rule(const InputRegion& region, size_t slot, const Def* axes, 
     auto original    = input_tree(region.values(), parameters, cursor);
     auto value       = w.app(w.app(fields.back(), body->var()), original);
     auto [off, ext]  = body->vars<2>();
-    GridTilePlan owned{
-        source_mr.Tp, source_mr.Ro, source_mr.So, source_plan.shape, source_plan.tiles, axes, ins, body, 1,
-        plan.rank,    false};
+    GridTilePlan owned{source_mr.Tp,
+                       source_mr.Ro,
+                       source_mr.So,
+                       source_plan.shape,
+                       source_plan.tiles,
+                       source_plan.tail,
+                       axes,
+                       ins,
+                       body,
+                       1,
+                       plan.rank,
+                       false};
     auto [start, extent] = owned.box(0, off, ext);
     auto tile = w.app(w.app(w.annex<yield_tiles>(), {source_mr.Tp, source_mr.Ro, value->type()}), source_mr.So);
     auto pair = w.app(tile, {rebuilt, start, extent, value});
@@ -875,8 +885,8 @@ private:
         auto ins      = args[args.size() - 2];
         auto fn       = args.back()->isa<Lam>();
         if (!rank || *rank > 8 || !fn || !fn->is_set()) return {};
-        auto shape = args[1]->proj(multiple ? 3 : 2, multiple ? 1 : 0);
-        auto tile  = args[1]->proj(multiple ? 3 : 2, multiple ? 2 : 1);
+        auto shape = args[1]->proj(multiple ? 4 : 3, multiple ? 1 : 0);
+        auto tile  = args[1]->proj(multiple ? 4 : 3, multiple ? 2 : 1);
         DefVec extents(*rank);
         DefVec origins(*rank, world_.bot(world_.type_nat()));
         auto axis = [&](this auto&& axis, size_t d) -> std::optional<u64> {
@@ -1463,6 +1473,7 @@ check_region_yield(const pattern::GraphView& source, Defs inputs, World& target,
                        shape,
                        plan.shape,
                        plan.tiles,
+                       plan.tail,
                        axes,
                        plan.inputs,
                        plan.body,

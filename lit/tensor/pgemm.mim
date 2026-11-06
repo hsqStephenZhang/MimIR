@@ -29,7 +29,7 @@ lam packed {M K N MR KR NR: Nat}
     (a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64, add mul: «2; I64» → I64, leaf: LeafSchedule): tensor.Tensor 2 (M, N) I64 =
     fun combine (acc: I64, pair: «2; I64»)@tt: I64 =
         return (add (acc, mul pair));
-    tiled @(I64, 2) ((M, N), (M, NR)) (a, b)
+    tiled @(I64, 2) ((M, N), (M, NR), 1) (a, b)
         (λ (off ext: «2; Nat») (a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64): tensor.Tensor 2 ext I64 =
             let j = off#tt;
             let rows = ext#ff;
@@ -38,7 +38,7 @@ lam packed {M K N MR KR NR: Nat}
                 (k ko: Nat, acc: tensor.Tensor 2 (rows, n) I64): tensor.Tensor 2 (rows, n) I64 =
                 let bp = stage @(I64, 2, 1) (k, n) (1, NR, (1₂, 0₂), 0I64) 0
                     (slice @(I64, 2) (K, N) ((ko, j), (1, 1), (k, n)) b);
-                tiled @(I64, 2) ((rows, n), (MR, n)) (a, bp, acc)
+                tiled @(I64, 2) ((rows, n), (MR, n), 1) (a, bp, acc)
                     (λ (row size: «2; Nat») (a, bp, acc): tensor.Tensor 2 size I64 =
                         let m = size#ff;
                         let cols = size#tt;
