@@ -1,0 +1,18 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=2 %s -p ll -X ll:o=%t.ll -o - | %FileCheck %s
+// RUN: clang++ -O1 -fsanitize=address %S/tile_group_chain_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// The second group's loop must thread the memory after the first group, so the intermediate is freed.
+
+plugin tensor;
+plugin core;
+plugin math;
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+extern fun kernel (a b c: tensor.Tensor 2 (64, 64) F32): tensor.Tensor 2 (64, 64) F32 =
+    return (tensor.product_2d R (tensor.product_2d R (tensor.buf a, tensor.buf b), tensor.buf c));
+
+// CHECK: let [[T:_[0-9]+]] = mem.malloc
+// CHECK: let [[R:_[0-9]+]] = mem.malloc
+// CHECK: mem.free {{.*}}, [[T]]#tt)
+// CHECK: return_{{[0-9]+}} ({{_[0-9]+}}, [[R]]#tt)

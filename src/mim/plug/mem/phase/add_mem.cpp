@@ -212,7 +212,9 @@ const Def* AddMem::rewrite_imm_Tuple(const Tuple* tuple) {
     //      already have been anchored (threaded) in this scope by the memory operands above.
     auto rank = [](const Def* op) {
         if (!op->type()) return 0; // Level has no type and is neither memory nor a continuation
-        return isa_mem(op) ? 1 : (Pi::isa_cn(op->type()) ? 2 : 0);
+        if (Pi::isa_cn(op->type())) return 2;
+        // A `(mem, buf)` operand, even a whole memory op, must also follow its siblings' effects.
+        return has_mem_ty(op->type()) ? 1 : 0;
     };
 
     auto& w      = new_world();
