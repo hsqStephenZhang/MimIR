@@ -938,7 +938,13 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         output_cap        = bounded(output_cap, mr.So, ro);
         loop_cap          = bounded(loop_cap, mr.Sr, rn);
         auto parallel_cap = w.tuple(DefVec(ro, [&](size_t d) { return loop_cap->proj(rn, d); }));
-        if (!lit_projs(output_cap, ro) || !lit_projs(parallel_cap, ro))
+        // Buffers take a runtime outermost extent, so only inner caps must be literal.
+        auto inner_literal = [&](const Def* caps) {
+            for (u64 d = 1; d < ro; ++d)
+                if (!Lit::isa(caps->proj(ro, d))) return false;
+            return true;
+        };
+        if (!inner_literal(output_cap) || !inner_literal(parallel_cap))
             app->blame("tensor tile storage and loop caps must be literal: {}, {} for {}", output_cap, parallel_cap,
                        mr.So)
                 .bail();

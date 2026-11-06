@@ -249,12 +249,13 @@ const Def* storage(const Def* tile) {
     return mr.So;
 }
 
-/// Whether every storage extent of @p tile has a constant upper bound.
+/// Whether every inner storage extent of @p tile has a constant upper bound.
 bool bounded_storage(const Def* tile) {
     auto extents = storage(tile);
     auto rank    = Lit::isa(extents->arity());
     if (!rank) return false;
-    for (u64 d = 0; d != *rank; ++d)
+    // Buffers take a runtime outermost extent; only the inner ones need a bound.
+    for (u64 d = 1; d < *rank; ++d)
         if (!nat_upper(extents->proj(*rank, d))) return false;
     return true;
 }
@@ -539,7 +540,7 @@ const Def* Levels::reduction_tile(const btensor::MapRedPost& mr, const Def* anch
 
 Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind) {
     auto& w = world();
-    Fused result{value, 0, {}};
+    Fused result{value, 0, {}, {}};
     DefSet visited;
     std::vector<std::pair<const Def*, Origin>> tiles;
     for (size_t step = 0; step != max_fusions; ++step) {
@@ -649,14 +650,21 @@ const Def* Levels::parallel(const Def* anchor,
         whole &= tiles[d] == mr.So->proj(ro, d);
     }
     // The outermost level stays a region even over the whole shape, so tile bodies own every intermediate buffer.
-    if (whole && depth) return tile(anchor, rest, depth + 1);
+    // A scalar root has no grid to tile.
+    if (whole && (depth || !ro)) return tile(anchor, rest, depth + 1);
 
     auto box   = w.sigma({w.arr(mr.Ro, w.type_nat()), w.arr(mr.Ro, w.type_nat())});
     auto probe = w.mut_lam(box, w.type_nat());
     auto var   = probe->var()->as<Var>();
     auto off = probe->var(2, 0), ext = probe->var(2, 1);
+    auto root_tile = tile_of(anchor, off, ext, w.tuple(tiles));
+    if (Axm::isa<tile_of_box>(root_tile)) {
+        log_.d("tensor.tile_fuse {} L{} skip: the root has no tile here: {}", op_, depth,
+               producer_tile(anchor, off, ext, w.tuple(tiles)).reason);
+        return tile(anchor, rest, depth + 1);
+    }
     scopes_.push_back(var);
-    auto fused = fuse(tile_of(anchor, off, ext, w.tuple(tiles)), var, depth, 0);
+    auto fused = fuse(root_tile, var, depth, 0);
 
     struct Yield {
         const Def *producer, *tile;
@@ -791,7 +799,11 @@ const Def* Levels::reduction(const Def* anchor,
         for (u64 slot = 0; slot != nis; ++slot) {
             if (!(promote >> slot & 1)) continue;
             auto panel = panel_axis(mr.maps->proj(nis, slot), Lit::as(mr.Ris->proj(nis, slot)), tiles);
-            if (!panel) return fail("a promoted input has no axis tiled by the next parallel level");
+            if (!panel) {
+                log_.d("tensor.tile_fuse {} L{} skip promoting input {}: no axis tiled by the next parallel level", op_,
+                       depth, slot);
+                continue;
+            }
             panels.emplace_back(slot, panel->first, panel->second);
             log_.d("tensor.tile_fuse {} L{} promote input {} axis {} panel {}", op_, depth, slot, panel->first,
                    panel->second);
@@ -807,10 +819,11 @@ const Def* Levels::reduction(const Def* anchor,
     };
     auto partial = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), ko, chunk, acc});
     if (!partial) return fail("the root has no reduction chunk");
-    partial = stage_block(partial);
-    if (!partial) return fail("the promoted reduction chunk is not a map_reduce_post");
     scopes_.push_back(var);
-    auto fused = fuse(partial, var, depth, 1);
+    // Members are fused first, so a promoted input stages its fused tile.
+    auto fused  = fuse(partial, var, depth, 1);
+    fused.value = stage_block(fused.value);
+    if (!fused.value) return fail("the promoted reduction chunk is not a map_reduce_post");
     auto value = tile(fused.value, rest, depth + 1);
     scopes_.pop_back();
     if (!value) return nullptr;
@@ -828,9 +841,9 @@ const Def* Levels::reduction(const Def* anchor,
         auto [at, rem] = build(w.annex<tf_tail>(), {w.tuple({K, ks})})->projs<2>();
         auto partial   = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), at, rem, last->var()});
         if (!partial) return fail("the root has no reduction tail");
-        partial = stage_block(partial);
-        if (!partial) return fail("the promoted reduction tail is not a map_reduce_post");
-        auto block = fuse(partial, nullptr, depth, 1);
+        auto block  = fuse(partial, nullptr, depth, 1);
+        block.value = stage_block(block.value);
+        if (!block.value) return fail("the promoted reduction tail is not a map_reduce_post");
         tail_fused = block.count;
         auto done  = tile(block.value, rest, depth + 1);
         if (!done) return nullptr;
