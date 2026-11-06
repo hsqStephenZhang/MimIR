@@ -299,6 +299,65 @@ const Def* nat_min(const Def* a, const Def* b) {
     return w.extract(w.tuple({b, a}), w.call(core::ncmp::l, Defs{a, b}));
 }
 
+/// The axis of a rank-2 input read by @p map that one of the loops in @p tiles projects onto, with that loop's tile.
+std::optional<std::pair<u64, u64>> panel_axis(const Def* map, u64 rank, fe::Span<const u64> tiles) {
+    auto& w   = map->world();
+    auto pi   = map->type()->as<Pi>();
+    auto rn   = Lit::isa(pi->dom()->arity());
+    auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
+    auto read = w.app(map, var);
+    if (!rn || rank != 2) return {};
+    std::optional<std::pair<u64, u64>> result;
+    // Offsets of enclosing tiles are constants; only the loops decide the axis.
+    for (u64 d = 0; d != rank; ++d) {
+        auto form = Linear::of(read->proj(rank, d));
+        for (u64 l = 0; l != tiles.size(); ++l) {
+            bool own = true;
+            for (u64 k = 0; k != *rn; ++k) {
+                auto atom = form.atoms.find(var->proj(*rn, k));
+                own &= (atom == form.atoms.end() ? 0 : atom->second) == (k == l ? 1 : 0);
+            }
+            if (!tiles[l] || !own) continue;
+            if (result) return {};
+            result = std::pair{d, tiles[l]};
+        }
+    }
+    return result;
+}
+
+/// @p app with its input @p slot staged into panels of @p tile along @p axis, the panel index outermost (BLIS B).
+/// The read map follows the layout: `x ↦ (x#axis / tile, x#other, x#axis % tile)`.
+const App* promote_input(const App* app, u64 slot, u64 axis, u64 tile) {
+    auto& w            = app->world();
+    auto mr            = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto nis           = Lit::as(mr.nis);
+    auto [is, post_is] = app->args<2>();
+    auto input         = is->proj(nis, slot);
+    auto type          = *TensorType::isa(input->type());
+    auto other         = 1 - axis;
+    auto perm          = w.tuple({w.lit_idx(2, axis), w.lit_idx(2, other)});
+    auto stage_app = build(w.annex<stage>(),
+                           {w.tuple({type.T, w.lit_nat(2), w.lit_nat_1()}), type.s,
+                            w.tuple({w.lit_nat(axis), w.lit_nat(tile), perm, w.bot(type.T)}), w.lit_nat_0(), input});
+    auto old_map   = mr.maps->proj(nis, slot);
+    auto map       = w.mut_lam(w.pi(old_map->type()->as<Pi>()->dom(), w.arr(3, w.annex<affine::Index>())));
+    auto coords    = w.app(old_map, map->var());
+    auto at        = coords->proj(2, axis);
+    map->set(true, w.tuple({w.call(affine::semiop::floordiv, Defs{at, w.lit_nat(tile)}), coords->proj(2, other),
+                            w.call(affine::semiop::rem, Defs{at, w.lit_nat(tile)})}));
+    auto replace = [&](const Def* tuple, u64 n, const Def* value) {
+        return w.tuple(DefVec(n, [&](size_t i) { return i == slot ? value : tuple->proj(n, i); }));
+    };
+    auto staged = TensorType::isa(stage_app->type());
+    auto in_tys = w.tuple(
+        {mr.Tis, replace(mr.Ris, nis, w.lit_nat(3)), replace(mr.Sis, nis, staged->s), mr.Tps, mr.Rps, mr.Sps});
+    auto result = build(w.annex<map_reduce_post>(),
+                        {mr.nis_nps, mr.meta, mr.shapes, in_tys, mr.init->type(), w.tuple({mr.comb, mr.init, mr.post}),
+                         mr.map_out, w.tuple({replace(mr.maps, nis, map), mr.post_maps}),
+                         w.tuple({replace(is, nis, stage_app), post_is})});
+    return result->as<App>();
+}
+
 /// Realizes the levels of one `tile_req`, each inside the region body of the level before.
 class Levels {
 public:
@@ -363,6 +422,7 @@ private:
                          u64 rn,
                          fe::Span<const u64> sizes,
                          bool peel,
+                         u64 promote,
                          fe::Span<const Def*> rest,
                          u64 depth);
     const Def* vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const Def*> rest, u64 depth);
@@ -491,7 +551,8 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const Def*> levels, u64 dept
     auto [kind, sizes, tail, promote] = levels.front()->projs<4>();
     auto k = Lit::isa(kind), t = Lit::isa(tail);
     if (!k || !t || *t > 1) return fail("level kinds and tails must be literals");
-    if (Lit::isa(promote) != 0) return fail("promotion is not supported");
+    auto promoted = Lit::isa(promote);
+    if (!promoted || (*promoted && *k != 1)) return fail("only reduction levels promote an input");
     auto literal = fe::Vector<u64>(rn);
     for (u64 d = 0; d != rn; ++d)
         if (auto size = Lit::isa(sizes->proj(rn, d)))
@@ -501,7 +562,7 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const Def*> levels, u64 dept
     auto rest = levels.subspan(1);
     switch (*k) {
         case 0: return parallel(anchor, mr, ro, rn, literal, *t == 1, rest, depth);
-        case 1: return reduction(anchor, mr, ro, rn, literal, *t == 1, rest, depth);
+        case 1: return reduction(anchor, mr, ro, rn, literal, *t == 1, *promoted, rest, depth);
         case 2: return vector(root, rn, literal, rest, depth);
         default: return fail("level kinds are 0 (parallel), 1 (reduction) or 2 (vector)");
     }
@@ -626,6 +687,7 @@ const Def* Levels::reduction(const Def* anchor,
                              u64 rn,
                              fe::Span<const u64> sizes,
                              bool peel,
+                             u64 promote,
                              fe::Span<const Def*> rest,
                              u64 depth) {
     auto& w   = world();
@@ -652,8 +714,32 @@ const Def* Levels::reduction(const Def* anchor,
     auto acc = probe->var(2, 0), ko = probe->var(2, 1);
     auto tail    = w.lit_nat(peel);
     auto chunk   = build(w.annex<tf_chunk>(), {w.tuple({K, ks, tail, ko})});
+    // A promoted input is staged per block into panels as wide as the next parallel level's tile of its axis.
+    std::function<const Def*(const Def*)> stage_block = [](const Def* block) { return block; };
+    if (promote) {
+        auto tiles = fe::Vector<u64>(ro, 0);
+        for (auto level : rest)
+            if (auto [kind, inner, tail, _] = level->projs<4>(); Lit::isa(kind) == 0) {
+                for (u64 d = 0; d != ro; ++d)
+                    tiles[d] = Lit::isa(inner->proj(rn, d)).value_or(0);
+                break;
+            }
+        auto slot = promote - 1;
+        if (slot >= Lit::as(mr.nis)) return fail("the promoted input does not exist");
+        auto panel
+            = panel_axis(mr.maps->proj(Lit::as(mr.nis), slot), Lit::as(mr.Ris->proj(Lit::as(mr.nis), slot)), tiles);
+        if (!panel) return fail("the promoted input has no axis tiled by the next parallel level");
+        stage_block = [slot, panel](const Def* block) -> const Def* {
+            if (auto app = graph::map_reduce(block)) return promote_input(app, slot, panel->first, panel->second);
+            return nullptr;
+        };
+        log_.d("tensor.tile_fuse {} L{} promote input {} axis {} panel {}", op_, depth, slot, panel->first,
+               panel->second);
+    }
     auto partial = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), ko, chunk, acc});
     if (!partial) return fail("the root has no reduction chunk");
+    partial = stage_block(partial);
+    if (!partial) return fail("the promoted reduction chunk is not a map_reduce_post");
     scopes_.push_back(var);
     auto fused = fuse(partial, var, depth, 1);
     auto value = tile(fused.value, rest, depth + 1);
@@ -673,6 +759,8 @@ const Def* Levels::reduction(const Def* anchor,
         auto [at, rem] = build(w.annex<tf_tail>(), {w.tuple({K, ks})})->projs<2>();
         auto partial   = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), at, rem, last->var()});
         if (!partial) return fail("the root has no reduction tail");
+        partial = stage_block(partial);
+        if (!partial) return fail("the promoted reduction tail is not a map_reduce_post");
         auto block = fuse(partial, nullptr, depth, 1);
         tail_fused = block.count;
         auto done  = tile(block.value, rest, depth + 1);

@@ -12,6 +12,8 @@ extern "C" int64_t* outer7(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap_m(int64_t, int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap7(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap_n7(int64_t*, int64_t*, int64_t*);
+extern "C" int64_t* promoted(int64_t*, int64_t*, int64_t*);
+extern "C" int64_t* promoted_k(int64_t, int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap_k(int64_t, int64_t*, int64_t*, int64_t*);
 
 using Sym = int64_t* (*)(int64_t, int64_t*, int64_t*, int64_t*);
@@ -59,6 +61,7 @@ int main() {
     check("outer7", 5, 7, false, 0, outer7, nullptr);
     check("cap7", 5, 7, false, 0, cap7, nullptr);
     check("cap_n7", 5, 7, false, 0, cap_n7, nullptr);
+    check("promoted", 5, 7, false, 0, promoted, nullptr);
     for (int64_t n = 0; n != 10; ++n) {
         check("nested_k", 5, n, true, n, nullptr, nested_k);
         check("nested_m", n, 7, false, n, nullptr, nested_m);
@@ -67,6 +70,7 @@ int main() {
         check("outer_m", n, 7, false, n, nullptr, outer_m);
         check("cap_m", n, 7, false, n, nullptr, cap_m);
         check("cap_k", 5, n, true, n, nullptr, cap_k);
+        check("promoted_k", 5, n, true, n, nullptr, promoted_k);
     }
     return failures != 0;
 }
