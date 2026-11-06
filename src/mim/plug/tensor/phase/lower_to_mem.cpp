@@ -1163,6 +1163,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     bind_new(run->has_var());
     if (auto var = parameter->has_var()) bind_old(var);
     map(proxy, runtime->proj(2, 1));
+    forward_storage(inputs, proxy);
     // Offsets live in the new world; extents stay in the old one, where the body is specialized to them.
     DefVec offsets(*rank), extents(*rank);
     std::function<const Def*(size_t, const Def*, const Def*)> emit
@@ -1261,6 +1262,7 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
     auto proxy     = parameter->var();
     if (auto var = parameter->has_var()) bind_old(var);
     map(proxy, inputs);
+    forward_storage(plan.inputs, proxy);
     for (size_t t = 0; t != plan.points.size(); ++t) {
         auto memo    = fe::Restore(fresh_memo_, {});
         auto storage = fe::Restore(storage_shapes_, storage_shapes_);
@@ -1471,6 +1473,13 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
     return true;
 }
 
+// Clipped tiles keep their cap as storage, so region parameters must index them by it.
+void LowerToMem::forward_storage(const Def* inputs, const Def* proxy) {
+    auto n = Lit::as(inputs->type()->arity());
+    for (size_t i = 0; i != n; ++i)
+        if (auto shape = fe::lookup(storage_shapes_, inputs->proj(n, i))) storage_shapes_[proxy->proj(n, i)] = shape;
+}
+
 const Def* LowerToMem::region_input(const Def* inputs) {
     auto value     = materialize(inputs->type(), inputs);
     auto& old      = old_world();
@@ -1478,6 +1487,7 @@ const Def* LowerToMem::region_input(const Def* inputs) {
     auto proxy     = parameter->var();
     if (auto var = parameter->has_var()) bind_old(var);
     map(proxy, value);
+    forward_storage(inputs, proxy);
     return proxy;
 }
 

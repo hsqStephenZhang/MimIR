@@ -62,6 +62,7 @@ private:
     const Def*
     lower_tile_body(const GridTilePlan&, const Def*, const Def*, const Def*, Defs, Scratch*, const Destination*);
     const Def* region_input(const Def*);
+    void forward_storage(const Def* inputs, const Def* proxy);
     std::pair<const Def*, const Def*> allocate(const Def*, const Def*, const Def*, bool = true);
     void prepare_realizations(const Def*, const Lam* = nullptr, Defs = {});
 
