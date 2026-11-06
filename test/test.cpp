@@ -144,6 +144,20 @@ TEST_CASE("core.trait.size") {
     CHECK(size(0x0000'0000'0000'0000_n) == 8);
 }
 
+TEST_CASE("core.nat.sub of a sum") {
+    Driver driver;
+    World& w = driver.world();
+    ast::load_plugin(w, "core");
+
+    auto x   = w.mut_lam(w.type_nat(), w.type_nat())->var();
+    auto y   = w.mut_lam(w.type_nat(), w.type_nat())->var();
+    auto sum = w.call(core::nat::add, Defs{x, y});
+    CHECK(w.call(core::nat::sub, Defs{sum, y}) == x);
+    CHECK(w.call(core::nat::sub, Defs{sum, x}) == y);
+    CHECK(w.call(core::nat::sub, Defs{w.call(core::nat::add, Defs{w.lit_nat(4), x}), x}) == w.lit_nat(4));
+    CHECK(!Lit::isa(w.call(core::nat::sub, Defs{x, sum})));
+}
+
 static const Def* normalize_test_curry(const Def* type, const Def* callee, const Def* arg) {
     auto& w = arg->world();
     return w.raw_app(type, callee, w.lit_nat(42));

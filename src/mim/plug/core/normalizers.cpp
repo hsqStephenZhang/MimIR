@@ -546,6 +546,14 @@ const Def* normalize_nat(const Def* type, const Def* callee, const Def* arg) {
         }
     }
 
+    // (x + y) - y = x and (x + y) - x = y, since x + y never falls below either summand.
+    if (id == nat::sub)
+        if (auto sum = Axm::isa(nat::add, a)) {
+            auto [x, y] = sum->args<2>();
+            if (y == b) return x;
+            if (x == b) return y;
+        }
+
     if (auto res = reassociate<nat>(id, world, a, b)) return res;
 
     return world.raw_app(type, callee, {a, b});
