@@ -716,8 +716,11 @@ const Def* Levels::parallel(const Def* anchor,
             if (sizes[d]) return fail("a parallel level cannot tile a reduction loop");
             continue;
         }
-        tiles[d] = sizes[d] ? w.lit_nat(sizes[d]) : mr.So->proj(ro, d);
-        whole &= tiles[d] == mr.So->proj(ro, d);
+        auto extent = mr.So->proj(ro, d);
+        // An untiled runtime extent takes its constant storage bound, so the inner write preimage is exact.
+        auto bound = storage(anchor)->proj(ro, d);
+        tiles[d]   = sizes[d] ? w.lit_nat(sizes[d]) : Lit::isa(extent) || !Lit::isa(bound) ? extent : bound;
+        whole &= !sizes[d] || tiles[d] == extent;
     }
     // The outermost level stays a region even over the whole shape, so tile bodies own every intermediate buffer.
     // A scalar root has no grid to tile.
@@ -727,6 +730,14 @@ const Def* Levels::parallel(const Def* anchor,
     auto probe = w.mut_lam(box, w.type_nat());
     auto var   = probe->var()->as<Var>();
     auto off = probe->var(2, 0), ext = probe->var(2, 1);
+    // A runtime extent whose storage fits one tile has that tile at its origin.
+    auto bounds    = storage(anchor);
+    auto origin    = DefVec(ro, [&](size_t d) -> const Def* {
+        auto tile = Lit::isa(tiles[d]), bound = Lit::isa(bounds->proj(ro, d));
+        bool one = !Lit::isa(mr.So->proj(ro, d)) && tile && bound && *tile >= *bound;
+        return one ? w.lit_nat_0() : off->proj(ro, d);
+    });
+    off            = w.tuple(origin);
     auto root_tile = tile_of(anchor, off, ext, w.tuple(tiles));
     if (Axm::isa<tile_of_box>(root_tile)) {
         log_.d("tensor.tile_fuse {} L{} skip: the root has no tile here: {}", op_, depth,

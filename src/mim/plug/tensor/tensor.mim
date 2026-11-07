@@ -1773,7 +1773,7 @@ anx lam default_tile_config (ro rr kind: Nat, bytes lanes registers cache_bytes:
     let rows   = ‹d: n; (0, 1)#(below (d, lead))›;
     let outer  = ‹d: n; ((0, nc)#(is (d, ro - 1)), 1)#(below (d, ro - 2))›;
     let block  = ‹d: n; (0, kc)#(is (d, n - 1))›;
-    let micro  = ‹d: n; (((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2)), 1)#(below (d, ro - 2))›;
+    let micro  = ‹d: n; ((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2))›;
     let vector = ‹d: n; (0, 1)#(is (d, ro - 2))›;
     (((0, rows, 1, 0), (1, none, 1, 0), (0, none, 1, 0), (2, none, 1, 0)),
      ((0, outer, 1, 0), (1, block, 1, 3), (0, micro, 1, 0), (2, vector, 1, 0)))#(kind == 1);
@@ -1938,6 +1938,7 @@ axm tile_fold: {Acc: *}
 ///
 /// `tile_fuse` builds every level from these, so each rewrite it applies is defined here.
 /// `tf_par` tiles a root on one grid (R1); `tf_par_n` also hands back `n - 1` member tiles ahead of the root (R4), each whole off its grid `axes`.
+/// `tf_view` materializes an operand on the loops a contraction reads it by, so packing sees a plain projection.
 /// `tf_reduce` splits a reduction into `tile_fold` blocks of `ks`, a peeled last block and the epilogue (R3).
 /// `tf_chunk` is the extent of the block at `ko` and `tf_tail` the offset and extent of the peeled block.
 ///
@@ -1949,6 +1950,9 @@ anx lam tf_par_n {n g: Nat, Ts: «n; *», rs: «n; Nat»} {I: *}
     (body: [off ext: «g; Nat»] → I → «i: n; Tensor (rs#i) (tile_shape (shapes#i, axes#i, ext)) (Ts#i)»)
     : «i: n; Tensor (rs#i) (shapes#i) (Ts#i)» =
     tiled_multi @(n, g, Ts, rs) (shapes, s, ts, tail) axes ins body;
+anx lam tf_view {T: *, r: Nat, s: «r; Nat»} {g: Nat} (S: «g; Nat»)
+    (map: «g; affine.Index» → «r; affine.Index») (input: Tensor r s T): Tensor g S T =
+    map_reduce (S, S) (tensor_copy @T, ⊥:T) affine.id (map,) input;
 anx lam tf_chunk (K ks tail ko: Nat): Nat =
     let rest = K - ko;
     ((rest, ks)#(ks < rest), ks)#(tail == 1);

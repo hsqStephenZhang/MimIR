@@ -10,16 +10,21 @@ namespace mim::plug::tensor::phase {
 
 namespace {
 
-/// Whether @p map reads loop @p loop on some axis.
+/// Whether @p map reads loop @p loop on some axis, also through a view's division or remainder.
 bool reads_loop(const Def* map, u64 loops, u64 loop) {
     auto& w    = map->world();
     auto pi    = map->type()->as<Pi>();
     auto var   = w.mut_lam(pi->dom(), pi->codom())->var();
     auto read  = w.app(map, var);
-    auto arity = Lit::isa(read->arity());
-    if (!arity) return false;
-    for (u64 d = 0; d != *arity; ++d)
-        if (Linear::of(read->proj(*arity, d)).atoms.contains(var->proj(loops, loop))) return true;
+    auto index = var->proj(loops, loop);
+    DefSet seen{read};
+    for (DefVec pending{read}; !pending.empty();) {
+        auto def = pending.back();
+        pending.pop_back();
+        if (def == index) return true;
+        for (auto op : def->ops())
+            if (op && seen.insert(op).second) pending.push_back(op);
+    }
     return false;
 }
 
@@ -39,17 +44,90 @@ bool canonical_write(const btensor::MapRedPost& mr, u64 ro, u64 rn) {
     return true;
 }
 
-/// 1 for a contraction `(m, n, k)` whose two inputs read `m, k` and `k, n`, 2 for another reduction, 0 otherwise.
+/// 1 for a contraction `(…, m, n, k)` whose two inputs read `m, k` and `k, n`, 2 for another reduction, 0 otherwise.
 u64 kind_of(const btensor::MapRedPost& mr) {
     auto ranks = mr.ranks();
     if (!ranks || !ranks->rr) return 0;
-    // Batched contractions are not yet tiled at the micro level: their nested write maps defeat exact preimages.
-    if (ranks->rr != 1 || ranks->ro != 2 || ranks->nis != 2) return 2;
+    if (ranks->rr != 1 || ranks->ro < 2 || ranks->nis != 2) return 2;
     auto n = ranks->nloops(), m = ranks->ro - 2, k = n - 1;
     auto a = mr.maps->proj(2, 0), b = mr.maps->proj(2, 1);
     bool contraction = reads_loop(a, n, m) && reads_loop(a, n, k) && !reads_loop(a, n, m + 1) && reads_loop(b, n, k)
                     && reads_loop(b, n, m + 1) && !reads_loop(b, n, m);
     return contraction ? 1 : 2;
+}
+
+/// Whether axis d of @p map reads loop `loops[d]` and no other loop; offsets of enclosing tiles may shift it.
+bool projects(const Def* map, u64 rn, fe::Span<const u64> loops) {
+    auto& w   = map->world();
+    auto pi   = map->type()->as<Pi>();
+    auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
+    auto read = w.app(map, var);
+    if (Lit::isa(read->arity()) != loops.size()) return false;
+    for (size_t d = 0; d != loops.size(); ++d) {
+        auto form = Linear::of(read->proj(loops.size(), d));
+        for (u64 l = 0; l != rn; ++l) {
+            auto atom = form.atoms.find(var->proj(rn, l));
+            if ((atom == form.atoms.end() ? 0 : atom->second) != (l == loops[d] ? 1 : 0)) return false;
+        }
+    }
+    return true;
+}
+
+/// @p value with each contraction operand that a view reads materialized on the loops it depends on: the batch loops,
+/// then its two contraction loops, so that packing a panel sees an operand whose axes are the loops themselves.
+const Def* contraction_views(const Def* value) {
+    auto app = graph::map_reduce(value);
+    if (app != value) return value;
+    auto& w    = app->world();
+    auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks = *mr.ranks();
+    auto rn = ranks.nloops(), m = ranks.ro - 2, k = rn - 1;
+    auto [is, post_is] = app->args<2>();
+    DefVec inputs(is->projs(2)), maps(mr.maps->projs(2)), rank(mr.Ris->projs(2)), shapes(mr.Sis->projs(2));
+    bool changed = false;
+    for (u64 slot = 0; slot != 2; ++slot) {
+        auto loops = std::vector<u64>();
+        for (u64 b = 0; b != m; ++b)
+            loops.push_back(b);
+        loops.push_back(slot == 0 ? m : k);
+        loops.push_back(slot == 0 ? k : m + 1);
+        auto swapped = loops;
+        std::swap(swapped[m], swapped[m + 1]);
+        if (!Lit::isa(rank[slot]) || projects(maps[slot], rn, loops) || projects(maps[slot], rn, swapped)) continue;
+        auto g     = loops.size();
+        auto pi    = maps[slot]->type()->as<Pi>();
+        auto index = w.annex<affine::Index>();
+        auto read  = w.mut_lam(w.pi(w.arr(g, index), pi->codom()));
+        read->set(true, w.app(maps[slot], w.tuple(DefVec(rn, [&](size_t l) -> const Def* {
+            if (auto at = std::ranges::find(loops, l); at != loops.end()) return read->var(g, at - loops.begin());
+            return w.call<affine::lit>(w.lit_nat_0());
+        }))));
+        auto shape = w.tuple(DefVec(g, [&](size_t i) { return mr.Sr->proj(rn, loops[i]); }));
+        // Buffers take runtime extents only on their leading axis.
+        bool bufferizable = true;
+        for (size_t i = 1; i != g; ++i)
+            bufferizable &= Lit::isa(shape->proj(g, i)).has_value();
+        if (!bufferizable) continue;
+        auto type = *TensorType::isa(inputs[slot]->type());
+        auto view
+            = w.app(w.app(w.app(w.app(w.app(w.annex<tf_view>(), {type.T, type.r, type.s}), w.lit_nat(g)), shape), read),
+                    inputs[slot]);
+        auto plain = w.mut_lam(pi->dom(), w.arr(g, index));
+        plain->set(true, w.tuple(DefVec(g, [&](size_t i) { return plain->var()->proj(rn, loops[i]); })));
+        inputs[slot] = view;
+        maps[slot]   = plain;
+        rank[slot]   = w.lit_nat(g);
+        shapes[slot] = shape;
+        changed      = true;
+    }
+    if (!changed) return value;
+    auto in_tys = w.tuple({mr.Tis, w.tuple(rank), w.tuple(shapes), mr.Tps, mr.Rps, mr.Sps});
+    auto result = w.app(
+        w.app(w.app(w.app(w.app(w.app(w.app(w.annex<map_reduce_post>(), mr.nis_nps), mr.meta), mr.shapes), in_tys),
+                    mr.init->type()),
+              w.tuple({mr.comb, mr.init, mr.post})),
+        mr.map_out);
+    return w.app(w.app(result, w.tuple({w.tuple(maps), mr.post_maps})), w.tuple({w.tuple(inputs), post_is}));
 }
 
 } // namespace
@@ -129,6 +207,7 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
     auto value = RWPhase::rewrite_imm_App(app);
     auto group = groups_.find(app);
     if (group == groups_.end()) return value;
+    if (group->second.kind == 1) value = contraction_views(value);
     auto& w     = new_world();
     auto mr     = btensor::MapRedPost::of(graph::map_reduce(value)->callee()->as<App>());
     auto ranks  = *mr.ranks();
