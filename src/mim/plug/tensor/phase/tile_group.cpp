@@ -166,8 +166,8 @@ void TileGroup::start() {
                 continue;
             claimed.insert(op);
             DefVec members;
-            // A batched contraction's operands are not packed yet, so a fused producer would be recomputed per micro
-            // tile.
+            // A batched contraction's producers also feed other roots' reductions, so fusing them would compute them
+            // twice.
             bool batched = kind == 1 && mr.ranks()->ro > 2;
             for (DefVec todo{op}; !batched && !todo.empty();) {
                 auto consumer = todo.back();

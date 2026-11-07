@@ -1,12 +1,14 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=2 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
 // RUN: %FileCheck %s < %t.log
 // RUN: %FileCheck %s --check-prefix=BATCH < %t.log
+// RUN: %FileCheck %s --check-prefix=PACK < %t.log
 // RUN: clang++ -O1 -fsanitize=address %S/tile_group_contraction_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 
 // Batched contractions and contractions that read views are register-blocked contractions.
 // An operand read through a view is materialized on its batch and contraction loops.
-// A batched contraction takes no members: its operands are not packed, so a fused producer would run per micro tile.
+// Batched operands are packed behind their batch axes, also when the reduction fits one block.
+// A batched contraction takes no members: its producers also feed other roots, so fusing them computes them twice.
 
 plugin tensor;
 plugin core;
@@ -50,3 +52,4 @@ extern fun mim_model (qkv: tensor.Tensor 2 (8, 48) F32, w: tensor.Tensor 2 (16, 
 
 // CHECK-COUNT-3: tensor.tile_group root {{.*}} kind 1
 // BATCH-NOT: kind 1 members {{[1-9]}}
+// PACK-COUNT-4: L1 promote input {{[01]}} axis {{[12]}}

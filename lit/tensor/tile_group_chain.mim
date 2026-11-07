@@ -12,7 +12,7 @@ let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.
 extern fun kernel (a b c: tensor.Tensor 2 (64, 64) F32): tensor.Tensor 2 (64, 64) F32 =
     return (tensor.product_2d R (tensor.product_2d R (tensor.buf a, tensor.buf b), tensor.buf c));
 
-// CHECK: let [[T:_[0-9]+]] = mem.malloc
-// CHECK: let [[R:_[0-9]+]] = mem.malloc
-// CHECK: mem.free {{.*}}, [[T]]#tt)
-// CHECK: return_{{[0-9]+}} ({{_[0-9]+}}, [[R]]#tt)
+// CHECK: let [[T:_[0-9]+]] = mem.malloc («64, 64;
+// CHECK: let [[R:_[0-9]+]] = mem.malloc («64, 64;
+// CHECK-DAG: return_{{[0-9]+}} ({{_[0-9]+}}, [[R]]#tt)
+// CHECK-DAG: mem.free {{.*}}, [[T]]#tt)
