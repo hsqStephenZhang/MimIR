@@ -166,7 +166,10 @@ void TileGroup::start() {
                 continue;
             claimed.insert(op);
             DefVec members;
-            for (DefVec todo{op}; !todo.empty();) {
+            // A batched contraction's operands are not packed yet, so a fused producer would be recomputed per micro
+            // tile.
+            bool batched = kind == 1 && mr.ranks()->ro > 2;
+            for (DefVec todo{op}; !batched && !todo.empty();) {
                 auto consumer = todo.back();
                 todo.pop_back();
                 auto reader = graph::map_reduce(consumer);
