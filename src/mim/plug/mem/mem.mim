@@ -105,6 +105,12 @@ anx lam decay {n: Nat, T: *, a: Nat} (p: Ptr («n; T», a)): Ptr (T, a) = lea (p
 /// @warning This is *unchecked*: the caller vouches for the length, e.g. for memory a C function hands over.
 axm assume: {T: *, a: Nat} as Ta → [Ptr Ta, n: Nat] → Ptr («n; T», a);
 ///
+/// ### align
+///
+/// Asserts that `p` is aligned to `n` bytes, so a backend may use aligned (e.g. vector) accesses through it.
+/// @warning This is *unchecked* like `assume`: the caller vouches for the alignment.
+axm align: {T: *, a: Nat} as Ta → [Ptr Ta, n: Nat] → Ptr Ta;
+///
 /// ### cstr
 ///
 /// Views a NUL-terminated C string `p` as an array of its `n` characters, excluding the NUL.

@@ -50,6 +50,14 @@ axm read: [r: Nat, s: «r; Nat», T: *] as rsT
 axm write: [r: Nat, s: «r; Nat», T: *] as rsT
          → [mem.M 0, Buf rsT, idx: «i: r; Idx s#i», val: T] → [mem.M 0, Buf rsT], normalize_write;
 ///
+/// ### vectorize
+///
+/// Views the last axis in runs of `n` elements as one `«n; T»` element each, so `read` and `write` move a vector.
+/// `c` is `s` with its last extent divided by `n`, which must divide it.
+/// Every allocation is 16-byte aligned, so the runs are aligned and the backend may use vector accesses.
+///
+axm vectorize: [r: Nat, s: «r; Nat», T: *] as rsT → [n: Nat, c: «r; Nat»] → Buf rsT → Buf (r, c, «n; T»);
+///
 /// ### init
 ///
 /// A buffer initialized with the contents of the SSA array value `val`.

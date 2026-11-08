@@ -84,10 +84,11 @@ public:
     const std::string& get_extra_flags() const { return extra_flags; }
 
 private:
-    /// Device slots live in a module-scope global in their requested address space, not on the stack.
-    std::string emit_slot(ll::BB&, const App* app, const Def* pointee, const Def* addr_space) override {
+    /// Shared and constant slots live in a module-scope global in their address space; generic ones stay per thread.
+    std::string emit_slot(ll::BB& bb, const App* app, const Def* pointee, const Def* addr_space) override {
+        if (Lit::as(addr_space) == 0) return ll::Emitter::emit_slot(bb, app, pointee, addr_space);
         auto v_ptr = "@" + app->unique_name() + ".slot";
-        std::println(vars_decls_, "{} = internal addrspace({}) global {} undef", v_ptr, addr_space,
+        std::println(vars_decls_, "{} = internal addrspace({}) global {} undef, align 16", v_ptr, addr_space,
                      convert(pointee, false));
         return v_ptr;
     }
@@ -588,7 +589,7 @@ std::string DeviceEmitter::prepare() {
                        smem->type());
         auto name     = "@" + smem->unique_name();
         locals_[smem] = name;
-        std::println(vars_decls_, "{} = internal addrspace({}) global {} undef", name, a, convert(T, false));
+        std::println(vars_decls_, "{} = internal addrspace({}) global {} undef, align 16", name, a, convert(T, false));
     }
 
     return kernel->unique_name();
@@ -603,6 +604,16 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         emit_unsafe(sync_work_items->arg(2, 0));
         emit_unsafe(sync_work_items->arg(2, 1));
         std::print(bb.body().emplace_back(), "call void @llvm.nvvm.barrier0()");
+        return name;
+    } else if (Axm::isa<gpu::generic_mem>(def) || Axm::isa<gpu::global_mem>(def)) {
+        emit_unsafe(def->as<App>()->arg());
+        return std::string();
+    } else if (auto slot = Axm::isa<gpu::slot_shared>(def)) {
+        emit_unsafe(slot->arg());
+        auto pointee = convert(slot->decurry()->arg(), false);
+        auto v_ptr   = "@" + def->unique_name() + ".slot";
+        std::println(vars_decls_, "{} = internal addrspace(3) global {} undef, align 16", v_ptr, pointee);
+        bb.assign(name, "addrspacecast {} addrspace(3)* {} to {}*", pointee, v_ptr, pointee);
         return name;
     } else if (auto tri = Axm::isa<math::tri>(def)) {
         auto arg       = emit(tri->arg());

@@ -8,12 +8,25 @@ namespace mim::plug::mem::phase {
 
 namespace {
 
+bool reaches(const Def* from, const Def* target) {
+    DefSet seen;
+    for (DefVec pending(from->ops().begin(), from->ops().end()); !pending.empty();) {
+        auto def = pending.back();
+        pending.pop_back();
+        if (def == target) return true;
+        if (!seen.insert(def).second) continue;
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+    return false;
+}
+
 // Conservative: the slot's actual lifetime ends at the nearest enclosing returning Lam, not the top-level one.
+// A continuation nested in a loop runs per iteration only if it reaches the loop's head again; an exit runs once.
 bool in_loop(const Nest::Node* node) {
-    auto fun = node;
-    while (fun->level() > 1)
-        fun = fun->inest();
-    return node->loop_depth() > fun->loop_depth();
+    for (auto n = node; n->level() > 1; n = n->inest())
+        if (n->is_recursive() && (n == node || reaches(node->mut(), n->mut()))) return true;
+    return false;
 }
 
 } // namespace

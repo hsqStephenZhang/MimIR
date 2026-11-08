@@ -850,7 +850,7 @@ private:
         if (auto tiled = Axm::isa<tiled_n>(call)) {
             Rewriter geometry(world_);
             auto plan = multi_tile_plan(geometry.rewrite(tiled)->as<App>());
-            auto body = tiled->arg()->isa<Lam>();
+            auto body = region_body(tiled->arg()).first->isa<Lam>();
             if (!body || !body->is_set()) return {};
             u64 total = 0;
             for (auto point : plan.points) {

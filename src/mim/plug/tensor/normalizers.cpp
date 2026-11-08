@@ -99,6 +99,13 @@ std::optional<u64> sub_upper(const Def* a, const Def* b) {
 
 } // namespace
 
+bool nat_bounded_by(const Def* x, const Def* bound) {
+    if (Check::test_alpha(x, bound)) return true;
+    if (auto upper = nat_upper(x); upper && Lit::isa(bound) && *upper <= *Lit::isa(bound)) return true;
+    if (auto m = isa_min(x)) return nat_bounded_by(m->first, bound) || nat_bounded_by(m->second, bound);
+    return false;
+}
+
 std::optional<u64> nat_upper(const Def* x) {
     if (auto l = Lit::isa(x)) return l;
     if (auto op = Axm::isa<core::nat>(x)) {
@@ -136,7 +143,14 @@ std::optional<u64> nat_upper(const Def* x) {
     return {};
 }
 
+std::pair<const Def*, u64> region_body(const Def* body) {
+    if (auto bound = Axm::isa<tensor::bind>(body))
+        return {bound->arg(), Lit::expect(bound->decurry()->arg(), "a literal tensor.bind level")};
+    return {body, 0};
+}
+
 void check_region_inputs(const Def* function, const Def* region) {
+    function   = region_body(function).first;
     auto outer = function->isa<Lam>();
     if (!outer || !outer->is_set()) return;
     auto inner = outer->body()->isa<Lam>();
@@ -461,8 +475,8 @@ producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* bo
     auto counts = cut ? w.tuple({mr.nis, w.lit_nat_0()}) : mr.nis_nps;
     auto meta   = cut ? w.tuple({mr.To, mr.To, mr.Ro, mr.Rn, mr.TSched}) : mr.meta;
     auto post   = cut ? w.app(w.annex<tensor::id>(), mr.To) : mr.post;
-    auto write = shift(mr.map_out, mr.Rn, mr.Ro, lo, off);
-    auto sched = schedule;
+    auto write  = shift(mr.map_out, mr.Rn, mr.Ro, lo, off);
+    auto sched  = schedule;
     if (cap != size || output_cap != ext) {
         auto parallel = w.tuple(DefVec(ro, [&](size_t d) { return size->proj(rn, d); }));
         sched = w.app(w.app(w.annex<btensor::clip_sched>(), {mr.Ro, mr.Rn}), {parallel, output_cap, cap, sched});
@@ -514,10 +528,19 @@ ProducerTile producer_init(const Def* producer, const Def* off, const Def* ext) 
     return {w.app(w.app(w.annex<tensor::splat>(), {mr.To, mr.Ro}), {ext, mr.init}), {}};
 }
 
+bool identity_post(const Def* post) {
+    auto lam = post->isa_mut<Lam>();
+    if (!lam || !lam->is_set()) return false;
+    if (auto y = Lam::isa_ret_arg(lam)) return y == lam->var(lam->num_vars(), 0)->proj(2, 0);
+    return lam->body() == lam->var()->proj(2, 0);
+}
+
 ProducerTile producer_post(const Def* producer, const Def* off, const Def* ext, const Def* acc) {
     auto app = graph::map_reduce(producer);
     if (!app) return {nullptr, "producer is not a map_reduce_post"};
-    auto mr      = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    if (Lit::isa(mr.nps) == 0 && identity_post(mr.post) && acc->type() == type_tensor(mr.Ro, ext, mr.Tp))
+        return {acc, {}};
     auto& w      = producer->world();
     auto posts   = app->arg(2, 1);
     auto builder = w.app(w.annex<post_tile>(), {mr.To, mr.Tp, mr.Ro, mr.nps, mr.Tps, mr.Rps, mr.Sps});
@@ -585,8 +608,9 @@ bool nests_region(const Def* body) {
 
 } // namespace
 
-const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
+const Def* normalize_tiled(const Def*, const Def* c, const Def* annotated) {
     auto [meta, shapes, input_type, inputs] = c->as<App>()->uncurry_args<4>();
+    auto [body, bind]                       = region_body(annotated);
     check_region_inputs(body, c);
     auto [s, ts, tail] = shapes->projs<3>();
     if (auto rank = Lit::isa(meta->proj(2, 1))) {
@@ -599,7 +623,7 @@ const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
             }
         // An open body may be a copy that an enclosing reduction is still filling; reducing it now leaves stale vars.
         // A nested region keeps its destination only through this region's boundary.
-        if (s == ts && body->is_closed() && !nests_region(body))
+        if (!bind && s == ts && body->is_closed() && !nests_region(body))
             return c->world().app(c->world().app(body, {c->world().pack(*rank, c->world().lit_nat(0)), s}), inputs);
     }
     return nullptr;
@@ -607,19 +631,21 @@ const Def* normalize_tiled(const Def*, const Def* c, const Def* body) {
 
 GridTilePlan grid_tile_plan(const App* app) {
     if (Axm::isa<tiled>(app)) {
-        auto [meta, shapes, it, ins, body] = app->uncurry_args<5>();
-        auto [type, rank]                  = meta->projs<2>();
-        auto [shape, tiles, tail]          = shapes->projs<3>();
-        auto& w                            = app->world();
-        auto r                             = Lit::expect(rank, "a literal tensor.tiled grid rank");
-        auto axes                          = w.tuple(DefVec(r, [&](size_t d) { return w.lit_idx(r, d); }));
-        return {type, rank, shape, shape, tiles, tail, axes, ins, body, 1, r, false};
+        auto [meta, shapes, it, ins, annotated] = app->uncurry_args<5>();
+        auto [type, rank]                       = meta->projs<2>();
+        auto [shape, tiles, tail]               = shapes->projs<3>();
+        auto [body, bind]                       = region_body(annotated);
+        auto& w                                 = app->world();
+        auto r                                  = Lit::expect(rank, "a literal tensor.tiled grid rank");
+        auto axes                               = w.tuple(DefVec(r, [&](size_t d) { return w.lit_idx(r, d); }));
+        return {type, rank, shape, shape, tiles, tail, axes, ins, body, 1, r, false, bind};
     }
-    auto [meta, shapes_grid, axes, it, ins, body] = app->uncurry_args<6>();
-    auto [n, g, types, ranks]                     = meta->projs<4>();
-    auto [shapes, shape, tiles, tail]             = shapes_grid->projs<4>();
-    auto count                                    = Lit::expect(n, "a literal tensor.tiled_multi result count");
-    auto rank                                     = Lit::expect(g, "a literal tensor.tiled_multi grid rank");
+    auto [meta, shapes_grid, axes, it, ins, annotated] = app->uncurry_args<6>();
+    auto [body, bind]                                  = region_body(annotated);
+    auto [n, g, types, ranks]                          = meta->projs<4>();
+    auto [shapes, shape, tiles, tail]                  = shapes_grid->projs<4>();
+    auto count                                         = Lit::expect(n, "a literal tensor.tiled_multi result count");
+    auto rank                                          = Lit::expect(g, "a literal tensor.tiled_multi grid rank");
     for (u64 d = 0; d != rank; ++d)
         if (Lit::isa(tiles->proj(rank, d)) == 0) app->blame("tensor.tiled_multi requires positive tile sizes").bail();
     for (u64 i = 0; i != count; ++i) {
@@ -638,7 +664,7 @@ GridTilePlan grid_tile_plan(const App* app) {
                 app->blame("tensor.tiled_multi result extent must equal its mapped grid extent").bail();
         }
     }
-    return {types, ranks, shapes, shape, tiles, tail, axes, ins, body, count, rank, true};
+    return {types, ranks, shapes, shape, tiles, tail, axes, ins, body, count, rank, true, bind};
 }
 
 std::pair<const Def*, const Def*> GridTilePlan::box(u64 i, const Def* off, const Def* ext) const {
@@ -656,7 +682,7 @@ std::pair<const Def*, const Def*> GridTilePlan::box(u64 i, const Def* off, const
 }
 
 const Def* normalize_tiled_multi(const Def* type, const Def* c, const Def* body) {
-    check_region_inputs(body, c);
+    check_region_inputs(region_body(body).first, c);
     // A generic definition such as a builder is checked once it is applied to literal counts, ranks and axes.
     auto [meta, shapes, axes, input_type, inputs] = c->as<App>()->uncurry_args<5>();
     auto [n, g, types, ranks]                     = meta->projs<4>();

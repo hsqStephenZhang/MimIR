@@ -106,9 +106,12 @@ struct GridTilePlan {
     const Def *types, *ranks, *shapes, *shape, *tiles, *tail, *axes, *inputs, *body;
     u64 count, rank;
     bool multiple;
+    u64 bind;
     std::pair<const Def*, const Def*> box(u64, const Def*, const Def*) const;
 };
 GridTilePlan grid_tile_plan(const App*);
+/// A region body and the level its `tensor.bind` annotation binds it to, 0 without one.
+std::pair<const Def*, u64> region_body(const Def*);
 void check_region_inputs(const Def*, const Def*);
 
 class RegionInputs {
@@ -207,6 +210,9 @@ inline std::optional<fe::Vector<u64>> lit_projs(const Def* def, u64 n) {
 
 /// A literal `u` with `x ≤ u` for every value the `Nat` term @p x may take, if its structure bounds it.
 std::optional<u64> nat_upper(const Def* x);
+/// Whether `x ≤ bound` follows from the structure of @p x: alpha-equal, a literal upper bound, or a `min` with @p
+/// bound.
+bool nat_bounded_by(const Def* x, const Def* bound);
 
 /// An affine index as integer coefficients of its opaque atoms plus a constant.
 /// Affine indices wrap around in two's complement, so equal forms denote equal indices.

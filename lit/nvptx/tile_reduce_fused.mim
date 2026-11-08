@@ -1,0 +1,18 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/softmax16_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// One kernel: both row reductions fold into shared partials and merge behind fences, the item level reads the
+// shared results; no per-item device allocation remains.
+
+// CHECK: addrspace(3) global
+// CHECK: define ptx_kernel void @tileKernel
+// CHECK-NOT: define ptx_kernel
+// CHECK-NOT: call i8* @malloc
+// CHECK: call void @llvm.nvvm.barrier0()
+// CHECK: call void @llvm.nvvm.barrier0()
+// CHECK: call void @llvm.nvvm.barrier0()
+// CHECK: call void @llvm.nvvm.barrier0()
+// CHECK-NOT: call i8* @malloc

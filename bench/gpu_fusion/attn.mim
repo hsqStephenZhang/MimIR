@@ -1,0 +1,8 @@
+// Scaled dot-product attention, H = 12, L = 512, D = 64, with the stable softmax in between.
+plugin tensor;
+plugin math;
+
+extern fun attn (q: tensor.Tensor 3 (12, 512, 64) math.F32, k: tensor.Tensor 3 (12, 512, 64) math.F32,
+                 v: tensor.Tensor 3 (12, 512, 64) math.F32): tensor.Tensor 3 (12, 512, 64) math.F32 =
+    return (tensor.sdpa math.mode.fast @(12, 512, 512, 64, 64)
+        (0.125:math.F32, tensor.buf q, tensor.buf k, tensor.buf v));

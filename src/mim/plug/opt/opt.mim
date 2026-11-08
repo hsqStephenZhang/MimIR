@@ -61,6 +61,7 @@ extern lam _default_compile (): compile.Phase =
 
         // buffer
         compile.named "buffer.lower_ptr",
+        compile.named "gpu.outline",
 
         // affine + cps
         compile.named "affine.lower_index",

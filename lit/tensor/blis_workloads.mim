@@ -1,7 +1,7 @@
 // RUN: python3 %S/blis_f32.py %mim %S/blis.mim %t.dir workloads
 // RUN: clang++ -O3 %S/blis_workloads_aux.cpp %t.dir/probe.ll -o %t -Wno-override-module
 // RUN: %t
-// RUN: python3 %S/realization_count.py %t.dir/probe.ll %t.count.ll
+// RUN: python3 %S/realization_count.py %t.dir/probe.ll %t.count.ll --unoptimized
 // RUN: clang++ -O3 -DREALIZATION_COUNT %S/blis_workloads_aux.cpp %t.count.ll -o %t.count -Wno-override-module
 // RUN: %t.count
 // RUN: python3 %S/blis_f32.py %mim %S/blis.mim %t.ref.dir workloads reference

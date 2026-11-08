@@ -1,0 +1,24 @@
+// relu(A·B + bias) on 1024³ with the G3 tile request: the epilogue should fold into the product's kernel.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+lam relu (x: F32): F32 = math.extrema.fmax fast (x, 0.0:F32);
+
+let levels = ((0, (128, 128, 0), 1, 0, 1), (0, (8, 8, 0), 1, 0, 2), (1, (0, 0, 16), 1, 3, 0), (2, (1, 0, 0), 1, 0, 0));
+
+extern fun gemm_bias_relu (a b bias: tensor.Tensor 2 (1024, 1024) F32): tensor.Tensor 2 (1024, 1024) F32 =
+    let root = map_reduce ((1024, 1024), (1024, 1024, 1024)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+    let out = unary relu (binary (math.arith.add fast) (root, buf bias));
+    return (tile_req (out, (), levels, default_control));

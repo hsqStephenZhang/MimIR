@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <limits>
 
+#include <fe/restore.h>
+
 #include <mim/pattern/graph.h>
 
 #include <mim/plug/core/core.h>
@@ -91,7 +93,8 @@ DefVec leaves(const Def* value, const Var* var, DefVec* composites = nullptr) {
     for (size_t i = 0; i != pending.size(); ++i) {
         auto def = pending[i];
         if (!depends(def, var)) {
-            if (TensorType::isa(def->type())) {
+            // A closed splat stays inline, so its consumers seed from the scalar instead of a materialized input.
+            if (TensorType::isa(def->type()) && !(def->is_closed() && Axm::isa<tensor::splat>(def))) {
                 result.push_back(def);
                 continue;
             }
@@ -416,6 +419,25 @@ bool depends_on(const Def* def, const Def* target) {
     return false;
 }
 
+const Def* slice_of(const Def* tensor, const Def* off, const Def* ext) {
+    auto& w   = tensor->world();
+    auto type = *TensorType::isa(tensor->type());
+    auto r    = Lit::as(type.r);
+    auto view = w.app(w.app(w.annex<slice>(), {type.T, type.r}), type.s);
+    return w.app(w.app(view, {off, w.pack(r, w.lit_nat_1()), ext}), tensor);
+}
+
+/// The whole of @p tensor staged as one panel with its own layout.
+const Def* stage_whole(const Def* tensor) {
+    auto& w     = tensor->world();
+    auto type   = *TensorType::isa(tensor->type());
+    auto r      = Lit::as(type.r);
+    auto perm   = w.tuple(DefVec(r, [&](size_t d) { return w.lit_idx(r, d); }));
+    auto layout = w.tuple({w.tuple(), w.tuple(), perm, w.bot(type.T)});
+    auto staged = w.app(w.app(w.annex<stage>(), {type.T, type.r, w.lit_nat_0()}), type.s);
+    return w.app(w.app(w.app(staged, layout), w.lit_nat_0()), tensor);
+}
+
 const Def* slice_box_of(const Def* tensor, const Def* off, const Def* ext, const Def* cap) {
     auto& w   = tensor->world();
     auto type = *TensorType::isa(tensor->type());
@@ -430,14 +452,18 @@ const Def* nat_min(const Def* a, const Def* b) {
 
 /// The axis among the last two of an input read by @p map that one of the loops in @p tiles projects onto, with that
 /// loop's tile; leading axes are batch axes.
-std::optional<std::pair<u64, u64>> panel_axis(const Def* map, u64 rank, fe::Span<const u64> tiles) {
+struct Panel {
+    u64 axis, loop, tile;
+};
+
+std::optional<Panel> panel_axis(const Def* map, u64 rank, fe::Span<const u64> tiles) {
     auto& w   = map->world();
     auto pi   = map->type()->as<Pi>();
     auto rn   = Lit::isa(pi->dom()->arity());
     auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
     auto read = w.app(map, var);
     if (!rn || rank < 2) return {};
-    std::optional<std::pair<u64, u64>> result;
+    std::optional<Panel> result;
     // Offsets of enclosing tiles are constants; only the loops decide the axis.
     for (u64 d = rank - 2; d != rank; ++d) {
         auto form = Linear::of(read->proj(rank, d));
@@ -449,7 +475,7 @@ std::optional<std::pair<u64, u64>> panel_axis(const Def* map, u64 rank, fe::Span
             }
             if (!tiles[l] || !own) continue;
             if (result) return {};
-            result = std::pair{d, tiles[l]};
+            result = Panel{d, l, tiles[l]};
         }
     }
     return result;
@@ -457,18 +483,95 @@ std::optional<std::pair<u64, u64>> panel_axis(const Def* map, u64 rank, fe::Span
 
 /// @p app with its input @p slot staged into panels of @p tile along @p axis, one of its last two axes.
 /// The read map follows the layout: `x ↦ (batch axes, x#axis / tile, x#other, x#axis % tile)`.
-const App* promote_input(const App* app, u64 slot, u64 axis, u64 tile) {
+/// Stages input @p slot per block into panels of @p tile along @p axis.
+/// Panels of a work-group's shared memory keep @p axis's panel index innermost among the outer axes, so consecutive
+/// work-items read consecutive panels without bank conflicts.
+/// A bound parallel level's region var and literal tile sizes per output loop.
+struct LevelScope {
+    const Var* var;
+    fe::Vector<u64> tiles;
+};
+
+/// The input dim that reads loop @p loop with unit slope, if any.
+std::optional<u64> dim_of_loop(const Def* map, u64 rank, u64 loop) {
+    auto& w   = map->world();
+    auto pi   = map->type()->as<Pi>();
+    auto rn   = Lit::as(pi->dom()->arity());
+    auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
+    auto read = w.app(map, var);
+    for (u64 d = 0; d != rank; ++d) {
+        auto form = Linear::of(read->proj(rank, d));
+        bool own  = true;
+        for (u64 k = 0; k != rn; ++k) {
+            auto atom = form.atoms.find(var->proj(rn, k));
+            own &= (atom == form.atoms.end() ? 0 : atom->second) == (k == loop ? 1 : 0);
+        }
+        if (own) return d;
+    }
+    return {};
+}
+
+/// A reduction level's block along output loop `loop`: `[k0, k0 + k)`.
+struct Block {
+    u64 loop;
+    const Def *k0, *k;
+};
+
+/// The input's slice over the whole enclosing work-group's tile along @p axis (output loop @p loop) and the
+/// reduction block, with the work-item's offset inside it; nothing if the input is no plain slice.
+std::optional<std::pair<const Def*, const Def*>> group_slice(const Def* input,
+                                                             const Def* map,
+                                                             u64 axis,
+                                                             u64 loop,
+                                                             u64 rank,
+                                                             const LevelScope& group,
+                                                             const LevelScope& item,
+                                                             const Block& block) {
+    auto slice = Axm::isa<tensor::slice>(input);
+    if (!slice) return {};
+    auto kdim = dim_of_loop(map, rank, block.loop);
+    if (!kdim) return {};
+    auto& w                 = input->world();
+    auto [meta, shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
+    auto ro                 = group.tiles.size();
+    auto off = group.var->proj(2, 0)->proj(ro, loop), ext = group.var->proj(2, 1)->proj(ro, loop);
+    auto start = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
+        return d == axis ? off : d == *kdim ? block.k0 : w.lit_nat_0();
+    }));
+    auto size  = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
+        return d == axis ? ext : d == *kdim ? block.k : shape->proj(rank, d);
+    }));
+    auto wide  = w.app(w.app(w.app(w.annex<tensor::slice>(), meta), shape), {start, w.pack(rank, w.lit_nat_1()), size});
+    return std::pair{w.app(wide, slice->arg()), item.var->proj(2, 0)->proj(ro, loop)};
+}
+
+const App* promote_input(const App* app,
+                         u64 slot,
+                         u64 axis,
+                         u64 loop,
+                         u64 tile,
+                         bool shared,
+                         const LevelScope* group,
+                         const LevelScope* item,
+                         const Block* block) {
     auto& w            = app->world();
     auto mr            = btensor::MapRedPost::of(app->callee()->as<App>());
     auto nis           = Lit::as(mr.nis);
     auto [is, post_is] = app->args<2>();
     auto input         = is->proj(nis, slot);
-    auto type          = *TensorType::isa(input->type());
-    auto rank          = Lit::as(type.r);
-    auto other         = 2 * rank - 3 - axis;
-    auto perm          = w.tuple(DefVec(rank, [&](size_t i) {
-        return w.lit_idx(rank, i + 2 < rank ? i : i + 2 == rank ? axis : other);
-    }));
+    auto rank          = Lit::as(TensorType::isa(input->type())->r);
+    const Def* inner   = nullptr;
+    if (group)
+        if (auto widened = group_slice(input, mr.maps->proj(nis, slot), axis, loop, rank, *group, *item, *block))
+            std::tie(input, inner) = *widened;
+    auto type   = *TensorType::isa(input->type());
+    auto other  = 2 * rank - 3 - axis;
+    auto source = [&](size_t i) {
+        if (i + 2 < rank) return i;
+        auto last = i + 2 == rank;
+        return (last != shared) ? axis : other;
+    };
+    auto perm      = w.tuple(DefVec(rank, [&](size_t i) { return w.lit_idx(rank, source(i)); }));
     auto stage_app = build(w.annex<stage>(),
                            {w.tuple({type.T, type.r, w.lit_nat_1()}), type.s,
                             w.tuple({w.lit_nat(axis), w.lit_nat(tile), perm, w.bot(type.T)}), w.lit_nat_0(), input});
@@ -476,8 +579,9 @@ const App* promote_input(const App* app, u64 slot, u64 axis, u64 tile) {
     auto map       = w.mut_lam(w.pi(old_map->type()->as<Pi>()->dom(), w.arr(rank + 1, w.annex<affine::Index>())));
     auto coords    = w.app(old_map, map->var());
     auto at        = coords->proj(rank, axis);
-    auto layout    = DefVec(rank, [&](size_t i) -> const Def* {
-        auto p = i + 2 < rank ? i : i + 2 == rank ? axis : other;
+    if (inner) at = w.call(affine::op::add, Defs{at, w.call<affine::lit>(inner)});
+    auto layout = DefVec(rank, [&](size_t i) -> const Def* {
+        auto p = source(i);
         return p == axis ? w.call(affine::semiop::floordiv, Defs{at, w.lit_nat(tile)}) : coords->proj(rank, p);
     });
     layout.push_back(w.call(affine::semiop::rem, Defs{at, w.lit_nat(tile)}));
@@ -547,12 +651,15 @@ private:
     template<class Id>
     const Def* reduction_tile(const btensor::MapRedPost& mr, const Def* anchor, DefVec args) const;
     Fused fuse(const Def* value, const Var* own, u64 depth, u64 kind);
+    const Def* split_over_items(const Def* tile, u64 items, const Def* merge, u64 depth);
     const Def* parallel(const Def* anchor,
                         const btensor::MapRedPost& mr,
                         u64 ro,
                         u64 rn,
                         fe::Span<const u64> sizes,
                         bool peel,
+                        u64 promote,
+                        u64 bind,
                         fe::Span<const Def*> rest,
                         u64 depth);
     const Def* reduction(const Def* anchor,
@@ -562,6 +669,8 @@ private:
                          fe::Span<const u64> sizes,
                          bool peel,
                          u64 promote,
+                         u64 bind,
+                         const Def* merge,
                          fe::Span<const Def*> rest,
                          u64 depth);
     const Def* vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const Def*> rest, u64 depth);
@@ -574,12 +683,18 @@ private:
     const DefSet& outside_;
     bool strict_;
     fe::Vector<const Var*> scopes_;
+    std::optional<LevelScope> group_scope_, item_scope_;
+    /// The work-item count of the item level that follows the work-group level being fused.
+    std::optional<u64> next_items_;
+    /// Reductions split over the work-items, by producer; later reads view them instead of recomputing them.
+    DefMap<std::pair<const Def*, Origin>> resident_;
     DefMap<Origin> origins_;
     /// Tiles that enclosing levels hand back, by their original producer, and the inner results that replace them.
     DefMap<const Def*> escaping_;
     DefMap<const Def*> handed_;
     std::string reason_;
     std::vector<std::pair<const Def*, const Def*>> yielded_;
+    u64 bound_ = 0;
 };
 
 // Boxed tiles carry literal storage caps derived from the tile sizes into every fused producer.
@@ -616,6 +731,27 @@ const Def* Levels::reduction_tile(const btensor::MapRedPost& mr, const Def* anch
     return Axm::isa<Id>(tile) ? nullptr : tile;
 }
 
+// The reduction tile @p tile as a `tile_fold` whose blocks the @p items work-items fold (R8), if its single
+// reduction loop divides into them.
+const Def* Levels::split_over_items(const Def* tile, u64 items, const Def* merge, u64 depth) {
+    auto& w   = world();
+    auto root = graph::map_reduce(tile);
+    if (!root) return nullptr;
+    auto mr  = btensor::MapRedPost::of(root->callee()->as<App>());
+    auto rks = mr.ranks();
+    if (!rks || rks->rr != 1) return nullptr;
+    auto rn = rks->nloops();
+    auto K  = Lit::isa(mr.Sr->proj(rn, rn - 1));
+    if (!K || *K % items) return nullptr;
+    auto sizes  = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / items : 0); });
+    auto fields = DefVec{w.lit_nat_1(), w.tuple(sizes), w.lit_nat_1(), w.lit_nat_0(), w.lit_nat(2)};
+    if (merge) fields.push_back(merge);
+    auto one   = DefVec{w.tuple(fields)};
+    auto split = this->tile(tile, one, depth + 1);
+    if (!split) log_.d("tensor.tile_fuse {} keeps a fused reduction whole: {}", op_, reason_);
+    return split;
+}
+
 Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind) {
     auto& w = world();
     Fused result{value, 0, {}, {}};
@@ -630,19 +766,44 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
             }
         if (!next) break;
         auto p           = next->producer;
-        auto producer    = graph::map_reduce(p);
-        auto reduces     = producer
-                        && btensor::MapRedPost::of(producer->callee()->as<App>())
-                                   .ranks()
-                                   .value_or(btensor::MapRedPost::Ranks{0, 0, 0, 0})
-                                   .rr
-                               != 0;
-        auto origin      = compose(p, next->off, next->ext, next->cap);
+        const Def* merge = nullptr;
+        if (auto marked = Axm::isa<tensor::merge_with>(p)) {
+            merge = marked->callee()->as<App>()->arg();
+            p     = marked->arg();
+        }
+        auto producer = graph::map_reduce(p);
+        auto reduces  = producer
+                     && btensor::MapRedPost::of(producer->callee()->as<App>())
+                                .ranks()
+                                .value_or(btensor::MapRedPost::Ranks{0, 0, 0, 0})
+                                .rr
+                            != 0;
+        auto origin   = compose(p, next->off, next->ext, next->cap);
+        if (auto resident = resident_.find(origin.producer); resident != resident_.end()) {
+            auto [shared, from] = resident->second;
+            // The shared tile's own fill reads the producer.
+            if (shared == p || depends_on(shared, next->app)) continue;
+            auto whole = Check::test_alpha(origin.off, from.off) && Check::test_alpha(next->ext, from.ext);
+            log_.d("tensor.tile_fuse {} read {} from the work-items' shared tile", op_, p);
+            auto r     = Lit::as(TensorType::isa(p->type())->r);
+            auto start = w.tuple(DefVec(r, [&](size_t d) {
+                return w.call(core::nat::sub, Defs{origin.off->proj(r, d), from.off->proj(r, d)});
+            }));
+            auto view  = whole ? shared : slice_box_of(shared, start, next->ext, next->cap ? next->cap : next->ext);
+            Substitute reuse(w);
+            for (auto free : result.value->free_vars())
+                reuse.map(free, free);
+            reuse.substitute(next->app, view);
+            result.value = reuse.rewrite(result.value);
+            for (auto& made : tiles)
+                made.first = reuse.rewrite(made.first);
+            continue;
+        }
         auto escaping    = escaping_.find(origin.producer);
-        auto outside_use = (outermost(own) && outside_.contains(p)) || escaping != escaping_.end();
+        auto outside_use = (outermost(own) && outside_.contains(next->producer)) || escaping != escaping_.end();
         auto query
             = w.tuple({w.lit_nat(depth), w.lit_nat(kind), w.lit_nat_0(), w.lit_bool(reduces), w.lit_bool(outside_use),
-                       w.lit_bool(in_group(p)), w.lit_nat(std::numeric_limits<nat_t>::max())});
+                       w.lit_bool(in_group(next->producer)), w.lit_nat(std::numeric_limits<nat_t>::max())});
         auto decision = w.app(control_, query);
         auto fuse = Lit::isa(decision->proj(2, 0)), yield = Lit::isa(decision->proj(2, 1));
         if (!fuse || !yield) {
@@ -661,6 +822,9 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
             log_.d("tensor.tile_fuse {} skip {}: its tile storage {} has no constant bound", op_, p, storage(tile));
             continue;
         }
+        if (reduces && next_items_)
+            if (auto split = split_over_items(tile, *next_items_, merge, depth))
+                resident_.emplace(origin.producer, std::pair{tile = split, origin});
         Substitute substitute(w);
         for (auto free : result.value->free_vars())
             substitute.map(free, free);
@@ -687,11 +851,29 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const Def*> levels, u64 dept
     auto rks = mr.ranks();
     if (!rks) return fail("the root's ranks are not literal");
     auto ro = rks->ro, rn = rks->nloops();
-    auto [kind, sizes, tail, promote] = levels.front()->projs<4>();
+    auto level  = levels.front();
+    auto fields = level->num_projs();
+    if (fields < 4 || fields > 6)
+        return fail(
+            "a level is (kind, sizes, tail, promote), (kind, sizes, tail, promote, bind) or (kind, sizes, tail, "
+            "promote, bind, merge)");
+    auto kind = level->proj(fields, 0), sizes = level->proj(fields, 1), tail = level->proj(fields, 2),
+         promote = level->proj(fields, 3);
     auto k = Lit::isa(kind), t = Lit::isa(tail);
     if (!k || !t || *t > 1) return fail("level kinds and tails must be literals");
     auto promoted = Lit::isa(promote);
-    if (!promoted || (*promoted && *k != 1)) return fail("only reduction levels promote an input");
+    auto bound    = fields >= 5 ? Lit::isa(level->proj(fields, 4)) : std::optional<u64>(0);
+    if (!promoted || (*promoted && *k != 1 && !(*k == 0 && bound == 1)))
+        return fail("only reduction levels and work-group levels promote an input");
+    auto merge = fields == 6 ? level->proj(6, 5) : nullptr;
+    if (merge && (*k != 1 || !bound || *bound != 2))
+        return fail("only a work-item bound reduction level takes a merge");
+    if (!bound || *bound > 2) return fail("a level binds to 0 (serial), 1 (work-group) or 2 (work-item)");
+    if (*bound && *k != 0 && !(*bound == 2 && *k == 1))
+        return fail("only parallel levels bind to hardware, and reduction levels to work-items");
+    if (*bound == 2 && *k == 1 && bound_ != 1)
+        return fail("a work-item bound reduction level must nest directly inside a work-group level");
+    if (*bound == 1 && bound_ == 2) return fail("a work-group level cannot nest inside a work-item level");
     auto literal = fe::Vector<u64>(rn);
     for (u64 d = 0; d != rn; ++d)
         if (auto size = Lit::isa(sizes->proj(rn, d)))
@@ -700,8 +882,8 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const Def*> levels, u64 dept
             return fail("tile sizes must be literals");
     auto rest = levels.subspan(1);
     switch (*k) {
-        case 0: return parallel(anchor, mr, ro, rn, literal, *t == 1, rest, depth);
-        case 1: return reduction(anchor, mr, ro, rn, literal, *t == 1, *promoted, rest, depth);
+        case 0: return parallel(anchor, mr, ro, rn, literal, *t == 1, *promoted, *bound, rest, depth);
+        case 1: return reduction(anchor, mr, ro, rn, literal, *t == 1, *promoted, *bound, merge, rest, depth);
         case 2: return vector(root, rn, literal, rest, depth);
         default: return fail("level kinds are 0 (parallel), 1 (reduction) or 2 (vector)");
     }
@@ -713,9 +895,12 @@ const Def* Levels::parallel(const Def* anchor,
                             u64 rn,
                             fe::Span<const u64> sizes,
                             bool peel,
+                            u64 promote,
+                            u64 bind,
                             fe::Span<const Def*> rest,
                             u64 depth) {
-    auto& w = world();
+    auto& w         = world();
+    auto scope_bind = fe::Restore(bound_, bind ? bind : bound_);
     if (!canonical_write(mr, ro, rn)) return fail("the root does not write loop d to output axis d");
     auto tiles = DefVec(ro);
     bool whole = true;
@@ -753,6 +938,46 @@ const Def* Levels::parallel(const Def* anchor,
         return tile(anchor, rest, depth + 1);
     }
     scopes_.push_back(var);
+    auto literal = fe::Vector<u64>(ro, [&](size_t d) { return sizes[d]; });
+    auto group_scope = fe::Restore(group_scope_, bind == 1 ? std::optional{LevelScope{var, literal}} : group_scope_);
+    auto item_scope  = fe::Restore(item_scope_, bind == 2 ? std::optional{LevelScope{var, literal}} : item_scope_);
+    // A reduction fused into a work-group's tile is split over the work-items of the item level that follows.
+    auto items = std::optional<u64>();
+    if (bind == 1)
+        for (auto level : rest) {
+            auto fields = level->num_projs();
+            if (fields < 5 || Lit::isa(level->proj(fields, 0)) != 0 || Lit::isa(level->proj(fields, 4)) != 2) continue;
+            auto item_sizes = level->proj(fields, 1);
+            u64 count       = 1;
+            for (u64 d = 0; d != ro; ++d) {
+                auto item = Lit::isa(item_sizes->proj(rn, d)).value_or(0), tile = Lit::isa(tiles[d]).value_or(0);
+                if (item && tile) count *= (tile + item - 1) / item;
+            }
+            items = count;
+            break;
+        }
+    auto next_items = fe::Restore(next_items_, items);
+    // A promoted input's box is staged into the work-group's shared memory once; every fused read views it.
+    if (promote) {
+        auto nis = Lit::as(mr.nis);
+        if (promote >> nis) return fail("a promoted input does not exist");
+        auto is = graph::map_reduce(anchor)->arg(2, 0);
+        Substitute staging(w);
+        for (auto free : root_tile->free_vars())
+            staging.map(free, free);
+        for (auto read : reads(root_tile))
+            for (u64 slot = 0; slot != nis; ++slot) {
+                if (!(promote >> slot & 1) || read.producer != is->proj(nis, slot)) continue;
+                auto staged = stage_whole(slice_of(read.producer, read.off, read.ext));
+                staging.substitute(read.app, staged);
+                resident_.emplace(read.producer, std::pair{
+                                                     staged, Origin{read.producer, read.off, read.ext, read.cap}
+                });
+                log_.d("tensor.tile_fuse {} L{} stage input {} box {} × {} in the work-group", op_, depth, slot,
+                       read.off, read.ext);
+            }
+        root_tile = staging.rewrite(root_tile);
+    }
     auto fused = fuse(root_tile, var, depth, 0);
 
     struct Yield {
@@ -843,11 +1068,13 @@ const Def* Levels::parallel(const Def* anchor,
     auto inner = w.mut_lam(pi->reduce(body->var())->as<Pi>());
     inner->set(true, close(value, var, body->var(), inputs, inner->var()));
     body->set(true, inner);
+    const Def* region = body;
+    if (bind) region = w.app(w.app(w.app(w.annex<tensor::bind>(), body->type()), w.lit_nat(bind)), body);
 
-    log_.d("tensor.tile_fuse {} L{} par tiles={} tail={} inputs={} fused={} yielded={}", op_, depth, w.tuple(tiles),
-           peel ? "peel" : "cap", inputs.size(), fused.count, yields.size());
+    log_.d("tensor.tile_fuse {} L{} par tiles={} tail={} inputs={} fused={} yielded={} bind={}", op_, depth,
+           w.tuple(tiles), peel ? "peel" : "cap", inputs.size(), fused.count, yields.size(), bind);
     auto grid = w.tuple({mr.So, w.tuple(tiles), w.lit_nat(peel)});
-    if (yields.empty()) return build(w.annex<tf_par>(), {w.tuple({mr.Tp, mr.Ro}), ins->type(), grid, ins, body});
+    if (yields.empty()) return build(w.annex<tf_par>(), {w.tuple({mr.Tp, mr.Ro}), ins->type(), grid, ins, region});
     auto n     = yields.size() + 1;
     auto types = DefVec(), ranks = DefVec(), shapes = DefVec(), maps = DefVec();
     for (const auto& y : yields) {
@@ -863,13 +1090,13 @@ const Def* Levels::parallel(const Def* anchor,
     maps.push_back(w.tuple(DefVec(ro, [&](size_t d) { return w.lit_idx(ro, d); })));
     auto meta   = w.tuple({w.lit_nat(n), mr.Ro, w.tuple(types), w.tuple(ranks)});
     auto layout = w.tuple({w.tuple(shapes), mr.So, w.tuple(tiles), w.lit_nat(peel)});
-    auto region = build(w.annex<tf_par_n>(), {meta, ins->type(), layout, w.tuple(maps), ins, body});
+    auto multi  = build(w.annex<tf_par_n>(), {meta, ins->type(), layout, w.tuple(maps), ins, region});
     for (size_t i = 0; i != yields.size(); ++i)
         if (scopes_.empty() && members_.contains(yields[i].producer))
-            yielded_.emplace_back(yields[i].producer, region->proj(n, i));
+            yielded_.emplace_back(yields[i].producer, multi->proj(n, i));
         else
-            handed_[yields[i].producer] = region->proj(n, i);
-    return region->proj(n, n - 1);
+            handed_[yields[i].producer] = multi->proj(n, i);
+    return multi->proj(n, n - 1);
 }
 
 const Def* Levels::reduction(const Def* anchor,
@@ -879,6 +1106,8 @@ const Def* Levels::reduction(const Def* anchor,
                              fe::Span<const u64> sizes,
                              bool peel,
                              u64 promote,
+                             u64 bind,
+                             const Def* merge,
                              fe::Span<const Def*> rest,
                              u64 depth) {
     auto& w   = world();
@@ -894,15 +1123,24 @@ const Def* Levels::reduction(const Def* anchor,
     const Def* ks = w.lit_nat(sizes[loop]);
     // Each promoted input (bit i of promote) is staged per block into panels as wide as the next parallel level's tile
     // of its axis.
-    std::vector<std::tuple<u64, u64, u64>> panels;
+    struct Promoted {
+        u64 slot, axis, loop, tile;
+    };
+    std::vector<Promoted> panels;
+    // Inside a work-item level the panels cover the whole work-group, packed by the work-item's tile.
+    auto group_wide = bound_ == 2 && group_scope_ && item_scope_;
     if (promote) {
         auto tiles = fe::Vector<u64>(ro, 0);
-        for (auto level : rest)
-            if (auto [kind, inner, tail, _] = level->projs<4>(); Lit::isa(kind) == 0) {
+        if (group_wide) tiles = item_scope_->tiles;
+        for (auto level : rest) {
+            if (group_wide) break;
+            if (auto fields = level->num_projs(); Lit::isa(level->proj(fields, 0)) == 0) {
+                auto inner = level->proj(fields, 1);
                 for (u64 d = 0; d != ro; ++d)
                     tiles[d] = Lit::isa(inner->proj(rn, d)).value_or(0);
                 break;
             }
+        }
         auto nis = Lit::as(mr.nis);
         if (promote >> nis) return fail("a promoted input does not exist");
         for (u64 slot = 0; slot != nis; ++slot) {
@@ -913,24 +1151,26 @@ const Def* Levels::reduction(const Def* anchor,
                        depth, slot);
                 continue;
             }
-            panels.emplace_back(slot, panel->first, panel->second);
-            log_.d("tensor.tile_fuse {} L{} promote input {} axis {} panel {}", op_, depth, slot, panel->first,
-                   panel->second);
+            panels.push_back({slot, panel->axis, panel->loop, panel->tile});
+            log_.d("tensor.tile_fuse {} L{} promote input {} axis {} panel {}{}", op_, depth, slot, panel->axis,
+                   panel->tile, group_wide ? " group-wide" : "");
         }
     }
-    auto stage_block = [&](const Def* block) -> const Def* {
-        for (auto [slot, axis, tile] : panels) {
-            auto app = graph::map_reduce(block);
+    auto stage_block = [&](const Def* value, const Def* k0, const Def* k) -> const Def* {
+        auto block = Block{loop, k0, k};
+        for (auto [slot, axis, panel_loop, tile] : panels) {
+            auto app = graph::map_reduce(value);
             if (!app) return nullptr;
-            block = promote_input(app, slot, axis, tile);
+            value = promote_input(app, slot, axis, panel_loop, tile, bound_ != 0, group_wide ? &*group_scope_ : nullptr,
+                                  group_wide ? &*item_scope_ : nullptr, &block);
         }
-        return block;
+        return value;
     };
     // A reduction that fits one block is not split, but its promoted inputs are still staged, once.
     if (auto k = Lit::isa(K); k && *k <= sizes[loop]) {
         if (panels.empty()) return tile(anchor, rest, depth + 1);
         auto block  = fuse(anchor, nullptr, depth, 1);
-        block.value = stage_block(block.value);
+        block.value = stage_block(block.value, w.lit_nat_0(), K);
         if (!block.value) return fail("the promoted reduction is not a map_reduce_post");
         return tile(block.value, rest, depth + 1);
     }
@@ -947,11 +1187,15 @@ const Def* Levels::reduction(const Def* anchor,
     auto tail    = w.lit_nat(peel);
     auto chunk   = build(w.annex<tf_chunk>(), {w.tuple({K, ks, tail, ko})});
     auto partial = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), ko, chunk, acc});
-    if (!partial) return fail("the root has no reduction chunk");
+    if (!partial) {
+        auto cut = ReductionCut{loop, ko, chunk, acc};
+        return fail(
+            std::format("the root has no reduction chunk: {}", producer_tile(anchor, off, ext, nullptr, &cut).reason));
+    }
     scopes_.push_back(var);
     // Members are fused first, so a promoted input stages its fused tile.
     auto fused  = fuse(partial, var, depth, 1);
-    fused.value = stage_block(fused.value);
+    fused.value = stage_block(fused.value, ko, chunk);
     if (!fused.value) return fail("the promoted reduction chunk is not a map_reduce_post");
     auto value = tile(fused.value, rest, depth + 1);
     scopes_.pop_back();
@@ -962,16 +1206,22 @@ const Def* Levels::reduction(const Def* anchor,
     auto step   = w.mut_lam(dom, w.pi(ins->type(), acc_type));
     auto inner  = w.mut_lam(ins->type(), acc_type);
     inner->set(true, close(value, var, step->var(), inputs, inner->var()));
-    step->set(true, inner);
+    // A bound reduction's blocks run on the work-items, each folding its own seed; `lower_to_mem` merges them.
+    const Def* marked = inner;
+    if (merge) marked = w.app(w.app(w.app(w.annex<tensor::merge_with>(), {inner->type(), mr.To}), merge), marked);
+    if (bind) marked = w.app(w.app(w.app(w.annex<tensor::bind>(), marked->type()), w.lit_nat(bind)), marked);
+    step->set(true, marked);
 
     auto last       = w.mut_lam(acc_type, acc_type);
     auto tail_fused = size_t(0);
-    if (peel) {
+    auto literal_k  = Lit::isa(K);
+    // A literal K that the blocks divide has no tail to peel.
+    if (peel && !(literal_k && *literal_k % sizes[loop] == 0)) {
         auto [at, rem] = build(w.annex<tf_tail>(), {w.tuple({K, ks})})->projs<2>();
         auto partial   = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), at, rem, last->var()});
         if (!partial) return fail("the root has no reduction tail");
         auto block  = fuse(partial, nullptr, depth, 1);
-        block.value = stage_block(block.value);
+        block.value = stage_block(block.value, at, rem);
         if (!block.value) return fail("the promoted reduction tail is not a map_reduce_post");
         tail_fused = block.count;
         auto done  = tile(block.value, rest, depth + 1);
@@ -986,8 +1236,8 @@ const Def* Levels::reduction(const Def* anchor,
     post->set(true, epilogue);
     auto result = build(w.annex<tf_reduce>(), {w.tuple({acc_type, anchor->type(), ins->type()}), w.tuple({K, ks, tail}),
                                                init, ins, step, last, post});
-    log_.d("tensor.tile_fuse {} L{} red loop={} ks={} tail={} inputs={} fused={} tail_fused={}", op_, depth, loop, ks,
-           peel ? "peel" : "cap", inputs.size(), fused.count, tail_fused);
+    log_.d("tensor.tile_fuse {} L{} red loop={} ks={} tail={} inputs={} fused={} tail_fused={} bind={}", op_, depth,
+           loop, ks, peel ? "peel" : "cap", inputs.size(), fused.count, tail_fused, bind);
     return result;
 }
 

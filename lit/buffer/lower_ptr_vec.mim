@@ -1,0 +1,27 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll
+// RUN: %FileCheck %s --check-prefix=LL < %t.ll
+// RUN: clang %t.ll -o %t -Wno-override-module
+// RUN: %t; test $? -eq 30
+
+// `buffer.vectorize` views a buffer's last axis in runs: `read`/`write` on the view move one aligned vector.
+// `lower_ptr` retypes the pointer and claims its alignment (`mem.align`), which the backend hands to LLVM.
+plugin core;
+plugin mem;
+plugin buffer;
+plugin opt;
+
+extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr («core.idx2nat argc; mem.Ptr (mem.Char, 0)», 0), return: Cn [mem.M 0, I32]) =
+    let RST      = (2, (2, 8), I32);
+    let (m, buf) = buffer.alloc RST m;
+    let runs     = buffer.vectorize RST (4, (2, 2)) buf;
+    let (m, _)   = buffer.write (2, (2, 2), «4; I32») (m, runs, (1₂, 1₂), (10I32, 20I32, 30I32, 40I32));
+    let (m, v)   = buffer.read (2, (2, 2), «4; I32») (m, runs, (1₂, 1₂));
+    return (m, v#2₄);
+
+// CHECK-DAG: mem.align
+// CHECK-DAG: mem.store
+// CHECK-DAG: mem.load
+
+// LL: call void @llvm.assume(i1 true) [ "align"(
+// LL: align 16

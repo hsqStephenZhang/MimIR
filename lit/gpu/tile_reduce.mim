@@ -1,0 +1,31 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - -VVVV 2> %t.log | %FileCheck %s
+// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_reduce_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A reduction level bound to the work-items splits each row over them: every item folds its block into a private
+// seed, the partials meet in shared memory behind a fence, and one item per output merges them with the row sum's
+// `add`. Without the gpu plugin the same request runs as the sequential fold.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+let levels = ((0, (4, 0), 1, 0, 1), (1, (0, 4), 1, 0, 2));
+
+extern fun rowsum16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 F32 =
+    return (tile_req (reduce (math.arith.add fast, 0.0:F32) 1₂ (buf x), (), levels, default_control));
+
+// LOG: L1 red loop=1 ks=4 tail=peel inputs=1 fused=0 tail_fused=0 bind=2
+// LOG: gpu.outline tileGroups{{.*}}: 4 groups × 4 items
+
+// CHECK-DAG: gpu.launch
+// CHECK-DAG: gpu.slot_shared
+// CHECK-DAG: gpu.sync_work_items

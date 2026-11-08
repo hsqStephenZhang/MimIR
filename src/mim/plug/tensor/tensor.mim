@@ -71,6 +71,13 @@ axm set: {r: Nat, s: «r; Nat», T: *}
 axm scalar: {T: *} → T → Tensor 0 () T, normalize_scalar;
 axm item: {T: *} → Tensor 0 () T → T, normalize_item;
 ///
+/// ### as_vectors
+///
+/// Views the last axis in runs of `n` elements as one `«n; T»` element each; `c` is `s` with its last extent
+/// divided by `n`, which must divide it.
+/// A `get` on the view reads one aligned vector (see `buffer.vectorize`).
+axm as_vectors: {r: Nat, s: «r; Nat», T: *} → [n: Nat, c: «r; Nat»] → Tensor r s T → Tensor r c «n; T»;
+///
 /// ## Constructors
 ///
 /// Build a tensor from nothing but its shape.
@@ -1728,13 +1735,24 @@ axm report_groups: compile.Phase;
 /// `sizes#d = 0` leaves loop `d` untiled at that level.
 /// `tail` is 0 for one capped body over a runtime tail and 1 for peeling full tiles from the tail.
 /// `promote` sets bit `i` to stage input `i` of a reduction level into panels as wide as the next parallel level's tile.
+/// `bind` is 0 for a serial level, 1 to run each tile on a work-group and 2 on a work-item; only parallel levels bind, and the CPU lowering ignores it.
 ///
-anx lam TileLevel (n: Nat): * = [kind: Nat, sizes: «n; Nat», tail promote: Nat];
+anx lam TileLevel (n: Nat): * = [kind: Nat, sizes: «n; Nat», tail promote bind: Nat];
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
 axm tile_req: {P M C K: *} → [op: P, members: M, levels: C, control: K] → P;
 axm tile_fuse: compile.Phase;
 axm tile_group: compile.Phase;
+///
+/// ### bind
+///
+/// Identity annotation on the body of a `tiled` or `tiled_multi` region: `to` is the level's `TileLevel#bind`.
+///
+axm bind: {T: *} → [to: Nat] → T → T;
+///
+/// `merge_with merge step` marks a bound reduction's step with the merge of two partial accumulators, for a
+/// combiner that is not `op (acc, e)`; `merge` must be associative and commutative with the seed as its identity.
+axm merge_with: {T Acc: *} → [merge: [Acc, Acc] → Acc] → T → T;
 ///
 /// Fuses exactly the group's members; parallel levels yield members that have users outside the group,
 /// reduction levels fuse only members without such users and never yield.
@@ -1775,8 +1793,8 @@ anx lam default_tile_config (ro rr kind: Nat, bytes lanes registers cache_bytes:
     let block  = ‹d: n; (0, kc)#(is (d, n - 1))›;
     let micro  = ‹d: n; ((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2))›;
     let vector = ‹d: n; (0, 1)#(is (d, ro - 2))›;
-    (((0, rows, 1, 0), (1, none, 1, 0), (0, none, 1, 0), (2, none, 1, 0)),
-     ((0, outer, 1, 0), (1, block, 1, 3), (0, micro, 1, 0), (2, vector, 1, 0)))#(kind == 1);
+    (((0, rows, 1, 0, 0), (1, none, 1, 0, 0), (0, none, 1, 0, 0), (2, none, 1, 0, 0)),
+     ((0, outer, 1, 0, 0), (1, block, 1, 3, 0), (0, micro, 1, 0, 0), (2, vector, 1, 0, 0)))#(kind == 1);
 
 axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
 axm region_fusion_ok: {P R B: *}
@@ -2203,40 +2221,45 @@ priv anx lam prepack_rule (T: *, r k n: Nat) (facts: «n; [value multiple bound:
         prepack_panel (stage @(T, r, k) s (pos, tiles, perm, pad) scope input);
     pack;
 
-priv anx lam stage_read_impl {T: *, r k ri: Nat} (s_source s: «r; Nat», si: «ri; Nat»)
+// A fill of `s_out` elements of `E`, each `getter` reading the panel coordinate scaled by `scale`;
+// a vector fill scales its fast dim by the vector width and gets that many elements at once.
+priv anx lam stage_read_impl {T E: *, r k ri: Nat} (s_source s: «r; Nat», si: «ri; Nat»)
     (map: «r; affine.Index» → «ri; affine.Index»)
-    (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
-    (start step: «r; Nat») (scope: Nat) (input: Tensor ri si T): Tensor (r + k) (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) T =
+    (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: E)
+    (start step: «r; Nat»)
+    (s_out scale: «r + k; Nat», getter: [Tensor ri si T, «i: ri; Idx si#i»] → E)
+    (scope: Nat) (input: Tensor ri si T): Tensor (r + k) s_out E =
     let input = buf input;
     let inverse = ‹d: r; option.unwrap_unsafe (vec.first core.icmp.e (outer_perm, d))›;
     let axes = ‹j: k; core.idx2nat j›;
-    lam at (x: «r + k; I64»): T =
+    lam at (x: «r + k; I64»): E =
+        let y = ‹d: r + k; core.nat.mul (core.bitcast Nat (x#d), scale#d)›;
         lam coordinate (d: Nat) (j: Nat, coord: Nat): Nat =
-            (coord, coord * inner_tiles#(core.idx 0 k j)
-                + core.bitcast Nat (x#(core.idx 0 (r + k) (r + j))))
+            (coord, coord * inner_tiles#(core.idx 0 k j) + y#(core.idx 0 (r + k) (r + j)))
                     #(d == inner_dims_pos#(core.idx 0 k j));
         let coords = ‹d: r;
             vec.fold.r @(Nat, Nat) @k (coordinate (core.idx2nat d))
-                (axes, core.bitcast Nat (x#(core.idx 0 (r + k) (core.idx2nat (inverse#d)))))›;
+                (axes, y#(core.idx 0 (r + k) (core.idx2nat (inverse#d))))›;
         let valid = vec.scan.for_all @(Idx r) @r
             (λ (d: Idx r): Bool = coords#d < s#d) ‹d: r; d›;
-        fun read (): T =
+        fun read (): E =
             (padding, present)#valid ()
             where
                 con padding () = return pad;
                 con present () =
                     let indices = ‹d: r; core.idx 0 (s_source#d) (start#d + step#d * coords#d)›;
                     let (_, indices) = affine.map @(ri, r) @(s_source, si) map indices @0 (⊥:(core.M 0));
-                    return (get (input, indices));
+                    return (getter (input, indices));
             end;
         cps.cps2ds read ();
-    generate (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) at;
+    generate s_out at;
 
 priv anx lam stage_box_impl {T: *, r k: Nat} (s_source s: «r; Nat»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
     (start step: «r; Nat») (scope: Nat) (input: Tensor r s_source T): Tensor (r + k) (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) T =
-    stage_read_impl @(T, r, k, r) (s_source, s, s_source) (affine.id @r)
-        (inner_dims_pos, inner_tiles, outer_perm, pad) (start, step) scope input;
+    stage_read_impl @(T, T, r, k, r) (s_source, s, s_source) (affine.id @r)
+        (inner_dims_pos, inner_tiles, outer_perm, pad) (start, step)
+        (stage_shape s (inner_dims_pos, inner_tiles, outer_perm), ‹r + k; 1›, get @(r, s_source, T)) scope input;
 
 priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)

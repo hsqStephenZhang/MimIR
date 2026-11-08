@@ -1,0 +1,46 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - -VVVV 2> %t.log | %FileCheck %s
+// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_reduce_merge_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// An online `(max, sum)` fold: the combiner is not `op (acc, e)`, so the bound reduction level names the merge of
+// two partial pairs explicitly, and the pair is a flat array element the bufferizer stores as a struct.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let ML   = [F32, F32];
+
+fun step (acc: ML, xs: [F32])@tt: ML =
+    let (m, l) = acc;
+    let (x)    = xs;
+    let m2     = math.extrema.fmax fast (m, x);
+    return (m2, math.arith.add fast (math.arith.mul fast (l, math.exp.exp fast (math.arith.sub fast (m, m2))),
+                                     math.exp.exp fast (math.arith.sub fast (x, m2))));
+
+lam merge (a b: ML): ML =
+    let (m1, l1) = a;
+    let (m2, l2) = b;
+    let m        = math.extrema.fmax fast (m1, m2);
+    (m, math.arith.add fast (math.arith.mul fast (l1, math.exp.exp fast (math.arith.sub fast (m1, m))),
+                            math.arith.mul fast (l2, math.exp.exp fast (math.arith.sub fast (m2, m)))));
+
+let levels = ((0, (4, 0), 1, 0, 1), (1, (0, 4), 1, 0, 2, merge));
+
+extern fun online16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 ML =
+    let ml = map_reduce (16, (16, 16)) (step, (math.neg_inf math.f32, 0.0:F32)) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1)) (buf x);
+    return (tile_req (ml, (), levels, default_control));
+
+// LOG: L1 red loop=1 ks=4 tail=peel inputs=1 fused=0 tail_fused=0 bind=2
+// LOG: gpu.outline tileGroups{{.*}}: 4 groups × 4 items
+
+// CHECK-DAG: gpu.launch
+// CHECK-DAG: gpu.slot_shared
+// CHECK-DAG: gpu.sync_work_items

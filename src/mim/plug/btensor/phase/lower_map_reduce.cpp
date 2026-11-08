@@ -126,12 +126,38 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         auto [m, indices] = args->projs<2>();
         auto values       = DefVec(num);
         for (u64 i = 0; i != num; ++i) {
-            auto si = ss->proj(num, i);
-            auto [mapped, coords]
-                = op_affine_map(maps->proj(num, i), rs->proj(num, i), rank, bounds, si, indices, m)->projs<2>();
-            auto [read, value] = buffer::op_read(mapped, buffers->proj(num, i), *Shape(coords).fold(si))->projs<2>();
-            m                  = read;
-            values[i]          = value;
+            auto si  = ss->proj(num, i);
+            auto map = maps->proj(num, i);
+            // The map's own function type is one more curry level of the marker.
+            auto vectorized = Axm::isa<btensor::vectorize, 1>(map) ? map->as<App>() : nullptr;
+            if (!vectorized) {
+                auto [mapped, coords] = op_affine_map(map, rs->proj(num, i), rank, bounds, si, indices, m)->projs<2>();
+                auto [read, value]
+                    = buffer::op_read(mapped, buffers->proj(num, i), *Shape(coords).fold(si))->projs<2>();
+                m         = read;
+                values[i] = value;
+                continue;
+            }
+            // The lane comes from the logical coordinate, a literal once the cell loops are unrolled.
+            auto [n, logical, layout, f] = vectorized->args<4>();
+            auto ri                      = rs->proj(num, i);
+            auto r                       = Lit::as(ri);
+            auto [mapped, coords]        = op_affine_map(f, ri, rank, bounds, logical, indices, m)->projs<2>();
+            auto last                    = w.call<core::idx2nat>(coords->proj(r, r - 1));
+            auto lane                    = w.call(core::nat::rem, Defs{last, n});
+            auto start                   = DefVec(coords->projs(r));
+            start[r - 1]
+                = w.call<core::idx>(w.lit_nat_0(), logical->proj(r, r - 1), w.call(core::nat::sub, Defs{last, lane}));
+            auto [placed, physical] = op_affine_map(layout, ri, ri, logical, si, w.tuple(start), mapped)->projs<2>();
+            auto vectors            = buffer::op_vectorize(n, buffers->proj(num, i));
+            auto runs               = DefVec(si->projs(r));
+            runs[r - 1]             = w.call(core::nat::div, Defs{runs[r - 1], n});
+            auto run                = DefVec(physical->projs(r));
+            auto physical_last      = w.call<core::idx2nat>(physical->proj(r, r - 1));
+            run[r - 1]  = w.call<core::idx>(w.lit_nat_0(), runs[r - 1], w.call(core::nat::div, Defs{physical_last, n}));
+            auto loaded = buffer::op_read(placed, vectors, *Shape(w.tuple(run)).fold(w.tuple(runs)));
+            m           = loaded->proj(2, 0);
+            values[i]   = w.extract(loaded->proj(2, 1), w.call<core::idx>(w.lit_nat_0(), n, lane));
         }
         fun->app(true, ret, {m, w.tuple(values)});
         return fun;

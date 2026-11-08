@@ -1,0 +1,13 @@
+// 1024³ SGEMM through the default gpu pipeline: one thread per output, serial k.
+plugin tensor;
+plugin core;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let Ring = (F32, 0:F32, math.arith.add fast, math.arith.mul fast);
+
+extern fun gemm1024 (a b: tensor.Tensor 2 (1024, 1024) F32): tensor.Tensor 2 (1024, 1024) F32 =
+    return (product_2d Ring (a, b));

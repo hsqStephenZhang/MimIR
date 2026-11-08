@@ -236,6 +236,42 @@ anx lam synced_scope (m1: GlobalM, m3: SharedM,
     let (m1, m3) = sync_work_items (m1, m3);
     (m1, m3);
 ///
+/// ### Loop Binding
+///
+/// #### bind
+///
+/// Identity annotation on the body of an `affine.For`.
+/// `gpu.outline` runs a `group`-bound loop one iteration per work-group, an `item`-bound loop one iteration per work-item,
+/// and spreads a `cooperative` loop's iterations over the work-items of a work-group with a barrier before and after.
+/// A `staged` loop is cooperative with a barrier before only, and a `chained` one with no barrier at all: a later `fence` publishes their writes.
+///
+axm bind.(group, item, cooperative, staged, chained): {T: *} → T → T;
+///
+/// #### fence
+///
+/// Makes every work-item's writes before it visible after it; `gpu.outline` turns it into a `sync_work_items`.
+///
+axm fence: mem.M 0 → mem.M 0;
+///
+/// #### slot_shared
+///
+/// A statically sized shared-memory slot of the work-group, handed out as a generic pointer.
+///
+axm slot_shared: [T: *] → mem.M 0 → [mem.M 0, mem.Ptr (T, 0)];
+///
+/// #### shared_scope
+///
+/// Marks the allocation on this memory as shared by the work-group; `gpu.outline` turns it into a `slot_shared`.
+///
+axm shared_scope: mem.M 0 → mem.M 0;
+///
+/// #### generic_mem / global_mem
+///
+/// Convert between global memory and the generic `mem.M 0` an outlined kernel body threads; both erase to nothing.
+///
+axm generic_mem: GlobalM → mem.M 0;
+axm global_mem: mem.M 0 → GlobalM;
+///
 /// ## Phases
 ///
 /// ### check_addr_spaces_repl
@@ -278,6 +314,13 @@ axm split_apply: compile.Phase;
 /// explicit `init`.
 ///
 axm lower_btensor_map_reduce: compile.Phase;
+///
+/// ### outline
+///
+/// Outlines each `affine.For` whose body is `gpu.bind.group` into a `gpu.launch`: one work-group per iteration and one work-item per iteration of the enclosed `gpu.bind.item` loop.
+/// Captured host pointers are copied to the device before the launch and back afterwards.
+///
+axm outline: compile.Phase;
 ///
 /// ### Pipelines
 ///

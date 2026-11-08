@@ -47,9 +47,15 @@ bool AddMem::analyze() {
             queue.push(d);
     }
 
+    // Once the ABIs are converted, a lam that already threads memory, such as a kernel, is no callback: its effects
+    // resolve like a host function's, and so do those of everything it encloses.
+    auto resolving = annex() == Annex::base<mem::resolve_fresh>();
     while (!pinned.empty()) {
         auto def = pinned.pop();
-        if (auto lam = def->isa_mut<Lam>()) preserved_.emplace(lam);
+        if (auto lam = def->isa_mut<Lam>()) {
+            if (resolving && has_leading_mem(lam->type())) continue;
+            preserved_.emplace(lam);
+        }
         for (auto d : def->deps())
             pinned.push(d);
     }
@@ -65,7 +71,7 @@ const Def* AddMem::rewrite(const Def* old_def) {
                 auto preserve = fe::Restore(preserving_, false);
                 return rewrite(old_def);
             }
-    if (curr_mem_ && !preserving_ && fresh_parameters_.contains(old_def)) return curr_mem_;
+    if (curr_mem_ && !preserving_ && fresh_parameters_.contains(old_def) && same_space(old_def)) return curr_mem_;
     // Type rewriting is MODE-DEPENDENT: outside a pinned ABI every continuation pi gains a leading
     // mem, inside one it must not - but the rewrite memo is shared. Whichever mode first touches a
     // shared type (e.g. a plain 'Cn F32' return pi) would poison the other, hash-order-dependently.
@@ -87,8 +93,16 @@ const Def* AddMem::rewrite(const Def* old_def) {
     auto new_def = Rewriter::rewrite(old_def);
     // Rewrite every memory operand to the current memory - after threading the operand's producers, which
     // advances curr_mem_ along the way. Placeholders (`⊥`/`⊤ : mem.M 0`) are thereby spliced into the chain.
-    if (curr_mem_ && !preserving_ && !old_def->isa_mut() && old_def->type() && isa_mem(old_def)) return curr_mem_;
+    if (curr_mem_ && !preserving_ && !old_def->isa_mut() && old_def->type() && isa_mem(old_def) && same_space(old_def))
+        return curr_mem_;
     return new_def;
+}
+
+/// Only the chain of the current memory's address space is threaded; a kernel also carries the others' tokens.
+bool AddMem::same_space(const Def* old_mem) const {
+    auto old_as = Axm::isa<mem::M>(old_mem->type())->arg();
+    auto cur_as = Axm::isa<mem::M>(curr_mem_->type())->arg();
+    return Lit::isa(old_as) == Lit::isa(cur_as);
 }
 
 const Def* AddMem::rewrite_imm_Pi(const Pi* pi) {
@@ -170,7 +184,9 @@ const Def* AddMem::rewrite_imm_App(const App* app) {
 
     // Resolving at operand uses keeps independent allocations on the advancing memory chain.
     if (Axm::isa<mem::fresh>(app)) {
-        auto [_, k] = app->args<2>();
+        auto [space, k] = app->args<2>();
+        if (Lit::isa(space) != Lit::isa(Axm::isa<mem::M>(curr_mem_->type())->arg()))
+            app->blame("mem.fresh of address space {} inside a chain of {}", space, curr_mem_->type()).bail();
         if (auto lam = k->isa<Lam>(); lam && lam->is_set() && lam->filter() == old_world().lit_tt()) {
             if (auto var = lam->has_var()) fresh_parameters_.insert(var);
             auto body = rewrite(lam->body());
@@ -227,7 +243,7 @@ const Def* AddMem::rewrite_imm_Tuple(const Tuple* tuple) {
 }
 
 void AddMem::advance_mem(const Def* def) {
-    if (auto m = mem_def(def)) curr_mem_ = m;
+    if (auto m = mem_def(def); m && (!curr_mem_ || same_space(m))) curr_mem_ = m;
 }
 
 } // namespace mim::plug::mem::phase

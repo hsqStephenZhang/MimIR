@@ -1,5 +1,6 @@
 #include "mim/plug/ll/ll.h"
 
+#include <numeric>
 #include <ranges>
 #include <string>
 
@@ -561,6 +562,23 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
     return prev;
 }
 
+// A `mem.align` claim on @p ptr, carried through `mem.lea` by the element size.
+std::optional<nat_t> Emitter::claimed_alignment(const Def* ptr) {
+    if (auto align = Axm::isa<mem::align>(ptr)) return Lit::isa(align->arg(2, 1));
+    if (auto lea = Axm::isa<mem::lea>(ptr))
+        if (auto base = claimed_alignment(lea->arg(2, 0)))
+            if (auto size = Lit::isa(core::op(core::trait::size, mem::pointee(ptr))); size && *size)
+                return std::gcd(*base, *size);
+    return {};
+}
+
+// The `align` of an access through @p ptr: a claim, else byte alignment for the vectors LLVM would otherwise
+// require to be naturally aligned.
+std::string Emitter::alignment(const Def* ptr, const Def* pointee) {
+    if (auto n = claimed_alignment(ptr)) return std::format(", align {}", *n);
+    return use_simd() && has_f32_vector(pointee) ? ", align 1" : "";
+}
+
 std::string Emitter::repack(BB& bb, const std::string& name, const Def* type, const std::string& v, bool simd) {
     if (!has_vec(type)) return v;
 
@@ -600,6 +618,21 @@ std::pair<std::string, std::string> Emitter::emit_gep_index(BB& bb, const std::s
     }
 
     return std::pair(v_i, t_i);
+}
+
+// A tuple index into a nested array is one GEP index per component.
+std::string Emitter::emit_gep_indices(BB& bb, const std::string& name, const Def* index) {
+    auto n = index->type()->isa<Arr>() || index->type()->isa<Sigma>() ? Lit::isa(index->type()->arity()) : std::nullopt;
+    if (!n) {
+        auto [v_i, t_i] = emit_gep_index(bb, name, index);
+        return t_i + " " + v_i;
+    }
+    std::string result;
+    for (size_t i = 0; i != *n; ++i) {
+        auto [v_i, t_i] = emit_gep_index(bb, name + "." + std::to_string(i), index->proj(*n, i));
+        result += (i ? ", " : "") + t_i + " " + v_i;
+    }
+    return result;
 }
 
 std::string Emitter::emit_simd_index(BB& bb, const std::string& name, const Def* index) {
@@ -681,14 +714,14 @@ std::optional<std::string> Emitter::emit_builtin(BB& bb, const std::string& name
             return bb.assign(name, "extractvalue {} {}, {}", t_tup, v_tup, v_i);
         }
 
-        auto t_elem     = convert(extract->type());
-        auto [v_i, t_i] = emit_gep_index(bb, name, index);
+        auto t_elem  = convert(extract->type());
+        auto indices = emit_gep_indices(bb, name, index);
 
         std::print(lam2bb_[root()].body().emplace_front(),
                    "{}.alloca = alloca {} ; copy to alloca to emulate extract with store + gep + load", name, t_tup);
         std::print(bb.body().emplace_back(), "store {} {}, {}* {}.alloca", t_tup, v_tup, t_tup, name);
-        std::print(bb.body().emplace_back(), "{}.gep = getelementptr inbounds {}, {}* {}.alloca, i64 0, {} {}", name,
-                   t_tup, t_tup, name, t_i, v_i);
+        std::print(bb.body().emplace_back(), "{}.gep = getelementptr inbounds {}, {}* {}.alloca, i64 0, {}", name,
+                   t_tup, t_tup, name, indices);
         return bb.assign(name, "load {}, {}* {}.gep", t_elem, t_elem, name);
     } else if (auto insert = def->isa<Insert>()) {
         if (Axm::isa<mem::M>(insert->tuple()->proj(insert->tuple()->num_projs(), 0)->type()))
@@ -705,13 +738,12 @@ std::optional<std::string> Emitter::emit_builtin(BB& bb, const std::string& name
             return bb.assign(name, "insertvalue {} {}, {} {}, {}", t_tup, v_tup, t_val, v_val,
                              aggregate_index(insert->tuple()->type(), *idx));
 
-        auto t_elem     = convert(insert->value()->type());
-        auto [v_i, t_i] = emit_gep_index(bb, name, insert->index());
+        auto indices = emit_gep_indices(bb, name, insert->index());
         std::print(lam2bb_[root()].body().emplace_front(),
                    "{}.alloca = alloca {} ; copy to alloca to emulate insert with store + gep + load", name, t_tup);
         std::print(bb.body().emplace_back(), "store {} {}, {}* {}.alloca", t_tup, v_tup, t_tup, name);
-        std::print(bb.body().emplace_back(), "{}.gep = getelementptr inbounds {}, {}* {}.alloca, i64 0, {} {}", name,
-                   t_tup, t_tup, name, t_i, v_i);
+        std::print(bb.body().emplace_back(), "{}.gep = getelementptr inbounds {}, {}* {}.alloca, i64 0, {}", name,
+                   t_tup, t_tup, name, indices);
         std::print(bb.body().emplace_back(), "store {} {}, {}* {}.gep", t_val, v_val, t_val, name);
         return bb.assign(name, "load {}, {}* {}.alloca", t_tup, t_tup, name);
     }
@@ -889,7 +921,10 @@ std::optional<std::string> Emitter::emit_core(BB& bb, const std::string& name, c
 
         if (auto lit = Lit::isa(bitcast->arg()); lit && *lit == 0) return "zeroinitializer";
         // clang-format off
-        if (src_type_ptr && dst_type_ptr) return bb.assign(name,  "bitcast {} {} to {}", t_src, v_src, t_dst);
+        if (src_type_ptr && dst_type_ptr) {
+            auto same_space = Lit::as(src_type_ptr->arg(2, 1)) == Lit::as(dst_type_ptr->arg(2, 1));
+            return bb.assign(name, "{} {} {} to {}", same_space ? "bitcast" : "addrspacecast", t_src, v_src, t_dst);
+        }
         if (src_type_ptr)                 return bb.assign(name, "ptrtoint {} {} to {}", t_src, v_src, t_dst);
         if (dst_type_ptr)                 return bb.assign(name, "inttoptr {} {} to {}", t_src, v_src, t_dst);
         // clang-format on
@@ -931,6 +966,13 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
     } else if (auto assume = Axm::isa<mem::assume>(def)) {
         auto p = assume->arg(2, 0);
         return bb.assign(name, "bitcast {} {} to {}", convert(p->type()), emit(p), convert(def->type()));
+    } else if (auto align = Axm::isa<mem::align>(def)) {
+        auto [p, n] = align->args<2>();
+        auto v_p    = emit(p);
+        declare("void @llvm.assume(i1)");
+        std::print(bb.body().emplace_back(), "call void @llvm.assume(i1 true) [ \"align\"({} {}, i64 {}) ]",
+                   convert(p->type()), v_p, emit(n));
+        return v_p;
     } else if (auto malloc = Axm::isa<mem::malloc>(def)) {
         auto address_space = malloc->decurry()->arg(2, 1);
         declare("i8* @malloc(i64)");
@@ -991,8 +1033,7 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         auto pointee = mem::pointee(ptr);
         if (use_simd()) require_static_array_value(pointee);
         auto t_val = convert(pointee, false);
-        auto value = bb.assign(name, "load {}, {} {}{}", t_val, t_ptr, v_ptr,
-                               use_simd() && has_f32_vector(pointee) ? ", align 1" : "");
+        auto value = bb.assign(name, "load {}, {} {}{}", t_val, t_ptr, v_ptr, alignment(ptr, pointee));
         return repack(bb, name, pointee, value, true);
     } else if (auto store = Axm::isa<mem::store>(def)) {
         auto [mem, ptr, val] = store->args<3>();
@@ -1003,7 +1044,7 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         auto t_ptr = convert(ptr->type());
         auto t_val = convert(val->type(), false);
         std::print(bb.body().emplace_back(), "store {} {}, {} {}{}", t_val, v_val, t_ptr, v_ptr,
-                   use_simd() && has_f32_vector(val->type()) ? ", align 1" : "");
+                   alignment(ptr, val->type()));
         return std::string();
     } else if (auto q = Axm::isa<clos::alloc_jmpbuf>(def)) {
         // The size of a `jmp_buf` is platform/libc-dependent, so it is computed by a C runtime

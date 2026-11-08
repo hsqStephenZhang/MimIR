@@ -19,3 +19,5 @@ add_mim_plugin(tensor
         phase/tile_fuse.cpp
         phase/tile_group.cpp
 )
+# tensor.lower_to_mem annotates bound loops with gpu.bind, so it needs the gpu plugin's generated header.
+add_dependencies(mim_tensor mim_internal_gpu)

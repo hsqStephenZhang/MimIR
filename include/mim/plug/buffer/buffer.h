@@ -3,6 +3,8 @@
 #include <mim/axm.h>
 #include <mim/world.h>
 
+#include <mim/plug/core/core.h>
+
 #include "mim/plug/buffer/autogen.h"
 
 namespace mim::plug::buffer {
@@ -48,6 +50,15 @@ inline const Def* op_read(const Def* mem, const Def* buf, const Def* idx) {
 inline const Def* op_write(const Def* mem, const Def* buf, const Def* idx, const Def* val) {
     auto [r, s, T] = Axm::isa<Buf>(buf->type())->args<3>();
     return op_write(r, s, T, mem, buf, idx, val);
+}
+
+/// `buffer.vectorize (r, s, T) (n, c) buf` ↦ `buffer.Buf (r, c, «n; T»)` with `c` the shape of @p buf's runs of @p n.
+inline const Def* op_vectorize(const Def* n, const Def* buf) {
+    auto& w        = buf->world();
+    auto [r, s, T] = Axm::isa<Buf>(buf->type())->args<3>();
+    auto c         = DefVec(s->projs(s->num_projs()));
+    c.back()       = w.call(core::nat::div, Defs{c.back(), n});
+    return w.app(w.app(w.app(w.annex<vectorize>(), {r, s, T}), {n, w.tuple(c)}), buf);
 }
 
 /// op_copy with `(r, s, T)` read off the type of @p dst.

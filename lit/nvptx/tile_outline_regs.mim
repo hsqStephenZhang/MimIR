@@ -1,0 +1,17 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %FileCheck %s --check-prefix=VEC --input-file=%{s:stem}_dev.ll
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_outline_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// The kernel's shared panels are filled inside the work-item's reduction loop, which accumulates in registers.
+
+// CHECK: addrspace(3) global
+// CHECK: define ptx_kernel void @tileKernel
+// CHECK-COUNT-2: call void @llvm.nvvm.barrier0()
+// CHECK-NOT: call void @llvm.nvvm.barrier0()
+
+// A panel whose rows are 16-byte aligned is filled a vector per step; the backend gets the alignment claim.
+// VEC: call void @llvm.assume(i1 true) [ "align"(
+// VEC: load [4 x float], {{.*}}, align 16

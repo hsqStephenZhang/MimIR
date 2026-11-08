@@ -1,0 +1,37 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - -VVVV 2> %t.log | %FileCheck %s
+// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_outline_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A work-group level of 8×8 tiles over a work-item level of 2×2 tiles outlines into one kernel launch.
+// Without the gpu plugin the same request lowers to host loops.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+let levels = ((0, (8, 8, 0), 0, 0, 1), (0, (2, 2, 0), 0, 0, 2), (2, (1, 0, 0), 1, 0, 0));
+
+extern fun gemm16 (a b: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    let root = map_reduce ((16, 16), (16, 16, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+    return (tile_req (root, (), levels, default_control));
+
+// LOG-DAG: L2 vec vdim=0
+// LOG-DAG: L1 par tiles=‹2; 2› tail=cap inputs=2 fused=0 yielded=0 bind=2
+// LOG-DAG: L0 par tiles=‹2; 8› tail=cap inputs=2 fused=0 yielded=0 bind=1
+// LOG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items, 3 device buffers, 3 arguments
+
+// CHECK: gpu.launch
+// CHECK: tileKernel

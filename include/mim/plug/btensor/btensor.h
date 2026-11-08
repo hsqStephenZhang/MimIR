@@ -1,6 +1,8 @@
 #pragma once
 
+#include <functional>
 #include <optional>
+#include <ranges>
 
 #include <mim/lam.h>
 #include <mim/tuple.h>
@@ -200,11 +202,48 @@ inline const Def* concat_select(const Def* o_ax, const fe::Vector<u64>& exts, au
     return result;
 }
 
+/// One loop over the product of @p dims whose body @p annotate wraps, delinearized into per-dimension i64 counters.
+inline DefVec linear_loop(Lam*& cur,
+                          const Def*& exit,
+                          const Def*& acc,
+                          Defs dims,
+                          std::string_view name,
+                          std::function<const Def*(const Def*)> annotate,
+                          size_t inner = size_t(-1)) {
+    auto& w          = cur->world();
+    const Def* total = w.lit_nat_1();
+    for (auto dim : dims)
+        total = w.call(core::nat::mul, Defs{total, dim});
+    // Row-major, except that dim `inner` runs fastest.
+    auto order = std::vector<size_t>();
+    for (size_t d = 0; d != dims.size(); ++d)
+        if (d != inner) order.push_back(d);
+    if (inner < dims.size()) order.push_back(inner);
+    auto body = w.mut_con({w.type_i64(), acc->type(), w.cn(acc->type())})->set(w.sym(name));
+    auto loop = w.call<affine::For>(annotate(body), exit,
+                                    Defs{w.lit_i64(0), w.call<core::bitcast>(w.type_i64(), total), w.lit_i64(1), acc});
+    cur->set(true, loop);
+    auto [index, new_acc, yield] = body->vars<3>();
+    cur                          = body;
+    exit                         = yield;
+    acc                          = new_acc;
+    const Def* rest              = w.call<core::bitcast>(w.type_nat(), index);
+    auto iters                   = DefVec(dims.size());
+    for (auto d : order | std::views::reverse) {
+        auto tile = d == order.front() ? rest : w.call(core::nat::rem, Defs{rest, dims[d]});
+        rest      = w.call(core::nat::div, Defs{rest, dims[d]});
+        iters[d]  = w.call<core::bitcast>(w.type_i64(), tile);
+    }
+    return iters;
+}
+
 /// A `[mem, dst, ins] → [mem, Buf]` fun spliced via `cps.cps2ds_dep` that loops over @p s_out carrying
 /// `[mem, dst]` and writes `compute`'s element at the loop's (identity) output coordinates.
 /// `compute(iters, ins, mem)` receives the raw i64 loop counters, the fun's inputs var, and the current mem; it
 /// returns `{mem', elem}`.
 /// @p storage is `dst`'s shape when it bounds a smaller @p s_out.
+/// With @p annotate the fill is one linear loop whose body it wraps, running dim @p inner fastest.
+/// @p write `(mem, dst, iters, elem)` replaces the element write and returns the memory after it.
 inline const Def* build_pointwise(const Def* result_ty, // [mem.M 0, buffer.Buf (r, s_out, T)]
                                   const Def* mem,
                                   const Def* dst,
@@ -213,19 +252,25 @@ inline const Def* build_pointwise(const Def* result_ty, // [mem.M 0, buffer.Buf 
                                   u64 rn,
                                   const std::string& name,
                                   auto compute,
-                                  const Def* storage = nullptr) {
+                                  const Def* storage                             = nullptr,
+                                  std::function<const Def*(const Def*)> annotate = {},
+                                  size_t inner                                   = size_t(-1),
+                                  std::function<const Def*(const Def*, const Def*, Defs, const Def*)> write = {}) {
     auto& w                          = mem->world();
     auto [fun, call]                 = ds_splice(w.tuple({mem, dst, ins}), result_ty, name);
     auto [fun_mem, out_buf, fun_ins] = fun->var(2, 0)->projs<3>();
     const Def* cont                  = fun->var(2, 1);
     const Def* acc                   = w.tuple({fun_mem, out_buf});
     auto cur                         = fun;
-    auto iters                       = affine::counting_nest(cur, cont, acc, s_out->projs(rn), name);
+    auto iters                       = annotate ? linear_loop(cur, cont, acc, s_out->projs(rn), name, annotate, inner)
+                                                : affine::counting_nest(cur, cont, acc, s_out->projs(rn), name);
     auto [loop_mem, loop_buf]        = acc->projs<2>();
 
     std::pair<const Def*, const Def*> el = compute(iters, fun_ins, loop_mem);
     auto [el_mem, elem]                  = el;
-    auto wr_mem = buffer::op_write(el_mem, loop_buf, folded_idx(storage ? storage : s_out, iters), elem)->proj(2, 0);
+    auto wr_mem
+        = write ? write(el_mem, loop_buf, iters, elem)
+                : buffer::op_write(el_mem, loop_buf, folded_idx(storage ? storage : s_out, iters), elem)->proj(2, 0);
     cur->app(true, cont, w.tuple({wr_mem, loop_buf}));
     return call;
 }

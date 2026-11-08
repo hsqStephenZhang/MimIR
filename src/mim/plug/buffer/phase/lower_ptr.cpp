@@ -3,6 +3,7 @@
 #include <mim/axm.h>
 #include <mim/def.h>
 
+#include <mim/plug/core/core.h>
 #include <mim/plug/gpu/gpu.h>
 #include <mim/plug/mem/mem.h>
 
@@ -33,6 +34,13 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         auto element_ptr     = mem::op_lea_tuple(buf, idx);
         auto [mem2, val]     = w.call<mem::load>(Defs{mem, element_ptr})->projs<2>();
         return w.tuple({mem2, val});
+    } else if (auto vectorize_ax = Axm::isa<buffer::vectorize>(app)) {
+        auto [n, c]    = vectorize_ax->callee()->as<App>()->args<2>([this](const Def* d) { return rewrite(d); });
+        auto [r, s, T] = vectorize_ax->callee()->as<App>()->callee()->as<App>()->args<3>();
+        T              = rewrite(T);
+        auto vectors   = w.call<mem::Ptr>(Defs{w.arr(c, w.arr(n, T)), w.lit_nat_0()});
+        auto bytes     = w.call(core::nat::mul, Defs{n, core::op(core::trait::size, T)});
+        return w.call<mem::align>(Defs{w.call<core::bitcast>(vectors, rewrite(vectorize_ax->arg())), bytes});
     } else if (auto write_ax = Axm::isa<buffer::write>(app)) {
         auto [mem, buf, idx, val] = write_ax->args<4>();
         mem                       = rewrite(mem);

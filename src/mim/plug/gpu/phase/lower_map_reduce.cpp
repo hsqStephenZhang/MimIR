@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include <fe/log.h>
+#include <fe/restore.h>
 #include <fe/vector.h>
 
 #include <mim/driver.h>
@@ -310,7 +311,13 @@ void LowerMapReduce::start() {
 }
 
 const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
-    if (Axm::isa<btensor::map_reduce_post>(app)) return lower_map_reduce_post(app);
+    if (Axm::isa<btensor::map_reduce_post>(app) && !in_kernel_) return lower_map_reduce_post(app);
+    // A loop bound to work-groups becomes a kernel of its own; `gpu.outline` lowers its map-reduces as plain loops.
+    if (auto loop = Axm::isa<affine::For>(app))
+        if (auto bound = Axm::isa<gpu::bind>(loop->uncurry_args<3>()[0]); bound && bound.id() == gpu::bind::group) {
+            auto inside = fe::Restore(in_kernel_, true);
+            return Super::rewrite_imm_App(app);
+        }
     return Super::rewrite_imm_App(app);
 }
 

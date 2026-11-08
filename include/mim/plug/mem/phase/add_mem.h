@@ -46,6 +46,8 @@ private:
     void advance_mem(const Def* def);
 
     /// The current memory token in the continuation being rewritten (new world), or `nullptr` outside any mem context.
+    bool same_space(const Def* old_mem) const;
+
     const Def* curr_mem_ = nullptr;
     /// `true` while rewriting a pinned-ABI subtree: callback-local memory effects remain deferred.
     bool preserving_ = false;

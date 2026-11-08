@@ -47,8 +47,13 @@ const Def* LowerFor::rewrite_imm_App(const App* app) {
         auto new_phis     = new_head_lam->vars();
         auto new_iter     = new_phis.front();
         auto new_acc      = new_world().tuple(new_phis.view().subspan(1));
-        new_mem           = mem::mem_var(new_head_lam);
-        auto new_bb_dom   = new_mem ? new_mem->type() : new_world().sigma();
+        auto acc_phis     = new_phis.view().subspan(1);
+        auto mem_phis     = DefVec();
+        for (auto phi : acc_phis)
+            if (Axm::isa<mem::M>(phi->type())) mem_phis.emplace_back(phi);
+        new_mem         = mem_phis.empty() ? nullptr : mem_phis.front();
+        auto new_bb_dom = new_world().sigma(DefVec(mem_phis.size(), [&](size_t i) { return mem_phis[i]->type(); }));
+        auto new_bb_mem = new_world().tuple(mem_phis);
 
         auto new_body  = new_world().mut_con(new_bb_dom)->set("new_body");
         auto new_exit  = new_world().mut_con(new_bb_dom)->set("new_exit");
@@ -58,17 +63,18 @@ const Def* LowerFor::rewrite_imm_App(const App* app) {
 
         if (vec_axm) new_cmp = new_world().app(new_world().app(rewrite(vec_axm), new_cmp->type()), new_cmp);
 
-        new_head_lam->branch(false, new_cmp, new_body, new_exit, new_mem);
+        new_head_lam->branch(false, new_cmp, new_body, new_exit, new_bb_mem);
         new_yield->app(false, new_head_lam, merge(true, new_inc, new_yield->var(), new_mem));
 
-        // `new_acc` references the head's phis, including the head's mem var.
-        // Each new bb receives its own mem, so re-thread the acc's mem through the bb's own mem var.
+        // `new_acc` references the head's phis, including its mem vars, one per address space.
+        // Each new bb receives its own mems, so re-thread the acc's mems through the bb's own mem vars.
         auto acc_for = [&](Lam* bb) -> const Def* {
-            if (!new_mem) return new_acc;
-            auto bb_mem = mem::mem_var(bb);
-            auto elems  = DefVec();
-            for (auto phi : new_phis.view().subspan(1))
-                elems.emplace_back(Axm::isa<mem::M>(phi->type()) ? bb_mem : phi);
+            if (mem_phis.empty()) return new_acc;
+            auto bb_mems = bb->var()->projs(mem_phis.size());
+            auto elems   = DefVec();
+            size_t next  = 0;
+            for (auto phi : acc_phis)
+                elems.emplace_back(Axm::isa<mem::M>(phi->type()) ? bb_mems[next++] : phi);
             return new_world().tuple(elems);
         };
 

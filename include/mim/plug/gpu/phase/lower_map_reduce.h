@@ -16,6 +16,8 @@ private:
     const Def* rewrite_imm_App(const App*) final;
 
     const Def* lower_map_reduce_post(const App*);
+
+    bool in_kernel_ = false;
 };
 
 } // namespace mim::plug::gpu::phase

@@ -1,0 +1,15 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/softmax16_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// The work-group's four rows of `x` live in a shared array next to the pair partials; one kernel, no device heap.
+
+// CHECK-DAG: addrspace(3) global [4 x [16 x float]]
+// CHECK-DAG: addrspace(3) global [16 x [2 x float]]
+// CHECK: define ptx_kernel void @tileKernel
+// CHECK-NOT: define ptx_kernel
+// CHECK-NOT: call i8* @malloc
+// CHECK: call void @llvm.nvvm.barrier0()
+// CHECK-NOT: call i8* @malloc

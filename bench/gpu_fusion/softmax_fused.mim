@@ -1,0 +1,22 @@
+// Row softmax over (12, 1024, 1024) as one kernel: a tile per 8 rows with the two row reductions as members, which
+// the work-items of the item level split and merge in shared memory; exp(x - max) is recomputed by both consumers.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+let levels = ((0, (1, 8, 0), 1, 0, 1), (0, (1, 8, 4), 1, 0, 2));
+
+lam shifted_exp (a b: F32): F32 = math.exp.exp fast (math.arith.sub fast (a, b));
+
+extern fun softmax_rows (x: tensor.Tensor 3 (12, 1024, 1024) F32): tensor.Tensor 3 (12, 1024, 1024) F32 =
+    let x  = buf x;
+    let mx = reduce (math.extrema.fmax fast, math.neg_inf math.f32) 2₃ x;
+    let s  = reduce (math.arith.add fast, 0.0:F32) 2₃ (binary_ax shifted_exp 2₃ (x, mx));
+    let y  = binary_ax (math.arith.div fast) 2₃ (binary_ax shifted_exp 2₃ (x, mx), s);
+    return (tile_req (y, (mx, s), levels, default_control));

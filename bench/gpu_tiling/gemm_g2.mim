@@ -1,0 +1,117 @@
+// G2: a 64×64 block per work-group, k in blocks of 16 staged into shared memory by all threads,
+// a 4×4 register tile per thread.
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+plugin affine;
+
+use core.ops.u.w;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let Mat  = «1024, 1024; F32»;
+let Tile = «16, 64; F32»;
+let Acc  = «16; F32»;
+
+lam fmul (x y: F32): F32 = math.arith.mul fast (x, y);
+lam fadd (x y: F32): F32 = math.arith.add fast (x, y);
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            group_id item_id: Idx 256, (), (a b c: gpu.GlobalPtr Mat),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    ret (m3, smem_a) = mem.slot (Tile, 3) $ m3;
+    ret (m3, smem_b) = mem.slot (Tile, 3) $ m3;
+    let bm    = core.conv.u 1024 (core.shr.l (group_id, 4₂₅₆));
+    let bn    = core.conv.u 1024 (core.bit2.and 0 (group_id, 15₂₅₆));
+    let tm    = core.conv.u 64 (core.shr.l (item_id, 4₂₅₆)) * 4₆₄;
+    let tn    = core.conv.u 64 (core.bit2.and 0 (item_id, 15₂₅₆)) * 4₆₄;
+    let row0b = bm * 64₁₀₂₄;
+    let col0b = bn * 64₁₀₂₄;
+    let row0  = row0b + core.conv.u 1024 tm;
+    let col0  = col0b + core.conv.u 1024 tn;
+    // Cooperative copy coordinates: thread t loads 4 consecutive k of one A row and 4 consecutive columns of one B row.
+    let arow  = core.conv.u 64 (core.shr.l (item_id, 2₂₅₆));
+    let ak    = core.conv.u 16 (core.bit2.and 0 (item_id, 3₂₅₆)) * 4₁₆;
+    let bk    = core.conv.u 16 (core.shr.l (item_id, 4₂₅₆));
+    let bcol  = core.conv.u 64 (core.bit2.and 0 (item_id, 15₂₅₆)) * 4₆₄;
+    let ga    = mem.lea (a, row0b + core.conv.u 1024 arow);
+    affine.For block block_exit (0I64, 64I64, 1I64, (m1, m3, ‹16; 0.0:F32›))
+    where
+        con block (kb: I64, acc: [gpu.GlobalM, gpu.SharedM, Acc], continue: Cn [[gpu.GlobalM, gpu.SharedM, Acc]]) =
+            let (m1, m3, cc) = acc;
+            let k0        = core.conv.u 1024 kb * 16₁₀₂₄;
+            let gak       = k0 + core.conv.u 1024 ak;
+            let (m1, a0)  = mem.load (m1, mem.lea (ga, gak));
+            let (m1, a1)  = mem.load (m1, mem.lea (ga, gak + 1₁₀₂₄));
+            let (m1, a2)  = mem.load (m1, mem.lea (ga, gak + 2₁₀₂₄));
+            let (m1, a3)  = mem.load (m1, mem.lea (ga, gak + 3₁₀₂₄));
+            let gb        = mem.lea (b, k0 + core.conv.u 1024 bk);
+            let gbc       = col0b + core.conv.u 1024 bcol;
+            let (m1, b0)  = mem.load (m1, mem.lea (gb, gbc));
+            let (m1, b1)  = mem.load (m1, mem.lea (gb, gbc + 1₁₀₂₄));
+            let (m1, b2)  = mem.load (m1, mem.lea (gb, gbc + 2₁₀₂₄));
+            let (m1, b3)  = mem.load (m1, mem.lea (gb, gbc + 3₁₀₂₄));
+            let m3        = mem.store (m3, mem.lea (mem.lea (smem_a, ak), arow), a0);
+            let m3        = mem.store (m3, mem.lea (mem.lea (smem_a, ak + 1₁₆), arow), a1);
+            let m3        = mem.store (m3, mem.lea (mem.lea (smem_a, ak + 2₁₆), arow), a2);
+            let m3        = mem.store (m3, mem.lea (mem.lea (smem_a, ak + 3₁₆), arow), a3);
+            let sb        = mem.lea (smem_b, bk);
+            let m3        = mem.store (m3, mem.lea (sb, bcol), b0);
+            let m3        = mem.store (m3, mem.lea (sb, bcol + 1₆₄), b1);
+            let m3        = mem.store (m3, mem.lea (sb, bcol + 2₆₄), b2);
+            let m3        = mem.store (m3, mem.lea (sb, bcol + 3₆₄), b3);
+            let (m1, m3)  = gpu.sync_work_items (m1, m3);
+            affine.For inner inner_exit (0I64, 16I64, 1I64, (m3, cc))
+            where
+                con inner (kk: I64, acc: [gpu.SharedM, Acc], continue: Cn [[gpu.SharedM, Acc]]) =
+                    let (m3, cc) = acc;
+                    let k        = core.conv.u 16 kk;
+                    let sa       = mem.lea (smem_a, k);
+                    let (m3, a0) = mem.load (m3, mem.lea (sa, tm));
+                    let (m3, a1) = mem.load (m3, mem.lea (sa, tm + 1₆₄));
+                    let (m3, a2) = mem.load (m3, mem.lea (sa, tm + 2₆₄));
+                    let (m3, a3) = mem.load (m3, mem.lea (sa, tm + 3₆₄));
+                    let sb       = mem.lea (smem_b, k);
+                    let (m3, b0) = mem.load (m3, mem.lea (sb, tn));
+                    let (m3, b1) = mem.load (m3, mem.lea (sb, tn + 1₆₄));
+                    let (m3, b2) = mem.load (m3, mem.lea (sb, tn + 2₆₄));
+                    let (m3, b3) = mem.load (m3, mem.lea (sb, tn + 3₆₄));
+                    let av       = (a0, a1, a2, a3);
+                    let bv       = (b0, b1, b2, b3);
+                    continue (m3, ‹t: 16; fadd (cc#t, fmul (av#(core.conv.u 4 (core.shr.l (t, 2₁₆))), bv#(core.conv.u 4 (core.bit2.and 0 (t, 3₁₆)))))›);
+                con inner_exit (acc: [gpu.SharedM, Acc]) =
+                    let (m3, cc) = acc;
+                    let (m1, m3) = gpu.sync_work_items (m1, m3);
+                    continue (m1, m3, cc);
+            end;
+        con block_exit (acc: [gpu.GlobalM, gpu.SharedM, Acc]) =
+            let (m1, m3, cc) = acc;
+            affine.For store_row store_exit (0I64, 4I64, 1I64, m1)
+            where
+                con store_row (i: I64, m1: gpu.GlobalM, continue: Cn gpu.GlobalM) =
+                    let t0   = core.conv.u 16 i * 4₁₆;
+                    let crow = mem.lea (c, row0 + core.conv.u 1024 i);
+                    let m1   = mem.store (m1, mem.lea (crow, col0), cc#t0);
+                    let m1   = mem.store (m1, mem.lea (crow, col0 + 1₁₀₂₄), cc#(t0 + 1₁₆));
+                    let m1   = mem.store (m1, mem.lea (crow, col0 + 2₁₀₂₄), cc#(t0 + 2₁₆));
+                    let m1   = mem.store (m1, mem.lea (crow, col0 + 3₁₀₂₄), cc#(t0 + 3₁₆));
+                    continue m1;
+                con store_exit (m1: gpu.GlobalM) = return (m1, m3, m4, m5);
+            end;
+    end;
+
+extern fun gemm_g2 (m0: mem.M 0, a b c: mem.Ptr0 Mat): [mem.M 0, I32] =
+    let (m0, m1, m4) = gpu.init m0;
+    let (m1, da)     = mem.alloc (Mat, 1) m1;
+    let (m1, db)     = mem.alloc (Mat, 1) m1;
+    let (m1, dc)     = mem.alloc (Mat, 1) m1;
+    let (m0, m1)     = gpu.copy_to_device.block (m0, m1, a, da);
+    let (m0, m1)     = gpu.copy_to_device.block (m0, m1, b, db);
+    ret (m0, m1, m4) = gpu.launch (256, 256, gpu.default_stream, ff, ()) kernel (da, db, dc) $ (m0, m1, m4);
+    let (m0, m1)     = gpu.copy_to_host.block (m0, m1, dc, c);
+    let m1           = mem.free (m1, da);
+    let m1           = mem.free (m1, db);
+    let m1           = mem.free (m1, dc);
+    let m0           = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);

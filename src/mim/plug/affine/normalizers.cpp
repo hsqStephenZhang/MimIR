@@ -387,20 +387,31 @@ private:
     }
 
     std::optional<Lin> lin_add(const std::optional<Lin>& a, const std::optional<Lin>& b) {
-        if (!a || !b || (a->sym && b->sym)) return {};
+        if (!a || !b) return {};
         auto l = *a;
         for (u64 i = 0; i != n_; ++i)
             l.c[i] = check(i64(l.c[i]) + i64(b->c[i]));
-        l.sym = a->sym ? a->sym : b->sym;
+        // Two symbolic constants, such as the offsets of nested tiles, sum to one.
+        l.sym = a->sym && b->sym ? w_.call(core::nat::add, Defs{a->sym, b->sym}) : a->sym ? a->sym : b->sym;
         l.k   = check(i64(l.k) + i64(b->k));
         return l;
     }
 
     /// Only a constant is subtracted, so the coefficients stay non-negative.
+    /// A symbolic constant cancels against itself or against one summand of a symbolic sum.
     std::optional<Lin> lin_sub(const std::optional<Lin>& a, const std::optional<Lin>& b) {
-        if (!a || !b || !b->constant() || (b->sym && b->sym != a->sym)) return {};
+        if (!a || !b || !b->constant()) return {};
         auto l = *a;
-        if (b->sym) l.sym = nullptr;
+        if (b->sym) {
+            if (b->sym == a->sym) {
+                l.sym = nullptr;
+            } else if (auto sum = a->sym ? Axm::isa<core::nat>(a->sym) : Axm::IsA<core::nat, App>();
+                       sum && sum.id() == core::nat::add && (sum->arg(2, 0) == b->sym || sum->arg(2, 1) == b->sym)) {
+                l.sym = sum->arg(2, 0) == b->sym ? sum->arg(2, 1) : sum->arg(2, 0);
+            } else {
+                return {};
+            }
+        }
         l.k = check(i64(l.k) + i64(int64_t(-1)) * i64(b->k));
         return l;
     }

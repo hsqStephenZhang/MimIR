@@ -139,6 +139,23 @@ anx let SchedT = [N: *] → (Sched → N) → N;
 /// The canonical chooser: it hands the builder `s` itself.
 anx lam mk_sched (s: Sched) (N: *) (mk: Sched → N): N = mk s;
 
+/// ### vectorize
+///
+/// An input map whose reads go `n` elements at a time: `f` maps to the input's logical coordinates of shape `s`,
+/// whose last axis `n` divides; the run holding the coordinate starts `lane = last % n` before it, `layout` places
+/// that start in the buffer, and the lane is taken from the `buffer.vectorize n` view read there.
+///
+axm vectorize: {m r: Nat}
+             → [n: Nat, s: «r; Nat», layout: «r; affine.Index» → «r; affine.Index», f: «m; affine.Index» → «r; affine.Index»]
+             → «m; affine.Index» → «r; affine.Index»;
+///
+/// ### register_budget
+///
+/// How many output cells a leaf keeps in SSA registers: `-X btensor:registers=<n>` (default 64).
+/// A GPU work-item holds its whole tile this way, so the GPU pipeline raises it.
+///
+axm register_budget: [] → Nat, normalize_register_budget;
+///
 axm clip_sched: {ro rn: Nat}
     → [valid: «ro; Nat», output_cap: «ro; Nat», loop_cap: «rn; Nat», sched: SchedT] → SchedT, 2;
 
@@ -473,7 +490,7 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
             (range_nest (r, Sr) U (novec_for @U, 0, pd_c) at_block) (‹r; 0I32›, m, u, done_panel);
 
         let register_ok = core.bit2.and 2 (block_ok,
-            Sr#(core.idx 0 r pd_c) * Sr#(core.idx 0 r sd_c) <= 64);
+            Sr#(core.idx 0 r pd_c) * Sr#(core.idx 0 r sd_c) <= register_budget ());
         let Sp = (1, Sr#(core.idx 0 r pd_c))#register_ok;
         let Sv = (1, Sr#(core.idx 0 r sd_c))#register_ok;
         let Regs = «Sp * Sv; To»;

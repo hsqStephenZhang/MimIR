@@ -253,9 +253,10 @@ protected:
     /// The generic backend allocates on the stack; targets may override (e.g. a global in a specific address space).
     /// Kept inline on purpose so `Emitter` retains no vtable key function (else its vtable would live in a single
     /// module and break derived backends loaded from a separate plugin).
+    /// Slots are 16-byte aligned like heap allocations, so vector accesses through `mem.align` hold for both.
     virtual std::string emit_slot(BB& bb, const App* app, const Def* pointee, const Def* /*addr_space*/) {
         auto v_ptr = "%" + app->unique_name() + ".slot";
-        std::print(bb.body().emplace_back(), "{} = alloca {}", v_ptr, convert(pointee, false));
+        std::print(bb.body().emplace_back(), "{} = alloca {}, align 16", v_ptr, convert(pointee, false));
         return v_ptr;
     }
 
@@ -298,6 +299,7 @@ private:
     MIM_NOINLINE std::string emit_lit(const Def*);
     MIM_NOINLINE std::string emit_tuple(BB&, const std::string& name, const Def* tuple);
     MIM_NOINLINE std::pair<std::string, std::string> emit_gep_index(BB&, const std::string& name, const Def* index);
+    MIM_NOINLINE std::string emit_gep_indices(BB&, const std::string& name, const Def* index);
     MIM_NOINLINE std::optional<std::string> emit_builtin(BB&, const std::string& name, const Def*);
     MIM_NOINLINE std::optional<std::string> emit_core(BB&, const std::string& name, const Def*);
     MIM_NOINLINE std::optional<std::string> emit_mem(BB&, const std::string& name, const Def*);
@@ -306,6 +308,8 @@ private:
 
     /// An `extractelement`/`insertelement` lane index; LLVM wants a plain `i32`, not the `Idx` carrier.
     std::string emit_simd_index(BB&, const std::string& name, const Def* index);
+    std::optional<nat_t> claimed_alignment(const Def* ptr);
+    std::string alignment(const Def* ptr, const Def* pointee);
     /// Converts the value @p v of @p type into its value (@p simd) or memory (`!simd`) representation.
     std::string repack(BB&, const std::string& name, const Def* type, const std::string& v, bool simd);
     const Def* find_common_simd_src(const App*) const;

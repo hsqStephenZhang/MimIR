@@ -1,0 +1,41 @@
+// Online row softmax over (12, 1024, 1024) as one kernel: the (max, sum) fold is a member of the normalizing tile,
+// so the work-items of the item level split it and merge the partials in shared memory before normalizing.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let ML   = [F32, F32];
+
+fun step (acc: ML, xs: [F32])@tt: ML =
+    let (m, l) = acc;
+    let (x)    = xs;
+    let m2     = math.extrema.fmax fast (m, x);
+    return (m2, math.arith.add fast (math.arith.mul fast (l, math.exp.exp fast (math.arith.sub fast (m, m2))),
+                                     math.exp.exp fast (math.arith.sub fast (x, m2))));
+
+lam merge (a b: ML): ML =
+    let (m1, l1) = a;
+    let (m2, l2) = b;
+    let m        = math.extrema.fmax fast (m1, m2);
+    (m, math.arith.add fast (math.arith.mul fast (l1, math.exp.exp fast (math.arith.sub fast (m1, m))),
+                            math.arith.mul fast (l2, math.exp.exp fast (math.arith.sub fast (m2, m)))));
+
+fun normalize (_: F32, xv_ml: [F32, ML])@tt: F32 =
+    let (xv, ml) = xv_ml;
+    let (m, l)   = ml;
+    return (math.arith.div fast (math.exp.exp fast (math.arith.sub fast (xv, m)), l));
+
+let levels = ((0, (1, 8, 0), 1, 0, 1), (0, (1, 8, 4), 1, 0, 2));
+
+extern fun softmax_rows (x: tensor.Tensor 3 (12, 1024, 1024) F32): tensor.Tensor 3 (12, 1024, 1024) F32 =
+    let x  = buf x;
+    let ml = merge_with merge (map_reduce ((12, 1024), (12, 1024, 1024)) (step, (math.neg_inf math.f32, 0.0:F32))
+        (proj_map @(3, 2) (0, 1)) (proj_map @(3, 3) (0, 1, 2)) x);
+    let y = map_reduce ((12, 1024, 1024), (12, 1024, 1024)) (normalize, ⊥:F32) (affine.id @3)
+        (affine.id @3, proj_map @(3, 2) (0, 1)) (x, ml);
+    return (tile_req (y, ml, levels, default_control));

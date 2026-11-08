@@ -1,0 +1,41 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - -VVVV 2> %t.log | %FileCheck %s
+// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/softmax16_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Row softmax as one region: the two row reductions are members of the work-group tile, so TileFuse splits each
+// over the work-items of the item level that follows (R8) instead of recomputing it per item, the second fold
+// reads the first's shared tile, and the item level reads both.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+lam shifted_exp (a b: F32): F32 = math.exp.exp fast (math.arith.sub fast (a, b));
+
+let levels = ((0, (4, 0), 1, 0, 1), (0, (4, 4), 1, 0, 2));
+
+extern fun softmax16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    let x  = buf x;
+    let mx = reduce (math.extrema.fmax fast, math.neg_inf math.f32) 1₂ x;
+    let s  = reduce (math.arith.add fast, 0.0:F32) 1₂ (binary_ax shifted_exp 1₂ (x, mx));
+    let y  = binary_ax (math.arith.div fast) 1₂ (binary_ax shifted_exp 1₂ (x, mx), s);
+    return (tile_req (y, (mx, s), levels, default_control));
+
+// LOG: L1 red loop=1 ks=4 tail=peel inputs=1 fused=0 tail_fused=0 bind=2
+// LOG: read {{.*}} from the work-items' shared tile
+// LOG: L1 red loop=1 ks=4 tail=peel inputs=2 fused=0 tail_fused=0 bind=2
+// LOG: L1 par tiles=‹2; 4› tail=peel inputs=3 fused=0 yielded=0 bind=2
+// LOG: L0 par tiles=(4, 16) tail=peel inputs=1 fused=2 yielded=0 bind=1
+// LOG: gpu.outline tileGroups{{.*}}: 4 groups × 4 items
+
+// CHECK-DAG: gpu.launch
+// CHECK-DAG: gpu.slot_shared
+// CHECK-DAG: gpu.sync_work_items

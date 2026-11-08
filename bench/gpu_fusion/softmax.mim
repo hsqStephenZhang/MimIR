@@ -1,0 +1,6 @@
+// Row softmax over (12, 1024, 1024): the stable form is max → exp(x - max) → sum → divide.
+plugin tensor;
+plugin math;
+
+extern fun softmax_rows (x: tensor.Tensor 3 (12, 1024, 1024) math.F32): tensor.Tensor 3 (12, 1024, 1024) math.F32 =
+    return (tensor.softmax math.mode.fast @math.f32 @3 2₃ @(12, 1024, 1024) (tensor.buf x));
