@@ -20,7 +20,7 @@ fun mac (acc: I64, xy: [I64, I64])@tt: I64 =
     return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
 fun bias_add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (core.wrap.mul 0 (acc, 2I64), x));
 
-lam gemm {C K: *} (m k: Nat, transposed: Bool) (levels: C, control: K)
+lam gemm {K: *} (m k: Nat, transposed: Bool) (levels: TileLevels (3, I64), control: K)
     (a: tensor.Tensor 2 ((m, k), (k, m))#transposed I64, b: tensor.Tensor 2 (k, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (m, 6) I64 =
     let s    = ((m, k), (k, m))#transposed;
@@ -32,7 +32,7 @@ lam gemm {C K: *} (m k: Nat, transposed: Bool) (levels: C, control: K)
         ((r, b), bias);
     tile_req (root, r, levels, control);
 
-let four = ((0, (2, 0, 0), 1, 0), (1, (0, 0, 3), 1, 0), (0, (1, 4, 0), 1, 0), (2, (0, 1, 0), 1, 0));
+let four = serial_par ((2, 0, 0), 1, serial_red ((0, 0, 3), 1, 0, serial_par ((1, 4, 0), 1, serial_vec ((0, 1, 0), serial_done ()))));
 
 // Symbolic extents stay outermost in every buffer.
 // With a symbolic K outermost in a, the parallel level fuses a relu tile over all of K, as buffers take a runtime outer extent.
@@ -47,10 +47,10 @@ extern fun nested7 (a: tensor.Tensor 2 (5, 7) I64, b: tensor.Tensor 2 (7, 6) I64
     return (gemm (5, 7, ff) (four, default_control) (buf a, buf b, buf bias));
 extern fun capped (k: Nat, a: tensor.Tensor 2 (k, 5) I64, b: tensor.Tensor 2 (k, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (5, 6) I64 =
-    return (gemm (5, k, tt) (((0, (2, 0, 0), 1, 0), (1, (0, 0, 3), 0, 0)), default_control) (buf a, buf b, buf bias));
+    return (gemm (5, k, tt) (serial_par ((2, 0, 0), 1, serial_red ((0, 0, 3), 0, 0, serial_done ())), default_control) (buf a, buf b, buf bias));
 extern fun reduce_first (k: Nat, a: tensor.Tensor 2 (k, 5) I64, b: tensor.Tensor 2 (k, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (5, 6) I64 =
-    return (gemm (5, k, tt) (((1, (0, 0, 4), 1, 0), (0, (2, 2, 0), 1, 0)), default_control) (buf a, buf b, buf bias));
+    return (gemm (5, k, tt) (serial_red ((0, 0, 4), 1, 0, serial_par ((2, 2, 0), 1, serial_done ())), default_control) (buf a, buf b, buf bias));
 
 // Inner levels that keep an outer relu tile as a region input index it by its capped storage.
 lam outer (q: FuseQuery): FuseDecision = (core.bit2.and 0 (q#in_group, core.ncmp.e (q#level, 0)), ff);
@@ -62,7 +62,7 @@ extern fun outer7 (a: tensor.Tensor 2 (5, 7) I64, b: tensor.Tensor 2 (7, 6) I64,
     return (gemm (5, 7, ff) (four, outer) (buf a, buf b, buf bias));
 
 // Capped parallel levels run one body over the tail; a capped inner extent allocates its bound.
-let capfour = ((0, (2, 0, 0), 0, 0), (1, (0, 0, 3), 1, 0), (0, (1, 4, 0), 0, 0), (2, (0, 1, 0), 1, 0));
+let capfour = serial_par ((2, 0, 0), 0, serial_red ((0, 0, 3), 1, 0, serial_par ((1, 4, 0), 0, serial_vec ((0, 1, 0), serial_done ()))));
 extern fun cap_m (m: Nat, a: tensor.Tensor 2 (m, 7) I64, b: tensor.Tensor 2 (7, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (m, 6) I64 =
     return (gemm (m, 7, ff) (capfour, default_control) (buf a, buf b, buf bias));
@@ -71,31 +71,31 @@ extern fun cap7 (a: tensor.Tensor 2 (5, 7) I64, b: tensor.Tensor 2 (7, 6) I64, b
     return (gemm (5, 7, ff) (capfour, default_control) (buf a, buf b, buf bias));
 extern fun cap_k (k: Nat, a: tensor.Tensor 2 (k, 5) I64, b: tensor.Tensor 2 (k, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (5, 6) I64 =
-    return (gemm (5, k, tt) (((0, (2, 4, 0), 0, 0), (1, (0, 0, 3), 0, 0), (0, (1, 2, 0), 0, 0)), default_control)
+    return (gemm (5, k, tt) (serial_par ((2, 4, 0), 0, serial_red ((0, 0, 3), 0, 0, serial_par ((1, 2, 0), 0, serial_done ()))), default_control)
         (buf a, buf b, buf bias));
 extern fun cap_n7 (a: tensor.Tensor 2 (5, 7) I64, b: tensor.Tensor 2 (7, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (5, 6) I64 =
-    return (gemm (5, 7, ff) (((0, (2, 4, 0), 0, 0), (1, (0, 0, 3), 0, 0), (0, (1, 2, 0), 0, 0)), default_control)
+    return (gemm (5, 7, ff) (serial_par ((2, 4, 0), 0, serial_red ((0, 0, 3), 0, 0, serial_par ((1, 2, 0), 0, serial_done ()))), default_control)
         (buf a, buf b, buf bias));
 
 // A promoted reduction level stages each block of b into panels as wide as the inner level's column tile.
 extern fun promoted (a: tensor.Tensor 2 (5, 7) I64, b: tensor.Tensor 2 (7, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (5, 6) I64 =
-    return (gemm (5, 7, ff) (((0, (2, 0, 0), 1, 0), (1, (0, 0, 3), 1, 2), (0, (1, 4, 0), 1, 0), (2, (1, 0, 0), 1, 0)),
+    return (gemm (5, 7, ff) (serial_par ((2, 0, 0), 1, serial_red ((0, 0, 3), 1, 2, serial_par ((1, 4, 0), 1, serial_vec ((1, 0, 0), serial_done ())))),
         default_control) (buf a, buf b, buf bias));
 extern fun promoted_k (k: Nat, a: tensor.Tensor 2 (k, 5) I64, b: tensor.Tensor 2 (k, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (5, 6) I64 =
-    return (gemm (5, k, tt) (((0, (2, 4, 0), 1, 0), (1, (0, 0, 3), 0, 2), (0, (1, 2, 0), 1, 0)), default_control)
+    return (gemm (5, k, tt) (serial_par ((2, 4, 0), 1, serial_red ((0, 0, 3), 0, 2, serial_par ((1, 2, 0), 1, serial_done ()))), default_control)
         (buf a, buf b, buf bias));
 
 // An untiled symbolic m may be zero; the vector level splits the reduction of each full block by 3 and unrolls it.
 extern fun whole_m (m: Nat, a: tensor.Tensor 2 (m, 7) I64, b: tensor.Tensor 2 (7, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (m, 6) I64 =
-    return (gemm (m, 7, ff) (((0, (0, 4, 0), 1, 0), (1, (0, 0, 3), 1, 2), (0, (2, 2, 0), 1, 0), (2, (1, 0, 3), 1, 0)),
+    return (gemm (m, 7, ff) (serial_par ((0, 4, 0), 1, serial_red ((0, 0, 3), 1, 2, serial_par ((2, 2, 0), 1, serial_vec ((1, 0, 3), serial_done ())))),
         default_control) (buf a, buf b, buf bias));
 extern fun packed_ab (m: Nat, a: tensor.Tensor 2 (m, 7) I64, b: tensor.Tensor 2 (7, 6) I64, bias: tensor.Tensor 1 6 I64)
     : tensor.Tensor 2 (m, 6) I64 =
-    return (gemm (m, 7, ff) (((0, (0, 4, 0), 1, 0), (1, (0, 0, 3), 1, 3), (0, (2, 2, 0), 1, 0), (2, (1, 0, 3), 1, 0)),
+    return (gemm (m, 7, ff) (serial_par ((0, 4, 0), 1, serial_red ((0, 0, 3), 1, 3, serial_par ((2, 2, 0), 1, serial_vec ((1, 0, 3), serial_done ())))),
         default_control) (buf a, buf b, buf bias));
 
 // CHECK-DAG: L0 par tiles=(2, 6) tail=peel inputs=3 fused=1 yielded=0

@@ -27,8 +27,8 @@ lam chained (n: Nat) (x y: tensor.Tensor 2 (n, 4) I64) (control: FuseQuery → F
     let p1   = map_reduce ((n, 4), (n, 4)) (twice, 0I64) (affine.id @2) (affine.id @2,) x;
     let p2   = map_reduce ((n, 4), (n, 4)) (inc, 0I64) (affine.id @2) (affine.id @2,) p1;
     let root = map_reduce ((n, 4), (n, 4)) (add, 0I64) (affine.id @2) (affine.id @2, affine.id @2) (p2, y);
-    (λ (): tensor.Tensor 2 (n, 4) I64 = tile_req (root, (), ((0, (2, 0), 1, 0),), control),
-     λ (): tensor.Tensor 2 (n, 4) I64 = tile_req (root, (p1, p2), ((0, (2, 0), 1, 0),), control))#grouped ();
+    (λ (): tensor.Tensor 2 (n, 4) I64 = tile_req (root, (), serial_par ((2, 0), 1, serial_done ()), control),
+     λ (): tensor.Tensor 2 (n, 4) I64 = tile_req (root, (p1, p2), serial_par ((2, 0), 1, serial_done ()), control))#grouped ();
 
 extern fun chain (x y: tensor.Tensor 2 (6, 4) I64): tensor.Tensor 2 (6, 4) I64 =
     return (chained 6 (buf x, buf y) (default_control, tt));
@@ -43,7 +43,7 @@ lam shared_ (n: Nat) (x y: tensor.Tensor 2 (n, 4) I64): [tensor.Tensor 2 (n, 4) 
     let p1   = map_reduce ((n, 4), (n, 4)) (twice, 0I64) (affine.id @2) (affine.id @2,) x;
     let p2   = map_reduce ((n, 4), (n, 4)) (inc, 0I64) (affine.id @2) (affine.id @2,) p1;
     let root = map_reduce ((n, 4), (n, 4)) (add, 0I64) (affine.id @2) (affine.id @2, affine.id @2) (p2, y);
-    (tile_req (root, (p1, p2), ((0, (2, 0), 1, 0),), default_control), p1);
+    (tile_req (root, (p1, p2), serial_par ((2, 0), 1, serial_done ()), default_control), p1);
 
 extern fun shared (x y: tensor.Tensor 2 (6, 4) I64): [tensor.Tensor 2 (6, 4) I64, tensor.Tensor 2 (6, 4) I64] =
     return (shared_ 6 (buf x, buf y));
@@ -54,7 +54,7 @@ extern fun rows (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): 
     let r    = map_reduce ((5, 3), (5, 3)) (relu, 0I64) (affine.id @2) (affine.id @2,) (buf a);
     let root = map_reduce ((5, 4), (5, 4, 3)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (r, buf b);
-    return (tile_req (root, r, ((0, (2, 0, 0), 1, 0),), default_control));
+    return (tile_req (root, r, serial_par ((2, 0, 0), 1, serial_done ()), default_control));
 
 // CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) tail=peel inputs=2 fused=2 yielded=0
 // CHECK-DAG: tensor.tile_fuse {{.*}} L0 par tiles=(2, 4) tail=peel inputs=2 fused=0 yielded=0

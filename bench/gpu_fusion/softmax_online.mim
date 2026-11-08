@@ -30,8 +30,8 @@ fun normalize (_: F32, xv_ml: [F32, ML])@tt: F32 =
     let (m, l)   = ml;
     return (math.arith.div fast (math.exp.exp fast (math.arith.sub fast (xv, m)), l));
 
-let pass1 = ((0, (1, 8, 0), 1, 0, 1), (1, (0, 0, 4), 1, 0, 2, merge));
-let pass2 = ((0, (1, 8, 0), 1, 0, 1), (0, (1, 8, 4), 1, 0, 2));
+let pass1 = serial_group ((1, 8, 0), 1, 0, group_red_merge ((0, 0, 4), 1, merge, group_done ()));
+let pass2 = serial_group ((1, 8, 0), 1, 0, group_item ((1, 8, 4), 1, item_done ()));
 
 extern fun softmax_rows (x: tensor.Tensor 3 (12, 1024, 1024) F32): tensor.Tensor 3 (12, 1024, 1024) F32 =
     let x  = buf x;

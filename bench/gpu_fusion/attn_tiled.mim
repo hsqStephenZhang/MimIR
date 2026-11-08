@@ -36,8 +36,8 @@ fun normalize (_: F32, xv_ml: [F32, ML])@tt: F32 =
     let xv       = math.arith.mul fast (xv, 0.125:F32);
     return (math.arith.div fast (math.exp.exp fast (math.arith.sub fast (xv, m)), l));
 
-let gemm_levels = ((0, (1, 64, 64, 0), 1, 0, 1), (0, (1, 4, 4, 0), 1, 0, 2), (1, (0, 0, 0, 16), 1, 3, 0), (2, (1, 1, 0, 0), 1, 0, 0));
-let softmax_levels = ((0, (1, 4, 0), 1, 1, 1), (0, (1, 4, 4), 1, 0, 2));
+let gemm_levels = serial_group ((1, 64, 64, 0), 1, 0, group_item ((1, 4, 4, 0), 1, item_red ((0, 0, 0, 16), 1, 3, item_vec ((1, 1, 0, 0), item_done ()))));
+let softmax_levels = serial_group ((1, 4, 0), 1, 1, group_item ((1, 4, 4), 1, item_done ()));
 
 extern fun attn (q k v: tensor.Tensor 3 (12, 512, 64) F32): tensor.Tensor 3 (12, 512, 64) F32 =
     let (q, k, v) = (buf q, buf k, buf v);

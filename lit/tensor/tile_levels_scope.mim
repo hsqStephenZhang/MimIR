@@ -1,0 +1,19 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+
+// A work-item level needs a work-group around it: `group_item` builds a `GroupLevels` chain, which the rest of a
+// serial `serial_par` level does not accept, so the request is rejected by the type checker, not by TileFuse.
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
+
+extern fun bad (x: tensor.Tensor 2 (8, 4) I64): tensor.Tensor 2 (8, 4) I64 =
+    let root = map_reduce ((8, 4), (8, 4)) (twice, 0I64) (affine.id @2) (affine.id @2,) (buf x);
+    return (tile_req (root, (), serial_par ((2, 0), 1, group_item ((1, 2), 1, item_done ())), default_control));
+
+// CHECK: error: argument is not assignable to callee's domain
+// CHECK: 1 error(s) encountered

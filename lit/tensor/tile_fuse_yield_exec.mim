@@ -27,15 +27,15 @@ fun mac (acc: I64, xy: [I64, I64])@tt: I64 =
     return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
 fun bias_add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (core.wrap.mul 0 (acc, 2I64), x));
 
-lam shared_ {C: *} (n: Nat) (levels: C) (x y: tensor.Tensor 2 (n, 4) I64)
+lam shared_ (n: Nat) (levels: TileLevels (2, I64)) (x y: tensor.Tensor 2 (n, 4) I64)
     : [tensor.Tensor 2 (n, 4) I64, tensor.Tensor 2 (n, 4) I64] =
     let p1   = map_reduce ((n, 4), (n, 4)) (twice, 0I64) (affine.id @2) (affine.id @2,) x;
     let p2   = map_reduce ((n, 4), (n, 4)) (inc, 0I64) (affine.id @2) (affine.id @2,) p1;
     let root = map_reduce ((n, 4), (n, 4)) (add, 0I64) (affine.id @2) (affine.id @2, affine.id @2) (p2, y);
     (tile_req (root, (p1, p2), levels, default_control), p1);
 
-let two = ((0, (4, 0), 1, 0), (0, (1, 2), 1, 0));
-let twocap = ((0, (4, 0), 0, 0), (0, (1, 3), 0, 0));
+let two = serial_par ((4, 0), 1, serial_par ((1, 2), 1, serial_done ()));
+let twocap = serial_par ((4, 0), 0, serial_par ((1, 3), 0, serial_done ()));
 
 extern fun sh2 (x y: tensor.Tensor 2 (6, 4) I64): [tensor.Tensor 2 (6, 4) I64, tensor.Tensor 2 (6, 4) I64] =
     return (shared_ 6 two (buf x, buf y));
@@ -53,13 +53,13 @@ extern fun gemm_yield (m: Nat, a: tensor.Tensor 2 (m, 7) I64, b: tensor.Tensor 2
         (mac, 0I64, bias_add) (proj_map @(3, 2) (0, 1))
         ((proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)), proj_map @(2, 2) (0, 1))
         ((buf a, buf b), q);
-    return (tile_req (root, q, ((0, (2, 0, 0), 1, 0), (1, (0, 0, 3), 1, 0), (0, (1, 4, 0), 0, 0)), default_control), q);
+    return (tile_req (root, q, serial_par ((2, 0, 0), 1, serial_red ((0, 0, 3), 1, 0, serial_par ((1, 4, 0), 0, serial_done ()))), default_control), q);
 
 // A transposed read leaves the tile's box, so the handed tile is computed on its own.
 extern fun unaligned (x y: tensor.Tensor 2 (4, 4) I64): [tensor.Tensor 2 (4, 4) I64, tensor.Tensor 2 (4, 4) I64] =
     let p1   = map_reduce ((4, 4), (4, 4)) (twice, 0I64) (affine.id @2) (affine.id @2,) (buf x);
     let root = map_reduce ((4, 4), (4, 4)) (add, 0I64) (affine.id @2) (proj_map @(2, 2) (1, 0), affine.id @2) (p1, buf y);
-    return (tile_req (root, p1, ((0, (2, 0), 1, 0), (0, (1, 2), 1, 0)), default_control), p1);
+    return (tile_req (root, p1, serial_par ((2, 0), 1, serial_par ((1, 2), 1, serial_done ())), default_control), p1);
 
 // CHECK-DAG: L1 par tiles=(1, 2) tail=peel inputs=2 fused=2 yielded=1
 // CHECK-DAG: L1 par tiles=(1, 3) tail=cap inputs=2 fused=2 yielded=1

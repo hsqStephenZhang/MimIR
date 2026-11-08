@@ -5,6 +5,9 @@
 
 #include <fe/restore.h>
 
+#include <mim/nom.h>
+#include <mim/union.h>
+
 #include <mim/pattern/graph.h>
 
 #include <mim/plug/core/core.h>
@@ -157,12 +160,58 @@ const Def* close(const Def* value, const Var* var, const Def* binder, const DefV
     return rewriter.rewrite(value);
 }
 
-/// The levels of a `tile_req`; a single level is not wrapped, as a one-element tuple is its element.
-DefVec tile_levels(const Def* levels) {
-    if (auto sigma = levels->type()->isa<Sigma>(); sigma && sigma->num_ops() == 4 && sigma->op(1)->isa<Arr>())
-        return {levels};
-    if (auto count = Lit::isa(levels->arity())) return levels->projs(*count);
-    return {};
+/// One level of a `tile_req`: `kind` 0 parallel, 1 reduction, 2 vector; `bind` 0 serial, 1 work-group, 2 work-item.
+struct LevelSpec {
+    u64 kind, tail, promote, bind;
+    const Def* sizes;
+    const Def* merge;
+};
+
+/// The levels of a `tile_req` chain, outermost first; `nullopt` unless the chain is a literal value.
+std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
+    enum { Serial, Group, Item } scope = Serial;
+    std::vector<LevelSpec> specs;
+    for (auto cur = levels;;) {
+        // The chain's noms are newtypes over variants: a `Name` wraps the case's `Inj`.
+        if (auto name = cur->isa<Name>()) cur = name->op();
+        auto inj = cur->isa<Inj>();
+        if (!inj) return std::nullopt;
+        auto i = inj->index();
+        if (i == 0) return specs;
+        auto n     = inj->value()->num_projs();
+        auto field = [&](size_t j) { return inj->value()->proj(n, j); };
+        auto lit   = [&](size_t j) { return Lit::isa(field(j)); };
+        LevelSpec spec{0, 0, 0, 0, field(0), nullptr};
+        // (kind, bind) per constructor of TileLevels / GroupLevels / ItemLevels; -1 marks a case without one.
+        static constexpr int table[3][6][2] = {
+            {{0, 0}, {0, 0}, {0, 1}, {1, 0},   {2, 0}, {-1, -1}},
+            {{0, 0}, {0, 0}, {0, 2}, {1, 0},   {1, 2},   {2, 0}},
+            {{0, 0}, {0, 0}, {1, 0}, {2, 0}, {-1, -1}, {-1, -1}}
+        };
+        if (i > 5 || table[scope][i][0] < 0) return std::nullopt;
+        spec.kind = table[scope][i][0], spec.bind = table[scope][i][1];
+        if (spec.kind != 2) {
+            auto tail = lit(1);
+            if (!tail) return std::nullopt;
+            spec.tail = *tail;
+        }
+        if ((spec.kind == 1 && spec.bind == 0) || (spec.kind == 0 && spec.bind == 1)) {
+            auto promote = lit(2);
+            if (!promote) return std::nullopt;
+            spec.promote = *promote;
+        }
+        if (spec.kind == 1 && spec.bind == 2) {
+            auto option = field(2);
+            if (auto name = option->isa<Name>()) option = name->op();
+            auto merge = option->isa<Inj>();
+            if (!merge) return std::nullopt;
+            if (merge->index() == 1) spec.merge = merge->value();
+        }
+        specs.push_back(spec);
+        if (spec.bind == 1) scope = Group;
+        if (spec.kind == 0 && spec.bind == 2) scope = Item;
+        cur = field(n - 1);
+    }
 }
 
 /// Whether @p producer reaches anything but the operations in @p inside, through tuples and projections.
@@ -613,7 +662,7 @@ public:
         , strict_(strict) {}
 
     /// The value of @p anchor tiled by @p levels; `nullptr` when a level cannot be realized, see reason().
-    const Def* tile(const Def* anchor, fe::Span<const Def*> levels, u64 depth);
+    const Def* tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64 depth);
     std::string_view reason() const { return reason_; }
     /// Members handed back by the outermost region, with the region results that replace them.
     const auto& yielded() const { return yielded_; }
@@ -660,7 +709,7 @@ private:
                         bool peel,
                         u64 promote,
                         u64 bind,
-                        fe::Span<const Def*> rest,
+                        fe::Span<const LevelSpec> rest,
                         u64 depth);
     const Def* reduction(const Def* anchor,
                          const btensor::MapRedPost& mr,
@@ -671,9 +720,9 @@ private:
                          u64 promote,
                          u64 bind,
                          const Def* merge,
-                         fe::Span<const Def*> rest,
+                         fe::Span<const LevelSpec> rest,
                          u64 depth);
-    const Def* vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const Def*> rest, u64 depth);
+    const Def* vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const LevelSpec> rest, u64 depth);
 
     const fe::Log& log_;
     const App* request_;
@@ -743,11 +792,9 @@ const Def* Levels::split_over_items(const Def* tile, u64 items, const Def* merge
     auto rn = rks->nloops();
     auto K  = Lit::isa(mr.Sr->proj(rn, rn - 1));
     if (!K || *K % items) return nullptr;
-    auto sizes  = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / items : 0); });
-    auto fields = DefVec{w.lit_nat_1(), w.tuple(sizes), w.lit_nat_1(), w.lit_nat_0(), w.lit_nat(2)};
-    if (merge) fields.push_back(merge);
-    auto one   = DefVec{w.tuple(fields)};
-    auto split = this->tile(tile, one, depth + 1);
+    auto sizes = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / items : 0); });
+    auto level = LevelSpec{1, 1, 0, 2, w.tuple(sizes), merge};
+    auto split = this->tile(tile, fe::Span<const LevelSpec>(&level, 1), depth + 1);
     if (!split) log_.d("tensor.tile_fuse {} keeps a fused reduction whole: {}", op_, reason_);
     return split;
 }
@@ -843,7 +890,7 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
     return result;
 }
 
-const Def* Levels::tile(const Def* anchor, fe::Span<const Def*> levels, u64 depth) {
+const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64 depth) {
     if (levels.empty()) return anchor;
     auto root = graph::map_reduce(anchor);
     if (!root) return fail("the root tile is not a map_reduce_post");
@@ -851,41 +898,23 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const Def*> levels, u64 dept
     auto rks = mr.ranks();
     if (!rks) return fail("the root's ranks are not literal");
     auto ro = rks->ro, rn = rks->nloops();
-    auto level  = levels.front();
-    auto fields = level->num_projs();
-    if (fields < 4 || fields > 6)
-        return fail(
-            "a level is (kind, sizes, tail, promote), (kind, sizes, tail, promote, bind) or (kind, sizes, tail, "
-            "promote, bind, merge)");
-    auto kind = level->proj(fields, 0), sizes = level->proj(fields, 1), tail = level->proj(fields, 2),
-         promote = level->proj(fields, 3);
-    auto k = Lit::isa(kind), t = Lit::isa(tail);
-    if (!k || !t || *t > 1) return fail("level kinds and tails must be literals");
-    auto promoted = Lit::isa(promote);
-    auto bound    = fields >= 5 ? Lit::isa(level->proj(fields, 4)) : std::optional<u64>(0);
-    if (!promoted || (*promoted && *k != 1 && !(*k == 0 && bound == 1)))
-        return fail("only reduction levels and work-group levels promote an input");
-    auto merge = fields == 6 ? level->proj(6, 5) : nullptr;
-    if (merge && (*k != 1 || !bound || *bound != 2))
-        return fail("only a work-item bound reduction level takes a merge");
-    if (!bound || *bound > 2) return fail("a level binds to 0 (serial), 1 (work-group) or 2 (work-item)");
-    if (*bound && *k != 0 && !(*bound == 2 && *k == 1))
-        return fail("only parallel levels bind to hardware, and reduction levels to work-items");
-    if (*bound == 2 && *k == 1 && bound_ != 1)
-        return fail("a work-item bound reduction level must nest directly inside a work-group level");
-    if (*bound == 1 && bound_ == 2) return fail("a work-group level cannot nest inside a work-item level");
+    auto& level = levels.front();
+    if (level.tail > 1) return fail("a tail is 0 (cap) or 1 (peel)");
+    if (Lit::isa(level.sizes->arity()) != rn)
+        return fail("the levels tile a different number of loops than the root has");
     auto literal = fe::Vector<u64>(rn);
     for (u64 d = 0; d != rn; ++d)
-        if (auto size = Lit::isa(sizes->proj(rn, d)))
+        if (auto size = Lit::isa(level.sizes->proj(rn, d)))
             literal[d] = *size;
         else
             return fail("tile sizes must be literals");
     auto rest = levels.subspan(1);
-    switch (*k) {
-        case 0: return parallel(anchor, mr, ro, rn, literal, *t == 1, *promoted, *bound, rest, depth);
-        case 1: return reduction(anchor, mr, ro, rn, literal, *t == 1, *promoted, *bound, merge, rest, depth);
-        case 2: return vector(root, rn, literal, rest, depth);
-        default: return fail("level kinds are 0 (parallel), 1 (reduction) or 2 (vector)");
+    switch (level.kind) {
+        case 0: return parallel(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, rest, depth);
+        case 1:
+            return reduction(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, level.merge, rest,
+                             depth);
+        default: return vector(root, rn, literal, rest, depth);
     }
 }
 
@@ -897,7 +926,7 @@ const Def* Levels::parallel(const Def* anchor,
                             bool peel,
                             u64 promote,
                             u64 bind,
-                            fe::Span<const Def*> rest,
+                            fe::Span<const LevelSpec> rest,
                             u64 depth) {
     auto& w         = world();
     auto scope_bind = fe::Restore(bound_, bind ? bind : bound_);
@@ -944,13 +973,11 @@ const Def* Levels::parallel(const Def* anchor,
     // A reduction fused into a work-group's tile is split over the work-items of the item level that follows.
     auto items = std::optional<u64>();
     if (bind == 1)
-        for (auto level : rest) {
-            auto fields = level->num_projs();
-            if (fields < 5 || Lit::isa(level->proj(fields, 0)) != 0 || Lit::isa(level->proj(fields, 4)) != 2) continue;
-            auto item_sizes = level->proj(fields, 1);
-            u64 count       = 1;
+        for (auto& level : rest) {
+            if (level.kind != 0 || level.bind != 2) continue;
+            u64 count = 1;
             for (u64 d = 0; d != ro; ++d) {
-                auto item = Lit::isa(item_sizes->proj(rn, d)).value_or(0), tile = Lit::isa(tiles[d]).value_or(0);
+                auto item = Lit::isa(level.sizes->proj(rn, d)).value_or(0), tile = Lit::isa(tiles[d]).value_or(0);
                 if (item && tile) count *= (tile + item - 1) / item;
             }
             items = count;
@@ -1108,7 +1135,7 @@ const Def* Levels::reduction(const Def* anchor,
                              u64 promote,
                              u64 bind,
                              const Def* merge,
-                             fe::Span<const Def*> rest,
+                             fe::Span<const LevelSpec> rest,
                              u64 depth) {
     auto& w   = world();
     auto loop = rn;
@@ -1132,12 +1159,11 @@ const Def* Levels::reduction(const Def* anchor,
     if (promote) {
         auto tiles = fe::Vector<u64>(ro, 0);
         if (group_wide) tiles = item_scope_->tiles;
-        for (auto level : rest) {
+        for (auto& level : rest) {
             if (group_wide) break;
-            if (auto fields = level->num_projs(); Lit::isa(level->proj(fields, 0)) == 0) {
-                auto inner = level->proj(fields, 1);
+            if (level.kind == 0) {
                 for (u64 d = 0; d != ro; ++d)
-                    tiles[d] = Lit::isa(inner->proj(rn, d)).value_or(0);
+                    tiles[d] = Lit::isa(level.sizes->proj(rn, d)).value_or(0);
                 break;
             }
         }
@@ -1241,7 +1267,8 @@ const Def* Levels::reduction(const Def* anchor,
     return result;
 }
 
-const Def* Levels::vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const Def*> rest, u64 depth) {
+const Def*
+Levels::vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const LevelSpec> rest, u64 depth) {
     auto& w = world();
     if (!rest.empty()) return fail("a vector level must be the innermost");
     auto ro   = Lit::as(btensor::MapRedPost::of(root->callee()->as<App>()).Ro);
@@ -1302,20 +1329,21 @@ const Def* TileFuse::rewrite_imm_App(const App* app) {
 
 const Def* TileFuse::realize(const App* request, const DefSet& outside) {
     auto [op, members, levels, control] = request->args<4>();
-    auto level_list                     = tile_levels(levels);
-    if (level_list.empty()) {
-        report_tile_request(request, "the levels are not a literal list");
+    auto parsed                         = tile_levels(levels);
+    if (!parsed || parsed->empty()) {
+        report_tile_request(request, "the levels are not a literal chain");
         return op;
     }
-    auto group = members_of(members);
+    auto level_list = std::move(*parsed);
+    auto group      = members_of(members);
     DefSet in_group(group.begin(), group.end());
     Levels realizer(log(), request, in_group, outside, driver().arg_nat("tensor", "strict").value_or(0));
     if (auto root = graph::map_reduce(op))
         if (auto ranks = btensor::MapRedPost::of(root->callee()->as<App>()).ranks();
-            ranks && Lit::isa(level_list.front()->proj(4, 0)) != 0) {
+            ranks && level_list.front().kind != 0) {
             auto& w = op->world();
-            level_list.insert(level_list.begin(), w.tuple({w.lit_nat_0(), w.pack(ranks->nloops(), w.lit_nat_0()),
-                                                           w.lit_nat_1(), w.lit_nat_0()}));
+            level_list.insert(level_list.begin(),
+                              LevelSpec{0, 1, 0, 0, w.pack(ranks->nloops(), w.lit_nat_0()), nullptr});
         }
     auto value = realizer.tile(op, level_list, 0);
     if (!value) {

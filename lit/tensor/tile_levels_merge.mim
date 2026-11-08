@@ -1,0 +1,24 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+
+// The merge of a work-item bound reduction is typed against the root's accumulator: an `I64` merge on an `F32`
+// reduction does not type-check.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+lam bad_merge (a b: I64): I64 = core.wrap.add 0 (a, b);
+
+extern fun bad (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 F32 =
+    let root = reduce (math.arith.add fast, 0.0:F32) 1₂ (buf x);
+    return (tile_req (root, (), serial_group ((4, 0), 1, 0, group_red_merge ((0, 4), 1, bad_merge, group_done ())),
+        default_control));
+
+// CHECK: error: argument is not assignable to callee's domain
+// CHECK: 1 error(s) encountered

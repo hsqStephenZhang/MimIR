@@ -10,7 +10,7 @@ use tensor;
 let F32  = math.F32;
 let fast = math.mode.fast;
 
-let levels = ((0, (1, 8, 0), 1, 0, 1), (0, (1, 8, 4), 1, 0, 2));
+let levels = serial_group ((1, 8, 0), 1, 0, group_item ((1, 8, 4), 1, item_done ()));
 
 lam shifted_exp (a b: F32): F32 = math.exp.exp fast (math.arith.sub fast (a, b));
 

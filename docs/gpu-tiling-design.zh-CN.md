@@ -349,27 +349,42 @@ G1 生成要靠 vec 级 `vdim=0` 触发小 blocked leaf 的 SSA 累加器（tile
 
 ## 8. 多级 tiling 方案总览（2026-11-08 现状）
 
-入口是 `tile_req (root, members, levels, control)`：`root` 是一个 `map_reduce_post`，`members` 是允许融进 tile 的 producer，`levels` 是一列 `TileLevel = (kind, sizes, tail, promote, bind[, merge])`。
+入口是 `tile_req (root, members, levels, control)`：`root` 是一个 `map_reduce_post`（类型 `Tensor r s T`），`members` 是允许融进 tile 的 producer，`levels: TileLevels (n, T)` 是一条由外到内的 level 链，`n` 是 root 的循环数，`T` 是它的累加器类型。
 TileFuse 逐级实现，每一级嵌在前一级 tile 的 body 里，所以"多级"就是 region 的嵌套；LowerToMem 和 gpu 插件再把 region 落到硬件。
 
-字段含义：
+### 8.1 levels 是类型化的链
 
-- `kind`：0 并行级、1 归约级、2 向量级。
-- `sizes`：按 root 的循环维给 tile 大小，0 表示该维整个不切。
-- `tail`：1 = peel，body 对字面量 extent 做特化；0 = 用 cap 截断。
-- `promote`：位掩码，第 i 位把输入 i 分块放进 shared；归约级和 work-group 级都接受。
-- `bind`：0 顺序执行、1 绑定到 work-group、2 绑定到 work-item。
-- `merge`：绑定到 item 的归约级显式给出两个 partial 的合并函数。
+链的类型名就是作用域：`TileLevels` 是串行代码，`GroupLevels` 是 work-group 内部，`ItemLevels` 是 work-item 内部。三个类型互相递归，每个构造子只提供该作用域允许的 level，并决定下一段链的作用域：
 
-每一级对应的 IR 与硬件变化：
+| 作用域 | 构造子（函数形式） | 含义 | 下一段 |
+|---|---|---|---|
+| `TileLevels` | `serial_par (sizes, tail, rest)` | 串行并行级 | `TileLevels` |
+| | `serial_group (sizes, tail, promote, rest)` | 绑定到 work-group 的并行级，`promote` 位把输入整块放进 shared | `GroupLevels` |
+| | `serial_red (sizes, tail, promote, rest)` | 顺序归约级，`promote` 位按块放面板 | `TileLevels` |
+| | `serial_vec (sizes, rest)` | 向量级 | `TileLevels` |
+| `GroupLevels` | `group_par`、`group_red`、`group_vec` | 同上，但在 group 内 | `GroupLevels` |
+| | `group_item (sizes, tail, rest)` | 绑定到 work-item 的并行级 | `ItemLevels` |
+| | `group_red_items (sizes, tail, rest)` | 拆到 work-item 的归约级，merge 从 combiner `op (acc, e)` 推出 | `GroupLevels` |
+| | `group_red_merge (sizes, tail, merge, rest)` | 同上，显式给 `merge: [T, T] → T` | `GroupLevels` |
+| `ItemLevels` | `item_par`、`item_red`、`item_vec` | item 内的级 | `ItemLevels` |
+| 任一 | `serial_done ()`、`group_done ()`、`item_done ()` | 链尾 | |
+
+`sizes: «n; Nat»`（0 表示该维不切）、`tail`（0 cap、1 peel）、`promote`（位掩码）仍是 `Nat`；`merge` 的类型由 root 的 `T` 决定。
+于是以前 TileFuse 用 `fail("…")` 检查的那组约束全部成为类型错误：work-item 级必须在 work-group 级里、拆到 item 的归约级必须直接在 group 级下、work-group 级不能嵌在 work-item 级里、只有归约级和 work-group 级能 promote、只有拆到 item 的归约级能带 merge、merge 的类型要匹配累加器（`lit/tensor/tile_levels_scope.mim`、`tile_levels_merge.mim`）。
+报错落在 `tile_req` 的实参上，note 里只给 nominal 实例名（`TileLevels_280567` 对 `TileLevels_280501`），要让它打印成 `TileLevels (2, F32)` 还得改 dump。
+留在 C++ 里的检查只剩类型表达不了的：tile 大小是字面量、链的 `n` 等于 root 的循环数、拆到 item 的 K 被 item 数整除、树形合并要求 item 数是 2 的幂。
+`default_tile_config` 也返回这条链；两种形状的配置共用一条链、在各级的 sizes 上做选择，因为 `(a, b)#cond` 对两个 nominal 实例会得到 union 类型。
+TileFuse 内部仍用 `LevelSpec {kind, sizes, tail, promote, bind, merge}`，`tile_levels` 沿着 `Name`（newtype 引入）→ `Inj`（变体 case）→ payload 的最后一个分量走完整条链，作用域在遍历时跟着构造子切换。
+
+### 8.2 每一级对应的 IR 与硬件变化
 
 | 级 | TileFuse 产出 | GPU 上的落地 |
 |---|---|---|
-| 并行级 `bind=1`，如 `(0, (1, 64, 64, 0), 1, 0, 1)` | 一个 `tiled` region，body 拿到 `(off, ext)` 和 inputs，members 按 tile 融进去 | `gpu.outline` 把 tile 循环变成 grid、body 变成 kernel；body 里的 buffer 都在 shared；`promote` 位把该输入的 box 用 k = 0 的 `stage` 协作填进 shared（§7.1j）；融进来的归约 member 按下一级的 item 数拆成 R8 fold，后续读改读这份共享 tile（§7.1i） |
-| 并行级 `bind=2`，如 `(0, (1, 4, 4, 0), 1, 0, 2)` | 再一层 `tiled`，切出每个 item 的子 tile | item 循环改写成 `item_id`，比 item 数短的循环加守卫；私有数据在寄存器或 local |
-| 归约级 `bind=0`，如 `(1, (0, 0, 0, 16), 1, 3, 0)` | `tile_fold`：按块顺序折叠归约循环，step 原地更新累加器 | 顺序 k 循环；`promote` 位让每块的输入面板用向量填充进 shared，面板布局按消费者的读模式选 padding 或 swizzle（§7.1e、§7.1f），前后 fence |
-| 归约级 `bind=2`，如 `(1, (0, 0, 4), 1, 0, 2, merge)` | step 体包上 `bind 2`（和 `merge_with`） | R8（§7.1h）：每个 item 折自己的块进私有 tile → shared partials → 树形合并 → 每元素一个 item 发布；须直接嵌在 group 级下 |
-| 向量级 `kind=2`，如 `(2, (1, 1, 0, 0), 1, 0, 0)` | leaf 变成直线代码 | 累加器进 SSA 寄存器（`btensor:registers` 预算，§7.1g），读按 lane 向量化 |
+| `serial_group ((1, 64, 64, 0), 1, 0, …)` | 一个 `tiled` region，body 拿到 `(off, ext)` 和 inputs，members 按 tile 融进去 | `gpu.outline` 把 tile 循环变成 grid、body 变成 kernel；body 里的 buffer 都在 shared；`promote` 位把该输入的 box 用 k = 0 的 `stage` 协作填进 shared（§7.1j）；融进来的归约 member 按下一级的 item 数拆成 R8 fold，后续读改读这份共享 tile（§7.1i） |
+| `group_item ((1, 4, 4, 0), 1, …)` | 再一层 `tiled`，切出每个 item 的子 tile | item 循环改写成 `item_id`，比 item 数短的循环加守卫；私有数据在寄存器或 local |
+| `item_red ((0, 0, 0, 16), 1, 3, …)` | `tile_fold`：按块顺序折叠归约循环，step 原地更新累加器 | 顺序 k 循环；`promote` 位让每块的输入面板用向量填充进 shared，面板布局按消费者的读模式选 padding 或 swizzle（§7.1e、§7.1f），前后 fence |
+| `group_red_merge ((0, 0, 4), 1, merge, …)` | step 体包上 `bind 2`（和 `merge_with`） | R8（§7.1h）：每个 item 折自己的块进私有 tile → shared partials → 树形合并 → 每元素一个 item 发布 |
+| `item_vec ((1, 1, 0, 0), …)` | leaf 变成直线代码 | 累加器进 SSA 寄存器（`btensor:registers` 预算，§7.1g），读按 lane 向量化 |
 
 贯穿所有级的机制：
 
@@ -382,4 +397,4 @@ TileFuse 逐级实现，每一级嵌在前一级 tile 的 body 里，所以"多�
 - tile 大小必须是字面量；归约 member 拆到 item 要求只有一个归约循环且 K 被 item 数整除；树形合并要求 item 数是 2 的幂。
 - shared 预算没有模型（8 行 softmax 的 40 KB 把占用率压到 1 block/SM）。
 - group 级 promote 的填充还是标量读。
-- 同一函数里两个 `tile_req` kernel 首尾相接时，host glue 会在 `host_malloc2gpualloc` 报 `core.M 1` 对 `core.M 0` 的类型冲突：attention 的 QKᵀ → softmax → PV 三 kernel 版本因此还编不过；它与 promote 无关（`bench/gpu_fusion/attn_tiled.mim` 的任意两 kernel 组合都触发），而 `softmax_r8.mim` 的三个 kernel 又没事，原因待查。这是把 attention 和 flash attention 跑到 GPU 上的下一个障碍。
+- 执行映射（grid/block、barrier、host 与 device 的内存 token）还没有类型：同一函数里两个 `tile_req` kernel 首尾相接时，host glue 会在 `host_malloc2gpualloc` 报 `core.M 1` 对 `core.M 0` 的类型冲突，attention 的 QKᵀ → softmax → PV 三 kernel 版本因此还编不过；它与 promote 无关（`bench/gpu_fusion/attn_tiled.mim` 的任意两 kernel 组合都触发），而 `softmax_r8.mim` 的三个 kernel 又没事，原因待查。

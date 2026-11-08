@@ -37,7 +37,7 @@ fun normalize (_: F32, xv_ml: [F32, ML])@tt: F32 =
     let (m, l)   = ml;
     return (math.arith.div fast (math.exp.exp fast (math.arith.sub fast (xv, m)), l));
 
-let levels = ((0, (4, 0), 1, 1, 1), (0, (4, 4), 1, 0, 2));
+let levels = serial_group ((4, 0), 1, 1, group_item ((4, 4), 1, item_done ()));
 
 extern fun softmax16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16) F32 =
     let x  = buf x;

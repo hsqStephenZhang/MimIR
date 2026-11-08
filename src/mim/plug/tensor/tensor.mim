@@ -1727,20 +1727,79 @@ axm report_groups: compile.Phase;
 ///
 /// Identity request for multi-level tile-and-fuse of root `op`.
 /// `members` are the producers the partition placed in `op`'s group; only they are fused.
-/// `levels: «L; TileLevel n»` lists the levels outermost first, where `n` is `op`'s loop count.
+/// `levels` lists the levels outermost first as a chain whose type names the scope its levels run in:
+/// `TileLevels` for serial code, `GroupLevels` inside a work-group, `ItemLevels` inside a work-item.
+/// Entering a work-group or a work-item continues in the next chain, so a level the scope does not offer,
+/// such as a work-item bound reduction outside a work-group, does not type-check.
 /// `control: FuseQuery → FuseDecision` decides, per candidate, whether to fuse and whether to yield.
 /// `report_groups` removes residual requests with a warning, failing under `tensor:strict=1`.
 ///
-/// A level's `kind` is 0 for parallel (a `tiled_multi` region), 1 for reduction (`tile_fold`), 2 for vector (`sched`).
-/// `sizes#d = 0` leaves loop `d` untiled at that level.
+/// Every level tiles the root's `n` loops; `sizes#d = 0` leaves loop `d` untiled at that level.
 /// `tail` is 0 for one capped body over a runtime tail and 1 for peeling full tiles from the tail.
-/// `promote` sets bit `i` to stage input `i` of a reduction level into panels as wide as the next parallel level's tile.
-/// `bind` is 0 for a serial level, 1 to run each tile on a work-group and 2 on a work-item; only parallel levels bind, and the CPU lowering ignores it.
+/// `promote` sets bit `i` to stage input `i` into shared memory: a reduction level stages a panel per block,
+/// a work-group level its whole box.
+/// `RedItems` splits a reduction over the work-items and merges their partials: `Combiner` derives the merge
+/// from a combiner `op (acc, e)`, `Merge` names it for any other combiner; it must be associative and
+/// commutative with the seed as its identity.
+/// The CPU lowering runs bound levels as loops.
 ///
-anx lam TileLevel (n: Nat): * = [kind: Nat, sizes: «n; Nat», tail promote bind: Nat];
+anx nom TileMerge (Acc: *) = | Combiner | Merge: [Acc, Acc] → Acc;
+anx mutual
+    nom TileLevels (n: Nat, Acc: *) =
+        | Done
+        | Par: [sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc)]
+        | Group: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)]
+        | Red: [sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc)]
+        | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc)];
+    nom GroupLevels (n: Nat, Acc: *) =
+        | Done
+        | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc)]
+        | Item: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)]
+        | Red: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)]
+        | RedItems: [sizes: «n; Nat», tail: Nat, merge: TileMerge Acc, rest: GroupLevels (n, Acc)]
+        | Vec: [sizes: «n; Nat», rest: GroupLevels (n, Acc)];
+    nom ItemLevels (n: Nat, Acc: *) =
+        | Done
+        | Par: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)]
+        | Red: [sizes: «n; Nat», tail promote: Nat, rest: ItemLevels (n, Acc)]
+        | Vec: [sizes: «n; Nat», rest: ItemLevels (n, Acc)];
+end
+///
+/// The constructors as functions, so a chain infers `n` and `Acc` from the request.
+///
+anx lam serial_done {n: Nat, Acc: *} (_: []): TileLevels (n, Acc) = (TileLevels (n, Acc))#Done;
+anx lam serial_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc)): TileLevels (n, Acc) =
+    (TileLevels (n, Acc))#Par (sizes, tail, rest);
+anx lam serial_group {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)): TileLevels (n, Acc) =
+    (TileLevels (n, Acc))#Group (sizes, tail, promote, rest);
+anx lam serial_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc)): TileLevels (n, Acc) =
+    (TileLevels (n, Acc))#Red (sizes, tail, promote, rest);
+anx lam serial_vec {n: Nat, Acc: *} (sizes: «n; Nat», rest: TileLevels (n, Acc)): TileLevels (n, Acc) =
+    (TileLevels (n, Acc))#Vec (sizes, rest);
+anx lam group_done {n: Nat, Acc: *} (_: []): GroupLevels (n, Acc) = (GroupLevels (n, Acc))#Done;
+anx lam group_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
+    (GroupLevels (n, Acc))#Par (sizes, tail, rest);
+anx lam group_item {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)): GroupLevels (n, Acc) =
+    (GroupLevels (n, Acc))#Item (sizes, tail, rest);
+anx lam group_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
+    (GroupLevels (n, Acc))#Red (sizes, tail, promote, rest);
+anx lam group_red_items {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
+    (GroupLevels (n, Acc))#RedItems (sizes, tail, (TileMerge Acc)#Combiner, rest);
+anx lam group_red_merge {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, merge: [Acc, Acc] → Acc, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
+    (GroupLevels (n, Acc))#RedItems (sizes, tail, (TileMerge Acc)#Merge merge, rest);
+anx lam group_vec {n: Nat, Acc: *} (sizes: «n; Nat», rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
+    (GroupLevels (n, Acc))#Vec (sizes, rest);
+anx lam item_done {n: Nat, Acc: *} (_: []): ItemLevels (n, Acc) = (ItemLevels (n, Acc))#Done;
+anx lam item_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
+    (ItemLevels (n, Acc))#Par (sizes, tail, rest);
+anx lam item_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
+    (ItemLevels (n, Acc))#Red (sizes, tail, promote, rest);
+anx lam item_vec {n: Nat, Acc: *} (sizes: «n; Nat», rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
+    (ItemLevels (n, Acc))#Vec (sizes, rest);
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
-axm tile_req: {P M C K: *} → [op: P, members: M, levels: C, control: K] → P;
+axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *, n: Nat}
+            → [op: Tensor r s T, members: M, levels: TileLevels (n, T), control: K] → Tensor r s T;
 axm tile_fuse: compile.Phase;
 axm tile_group: compile.Phase;
 ///
@@ -1780,7 +1839,7 @@ anx lam group_blocks (bytes lanes registers cache_bytes: Nat): «4; Nat» =
 /// 2 another reduction and 0 an elementwise root, both one tile per index of all parallel loops but the last
 /// (one per row for a row reduction).
 ///
-anx lam default_tile_config (ro rr kind: Nat, bytes lanes registers cache_bytes: Nat): «4; TileLevel (ro + rr)» =
+anx lam default_tile_config {Acc: *} (ro rr kind: Nat, bytes lanes registers cache_bytes: Nat): TileLevels (ro + rr, Acc) =
     let n      = ro + rr;
     let blocks = group_blocks (bytes, lanes, registers, cache_bytes);
     let (mr, nr, kc, nc) = (blocks#0₄, blocks#1₄, blocks#2₄, blocks#3₄);
@@ -1793,8 +1852,11 @@ anx lam default_tile_config (ro rr kind: Nat, bytes lanes registers cache_bytes:
     let block  = ‹d: n; (0, kc)#(is (d, n - 1))›;
     let micro  = ‹d: n; ((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2))›;
     let vector = ‹d: n; (0, 1)#(is (d, ro - 2))›;
-    (((0, rows, 1, 0, 0), (1, none, 1, 0, 0), (0, none, 1, 0, 0), (2, none, 1, 0, 0)),
-     ((0, outer, 1, 0, 0), (1, block, 1, 3, 0), (0, micro, 1, 0, 0), (2, vector, 1, 0, 0)))#(kind == 1);
+    // One chain for both shapes: a select of two chains would be a union of two nominal instances.
+    lam pick (elementwise contraction: «n; Nat»): «n; Nat» = (elementwise, contraction)#(kind == 1);
+    serial_par (pick (rows, outer), 1,
+        serial_red (pick (none, block), 1, (0, 3)#(kind == 1),
+            serial_par (pick (none, micro), 1, serial_vec (pick (none, vector), serial_done ()))));
 
 axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
 axm region_fusion_ok: {P R B: *}

@@ -219,11 +219,13 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
     auto facts  = w.tuple({w.lit_nat(ranks.ro), w.lit_nat(ranks.rr), w.lit_nat(group->second.kind), bytes, lanes,
                            w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
                            w.lit_nat(driver().arg_nat("tensor", "group-cache").value_or(262144))});
-    auto levels = w.app(w.annex<default_tile_config>(), facts);
+    auto levels = w.app(w.app(w.annex<default_tile_config>(), mr.To), facts);
     auto members
         = w.tuple(DefVec(group->second.members.size(), [&](size_t i) { return rewrite(group->second.members[i]); }));
     auto control = w.annex<default_control>();
-    auto request = w.app(w.annex<tile_req>(), {value->type(), members->type(), levels->type(), control->type()});
+    auto tensor  = *TensorType::isa(value->type());
+    auto request = w.app(w.annex<tile_req>(),
+                         {tensor.T, tensor.r, tensor.s, members->type(), control->type(), w.lit_nat(ranks.nloops())});
     return w.app(request, {value, members, levels, control});
 }
 

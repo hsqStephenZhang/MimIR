@@ -14,7 +14,7 @@ fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
     let (x, y) = xy;
     return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
 
-let levels = ((0, (64, 64, 0), 0, 0, 1), (1, (0, 0, 16), 0, 3, 0), (0, (4, 4, 0), 0, 0, 2), (2, (1, 0, 0), 1, 0, 0));
+let levels = serial_group ((64, 64, 0), 0, 0, group_red ((0, 0, 16), 0, 3, group_item ((4, 4, 0), 0, item_vec ((1, 0, 0), item_done ()))));
 
 extern fun gemm1024 (a b: tensor.Tensor 2 (1024, 1024) F32): tensor.Tensor 2 (1024, 1024) F32 =
     let root = map_reduce ((1024, 1024), (1024, 1024, 1024)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))

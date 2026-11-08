@@ -32,7 +32,7 @@ lam merge (a b: ML): ML =
     (m, math.arith.add fast (math.arith.mul fast (l1, math.exp.exp fast (math.arith.sub fast (m1, m))),
                             math.arith.mul fast (l2, math.exp.exp fast (math.arith.sub fast (m2, m)))));
 
-let levels = ((0, (4, 0), 1, 0, 1), (1, (0, 4), 1, 0, 2, merge));
+let levels = serial_group ((4, 0), 1, 0, group_red_merge ((0, 4), 1, merge, group_done ()));
 
 extern fun online16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 ML =
     let ml = map_reduce (16, (16, 16)) (step, (math.neg_inf math.f32, 0.0:F32)) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1)) (buf x);

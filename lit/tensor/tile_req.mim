@@ -29,7 +29,7 @@ fun twice (_ x: I64)@tt: I64 = return (core.wrap.mul 0 (x, 2I64));
 
 extern fun requested (x: tensor.Tensor 2 (4, 3) I64): tensor.Tensor 2 (4, 3) I64 =
     let y = map_reduce ((4, 3), (4, 3)) (twice, 0I64) (affine.id @2) (affine.id @2,) (buf x);
-    return (tile_req (y, (), ((0, (2, 0), 0, 0),), default_control));
+    return (tile_req (y, (), serial_par ((2, 0), 0, serial_done ()), default_control));
 
 // WARN: unrealized tensor.tile_req
 // STRICT: error: unrealized tensor.tile_req

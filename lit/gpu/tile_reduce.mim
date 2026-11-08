@@ -18,7 +18,7 @@ use tensor;
 let F32  = math.F32;
 let fast = math.mode.fast;
 
-let levels = ((0, (4, 0), 1, 0, 1), (1, (0, 4), 1, 0, 2));
+let levels = serial_group ((4, 0), 1, 0, group_red_items ((0, 4), 1, group_done ()));
 
 extern fun rowsum16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 F32 =
     return (tile_req (reduce (math.arith.add fast, 0.0:F32) 1₂ (buf x), (), levels, default_control));
