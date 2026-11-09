@@ -9,6 +9,7 @@
 plugin core;
 plugin mem;
 plugin buffer;
+plugin math;
 import compile;
 
 use core.ops.n;
@@ -285,6 +286,24 @@ axm shared_scope: mem.M 0 → mem.M 0;
 ///
 axm generic_mem: GlobalM → mem.M 0;
 axm global_mem: mem.M 0 → GlobalM;
+///
+/// ### Tensor Cores
+///
+/// The operations of this section are warp-collective: all 32 work-items of a warp execute them together.
+///
+/// #### mma_tf32
+///
+/// A warp's `D = A·B + C` on a 16×8×8 tile with TF32 inputs and F32 accumulation (`mma.sync.m16n8k8`).
+/// Each work-item holds 4 elements of A, 2 of B and 4 of C and D in the fragment layout of the PTX ISA.
+///
+axm mma_tf32: [«4; math.F32», «2; math.F32», «4; math.F32»] → «4; math.F32»;
+///
+/// #### ldmatrix
+///
+/// Loads `n` 8×4 matrices of 32-bit elements from shared memory (`ldmatrix.sync.m8n8.b16`).
+/// Work-item `i` passes the address of row `i % 8` of matrix `i / 8` and receives element `(i / 4, i % 4)` of each matrix.
+///
+axm ldmatrix: {a: Nat} → [n: Nat, mem.M a, mem.Ptr («4; math.F32», a)] → [mem.M a, «n; math.F32»];
 ///
 /// ## Phases
 ///

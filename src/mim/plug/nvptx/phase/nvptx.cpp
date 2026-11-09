@@ -654,6 +654,57 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         std::print(bb.body().emplace_back(), "call void @{}(ptr addrspace(3) {}, ptr addrspace(1) {})", intrinsic,
                    shared, global);
         return std::string();
+    } else if (auto ld = Axm::isa<gpu::ldmatrix>(def)) {
+        auto [n, mem, ptr] = ld->args<3>();
+        emit_unsafe(mem);
+        auto count     = Lit::as(n);
+        auto v_ptr     = emit(ptr);
+        auto t_ptr     = convert(ptr->type());
+        auto shared    = Lit::as(ld->decurry()->arg()) == 3
+                           ? v_ptr
+                           : bb.assign(name + ".s", "addrspacecast {} {} to ptr addrspace(3)", t_ptr, v_ptr);
+        auto regs      = count == 1 ? "i32"s : std::format("{{ {} }}", fe::Join(std::vector(count, "i32"s), ", "));
+        auto intrinsic = std::format("llvm.nvvm.ldmatrix.sync.aligned.m8n8.x{}.b16.p3", count);
+        declare("{} @{}(ptr addrspace(3))", regs, intrinsic);
+        auto loaded = bb.assign(name + ".r", "call {} @{}(ptr addrspace(3) {})", regs, intrinsic, shared);
+        if (count == 1) return bb.assign(name, "bitcast i32 {} to float", loaded);
+        auto value = "undef"s;
+        for (u64 i = 0; i != count; ++i) {
+            auto reg = bb.assign(std::format("{}.i{}", name, i), "extractvalue {} {}, {}", regs, loaded, i);
+            auto f   = bb.assign(std::format("{}.f{}", name, i), "bitcast i32 {} to float", reg);
+            value = bb.assign(std::format("{}.v{}", name, i), "insertvalue [{} x float] {}, float {}, {}", count, value,
+                              f, i);
+        }
+        return value;
+    } else if (auto mma = Axm::isa<gpu::mma_tf32>(def)) {
+        auto [a, b, c] = mma->args<3>();
+        auto v_a = emit(a), v_b = emit(b), v_c = emit(c);
+        auto lanes = [&](const std::string& v, u64 n, bool bits, std::string_view tag) {
+            auto result = std::vector<std::string>();
+            for (u64 i = 0; i != n; ++i) {
+                auto f = bb.assign(std::format("{}.{}{}", name, tag, i), "extractvalue [{} x float] {}, {}", n, v, i);
+                result.push_back(
+                    bits ? "i32 " + bb.assign(std::format("{}.{}i{}", name, tag, i), "bitcast float {} to i32", f)
+                         : "float " + f);
+            }
+            return result;
+        };
+        auto operands = lanes(v_a, 4, true, "a");
+        for (auto&& op : lanes(v_b, 2, true, "b"))
+            operands.push_back(op);
+        for (auto&& op : lanes(v_c, 4, false, "c"))
+            operands.push_back(op);
+        auto regs = "{ float, float, float, float }"s;
+        declare("{} @llvm.nvvm.mma.m16n8k8.row.col.tf32(i32, i32, i32, i32, i32, i32, float, float, float, float)",
+                regs);
+        auto d
+            = bb.assign(name + ".d", "call {} @llvm.nvvm.mma.m16n8k8.row.col.tf32({})", regs, fe::Join(operands, ", "));
+        auto value = "undef"s;
+        for (u64 i = 0; i != 4; ++i) {
+            auto f = bb.assign(std::format("{}.d{}", name, i), "extractvalue {} {}, {}", regs, d, i);
+            value  = bb.assign(std::format("{}.v{}", name, i), "insertvalue [4 x float] {}, float {}, {}", value, f, i);
+        }
+        return value;
     } else if (auto wait = Axm::isa<gpu::async_wait>(def)) {
         emit_unsafe(wait->arg());
         if (async_copy_) {

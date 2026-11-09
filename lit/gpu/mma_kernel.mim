@@ -1,0 +1,30 @@
+// RUN: %mim %s -p opt
+
+// One warp multiplies a 16×8 A tile, staged in shared memory and read with ldmatrix, by an 8×8 B tile on the tensor cores.
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+
+let F32 = math.F32;
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM, group_id: Idx 1, lane: Idx 32,
+            smem: gpu.SharedPtr «16, 2, 4; F32», (a b: gpu.GlobalPtr «32; «4; F32»», d: gpu.GlobalPtr «32; «4; F32»»),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let row      = core.conv.u 16 (core.bit2.and 0 (lane, 15₃₂));
+    let half     = core.conv.u 2 (core.shr.l (lane, 4₃₂));
+    let (m1, ar) = mem.load (m1, mem.lea (a, lane));
+    let m3       = mem.store (m3, mem.lea (mem.lea (smem, row), half), ar);
+    let (m1, m3) = gpu.sync_work_items (m1, m3);
+    let (m3, af) = gpu.ldmatrix (4, m3, mem.lea (mem.lea (smem, row), half));
+    let (m1, bf) = mem.load (m1, mem.lea (b, lane));
+    let df       = gpu.mma_tf32 (af, (bf#0₄, bf#1₄), ‹4; 0.0:F32›);
+    let m1       = mem.store (m1, mem.lea (d, lane), df);
+    return (m1, m3, m4, m5);
+
+extern fun mma_tile (m0: mem.M 0, a b d: gpu.GlobalPtr «32; «4; F32»»): [mem.M 0, I32] =
+    let (m0, m1, m4) = gpu.init m0;
+    ret (m0, m1, m4) = gpu.launch (1, 32, gpu.default_stream, tt, «16, 2, 4; F32») kernel (a, b, d) $ (m0, m1, m4);
+    let m0           = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);

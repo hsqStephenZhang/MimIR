@@ -1,0 +1,7 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+
+// CHECK: call void @llvm.nvvm.barrier0()
+// CHECK: call { i32, i32, i32, i32 } @llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.b16.p3(ptr addrspace(3)
+// CHECK: call { float, float, float, float } @llvm.nvvm.mma.m16n8k8.row.col.tf32(i32
