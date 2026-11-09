@@ -225,7 +225,7 @@ public:
         }
         auto device_fatbin_file = c.embed_device_code ? std::optional(c.dev_fatbin_name) : std::nullopt;
         auto host_out           = Out(c.host_ll_name);
-        emit_host(setup_phase->old_world(), *host_out.os(), device_fatbin_file, rt);
+        emit_host(setup_phase->old_world(), *host_out.os(), device_fatbin_file, device_flags.dynamic_shared, rt);
 
         if (c.embed_device_code) {
             std::println(std::cout, "Unified (Fat) LLVM IR written to {}", c.host_ll_name);

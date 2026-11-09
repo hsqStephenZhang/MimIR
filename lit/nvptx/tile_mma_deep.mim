@@ -1,0 +1,11 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=4 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll --check-prefix=DEVICE
+// RUN: %FileCheck %s --input-file=%{s:stem}.ll --check-prefix=HOST
+
+// The panels move into dynamic shared memory, which the host raises to their size before the launch.
+
+// DEVICE: _dynamic_shared = external addrspace(3) global [0 x i8], align 16
+// DEVICE: call void @llvm.nvvm.cp.async.wait.group(i32 2)
+// HOST: call i32 @cuFuncSetAttribute(ptr {{.*}}, i32 8, i32 75776)
+// HOST: call i32 @cuLaunchKernel{{.*}}, i32 75776,

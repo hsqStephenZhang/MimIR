@@ -1,9 +1,9 @@
-// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 %s -p gpu -o - | %FileCheck %s
-// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 %s -p ll -X ll:o=%t.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=3 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=3 %s -p ll -X ll:o=%t.ll
 // RUN: clang++ -O1 %S/tile_outline_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 
-// A pipelined fold fills the next block's panels into their spare buffers while it computes on the current ones.
+// A three-stage fold keeps two blocks' panels in flight in a ring of buffers while it computes on the current one.
 
 plugin tensor;
 plugin core;
@@ -30,6 +30,10 @@ extern fun gemm16 (a b: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16) 
 // CHECK-DAG: gpu.slot_shared
 // CHECK-DAG: gpu.slot_shared
 // CHECK-DAG: gpu.slot_shared
+// CHECK-DAG: gpu.slot_shared
+// CHECK-DAG: gpu.slot_shared
+// CHECK-DAG: gpu.async_commit
+// CHECK-DAG: gpu.async_wait_group 1
 // CHECK-DAG: gpu.store_async
 // CHECK-DAG: gpu.async_wait
 // CHECK-DAG: gpu.sync_work_items

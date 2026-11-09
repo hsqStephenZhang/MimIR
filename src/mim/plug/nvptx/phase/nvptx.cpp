@@ -28,9 +28,13 @@ class HostEmitter : public ll::Emitter {
 public:
     using Super = ll::Emitter;
 
-    HostEmitter(World& world, std::ostream& ostream, std::optional<std::string> device_fatbin_file)
+    HostEmitter(World& world,
+                std::ostream& ostream,
+                std::optional<std::string> device_fatbin_file,
+                std::map<std::string, u64> dynamic_shared)
         : Super(world, "llvm_nvptx_host_emitter", ostream)
-        , device_fatbin_file_(device_fatbin_file) {}
+        , device_fatbin_file_(device_fatbin_file)
+        , dynamic_shared_(std::move(dynamic_shared)) {}
 
     void start() final;
     void find_kernels(const Def*);
@@ -55,6 +59,7 @@ private:
     void emit_gpu_teardown(ll::BB&, const std::string& name);
 
     std::optional<std::string> device_fatbin_file_;
+    std::map<std::string, u64> dynamic_shared_;
     LamMap<int> kernel_ids_;
     bool cu_globals_declared_ = false;
 
@@ -82,6 +87,7 @@ public:
     std::optional<std::string> isa_targetspecific_intrinsic(ll::BB&, const Def*) final;
 
     bool is_using_libdevice() const { return uses_libdevice; }
+    const std::map<std::string, u64>& dynamic_shared() const { return dynamic_shared_; }
     const std::string& get_extra_flags() const { return extra_flags; }
 
 private:
@@ -95,6 +101,10 @@ private:
     }
 
     LamSet kernels_;
+    /// A kernel whose shared slots exceed the static limit carves them out of one dynamic array, at these offsets.
+    DefMap<u64> dynamic_slots_;
+    std::string dynamic_array_;
+    std::map<std::string, u64> dynamic_shared_;
     /// `cp.async` needs sm_80; below it a `gpu.store_async` is a plain store.
     bool async_copy_;
 
@@ -103,6 +113,9 @@ private:
 };
 
 namespace {
+// The shared memory a kernel may declare statically.
+constexpr u64 Static_Shared_Limit = 48 * 1024;
+
 // Kernel arguments are typed global pointers; offsets and casts of them stay in global memory.
 bool is_global(const Def* ptr) {
     while (true) {
@@ -202,6 +215,8 @@ constexpr auto Cu_Memcpy_Dtoh         = "cuMemcpyDtoH_v2";
 constexpr auto Cu_Memcpy_Dtoh_Async   = "cuMemcpyDtoHAsync_v2_ptsz";
 constexpr auto Cu_Module_Load_Fatbin  = "cuModuleLoadFatBinary";
 constexpr auto Cu_Module_Get_Function = "cuModuleGetFunction";
+constexpr auto Cu_Func_Set_Attribute  = "cuFuncSetAttribute";
+constexpr auto Cu_Max_Dynamic_Shared  = 8; // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
 constexpr auto Cu_Module_Unload       = "cuModuleUnload";
 constexpr auto Cu_Stream_Create       = "cuStreamCreate";
 constexpr auto Cu_Stream_Destroy      = "cuStreamDestroy_v2";
@@ -276,6 +291,13 @@ void HostEmitter::emit_gpu_setup(ll::BB& bb, const std::string& name) {
         auto func_res = bb.assign(name + "_" + kname + "_getfuncres", "call i32 @{}(ptr {}, ptr {}, ptr {}{})",
                                   Cu_Module_Get_Function, func_ptr, mod_inner, kernel_name_prefix, kid);
         emit_cu_error_handling(bb, func_res);
+        if (auto bytes = dynamic_shared_.find(kname); bytes != dynamic_shared_.end()) {
+            declare("i32 @{}(ptr, i32, i32)", Cu_Func_Set_Attribute);
+            auto func = bb.assign(name + "_" + kname + "_func", "load ptr, ptr {}", func_ptr);
+            auto res  = bb.assign(name + "_" + kname + "_setattr", "call i32 @{}(ptr {}, i32 {}, i32 {})",
+                                  Cu_Func_Set_Attribute, func, Cu_Max_Dynamic_Shared, bytes->second);
+            emit_cu_error_handling(bb, res);
+        }
     }
 }
 
@@ -520,11 +542,16 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
         if (!kernel_ids_.contains(lam)) fe::throwf(MIM_NVPTX_BE "unknown kernel `{}`", lam);
         auto kid = kernel_ids_[lam];
 
-        auto shared_mem_bytes = 0;
+        u64 shared_mem_bytes = 0;
         if (auto smem_count = Lit::expect(m, "a shared-memory allocation count")) {
             if (smem_count != 1)
                 fe::throwf(MIM_NVPTX_BE "only one dynamic shared-memory allocation is allowed per kernel");
             shared_mem_bytes = Lit::expect(world().call(core::trait::size, MT), "a shared-memory size");
+        }
+
+        if (auto bytes = dynamic_shared_.find(id(lam).substr(1)); bytes != dynamic_shared_.end()) {
+            if (shared_mem_bytes) fe::throwf(MIM_NVPTX_BE "kernel `{}` has dynamic shared memory twice", lam);
+            shared_mem_bytes = bytes->second;
         }
 
         emit_unsafe(mem);
@@ -574,6 +601,32 @@ std::string DeviceEmitter::prepare() {
     std::print(func_impls_, "define ptx_kernel {} {}(", convert_ret_pi(kernel->type()->ret_pi()), id(kernel));
 
     auto [m1, m3, m4, m5, group_id, item_id, smem, arg, ret_lam] = kernel->vars<9>();
+
+    dynamic_slots_.clear();
+    auto slots = DefVec();
+    auto seen  = DefSet();
+    for (auto todo = DefVec{kernel}; !todo.empty();) {
+        auto def = todo.back();
+        todo.pop_back();
+        if (!seen.emplace(def).second) continue;
+        if (Axm::isa<gpu::slot_shared>(def)) slots.push_back(def);
+        for (auto dep : def->deps())
+            todo.push_back(dep);
+    }
+    u64 total = 0;
+    for (auto slot : slots) {
+        dynamic_slots_[slot] = total;
+        auto bytes           = Lit::as(core::op(core::trait::size, slot->as<App>()->decurry()->arg()));
+        total += (bytes + 15) / 16 * 16;
+    }
+    if (total > Static_Shared_Limit) {
+        auto kname             = id(kernel).substr(1);
+        dynamic_array_         = "@" + kname + "_dynamic_shared";
+        dynamic_shared_[kname] = total;
+        std::println(vars_decls_, "{} = external addrspace(3) global [0 x i8], align 16", dynamic_array_);
+    } else {
+        dynamic_slots_.clear();
+    }
 
     auto arg_name = id(arg);
     locals_[arg]  = arg_name;
@@ -705,6 +758,21 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
             value  = bb.assign(std::format("{}.v{}", name, i), "insertvalue [4 x float] {}, float {}, {}", value, f, i);
         }
         return value;
+    } else if (auto commit = Axm::isa<gpu::async_commit>(def)) {
+        emit_unsafe(commit->arg());
+        if (async_copy_) {
+            declare("void @llvm.nvvm.cp.async.commit.group()");
+            std::print(bb.body().emplace_back(), "call void @llvm.nvvm.cp.async.commit.group()");
+        }
+        return std::string();
+    } else if (auto wait = Axm::isa<gpu::async_wait_group>(def)) {
+        emit_unsafe(wait->arg());
+        if (async_copy_) {
+            declare("void @llvm.nvvm.cp.async.wait.group(i32)");
+            std::print(bb.body().emplace_back(), "call void @llvm.nvvm.cp.async.wait.group(i32 {})",
+                       Lit::as(wait->decurry()->arg()));
+        }
+        return std::string();
     } else if (auto wait = Axm::isa<gpu::async_wait>(def)) {
         emit_unsafe(wait->arg());
         if (async_copy_) {
@@ -715,6 +783,12 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
     } else if (Axm::isa<gpu::generic_mem>(def) || Axm::isa<gpu::global_mem>(def)) {
         emit_unsafe(def->as<App>()->arg());
         return std::string();
+    } else if (auto slot = Axm::isa<gpu::slot_shared>(def); slot && dynamic_slots_.contains(def)) {
+        emit_unsafe(slot->arg());
+        auto shared = bb.assign(name + ".s", "getelementptr inbounds i8, ptr addrspace(3) {}, i64 {}", dynamic_array_,
+                                dynamic_slots_[def]);
+        bb.assign(name, "addrspacecast ptr addrspace(3) {} to ptr", shared);
+        return name;
     } else if (auto slot = Axm::isa<gpu::slot_shared>(def)) {
         emit_unsafe(slot->arg());
         auto pointee = convert(slot->decurry()->arg(), false);
@@ -776,8 +850,12 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
     return std::nullopt;
 }
 
-void emit_host(World& world, std::ostream& ostream, std::optional<std::string> device_fatbin_file, ll::Emitter::Rt rt) {
-    HostEmitter emitter(world, ostream, device_fatbin_file);
+void emit_host(World& world,
+               std::ostream& ostream,
+               std::optional<std::string> device_fatbin_file,
+               std::map<std::string, u64> dynamic_shared,
+               ll::Emitter::Rt rt) {
+    HostEmitter emitter(world, ostream, device_fatbin_file, std::move(dynamic_shared));
     emitter.rt_mode(rt);
     // Same one-liner the `ll` backend uses; each backend just names its own runtime module.
     if (rt == ll::Emitter::Rt::embed) emitter.load_rt_module("nvptx_rt.ll");
@@ -790,6 +868,7 @@ DeviceEmitFlags emit_device(World& world, std::ostream& ostream, bool async_copy
 
     return DeviceEmitFlags{
         .uses_libdevice = emitter.is_using_libdevice(),
+        .dynamic_shared = emitter.dynamic_shared(),
     };
 }
 

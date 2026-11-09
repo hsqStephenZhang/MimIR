@@ -287,3 +287,21 @@ TF32 tensor core（`group_warp ((64, 32, 0), 1, warp_red ((0, 0, 16), 1, 3, warp
 - 累加器是每个 lane 的 SSA 值 `«(WM/16)·(WN/8); «4; F32»»`，跨 k 块留在寄存器，最后按 PTX 的 C 布局写回。
 - tensor core 上流水是必要的：没有它 1024³ 慢 35%。
 - 4096³ 下约为 FP32 cuBLAS 的 3.3 倍；与 cuBLAS TF32 的差距来自两级流水（cuBLAS 用 3–4 级）、B 面板的标量读和 128×128 的固定 tile。
+
+### 多级流水与动态 shared memory（同日）
+
+`-X tensor:pipeline=n` 给每个面板一个 n 个 buffer 的环，提前 n − 1 块填充。
+每块的填充是一组 `cp.async`（`commit_group`），每步先 `wait_group (n − 2)` 等最老的一组，再一次 barrier。
+kernel 的 shared slot 超过静态上限 48 KiB 时，nvptx 后端把它们放进一个 `extern` 的动态 shared 数组，
+host 在 launch 前用 `cuFuncSetAttribute` 把上限提到所需大小。
+
+TF32 tensor core（128×128 work-group，8 个 warp，BK=16），同一时段背靠背测量，4096³ 三次中位数一致：
+
+| 流水 | shared | 1024 | 2048 | 4096 | 相对 cuBLAS TF32（4096） |
+|---|---:|---:|---:|---:|---:|
+| 2 | 37 KiB | 0.090 ms | 0.477 ms | 1.94 ms | 82% |
+| 3 | 56 KiB | 0.093 ms | 0.468 ms | 1.94 ms | 82% |
+| **4** | **74 KiB** | 0.092 ms | **0.457 ms** | **1.87 ms（73.5 TFLOP/s）** | **85%** |
+
+BK=8 时每级只有 10 KiB，但每块的 mma 只有一步 k8，流水再深也只有 0.11–0.13 ms（1024³），不如 BK=16。
+FP32 SIMT kernel 在 3、4 级下仍然正确，速度与 2 级相当。

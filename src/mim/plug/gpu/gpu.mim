@@ -270,6 +270,14 @@ axm store_async: {T: *} → [mem.M 0, mem.Ptr0 T, T] → mem.M 0;
 ///
 axm async_wait: mem.M 0 → mem.M 0;
 ///
+/// #### async_commit / async_wait_group
+///
+/// `async_commit` closes the group of the work-item's `store_async`s since the previous one.
+/// `async_wait_group n` waits until at most `n` of its committed groups are still pending.
+///
+axm async_commit: mem.M 0 → mem.M 0;
+axm async_wait_group: Nat → mem.M 0 → mem.M 0;
+///
 /// #### fence
 ///
 /// Makes every work-item's writes before it visible after it; `gpu.outline` turns it into a `sync_work_items`.

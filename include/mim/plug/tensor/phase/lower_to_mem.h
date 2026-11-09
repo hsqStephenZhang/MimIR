@@ -199,10 +199,12 @@ private:
     bool fence_pending_ = false;
     /// The fills of a pipelined fold copy asynchronously; its loop waits for them before its fence.
     bool async_fill_ = false;
-    /// How many blocks' panels a work-group fold keeps in flight (`-X tensor:pipeline`); 2 at most.
+    /// How many blocks' panels a work-group fold keeps in flight (`-X tensor:pipeline`).
     u64 pipeline_ = 1;
     /// `(mem, buffer)` the next uniform fill writes instead of allocating; it leaves its memory in filled_mem_.
     std::optional<std::pair<const Def*, const Def*>> fill_target_;
+    /// While a pipelined fold sizes its ring: a uniform fill only allocates its panel.
+    bool probe_fill_       = false;
     const Def* filled_mem_ = nullptr;
     /// The work-group buffers that uniform fills wrote.
     DefSet shared_fills_;

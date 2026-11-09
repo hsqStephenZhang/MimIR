@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 
@@ -18,9 +19,15 @@ namespace ll = mim::plug::ll;
 
 struct DeviceEmitFlags {
     bool uses_libdevice;
+    /// The bytes of dynamic shared memory each kernel needs, by name: its slots exceed the static 48 KiB.
+    std::map<std::string, u64> dynamic_shared;
 };
 
-void emit_host(World&, std::ostream&, std::optional<std::string>, ll::Emitter::Rt rt = ll::Emitter::Rt::embed);
+void emit_host(World&,
+               std::ostream&,
+               std::optional<std::string>,
+               std::map<std::string, u64> dynamic_shared = {},
+               ll::Emitter::Rt rt                        = ll::Emitter::Rt::embed);
 DeviceEmitFlags emit_device(World&, std::ostream&, bool async_copy);
 
 } // namespace plug::nvptx

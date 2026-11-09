@@ -1,4 +1,4 @@
-// kbench <cubin> <kernel> <groups> <items> [iters] [n]: times a generated n³ SGEMM kernel back to back in one context.
+// kbench <cubin> <kernel> <groups> <items> [iters] [n] [smem]: times a generated n³ SGEMM kernel back to back in one context.
 // The kernel takes its three device buffers as one by-value array; the operand order is found by checking the result.
 #include <algorithm>
 #include <array>
@@ -21,6 +21,7 @@
 int main(int argc, char** argv) {
     int groups = std::atoi(argv[3]), items = std::atoi(argv[4]), iters = argc > 5 ? std::atoi(argv[5]) : 300;
     size_t N   = argc > 6 ? std::atoi(argv[6]) : 1024;
+    unsigned smem = argc > 7 ? std::atoi(argv[7]) : 0;
     CHECK(cuInit(0));
     CUdevice dev;
     CHECK(cuDeviceGet(&dev, 0));
@@ -31,6 +32,7 @@ int main(int argc, char** argv) {
     CHECK(cuModuleLoad(&mod, argv[1]));
     CUfunction fn;
     CHECK(cuModuleGetFunction(&fn, mod, argv[2]));
+    if (smem) CHECK(cuFuncSetAttribute(fn, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem));
 
     std::vector<float> a(N * N), b(N * N), c(N * N);
     for (size_t i = 0; i < N * N; ++i) {
@@ -44,7 +46,7 @@ int main(int argc, char** argv) {
         CHECK(cuMemcpyHtoD(buf[ib], b.data(), N * N * 4));
         CHECK(cuMemsetD32(buf[ic], 0, N * N));
         void* params[] = {buf.data()};
-        CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, 0, nullptr, params, nullptr));
+        CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, smem, nullptr, params, nullptr));
         CHECK(cuCtxSynchronize());
         CHECK(cuMemcpyDtoH(c.data(), buf[ic], N * N * 4));
         for (size_t s = 0; s < 64; ++s) {
@@ -67,14 +69,14 @@ int main(int argc, char** argv) {
         return 1;
     }
     void* params[] = {buf.data()};
-    for (int i = 0; i < 20; ++i) CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, 0, nullptr, params, nullptr));
+    for (int i = 0; i < 20; ++i) CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, smem, nullptr, params, nullptr));
     CUevent start, stop;
     CHECK(cuEventCreate(&start, 0));
     CHECK(cuEventCreate(&stop, 0));
     std::vector<float> ms;
     for (int i = 0; i < iters; ++i) {
         CHECK(cuEventRecord(start, nullptr));
-        CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, 0, nullptr, params, nullptr));
+        CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, smem, nullptr, params, nullptr));
         CHECK(cuEventRecord(stop, nullptr));
         CHECK(cuEventSynchronize(stop));
         float t;
