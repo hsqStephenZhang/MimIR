@@ -123,6 +123,7 @@ private:
     const Def* view_reads(const Def* inputs, const Def* proxy, const std::vector<bool>& views);
     const Def* region_input(const Def*);
     void forward_storage(const Def* inputs, const Def* proxy);
+    void forward_layouts(const Def* buffers, const Def* params);
     std::pair<const Def*, const Def*> allocate(const Def*, const Def*, const Def*, bool = true);
     void prepare_realizations(const Def*, const Lam* = nullptr, Defs = {});
 

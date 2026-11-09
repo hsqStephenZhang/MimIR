@@ -1552,8 +1552,12 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         auto size    = Lit::isa(core::op(core::trait::size, mr.Tis->proj(nis, i)));
         auto last = Lit::isa(logical->proj(r, r - 1)), physical_last = Lit::isa(storage->proj(r, r - 1));
         auto n = size && 16 % *size == 0 ? 16 / *size : 1;
-        auto vectors
-            = panels_.contains(buffer) && n > 1 && last && *last % n == 0 && physical_last && *physical_last % n == 0;
+        // A vector runs along the logical last dim, so the layout must keep that dim innermost.
+        auto keeps_last
+            = !layout
+           || (layout->perm.back() + 1 == layout->perm.size() && (layout->split == 1 || layout->split % n == 0));
+        auto vectors   = panels_.contains(buffer) && n > 1 && last && *last % n == 0 && physical_last
+                      && *physical_last % n == 0 && keeps_last;
         auto placement = layout ? layout_lam(*layout, storage) : w.app(w.annex<affine::id>(), w.lit_nat(r));
         if (!vectors) {
             if (!layout) continue;
@@ -1653,7 +1657,10 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
     const Def* acc     = w.tuple({m, dst});
     const Def* exit    = run->ret_var();
     auto cur           = run;
-    auto iters         = affine::counting_nest(cur, exit, acc, shape->projs(rank), "tileCopy");
+    auto scope         = fe::Restore(uniform_, uniform(root));
+    auto annotate      = cooperative();
+    auto iters         = annotate ? btensor::linear_loop(cur, exit, acc, shape->projs(rank), "tileCopy", annotate)
+                                  : affine::counting_nest(cur, exit, acc, shape->projs(rank), "tileCopy");
     auto [loop_mem, loop_dst] = acc->projs<2>();
     const Def* element        = src;
     if (Axm::isa<buffer::Buf>(src->type()))
@@ -1832,6 +1839,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     if (auto var = parameter->has_var()) bind_old(var);
     map(proxy, runtime->proj(2, 1));
     forward_storage(sources, proxy);
+    forward_layouts(captured, runtime->proj(2, 1));
     // Offsets live in the new world; extents stay in the old one, where the body is specialized to them.
     // A capped dimension leaves its extent null for the body to bound by its origin.
     DefVec offsets(*rank), extents(*rank);
@@ -2009,6 +2017,7 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
     if (auto var = parameter->has_var()) bind_old(var);
     map(proxy, inputs);
     forward_storage(plan.inputs, proxy);
+    forward_layouts(captured, inputs);
     for (size_t t = 0; t != plan.points.size(); ++t) {
         auto memo    = fe::Restore(fresh_memo_, {});
         auto storage = fe::Restore(storage_shapes_, storage_shapes_);
@@ -2332,6 +2341,23 @@ void LowerToMem::forward_storage(const Def* inputs, const Def* proxy) {
     auto n = Lit::as(inputs->type()->arity());
     for (size_t i = 0; i != n; ++i)
         if (auto shape = fe::lookup(storage_shapes_, inputs->proj(n, i))) storage_shapes_[proxy->proj(n, i)] = shape;
+}
+
+// A panel passed into a region keeps the layout its fill wrote, so the region's reads place their coordinates.
+void LowerToMem::forward_layouts(const Def* buffers, const Def* params) {
+    auto forward = [this](const Def* buffer, const Def* param) {
+        if (auto found = fe::lookup(layouts_, buffer)) {
+            auto layout            = *found;
+            auto shape             = logical_shapes_[buffer];
+            layouts_[param]        = std::move(layout);
+            logical_shapes_[param] = shape;
+        }
+        if (panels_.contains(buffer)) panels_.insert(param);
+    };
+    if (Axm::isa<buffer::Buf>(buffers->type())) return forward(buffers, params);
+    if (auto n = Lit::isa(buffers->type()->arity()))
+        for (size_t i = 0; i != *n; ++i)
+            forward(buffers->proj(*n, i), params->proj(*n, i));
 }
 
 // A slice of a realized tensor among region inputs stays a read of its source, which the body composes.
