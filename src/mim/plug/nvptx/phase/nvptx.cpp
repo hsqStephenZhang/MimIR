@@ -67,8 +67,9 @@ class DeviceEmitter : public ll::Emitter {
 public:
     using Super = ll::Emitter;
 
-    DeviceEmitter(World& world, std::ostream& ostream)
-        : Super(world, "llvm_nvptx_device_emitter", ostream) {
+    DeviceEmitter(World& world, std::ostream& ostream, bool async_copy)
+        : Super(world, "llvm_nvptx_device_emitter", ostream)
+        , async_copy_(async_copy) {
         simd_ = false;
     }
 
@@ -94,12 +95,39 @@ private:
     }
 
     LamSet kernels_;
+    /// `cp.async` needs sm_80; below it a `gpu.store_async` is a plain store.
+    bool async_copy_;
 
     bool uses_libdevice = false;
     std::string extra_flags;
 };
 
 namespace {
+// Kernel arguments are typed global pointers; offsets and casts of them stay in global memory.
+bool is_global(const Def* ptr) {
+    while (true) {
+        if (auto type = Axm::isa<mem::Ptr>(ptr->type()); type && Lit::isa(type->arg(2, 1)) == 1) return true;
+        if (auto lea = Axm::isa<mem::lea>(ptr))
+            ptr = lea->arg(2, 0);
+        else if (auto cast = Axm::isa<core::bitcast>(ptr))
+            ptr = cast->arg();
+        else if (auto aligned = Axm::isa<mem::align>(ptr))
+            ptr = aligned->arg(2, 0);
+        else
+            return false;
+    }
+}
+
+// The global pointer @p val is loaded from.
+// A lane of a loaded vector stays a plain store: copying lanes apart takes a request per lane.
+const Def* global_source(const Def* val) {
+    auto read = val->isa<Extract>();
+    if (!read || Lit::isa(read->index()) != 1) return nullptr;
+    auto load = Axm::isa<mem::load>(read->tuple());
+    if (!load || !is_global(load->arg(2, 1))) return nullptr;
+    return load->arg(2, 1);
+}
+
 bool reaches_if(const Def* def, DefSet& seen, std::predicate<const Def*> auto pred) {
     if (auto [_, ins] = seen.emplace(def); !ins) return false;
     if (pred(def)) return true;
@@ -605,6 +633,34 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         emit_unsafe(sync_work_items->arg(2, 1));
         std::print(bb.body().emplace_back(), "call void @llvm.nvvm.barrier0()");
         return name;
+    } else if (auto store = Axm::isa<gpu::store_async>(def)) {
+        auto [mem, dst, val] = store->args<3>();
+        emit_unsafe(mem);
+        auto v_dst   = emit(dst);
+        auto t_ptr   = convert(dst->type());
+        auto pointee = mem::pointee(dst);
+        auto size    = Lit::isa(core::op(core::trait::size, pointee));
+        auto src     = async_copy_ && size && (*size == 4 || *size == 8 || *size == 16) ? global_source(val) : nullptr;
+        if (!src) {
+            auto v_val = emit(val);
+            std::print(bb.body().emplace_back(), "store {} {}, {} {}", convert(pointee, false), v_val, t_ptr, v_dst);
+            return std::string();
+        }
+        auto intrinsic = std::format("llvm.nvvm.cp.async.{}.shared.global.{}", *size == 16 ? "cg" : "ca", *size);
+        declare("void @{}(ptr addrspace(3), ptr addrspace(1))", intrinsic);
+        auto shared = bb.assign(name + ".s", "addrspacecast {} {} to ptr addrspace(3)", t_ptr, v_dst);
+        auto global
+            = bb.assign(name + ".g", "addrspacecast {} {} to ptr addrspace(1)", convert(src->type()), emit(src));
+        std::print(bb.body().emplace_back(), "call void @{}(ptr addrspace(3) {}, ptr addrspace(1) {})", intrinsic,
+                   shared, global);
+        return std::string();
+    } else if (auto wait = Axm::isa<gpu::async_wait>(def)) {
+        emit_unsafe(wait->arg());
+        if (async_copy_) {
+            declare("void @llvm.nvvm.cp.async.wait.all()");
+            std::print(bb.body().emplace_back(), "call void @llvm.nvvm.cp.async.wait.all()");
+        }
+        return std::string();
     } else if (Axm::isa<gpu::generic_mem>(def) || Axm::isa<gpu::global_mem>(def)) {
         emit_unsafe(def->as<App>()->arg());
         return std::string();
@@ -677,8 +733,8 @@ void emit_host(World& world, std::ostream& ostream, std::optional<std::string> d
     emitter.run();
 }
 
-DeviceEmitFlags emit_device(World& world, std::ostream& ostream) {
-    DeviceEmitter emitter(world, ostream);
+DeviceEmitFlags emit_device(World& world, std::ostream& ostream, bool async_copy) {
+    DeviceEmitter emitter(world, ostream, async_copy);
     emitter.run();
 
     return DeviceEmitFlags{

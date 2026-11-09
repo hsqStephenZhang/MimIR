@@ -73,6 +73,15 @@ void Outline::captures(const Def* def, const Vars& outer, DefSet& seen, DefVec& 
     pieces.push_back(def);
 }
 
+// An `async` loop only fills work-group panels, so its stores go to shared memory.
+const Def* Outline::store_async(const App* app) {
+    auto& w            = new_world();
+    auto store         = Axm::isa<mem::store>(app);
+    auto [m, dst, val] = store->args<3>();
+    auto T             = rewrite(store->decurry()->arg(2, 0));
+    return w.app(w.app(w.annex<gpu::store_async>(), T), {rewrite(m), rewrite(dst), rewrite(val)});
+}
+
 /// Barrier on the generic chain: every work-item's writes before @p mem are visible after the result.
 const Def* Outline::sync(const Def* mem) {
     auto& w     = new_world();
@@ -114,11 +123,13 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         auto in_range = w.call(core::icmp::ul, Defs{item_id_, w.lit_i64(*count)});
         return w.app(w.extract(w.tuple({skip, run}), in_range), new_init);
     }
+    if (in_async_ && Axm::isa<mem::store>(app)) return store_async(app);
     if (auto fence = Axm::isa<gpu::fence>(app)) {
         if (!item_id_) app->blame("gpu.outline: a fence must nest inside a work-group loop").bail();
         return sync(rewrite(fence->arg()));
     }
-    auto chained = bound_loop(app, bind::chained);
+    auto async   = bound_loop(app, bind::async);
+    auto chained = async ? async : bound_loop(app, bind::chained);
     auto staged  = chained ? chained : bound_loop(app, bind::staged);
     if (auto loop = staged ? staged : bound_loop(app, bind::cooperative)) {
         if (!item_id_) app->blame("gpu.outline: a cooperative loop must nest inside a work-group loop").bail();
@@ -138,6 +149,7 @@ const Def* Outline::rewrite_imm_App(const App* app) {
             done = after;
         }
         auto entry    = chained ? new_init : with_mem(new_init, sync(new_init->proj(n, mem_i)));
+        auto copying  = fe::Restore(in_async_, async != nullptr);
         auto new_body = rewrite(body);
         // A literal per-item trip count lets the backend unroll the fill and batch its loads.
         if (auto count = trip_count(args); count && *count % n_items_ == 0) {

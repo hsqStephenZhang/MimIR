@@ -2316,6 +2316,29 @@ priv anx lam stage_read_impl {T E: *, r k ri: Nat} (s_source s: «r; Nat», si: 
         cps.cps2ds read ();
     generate s_out at;
 
+/// `stage_read_impl` for a box whose tiled extents are multiples of their tiles: every coordinate is in bounds.
+priv anx lam stage_read_exact_impl {T E: *, r k ri: Nat} (s_source s: «r; Nat», si: «ri; Nat»)
+    (map: «r; affine.Index» → «ri; affine.Index»)
+    (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: E)
+    (start step: «r; Nat»)
+    (s_out scale: «r + k; Nat», getter: [Tensor ri si T, «i: ri; Idx si#i»] → E)
+    (scope: Nat) (input: Tensor ri si T): Tensor (r + k) s_out E =
+    let input = buf input;
+    let inverse = ‹d: r; option.unwrap_unsafe (vec.first core.icmp.e (outer_perm, d))›;
+    let axes = ‹j: k; core.idx2nat j›;
+    lam at (x: «r + k; I64»): E =
+        let y = ‹d: r + k; core.nat.mul (core.bitcast Nat (x#d), scale#d)›;
+        lam coordinate (d: Nat) (j: Nat, coord: Nat): Nat =
+            (coord, coord * inner_tiles#(core.idx 0 k j) + y#(core.idx 0 (r + k) (r + j)))
+                    #(d == inner_dims_pos#(core.idx 0 k j));
+        let coords = ‹d: r;
+            vec.fold.r @(Nat, Nat) @k (coordinate (core.idx2nat d))
+                (axes, y#(core.idx 0 (r + k) (core.idx2nat (inverse#d))))›;
+        let indices = ‹d: r; core.idx 0 (s_source#d) (start#d + step#d * coords#d)›;
+        let (_, indices) = affine.map @(ri, r) @(s_source, si) map indices @0 (⊥:(core.M 0));
+        getter (input, indices);
+    generate s_out at;
+
 priv anx lam stage_box_impl {T: *, r k: Nat} (s_source s: «r; Nat»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)
     (start step: «r; Nat») (scope: Nat) (input: Tensor r s_source T): Tensor (r + k) (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) T =

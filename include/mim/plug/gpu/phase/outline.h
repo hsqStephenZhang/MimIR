@@ -18,11 +18,13 @@ private:
     void captures(const Def*, const Vars&, DefSet&, DefVec&);
 
     const Def* sync(const Def* mem);
+    const Def* store_async(const App* store);
 
     const Def* item_id_  = nullptr;
     const Def* k_shared_ = nullptr;
     u64 n_items_         = 1;
     bool in_item_        = false;
+    bool in_async_       = false;
     DefVec splits_;
     DefSet shared_;
 };

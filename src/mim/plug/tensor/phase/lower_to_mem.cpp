@@ -468,6 +468,7 @@ void LowerToMem::validate() {
 
 void LowerToMem::start() {
     tensor_key_ = tensor_key(old_world());
+    pipeline_   = driver().arg_nat("tensor", "pipeline").value_or(1);
     validate();
     RWPhase::start();
     assert(pending_.empty());
@@ -536,7 +537,10 @@ bool LowerToMem::uniform(const Def* value) const {
 // A work-group's uniform fills run once, spread over its work-items by `gpu.outline`.
 std::function<const Def*(const Def*)> LowerToMem::cooperative() {
     if (!uniform_) return {};
-    auto tag = !staging_ ? gpu::bind::cooperative : fence_pending_ ? gpu::bind::chained : gpu::bind::staged;
+    auto tag = async_fill_    ? gpu::bind::async
+             : !staging_      ? gpu::bind::cooperative
+             : fence_pending_ ? gpu::bind::chained
+                              : gpu::bind::staged;
     fence_pending_ |= staging_;
     return
         [&w = new_world(), tag](const Def* body) { return w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body); };
@@ -914,11 +918,15 @@ const Def* LowerToMem::lower_generate(const App* app) {
             }
             return m;
         };
-    auto [am, dst] = allocate(br, bs, bT);
-    auto filled
+    auto target = std::exchange(fill_target_, std::nullopt);
+    if (target && std::get<1>(*target)->type() != out_ty) app->blame("a pipelined panel changed its type").bail();
+    auto [am, dst] = target ? *target : allocate(br, bs, bT);
+    auto fill
         = btensor::build_pointwise(result_ty, am, dst, w.tuple(captures), s_out, rn, "generate", compute,
-                                   bounded ? storage : nullptr, cooperative(), inner ? *inner : size_t(-1), write)
-              ->proj(2, 1);
+                                   bounded ? storage : nullptr, cooperative(), inner ? *inner : size_t(-1), write);
+    auto filled = fill->proj(2, 1);
+    if (target) filled_mem_ = fill->proj(2, 0);
+    if (uniform_) shared_fills_.insert(filled);
     if (layout) layouts_[filled] = *layout, logical_shapes_[filled] = bounded_shape(logical, bound_level_ != 0);
     if (inner && uniform_) panels_.insert(filled);
     return filled;
@@ -2245,7 +2253,17 @@ const Def* LowerToMem::lower_stage(const App* app) {
             s_out        = old.tuple(dims);
             pad          = old.pack(vec, pad);
         }
-        impl = old.app(old.annex<tensor::stage_read_impl>(), {type, element, rank, split, physical_rank});
+        // Tiles that divide their extents need no bounds check, so a fill moves each element unconditionally.
+        auto k     = Lit::isa(split);
+        auto exact = k.has_value();
+        for (size_t j = 0; exact && j != *k; ++j) {
+            auto d    = Lit::isa(pos->proj(*k, j));
+            auto tile = Lit::isa(tiles->proj(*k, j));
+            auto size = d ? Lit::isa(extent->proj(r, *d)) : std::nullopt;
+            exact     = tile && size && *tile != 0 && *size % *tile == 0;
+        }
+        impl = exact ? old.annex<tensor::stage_read_exact_impl>() : old.annex<tensor::stage_read_impl>();
+        impl = old.app(impl, {type, element, rank, split, physical_rank});
         impl = old.app(impl, {source_shape, extent, physical_shape});
         impl = old.app(impl, read);
         impl = old.app(impl, {pos, tiles, perm, pad});
@@ -2412,6 +2430,26 @@ const Def* LowerToMem::region_input(const Def* inputs) {
     return view_reads(inputs, proxy, views);
 }
 
+// The work-group panels a fold step stages per block: the uniform `tensor.stage`s that depend on the step's @p var.
+// A panel whose type depends on @p var changes shape between blocks, so its two buffers could not alternate.
+DefVec LowerToMem::staged_panels(const Def* root, const Def* var) const {
+    DefVec result;
+    DefSet seen;
+    auto todo = DefVec{root};
+    while (!todo.empty()) {
+        auto def = todo.back();
+        todo.pop_back();
+        if (!seen.emplace(def).second || def->isa_mut() || !def->has_free_var(var->as<Var>())) continue;
+        if (Axm::isa<tensor::stage>(def)) {
+            if (uniform(def) && !def->type()->has_free_var(var->as<Var>())) result.push_back(def);
+            continue;
+        }
+        for (auto op : def->ops() | std::views::reverse)
+            if (op) todo.push_back(op);
+    }
+    return result;
+}
+
 const Def* LowerToMem::lower_tile_fold(const App* app) {
     if (app->type()->isa_imm<Sigma>()) return lower_product_fold(app);
     auto scope                                          = fe::Restore(uniform_, uniform(app));
@@ -2493,18 +2531,70 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
         plain(initial);
         mem = copy_box(mem, buffer, storage, initial, source ? source : extent, extent, cooperative());
     }
-    auto [run, call] = btensor::ds_splice(w.tuple({mem, buffer}), w.sigma({mem->type(), buffer->type()}), "tileFold");
-    auto state       = run->var(2, 0);
-    auto remaining   = first_scalar ? w.lit_nat(*literal_count - 1) : rewrite(count);
-    auto [loop, loop_call] = affine::counting_for(w.call<core::bitcast>(w.type_i64(), remaining), state, run->ret_var(),
-                                                  w.sym("tileFoldStep"));
+    // A work-group fold with at least two blocks fills the next block's panels while it computes on the current ones.
+    auto stages = pipeline_ > 1 && bound_level_ != 0 && driver().is_loaded("gpu") && inplace && !first_scalar
+                       && literal_count && *literal_count > 1
+                    ? staged_panels(root, parameter->var())
+                    : DefVec();
+    DefVec current, spare;
+    std::vector<size_t> pipelined;
+    if (!stages.empty()) {
+        auto first = old.mut_lam(parameter->type()->as<Pi>());
+        if (auto block = Lit::isa(stride)) multiples_[first->var(2, 1)] = *block;
+        auto first_root = old.app(std::get<0>(peel_step(step->reduce(first->var()).back())), input);
+        auto firsts     = staged_panels(first_root, first->var());
+        if (firsts.size() != stages.size()) app->blame("pipelined fold found {} panels", firsts.size()).bail();
+        auto memo    = fe::Restore(fresh_memo_, {});
+        auto staging = fe::Restore(staging_, true);
+        auto fence   = fe::Restore(fence_pending_, true);
+        auto async   = fe::Restore(async_fill_, true);
+        push();
+        bind_old(first->has_var());
+        map(first->var(2, 1), w.lit_nat_0());
+        DefVec kept;
+        for (size_t i = 0; i != firsts.size(); ++i) {
+            auto panel = rewrite(firsts[i]);
+            if (!shared_fills_.contains(panel)) continue;
+            if (auto shape = fe::lookup(storage_shapes_, firsts[i])) storage_shapes_[stages[i]] = shape;
+            kept.push_back(stages[i]);
+            pipelined.push_back(i);
+            current.push_back(panel);
+        }
+        pop();
+        stages = kept;
+        for (auto panel : current) {
+            auto [r, shape, T] = Axm::as<buffer::Buf>(panel->type())->args<3>();
+            const Def* other;
+            auto scope           = w.app(w.annex<gpu::shared_scope>(), mem);
+            std::tie(mem, other) = buffer::op_alloc(r, shape, T, scope)->projs<2>();
+            forward_layouts(panel, other);
+            spare.push_back(other);
+        }
+    }
+    auto panels = current.size();
+    auto state  = DefVec{mem, buffer};
+    state.insert(state.end(), current.begin(), current.end());
+    state.insert(state.end(), spare.begin(), spare.end());
+    auto [run, call] = btensor::ds_splice(w.tuple(state), w.sigma({mem->type(), buffer->type()}), "tileFold");
+    auto start       = run->var(2, 0);
+    auto exit        = run->ret_var();
+    if (panels != 0) {
+        auto done = w.mut_con(start->type())->set("tileFoldDone");
+        auto n    = 2 + 2 * panels;
+        done->app(true, exit, w.tuple({w.app(w.annex<gpu::async_wait>(), done->var(n, 0)), done->var(n, 1)}));
+        exit = done;
+    }
+    auto remaining = first_scalar ? w.lit_nat(*literal_count - 1) : rewrite(count);
+    auto [loop, loop_call]
+        = affine::counting_for(w.call<core::bitcast>(w.type_i64(), remaining), start, exit, w.sym("tileFoldStep"));
     auto [index, carried, yield] = loop->vars<3>();
-    auto [loop_mem, loop_buffer] = carried->projs<2>();
-    auto pending                 = fe::Restore(pending_, {});
-    auto nested_staging          = fe::Restore(staging_, false);
-    auto memo                    = fe::Restore(fresh_memo_, {});
-    auto cache                   = fe::Restore(realizations_, realizations_);
-    auto nested                  = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
+    auto loop_state              = carried->projs(2 + 2 * panels);
+    auto loop_mem = loop_state[0], loop_buffer = loop_state[1];
+    auto pending        = fe::Restore(pending_, {});
+    auto nested_staging = fe::Restore(staging_, false);
+    auto memo           = fe::Restore(fresh_memo_, {});
+    auto cache          = fe::Restore(realizations_, realizations_);
+    auto nested         = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
     push();
     bind_old(parameter->has_var());
     map(accumulator, loop_buffer);
@@ -2512,6 +2602,37 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     auto iteration = w.call<core::bitcast>(w.type_nat(), index);
     if (first_scalar) iteration = w.call(core::nat::add, Defs{iteration, w.lit_nat(1)});
     map(offset, w.call(core::nat::mul, Defs{iteration, rewrite(stride)}));
+    if (panels != 0) {
+        for (size_t i = 0; i != panels; ++i) {
+            map(stages[i], loop_state[2 + i]);
+            forward_layouts(current[i], loop_state[2 + i]);
+            forward_layouts(current[i], loop_state[2 + panels + i]);
+        }
+        loop_mem = w.app(w.annex<gpu::fence>(), w.app(w.annex<gpu::async_wait>(), loop_mem));
+        // The last block fills its own panels once more, which keeps the loop body free of a branch.
+        auto ahead  = w.call(core::nat::add, Defs{iteration, w.lit_nat(1)});
+        auto last   = w.lit_nat(*literal_count - 1);
+        auto next   = w.extract(w.tuple({last, ahead}), w.call(core::ncmp::l, Defs{ahead, w.lit_nat(*literal_count)}));
+        auto future = old.mut_lam(parameter->type()->as<Pi>());
+        if (auto block = Lit::isa(stride)) multiples_[future->var(2, 1)] = *block;
+        auto roots
+            = staged_panels(old.app(std::get<0>(peel_step(step->reduce(future->var()).back())), input), future->var());
+        auto staging = fe::Restore(staging_, true);
+        auto fence   = fe::Restore(fence_pending_, true);
+        auto async   = fe::Restore(async_fill_, true);
+        push();
+        bind_old(future->has_var());
+        map(future->var(2, 1), w.call(core::nat::mul, Defs{next, rewrite(stride)}));
+        for (size_t j = 0; j != panels; ++j) {
+            auto stage   = roots[pipelined[j]];
+            fill_target_ = {loop_mem, loop_state[2 + panels + j]};
+            filled_mem_  = nullptr;
+            rewrite(stage);
+            if (!filled_mem_) stage->blame("a pipelined panel was not filled into its spare buffer").bail();
+            loop_mem = filled_mem_;
+        }
+        pop();
+    }
     prepare_realizations(root);
     const Def* update;
     if (inplace) {
@@ -2527,6 +2648,14 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
         update
             = w.tuple({copy_box(loop_mem, loop_buffer, storage, value, source ? source : extent, extent, cooperative()),
                        loop_buffer});
+    }
+    if (panels != 0) {
+        auto next = DefVec{update->proj(2, 0), update->proj(2, 1)};
+        for (size_t i = 0; i != panels; ++i)
+            next.push_back(loop_state[2 + panels + i]);
+        for (size_t i = 0; i != panels; ++i)
+            next.push_back(loop_state[2 + i]);
+        update = w.tuple(next);
     }
     loop->app(true, yield, update);
     loop->set(true, wrap_fresh_mem(loop->body()));

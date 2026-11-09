@@ -244,8 +244,22 @@ anx lam synced_scope (m1: GlobalM, m3: SharedM,
 /// `gpu.outline` runs a `group`-bound loop one iteration per work-group, an `item`-bound loop one iteration per work-item,
 /// and spreads a `cooperative` loop's iterations over the work-items of a work-group with a barrier before and after.
 /// A `staged` loop is cooperative with a barrier before only, and a `chained` one with no barrier at all: a later `fence` publishes their writes.
+/// An `async` loop is chained, and its stores into shared memory become `store_async`; an `async_wait` before the `fence` publishes them.
 ///
-axm bind.(group, item, cooperative, staged, chained): {T: *} → T → T;
+axm bind.(group, item, cooperative, staged, chained, async): {T: *} → T → T;
+///
+/// #### store_async
+///
+/// Stores into shared memory like `mem.store`.
+/// When the value is loaded from global memory right before, the copy may complete asynchronously, up to the next `async_wait`.
+///
+axm store_async: {T: *} → [mem.M 0, mem.Ptr0 T, T] → mem.M 0;
+///
+/// #### async_wait
+///
+/// Waits until the work-item's `store_async`s have completed; the writes are visible to the other work-items after the next `fence`.
+///
+axm async_wait: mem.M 0 → mem.M 0;
 ///
 /// #### fence
 ///

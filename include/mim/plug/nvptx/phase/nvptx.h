@@ -21,7 +21,7 @@ struct DeviceEmitFlags {
 };
 
 void emit_host(World&, std::ostream&, std::optional<std::string>, ll::Emitter::Rt rt = ll::Emitter::Rt::embed);
-DeviceEmitFlags emit_device(World&, std::ostream&);
+DeviceEmitFlags emit_device(World&, std::ostream&, bool async_copy);
 
 } // namespace plug::nvptx
 

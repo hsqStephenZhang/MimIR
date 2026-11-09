@@ -121,8 +121,8 @@ void optimize_bytecode(const NvptxCompileArgs& c, bool uses_libdevice) {
     auto opt_input = uses_libdevice ? c.dev_bc_raw_name : c.dev_ll_name;
     auto opt       = fe::sys::require_cmd("opt");
     // Unlinked device IR has no target triple; opt needs one to register NVPTX passes.
-    fe::sys::require_run(std::format("{} -mtriple=nvptx64-nvidia-cuda {} {} -o {}", opt, c.opt_args, opt_input,
-                                     c.dev_bc_opt_name));
+    fe::sys::require_run(
+        std::format("{} -mtriple=nvptx64-nvidia-cuda {} {} -o {}", opt, c.opt_args, opt_input, c.dev_bc_opt_name));
 }
 
 void compile2ptx(const NvptxCompileArgs& c) {
@@ -192,16 +192,24 @@ public:
             = split_apply_phase.get()->expect<RWPhase>("the phase for `gpu.split_apply` to be an `RWPhase`");
         setup_phase->run();
 
+        if (c.embed_device_code && c.compute_cap.empty()) {
+            try {
+                c.compute_cap = get_compute_capability();
+            } catch (const fe::sys::CmdNotFound& e) {
+                log().w("{}; not embedding device code", e.what());
+                c.embed_device_code = false;
+            }
+        }
         DeviceEmitFlags device_flags;
         {
-            auto dev_out = Out(c.dev_ll_name);
-            device_flags = emit_device(setup_phase->new_world(), *dev_out.os());
+            auto dev_out    = Out(c.dev_ll_name);
+            auto async_copy = !c.compute_cap.empty() && std::stoi(c.compute_cap) >= 80;
+            device_flags    = emit_device(setup_phase->new_world(), *dev_out.os(), async_copy);
         }
         if (c.embed_device_code) {
             if (!c.embed_ptx && !c.embed_cubin)
                 fe::throwf(MIM_NVPTX_BE "embedding requested with no images (neither PTX nor CUBIN)");
             try {
-                if (c.compute_cap.empty()) c.compute_cap = get_compute_capability();
                 if (device_flags.uses_libdevice) {
                     if (c.libdevice_path.empty()) c.libdevice_path = find_libdevice();
                     link_libdevice(c);
