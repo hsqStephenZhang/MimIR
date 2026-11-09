@@ -5,6 +5,7 @@
 跨 item 归约、cp.async 多级流水和 tensor-core fragment——使每一步都有参考语义和明确的合法性条件。
 它是设计草案，不描述已实现的类型；§2 说明现状，§3–§4 是目标模型，§5 是落地顺序。
 初稿经 codex 审阅（`gpu-tiling-formalization-review.zh-CN.md`），本文已按其确认的问题修订。
+本文以 IREE 为主要实现参照：两者都在结构化 op 上做 op→op 的多级 tiling，并把各级绑定到 GPU 执行层次。
 
 ## 1. 论文模型及其边界
 
@@ -116,13 +117,17 @@ superstep    = forall item ∈ items. (本地计算 ; 对 shared 的写)
 ```
 
 - **一致值**（不依赖 item 号）在参考语义里只算一次；实现里由 `forall item` 分摊（协作填充），这正是 `cooperative` 循环。
-- **必须建立的 happens-before 边可以推导**：若值 v 在超步 k 由分布 D₁ 写入 shared，在超步 k' > k 由分布 D₂ 读取，且存在跨 item 的读，
-  则 k 与 k' 之间需要一个 barrier。现在的 `staged`/`chained`/`fence` 是这条规则的手写特例。barrier 放在哪里、是否合并、
-  用 CTA barrier 还是 mbarrier，仍是调度选择。
+- **必须建立的 happens-before 边由产生 shared 读写的变换结构化建立**：tile、promotion、跨 item 归约和 pipeline 在构造 shared
+  生产/消费时同时插入同步；同步尽量挂在 stage 产生的值上，采用与 IREE `iree_gpu.value_barrier` 相同的值语义视角。
+  现在 staged 填充、`lower_tile_fold` 流水循环顶部和 R8 各轮的 `fence` 已是这种做法的手写实例。首选由组合子固定
+  barrier 的作用域、动态实例和相对位置，而不是在事后对整个函数推导 barrier。
 - 合法性 `DRF(superstep)`：同一超步内，不同 item 对同一 shared 位置没有写-写或读-写冲突；barrier 只出现在一致控制流上，
   同一作用域、同一动态实例被所有参与者到达，并提供所需的顺序与可见性（不只是控制上的会合）。
   在这些前提下，且限定在无原子、无异步代理访问、无 warp collective 的子语言里，BSP 程序对可观察输出精化（`⊑obs`）
   保持每线程程序序与超步边界的顺序程序。不能依赖"warp 内隐式同步"：Volta 之后的独立线程调度不提供它。
+- 上述 DRF 保证的范围是这些受控构造生成的静态 shared 面板、结构化控制流、已知分布和已知别名关系。若布局、别名、控制一致性
+  或异步完成关系超出构造器可知范围，则退回更强的 workgroup barrier、同步 copy、取消 shared 复用/协作分布，最终可退回串行；
+  不能以用户保证代替。受限 BSP 检查器只作为调试验证，检查构造器是否兑现不变量，不是正确性的来源。
 - R8（跨 item 归约）是 BSP 里的一个超步序列：私有 fold → 写 partial → barrier → 树形合并若干轮。
   它额外需要归约律 `ParallelFold(step, seed, merge, mode)`，至少表达 `fold(seed, X ++ Y) ≈ merge(fold(seed, X), fold(seed, Y))`，
   以及 `ReductionPartition` 的覆盖（`lower_to_mem.cpp:3053` 的漏洞即违反此条）。
@@ -183,7 +188,7 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 | T2 | `Covers`/`Subview` 的 Bool 条件 | `tile_of_box` | preimage/image 计算（返回带理由的结果） |
 | T3 | `LayoutExpr`、放置 | `stage` | 代价模型选择 L |
 | T4 | `Dist` 项及覆盖模式、launch 形状 | `gpu.launch` | 动态形状下的覆盖证明 |
-| T5 | 超步结构、一致性判定的结果、归约律 witness | `gpu.fence`（barrier） | 依赖与 DRF 检查（受限子语言上） |
+| T5 | 超步结构、stage 值及其同步、归约律 witness | `gpu.fence`（barrier） | 产生 shared 读写的变换按构造插入；受限 DRF/一致性检查仅作可选调试验证 |
 | T6 | `pipeline n` 作为 tile_fold 的变换子 | `store_async`、`async_commit`、`async_wait_group` | 环的生成（或写成 Mim 定义） |
 | T7 | `Frag` 类型、L_A/L_B/L_C、`Addr_LD`/`Transfer_LD`、ldmatrix/mma 的参考定义 | `mma_tf32`、`ldmatrix`、TF32 转换 | ISA 的 fragment 表、intrinsic ABI、对齐与收敛前提（后端可信边界） |
 
@@ -194,8 +199,8 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 - **影响语义、跨 pass 的信息进入 IR，lowering 内部的缓存不必。** 旁表分三类：必须成为项的（选出的物理布局、fragment 布局、
   流水深度、所有者与作用域）；可以重算但要验证的（一致性、依赖、覆盖）；纯 lowering 缓存（`fresh_memo_`、`storage_shapes_`、
   `fill_inner_`、`multiples_` 这类）。目标是消除第一类旁表，不是消除所有旁表。
-- **同步的必要边由推导得出，放置仍是选择。** `cooperative/staged/chained/async` 四个标签各编码了一种 barrier 放置；
-  BSP 模型下必须满足的 happens-before 由数据依赖与分布推出，标签退化为实现提示。
+- **同步由 shared 生产/消费构造建立。** `cooperative/staged/chained/async` 四个标签目前编码 barrier 放置；目标是由 tile、stage、
+  R8 和 pipeline 组合子直接产生值语义同步及后端 barrier。可选检查器可以复核其 happens-before 与一致到达，但不重新承担全局推导。
 - **证明义务的形状只在纯函数部分与论文一致。** T1–T3 只需证明"实现 ≡value 参考（在 P 下）"一次，再加 rewriter 与部分求值的正确性；
   T5–T7 还需要 GPU 内存模型、并发、生命周期、数值近似与 collective 的未定义行为，不能只复用论文的三项义务。
 
@@ -203,8 +208,8 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 
 | 方式 | 含义 | 例子 |
 |---|---|---|
-| 构造即正确 | 组合子的形式本身蕴含 P；由开发者对组合子论证一次 | 网格公式生成的分块满足 ExactCover；`LayoutExpr` 的每个构造子（perm、常数 split、pad、块旋转）都是单射，组合后仍是单射；pipeline 变换子生成的环满足 AsyncSafe；ISA 给出的 fragment 布局表 |
-| 可判定检查 | 编译器对具体实例自动判定，条件归一化为 `tt` 才应用 | OrderedChunk（切的是否最外层归约维）；Covers/Subview（仿射 preimage/image）；受限子语言上的 DRF 与 barrier 一致性；已知 combiner 的归约律（整数 `+`、`max` 等） |
+| 构造即正确 | 组合子的形式本身蕴含 P；由开发者对组合子论证一次 | 网格公式生成的分块满足 ExactCover；`LayoutExpr` 的每个构造子（perm、常数 split、pad、块旋转）都是单射，组合后仍是单射；产生 shared 读写的 stage/R8/pipeline 构造同时建立同步；pipeline 变换子生成的环满足 AsyncSafe；ISA 给出的 fragment 布局表 |
+| 可判定检查 | 编译器对具体实例自动判定，条件归一化为 `tt` 才应用；同步检查可作为调试断言 | OrderedChunk（切的是否最外层归约维）；Covers/Subview（仿射 preimage/image）；对构造结果做受限 DRF 与 barrier 一致性复核；已知 combiner 的归约律（整数 `+`、`max` 等） |
 | 许可 | 用户表态接受语义变化，编译器不声称等价 | `fast` 允许浮点重结合；TF32 转换；用户给的 `merge` 的结合律与交换律 |
 | 保守退路 | 以上都不成立时 | 不融合、不并行、按串行 fold；动态形状下生成运行时守卫；或作为 `refly.check` 残留报错 |
 
@@ -223,11 +228,13 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 3. **作用域与 collective 的保持检查**：绑定级不会因整块简化而消失（`tile_fuse.cpp:944`），barrier 一致可达。
 4. **选出的物理布局成为受控项**：`LayoutExpr` 支持现有 perm/split/pad/旋转子集，配有限域 Injective 检查。
 5. **T7 的 fragment 参考定义 + 差分测试**：L_A/L_B/L_C、`Addr_LD`/`Transfer_LD` 写成 Mim；显式 TF32 转换；CPU 上用参考定义执行同一请求比对。
-6. **T5 的受限 BSP 验证器**：仿射访问、结构化控制流、CTA shared、无原子与异步的子语言。
+6. **结构化 barrier 与值语义同步**：stage、R8 和 pipeline 在产生 shared 读写时同时产生同步；同步尽量挂在 stage 值上；
+   可选的受限 BSP 调试检查覆盖仿射访问、结构化控制流、CTA shared 以及受控异步形态。
 7. **T6 的 `pipeline` 变换子**：把 `-X tensor:pipeline` 变成链上的参数，`AsyncSafe` 由 T5 的超步结构给出。
 
-风险：语义上最难的是 T5（GPU 内存模型与 collective 收敛很难压成一个 Bool）；工程迁移最大的是 T3（触及 buffer 类型、
-物理形状、向量访问与 mma 面板）；最先能抓到真实 bug 的是第 1 步，其次是第 5 步的差分测试。
+风险：T5 不再要求一个全局分析器证明正确性；其剩余难点是为每个 shared 构造审清 GPU 内存模型前提、异步完成与 collective
+一致到达，并让可选检查器发现构造器回归。工程迁移最大的是 T3（触及 buffer 类型、物理形状、向量访问与 mma 面板）；
+T6 的环槽生命周期和 wait/barrier 配对仍需逐个构造论证。最先能抓到真实 bug 的是第 1 步，其次是第 5 步的差分测试。
 
 ## 6. 开放问题
 
@@ -240,8 +247,14 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 
 ## 7. 相关工作
 
+- IREE：GPU `LoweringConfigAttr` 的 `TilingLevel`（Workgroup、Reduction、PartialReduction、Serial、Thread、Subgroup、Lane）在
+  结构化 op 上驱动多级 tile-and-fuse，并由 vector distribution 把内层 tile 分发到 subgroup/lane；`MMAIntrinsicAttr` 与
+  `MMASingleSubgroupLayout` 描述 MMA 及每 lane 的分布；`iree_gpu.value_barrier` 为 tensor/vector 提供值语义同步。它与 MimIR 的
+  level 链起点相同，都是 op→op 的多级 tiling 并绑定执行层次，因此本文以 IREE 为主基准。
 - Halide / TVM：`gpu_blocks`/`gpu_threads`、`compute_at`、`store_in(GPUShared)`、`cache_read(scope)`——调度是 DSL，合法性靠边界推断，不是 IR 中的项。
 - TensorIR（TVM）：block 的 iter var 绑定与作用域验证，最接近 T4/T5 的检查器。
 - Graphene（ASPLOS'23）：把 GPU 张量计算建模为按线程层次分解的张量与布局，与 T3/T7 的布局和 `Frag` 最接近。
-- CuTe / Triton linear layouts：布局代数，可作为 T7 中 L 的一般形式。
+- CuTe / Triton `LinearLayout`：布局表示、组合、求逆、XOR swizzle 与 MMA fragment 双射，可作为 T3/T7 中 L 的一般形式；
+  Triton 的 block 级 tile 编程模型不是本文多级 op→op tiling 的主基准。
+- Triton MMA/ldmatrix lowering 与 dot `inputPrecision`：作为 T7 的指令映射和显式 TF32 语义参照。
 - Fireiron：数据移动作为一等公民，对应 T3 的 stage 与 T6 的异步拷贝。
