@@ -250,3 +250,40 @@ K10 与 PyTorch 测的 cuBLAS（0.679 ms）持平，是这块卡的上限。
 
 - 展开阈值对 8×8/64 配置反而有害（0.770 → 0.827，0.843 → 0.836），所以不改 nvptx 的默认，只作为该配置的旋钮。
 - vec 级 `(2, (1, 0, 16), …)` 的 Mim 层 k 展开：64 配置 0.836 ms（略慢），8×8/8×16 编译时 `Check::alpha` 递归爆栈，`ulimit -s unlimited` 后 8×8 为 0.824 ms。
+
+## A100：cp.async 流水与 TF32 tensor core（2026-11-09）
+
+机器：A100-PCIE-40GB（sm_80），驱动 580，CUDA 12.9，LLVM 20（`opt` 需 `-X nvptx:Xopt='-passes="default<O2>,function(nvvm-reflect)"'`）。
+计时改用 `krun.sh` + `kbench.cpp`：直接加载 cubin，在同一个 context 里背靠背 launch 200 次取中位数。
+生成的 host 代码每次调用都重建 context，GPU 时钟在两次 kernel 之间回落到 210 MHz，nsys 单次测量不可靠。
+基线（cuBLAS 12.9 / PyTorch 2.14 cu126，CUDA event 中位数）：
+
+| n | cuBLAS FP32 | PyTorch FP32 | cuBLAS TF32 |
+|---|---:|---:|---:|
+| 1024 | 0.244 ms | 0.219 ms | 0.057 ms |
+| 2048 | 1.242 ms | 1.528 ms | 0.269 ms |
+| 4096 | 7.256 ms | 7.907 ms | 1.584 ms |
+
+FP32（SIMT）生成 kernel：
+
+| 配置 | 1024 | 4096 | 相对 cuBLAS FP32（4096） |
+|---|---:|---:|---:|
+| G3 64×64，4×4 | 0.421 ms | 11.07 ms | 66% |
+| G3 128×128，8×8 | 0.504 ms | 9.28 ms | 78% |
+| 同上，`-X tensor:pipeline=2` | 0.481 ms | 9.30 ms | 78% |
+
+`pipeline=2` 让 k 循环带两套面板，下一块的填充在 sm_80 上发为 `cp.async`（`LDGSTS`），每块一次 barrier。
+SIMT kernel 每个 SM 驻留多个 block，访存延迟已被掩盖，瓶颈在 FMA 与 shared 读，所以流水基本不提速，默认关闭。
+
+TF32 tensor core（`group_warp ((64, 32, 0), 1, warp_red ((0, 0, 16), 1, 3, warp_mma (16, 8, 8)))`，128×128 work-group，8 个 warp）：
+
+| 配置 | 1024 | 2048 | 4096 | 相对 cuBLAS TF32（4096） |
+|---|---:|---:|---:|---:|
+| 生成，无流水 | 0.138 ms | — | — | — |
+| **生成，`pipeline=2`** | **0.102 ms** | **0.503 ms** | **2.168 ms** | **73%** |
+| 手写 Mim（`gemm_tc.py`，同结构） | 0.102 ms | 0.501 ms | 2.146 ms | 74% |
+
+- A 面板强制为 (m, k)、k 最内、行宽 pad 到 20，fragment 由 `ldmatrix.x4` 读；B 面板 (k, n)、pad 8，标量读 b0/b1，无 bank conflict。
+- 累加器是每个 lane 的 SSA 值 `«(WM/16)·(WN/8); «4; F32»»`，跨 k 块留在寄存器，最后按 PTX 的 C 布局写回。
+- tensor core 上流水是必要的：没有它 1024³ 慢 35%。
+- 4096³ 下约为 FP32 cuBLAS 的 3.3 倍；与 cuBLAS TF32 的差距来自两级流水（cuBLAS 用 3–4 级）、B 面板的标量读和 128×128 的固定 tile。

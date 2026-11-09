@@ -95,6 +95,16 @@ private:
     const Def* lower_tiled(const App*, const Destination* = nullptr);
     const Def* lower_tiled_n(const App*);
     const Def* lower_tile_fold(const App*);
+    /// A warp's accumulator held as tensor-core fragments: every lane keeps a value of `count` `«4; F32»` of the
+    /// `rows × cols` tile, fragment `mi · cols / n + ni` covering rows `mi · m + …` and columns `ni · n + …` in the PTX
+    /// layout.
+    struct Fragments {
+        u64 rows, cols, m, n;
+        u64 count() const { return rows / m * (cols / n); }
+    };
+    const Def* lower_mma(const App*, const Destination&, const Fragments&);
+    std::pair<const Def*, Layout> mma_panel_layout(const Def* storage, size_t inner);
+    const Def* store_fragments(const Def* source, const Fragments&, const Destination&);
     DefVec staged_panels(const Def* root, const Def* var) const;
     const Def* merge_of(const Def*) const;
     std::tuple<const Def*, u64, const Def*> peel_step(const Def*) const;
@@ -196,6 +206,10 @@ private:
     const Def* filled_mem_ = nullptr;
     /// The work-group buffers that uniform fills wrote.
     DefSet shared_fills_;
+    /// The warp accumulators in fragment form, by value.
+    DefMap<Fragments> fragments_;
+    /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.
+    bool mma_panels_ = false;
     bool uniform(const Def*) const;
     std::function<const Def*(const Def*)> cooperative();
     const Def* shared_mem(const Def*);

@@ -1728,7 +1728,8 @@ axm report_groups: compile.Phase;
 /// Identity request for multi-level tile-and-fuse of root `op`.
 /// `members` are the producers the partition placed in `op`'s group; only they are fused.
 /// `levels` lists the levels outermost first as a chain whose type names the scope its levels run in:
-/// `TileLevels` for serial code, `GroupLevels` inside a work-group, `ItemLevels` inside a work-item.
+/// `TileLevels` for serial code, `GroupLevels` inside a work-group, `ItemLevels` inside a work-item,
+/// `WarpLevels` inside a warp, whose 32 work-items compute its tile together.
 /// Entering a work-group or a work-item continues in the next chain, so a level the scope does not offer,
 /// such as a work-item bound reduction outside a work-group, does not type-check.
 /// `control: FuseQuery → FuseDecision` decides, per candidate, whether to fuse and whether to yield.
@@ -1741,6 +1742,9 @@ axm report_groups: compile.Phase;
 /// `RedItems` splits a reduction over the work-items and merges their partials: `Combiner` derives the merge
 /// from a combiner `op (acc, e)`, `Merge` names it for any other combiner; it must be associative and
 /// commutative with the seed as its identity.
+/// `Mma` computes a warp's reduction block on tensor cores with TF32 inputs; `shape` is the instruction's
+/// tile of the root's loops, `(16, 8, 8)` for a matrix product, and divides the warp's tile and block.
+/// Promoted inputs of a reduction inside a warp are staged as panels over the whole work-group's tile.
 /// The CPU lowering runs bound levels as loops.
 ///
 anx nom TileMerge (Acc: *) = | Combiner | Merge: [Acc, Acc] → Acc;
@@ -1757,12 +1761,17 @@ anx mutual
         | Item: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)]
         | Red: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)]
         | RedItems: [sizes: «n; Nat», tail: Nat, merge: TileMerge Acc, rest: GroupLevels (n, Acc)]
-        | Vec: [sizes: «n; Nat», rest: GroupLevels (n, Acc)];
+        | Vec: [sizes: «n; Nat», rest: GroupLevels (n, Acc)]
+        | Warp: [sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc)];
     nom ItemLevels (n: Nat, Acc: *) =
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)]
         | Red: [sizes: «n; Nat», tail promote: Nat, rest: ItemLevels (n, Acc)]
         | Vec: [sizes: «n; Nat», rest: ItemLevels (n, Acc)];
+    nom WarpLevels (n: Nat, Acc: *) =
+        | Done
+        | Red: [sizes: «n; Nat», tail promote: Nat, rest: WarpLevels (n, Acc)]
+        | Mma: [shape: «n; Nat»];
 end
 ///
 /// The constructors as functions, so a chain infers `n` and `Acc` from the request.
@@ -1789,6 +1798,8 @@ anx lam group_red_merge {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, merge: [
     (GroupLevels (n, Acc))#RedItems (sizes, tail, (TileMerge Acc)#Merge merge, rest);
 anx lam group_vec {n: Nat, Acc: *} (sizes: «n; Nat», rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
     (GroupLevels (n, Acc))#Vec (sizes, rest);
+anx lam group_warp {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc)): GroupLevels (n, Acc) =
+    (GroupLevels (n, Acc))#Warp (sizes, tail, rest);
 anx lam item_done {n: Nat, Acc: *} (_: []): ItemLevels (n, Acc) = (ItemLevels (n, Acc))#Done;
 anx lam item_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
     (ItemLevels (n, Acc))#Par (sizes, tail, rest);
@@ -1796,6 +1807,10 @@ anx lam item_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: I
     (ItemLevels (n, Acc))#Red (sizes, tail, promote, rest);
 anx lam item_vec {n: Nat, Acc: *} (sizes: «n; Nat», rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
     (ItemLevels (n, Acc))#Vec (sizes, rest);
+anx lam warp_done {n: Nat, Acc: *} (_: []): WarpLevels (n, Acc) = (WarpLevels (n, Acc))#Done;
+anx lam warp_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: WarpLevels (n, Acc)): WarpLevels (n, Acc) =
+    (WarpLevels (n, Acc))#Red (sizes, tail, promote, rest);
+anx lam warp_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpLevels (n, Acc) = (WarpLevels (n, Acc))#Mma shape;
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
 axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *, n: Nat}
@@ -1805,9 +1820,15 @@ axm tile_group: compile.Phase;
 ///
 /// ### bind
 ///
-/// Identity annotation on the body of a `tiled` or `tiled_multi` region: `to` is the level's `TileLevel#bind`.
+/// Identity annotation on the body of a `tiled` or `tiled_multi` region: `to` is the level's binding, 1 for a
+/// work-group, 2 for a work-item and 3 for a warp.
 ///
 axm bind: {T: *} → [to: Nat] → T → T;
+///
+/// Identity annotation on a reduction block that a warp computes on tensor cores with TF32 inputs; `shape` is the
+/// instruction's tile of the block's loops.
+///
+axm mma: {T: *} → [n: Nat, shape: «n; Nat»] → T → T;
 ///
 /// `merge_with merge step` marks a bound reduction's step with the merge of two partial accumulators, for a
 /// combiner that is not `op (acc, e)`; `merge` must be associative and commutative with the seed as its identity.

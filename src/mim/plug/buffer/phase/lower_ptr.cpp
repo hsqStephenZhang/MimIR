@@ -86,6 +86,10 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         auto [mem2, ptr] = mem::op_alloc(w.arr(s, T), mem)->projs<2>();
         auto mem3        = w.call<mem::store>(Defs{mem2, ptr, w.pack(s, val)});
         return w.tuple({mem3, ptr});
+    } else if (auto ld = Axm::isa<gpu::buf_ldmatrix>(app)) {
+        auto [n, mem, buf, idx] = ld->args<4>([this](const Def* d) { return rewrite(d); });
+        auto row                = mem::op_lea_tuple(buf, idx);
+        return w.app(w.app(w.annex<gpu::ldmatrix>(), w.lit_nat_0()), {n, mem, row});
     } else if (auto buf_alloc_copy = Axm::isa<gpu::buf_alloc_copy>(app)) {
         auto [m0, m1, ptr] = buf_alloc_copy->args<3>([this](const Def* d) { return rewrite(d); });
         return w.call(gpu::alloc_copy::block, Defs{m0, m1, ptr});

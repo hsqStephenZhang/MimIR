@@ -31,9 +31,11 @@ const App* bound_loop(const Def* def, bind id) {
 std::optional<u64> item_count(const Def* def, DefSet& seen) {
     if (auto [_, ins] = seen.emplace(def); !ins) return {};
     auto count = std::optional<u64>();
-    if (auto loop = bound_loop(def, bind::item)) {
+    auto warp  = bound_loop(def, bind::warp);
+    if (auto loop = warp ? warp : bound_loop(def, bind::item)) {
         count = trip_count(loop->uncurry_args<3>()[2]);
         if (!count) loop->blame("gpu.outline requires a literal work-item count").bail();
+        if (warp) *count *= 32;
     }
     for (auto op : def->ops()) {
         if (!op || op->isa<Var>()) continue;
@@ -95,17 +97,27 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         if (item_id_) app->blame("gpu.outline: a work-group loop cannot nest inside a kernel").bail();
         return outline(app);
     }
-    if (auto loop = bound_loop(app, bind::item)) {
+    if (Axm::isa<gpu::lane_id>(app)) {
+        if (!lane_) app->blame("gpu.outline: a lane id must nest inside a warp loop").bail();
+        return lane_;
+    }
+    auto warp = bound_loop(app, bind::warp);
+    if (auto loop = warp ? warp : bound_loop(app, bind::item)) {
         if (!item_id_) app->blame("gpu.outline: a work-item loop must nest inside a work-group loop").bail();
         auto [annotated, exit, args] = loop->uncurry_args<3>();
         auto body                    = Axm::isa<gpu::bind>(annotated)->arg()->isa_mut<Lam>();
         if (!body) app->blame("gpu.outline requires a lambda loop body").bail();
         auto init   = args->proj(4, 3);
         auto inside = fe::Restore(in_item_, true);
-        auto count  = trip_count(args);
+        auto width  = warp ? 32 : 1;
+        auto index  = warp ? w.call(core::shr::l, Defs{item_id_, w.lit_i64(5)}) : item_id_;
+        auto lane  = fe::Restore(lane_, warp ? w.call(core::bit2::and_, core::Mode::none, Defs{item_id_, w.lit_i64(31)})
+                                             : lane_);
+        auto count = trip_count(args);
+        if (count) *count *= width;
         if (!count || *count >= n_items_) {
             push();
-            map(body->var(), {item_id_, rewrite(init), rewrite(exit)});
+            map(body->var(), {index, rewrite(init), rewrite(exit)});
             auto value = rewrite(body->body());
             pop();
             return value;
@@ -117,7 +129,7 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         skip->app(true, rewrite(exit), skip->var());
         auto run = w.mut_con(new_init->type())->set("itemRun");
         push();
-        map(body->var(), {item_id_, run->var(), rewrite(exit)});
+        map(body->var(), {index, run->var(), rewrite(exit)});
         run->set(false, rewrite(body->body()));
         pop();
         auto in_range = w.call(core::icmp::ul, Defs{item_id_, w.lit_i64(*count)});

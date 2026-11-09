@@ -247,7 +247,15 @@ anx lam synced_scope (m1: GlobalM, m3: SharedM,
 /// A `staged` loop is cooperative with a barrier before only, and a `chained` one with no barrier at all: a later `fence` publishes their writes.
 /// An `async` loop is chained, and its stores into shared memory become `store_async`; an `async_wait` before the `fence` publishes them.
 ///
-axm bind.(group, item, cooperative, staged, chained, async): {T: *} → T → T;
+/// A `warp` loop runs one iteration per warp of 32 work-items, which see their lane as `lane_id ()`.
+///
+axm bind.(group, item, cooperative, staged, chained, async, warp): {T: *} → T → T;
+///
+/// #### lane_id
+///
+/// The work-item's lane in its warp inside a `warp` loop; `gpu.outline` resolves it.
+///
+axm lane_id: [] → I64;
 ///
 /// #### store_async
 ///
@@ -304,6 +312,14 @@ axm mma_tf32: [«4; math.F32», «2; math.F32», «4; math.F32»] → «4; math.
 /// Work-item `i` passes the address of row `i % 8` of matrix `i / 8` and receives element `(i / 4, i % 4)` of each matrix.
 ///
 axm ldmatrix: {a: Nat} → [n: Nat, mem.M a, mem.Ptr («4; math.F32», a)] → [mem.M a, «n; math.F32»];
+///
+/// #### buf_ldmatrix
+///
+/// `ldmatrix` on the row of a work-group panel at `idx`; `buffer.lower_ptr` takes its address.
+///
+axm buf_ldmatrix: {r: Nat, s: «r; Nat»}
+                → [n: Nat, mem.M 0, buffer.Buf (r, s, «4; math.F32»), idx: «i: r; Idx s#i»]
+                → [mem.M 0, «n; math.F32»];
 ///
 /// ## Phases
 ///
