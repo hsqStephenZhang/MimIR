@@ -127,7 +127,9 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         auto new_init = rewrite(init);
         auto skip     = w.mut_con(new_init->type())->set("itemSkip");
         skip->app(true, rewrite(exit), skip->var());
-        auto run = w.mut_con(new_init->type())->set("itemRun");
+        auto run          = w.mut_con(new_init->type())->set("itemRun");
+        auto divergent    = fe::Restore(item_divergent_, true);
+        auto warp_aligned = fe::Restore(warp_aligned_, warp_aligned_ && *count % 32 == 0);
         push();
         map(body->var(), {index, run->var(), rewrite(exit)});
         run->set(false, rewrite(body->body()));
@@ -136,15 +138,24 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         return w.app(w.extract(w.tuple({skip, run}), in_range), new_init);
     }
     if (in_async_ && Axm::isa<mem::store>(app)) return store_async(app);
+    if (Axm::isa<gpu::sync_work_items>(app) && item_divergent_)
+        app->blame("gpu.outline: a work-item barrier cannot execute under a divergent item guard").bail();
     if (auto fence = Axm::isa<gpu::fence>(app)) {
         if (!item_id_) app->blame("gpu.outline: a fence must nest inside a work-group loop").bail();
+        if (item_divergent_)
+            app->blame("gpu.outline: a work-item barrier cannot execute under a divergent item guard").bail();
         return sync(rewrite(fence->arg()));
     }
+    if ((Axm::isa<gpu::ldmatrix>(app) || Axm::isa<gpu::mma_tf32>(app) || Axm::isa<gpu::buf_ldmatrix>(app))
+        && item_divergent_ && !warp_aligned_)
+        app->blame("gpu.outline: a warp collective cannot execute under a non-warp-aligned item guard").bail();
     auto async   = bound_loop(app, bind::async);
     auto chained = async ? async : bound_loop(app, bind::chained);
     auto staged  = chained ? chained : bound_loop(app, bind::staged);
     if (auto loop = staged ? staged : bound_loop(app, bind::cooperative)) {
         if (!item_id_) app->blame("gpu.outline: a cooperative loop must nest inside a work-group loop").bail();
+        if (item_divergent_ && !chained)
+            app->blame("gpu.outline: a work-item barrier cannot execute under a divergent item guard").bail();
         auto [annotated, exit, args]  = loop->uncurry_args<3>();
         auto body                     = Axm::isa<gpu::bind>(annotated)->arg();
         auto [begin, end, step, init] = args->projs<4>();

@@ -1027,7 +1027,7 @@ const Def* Levels::parallel(const Def* anchor,
     }
     // The outermost level stays a region even over the whole shape, so tile bodies own every intermediate buffer.
     // A scalar root has no grid to tile.
-    if (whole && (depth || !ro)) return tile(anchor, rest, depth + 1);
+    if (whole && !bind && !promote && (depth || !ro)) return tile(anchor, rest, depth + 1);
 
     auto box   = w.sigma({w.arr(mr.Ro, w.type_nat()), w.arr(mr.Ro, w.type_nat())});
     auto probe = w.mut_lam(box, w.type_nat());

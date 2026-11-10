@@ -1,0 +1,31 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_outline_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A work-group level that covers its enclosing serial tile still owns the nested work-item scope.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+let levels = serial_par ((8, 8, 0), 1,
+    serial_group ((0, 0, 0), 1, 0, group_item ((2, 2, 0), 1, item_done ())));
+
+extern fun gemm16 (a b: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    let root = map_reduce ((16, 16), (16, 16, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+    return (tile_req (root, (), levels, default_control));
+
+// CHECK: con tileKernel {{.*}}Idx 1{{.*}}Idx 16
+// CHECK: gpu.launch

@@ -1,0 +1,27 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+
+plugin core;
+plugin affine;
+plugin gpu;
+plugin mem;
+plugin compile;
+
+extern con bad (m: mem.M 0, return: Cn [mem.M 0]) =
+    affine.For (gpu.bind.group group_body) return (0I64, 1I64, 1I64, m)
+    where
+        con group_body (_: I64, m: mem.M 0, group_yield: Cn [mem.M 0]) =
+            affine.For (gpu.bind.item full_body) after_full (0I64, 4I64, 1I64, m)
+            where
+                con full_body (_: I64, m: mem.M 0, item_yield: Cn [mem.M 0]) = item_yield m;
+
+                con after_full (m: mem.M 0) =
+                    affine.For (gpu.bind.item item_body) group_yield (0I64, 3I64, 1I64, m);
+
+                con item_body (_: I64, m: mem.M 0, item_yield: Cn [mem.M 0]) =
+                    item_yield (gpu.fence m);
+            end;
+    end;
+
+extern lam _compile (): compile.Phase = gpu.outline;
+
+// CHECK: error: gpu.outline: a work-item barrier cannot execute under a divergent item guard

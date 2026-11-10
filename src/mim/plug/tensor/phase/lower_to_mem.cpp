@@ -1985,7 +1985,8 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         auto stride                = total;
         for (size_t d = 0; d != *rank; ++d) {
             if (counts[d] == 1) {
-                offsets[d] = w.lit_nat_0();
+                // Keep a one-tile bound region dependent on its binder so nested binding scopes cannot float out.
+                offsets[d] = total == 1 && d == 0 ? linear : w.lit_nat_0();
                 extents[d] = whole[d] ? shape->proj(*rank, d) : old.lit_nat(steps[d]);
                 continue;
             }

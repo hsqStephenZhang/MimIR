@@ -26,6 +26,8 @@ private:
     u64 n_items_         = 1;
     bool in_item_        = false;
     bool in_async_       = false;
+    bool item_divergent_ = false;
+    bool warp_aligned_   = true;
     DefVec splits_;
     DefSet shared_;
 };
