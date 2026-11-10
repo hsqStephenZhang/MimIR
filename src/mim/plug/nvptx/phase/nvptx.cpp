@@ -729,6 +729,11 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
                               f, i);
         }
         return value;
+    } else if (auto tf32 = Axm::isa<gpu::tf32_rna>(def)) {
+        auto arg = emit(tf32->arg());
+        declare("i32 @llvm.nvvm.f2tf32.rna(float)");
+        auto bits = bb.assign(name + ".i", "call i32 @llvm.nvvm.f2tf32.rna(float {})", arg);
+        return bb.assign(name, "bitcast i32 {} to float", bits);
     } else if (auto mma = Axm::isa<gpu::mma_tf32>(def)) {
         auto [a, b, c] = mma->args<3>();
         auto v_a = emit(a), v_b = emit(b), v_c = emit(c);

@@ -313,6 +313,20 @@ axm global_mem: mem.M 0 → GlobalM;
 /// Each work-item holds 4 elements of A, 2 of B and 4 of C and D in the fragment layout of the PTX ISA.
 ///
 axm mma_tf32: [«4; math.F32», «2; math.F32», «4; math.F32»] → «4; math.F32»;
+
+/// #### tf32_rna
+///
+/// Rounds the significand of an F32 to the 10 bits of TF32, to nearest with ties away from zero (`cvt.rna.tf32.f32`).
+/// `tf32_rna_ref` is its bit-level reference; Inf and NaN only lose their low 13 bits, as measured on sm_80.
+///
+axm tf32_rna: math.F32 → math.F32;
+
+anx lam tf32_rna_ref (x: math.F32): math.F32 =
+    let bits = core.bitcast I32 x;
+    let mask = 0xFFFFE000I32;
+    let special = core.icmp.e (core.bit2.and 0 (bits, 0x7F800000I32), 0x7F800000I32);
+    let rounded = core.bit2.and 0 ((core.wrap.add 0 (bits, 0x1000I32), bits)#special, mask);
+    core.bitcast math.F32 rounded;
 ///
 /// #### ldmatrix
 ///

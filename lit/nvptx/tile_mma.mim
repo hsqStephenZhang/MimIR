@@ -1,9 +1,15 @@
 // RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
 // RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
 // RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 -X tensor:tf32-rna=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
+// RUN: %FileCheck %s --check-prefix=RNA --input-file=%{s:stem}_dev.ll
 
 // The warps' blocks run as mma.sync on fragments loaded with ldmatrix from panels filled by cp.async.
 
 // CHECK: call void @llvm.nvvm.cp.async.cg.shared.global.16
 // CHECK: call { i32, i32, i32, i32 } @llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.b16.p3
+// CHECK-NOT: @llvm.nvvm.f2tf32.rna
 // CHECK: call { float, float, float, float } @llvm.nvvm.mma.m16n8k8.row.col.tf32
+
+// RNA: call i32 @llvm.nvvm.f2tf32.rna(float
+// RNA: call { float, float, float, float } @llvm.nvvm.mma.m16n8k8.row.col.tf32

@@ -1,0 +1,68 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll
+// RUN: clang %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+plugin tensor;
+plugin refly;
+plugin vec;
+plugin core;
+plugin math;
+plugin mem;
+
+use core.ops.n;
+
+let a_coords = ‹i: 128;
+    tensor.mma_m16n8k8_tf32.l_a (core.idx 0 32 (core.idx2nat i / 4), core.idx 0 4 (core.idx2nat i % 4))›;
+let b_coords = ‹i: 64;
+    tensor.mma_m16n8k8_tf32.l_b (core.idx 0 32 (core.idx2nat i / 2), core.idx 0 2 (core.idx2nat i % 2))›;
+let c_coords = ‹i: 128;
+    tensor.mma_m16n8k8_tf32.l_c (core.idx 0 32 (core.idx2nat i / 4), core.idx 0 4 (core.idx2nat i % 4))›;
+
+let a_linear = ‹i: 128; core.idx2nat (a_coords#i#0_2) * 8 + core.idx2nat (a_coords#i#1_2)›;
+let b_linear = ‹i: 64; core.idx2nat (b_coords#i#0_2) * 8 + core.idx2nat (b_coords#i#1_2)›;
+let c_linear = ‹i: 128; core.idx2nat (c_coords#i#0_2) * 8 + core.idx2nat (c_coords#i#1_2)›;
+
+let _ = refly.check (vec.is_unique a_linear, tt, "A fragment layout must be bijective");
+let _ = refly.check (vec.is_unique b_linear, tt, "B fragment layout must be bijective");
+let _ = refly.check (vec.is_unique c_linear, tt, "C fragment layout must be bijective");
+let _ = refly.check
+    (vec.scan.for_all @(Idx 128) @128
+        (λ (i: Idx 128): Bool =
+            let lane = core.idx 0 32 (core.idx2nat i / 4);
+            let reg = core.idx 0 4 (core.idx2nat i % 4);
+            let (ld_row, ld_col) = tensor.mma_m16n8k8_tf32.ld_a (lane, reg);
+            let (a_row, a_col) = tensor.mma_m16n8k8_tf32.l_a (lane, reg);
+            core.bit2.and 0 (core.idx2nat ld_row == core.idx2nat a_row,
+                             core.idx2nat ld_col == core.idx2nat a_col))
+        ‹i: 128; i›,
+     tt, "ldmatrix A composition must equal the A fragment layout");
+
+lam f (x: Nat): math.F32 = math.conv.s2f math.f32 (core.bitcast I32 x);
+
+extern fun main (_: I32, _: mem.Ptr0 (mem.Ptr0 mem.Char)): I32 =
+    let a = ‹row: 16; ‹col: 8; f (3 * core.idx2nat row + 5 * core.idx2nat col + 1)››;
+    let b = ‹row: 8; ‹col: 8; f (7 * core.idx2nat row + 2 * core.idx2nat col + 3)››;
+    let c = ‹row: 16; ‹col: 8; f (core.idx2nat row + 4 * core.idx2nat col + 2)››;
+    let af = ‹lane: 32; ‹reg: 4;
+        let (row, col) = tensor.mma_m16n8k8_tf32.l_a (lane, reg);
+        a#row#col››;
+    let bf = ‹lane: 32; ‹reg: 2;
+        let (row, col) = tensor.mma_m16n8k8_tf32.l_b (lane, reg);
+        b#row#col››;
+    let cf = ‹lane: 32; ‹reg: 4;
+        let (row, col) = tensor.mma_m16n8k8_tf32.l_c (lane, reg);
+        c#row#col››;
+    let got = tensor.mma_m16n8k8_tf32.mma_ref (af, bf, cf);
+    let ok = vec.scan.for_all @(Idx 32) @32
+        (λ (lane: Idx 32): Bool =
+            vec.scan.for_all @(Idx 4) @4
+                (λ (reg: Idx 4): Bool =
+                    let (row, col) = tensor.mma_m16n8k8_tf32.l_c (lane, reg);
+                    let reference = vec.fold.r @(math.F32, Idx 8) @8
+                        (λ (k: Idx 8, acc: math.F32): math.F32 =
+                            math.arith.add 0 (acc, math.arith.mul 0 (a#row#k, b#k#col)))
+                        (‹k: 8; k›, c#row#col);
+                    math.cmp.e 0 (got#lane#reg, reference))
+                ‹reg: 4; reg›)
+        ‹lane: 32; lane›;
+    return ((1I32, 0I32)#ok);

@@ -203,6 +203,8 @@ private:
     bool async_fill_ = false;
     /// How many blocks' panels a work-group fold keeps in flight (`-X tensor:pipeline`).
     u64 pipeline_ = 1;
+    /// Whether tensor-core operands are rounded to TF32 to nearest before `mma` (`-X tensor:tf32-rna`).
+    bool tf32_rna_ = false;
     /// `(mem, buffer)` the next uniform fill writes instead of allocating; it leaves its memory in filled_mem_.
     std::optional<std::pair<const Def*, const Def*>> fill_target_;
     /// While a pipelined fold sizes its ring: a uniform fill only allocates its panel.

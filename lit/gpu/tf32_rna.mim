@@ -1,0 +1,18 @@
+// RUN: %mim %s -o -
+
+plugin gpu;
+plugin math;
+plugin core;
+plugin refly;
+
+lam rounds (x expected: I32): Bool =
+    core.icmp.e (core.bitcast I32 (gpu.tf32_rna_ref (core.bitcast math.F32 x)), expected);
+
+let _ = refly.check (rounds (0x3F801000I32, 0x3F802000I32), tt, "a tie rounds away from zero");
+let _ = refly.check (rounds (0xBF801000I32, 0xBF802000I32), tt, "a negative tie rounds away from zero");
+let _ = refly.check (rounds (0x3F800FFFI32, 0x3F800000I32), tt, "below a tie rounds down");
+let _ = refly.check (rounds (0x3F801FFFI32, 0x3F802000I32), tt, "above a tie rounds up");
+let _ = refly.check (rounds (0x7F7FFFFFI32, 0x7F800000I32), tt, "the largest finite value overflows to Inf");
+let _ = refly.check (rounds (0x807FF000I32, 0x80800000I32), tt, "a subnormal rounds into the normal range");
+let _ = refly.check (rounds (0x7FC12345I32, 0x7FC12000I32), tt, "a NaN keeps its high payload");
+let _ = refly.check (rounds (0x7F800001I32, 0x7F800000I32), tt, "a NaN with only low payload bits becomes Inf");

@@ -175,6 +175,67 @@ anx layout_make = layout_expr.make;
 anx layout_shape = layout_expr.shape;
 anx layout_map = layout_expr.map_affine;
 anx layout_i64 = layout_expr.map_i64;
+
+/// ### mma_m16n8k8_tf32
+///
+/// Fragment coordinates follow the `mma.sync.m16n8k8` fragment tables in the PTX ISA.
+pub mod mma_m16n8k8_tf32
+pub anx lam l_a (lane: Idx 32, reg: Idx 4): [Idx 16, Idx 8] =
+    let l = core.idx2nat lane;
+    let j = core.idx2nat reg;
+    (core.idx 0 16 (l / 4 + 8 * (j % 2)), core.idx 0 8 (l % 4 + 4 * (j / 2)));
+
+pub anx lam l_b (lane: Idx 32, reg: Idx 2): [Idx 8, Idx 8] =
+    let l = core.idx2nat lane;
+    let j = core.idx2nat reg;
+    (core.idx 0 8 (l % 4 + 4 * j), core.idx 0 8 (l / 4));
+
+pub anx lam l_c (lane: Idx 32, reg: Idx 4): [Idx 16, Idx 8] =
+    let l = core.idx2nat lane;
+    let j = core.idx2nat reg;
+    (core.idx 0 16 (l / 4 + 8 * (j / 2)), core.idx 0 8 (2 * (l % 4) + j % 2));
+
+/// Lane `l` supplies row address `l % 8` of matrix `l / 8` for an x4 load.
+pub anx lam addr_ld (lane: Idx 32): [Idx 4, Idx 8] =
+    let l = core.idx2nat lane;
+    (core.idx 0 4 (l / 8), core.idx 0 8 (l % 8));
+
+/// Register `j` in lane `l` receives matrix `j` element `(l / 4, l % 4)`.
+pub anx lam transfer_ld (lane: Idx 32, reg: Idx 4): [Idx 4, Idx 8, Idx 4] =
+    let l = core.idx2nat lane;
+    (reg, core.idx 0 8 (l / 4), core.idx 0 4 (l % 4));
+
+/// The row-major A panel uses lane `l` for row `l % 16` at k offset `4 * (l / 16)`.
+pub anx lam panel_a_addr (lane: Idx 32): [Idx 16, Idx 8] =
+    let l = core.idx2nat lane;
+    (core.idx 0 16 (l % 16), core.idx 0 8 (4 * (l / 16)));
+
+pub anx lam ld_a (lane: Idx 32, reg: Idx 4): [Idx 16, Idx 8] =
+    let (matrix, matrix_row, matrix_col) = transfer_ld (lane, reg);
+    let provider = core.idx 0 32 (8 * core.idx2nat matrix + core.idx2nat matrix_row);
+    let (row, col) = panel_a_addr provider;
+    (row, core.idx 0 8 (core.idx2nat col + core.idx2nat matrix_col));
+
+lam a_at (a: «32; «4; math.F32»», row: Idx 16, col: Idx 8): math.F32 =
+    let r = core.idx2nat row;
+    let k = core.idx2nat col;
+    a#(core.idx 0 32 (4 * (r % 8) + k % 4))#(core.idx 0 4 (2 * (k / 4) + r / 8));
+
+lam b_at (b: «32; «2; math.F32»», row col: Idx 8): math.F32 =
+    let k = core.idx2nat row;
+    let n = core.idx2nat col;
+    b#(core.idx 0 32 (4 * n + k % 4))#(core.idx 0 2 (k / 4));
+
+pub anx lam mma_ref
+    (a: «32; «4; math.F32»», b: «32; «2; math.F32»», c: «32; «4; math.F32»»)
+    : «32; «4; math.F32»» =
+    ‹lane: 32; ‹reg: 4;
+        let (row, col) = l_c (lane, reg);
+        vec.fold.r @(math.F32, Idx 8) @8
+            (λ (k: Idx 8, acc: math.F32): math.F32 =
+                math.arith.add 0 (acc, math.arith.mul 0 (a_at (a, row, k), b_at (b, k, col))))
+            (‹k: 8; k›, c#lane#reg)››;
+end
 ///
 /// ### from_array
 ///

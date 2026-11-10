@@ -470,6 +470,7 @@ void LowerToMem::validate() {
 void LowerToMem::start() {
     tensor_key_ = tensor_key(old_world());
     pipeline_   = driver().arg_nat("tensor", "pipeline").value_or(1);
+    tf32_rna_   = driver().arg_nat("tensor", "tf32-rna").value_or(0) != 0;
     validate();
     RWPhase::start();
     assert(pending_.empty());
@@ -1062,6 +1063,18 @@ std::vector<u64> strides_of(const std::vector<u64>& shape) {
     for (size_t d = shape.size() - 1; d-- > 0;)
         strides[d] = strides[d + 1] * shape[d + 1];
     return strides;
+}
+
+const Def* lane_index(World& w) {
+    auto lane = w.call<core::bitcast>(w.type_nat(), w.app(w.annex<gpu::lane_id>(), w.tuple()));
+    return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(32), lane);
+}
+
+/// The `(row, col)` that a `tensor.mma_m16n8k8_tf32` coordinate map assigns to `arg`, as Nats.
+std::array<const Def*, 2> fragment_coords(World& w, Enum auto map, const Def* arg) {
+    auto [row, col]
+        = w.app(w.annex(map), arg)->template projs<2>([&](const Def* x) { return w.call<core::idx2nat>(x); });
+    return {row, col};
 }
 
 } // namespace
@@ -2482,38 +2495,41 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
     };
     auto nat  = [&](u64 v) { return w.lit_nat(v); };
     auto add  = [&](const Def* a, const Def* b) { return w.call(core::nat::add, Defs{a, b}); };
-    auto lane = w.call<core::bitcast>(w.type_nat(), w.app(w.annex<gpu::lane_id>(), w.tuple()));
-    auto div  = [&](u64 d) { return w.call(core::nat::div, Defs{lane, nat(d)}); };
-    auto rem  = [&](u64 d) { return w.call(core::nat::rem, Defs{lane, nat(d)}); };
+    auto lane = lane_index(w);
+    // Without the explicit rounding, `mma` reads the F32 operands truncated to TF32.
+    auto rounded = [&](const Def* fragment, u64 size) {
+        if (!tf32_rna_) return fragment;
+        return w.tuple(DefVec(
+            size, [&](size_t i) { return w.app(w.annex<gpu::tf32_rna>(), w.extract(fragment, w.lit_idx(size, i))); }));
+    };
     auto ms = fragments.rows / fragments.m, ns = fragments.cols / fragments.n;
     auto acc = DefVec(destination.buffer->projs(fragments.count()));
     for (u64 ks = 0; ks != depth / 8; ++ks) {
         auto a = DefVec(ms);
         for (u64 mi = 0; mi != ms; ++mi) {
-            // Lane l addresses row l % 16 of the 16×8 tile at k offset 4 · (l / 16).
-            auto [buffer, storage, physical, r] = coords(
-                0, add(nat(mi * 16), rem(16)), nat(0), add(nat(ks * 8), w.call(core::nat::mul, Defs{div(16), nat(4)})));
-            auto runs    = DefVec(storage->projs(r));
-            runs.back()  = w.call(core::nat::div, Defs{runs.back(), nat(4)});
-            auto run     = DefVec(physical->projs(r));
-            auto last    = w.call<core::idx2nat>(run.back());
+            auto [row, col]                     = fragment_coords(w, mma_m16n8k8_tf32::panel_a_addr, lane);
+            auto [buffer, storage, physical, r] = coords(0, add(nat(mi * 16), row), nat(0), add(nat(ks * 8), col));
+            auto runs                           = DefVec(storage->projs(r));
+            runs.back()                         = w.call(core::nat::div, Defs{runs.back(), nat(4)});
+            auto run                            = DefVec(physical->projs(r));
+            auto last                           = w.call<core::idx2nat>(run.back());
             run.back()   = w.call<core::idx>(w.lit_nat_0(), runs.back(), w.call(core::nat::div, Defs{last, nat(4)}));
             auto vectors = buffer::op_vectorize(nat(4), buffer);
             auto index   = *Shape(w.tuple(run)).fold(w.tuple(runs));
             auto [vr, vs, vT]    = Axm::as<buffer::Buf>(vectors->type())->args<3>();
             auto loaded          = w.app(w.app(w.annex<gpu::buf_ldmatrix>(), {vr, vs}), {nat(4), mem, vectors, index});
             std::tie(mem, a[mi]) = loaded->projs<2>();
+            a[mi]                = rounded(a[mi], 4);
         }
         auto b = DefVec(ns);
         for (u64 ni = 0; ni != ns; ++ni) {
             auto half = DefVec(2);
             for (u64 h = 0; h != 2; ++h) {
-                // Lane l holds B[k = l % 4 + 4h][n = l / 4].
-                auto [buffer, storage, physical, r]
-                    = coords(1, nat(0), add(nat(ni * 8), div(4)), add(nat(ks * 8 + 4 * h), rem(4)));
+                auto [row, col] = fragment_coords(w, mma_m16n8k8_tf32::l_b, w.tuple({lane, w.lit_idx(2, h)}));
+                auto [buffer, storage, physical, r] = coords(1, nat(0), add(nat(ni * 8), col), add(nat(ks * 8), row));
                 std::tie(mem, half[h]) = buffer::op_read(mem, buffer, *Shape(physical).fold(storage))->projs<2>();
             }
-            b[ni] = w.tuple(half);
+            b[ni] = rounded(w.tuple(half), 2);
         }
         for (u64 mi = 0; mi != ms; ++mi)
             for (u64 ni = 0; ni != ns; ++ni) {
@@ -2526,28 +2542,27 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
 
 // Writes each lane's accumulator fragments to their rows and columns of @p destination.
 const Def* LowerToMem::store_fragments(const Def* source, const Fragments& fragments, const Destination& destination) {
-    auto& w    = new_world();
-    auto rank  = Lit::as(destination.shape->arity());
-    auto nat   = [&](u64 v) { return w.lit_nat(v); };
-    auto add   = [&](const Def* a, const Def* b) { return w.call(core::nat::add, Defs{a, b}); };
-    auto lane  = w.call<core::bitcast>(w.type_nat(), w.app(w.annex<gpu::lane_id>(), w.tuple()));
-    auto group = w.call(core::nat::div, Defs{lane, nat(4)});
-    auto pair  = w.call(core::nat::mul, Defs{w.call(core::nat::rem, Defs{lane, nat(4)}), nat(2)});
-    auto ns    = fragments.cols / fragments.n;
-    auto mem   = destination.mem;
+    auto& w   = new_world();
+    auto rank = Lit::as(destination.shape->arity());
+    auto nat  = [&](u64 v) { return w.lit_nat(v); };
+    auto add  = [&](const Def* a, const Def* b) { return w.call(core::nat::add, Defs{a, b}); };
+    auto lane = lane_index(w);
+    auto ns   = fragments.cols / fragments.n;
+    auto mem  = destination.mem;
     for (u64 f = 0; f != fragments.count(); ++f) {
         auto value = source->proj(fragments.count(), f);
         for (u64 e = 0; e != 4; ++e) {
-            auto row   = add(nat(f / ns * fragments.m + 8 * (e / 2)), group);
-            auto col   = add(nat(f % ns * fragments.n + e % 2), pair);
-            auto at    = std::array{row, col};
-            auto index = w.tuple(DefVec(rank, [&](size_t d) {
+            auto [local_row, local_col] = fragment_coords(w, mma_m16n8k8_tf32::l_c, w.tuple({lane, w.lit_idx(4, e)}));
+            auto row                    = add(nat(f / ns * fragments.m), local_row);
+            auto col                    = add(nat(f % ns * fragments.n), local_col);
+            auto at                     = std::array{row, col};
+            auto index                  = w.tuple(DefVec(rank, [&](size_t d) {
                 auto coord = add(destination.origin->proj(rank, d), at[d]);
                 return w.call<core::idx>(w.lit_nat_0(), destination.shape->proj(rank, d), coord);
             }));
-            mem        = buffer::op_write(mem, destination.buffer, *Shape(index).fold(destination.shape),
-                                          w.extract(value, w.lit_idx(4, e)))
-                             ->proj(2, 0);
+            mem = buffer::op_write(mem, destination.buffer, *Shape(index).fold(destination.shape),
+                                   w.extract(value, w.lit_idx(4, e)))
+                      ->proj(2, 0);
         }
     }
     return w.tuple({mem, destination.buffer});
