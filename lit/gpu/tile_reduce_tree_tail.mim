@@ -1,0 +1,24 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_reduce_tree_tail_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+let levels = serial_group ((3, 0), 1, 0, group_red_items ((0, 8), 1, group_done ()));
+
+extern fun rowsum64 (x: tensor.Tensor 2 (6, 64) I64): tensor.Tensor 1 6 I64 =
+    return (tile_req (reduce (core.wrap.add 0 @0, 0I64) 1₂ (buf x), (), levels, default_control));
+
+// CHECK-LABEL: con tileKernel
+// CHECK: gpu.slot_shared
+// CHECK: gpu.sync_work_items
+// CHECK: core.wrap.add {{.*}} (4I64,
+// CHECK: let [[NEXT:_[0-9]+]] = core.wrap.add {{.*}} (8I64, [[PAIR:_[0-9]+]])
+// CHECK: head{{.*}} ({{.*}}, [[NEXT]])
+// CHECK: let {{_[0-9]+}} = core.icmp.{{.*}} ([[PAIR]], 12I64)
+// CHECK: gpu.launch

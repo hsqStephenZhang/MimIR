@@ -2945,11 +2945,12 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         if (!lit) app->blame("tensor.tile_fold: a work-item bound reduction needs a literal tile").bail();
         dims[d] = *lit;
     }
-    auto zero  = w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat(0); }));
-    auto el    = rewrite(element);
-    auto r     = w.lit_nat(rank);
-    auto rows  = rank ? dims[0] : 1;
-    auto prank = rank ? rank : 1;
+    auto literal_storage = w.tuple(DefVec(rank, [&](size_t d) { return w.lit_nat(dims[d]); }));
+    auto zero            = w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat(0); }));
+    auto el              = rewrite(element);
+    auto r               = w.lit_nat(rank);
+    auto rows            = rank ? dims[0] : 1;
+    auto prank           = rank ? rank : 1;
     // The partials of all work-items, stacked along the tile's first dim.
     auto pdims          = std::vector<u64>(rank ? dims : std::vector<u64>{1});
     pdims[0]            = rows * *n;
@@ -2979,25 +2980,26 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto nested         = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
         push();
         bind_old(parameter->has_var());
-        auto [pm, priv] = buffer::op_alloc(r, storage, el, item_mem)->projs<2>();
-        pm              = copy_box(pm, priv, storage, rewrite(seed), nullptr, extent, {});
+        auto [pm, priv] = buffer::op_alloc(r, literal_storage, el, item_mem)->projs<2>();
+        pm              = copy_box(pm, priv, literal_storage, rewrite(seed), nullptr, literal_storage, {});
         map(accumulator, priv);
-        if (bounded) storage_shapes_[accumulator] = storage;
+        if (bounded) storage_shapes_[accumulator] = literal_storage;
         map(offset, w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), rewrite(stride)}));
         prepare_realizations(root);
-        update = lower_into(root, {pm, priv, storage, zero, extent});
+        update = lower_into(root, {pm, priv, literal_storage, zero, extent});
         items->app(true, store, update->proj(2, 0));
         items->set(true, wrap_fresh_mem(items->body()));
         pop();
     }
     {
         // The private tile goes to the work-item's rows of the partials.
-        Lam* cur         = store;
-        const Def* exit  = yield;
-        const Def* acc   = store->var();
-        auto iters       = affine::counting_nest(cur, exit, acc, extent->projs(rank), "boundFoldStore");
-        auto [rm, value] = buffer::op_read(acc, update->proj(2, 1), btensor::folded_idx(storage, iters))->projs<2>();
-        auto at          = DefVec(iters.begin(), iters.end());
+        Lam* cur        = store;
+        const Def* exit = yield;
+        const Def* acc  = store->var();
+        auto iters      = affine::counting_nest(cur, exit, acc, literal_storage->projs(rank), "boundFoldStore");
+        auto [rm, value]
+            = buffer::op_read(acc, update->proj(2, 1), btensor::folded_idx(literal_storage, iters))->projs<2>();
+        auto at = DefVec(iters.begin(), iters.end());
         if (rank) {
             auto base = w.call(core::wrap::mul, core::Mode::none, Defs{index, w.lit_i64(rows)});
             at[0]     = w.call(core::wrap::add, core::Mode::none, Defs{base, at[0]});
@@ -3010,8 +3012,8 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     auto [after_mem, after_partials] = run_call->projs<2>();
     auto fenced                      = w.app(w.annex<gpu::fence>(), after_mem);
     auto op                          = rewrite(merge);
-    auto [rm, rbuf]                  = buffer::op_alloc(r, storage, el, shared_mem(fenced))->projs<2>();
-    transient(r, storage, el, rbuf);
+    auto [rm, rbuf]                  = buffer::op_alloc(r, literal_storage, el, shared_mem(fenced))->projs<2>();
+    transient(r, literal_storage, el, rbuf);
     auto [crun, ccall] = btensor::ds_splice(w.tuple({rm, rbuf}), w.sigma({rm->type(), rbuf->type()}), "boundCombine");
     auto [cmem, cbuf]  = crun->var(2, 0)->projs<2>();
     auto cdone         = w.mut_con(acc_ty)->set("boundCombineDone");
@@ -3050,19 +3052,17 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each fence.
     if ((*n & (*n - 1)) == 0) {
         for (u64 s = *n / 2; s != 0; s /= 2) {
-            auto pairs = s * elems, trip = std::min(*n, pairs), per = pairs / trip;
+            auto pairs = s * elems, trip = std::min(*n, pairs);
             auto next              = w.mut_con(acc_ty)->set("boundTreeDone");
             auto step              = item_loop(cur, first, trip, mem, next, "boundTreeItems");
             auto [t, tmem, tyield] = step->vars<3>();
             // The pair loop's exit is its own continuation; `lower_for` copies an exit's body into the loop.
             auto after = w.mut_con(acc_ty)->set("boundTreeAfter");
             after->app(true, tyield, after->var());
-            auto [qbody, qcall] = affine::counting_for(w.lit_i64(per), tmem, after, w.sym("boundTreePairs"));
-            step->set(true, qcall);
-            auto [q, qmem, qyield] = qbody->vars<3>();
-            auto pair    = w.call(core::wrap::add, core::Mode::none,
-                                  Defs{t, w.call(core::wrap::mul, core::Mode::none, Defs{q, w.lit_i64(trip)})});
-            auto pnat    = w.call<core::bitcast>(w.type_nat(), pair);
+            auto qbody = w.mut_con({w.type_i64(), acc_ty, w.cn(acc_ty)})->set("boundTreePairs");
+            step->set(true, w.call<affine::For>(qbody, after, Defs{t, w.lit_i64(pairs), w.lit_i64(trip), tmem}));
+            auto [pair, qmem, qyield] = qbody->vars<3>();
+            auto pnat                 = w.call<core::bitcast>(w.type_nat(), pair);
             auto i       = w.call<core::bitcast>(w.type_i64(), w.call(core::nat::div, Defs{pnat, w.lit_nat(elems)}));
             auto e       = w.call<core::bitcast>(w.type_i64(), w.call(core::nat::rem, Defs{pnat, w.lit_nat(elems)}));
             auto coords  = coords_of(e);
@@ -3080,7 +3080,8 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto [j, jmem, jyield] = citems->vars<3>();
         auto coords            = coords_of(j);
         auto [pmem, pval]      = buffer::op_read(jmem, after_partials, partial_at(w.lit_i64(0), coords))->projs<2>();
-        citems->app(true, jyield, buffer::op_write(pmem, cbuf, btensor::folded_idx(storage, coords), pval)->proj(2, 0));
+        citems->app(true, jyield,
+                    buffer::op_write(pmem, cbuf, btensor::folded_idx(literal_storage, coords), pval)->proj(2, 0));
     } else {
         // One work-item per tile element merges that element's partials in order.
         auto citems            = item_loop(cur, first, elems, mem, cdone, "boundCombineItems");
@@ -3088,7 +3089,8 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto coords            = coords_of(j);
         auto write             = w.mut_con({acc_ty, el})->set("boundCombineWrite");
         auto [wmem, wval]      = write->vars<2>();
-        write->app(true, jyield, buffer::op_write(wmem, cbuf, btensor::folded_idx(storage, coords), wval)->proj(2, 0));
+        write->app(true, jyield,
+                   buffer::op_write(wmem, cbuf, btensor::folded_idx(literal_storage, coords), wval)->proj(2, 0));
         auto [tbody, tcall]
             = affine::counting_for(w.lit_i64(*n), w.tuple({jmem, rewrite(seed)}), write, w.sym("boundCombineStep"));
         citems->set(true, tcall);
@@ -3097,7 +3099,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto [pmem, pval]      = buffer::op_read(tmem, after_partials, partial_at(t, coords))->projs<2>();
         tbody->app(true, tyield, w.tuple({pmem, w.app(op, w.tuple({tval, pval}))}));
     }
-    if (bounded) storage_shapes_[app] = storage;
+    if (bounded) storage_shapes_[app] = literal_storage;
     return scalar_result(app, ccall->proj(2, 0), ccall->proj(2, 1));
 }
 
