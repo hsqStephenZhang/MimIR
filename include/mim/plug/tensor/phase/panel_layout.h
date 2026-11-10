@@ -10,9 +10,11 @@
 /// The cost model that picks the storage layout of a work-group panel, and its `tensor.layout_expr` terms.
 namespace mim::plug::tensor::panel {
 
-/// A rotation swizzle: 16-byte chunk `c` of row `r` is stored at chunk `(c + (r >> shift) % groups) % chunks`.
+/// A swizzle of 16-byte chunk `c` of row `r` with `g = (r >> shift) % groups`: a rotation stores it at chunk
+/// `(c + g) % chunks`, an exclusive or at `c ^ g`.
 struct Swizzle {
     u64 width, groups, shift, chunks;
+    bool xored = false;
 };
 
 /// A panel's storage layout: its last dim split into `(extent / split, split)`, those dims permuted (`perm[p]` is

@@ -1,0 +1,6 @@
+// RUN: %mim %s 2>&1 | %FileCheck %s
+// CHECK: an exclusive-or swizzle needs a power-of-two chunk count
+
+plugin tensor;
+
+let invalid = tensor.layout_expr.make @(2) ((6, 24), 1, (0₃, 2₃, 1₃), (0, 0), 4, 2, 0, 6, tt);

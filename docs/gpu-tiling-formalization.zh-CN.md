@@ -90,7 +90,7 @@ warp shuffle 归约（需要 warp collective、active mask 与归约律）；per
 
 - 布局 L 取自一个**封闭的布局代数** `LayoutExpr`（perm、常数 split、pad、块旋转 swizzle），解释为 semi-affine 映射
   `«r; Index» → «p; Index»`，读 map 与它复合：`read' = L ∘ read`。现在的 `layout_lam` 就是用 `semiop.mul/floordiv/rem` 构造它；
-  现有的 swizzle 是块旋转 `chunk' = (chunk + group) mod chunks`（`panel_layout`），不需要 XOR。pad 只改变物理形状（步长），不改变坐标映射。
+  swizzle 有块旋转 `chunk' = (chunk + group) mod chunks` 与异或 `chunk' = chunk ⊕ group` 两种（`panel_layout`）；异或要求块数为 2 的幂，由 `layout_expr.make` 检查。pad 只改变物理形状（步长），不改变坐标映射。
 - 合法性 `Injective(L, s_logical, s_physical)`：在 `LayoutExpr` 上、字面量形状下可以有限枚举或用专门判定器检查；不接受任意 Mim 函数作为布局。
 - 代价模型（选哪个 L）可以留在 C++，但**选出的 L 必须是项**，挂在 stage 上，而不是旁表；这样 T5 的依赖分析和 T7 的 fragment 都能引用同一个 L。
 - 放置（`Global | Shared(group) | Private(item)`）与布局分开：前者决定所有者、生命周期与地址空间，后者只决定坐标映射，

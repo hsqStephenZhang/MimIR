@@ -1,0 +1,30 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_swizzle_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// The 16-byte chunks of a work-group panel row are swizzled by an exclusive or with a group of its row index, so the
+// work-items' reads of one panel column fall into distinct banks.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+let levels = serial_group ((64, 64, 0), 1, 0, group_item ((4, 4, 0), 1, item_red ((0, 0, 16), 1, 3, item_vec ((1, 0, 0), item_done ()))));
+
+extern fun gemm64 (a b: tensor.Tensor 2 (64, 64) F32): tensor.Tensor 2 (64, 64) F32 =
+    let root = map_reduce ((64, 64), (64, 64, 64)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+    return (tile_req (root, (), levels, default_control));
+
+// CHECK: core.bit2.xor

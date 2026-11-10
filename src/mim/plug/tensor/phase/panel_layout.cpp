@@ -100,8 +100,10 @@ struct Fill {
         for (size_t p = 1; p != shape.size(); ++p)
             col += physical[p] * strides[p];
         if (auto& swizzle = layout.swizzle) {
-            auto chunk = (col / swizzle->width + (row >> swizzle->shift) % swizzle->groups) % swizzle->chunks;
-            col        = chunk * swizzle->width + col % swizzle->width;
+            auto group = (row >> swizzle->shift) % swizzle->groups;
+            auto chunk
+                = swizzle->xored ? (col / swizzle->width) ^ group : (col / swizzle->width + group) % swizzle->chunks;
+            col = chunk * swizzle->width + col % swizzle->width;
         }
         return row * strides[0] + col;
     }
@@ -148,7 +150,7 @@ const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>
     auto make    = [&](const Def* pad) {
         return w.app(w.app(w.annex(tensor::layout_expr::make), w.lit_nat(rank)),
                      {logical, w.lit_nat(layout.split), perm, pad, w.lit_nat(swizzle.width), w.lit_nat(swizzle.groups),
-                      w.lit_nat(swizzle.shift), w.lit_nat(swizzle.chunks)});
+                      w.lit_nat(swizzle.shift), w.lit_nat(swizzle.chunks), w.lit_bool(swizzle.xored)});
     };
     auto base_expr = make(w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat_0(); })));
     if (physical.empty()) return base_expr;
@@ -310,21 +312,24 @@ Choice choose(const Def* storage, size_t inner, u64 vec, u64 bytes, const Reads*
                 u64 cols = 1;
                 for (size_t p = 1; p != shape.size(); ++p)
                     cols *= shape[p];
-                // A swizzle rotates whole chunks, so it needs the chunk as the last dim: a lane then stays a literal.
+                // A swizzle moves whole chunks, so it needs the chunk as the last dim: a lane then stays a literal.
+                // At equal cost an exclusive or wins: its chunk index needs no addition.
                 if (std::has_single_bit(cols) && cols / width >= 2 && shape.back() == width)
-                    for (u64 groups = 2; groups <= std::min<u64>(cols / width, 8); groups *= 2)
-                        for (u64 shift = 0; shift != 4; ++shift) {
-                            auto swizzled    = layout;
-                            swizzled.swizzle = Swizzle{width, groups, shift, cols / width};
-                            consider(swizzled, shape);
-                        }
+                    for (auto xored : {true, false})
+                        for (u64 groups = 2; groups <= std::min<u64>(cols / width, 8); groups *= 2)
+                            for (u64 shift = 0; shift != 4; ++shift) {
+                                auto swizzled    = layout;
+                                swizzled.swizzle = Swizzle{width, groups, shift, cols / width, xored};
+                                consider(swizzled, shape);
+                            }
             } while (std::next_permutation(perm.begin(), perm.end()));
         }
     if (!best_layout.identity() || best_shape != dims)
         w.log().d("panel {} stored as {} split={} perm={} swizzle={}", storage, fe::Join(best_shape), best_layout.split,
                   fe::Join(best_layout.perm),
                   best_layout.swizzle
-                      ? std::format("(row >> {}) % {}", best_layout.swizzle->shift, best_layout.swizzle->groups)
+                      ? std::format("{} (row >> {}) % {}", best_layout.swizzle->xored ? "xor" : "rotate",
+                                    best_layout.swizzle->shift, best_layout.swizzle->groups)
                       : "none");
     auto expr     = term(best_layout, storage, best_shape);
     auto physical = w.app(w.annex(tensor::layout_expr::shape), {expr, storage});
@@ -404,12 +409,13 @@ Choice decode(const Def* expr, const Def* storage, size_t inner, u64 vec, u64 by
     auto data = expr;
     while (auto name = data->isa<Name>())
         data = name->op();
-    auto fields  = data->projs<8>();
+    auto fields  = data->projs<9>();
     auto layout  = Layout{};
     layout.split = Lit::as(fields[1]);
     for (size_t p = 0; p != n + 1; ++p)
         if (layout.split != 1 || p != 2) layout.perm.push_back(Lit::as(fields[2]->proj(n + 1, p)));
-    auto swizzle = Swizzle{Lit::as(fields[4]), Lit::as(fields[5]), Lit::as(fields[6]), Lit::as(fields[7])};
+    auto swizzle = Swizzle{Lit::as(fields[4]), Lit::as(fields[5]), Lit::as(fields[6]), Lit::as(fields[7]),
+                           Lit::as(fields[8]) != 0};
     if (swizzle.width != 1 || swizzle.groups != 1 || swizzle.shift != 0 || swizzle.chunks != 1)
         layout.swizzle = swizzle;
     layout.permuted = permuted_dims(dims, layout);

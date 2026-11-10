@@ -274,6 +274,10 @@ const Def* LowerIndex::rewrite_imm_App(const App* app) {
                 auto [a, b] = rewrite(app->arg())->projs<2>();
                 return w.call(core::wrap::sub, core::Mode::none, Defs{a, b});
             }
+            case affine::op::xor_: {
+                auto [a, b] = rewrite(app->arg())->projs<2>();
+                return w.call(core::bit2::xor_, core::Mode::none, Defs{a, b});
+            }
             case affine::op::neg: {
                 auto a = rewrite(app->arg());
                 return w.call(core::wrap::sub, core::Mode::none, Defs{w.lit(w.type_i64(), 0), a});

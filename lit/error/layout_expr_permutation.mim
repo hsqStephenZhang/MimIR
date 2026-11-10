@@ -3,4 +3,4 @@
 
 plugin tensor;
 
-let invalid = tensor.layout_expr.make @(2) ((2, 4), 1, (0₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1);
+let invalid = tensor.layout_expr.make @(2) ((2, 4), 1, (0₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1, ff);

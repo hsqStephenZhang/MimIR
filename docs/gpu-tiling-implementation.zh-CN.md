@@ -165,7 +165,10 @@ anx nom CoverMode =
 > 写成 `tensor.placed L (stage …)`，成本模型移到 `phase/panel_layout.cpp`，LowerToMem 不再选择，只解码该项。
 > TileFuse 用代换 region 外延上界的方式复现 LowerToMem 特化后看到的面板形状、连续维、向量宽度和 item 读取；
 > 33 个 GPU 配置（`lit/nvptx/tile_*`、`mma*` 与 `bench/gpu_tiling`）的选择与原实现逐一相同。
-> `layout_expr.Data` 改为 annex，使布局值跨 phase 保持同一类型。未做：布局进入 buffer 类型、XOR swizzle。
+> `layout_expr.Data` 改为 annex，使布局值跨 phase 保持同一类型。
+> XOR swizzle：`Data` 增加 `xor` 字段，`make` 检查块数为 2 的幂（异或小于块数的组号是块的置换），`IndexOps` 增加 `xor`，
+> affine 侧新增 `affine.op.xor`；成本模型在银行冲突代价相同时优先 XOR（块号不需加法），`gemm_tiled_g3*` 因此由旋转改为 XOR。
+> 未做：布局进入 buffer 类型。
 
 ## IREE 主线
 
