@@ -108,7 +108,7 @@ private:
     const Def* store_fragments(const Def* source, const Fragments&, const Destination&);
     DefVec staged_panels(const Def* root, const Def* var) const;
     const Def* merge_of(const Def*) const;
-    std::tuple<const Def*, u64, const Def*> peel_step(const Def*) const;
+    std::tuple<const Def*, u64, const Def*, u64> peel_step(const Def*) const;
     const Def* lower_bound_fold(const App*,
                                 Lam*,
                                 const Def*,
@@ -201,8 +201,6 @@ private:
     bool fence_pending_ = false;
     /// The fills of a pipelined fold copy asynchronously; its loop waits for them before its fence.
     bool async_fill_ = false;
-    /// How many blocks' panels a work-group fold keeps in flight (`-X tensor:pipeline`).
-    u64 pipeline_ = 1;
     /// Whether tensor-core operands are rounded to TF32 to nearest before `mma` (`-X tensor:tf32-rna`).
     bool tf32_rna_ = false;
     /// `(mem, buffer)` the next uniform fill writes instead of allocating; it leaves its memory in filled_mem_.

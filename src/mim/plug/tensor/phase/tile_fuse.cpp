@@ -163,10 +163,12 @@ const Def* close(const Def* value, const Var* var, const Def* binder, const DefV
 
 /// One level of a `tile_req`: `kind` 0 parallel, 1 reduction, 2 vector, 3 tensor-core block; `bind` 0 serial,
 /// 1 work-group, 2 work-item, 3 warp.
+/// `pipeline` is a reduction's depth inside a work-group, 0 until TileFuse::realize resolves the default.
 struct LevelSpec {
     u64 kind, tail, promote, bind;
     const Def* sizes;
     const Def* merge;
+    u64 pipeline = 1;
 };
 
 /// The levels of a `tile_req` chain, outermost first; `nullopt` unless the chain is a literal value.
@@ -208,6 +210,11 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
             auto promote = lit(2);
             if (!promote) return std::nullopt;
             spec.promote = *promote;
+        }
+        if (spec.kind == 1 && spec.bind == 0 && scope != Serial) {
+            auto pipeline = lit(3);
+            if (!pipeline) return std::nullopt;
+            spec.pipeline = *pipeline;
         }
         if (spec.kind == 1 && spec.bind == 2) {
             auto option = field(2);
@@ -799,6 +806,7 @@ private:
                          u64 promote,
                          u64 bind,
                          const Def* merge,
+                         u64 pipeline,
                          fe::Span<const LevelSpec> rest,
                          u64 depth);
     const Def* vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const LevelSpec> rest, u64 depth);
@@ -992,8 +1000,8 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64
     switch (level.kind) {
         case 0: return parallel(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, rest, depth);
         case 1:
-            return reduction(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, level.merge, rest,
-                             depth);
+            return reduction(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, level.merge,
+                             level.pipeline, rest, depth);
         case 2: return vector(root, rn, literal, rest, depth);
         default: return mma(root, rn, literal, depth);
     }
@@ -1216,6 +1224,7 @@ const Def* Levels::reduction(const Def* anchor,
                              u64 promote,
                              u64 bind,
                              const Def* merge,
+                             u64 pipeline,
                              fe::Span<const LevelSpec> rest,
                              u64 depth) {
     auto& w   = world();
@@ -1326,6 +1335,8 @@ const Def* Levels::reduction(const Def* anchor,
     inner->set(true, close(value, var, step->var(), inputs, inner->var()));
     // A bound reduction's blocks run on the work-items, each folding its own seed; `lower_to_mem` merges them.
     const Def* marked = inner;
+    if (pipeline > 1)
+        marked = w.app(w.app(w.app(w.annex<tensor::pipeline>(), marked->type()), w.lit_nat(pipeline)), marked);
     if (merge) marked = w.app(w.app(w.app(w.annex<tensor::merge_with>(), {inner->type(), mr.To}), merge), marked);
     if (bind) marked = w.app(w.app(w.app(w.annex<tensor::bind>(), marked->type()), w.lit_nat(bind)), marked);
     step->set(true, marked);
@@ -1466,7 +1477,9 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
         return op;
     }
     auto level_list = std::move(*parsed);
-    auto group      = members_of(members);
+    for (auto& level : level_list)
+        if (level.pipeline == 0) level.pipeline = driver().arg_nat("tensor", "pipeline").value_or(1);
+    auto group = members_of(members);
     DefSet in_group(group.begin(), group.end());
     Levels realizer(log(), request, in_group, outside, driver().arg_nat("tensor", "strict").value_or(0));
     if (auto root = graph::map_reduce(op))

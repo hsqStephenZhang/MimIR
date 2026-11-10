@@ -306,6 +306,11 @@ wait 与环槽生命周期；它不推导 barrier，也不是正确性依据。
 
 # 7. T6：pipeline 作为 level-chain 参数
 
+> 结论（2026-11-10）：Group/Item/Warp 链的 `Red` 增加 `pipeline: Nat` 字段，构造子 `*_red_pipelined` 写入深度，`*_red` 写 0；
+> TileFuse 把 0 解析为 `-X tensor:pipeline`（默认 1），深度大于 1 时把 step 写成 `tensor.pipeline depth (…)`；
+> LowerToMem 从标注读深度，不再读命令行。未实现 `PipelineKind`：同步与 `cp.async` 由目标架构决定，链上没有使用者；
+> `lower_tile_fold` 的环生成尚未提取为独立 helper。
+
 ## IREE 主线
 
 - `Common/GPU/GPUPipelining.cpp` 检查 async copy、wait、barrier、ldmatrix 后做 loop pipelining。

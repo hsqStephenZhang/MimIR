@@ -1,11 +1,14 @@
 // RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
-// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=3 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
 // RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
-// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=3 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
 // RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_outline_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
 // RUN: %if system-linux && cuda %{ %t %}
 
 // On sm_80 each block's panel fills form one group of cp.async copies; a step waits for the oldest group.
+// The level's depth 3 takes precedence over `-X tensor:pipeline`.
 
 // CHECK: call void @llvm.nvvm.cp.async.cg.shared.global.16
 // CHECK: call void @llvm.nvvm.cp.async.commit.group()

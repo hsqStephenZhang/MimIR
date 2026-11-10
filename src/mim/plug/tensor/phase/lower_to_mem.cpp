@@ -469,7 +469,6 @@ void LowerToMem::validate() {
 
 void LowerToMem::start() {
     tensor_key_ = tensor_key(old_world());
-    pipeline_   = driver().arg_nat("tensor", "pipeline").value_or(1);
     tf32_rna_   = driver().arg_nat("tensor", "tf32-rna").value_or(0) != 0;
     validate();
     RWPhase::start();
@@ -674,7 +673,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
         return result;
     }
     if (Axm::isa<tensor::frozen>(app)) return rewrite(app->arg());
-    if (Axm::isa<tensor::mma>(app)) return rewrite(app->arg());
+    if (Axm::isa<tensor::mma>(app) || Axm::isa<tensor::pipeline>(app)) return rewrite(app->arg());
     if (Axm::isa<tensor::prepack>(app)) return lower_prepack(app);
     if (Axm::isa<tensor::group_req>(app)) {
         report_group_request(app, "request reached bufferization without realization");
@@ -2600,10 +2599,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     auto parameter             = old.mut_lam(old.pi(old.sigma({init->type(), old.type_nat()}), old.type_nat()));
     auto [accumulator, offset] = parameter->var()->projs<2>();
     if (auto block = Lit::isa(stride)) multiples_[offset] = *block;
-    auto input                   = region_input(inputs);
-    auto [stepped, level, merge] = peel_step(step->reduce(parameter->var()).back());
-    auto root                    = old.app(stepped, input);
-    auto result                  = root;
+    auto input                             = region_input(inputs);
+    auto [stepped, level, merge, pipeline] = peel_step(step->reduce(parameter->var()).back());
+    auto root                              = old.app(stepped, input);
+    auto result                            = root;
     for (size_t i = 0; i != 128; ++i) {
         auto call = result->isa<App>();
         if (!call) break;
@@ -2688,9 +2687,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
         plain(initial);
         mem = copy_box(mem, buffer, storage, initial, source ? source : extent, extent, cooperative());
     }
-    // A work-group fold with at least two blocks keeps the panels of `pipeline_ - 1` blocks ahead in flight while it
+    // A work-group fold with at least two blocks keeps the panels of `pipeline - 1` blocks ahead in flight while it
     // computes on the current ones; each block's fills form one group of asynchronous copies.
-    auto depth     = std::min<u64>(pipeline_, literal_count ? *literal_count : 0);
+    auto depth     = std::min<u64>(pipeline, literal_count ? *literal_count : 0);
     auto stages    = depth > 1 && bound_level_ != 0 && driver().is_loaded("gpu") && inplace && !first_scalar
                        ? staged_panels(root, parameter->var())
                        : DefVec();
@@ -2843,15 +2842,21 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     return scalar_result(app, out_mem, out);
 }
 
-// A fold step's body without its `tensor.bind` level and `tensor.merge_with` merge, and those two.
-std::tuple<const Def*, u64, const Def*> LowerToMem::peel_step(const Def* body) const {
+// A fold step's body without its `tensor.bind` level, `tensor.merge_with` merge and `tensor.pipeline` depth, and those
+// three.
+std::tuple<const Def*, u64, const Def*, u64> LowerToMem::peel_step(const Def* body) const {
     auto [stepped, level] = region_body(body);
     const Def* merge      = nullptr;
     if (auto marked = Axm::isa<tensor::merge_with>(stepped)) {
         merge   = marked->callee()->as<App>()->arg();
         stepped = marked->arg();
     }
-    return {stepped, level, merge};
+    u64 depth = 1;
+    if (auto marked = Axm::isa<tensor::pipeline>(stepped)) {
+        depth   = Lit::as(marked->decurry()->arg());
+        stepped = marked->arg();
+    }
+    return {stepped, level, merge, depth};
 }
 
 // The binary `op` of a combiner `λ (acc, ins). op (acc, e)` (or `op (e, acc)`) whose `e` is free of `acc`: with the

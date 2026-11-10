@@ -1932,6 +1932,8 @@ axm report_groups: compile.Phase;
 /// `Mma` computes a warp's reduction block on tensor cores with TF32 inputs; `shape` is the instruction's
 /// tile of the root's loops, `(16, 8, 8)` for a matrix product, and divides the warp's tile and block.
 /// Promoted inputs of a reduction inside a warp are staged as panels over the whole work-group's tile.
+/// `pipeline` of a reduction inside a work-group is how many blocks' panels are in flight, `n` filling `n - 1` blocks
+/// ahead of the one being computed; 0 takes `-X tensor:pipeline`, and the `*_red` constructors leave it 0.
 /// The CPU lowering runs bound levels as loops.
 ///
 anx nom TileMerge (Acc: *) = | Combiner | Merge: [Acc, Acc] → Acc;
@@ -1946,18 +1948,18 @@ anx mutual
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc)]
         | Item: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)]
-        | Red: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)]
+        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc)]
         | RedItems: [sizes: «n; Nat», tail: Nat, merge: TileMerge Acc, rest: GroupLevels (n, Acc)]
         | Vec: [sizes: «n; Nat», rest: GroupLevels (n, Acc)]
         | Warp: [sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc)];
     nom ItemLevels (n: Nat, Acc: *) =
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)]
-        | Red: [sizes: «n; Nat», tail promote: Nat, rest: ItemLevels (n, Acc)]
+        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc)]
         | Vec: [sizes: «n; Nat», rest: ItemLevels (n, Acc)];
     nom WarpLevels (n: Nat, Acc: *) =
         | Done
-        | Red: [sizes: «n; Nat», tail promote: Nat, rest: WarpLevels (n, Acc)]
+        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc)]
         | Mma: [shape: «n; Nat»];
 end
 ///
@@ -1978,7 +1980,9 @@ anx lam group_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: GroupLev
 anx lam group_item {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)): GroupLevels (n, Acc) =
     (GroupLevels (n, Acc))#Item (sizes, tail, rest);
 anx lam group_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
-    (GroupLevels (n, Acc))#Red (sizes, tail, promote, rest);
+    (GroupLevels (n, Acc))#Red (sizes, tail, promote, 0, rest);
+anx lam group_red_pipelined {n: Nat, Acc: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
+    (GroupLevels (n, Acc))#Red (sizes, tail, promote, pipeline, rest);
 anx lam group_red_items {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
     (GroupLevels (n, Acc))#RedItems (sizes, tail, (TileMerge Acc)#Combiner, rest);
 anx lam group_red_merge {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, merge: [Acc, Acc] → Acc, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
@@ -1991,12 +1995,16 @@ anx lam item_done {n: Nat, Acc: *} (_: []): ItemLevels (n, Acc) = (ItemLevels (n
 anx lam item_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
     (ItemLevels (n, Acc))#Par (sizes, tail, rest);
 anx lam item_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
-    (ItemLevels (n, Acc))#Red (sizes, tail, promote, rest);
+    (ItemLevels (n, Acc))#Red (sizes, tail, promote, 0, rest);
+anx lam item_red_pipelined {n: Nat, Acc: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
+    (ItemLevels (n, Acc))#Red (sizes, tail, promote, pipeline, rest);
 anx lam item_vec {n: Nat, Acc: *} (sizes: «n; Nat», rest: ItemLevels (n, Acc)): ItemLevels (n, Acc) =
     (ItemLevels (n, Acc))#Vec (sizes, rest);
 anx lam warp_done {n: Nat, Acc: *} (_: []): WarpLevels (n, Acc) = (WarpLevels (n, Acc))#Done;
 anx lam warp_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: WarpLevels (n, Acc)): WarpLevels (n, Acc) =
-    (WarpLevels (n, Acc))#Red (sizes, tail, promote, rest);
+    (WarpLevels (n, Acc))#Red (sizes, tail, promote, 0, rest);
+anx lam warp_red_pipelined {n: Nat, Acc: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc)): WarpLevels (n, Acc) =
+    (WarpLevels (n, Acc))#Red (sizes, tail, promote, pipeline, rest);
 anx lam warp_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpLevels (n, Acc) = (WarpLevels (n, Acc))#Mma shape;
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
@@ -2011,6 +2019,10 @@ axm tile_group: compile.Phase;
 /// work-group, 2 for a work-item and 3 for a warp.
 ///
 axm bind: {T: *} → [to: Nat] → T → T;
+///
+/// Identity annotation on a reduction step inside a work-group: its fold keeps `depth` blocks' panels in flight.
+///
+axm pipeline: {T: *} → [depth: Nat] → T → T;
 ///
 /// Identity annotation on a reduction block that a warp computes on tensor cores with TF32 inputs; `shape` is the
 /// instruction's tile of the block's loops.

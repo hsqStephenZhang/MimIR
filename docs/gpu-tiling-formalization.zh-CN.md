@@ -38,7 +38,7 @@ GPU 多级 tiling 正好越过了这三条边界。
 | promote / 面板 | `tensor.stage (pos, tiles, perm, pad, scope)` 表达逻辑的 split/perm/pad 形状 | `stage_read_impl`（及 exact 版本） | 其后的物理布局（perm/split/pad/旋转 swizzle）由 `panel_layout` 代价模型在 `lower_generate` 中另行选择，选出的布局是受检查的 `tensor.layout_expr` 项（第 4 步），但仍挂在旁表 `layouts_` 上而不在 buffer 类型里；`panels_` 只标记可按向量读的面板 |
 | 执行绑定 | `tensor.bind n`（1 group，2 item，3 warp）；`gpu.bind.(group,item,warp,cooperative,staged,chained,async)` 标注 `affine.For` | 标注是恒等 | 一致性由 LowerToMem 的上下文 `uniform(value)`（只看是否依赖 item 原点）判断；barrier 只来自 §3.5.1 的三种构造 |
 | 跨 item 归约（R8） | `merge_with`、`group_red_items` | step 有 Mim 定义，merge 树在 C++ 生成 | 归约律与 seed 单位元由 `reduction_law` 检查（第 2 步）；树形合并的覆盖漏洞（`n=8, elems=3, s=4` 只处理 12 个 pair 中的 8 个）已在第 1 步修复 |
-| 流水 | `-X tensor:pipeline=n`（编译选项，不在 IR 里） | 无 | 环形 buffer、`commit_group`/`wait_group` 计数在 `lower_tile_fold` C++ |
+| 流水 | 归约级的 `pipeline` 字段（`*_red_pipelined`），TileFuse 写成 step 上的 `tensor.pipeline depth` 标注；字段为 0 时取 `-X tensor:pipeline` | 标注是恒等 | 环形 buffer、`commit_group`/`wait_group` 计数在 `lower_tile_fold` C++ |
 | tensor core | `warp_mma (16, 8, 8)` → `tensor.mma` 标注 | 标注是恒等，参考计算来自它包住的 `map_reduce_post`；没有独立的 MMA 参考定义 | fragment 布局与 ldmatrix 地址是 `tensor.mma_m16n8k8_tf32` 的 Mim 定义，另有 `mma_ref` 参考（第 5 步）；累加器仍是 `fragments_` 旁表；TF32 默认由硬件截断，`-X tensor:tf32-rna=1` 显式舍入 |
 
 结论：论文模型在本分支里覆盖的是"一级切分的值语义"；GPU 特有的决策（放置、布局、分布、同步、时序、分布式值）
@@ -201,7 +201,7 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 |---|---|---|---|---|---|---|---|
 | `serial_group (sizes, tail, promote, …)` | 网格 | 融合 members | promote 位 → group 级 stage | Dist(group) | 开始一个 BSP 程序 | | |
 | `group_warp (sizes, tail, …)` | 子网格 | | | Dist(warp) | | | |
-| `warp_red (sizes, tail, promote, …)` | 有序块 | | 面板 stage(L) | | 填充超步 + barrier | `pipeline n` | |
+| `warp_red_pipelined (sizes, tail, promote, n, …)` | 有序块 | | 面板 stage(L) | | 填充超步 + barrier | `pipeline n` | |
 | `warp_mma (16, 8, 8)` | 叶子 | | | Dist(lane) | | | Frag 布局与 mma |
 | `group_red_items (…)` | 拆分归约 | | partials 在 shared | Dist(item, ReductionPartition) | R8 超步序列 | | |
 
@@ -262,6 +262,7 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 
 进度（2026-11-10）：第 1–5 步已实现，第 4 步只完成了布局成为项的第一阶段，布局进入 buffer 类型尚未开始。
 第 6 步经核对已由现有实现满足，整理为 §3.5.1 的三种构造；`value_barrier` 由挂在内存值上的 `gpu.fence` 代替，未新增代码。
+第 7 步：流水深度成为 Group/Item/Warp 链上 `Red` 的字段，LowerToMem 只读 IR 中的 `tensor.pipeline` 标注；同步与异步拷贝的选择仍由目标架构决定，不进入链。
 
 风险：T5 不再要求一个全局分析器证明正确性；其剩余难点是为每个 shared 构造审清 GPU 内存模型前提、异步完成与 collective
 一致到达，并让可选检查器发现构造器回归。工程迁移最大的是 T3（触及 buffer 类型、物理形状、向量访问与 mma 面板）；
