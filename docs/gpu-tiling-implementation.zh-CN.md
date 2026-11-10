@@ -251,6 +251,10 @@ fragment 映射必须双射，collective 必须一致执行。TF32 是许可；�
 
 # 6. T5：结构化 barrier 与值语义同步
 
+> 结论（2026-11-10）：核对后现有实现已满足本节目标，未改代码。三种构造见 `gpu-tiling-formalization.zh-CN.md` §3.5.1；
+> `gpu.fence` 本身是挂在 SSA 内存值上的 value barrier，所以不新增 `SyncScope`/`value_barrier`。
+> 循环末尾的 barrier 不能改成循环后的游离 fence：`AddMem` 重新串接内存时未被使用的 fence 会作为死代码消失。
+
 ## IREE 主线
 
 IREE 不在这些路径上做全函数 shared-memory barrier 推导；产生 shared 读写的变换结构化插同步：

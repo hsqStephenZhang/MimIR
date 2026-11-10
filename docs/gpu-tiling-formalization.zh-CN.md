@@ -32,14 +32,14 @@ GPU 多级 tiling 正好越过了这三条边界。
 
 | 关注点 | 现在的表示 | 参考语义 | 合法性由谁保证 |
 |---|---|---|---|
-| 级的序列与作用域 | `TileLevels/GroupLevels/ItemLevels/WarpLevels` 互递归 nominal 变体（`tensor.mim`） | 无（只是数据） | 链类型只保证构造语法；sizes 字面量、与 root 循环数一致等在 TileFuse C++；整块的绑定级可能被跳过（`tile_fuse.cpp:944`，作用域丢失） |
+| 级的序列与作用域 | `TileLevels/GroupLevels/ItemLevels/WarpLevels` 互递归 nominal 变体（`tensor.mim`） | 无（只是数据） | 链类型只保证构造语法；sizes 字面量、与 root 循环数一致等在 TileFuse C++；整块的绑定级曾被跳过而丢失作用域，第 3 步起只跳过不绑定、不提升的级 |
 | 单级切分 | TileFuse 产出 `tf_par`/`tf_reduce` → `tiled`/`tile_fold` | `tiled`、`tile_fold_impl` 的 Mim 定义 | box 覆盖、preimage 精确、归约块顺序：C++ 分析，无证据（`tiling-formalization-review.zh-CN.md` §1） |
 | 融合 | `tile_of`/`tile_of_box` 生产者方程，`slice`/`slice_box` 视图 | 有 | provenance/包含关系在 C++，无证据 |
-| promote / 面板 | `tensor.stage (pos, tiles, perm, pad, scope)` 表达逻辑的 split/perm/pad 形状 | `stage_read_impl`（及 exact 版本） | 其后的物理布局（perm/split/pad/旋转 swizzle）由 `panel_layout` 代价模型在 `lower_generate` 中另行选择，存在旁表 `layouts_`/`logical_shapes_`；`panels_` 只标记可按向量读的面板 |
-| 执行绑定 | `tensor.bind n`（1 group，2 item，3 warp）；`gpu.bind.(group,item,warp,cooperative,staged,chained,async)` 标注 `affine.For` | 标注是恒等 | 一致性由 LowerToMem 的上下文 `uniform(value)`（只看是否依赖 item 原点）判断；协作/串行选择与 barrier 放置在 LowerToMem/outline C++ |
-| 跨 item 归约（R8） | `merge_with`、`group_red_items` | step 有 Mim 定义，merge 树在 C++ 生成 | 代数律未要求；树形分配的覆盖有已知漏洞（`lower_to_mem.cpp:3053`，`n=8, elems=3, s=4` 只处理 12 个 pair 中的 8 个，仍未修） |
+| promote / 面板 | `tensor.stage (pos, tiles, perm, pad, scope)` 表达逻辑的 split/perm/pad 形状 | `stage_read_impl`（及 exact 版本） | 其后的物理布局（perm/split/pad/旋转 swizzle）由 `panel_layout` 代价模型在 `lower_generate` 中另行选择，选出的布局是受检查的 `tensor.layout_expr` 项（第 4 步），但仍挂在旁表 `layouts_` 上而不在 buffer 类型里；`panels_` 只标记可按向量读的面板 |
+| 执行绑定 | `tensor.bind n`（1 group，2 item，3 warp）；`gpu.bind.(group,item,warp,cooperative,staged,chained,async)` 标注 `affine.For` | 标注是恒等 | 一致性由 LowerToMem 的上下文 `uniform(value)`（只看是否依赖 item 原点）判断；barrier 只来自 §3.5.1 的三种构造 |
+| 跨 item 归约（R8） | `merge_with`、`group_red_items` | step 有 Mim 定义，merge 树在 C++ 生成 | 归约律与 seed 单位元由 `reduction_law` 检查（第 2 步）；树形合并的覆盖漏洞（`n=8, elems=3, s=4` 只处理 12 个 pair 中的 8 个）已在第 1 步修复 |
 | 流水 | `-X tensor:pipeline=n`（编译选项，不在 IR 里） | 无 | 环形 buffer、`commit_group`/`wait_group` 计数在 `lower_tile_fold` C++ |
-| tensor core | `warp_mma (16, 8, 8)` → `tensor.mma` 标注 | 标注是恒等，参考计算来自它包住的 `map_reduce_post`；没有独立的 MMA 参考定义 | fragment 布局、ldmatrix 地址、累加器分布在 `lower_mma`/`store_fragments` C++，`fragments_` 旁表；TF32 操作数直接传 F32 位模式（硬件截断低位），没有显式 `cvt.rna.tf32` |
+| tensor core | `warp_mma (16, 8, 8)` → `tensor.mma` 标注 | 标注是恒等，参考计算来自它包住的 `map_reduce_post`；没有独立的 MMA 参考定义 | fragment 布局与 ldmatrix 地址是 `tensor.mma_m16n8k8_tf32` 的 Mim 定义，另有 `mma_ref` 参考（第 5 步）；累加器仍是 `fragments_` 旁表；TF32 默认由硬件截断，`-X tensor:tf32-rna=1` 显式舍入 |
 
 结论：论文模型在本分支里覆盖的是"一级切分的值语义"；GPU 特有的决策（放置、布局、分布、同步、时序、分布式值）
 都由 C++ 在 lowering 中**作出并同时实现**，它们既不是项，也没有可单独检查的合法性条件。
@@ -90,7 +90,7 @@ warp shuffle 归约（需要 warp collective、active mask 与归约律）；per
 
 - 布局 L 取自一个**封闭的布局代数** `LayoutExpr`（perm、常数 split、pad、块旋转 swizzle），解释为 semi-affine 映射
   `«r; Index» → «p; Index»`，读 map 与它复合：`read' = L ∘ read`。现在的 `layout_lam` 就是用 `semiop.mul/floordiv/rem` 构造它；
-  现有的 swizzle 是块旋转 `chunk' = (chunk + group) mod chunks`（`lower_to_mem.cpp:1126`），不需要 XOR。pad 只改变物理形状（步长），不改变坐标映射。
+  现有的 swizzle 是块旋转 `chunk' = (chunk + group) mod chunks`（`panel_layout`），不需要 XOR。pad 只改变物理形状（步长），不改变坐标映射。
 - 合法性 `Injective(L, s_logical, s_physical)`：在 `LayoutExpr` 上、字面量形状下可以有限枚举或用专门判定器检查；不接受任意 Mim 函数作为布局。
 - 代价模型（选哪个 L）可以留在 C++，但**选出的 L 必须是项**，挂在 stage 上，而不是旁表；这样 T5 的依赖分析和 T7 的 fragment 都能引用同一个 L。
 - 放置（`Global | Shared(group) | Private(item)`）与布局分开：前者决定所有者、生命周期与地址空间，后者只决定坐标映射，
@@ -130,7 +130,31 @@ superstep    = forall item ∈ items. (本地计算 ; 对 shared 的写)
   不能以用户保证代替。受限 BSP 检查器只作为调试验证，检查构造器是否兑现不变量，不是正确性的来源。
 - R8（跨 item 归约）是 BSP 里的一个超步序列：私有 fold → 写 partial → barrier → 树形合并若干轮。
   它额外需要归约律 `ParallelFold(step, seed, merge, mode)`，至少表达 `fold(seed, X ++ Y) ≈ merge(fold(seed, X), fold(seed, Y))`，
-  以及 `ReductionPartition` 的覆盖（`lower_to_mem.cpp:3053` 的漏洞即违反此条）。
+  以及 `ReductionPartition` 的覆盖（第 1 步修复的树形合并漏算即违反此条）。
+
+#### 3.5.1 三种同步构造
+
+`LowerToMem` 只在下面三个构造里产生 barrier，每个 barrier 的作用域、动态实例和相对位置都由构造固定，不做事后推导。
+记 `B` 为 work-group barrier（`gpu.fence`，或 cooperative 循环首尾由 `gpu.outline` 生成的 `sync_work_items`）。
+
+| 构造 | 超步结构 | 构造给出的义务 | 实现位置 |
+|---|---|---|---|
+| 填充批 | `B ; (fill₁ ∥ … ∥ fillₖ) ; B ; consume` | 各 fill 写各自分配的面板，互不相交；fill 只读 global 或已发布的值；首个 `B` 结束上一个读这些面板的超步（WAR） | `cooperative()` 的 `staged`/`chained` 标签，`lower_map_reduce`、`lower_mma` 在消费者输入内存上的 `fence` |
+| R8 合并轮 | `write partial ; B ; (merge 一轮 ; B)*` | 每轮的配对互不相交且覆盖所有存活 partial；`B` 位于 item 守卫之外 | `lower_bound_fold` |
+| 流水环槽 | `wait_group(n − 2) ; B ; compute(slot b) ∥ refill(slot b + n − 1) ; commit` | 读槽前其写组已 wait 且其后有 `B`；重填的槽上一次读它的超步已被同一个 `B` 结束 | `lower_tile_fold` |
+
+单个不成批的一致填充是 `B ; fill ; B`（`cooperative` 标签）；异步填充在批末 `B` 前加 `async_wait`（`async` 标签）。
+
+- **值语义同步。** MimIR 的内存是 SSA 值 `mem.M`，`gpu.fence: mem.M 0 → mem.M 0` 已是挂在内存值上的 value barrier，
+  因此不另设 `value_barrier`。填充批的末尾 barrier 挂在**消费者自己的输入内存**上，所以它随消费者一起存活；
+  游离在未被使用的内存值上的 fence 会在 `AddMem` 重新串接内存时作为死代码消失，这也是 cooperative 循环的末尾 barrier
+  必须属于循环结构、而不能写成循环之后单独一个 fence 的原因。
+- **标签是协议，不是正确性来源。** `staged`/`chained` 只表示"本批末尾的 `B` 由消费者给出"，这一义务由 `fence_pending_`
+  在同一次输入改写内兑现；离开这次改写（`fe::Restore`）时协议结束，所以标签不会泄漏到批外。
+- **一致到达。** 三个构造的 `B` 都在 work-group 一致的控制流上；`gpu.outline` 拒绝 item 守卫内的 fence、带 barrier 的
+  cooperative 循环和非 warp 对齐守卫内的 warp collective（第 3 步）。
+- **合并只做局部。** `gpu.remove_double_syncs` 只删去内存链上紧跟另一个 barrier、或位于 kernel 入口的 barrier；
+  跨构造的 barrier 消除需要知道 fill 之间相互独立，这一知识只在构造内部可得，所以不做全局消除。
 
 ### 3.6 T6 时序：流水与异步拷贝
 
@@ -146,7 +170,7 @@ superstep    = forall item ∈ items. (本地计算 ; 对 shared 的写)
   - 读环槽 s 之前，写它的组已 wait 且之后有 barrier；写环槽 s 之前，上一次读它的超步已结束（同一个 barrier）；
   - 同一组内的写目标互不相交；
   - 末尾 clamp 后重复填充的槽不再被消费；循环出口的 wait-all 在 shared 生命周期结束前；
-  - depth 在 PTX 立即数与硬件支持范围内（`depth = min(pipeline, 块数)`，`lower_to_mem.cpp:2709`）。
+  - depth 在 PTX 立即数与硬件支持范围内（`lower_tile_fold` 取 `depth = min(pipeline, 块数)`）。
 
 ### 3.7 T7 分布式值：warp fragment 与 tensor core
 
@@ -160,10 +184,14 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 - `ldmatrix: Panel(L_panel) → Frag(L_A)`：参考语义是"按 L_A 从面板里取元素"。它是一个集体置换，实现需要三个关系
   并证明与 `L_panel` 相容：`Addr_LD`（提供地址的 lane → shared 行地址，x4 时 lane 0–7、8–15、16–23、24–31 各提供一个矩阵的 8 行）、
   `Transfer_LD`（(提供者 lane, 加载的元素) → (接收者 lane, 寄存器)）和 `L_A`。
-  当前 `lower_mma` 的 `rem(16)`、`div(16)·4` 是 `Addr_LD`，不是 `L_A`；`store_fragments` 的行列公式是 L_C，B 的标量读公式是 L_B，二者与 PTX ISA 一致。
+  这些关系现在是 `tensor.mma_m16n8k8_tf32` 里的 Mim 定义（`l_a`/`l_b`/`l_c`、`addr_ld`、`transfer_ld`、面板行选择 `panel_a_addr`
+  及其组合 `ld_a`）；`lit/tensor/mma_reference.mim` 穷举检查三个布局是双射、`ld_a = l_a`，并在 CPU 上把 `mma_ref` 与矩阵乘逐元素比对。
+  `lower_mma` 与 `store_fragments` 的地址由这些定义部分求值得到，不再有手写的行列公式。
 - warp 级累加器：现在是每个 lane 的 SSA 值 `«F; «4; F32»»` 加 `fragments_` 旁表；目标是 `Frag(L_C^F, (WM, WN), F32)` 这个类型本身。
-- 数值：TF32 与 `fast` 一样是**许可**（`≈mode`），不是等价：`warp_mma` 的语义应写成"操作数先转成 TF32 再做 map_reduce"，
-  转换（`cvt.rna.tf32.f32` 就近舍入，或截断）作为显式的 IR 操作出现；现在的实现直接传 F32 位模式，依赖硬件截断低位。
+- 数值：TF32 与 `fast` 一样是**许可**（`≈mode`），不是等价：`warp_mma` 的语义是"操作数先转成 TF32 再做 map_reduce"。
+  转换有两种实现：默认由 `mma` 截断 F32 的低 13 位；`-X tensor:tf32-rna=1` 时在 fragment 载入后显式调用 `gpu.tf32_rna`
+  （`cvt.rna.tf32.f32`，就近、平局远离零；其位级参考 `gpu.tf32_rna_ref` 按 sm_80 实测行为给出 Inf/NaN 的结果）。
+  两者都在许可之内；显式舍入在 A100 上使 4096³ GEMM 慢约 27%，所以不作默认。
 
 ### 3.8 组合
 
@@ -188,7 +216,7 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 | T2 | `Covers`/`Subview` 的 Bool 条件 | `tile_of_box` | preimage/image 计算（返回带理由的结果） |
 | T3 | `LayoutExpr`、放置 | `stage` | 代价模型选择 L |
 | T4 | `Dist` 项及覆盖模式、launch 形状 | `gpu.launch` | 动态形状下的覆盖证明 |
-| T5 | 超步结构、stage 值及其同步、归约律 witness | `gpu.fence`（barrier） | 产生 shared 读写的变换按构造插入；受限 DRF/一致性检查仅作可选调试验证 |
+| T5 | 超步结构、stage 值及其同步、归约律 witness | `gpu.fence`（挂在内存值上的 barrier）、cooperative 循环首尾的 barrier | 三种构造（§3.5.1）按构造插入；受限 DRF/一致性检查仅作可选调试验证 |
 | T6 | `pipeline n` 作为 tile_fold 的变换子 | `store_async`、`async_commit`、`async_wait_group` | 环的生成（或写成 Mim 定义） |
 | T7 | `Frag` 类型、L_A/L_B/L_C、`Addr_LD`/`Transfer_LD`、ldmatrix/mma 的参考定义 | `mma_tf32`、`ldmatrix`、TF32 转换 | ISA 的 fragment 表、intrinsic ABI、对齐与收敛前提（后端可信边界） |
 
@@ -222,15 +250,18 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 
 按"能发现真实错误 / 改动量"排序：
 
-1. **修复 R8 树形合并的覆盖**（`lower_to_mem.cpp:3053`）：每个 item 遍历 `pair = item + q·trip, pair < pairs`，
+1. **修复 R8 树形合并的覆盖**（`lower_bound_fold`）：每个 item 遍历 `pair = item + q·trip, pair < pairs`，
    加 `n = 8, elems = 3` 的 device 用例。这是已确认、局部、可测试的真实 bug；它违反的是 `ReductionPartition` 的覆盖，不是输出的 ExactCover。
 2. **归约契约与 root descriptor**（上次 review 的 P0）：`OrderedChunk`、`ParallelFold`；levels 按真实的 accumulator 类型 `To` 索引，而不是输出元素类型。
-3. **作用域与 collective 的保持检查**：绑定级不会因整块简化而消失（`tile_fuse.cpp:944`），barrier 一致可达。
+3. **作用域与 collective 的保持检查**：绑定级不会因整块简化而消失，barrier 一致可达。
 4. **选出的物理布局成为受控项**：`LayoutExpr` 支持现有 perm/split/pad/旋转子集，配有限域 Injective 检查。
 5. **T7 的 fragment 参考定义 + 差分测试**：L_A/L_B/L_C、`Addr_LD`/`Transfer_LD` 写成 Mim；显式 TF32 转换；CPU 上用参考定义执行同一请求比对。
 6. **结构化 barrier 与值语义同步**：stage、R8 和 pipeline 在产生 shared 读写时同时产生同步；同步尽量挂在 stage 值上；
    可选的受限 BSP 调试检查覆盖仿射访问、结构化控制流、CTA shared 以及受控异步形态。
 7. **T6 的 `pipeline` 变换子**：把 `-X tensor:pipeline` 变成链上的参数，`AsyncSafe` 由 T5 的超步结构给出。
+
+进度（2026-11-10）：第 1–5 步已实现，第 4 步只完成了布局成为项的第一阶段，布局进入 buffer 类型尚未开始。
+第 6 步经核对已由现有实现满足，整理为 §3.5.1 的三种构造；`value_barrier` 由挂在内存值上的 `gpu.fence` 代替，未新增代码。
 
 风险：T5 不再要求一个全局分析器证明正确性；其剩余难点是为每个 shared 构造审清 GPU 内存模型前提、异步完成与 collective
 一致到达，并让可选检查器发现构造器回归。工程迁移最大的是 T3（触及 buffer 类型、物理形状、向量访问与 mma 面板）；
