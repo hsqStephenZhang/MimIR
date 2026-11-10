@@ -1,0 +1,21 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_ordered_inner_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+fun add (acc: I64, xs: [I64])@tt: I64 = return (core.wrap.add 0 (acc, xs#0₁));
+
+let levels = serial_group ((1, 0, 0), 1, 0, group_red ((0, 0, 3), 1, 0, group_done ()));
+
+extern fun ordered_i64 (x: tensor.Tensor 3 (2, 4, 6) I64): tensor.Tensor 1 2 I64 =
+    let root = map_reduce (2, (2, 4, 6)) (add, 0I64) (proj_map @(3, 1) 0) (affine.id @3,) (buf x);
+    return (tile_req (root, (), levels, default_control));
+
+// CHECK: gpu.launch
+// CHECK-NOT: tensor.tile_req

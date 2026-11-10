@@ -1739,9 +1739,9 @@ axm report_groups: compile.Phase;
 /// `tail` is 0 for one capped body over a runtime tail and 1 for peeling full tiles from the tail.
 /// `promote` sets bit `i` to stage input `i` into shared memory: a reduction level stages a panel per block,
 /// a work-group level its whole box.
-/// `RedItems` splits a reduction over the work-items and merges their partials: `Combiner` derives the merge
-/// from a combiner `op (acc, e)`, `Merge` names it for any other combiner; it must be associative and
-/// commutative with the seed as its identity.
+/// `RedItems` splits a reduction over the work-items and merges their partials.
+/// `Combiner` is accepted only for a recognized reassociable law whose identity is the seed.
+/// `Merge` supplies an explicit permission and a merge function whose accumulator type is checked.
 /// `Mma` computes a warp's reduction block on tensor cores with TF32 inputs; `shape` is the instruction's
 /// tile of the root's loops, `(16, 8, 8)` for a matrix product, and divides the warp's tile and block.
 /// Promoted inputs of a reduction inside a warp are staged as panels over the whole work-group's tile.
@@ -1813,8 +1813,8 @@ anx lam warp_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: W
 anx lam warp_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpLevels (n, Acc) = (WarpLevels (n, Acc))#Mma shape;
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
-axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *, n: Nat}
-            → [op: Tensor r s T, members: M, levels: TileLevels (n, T), control: K] → Tensor r s T;
+axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *, n: Nat, Acc: *}
+            → [op: Tensor r s T, members: M, levels: TileLevels (n, Acc), control: K] → Tensor r s T;
 axm tile_fuse: compile.Phase;
 axm tile_group: compile.Phase;
 ///
@@ -1830,8 +1830,8 @@ axm bind: {T: *} → [to: Nat] → T → T;
 ///
 axm mma: {T: *} → [n: Nat, shape: «n; Nat»] → T → T;
 ///
-/// `merge_with merge step` marks a bound reduction's step with the merge of two partial accumulators, for a
-/// combiner that is not `op (acc, e)`; `merge` must be associative and commutative with the seed as its identity.
+/// `merge_with merge step` explicitly permits a bound reduction's partial accumulators to use `merge`.
+/// Its accumulator type is checked, but its algebraic laws are not inferred.
 axm merge_with: {T Acc: *} → [merge: [Acc, Acc] → Acc] → T → T;
 ///
 /// Fuses exactly the group's members; parallel levels yield members that have users outside the group,

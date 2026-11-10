@@ -224,6 +224,75 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
     }
 }
 
+const Def* combiner_app(const Def* comb) {
+    auto lam = comb->isa_mut<Lam>();
+    if (!lam || !lam->is_set()) return nullptr;
+    auto value = Lam::isa_ret_arg(lam);
+    auto app   = value ? value->isa<App>() : nullptr;
+    if (!app || app->arg()->num_projs() != 2) return nullptr;
+    auto acc   = lam->var(2, 0)->proj(2, 0);
+    auto other = app->arg(2, 0) == acc ? app->arg(2, 1) : app->arg(2, 1) == acc ? app->arg(2, 0) : nullptr;
+    if (!other) return nullptr;
+    DefSet seen;
+    for (DefVec pending{other}; !pending.empty();) {
+        auto def = pending.back();
+        pending.pop_back();
+        if (def == acc) return nullptr;
+        if (!seen.insert(def).second || def->isa<Var>() || def->is_closed()) continue;
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+    return app;
+}
+
+struct ReductionLaw {
+    const Def* identity;
+};
+
+std::optional<ReductionLaw> reduction_law(const btensor::MapRedPost& mr) {
+    auto op = combiner_app(mr.comb);
+    if (!op) return {};
+    auto& w   = mr.comb->world();
+    auto idx  = Idx::isa(mr.To);
+    auto size = idx ? Lit::isa(idx) : std::nullopt;
+    if (auto wrap = Axm::isa<core::wrap>(op)) {
+        if (wrap.id() == core::wrap::add) return ReductionLaw{w.lit(mr.To, 0)};
+        if (wrap.id() == core::wrap::mul && size) return ReductionLaw{w.lit_idx_mod(*size, 1)};
+    }
+    if (auto bit = Axm::isa<core::bit2>(op); bit && size) {
+        if (bit.id() == core::bit2::and_) return ReductionLaw{w.lit(mr.To, *size ? *size - 1 : u64(-1))};
+        if (bit.id() == core::bit2::or_ || bit.id() == core::bit2::xor_) return ReductionLaw{w.lit(mr.To, 0)};
+    }
+    if (auto extrema = Axm::isa<core::extrema>(op); extrema && size) {
+        switch (extrema.id()) {
+            case core::extrema::sm: return ReductionLaw{w.lit(mr.To, *size ? *size - 1 : u64(-1))};
+            case core::extrema::sM: return ReductionLaw{w.lit(mr.To, 0)};
+            case core::extrema::Sm: return ReductionLaw{w.lit(mr.To, (*size - 1) / 2)};
+            case core::extrema::SM: return ReductionLaw{w.lit(mr.To, *size ? *size - *size / 2 : u64(1) << 63)};
+        }
+    }
+    auto float_identity = [&](bool minimum) -> std::optional<ReductionLaw> {
+        auto width = math::isa_f(mr.To);
+        if (!width) return {};
+        auto value = minimum ? std::numeric_limits<f64>::infinity() : -std::numeric_limits<f64>::infinity();
+        return ReductionLaw{math::lit_f(w, *width, value)};
+    };
+    auto reassociable = [](const App* app) {
+        auto mode = Lit::isa(app->uncurry_args<3>()[0]);
+        return mode && fe::has_flag(static_cast<math::Mode>(*mode), math::Mode::reassoc);
+    };
+    if (auto arith = Axm::isa<math::arith>(op); arith && reassociable(arith)) {
+        if (arith.id() == math::arith::add) return ReductionLaw{math::lit_f(w, *math::isa_f(mr.To), 0.0)};
+        if (arith.id() == math::arith::mul) return ReductionLaw{math::lit_f(w, *math::isa_f(mr.To), 1.0)};
+    }
+    if (auto extrema = Axm::isa<math::extrema>(op); extrema && reassociable(extrema)) {
+        auto mode = static_cast<math::Mode>(*Lit::isa(extrema->uncurry_args<3>()[0]));
+        if (!fe::has_flag(mode, math::Mode::nnan) || !fe::has_flag(mode, math::Mode::nsz)) return {};
+        return float_identity(extrema.id() == math::extrema::im || extrema.id() == math::extrema::Im);
+    }
+    return {};
+}
+
 /// Whether @p producer reaches anything but the operations in @p inside, through tuples and projections.
 /// The request's own reference to its members is inside, unlike in `GraphView::complete_data_uses`.
 bool escapes_group(const pattern::GraphView& view, const Def* producer, const DefSet& inside) {
@@ -1214,6 +1283,16 @@ const Def* Levels::reduction(const Def* anchor,
         return tile(block.value, rest, depth + 1);
     }
 
+    auto law = reduction_law(mr);
+    // An inner reduction loop's chunks fold its elements out of order, which only a reassociable law permits.
+    if (loop != ro && !law && !merge)
+        return fail("an ordered reduction level can only tile the outermost reduction loop");
+    if (bind == 2 && !merge) {
+        if (!law) return fail("a work-item reduction requires a recognized reassociable combiner");
+        if (!Check::test_alpha(mr.init, law->identity))
+            return fail("a work-item reduction's seed is not the combiner's identity");
+    }
+
     auto off  = w.pack(mr.Ro, w.lit_nat_0());
     auto ext  = mr.So;
     auto init = reduction_tile<tile_of_init>(mr, anchor, {off, ext});
@@ -1369,7 +1448,19 @@ const Def* TileFuse::rewrite_imm_App(const App* app) {
 
 const Def* TileFuse::realize(const App* request, const DefSet& outside) {
     auto [op, members, levels, control] = request->args<4>();
-    auto parsed                         = tile_levels(levels);
+    if (auto root = graph::map_reduce(op)) {
+        auto mr  = btensor::MapRedPost::of(root->callee()->as<App>());
+        auto Acc = Hole::find(request->callee()->as<App>()->arg(7, 6));
+        if (Hole::isa_unset(Acc)) Acc = mr.To;
+        if (!Check::test_alpha(Acc, mr.To)) {
+            report_tile_request(request,
+                                std::format("the levels' accumulator type {} does not match the root's accumulator "
+                                            "type {}",
+                                            Acc, mr.To));
+            return op;
+        }
+    }
+    auto parsed = tile_levels(levels);
     if (!parsed || parsed->empty()) {
         report_tile_request(request, "the levels are not a literal chain");
         return op;

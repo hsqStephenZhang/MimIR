@@ -1,0 +1,34 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_reduce_post_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+let Acc = [I64, I64];
+
+fun step (acc: Acc, xs: [I64])@tt: Acc =
+    let (sum, count) = acc;
+    let (x) = xs;
+    return (core.wrap.add 0 (sum, x), core.wrap.add 0 (count, 1I64));
+
+lam merge (a b: Acc): Acc =
+    (core.wrap.add 0 (a#0₂, b#0₂), core.wrap.add 0 (a#1₂, b#1₂));
+
+fun post (acc: Acc, _: [])@tt: I64 = return (core.wrap.add 0 (acc#0₂, acc#1₂));
+
+let levels = serial_group ((4, 0), 1, 0, group_red_merge ((0, 4), 1, merge, group_done ()));
+
+extern fun sum_count16 (x: tensor.Tensor 2 (16, 16) I64): tensor.Tensor 1 16 I64 =
+    let root = map_reduce_post @(1, 0) @(Acc, I64, 1, 2, SchedT)
+        (16, (16, 16), mk_sched (2, 0)) @(I64, 2, (16, 16), (), (), ())
+        (step, (0I64, 0I64), post) (proj_map @(2, 1) 0) (affine.id @2, ()) ((buf x), ());
+    return (tile_req (root, (), levels, default_control));
+
+// CHECK-DAG: gpu.launch
+// CHECK-DAG: gpu.slot_shared
+// CHECK-DAG: gpu.sync_work_items

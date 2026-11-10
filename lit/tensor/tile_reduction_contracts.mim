@@ -1,0 +1,45 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null -VVVV 2>&1 | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_reduction_contracts_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let none = math.mode.none;
+let fast = math.mode.fast;
+
+let ordered_f32_levels = serial_red ((0, 0, 2), 1, 0, serial_done ());
+let items_bad_seed     = serial_group ((2, 0), 1, 0, group_red_items ((0, 2), 1, group_done ()));
+let items_f32_none     = serial_group ((2, 0), 1, 0, group_red_items ((0, 3), 1, group_done ()));
+let items_f32_fast     = serial_group ((2, 0), 1, 0, group_red_items ((0, 4), 1, group_done ()));
+let items_i64          = serial_group ((2, 0), 1, 0, group_red_items ((0, 5), 1, group_done ()));
+
+fun add_f32 (acc: F32, xs: [F32])@tt: F32 = return (math.arith.add none (acc, xs#0₁));
+
+extern fun ordered_f32 (x: tensor.Tensor 3 (2, 4, 6) F32): tensor.Tensor 1 2 F32 =
+    let root = map_reduce (2, (2, 4, 6)) (add_f32, 0.0:F32) (proj_map @(3, 1) 0) (affine.id @3,) (buf x);
+    return (tile_req (root, (), ordered_f32_levels, default_control));
+
+extern fun bad_seed (x: tensor.Tensor 2 (10, 10) I64): tensor.Tensor 1 10 I64 =
+    return (tile_req (reduce (core.wrap.add 0 @0, 1I64) 1₂ (buf x), (), items_bad_seed, default_control));
+
+extern fun f32_none (x: tensor.Tensor 2 (12, 12) F32): tensor.Tensor 1 12 F32 =
+    return (tile_req (reduce (math.arith.add none, 0.0:F32) 1₂ (buf x), (), items_f32_none, default_control));
+
+extern fun f32_fast (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 F32 =
+    return (tile_req (reduce (math.arith.add fast, 0.0:F32) 1₂ (buf x), (), items_f32_fast, default_control));
+
+extern fun i64_add (x: tensor.Tensor 2 (20, 20) I64): tensor.Tensor 1 20 I64 =
+    return (tile_req (reduce (core.wrap.add 0 @0, 0I64) 1₂ (buf x), (), items_i64, default_control));
+
+// CHECK-NOT: unrealized tensor.tile_req
+// CHECK-DAG: unrealized tensor.tile_req {{.*}}: an ordered reduction level can only tile the outermost reduction loop
+// CHECK-DAG: unrealized tensor.tile_req {{.*}}: a work-item reduction's seed is not the combiner's identity
+// CHECK-DAG: unrealized tensor.tile_req {{.*}}: a work-item reduction requires a recognized reassociable combiner
+// CHECK-NOT: unrealized tensor.tile_req
