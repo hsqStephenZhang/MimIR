@@ -14,6 +14,7 @@
 #include <mim/plug/math/math.h>
 
 #include "mim/plug/tensor/phase/group.h"
+#include "mim/plug/tensor/phase/panel_layout.h"
 #include "mim/plug/tensor/tensor.h"
 
 namespace mim::plug::tensor::phase {
@@ -621,11 +622,155 @@ std::optional<Panel> panel_axis(const Def* map, u64 rank, fe::Span<const u64> ti
 /// Stages input @p slot per block into panels of @p tile along @p axis.
 /// Panels of a work-group's shared memory keep @p axis's panel index innermost among the outer axes, so consecutive
 /// work-items read consecutive panels without bank conflicts.
-/// A bound parallel level's region var and literal tile sizes per output loop.
+/// A bound parallel level's region var, literal tile sizes per output loop, and the extents it tiles.
 struct LevelScope {
     const Var* var;
     fe::Vector<u64> tiles;
+    const Def* extents;
 };
+
+/// What a reduction level knows of a work-group panel's fill when it stages it.
+struct PanelSite {
+    /// Upper bounds of the region's extents, and whether they are exact once the regions are specialized.
+    DefMap<std::pair<u64, bool>> caps;
+    /// Nat terms known to be multiples of the value, 0 for any.
+    DefMap<u64> multiples;
+    /// The work-group's offsets, by loop.
+    DefMap<size_t> origins;
+    /// The tile grid of the item level that reads the panel.
+    std::optional<std::pair<std::vector<u64>, std::vector<u64>>> items;
+    bool mma = false;
+};
+
+bool site_multiple(const PanelSite& site, const Def* def, u64 v) {
+    if (v == 1) return true;
+    if (auto lit = Lit::isa(def)) return *lit % v == 0;
+    if (auto nat = Axm::isa<core::nat>(def)) {
+        auto [a, b] = nat->args<2>();
+        if (nat.id() == core::nat::add) return site_multiple(site, a, v) && site_multiple(site, b, v);
+        if (nat.id() == core::nat::mul) return site_multiple(site, a, v) || site_multiple(site, b, v);
+        return false;
+    }
+    if (auto multiple = fe::lookup(site.multiples, def)) return *multiple % v == 0;
+    return false;
+}
+
+std::optional<size_t> site_origin(const PanelSite& site, const Def* def) {
+    if (auto d = fe::lookup(site.origins, def)) return *d;
+    if (auto nat = Axm::isa<core::nat>(def); nat && (nat.id() == core::nat::add || nat.id() == core::nat::mul)) {
+        auto [a, b] = nat->args<2>();
+        if (auto d = site_origin(site, a)) return d;
+        return site_origin(site, b);
+    }
+    return {};
+}
+
+/// The storage layout the panel cost model picks for the work-group panel @p staged, or `nullptr` for its plain one.
+/// It sees the fill as `lower_to_mem` will: the panel dim along the source's contiguous one runs fastest and moves a
+/// 16-byte vector where the run is provably aligned.
+const Def* panel_term(const App* staged, const PanelSite& site) {
+    auto& w                           = staged->world();
+    auto [meta, shape, layout, scope] = staged->callee()->as<App>()->uncurry_args<4>();
+    auto [type, rank, split]          = meta->projs<3>();
+    auto [pos, tiles, perm, pad]      = layout->projs<4>();
+    auto r = Lit::isa(rank), k = Lit::isa(split);
+    auto bytes = Lit::isa(core::op(core::trait::size, type));
+    if (!r || !k || !bytes) return nullptr;
+    // Specializing the regions turns their extents into these caps; only exact ones become literals.
+    Substitute capped(w), exact(w);
+    for (auto [extent, bound] : site.caps) {
+        capped.substitute(extent, w.lit_nat(bound.first));
+        if (bound.second) exact.substitute(extent, w.lit_nat(bound.first));
+    }
+    auto cap = [&](const Def* extent) -> std::optional<std::pair<u64, bool>> {
+        auto literal = bool(Lit::isa(exact.rewrite(extent)));
+        auto bounded = capped.rewrite(extent);
+        if (auto lit = Lit::isa(bounded)) return std::pair{*lit, literal};
+        if (auto upper = nat_upper(bounded)) return std::pair{*upper, literal};
+        return {};
+    };
+    auto outer = std::vector<std::pair<u64, bool>>(*r);
+    for (size_t d = 0; d != *r; ++d) {
+        auto c = cap(shape->proj(*r, d));
+        if (!c) return nullptr;
+        outer[d] = *c;
+        for (size_t j = 0; j != *k; ++j)
+            if (Lit::isa(pos->proj(*k, j)) == d) {
+                auto tile      = Lit::as(tiles->proj(*k, j));
+                outer[d].first = (outer[d].first + tile - 1) / tile;
+            }
+    }
+    auto dims = std::vector<std::pair<u64, bool>>();
+    for (size_t p = 0; p != *r; ++p)
+        dims.push_back(outer[Lit::as(perm->proj(*r, p))]);
+    for (size_t j = 0; j != *k; ++j)
+        dims.emplace_back(Lit::as(tiles->proj(*k, j)), true);
+
+    auto inner = std::optional<size_t>();
+    auto along = [&](size_t c) {
+        for (size_t d = 0; d != *r; ++d)
+            if (Lit::isa(perm->proj(*r, d)) == c) inner = d;
+        for (size_t j = 0; j != *k; ++j)
+            if (Lit::isa(pos->proj(*k, j)) == c) inner = *r + j;
+    };
+    u64 vec    = 1;
+    auto slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(staged->arg()));
+    auto reads = std::optional<panel::Reads>();
+    if (slice) {
+        auto [slice_meta, source_shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
+        auto [start, step, extent]           = box->projs<3>();
+        auto source = slice->arg(), physical_shape = source_shape, physical_rank = rank;
+        const Def* read = w.app(w.annex<affine::id>(), rank);
+        while (auto view = panel::tensor_read(source, physical_shape)) {
+            if (!TensorType::isa(view->src->type())) break;
+            read           = panel::compose_read_map(view->map, read);
+            source         = view->src;
+            physical_shape = view->S;
+            physical_rank  = view->R;
+        }
+        auto contiguous = panel::contiguous_dim(read, rank, physical_rank);
+        if (contiguous) along(contiguous->first);
+        if (inner && 16 % *bytes == 0 && 16 / *bytes >= 2) {
+            auto c = contiguous->first, ri = Lit::as(physical_rank);
+            auto v   = 16 / *bytes;
+            auto e   = cap(extent->proj(*r, c));
+            auto row = Lit::isa(physical_shape->proj(ri, ri - 1));
+            if (e && e->second && e->first % v == 0 && Lit::isa(step->proj(*r, c)) == 1 && row && *row % v == 0
+                && contiguous->second % v == 0 && site_multiple(site, start->proj(*r, c), v) && dims[*inner].second
+                && dims[*inner].first % v == 0)
+                vec = v;
+        }
+        if (site.items) {
+            auto& [counts, steps] = *site.items;
+            reads                 = panel::Reads{counts, steps};
+            reads->loop_dim.resize(*r + *k);
+            reads->whole.resize(*r + *k);
+            for (size_t p = 0; reads && p != *r; ++p) {
+                auto d = Lit::as(perm->proj(*r, p));
+                auto j = site_origin(site, start->proj(*r, d));
+                if (!j || reads->counts[*j] == 1) continue;
+                u64 tile = 1;
+                for (size_t i = 0; i != *k; ++i)
+                    if (Lit::isa(pos->proj(*k, i)) == d) {
+                        tile                 = Lit::isa(tiles->proj(*k, i)).value_or(0);
+                        reads->whole[*r + i] = true;
+                    }
+                if (tile != reads->steps[*j])
+                    reads.reset();
+                else
+                    reads->loop_dim[p] = *j;
+            }
+        }
+    } else if (*r) {
+        along(*r - 1);
+    }
+    if (!inner) return nullptr;
+    auto storage = w.tuple(DefVec(dims.size(), [&](size_t d) { return w.lit_nat(dims[d].first); }));
+    auto choice  = site.mma ? panel::mma(storage, *inner)
+                            : panel::choose(storage, *inner, vec, *bytes, reads ? &*reads : nullptr);
+    if (choice.layout.identity() && choice.physical == storage) return nullptr;
+    return choice.expr;
+}
 
 /// The input dim that reads loop @p loop with unit slope, if any.
 std::optional<u64> dim_of_loop(const Def* map, u64 rank, u64 loop) {
@@ -688,7 +833,8 @@ const App* promote_input(const App* app,
                          bool shared,
                          const LevelScope* group,
                          const LevelScope* item,
-                         const Block* block) {
+                         const Block* block,
+                         const PanelSite* site) {
     auto& w            = app->world();
     auto mr            = btensor::MapRedPost::of(app->callee()->as<App>());
     auto nis           = Lit::as(mr.nis);
@@ -710,10 +856,16 @@ const App* promote_input(const App* app,
     auto stage_app = build(w.annex<stage>(),
                            {w.tuple({type.T, type.r, w.lit_nat_1()}), type.s,
                             w.tuple({w.lit_nat(axis), w.lit_nat(tile), perm, w.bot(type.T)}), w.lit_nat_0(), input});
-    auto old_map   = mr.maps->proj(nis, slot);
-    auto map       = w.mut_lam(w.pi(old_map->type()->as<Pi>()->dom(), w.arr(rank + 1, w.annex<affine::Index>())));
-    auto coords    = w.app(old_map, map->var());
-    auto at        = coords->proj(rank, axis);
+    if (site)
+        if (auto chosen = panel_term(stage_app->as<App>(), *site))
+            stage_app = w.app(w.app(w.app(w.app(w.annex<placed>(), {type.T, w.lit_nat(rank + 1)}),
+                                          TensorType::isa(stage_app->type())->s),
+                                    chosen),
+                              stage_app);
+    auto old_map = mr.maps->proj(nis, slot);
+    auto map     = w.mut_lam(w.pi(old_map->type()->as<Pi>()->dom(), w.arr(rank + 1, w.annex<affine::Index>())));
+    auto coords  = w.app(old_map, map->var());
+    auto at      = coords->proj(rank, axis);
     if (inner) at = w.call(affine::op::add, Defs{at, w.call<affine::lit>(inner)});
     auto layout = DefVec(rank, [&](size_t i) -> const Def* {
         auto p = source(i);
@@ -1057,8 +1209,8 @@ const Def* Levels::parallel(const Def* anchor,
     }
     scopes_.push_back(var);
     auto literal = fe::Vector<u64>(ro, [&](size_t d) { return sizes[d]; });
-    auto group_scope = fe::Restore(group_scope_, bind == 1 ? std::optional{LevelScope{var, literal}} : group_scope_);
-    auto item_scope  = fe::Restore(item_scope_, bind >= 2 ? std::optional{LevelScope{var, literal}} : item_scope_);
+    auto group_scope = fe::Restore(group_scope_, bind == 1 ? std::optional{LevelScope{var, literal, mr.So}} : group_scope_);
+    auto item_scope  = fe::Restore(item_scope_, bind >= 2 ? std::optional{LevelScope{var, literal, mr.So}} : item_scope_);
     // A reduction fused into a work-group's tile is split over the work-items of the item level that follows.
     auto items = std::optional<u64>();
     if (bind == 1)
@@ -1273,13 +1425,47 @@ const Def* Levels::reduction(const Def* anchor,
                    panel->tile, group_wide ? " group-wide" : "");
         }
     }
+    // A work-group's panels are filled by all its work-items, so their layout is chosen here.
+    auto uniform = bound_ == 1 || group_wide;
+    auto site    = std::optional<PanelSite>();
+    if (uniform && group_scope_) {
+        site.emplace();
+        site->mma   = std::ranges::any_of(rest, [](const LevelSpec& level) { return level.kind == 3; });
+        auto& group = *group_scope_;
+        auto caps   = fe::Vector<std::pair<u64, bool>>(ro);
+        for (u64 d = 0; d != ro; ++d) {
+            auto full = Lit::isa(group.extents->proj(ro, d));
+            auto tile = group.tiles[d];
+            auto off = group.var->proj(2, 0)->proj(ro, d), ext = group.var->proj(2, 1)->proj(ro, d);
+            caps[d] = tile ? std::pair{full ? std::min(*full, tile) : tile, full && *full % tile == 0}
+                           : std::pair{full.value_or(0), bool(full)};
+            if (caps[d].first) site->caps[ext] = caps[d];
+            site->multiples[off] = tile;
+            site->origins[off]   = d;
+        }
+        if (bound_ == 2 && group_wide && item_scope_) {
+            auto counts = std::vector<u64>(ro, 1), steps = std::vector<u64>(ro, 0);
+            for (u64 d = 0; d != ro; ++d) {
+                auto item = item_scope_->tiles[d];
+                if (!item) continue;
+                steps[d] = std::min(caps[d].first, item);
+                if (caps[d].first != steps[d]) counts[d] = (caps[d].first + steps[d] - 1) / steps[d];
+            }
+            site->items = std::pair{counts, steps};
+        }
+    }
     auto stage_block = [&](const Def* value, const Def* k0, const Def* k) -> const Def* {
         auto block = Block{loop, k0, k};
+        if (site) {
+            auto literal_k      = Lit::isa(K);
+            site->caps[k]       = {sizes[loop], literal_k && *literal_k % sizes[loop] == 0};
+            site->multiples[k0] = sizes[loop];
+        }
         for (auto [slot, axis, panel_loop, tile] : panels) {
             auto app = graph::map_reduce(value);
             if (!app) return nullptr;
             value = promote_input(app, slot, axis, panel_loop, tile, bound_ != 0, group_wide ? &*group_scope_ : nullptr,
-                                  group_wide ? &*item_scope_ : nullptr, &block);
+                                  group_wide ? &*item_scope_ : nullptr, &block, site ? &*site : nullptr);
         }
         return value;
     };
@@ -1382,7 +1568,7 @@ const Def* Levels::mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 d
         return fail("a TF32 tensor-core level multiplies F32 matrices");
     // A's rows and B's columns are its panels' tiled axes, so their contiguous dims are k and n.
     for (u64 slot = 0; slot != 2; ++slot) {
-        auto staged = Axm::isa<tensor::stage>(root->arg(2, 0)->proj(2, slot));
+        auto staged = Axm::isa<tensor::stage>(Axm::peel<tensor::placed>(root->arg(2, 0)->proj(2, slot)));
         if (!staged) return fail("the tensor-core operands must be promoted into work-group panels");
         auto layout = staged->callee()->as<App>()->uncurry_args<4>()[2];
         if (Lit::isa(layout->proj(4, 0)) != slot) return fail("the tensor-core operands must be row-major");

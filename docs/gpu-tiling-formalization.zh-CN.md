@@ -35,7 +35,7 @@ GPU 多级 tiling 正好越过了这三条边界。
 | 级的序列与作用域 | `TileLevels/GroupLevels/ItemLevels/WarpLevels` 互递归 nominal 变体（`tensor.mim`） | 无（只是数据） | 链类型只保证构造语法；sizes 字面量、与 root 循环数一致等在 TileFuse C++；整块的绑定级曾被跳过而丢失作用域，第 3 步起只跳过不绑定、不提升的级 |
 | 单级切分 | TileFuse 产出 `tf_par`/`tf_reduce` → `tiled`/`tile_fold` | `tiled`、`tile_fold_impl` 的 Mim 定义 | box 覆盖、preimage 精确、归约块顺序：C++ 分析，无证据（`tiling-formalization-review.zh-CN.md` §1） |
 | 融合 | `tile_of`/`tile_of_box` 生产者方程，`slice`/`slice_box` 视图 | 有 | provenance/包含关系在 C++，无证据 |
-| promote / 面板 | `tensor.stage (pos, tiles, perm, pad, scope)` 表达逻辑的 split/perm/pad 形状 | `stage_read_impl`（及 exact 版本） | 其后的物理布局（perm/split/pad/旋转 swizzle）由 `panel_layout` 代价模型在 `lower_generate` 中另行选择，选出的布局是受检查的 `tensor.layout_expr` 项（第 4 步），但仍挂在旁表 `layouts_` 上而不在 buffer 类型里；`panels_` 只标记可按向量读的面板 |
+| promote / 面板 | `tensor.stage (pos, tiles, perm, pad, scope)` 表达逻辑的 split/perm/pad 形状 | `stage_read_impl`（及 exact 版本） | 其后的物理布局（perm/split/pad/旋转 swizzle）由 TileFuse 在生成 stage 时用 `panel::choose`/`panel::mma` 代价模型选出，写成 `tensor.placed L (stage …)`，L 是受检查的 `tensor.layout_expr` 项；LowerToMem 只读该项，`layouts_` 只是把它从填充处带到读取处的缓存；`panels_` 只标记可按向量读的面板 |
 | 执行绑定 | `tensor.bind n`（1 group，2 item，3 warp）；`gpu.bind.(group,item,warp,cooperative,staged,chained,async)` 标注 `affine.For` | 标注是恒等 | 一致性由 LowerToMem 的上下文 `uniform(value)`（只看是否依赖 item 原点）判断；barrier 只来自 §3.5.1 的三种构造 |
 | 跨 item 归约（R8） | `merge_with`、`group_red_items` | step 有 Mim 定义，merge 树在 C++ 生成 | 归约律与 seed 单位元由 `reduction_law` 检查（第 2 步）；树形合并的覆盖漏洞（`n=8, elems=3, s=4` 只处理 12 个 pair 中的 8 个）已在第 1 步修复 |
 | 流水 | 归约级的 `pipeline` 字段（`*_red_pipelined`），TileFuse 写成 step 上的 `tensor.pipeline depth` 标注；字段为 0 时取 `-X tensor:pipeline` | 标注是恒等 | 环形 buffer、`commit_group`/`wait_group` 计数在 `lower_tile_fold` C++ |
@@ -262,6 +262,7 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
 
 进度（2026-11-10）：第 1–5 步已实现，第 4 步只完成了布局成为项的第一阶段，布局进入 buffer 类型尚未开始。
 第 6 步经核对已由现有实现满足，整理为 §3.5.1 的三种构造；`value_barrier` 由挂在内存值上的 `gpu.fence` 代替，未新增代码。
+第 4 步第二阶段：布局选择从 LowerToMem 移到 TileFuse，经 `tensor.placed` 进入 IR；在 33 个 GPU 配置上与原选择逐一相同。
 第 7 步：流水深度成为 Group/Item/Warp 链上 `Red` 的字段，LowerToMem 只读 IR 中的 `tensor.pipeline` 标注；同步与异步拷贝的选择仍由目标架构决定，不进入链。
 
 风险：T5 不再要求一个全局分析器证明正确性；其剩余难点是为每个 shared 构造审清 GPU 内存模型前提、异步完成与 collective

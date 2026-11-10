@@ -54,7 +54,7 @@ axm buf: {r: Nat, s: «r; Nat», T: *} → Tensor r s T → Tensor r s T;
 ///
 /// An opaque physical-layout value stores only canonical layout data.
 pub mod layout_expr
-nom Data =
+anx nom Data =
     [rank: Nat,
      split: Nat,
      perm: «rank + 1; Idx (rank + 1)»,
@@ -2485,6 +2485,9 @@ axm stage: {T: *, r k: Nat}
          → Tensor (r + k) (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) T, normalize_stage;
 
 axm frozen: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Tensor r s T;
+
+/// Identity annotation on a staged work-group panel: `layout` is the storage layout the scheduler chose for it.
+axm placed: {T: *, r: Nat} → {s: «r; Nat»} → [layout: layout_expr.Expr] → Tensor r s T → Tensor r s T;
 
 axm prepack: {T: *, r k: Nat}
            → [s: «r; Nat»]

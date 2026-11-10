@@ -161,6 +161,12 @@ anx nom CoverMode =
 
 # 4. 物理布局成为受控项
 
+> 进度（2026-11-10）：第一阶段把布局写成 `tensor.layout_expr` 项；第二阶段由 TileFuse 在 promotion 时选布局，
+> 写成 `tensor.placed L (stage …)`，成本模型移到 `phase/panel_layout.cpp`，LowerToMem 不再选择，只解码该项。
+> TileFuse 用代换 region 外延上界的方式复现 LowerToMem 特化后看到的面板形状、连续维、向量宽度和 item 读取；
+> 33 个 GPU 配置（`lit/nvptx/tile_*`、`mma*` 与 `bench/gpu_tiling`）的选择与原实现逐一相同。
+> `layout_expr.Data` 改为 annex，使布局值跨 phase 保持同一类型。未做：布局进入 buffer 类型、XOR swizzle。
+
 ## IREE 主线
 
 - `Dialect/GPU/IR/GPUTileSwizzleUtils.h/.cpp` 的 `TileSwizzle` 表示 expand-shape 与 permutation。

@@ -6,6 +6,8 @@
 #include <mim/lam.h>
 #include <mim/phase.h>
 
+#include "mim/plug/tensor/phase/panel_layout.h"
+
 namespace mim::plug::tensor {
 struct GridTilePlan;
 }
@@ -49,41 +51,10 @@ private:
     const Def* lower_splat(const App*);
     const Def* lower_generate(const App*);
 
-public:
-    /// A rotation swizzle: 16-byte chunk `c` of row `r` is stored at chunk `(c + (r >> shift) % groups) % chunks`.
-    struct Swizzle {
-        u64 width, groups, shift, chunks;
-    };
-    /// A panel's storage layout: its last dim split into `(extent / split, split)`, those dims permuted (`perm[p]` is
-    /// the dim at physical position `p`), and the rows of the result swizzled.
-    struct Layout {
-        std::vector<size_t> perm;
-        u64 split = 1;
-        std::optional<Swizzle> swizzle;
-        /// The dims after the split and permutation, before merging and padding.
-        std::vector<u64> permuted;
-        bool identity() const;
-    };
-    /// How the work-items of the current item level read a panel, per panel dim: the loop dim whose tile index
-    /// selects it, or whether an item reads the dim whole; the remaining dims are fixed per step.
-    struct PanelReads {
-        std::vector<u64> counts, steps;
-        std::vector<std::optional<size_t>> loop_dim;
-        std::vector<bool> whole;
-    };
-    struct ItemGrid {
-        std::vector<u64> counts, steps;
-    };
-
-private:
-    std::tuple<const Def*, const Def*, Layout, bool> panel_layout(const Def*, size_t, u64, u64, const PanelReads*);
+    using Layout = panel::Layout;
     DefVec layout_coords(const Def*, const Def*, Defs);
     const Def* layout_lam(const Def*, const Def*);
-    const Def* layout_expr(const Layout&, const Def*, const std::vector<u64>&);
     void plain(const Def*) const;
-    std::optional<std::pair<size_t, u64>> contiguous_dim(const Def*, const Def*, const Def*);
-    std::optional<size_t> origin_dim(const Def*) const;
-    std::optional<PanelReads> panel_reads(const App*) const;
     bool nat_multiple(const Def*, u64) const;
     u64 vector_width(const Def*, const Def*, const Def*, const Def*, const Def*, u64) const;
     const Def* lower_broadcast(const App*);
@@ -104,7 +75,6 @@ private:
         u64 count() const { return rows / m * (cols / n); }
     };
     const Def* lower_mma(const App*, const Destination&, const Fragments&);
-    std::tuple<const Def*, const Def*, Layout> mma_panel_layout(const Def* storage, size_t inner);
     const Def* store_fragments(const Def* source, const Fragments&, const Destination&);
     DefVec staged_panels(const Def* root, const Def* var) const;
     const Def* merge_of(const Def*) const;
@@ -168,20 +138,16 @@ private:
     DefMap<size_t> fill_inner_;
     /// How many elements along that dim a staged panel's fill moves per step.
     DefMap<u64> fill_vector_;
+    /// The layouts `tensor.placed` assigns to stages, and to the generates that fill them.
+    DefMap<const Def*> placed_layouts_, fill_layouts_;
     /// The panels stored in a non-identity layout, by buffer; every access goes through the layout term's interpreter.
     DefMap<const Def*> layouts_;
     /// Read-only layout fields used only to decide whether a panel read can stay vectorized.
     DefMap<Layout> layout_views_;
     /// The logical shapes of those panels.
     DefMap<const Def*> logical_shapes_;
-    /// The item level's reads of a staged panel, by its generate.
-    DefMap<PanelReads> panel_reads_;
     /// The work-group panels, by buffer: 16-byte aligned, so their consumers read them a vector at a time.
     DefSet panels_;
-    /// The tile grid of the item level being lowered, over the tiled op's loop dims.
-    std::optional<ItemGrid> item_grid_;
-    /// The components of the work-group region's origin, by loop dim.
-    DefMap<size_t> origin_dims_;
     /// Nat terms known to be multiples of the value: the tile origins of the regions being lowered.
     DefMap<u64> multiples_;
     /// Runtime-shaped buffers the current tile body allocates, as `(rank, shape, type, buffer)`, freed at its end.
