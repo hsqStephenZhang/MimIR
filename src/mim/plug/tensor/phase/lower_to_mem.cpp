@@ -780,7 +780,7 @@ std::pair<const Def*, const Def*> LowerToMem::storage_access(const Def* old, con
     if (n) nats.back() = w.call(core::nat::mul, Defs{nats.back(), n});
     if (auto layout = fe::lookup(layouts_, source)) {
         auto i64s     = DefVec(rank, [&](size_t d) { return w.call<core::bitcast>(w.type_i64(), nats[d]); });
-        auto physical = layout_coords(*layout, shape, i64s);
+        auto physical = layout_coords(layout, logical_shapes_[source], i64s);
         nats = DefVec(physical.size(), [&](size_t p) { return w.call<core::bitcast>(w.type_nat(), physical[p]); });
     }
     if (n) {
@@ -868,18 +868,23 @@ const Def* LowerToMem::lower_generate(const App* app) {
         T            = T->as<Arr>()->body();
     }
     auto storage      = bounded_shape(logical, bound_level_ != 0);
-    auto layout       = std::optional<Layout>();
+    auto layout       = static_cast<const Def*>(nullptr);
+    auto layout_view  = std::optional<Layout>();
+    auto layout_shape = storage;
     auto vector_store = inner && *inner + 1 == rn;
     if (auto size = Lit::isa(core::op(core::trait::size, T)); size && inner && uniform_ && mma_panels_) {
-        auto [physical, chosen] = mma_panel_layout(storage, *inner);
-        storage                 = physical;
-        vector_store            = true;
-        if (!chosen.identity()) layout = chosen;
+        auto [physical, expr, chosen] = mma_panel_layout(storage, *inner);
+        auto changed                  = physical != storage;
+        storage                       = physical;
+        vector_store                  = true;
+        if (!chosen.identity() || changed) layout = expr, layout_view = chosen;
     } else if (size && inner && uniform_) {
-        auto [physical, chosen, contiguous] = panel_layout(storage, *inner, vec, *size, fe::lookup(panel_reads_, app));
-        storage                             = physical;
-        vector_store                        = contiguous;
-        if (!chosen.identity()) layout = chosen;
+        auto [physical, expr, chosen, contiguous]
+            = panel_layout(storage, *inner, vec, *size, fe::lookup(panel_reads_, app));
+        auto changed = physical != storage;
+        storage      = physical;
+        vector_store = contiguous;
+        if (!chosen.identity() || changed) layout = expr, layout_view = chosen;
     }
     auto bounded = storage != logical;
     check_buffer_shape(r, storage);
@@ -898,9 +903,9 @@ const Def* LowerToMem::lower_generate(const App* app) {
         pop();
         return {m, value};
     };
-    auto physical = [this, storage, layout](Defs iters) {
+    auto physical = [this, layout_shape, layout](Defs iters) {
         if (!layout) return DefVec(iters.begin(), iters.end());
-        return layout_coords(*layout, storage, iters);
+        return layout_coords(layout, layout_shape, iters);
     };
     auto index = [&physical, storage](Defs iters) { return btensor::folded_idx(storage, physical(iters)); };
     auto write = std::function<const Def*(const Def*, const Def*, Defs, const Def*)>();
@@ -937,7 +942,11 @@ const Def* LowerToMem::lower_generate(const App* app) {
         if (target) filled_mem_ = fill->proj(2, 0);
     }
     if (uniform_) shared_fills_.insert(filled);
-    if (layout) layouts_[filled] = *layout, logical_shapes_[filled] = bounded_shape(logical, bound_level_ != 0);
+    if (layout) {
+        layouts_[filled]        = layout;
+        layout_views_[filled]   = *layout_view;
+        logical_shapes_[filled] = layout_shape;
+    }
     if (inner && uniform_) panels_.insert(filled);
     return filled;
 }
@@ -1057,9 +1066,28 @@ std::vector<u64> strides_of(const std::vector<u64>& shape) {
 
 } // namespace
 
+const Def* LowerToMem::layout_expr(const Layout& layout, const Def* logical, const std::vector<u64>& physical) {
+    auto& w       = new_world();
+    auto rank     = logical->num_projs();
+    auto extended = layout.perm;
+    if (layout.split == 1) extended.insert(extended.begin() + 2, rank);
+    auto perm    = w.tuple(DefVec(rank + 1, [&](size_t p) { return w.lit_idx(rank + 1, extended[p]); }));
+    auto swizzle = layout.swizzle.value_or(Swizzle{1, 1, 0, 1});
+    auto make    = [&](const Def* pad) {
+        return w.app(w.app(w.annex(tensor::layout_expr::make), w.lit_nat(rank)),
+                     {logical, w.lit_nat(layout.split), perm, pad, w.lit_nat(swizzle.width), w.lit_nat(swizzle.groups),
+                      w.lit_nat(swizzle.shift), w.lit_nat(swizzle.chunks)});
+    };
+    auto base_expr = make(w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat_0(); })));
+    if (physical.empty()) return base_expr;
+    auto base = w.app(w.annex(tensor::layout_expr::shape), {base_expr, logical});
+    auto pad  = w.tuple(DefVec(rank, [&](size_t p) { return w.lit_nat(physical[p] - Lit::as(base->proj(rank, p))); }));
+    return make(pad);
+}
+
 // A tensor-core panel keeps its source's contiguous dim innermost, so its fill copies 16-byte runs.
 // The pad makes ldmatrix's 8 rows of a narrow panel, or the scalar fragment loads of a wide one, hit distinct banks.
-std::pair<const Def*, LowerToMem::Layout> LowerToMem::mma_panel_layout(const Def* storage, size_t inner) {
+std::tuple<const Def*, const Def*, LowerToMem::Layout> LowerToMem::mma_panel_layout(const Def* storage, size_t inner) {
     auto& w   = new_world();
     auto n    = storage->num_projs();
     auto dims = std::vector<u64>(n);
@@ -1076,13 +1104,15 @@ std::pair<const Def*, LowerToMem::Layout> LowerToMem::mma_panel_layout(const Def
         last += 4;
     else if (last > 32 && last % 32 == 0)
         last += 8;
-    return {w.tuple(DefVec(shape.size(), [&](size_t p) { return w.lit_nat(shape[p]); })), layout};
+    auto expr     = layout_expr(layout, storage, shape);
+    auto physical = w.app(w.annex(tensor::layout_expr::shape), {expr, storage});
+    return {physical, expr, layout};
 }
 
 // The storage of a panel whose fill moves `vec` elements of `bytes` along dim `inner` per step, in the layout that
 // spreads the fill's warp stores and the items' warp reads over the 32 shared-memory banks best, and whether the
 // fill's vector stays contiguous in it.
-std::tuple<const Def*, LowerToMem::Layout, bool>
+std::tuple<const Def*, const Def*, LowerToMem::Layout, bool>
 LowerToMem::panel_layout(const Def* storage, size_t inner, u64 vec, u64 bytes, const PanelReads* reads) {
     auto& w    = new_world();
     auto n     = storage->num_projs();
@@ -1090,13 +1120,13 @@ LowerToMem::panel_layout(const Def* storage, size_t inner, u64 vec, u64 bytes, c
     auto plain = Layout{std::vector<size_t>(n)};
     for (size_t p = 0; p != n; ++p)
         plain.perm[p] = p;
-    plain.permuted = dims;
     for (size_t d = 0; d != n; ++d) {
         auto lit = Lit::isa(storage->proj(n, d));
-        if (!lit || !*lit) return {storage, plain, inner + 1 == n};
+        if (!lit || !*lit) return {storage, nullptr, plain, inner + 1 == n};
         dims[d] = *lit;
     }
-    if (n < 2 || bytes < 4 || bytes % 4 || 16 % bytes) return {storage, plain, inner + 1 == n};
+    plain.permuted = dims;
+    if (n < 2 || bytes < 4 || bytes % 4 || 16 % bytes) return {storage, nullptr, plain, inner + 1 == n};
     auto words = bytes / 4, width = 16 / bytes;
     auto chunked = dims;
     chunked[inner] /= vec;
@@ -1273,87 +1303,21 @@ LowerToMem::panel_layout(const Def* storage, size_t inner, u64 vec, u64 bytes, c
                   best_layout.swizzle
                       ? std::format("(row >> {}) % {}", best_layout.swizzle->shift, best_layout.swizzle->groups)
                       : "none");
-    auto physical = w.tuple(DefVec(best_shape.size(), [&](size_t p) { return w.lit_nat(best_shape[p]); }));
-    return {physical, best_layout, vec != 1 && contiguous_fill(best_layout, best_shape)};
+    auto expr     = layout_expr(best_layout, storage, best_shape);
+    auto physical = w.app(w.annex(tensor::layout_expr::shape), {expr, storage});
+    return {physical, expr, best_layout, vec != 1 && contiguous_fill(best_layout, best_shape)};
 }
 
-// The i64 physical coordinates of the i64 logical panel coordinates @p coords under @p layout.
-DefVec LowerToMem::layout_coords(const Layout& layout, const Def* storage, Defs coords) {
-    auto& w   = new_world();
-    auto lit  = [&](u64 v) { return w.lit_i64(v); };
-    auto add  = [&](const Def* a, const Def* b) { return w.call(core::wrap::add, core::Mode::none, Defs{a, b}); };
-    auto shl  = [&](const Def* a, u64 b) { return w.call(core::wrap::shl, core::Mode::none, Defs{a, lit(b)}); };
-    auto shr  = [&](const Def* a, u64 b) { return w.call(core::shr::l, Defs{a, lit(b)}); };
-    auto mask = [&](const Def* a, u64 m) { return w.call(core::bit2::and_, core::Mode::none, Defs{a, lit(m)}); };
-    auto pre  = std::vector<const Def*>(coords.begin(), coords.end());
-    if (layout.split != 1) {
-        auto last  = pre.back();
-        pre.back() = shr(last, std::countr_zero(layout.split));
-        pre.push_back(mask(last, layout.split - 1));
-    }
-    auto permuted = std::vector<const Def*>(pre.size());
-    for (size_t p = 0; p != pre.size(); ++p)
-        permuted[p] = pre[layout.perm[p]];
-    auto n      = coords.size();
-    auto merged = merge_coords(
-        permuted, layout.permuted, n, [&](const Def* a, u64 k) { return shl(a, std::countr_zero(k)); }, add);
-    auto result = DefVec(merged.begin(), merged.end());
-    if (!layout.swizzle) return result;
-    auto& swizzle = *layout.swizzle;
-    auto dims     = std::vector<u64>(n);
-    for (size_t p = 0; p != n; ++p)
-        dims[p] = Lit::as(storage->proj(n, p));
-    auto strides   = strides_of(dims);
-    const Def* col = result[n - 1];
-    for (size_t p = 1; p + 1 < n; ++p)
-        col = add(col, shl(result[p], std::countr_zero(strides[p])));
-    auto log_width = std::countr_zero(swizzle.width);
-    auto group     = mask(shr(result[0], swizzle.shift), swizzle.groups - 1);
-    auto chunk     = mask(add(shr(col, log_width), group), swizzle.chunks - 1);
-    auto swizzled  = add(shl(chunk, log_width), mask(col, swizzle.width - 1));
-    for (size_t p = 1; p != n; ++p)
-        result[p] = mask(shr(swizzled, std::countr_zero(strides[p])), dims[p] - 1);
-    return result;
+DefVec LowerToMem::layout_coords(const Def* layout, const Def* logical, Defs coords) {
+    auto& w  = new_world();
+    auto n   = coords.size();
+    auto map = w.app(w.annex(tensor::layout_expr::map_i64), {layout, logical});
+    return w.app(map, w.tuple(coords))->projs(n);
 }
 
-// The affine map from a panel's logical coordinates to its physical ones under @p layout.
-const Def* LowerToMem::layout_lam(const Layout& layout, const Def* storage) {
-    auto& w    = new_world();
-    auto n     = storage->num_projs();
-    auto index = w.annex<affine::Index>();
-    auto lam   = w.mut_lam(w.pi(w.arr(n, index), w.arr(n, index)))->set("layoutMap");
-    auto add   = [&](const Def* a, const Def* b) { return w.call(affine::op::add, Defs{a, b}); };
-    auto mul   = [&](const Def* a, u64 k) { return w.call(affine::semiop::mul, Defs{a, w.lit_nat(k)}); };
-    auto div   = [&](const Def* a, u64 k) { return w.call(affine::semiop::floordiv, Defs{a, w.lit_nat(k)}); };
-    auto rem   = [&](const Def* a, u64 k) { return w.call(affine::semiop::rem, Defs{a, w.lit_nat(k)}); };
-    auto projs = lam->var()->projs(n);
-    auto pre   = std::vector<const Def*>(projs.begin(), projs.end());
-    if (layout.split != 1) {
-        auto last  = pre.back();
-        pre.back() = div(last, layout.split);
-        pre.push_back(rem(last, layout.split));
-    }
-    auto permuted = std::vector<const Def*>(pre.size());
-    for (size_t p = 0; p != pre.size(); ++p)
-        permuted[p] = pre[layout.perm[p]];
-    auto merged = merge_coords(permuted, layout.permuted, n, mul, add);
-    auto result = DefVec(merged.begin(), merged.end());
-    if (auto& swizzle = layout.swizzle) {
-        auto dims = std::vector<u64>(n);
-        for (size_t p = 0; p != n; ++p)
-            dims[p] = Lit::as(storage->proj(n, p));
-        auto strides   = strides_of(dims);
-        const Def* col = result[n - 1];
-        for (size_t p = 1; p + 1 < n; ++p)
-            col = add(col, mul(result[p], strides[p]));
-        auto group    = rem(div(result[0], u64(1) << swizzle->shift), swizzle->groups);
-        auto chunk    = rem(add(div(col, swizzle->width), group), swizzle->chunks);
-        auto swizzled = add(mul(chunk, swizzle->width), rem(col, swizzle->width));
-        for (size_t p = 1; p != n; ++p)
-            result[p] = rem(div(swizzled, strides[p]), dims[p]);
-    }
-    lam->set(true, w.tuple(result));
-    return lam;
+const Def* LowerToMem::layout_lam(const Def* layout, const Def* logical) {
+    auto& w = new_world();
+    return w.app(w.annex(tensor::layout_expr::map_affine), {layout, logical});
 }
 
 void LowerToMem::plain(const Def* buffer) const {
@@ -1587,6 +1551,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     for (u64 i = 0; i != nis; ++i) {
         auto buffer = is->proj(nis, i), storage = mr.Sis->proj(nis, i);
         auto layout  = fe::lookup(layouts_, buffer);
+        auto view    = fe::lookup(layout_views_, buffer);
         auto r       = storage->num_projs();
         auto logical = layout ? fe::lookup(logical_shapes_, buffer) : storage;
         auto size    = Lit::isa(core::op(core::trait::size, mr.Tis->proj(nis, i)));
@@ -1594,11 +1559,10 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         auto n = size && 16 % *size == 0 ? 16 / *size : 1;
         // A vector runs along the logical last dim, so the layout must keep that dim innermost.
         auto keeps_last
-            = !layout
-           || (layout->perm.back() + 1 == layout->perm.size() && (layout->split == 1 || layout->split % n == 0));
+            = !layout || (view->perm.back() + 1 == view->perm.size() && (view->split == 1 || view->split % n == 0));
         auto vectors   = panels_.contains(buffer) && n > 1 && last && *last % n == 0 && physical_last
                       && *physical_last % n == 0 && keeps_last;
-        auto placement = layout ? layout_lam(*layout, storage) : w.app(w.annex<affine::id>(), w.lit_nat(r));
+        auto placement = layout ? layout_lam(layout, logical) : w.app(w.annex<affine::id>(), w.lit_nat(r));
         if (!vectors) {
             if (!layout) continue;
             auto lam = w.mut_lam(input_maps[i]->type()->as<Pi>())->set("placedMap");
@@ -2408,10 +2372,12 @@ void LowerToMem::forward_storage(const Def* inputs, const Def* proxy) {
 void LowerToMem::forward_layouts(const Def* buffers, const Def* params) {
     auto forward = [this](const Def* buffer, const Def* param) {
         if (auto found = fe::lookup(layouts_, buffer)) {
-            auto layout            = *found;
-            auto shape             = logical_shapes_[buffer];
-            layouts_[param]        = std::move(layout);
-            logical_shapes_[param] = shape;
+            auto view = fe::lookup(layout_views_, buffer);
+            if (!view) buffer->blame("a panel layout is missing its cost-model view").bail();
+            auto copied_view       = *view;
+            layouts_[param]        = found;
+            layout_views_[param]   = std::move(copied_view);
+            logical_shapes_[param] = logical_shapes_[buffer];
         }
         if (panels_.contains(buffer)) panels_.insert(param);
     };
@@ -2503,7 +2469,7 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
         auto map = rewrite(old_mr.maps->proj(2, i));
         if (auto layout = fe::lookup(layouts_, buffer)) {
             auto placed = w.mut_lam(map->type()->as<Pi>())->set("placedMap");
-            placed->set(true, w.app(layout_lam(*layout, storage), w.app(map, placed->var())));
+            placed->set(true, w.app(layout_lam(layout, logical_shapes_[buffer]), w.app(map, placed->var())));
             map = placed;
         }
         auto loops              = w.tuple(DefVec(3, [&](size_t d) {

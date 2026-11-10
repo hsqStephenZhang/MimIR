@@ -1,0 +1,46 @@
+// RUN: %mim %s
+
+plugin tensor;
+plugin refly;
+plugin core;
+plugin vec;
+
+use core.ops.n;
+
+lam check_coords {n: Nat} (physical: «2; Nat», outputs: «n; «2; I64»»): Bool =
+    let bounded = vec.scan.for_all @(Idx n) @n
+        (λ (i: Idx n): Bool =
+            vec.scan.for_all @(Idx 2) @2
+                (λ (d: Idx 2): Bool = core.bitcast Nat (outputs#i#(d)) < physical#(d)) (0₂, 1₂))
+        ‹i: n; i›;
+    let distinct = vec.scan.for_all @(Idx n) @n
+        (λ (i: Idx n): Bool =
+            vec.scan.for_all @(Idx n) @n
+                (λ (j: Idx n): Bool =
+                    let equal = vec.scan.for_all @(Idx 2) @2
+                        (λ (d: Idx 2): Bool = core.icmp.e (outputs#i#(d), outputs#j#(d))) (0₂, 1₂);
+                    core.bit2.or 0 (core.idx2nat i == core.idx2nat j, core.bit2.xor 0 (equal, tt)))
+                ‹j: n; j›)
+        ‹i: n; i›;
+    core.bit2.and 0 (bounded, distinct);
+
+let perm = tensor.layout_expr.make @(2) ((2, 3), 1, (1₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1);
+let split = tensor.layout_expr.make @(2) ((2, 4), 2, (1₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1);
+let padded = tensor.layout_expr.make @(2) ((2, 4), 2, (1₃, 0₃, 2₃), (0, 2), 1, 1, 0, 1);
+let rotated = tensor.layout_expr.make @(2) ((2, 4), 2, (1₃, 0₃, 2₃), (0, 2), 2, 2, 0, 3);
+
+let inputs_23 = ‹i: 6; let ii = core.idx2nat i; (core.bitcast I64 (ii / 3), core.bitcast I64 (ii % 3))›;
+let inputs_24 = ‹i: 8; let ii = core.idx2nat i; (core.bitcast I64 (ii / 4), core.bitcast I64 (ii % 4))›;
+let perm_coords = ‹i: 6; tensor.layout_expr.map_i64 (perm, (2, 3)) (inputs_23#i)›;
+let split_coords = ‹i: 8; tensor.layout_expr.map_i64 (split, (2, 4)) (inputs_24#i)›;
+let padded_coords = ‹i: 8; tensor.layout_expr.map_i64 (padded, (2, 4)) (inputs_24#i)›;
+let rotated_coords = ‹i: 8; tensor.layout_expr.map_i64 (rotated, (2, 4)) (inputs_24#i)›;
+
+let _ = refly.check (check_coords (tensor.layout_expr.shape (perm, (2, 3)), perm_coords), tt,
+                         "permuted layout must be injective and in bounds");
+let _ = refly.check (check_coords (tensor.layout_expr.shape (split, (2, 4)), split_coords), tt,
+                         "split layout must be injective and in bounds");
+let _ = refly.check (check_coords (tensor.layout_expr.shape (padded, (2, 4)), padded_coords), tt,
+                         "padded layout must be injective and in bounds");
+let _ = refly.check (check_coords (tensor.layout_expr.shape (rotated, (2, 4)), rotated_coords), tt,
+                         "rotated layout must be injective and in bounds");

@@ -1,0 +1,6 @@
+// RUN: %mim %s 2>&1 | %FileCheck %s
+// CHECK: layout permutation must contain every dimension once
+
+plugin tensor;
+
+let invalid = tensor.layout_expr.make @(2) ((2, 4), 1, (0₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1);

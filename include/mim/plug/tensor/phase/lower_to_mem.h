@@ -76,9 +76,10 @@ public:
     };
 
 private:
-    std::tuple<const Def*, Layout, bool> panel_layout(const Def*, size_t, u64, u64, const PanelReads*);
-    DefVec layout_coords(const Layout&, const Def*, Defs);
-    const Def* layout_lam(const Layout&, const Def*);
+    std::tuple<const Def*, const Def*, Layout, bool> panel_layout(const Def*, size_t, u64, u64, const PanelReads*);
+    DefVec layout_coords(const Def*, const Def*, Defs);
+    const Def* layout_lam(const Def*, const Def*);
+    const Def* layout_expr(const Layout&, const Def*, const std::vector<u64>&);
     void plain(const Def*) const;
     std::optional<std::pair<size_t, u64>> contiguous_dim(const Def*, const Def*, const Def*);
     std::optional<size_t> origin_dim(const Def*) const;
@@ -103,7 +104,7 @@ private:
         u64 count() const { return rows / m * (cols / n); }
     };
     const Def* lower_mma(const App*, const Destination&, const Fragments&);
-    std::pair<const Def*, Layout> mma_panel_layout(const Def* storage, size_t inner);
+    std::tuple<const Def*, const Def*, Layout> mma_panel_layout(const Def* storage, size_t inner);
     const Def* store_fragments(const Def* source, const Fragments&, const Destination&);
     DefVec staged_panels(const Def* root, const Def* var) const;
     const Def* merge_of(const Def*) const;
@@ -167,9 +168,10 @@ private:
     DefMap<size_t> fill_inner_;
     /// How many elements along that dim a staged panel's fill moves per step.
     DefMap<u64> fill_vector_;
-    /// The panels stored in a non-identity layout, by buffer; every access goes through LowerToMem::layout_coords or
-    /// layout_map.
-    DefMap<Layout> layouts_;
+    /// The panels stored in a non-identity layout, by buffer; every access goes through the layout term's interpreter.
+    DefMap<const Def*> layouts_;
+    /// Read-only layout fields used only to decide whether a panel read can stay vectorized.
+    DefMap<Layout> layout_views_;
     /// The logical shapes of those panels.
     DefMap<const Def*> logical_shapes_;
     /// The item level's reads of a staged panel, by its generate.
