@@ -269,6 +269,44 @@ axm sync_reclaim: GM (g, e, Reading) → GM (g, e + 1, Synced);   // 一道 barr
 
 **顺序**：第一步只引入 `GM` 与 `SharedBuf`，用它重写填充批与 R8 合并轮（不含流水环），预计覆盖现有六处手工 fence 中的五处；`WM`/`IM` 与 `run_items` 是第二步；流水槽自动机依赖循环携带 token 的解决，是第三步；`gpu.check_sync` 第四步。
 
+**落地状态（2026-11-11）。**
+
+与 Triton membar 的比较：
+- membar 在分配之后按区间做数据流，自动推断 barrier 放在哪里；它是一个算法，不是规约；
+- membar 按区间粒度表达不了按 owner 不相交的原地更新，R8 每轮会多插一道；
+- 它和我们一样依赖别名信息与全组一致到达。
+
+所以相位类型仍是主机制。membar 式分析适合放在擦除之后、按 buffer 身份做"只检查不插入"的验证（兜住 `view` 逃逸和旧的 `staged`/`chained` 路径），兼做多余 barrier 的删除；一旦 shared 内存按活跃区间复用，它就是必需的。
+
+- 相位扩成 `Synced | Writing | Reading | Updating`，可见性扩成 `Empty | Unpublished | Published | Owned`。
+  - `shared_panel` 给出 `Empty`，`coop_fill` 把它变成 `Unpublished`，所以未填充的面板不能发布。
+  - 原地更新走 `enter_update`（Reading→Updating，不发 barrier）、`claim`（以 Updating token 为见证，Published→Owned）、`owned_update`、`sync_carry`（一道 barrier，Owned 变成下一超步的 Published）。`Updating` 下没有 `read_phase`，`Owned` 没有 `view`。
+  - `group_leave` 只接受 `Synced`；`leave_reading` 从 `Reading` 离开，约定由下一次 `group_enter` 的 barrier 等待残留的读者；`Writing`/`Updating` 不能离开。
+- R8 合并轮已用这些公理生成：partials 是一个面板，存部分和的 item 循环是它的 `coop_fill`，每轮是一次 `owned_update` 加 `sync_carry`，最后的合并在 `read_phase` 里读视图，之后 `sync_reclaim` 再 `group_leave`。代价是多了 `group_enter` 那一道 barrier（`tile_reduce` 4→5）。只有当构造在每条路径上都以 `Synced` 离开、视图不逃逸时，这道才能省掉。
+- `gpu.check_sync` 在 `lower_to_mem` 之后、`erase_phases` 之前运行，代替线性类型检查：
+  - **S2 线性**：每个 `GM` token 恰好被消耗一次。作为 `publish_view`/`claim` 见证的使用不算消耗。`Empty`、`Unpublished`、`Owned` 面板恰好使用一次。被 `claim` 的 `Published` 句柄不得再有别的使用。
+  - **S1 不捕获**：token 按它依赖的变量放置，消耗它的节点不得放到更内层的 mutable 里，因为内层 mutable 可能执行不止一次。`mem.fresh` 的占位 continuation 恰好执行一次，算作外层的一部分。lam 的参数里不能有 token 或面板。图 IR 没有词法作用域，所以按可达性判断"在哪里用"不成立：后面的代码沿内存链总能到达已经 leave 掉的 token。
+  - **构造唯一**：同一 `g` 只能 `group_enter` 一次。
+- **仍未覆盖的限制**：
+  - S3 发散不检查；
+  - owner 不相交（每个 item 只写自己的元素，`owned_update`/`coop_fill` 的 body 是任意代码）不检查；
+  - `view` 返回的裸 `buffer.Buf` 在类型上仍能逃逸到 `sync_reclaim`/`leave_reading` 之后。现在 `read_phase {R}` 的 body 返回 `[mem, R]`，R8 的合并和填充批的两个消费者（`lower_map_reduce` 有目标内存时、`lower_mma`）都在 body 里读面板，不再在 leave 之后读，但检查不强制这一点；
+  - 同一批里两块类型相同的面板可以互换，面板没有身份；
+  - 循环里的构造每轮都是 `e = 0`，跨轮的隔离靠的是"面板是体内局部值、lam 参数不许带面板"，而不是代数；
+  - 原始 `mem.M` 不是线性的，用同一 `mem` 进入两个构造只能靠"构造唯一"兜底。
+- **评审（agy，gemini-3.8-flash-high 与 claude-sonnet-5-5-high）** 指出的上述漏洞都已复现。已经修掉的：
+  - `claim` 后旧句柄仍可读；
+  - `owned_update` 停在 `Reading`；
+  - 从 `Writing` 离开；
+  - 未填充即发布；
+  - `g` 重复。
+
+  `view` 逃逸已在生成侧改成作用域化读取，但检查不强制。
+
+  尚未修的：
+  - 没有目标内存的消费者不进批（Issue 7）；
+  - 批发布依赖 `Hole`，建议改成一次性的 `publish_batch`。
+
 ### C. 局部数值条件的检查
 
 只列第 1 类义务。每条都要"先检查，再声明并使用"，检查在内存顺序上存活并支配访问。
