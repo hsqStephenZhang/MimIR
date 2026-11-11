@@ -211,19 +211,20 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
     auto group = groups_.find(app);
     if (group == groups_.end()) return value;
     if (group->second.kind == 1) value = contraction_views(value);
-    auto& w     = new_world();
-    auto mr     = btensor::MapRedPost::of(graph::map_reduce(value)->callee()->as<App>());
-    auto ranks  = *mr.ranks();
-    auto bytes  = w.app(w.annex(core::trait::size), mr.To);
-    auto lanes  = w.app(w.annex<vec_width>(), w.lit_nat(4));
-    auto facts  = w.tuple({w.lit_nat(ranks.ro), w.lit_nat(ranks.rr), w.lit_nat(group->second.kind), bytes, lanes,
-                           w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
-                           w.lit_nat(driver().arg_nat("tensor", "group-cache").value_or(262144))});
-    auto levels = w.app(w.app(w.annex<default_tile_config>(), mr.To), facts);
+    auto& w        = new_world();
+    auto mr        = btensor::MapRedPost::of(graph::map_reduce(value)->callee()->as<App>());
+    auto ranks     = *mr.ranks();
+    auto bytes     = w.app(w.annex(core::trait::size), mr.To);
+    auto lanes     = w.app(w.annex<vec_width>(), w.lit_nat(4));
+    auto facts     = w.tuple({w.lit_nat(ranks.ro), w.lit_nat(ranks.rr), w.lit_nat(group->second.kind), bytes, lanes,
+                              w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
+                              w.lit_nat(driver().arg_nat("tensor", "group-cache").value_or(262144))});
+    auto tensor    = *TensorType::isa(value->type());
+    auto contracts = w.app(w.app(w.app(w.annex<root_contraction>(), {tensor.T, tensor.r}), tensor.s), value);
+    auto levels    = w.app(w.app(w.annex<default_tile_config>(), {mr.To, contracts}), facts);
     auto members
         = w.tuple(DefVec(group->second.members.size(), [&](size_t i) { return rewrite(group->second.members[i]); }));
     auto control = w.annex<default_control>();
-    auto tensor  = *TensorType::isa(value->type());
     auto request = w.app(w.annex<tile_req>(), {tensor.T, tensor.r, tensor.s, members->type(), control->type()});
     return w.app(request, {value, members, levels, control});
 }

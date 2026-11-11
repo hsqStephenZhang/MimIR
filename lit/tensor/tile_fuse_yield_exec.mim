@@ -27,7 +27,7 @@ fun mac (acc: I64, xy: [I64, I64])@tt: I64 =
     return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
 fun bias_add (acc x: I64)@tt: I64 = return (core.wrap.add 0 (core.wrap.mul 0 (acc, 2I64), x));
 
-lam shared_ (n: Nat) (levels: TileLevels (2, I64)) (x y: tensor.Tensor 2 (n, 4) I64)
+lam shared_ (n: Nat) (levels: TileLevels (2, I64, ff)) (x y: tensor.Tensor 2 (n, 4) I64)
     : [tensor.Tensor 2 (n, 4) I64, tensor.Tensor 2 (n, 4) I64] =
     let p1   = map_reduce ((n, 4), (n, 4)) (twice, 0I64) (affine.id @2) (affine.id @2,) x;
     let p2   = map_reduce ((n, 4), (n, 4)) (inc, 0I64) (affine.id @2) (affine.id @2,) p1;

@@ -210,6 +210,9 @@ inline std::optional<fe::Vector<u64>> lit_projs(const Def* def, u64 n) {
 
 /// A literal `u` with `x ≤ u` for every value the `Nat` term @p x may take, if its structure bounds it.
 std::optional<u64> nat_upper(const Def* x);
+
+/// The value @p lam returns, also when it hands its mapped element to a local continuation that returns the result.
+const Def* returned(Lam* lam);
 /// Whether `x ≤ bound` follows from the structure of @p x: alpha-equal, a literal upper bound, or a `min` with @p
 /// bound.
 bool nat_bounded_by(const Def* x, const Def* bound);

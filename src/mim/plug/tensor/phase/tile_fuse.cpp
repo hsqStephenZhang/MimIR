@@ -183,9 +183,9 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         if (!inj) return std::nullopt;
         auto i = inj->index();
         if (i == 0) return specs;
-        // `WarpLevels#Mma` holds just its shape and ends the chain.
+        // `WarpLevels#Mma` holds its shape and the root's contraction evidence, and ends the chain.
         if (scope == Warp && i == 2) {
-            specs.push_back(LevelSpec{3, 0, 0, 0, inj->value(), nullptr});
+            specs.push_back(LevelSpec{3, 0, 0, 0, inj->value()->proj(2, 0), nullptr});
             return specs;
         }
         auto n     = inj->value()->num_projs();
@@ -230,16 +230,6 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         if (spec.kind == 0 && spec.bind == 3) scope = Warp;
         cur = field(n - 1);
     }
-}
-
-/// The value @p lam returns, also when it hands its mapped element to a local continuation that returns the result.
-const Def* returned(Lam* lam) {
-    if (auto value = Lam::isa_ret_arg(lam)) return value;
-    auto call = lam->body()->isa<App>();
-    auto next = call ? call->callee()->isa_mut<Lam>() : nullptr;
-    if (!next || !next->is_set()) return nullptr;
-    auto app = next->reduce(call->arg()).back()->isa<App>();
-    return app && app->callee() == lam->ret_var() ? app->arg() : nullptr;
 }
 
 const Def* combiner_app(const Def* comb) {
@@ -1557,13 +1547,9 @@ const Def* Levels::reduction(const Def* anchor,
 const Def* Levels::mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 depth) {
     auto& w = world();
     if (bound_ != 3) return fail("a tensor-core level must be inside a warp");
-    auto mr  = btensor::MapRedPost::of(root->callee()->as<App>());
-    auto F32 = w.annex<math::F32>();
-    if (rn != 3 || Lit::as(mr.Ro) != 2 || Lit::as(mr.nis) != 2)
-        return fail("a tensor-core level computes a matrix product");
+    auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
+    // The request's type admits `warp_mma` only for an F32 matrix product.
     if (shape[0] != 16 || shape[1] != 8 || shape[2] != 8) return fail("a TF32 tensor-core tile is (16, 8, 8)");
-    if (mr.To != F32 || mr.Tis->proj(2, 0) != F32 || mr.Tis->proj(2, 1) != F32)
-        return fail("a TF32 tensor-core level multiplies F32 matrices");
     // A's rows and B's columns are its panels' tiled axes, so their contiguous dims are k and n.
     for (u64 slot = 0; slot != 2; ++slot) {
         auto staged = Axm::isa<tensor::stage>(Axm::peel<tensor::placed>(root->arg(2, 0)->proj(2, slot)));
@@ -1643,7 +1629,7 @@ const Def* TileFuse::rewrite_imm_App(const App* app) {
 
 const Def* TileFuse::realize(const App* request, const DefSet& outside) {
     auto [op, members, levels, control] = request->args<4>();
-    auto parsed = tile_levels(levels);
+    auto parsed                         = tile_levels(levels);
     if (!parsed || parsed->empty()) {
         report_tile_request(request, "the levels are not a literal chain");
         return op;

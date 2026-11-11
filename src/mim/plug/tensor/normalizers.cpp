@@ -11,6 +11,7 @@
 #include <mim/world.h>
 
 #include <mim/plug/affine/affine.h>
+#include <mim/plug/math/math.h>
 
 #include "mim/plug/tensor/tensor.h"
 
@@ -732,6 +733,59 @@ const Def* normalize_group_impl(const Def*, const Def* callee, const Def* arg) {
     inner->set(true, w.app(read, {inputs.rebuild(producer, inner->var()), w.tuple(origin), ext}));
     body->set(true, inner);
     return w.app(tiled, body);
+}
+
+const Def* returned(Lam* lam) {
+    if (auto value = Lam::isa_ret_arg(lam)) return value;
+    auto call = lam->body()->isa<App>();
+    auto next = call ? call->callee()->isa_mut<Lam>() : nullptr;
+    if (!next || !next->is_set()) return nullptr;
+    auto app = next->reduce(call->arg()).back()->isa<App>();
+    return app && app->callee() == lam->ret_var() ? app->arg() : nullptr;
+}
+
+namespace {
+
+// Whether @p map sends the loop index `(i0, i1, i2)` exactly to `(i_a, i_b)`.
+bool reads_loops(const Def* map, u64 a, u64 b) {
+    auto& w = map->world();
+    auto pi = map->type()->isa<Pi>();
+    if (!pi) return false;
+    auto var = w.mut_lam(pi)->var();
+    auto out = w.app(map, var);
+    return Lit::isa(out->arity()) == 2 && out->proj(2, 0) == var->proj(3, a) && out->proj(2, 1) == var->proj(3, b);
+}
+
+// Whether `x` and `y` are `a` and `b` in either order.
+bool either(const Def* x, const Def* y, const Def* a, const Def* b) { return (x == a && y == b) || (x == b && y == a); }
+
+// `C (m, n) += A (m, k) · B (k, n)` over F32, whose combiner returns `acc + a · b`.
+bool contraction(const App* root) {
+    auto& w    = root->world();
+    auto mr    = btensor::MapRedPost::of(root->callee()->as<App>());
+    auto ranks = mr.ranks();
+    auto F32   = w.annex<math::F32>();
+    if (!ranks || ranks->ro != 2 || ranks->rr != 1 || Lit::isa(mr.nis) != 2) return false;
+    if (mr.To != F32 || mr.Tis->proj(2, 0) != F32 || mr.Tis->proj(2, 1) != F32) return false;
+    if (!reads_loops(mr.map_out, 0, 1) || !reads_loops(mr.maps->proj(2, 0), 0, 2)
+        || !reads_loops(mr.maps->proj(2, 1), 2, 1))
+        return false;
+    auto lam   = mr.comb->isa_mut<Lam>();
+    auto value = lam && lam->is_set() ? returned(lam) : nullptr;
+    auto add   = value ? Axm::isa(math::arith::add, value) : nullptr;
+    if (!add) return false;
+    auto [acc, ins] = lam->var(2, 0)->projs<2>();
+    auto [l, r]     = add->args<2>();
+    auto product    = l == acc ? r : r == acc ? l : nullptr;
+    auto mul        = product ? Axm::isa(math::arith::mul, product) : nullptr;
+    return mul && either(mul->arg(2, 0), mul->arg(2, 1), ins->proj(2, 0), ins->proj(2, 1));
+}
+
+} // namespace
+
+const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
+    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) return op->world().lit_bool(contraction(root));
+    return nullptr;
 }
 
 const Def* normalize_root_loops(const Def*, const Def*, const Def* op) {

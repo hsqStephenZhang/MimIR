@@ -167,8 +167,8 @@ TileFuse 输出里只有 `bind 2` 和 `merge_with` 两个标注；lowering 之�
 
 | # | 缺陷 | 状态 |
 |---|---|---|
-| D1 | 非乘加的 combiner 走 `warp_red` 接 `warp_mma` 时被编译成 `gpu.mma_tf32`：顺序归约切最外层归约维时不查 `reduction_law`，`Levels::mma` 和 `lower_mma` 都不看 combiner | **已复现**：把 `lit/gpu/tile_mma.mim` 的 `mul` 换成 `sub`，无报错，输出仍含 `gpu.mma_tf32` |
-| D2 | mma 的输入轴没有和 (m, k)、(k, n) 绑定：`panel_axis` 只要求某根轴读任意一个被切的并行维，`lower_mma` 却硬编码两个输入的坐标 | 评审，未复现 |
+| D1 | 非乘加的 combiner 走 `warp_red` 接 `warp_mma` 时被编译成 `gpu.mma_tf32`：顺序归约切最外层归约维时不查 `reduction_law`，`Levels::mma` 和 `lower_mma` 都不看 combiner | **已修**：`tile_req` 的 levels 带第三个索引 `root_contraction op`，`warp_mma` 把它固定为 `tt`；只有 F32 且 combiner 返回 `acc + a · b` 时归一化为 `tt`。`lit/error/tile_mma_combiner.mim` |
+| D2 | mma 的输入轴没有和 (m, k)、(k, n) 绑定：`panel_axis` 只要求某根轴读任意一个被切的并行维，`lower_mma` 却硬编码两个输入的坐标 | **已修**：同一个 `root_contraction` 要求输出映射为 (m, n)、A 为 (m, k)、B 为 (k, n)。`lit/error/tile_mma_axes.mim` |
 | D3 | K 不超过归约块长时（如 K = 8、块长 8）TileFuse 不生成 `tile_fold`，`fragments_` 没登记，`mma` 被静默丢弃，退回的标量循环被 warp 的 32 个 lane 重复执行 | 评审，未复现 |
 | D4 | `store_async` 静默退化成同步 `store`，而 `bind.async` 循环前后没有 barrier，环槽的读写隔离被破坏；带越界分支的面板、非 4/8/16 字节的元素都会触发 | 评审，未复现 |
 | D5 | 根级 `group_red_items` 配非整除的 peel：尾块 `last` 没有 `bind 2`，在 group 作用域里被所有线程并发重复累加；带非恒等 post 时同理 | 评审，未复现 |
@@ -225,7 +225,7 @@ A1、A2 的 Mim 展开不能在 TileFuse 阶段写死成 GPU 公理：同一个 
 | **B3** 执行形状 | region 按物理 block 形状索引；逻辑工作量和 active 谓词是另外两个量；barrier 位于统一的物理 group 层 |
 | **B4** `Frag` | 能避免把普通四元素数组当 fragment。删旁表还要求 fragment 数、tile 形状、布局随 fold 状态和 region 参数传播，并区分 A/B/C 角色与数值格式。TileFuse 阶段的 fold 状态是 `Tensor`（`tile_of_partial/post` 的签名要求），在那里换成 `Frag` 会让整套 `tf_reduce` 类型不合；留到 LowerToMem 再换则消不掉旁表（评审） |
 | **B5** 归约律 | `[merge, identity, commutative]` 是声明不是证明。用受限的"已识别律"构造子加独立匹配；用户自己构造的明确叫 permission |
-| **B6** MMA 算子匹配（新增） | 受限的 contraction 描述符或独立 matcher，在选择 `mma` 之前核实 combiner 和访问关系。这先于 `Frag` |
+| **B6** MMA 算子匹配（新增） | 已完成：`root_contraction` 公理在 root 归一化为 `map_reduce_post` 时判定它是否为 F32 矩阵乘（访问关系与乘加 combiner，含融合后经局部 continuation 返回的 combiner）；level 链的类型以它为索引，`Mma` 变体携带单例证据 `‹tt›: «mma»`，所以只有矩阵乘的请求能以 `warp_mma` 结尾。索引必须出现在字段类型里才区分 nom 实例，只在递归引用里出现的索引会被忽略 |
 
 ### C. 局部数值条件的检查
 
