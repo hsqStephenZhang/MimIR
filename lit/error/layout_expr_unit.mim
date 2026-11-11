@@ -1,0 +1,6 @@
+// RUN: %mim %s 2>&1 | %FileCheck %s
+// CHECK: an unsplit layout keeps its unit dimension at position 2
+
+plugin tensor;
+
+let invalid = tensor.layout_expr.make @(3) ((4, 1, 8), 1, (3₄, 0₄, 1₄, 2₄), (0, 0, 0), 1, 1, 0, 1, ff);

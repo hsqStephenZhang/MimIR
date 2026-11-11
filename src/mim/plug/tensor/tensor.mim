@@ -111,9 +111,11 @@ pub anx lam make {r: Nat}
     let split = refly.check (logical#(core.idx 0 r (r - 1)) % split == 0, split,
                              "layout split must divide the last logical extent");
     let perm = refly.check (vec.is_unique perm, perm, "layout permutation must contain every dimension once");
+    let perm = refly.check (core.bit2.or 0 (split != 1, core.idx2nat (perm#(core.idx 0 (r + 1) 2)) == r), perm,
+                            "an unsplit layout keeps its unit dimension at position 2");
     let enabled = groups != 1;
     let width = core.select (enabled, refly.check (width > 0, width, "layout swizzle width must be nonzero"), 1);
-    let shift = core.select (enabled, shift, 0);
+    let shift = core.select (enabled, refly.check (shift < 64, shift, "layout swizzle shift must be below 64"), 0);
     let chunks = core.select (enabled, refly.check (chunks > 0, chunks, "layout swizzle chunks must be nonzero"), 1);
     let groups = core.select (enabled, refly.check (groups > 0, groups, "layout swizzle groups must be nonzero"), 1);
     let groups = core.select (enabled,
