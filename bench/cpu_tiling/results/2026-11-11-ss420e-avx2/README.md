@@ -1,5 +1,7 @@
 # ss420e CPU GEMM：禁用 AVX-512
 
+**基线说明：本报告的 `default`/“MimIR 默认”是已包含本次优化的分支默认参数，不是 `origin/master`；`haswell96` 是同一修复源码的显式参数配置。**
+
 与前一轮使用同一台 Xeon Silver 4310、同一 CPU 0 单线程、同一 Clang 20.1.8、同一
 MimIR LLVM IR、同一 tiling 配置以及完全相同的 A/B 输入。输入目录复用前一轮文件，
 二进制和结果保存在独立目录：
@@ -34,7 +36,7 @@ OpenBLAS 与 PyTorch `mm.out` 使用预分配 C。
 
 | 实现 | 相对 AVX2 OpenBLAS | 相对 AVX2 PyTorch | 禁用后的绝对加速比 |
 |---|---:|---:|---:|
-| MimIR 默认 | 83.25% | 81.28% | 1.255× |
+| MimIR 优化分支默认 | 83.25% | 81.28% | 1.255× |
 | MimIR 6×16 | 94.64% | 92.40% | 1.214× |
 | OpenBLAS | 100.00% | 97.63% | 0.656× |
 | PyTorch / MKL | 102.42% | 100.00% | 0.587× |

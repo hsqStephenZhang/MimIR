@@ -1,0 +1,4791 @@
+{
+  "affinity": [
+    0
+  ],
+  "threads": 1,
+  "warmup": 5,
+  "repeats": 9,
+  "min_repeat_ms": 100,
+  "isa": "avx2",
+  "target_flags": [
+    "-march=icelake-server",
+    "-mno-avx512f"
+  ],
+  "calibrate_once": true,
+  "rows": [
+    {
+      "op": "gemm",
+      "name": "sq64",
+      "shape": [
+        64,
+        64,
+        64
+      ],
+      "reps": 2000,
+      "max_abs_error": {
+        "origin_master": 2.6084535189596636e-06,
+        "branch_default": 2.6084535189596636e-06,
+        "branch_6x16": 2.6084535189596636e-06,
+        "openblas": 2.6084535189596636e-06,
+        "pytorch": 2.6084535189596636e-06
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/64_64_64/kernel.so",
+          "sha256": "4176f68db4b794983ab817feabed6190ad1e21b730c557c7ce20007f06eef482"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/64_64_64/kernel.so",
+          "sha256": "71becc122d55fb813648466027a99bd7143a538a9a0aee9917967492d93533a6"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/64_64_64/kernel.so",
+          "sha256": "223ac4c6551756c71f45416b0ea45e289e4e994ef7734b40c30d517645afafe2"
+        }
+      },
+      "ms": {
+        "origin_master": 0.0110879349962908,
+        "branch_default": 0.007244216716064019,
+        "branch_6x16": 0.007410816512607684,
+        "openblas": 0.006649217009182825,
+        "pytorch": 0.006357530805183769
+      },
+      "batches_ms": {
+        "origin_master": [
+          0.01137404015207715,
+          0.01104962240356083,
+          0.0110879349962908,
+          0.012043958735163203,
+          0.011063147533382788,
+          0.011040949091246291,
+          0.011130284773738874,
+          0.011085004821958457,
+          0.012847042748516321
+        ],
+        "branch_default": [
+          0.007229062477771191,
+          0.007235817131001777,
+          0.007333303319502074,
+          0.007228212803793717,
+          0.007244216716064019,
+          0.0072563991108476585,
+          0.007250480023710729,
+          0.007233746058091286,
+          0.007339801422643746
+        ],
+        "branch_6x16": [
+          0.007420371690875936,
+          0.007405202980569703,
+          0.00739975514053952,
+          0.00740077702320317,
+          0.007410816512607684,
+          0.0074032373765956115,
+          0.007433618499654154,
+          0.007484289127837515,
+          0.0074163308809658554
+        ],
+        "openblas": [
+          0.006643998981548949,
+          0.006646510264682029,
+          0.00664658731939462,
+          0.006646045902704391,
+          0.006723777273174745,
+          0.006660676581520023,
+          0.006649217009182825,
+          0.006661816923476301,
+          0.006649570534396458
+        ],
+        "pytorch": [
+          0.00646946388357765,
+          0.006354872795835989,
+          0.006362059379647333,
+          0.006670613872955173,
+          0.006356546845124283,
+          0.006357530805183769,
+          0.0063555569895899725,
+          0.006377284682387933,
+          0.006349291268323773
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          10784,
+          10784,
+          10784,
+          10784,
+          10784,
+          10784,
+          10784,
+          10784,
+          10784
+        ],
+        "branch_default": [
+          16870,
+          16870,
+          16870,
+          16870,
+          16870,
+          16870,
+          16870,
+          16870,
+          16870
+        ],
+        "branch_6x16": [
+          15903,
+          15903,
+          15903,
+          15903,
+          15903,
+          15903,
+          15903,
+          15903,
+          15903
+        ],
+        "openblas": [
+          16486,
+          16486,
+          16486,
+          16486,
+          16486,
+          16486,
+          16486,
+          16486,
+          16486
+        ],
+        "pytorch": [
+          18828,
+          18828,
+          18828,
+          18828,
+          18828,
+          18828,
+          18828,
+          18828,
+          18828
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "sq128",
+      "shape": [
+        128,
+        128,
+        128
+      ],
+      "reps": 500,
+      "max_abs_error": {
+        "origin_master": 7.548916229893621e-06,
+        "branch_default": 7.548916229893621e-06,
+        "branch_6x16": 7.548916229893621e-06,
+        "openblas": 7.548916229893621e-06,
+        "pytorch": 7.548916229893621e-06
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/128_128_128/kernel.so",
+          "sha256": "44e8c7e75c296bf6f6291562bd9d7bb068b7daba2f90c0fc69264bb50dc9e24a"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/128_128_128/kernel.so",
+          "sha256": "5bca86348f01acc379571c5d6a647509a3137aecfa6fccd3b723c38b103f40d7"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/128_128_128/kernel.so",
+          "sha256": "cd380ee2313e964015b96ae3416c7fc6a13e737a1ce7b86ea3a0f5e22daf0919"
+        }
+      },
+      "ms": {
+        "origin_master": 0.13062559233449475,
+        "branch_default": 0.054605768670309654,
+        "branch_6x16": 0.05075597752332485,
+        "openblas": 0.0498724800925101,
+        "pytorch": 0.04936414466783217
+      },
+      "batches_ms": {
+        "origin_master": [
+          0.1305415075493612,
+          0.1305958350754936,
+          0.1306096887340302,
+          0.1424458513356562,
+          0.13101452032520325,
+          0.13075023577235773,
+          0.1305884343786295,
+          0.13930976655052263,
+          0.13062559233449475
+        ],
+        "branch_default": [
+          0.0546079489981785,
+          0.054605768670309654,
+          0.054663840619307826,
+          0.054597626593806924,
+          0.05459911976320583,
+          0.05460058242258652,
+          0.054598877504553736,
+          0.060285698998178504,
+          0.05469908515482696
+        ],
+        "branch_6x16": [
+          0.05080693977947413,
+          0.050855100508905855,
+          0.05075597752332485,
+          0.05070610687022901,
+          0.05129363316369805,
+          0.05085733418150976,
+          0.05073745971162002,
+          0.05070216072943172,
+          0.05070955004240882
+        ],
+        "openblas": [
+          0.0497818257539503,
+          0.050385517458761894,
+          0.0498724800925101,
+          0.04987332048595593,
+          0.049792052276672855,
+          0.04977132924782332,
+          0.049982844821868405,
+          0.05033379681007836,
+          0.04975944677347778
+        ],
+        "pytorch": [
+          0.04934956905594405,
+          0.0492881437937063,
+          0.04944739772727273,
+          0.049284102272727275,
+          0.0506362145979021,
+          0.04939094405594406,
+          0.04936414466783217,
+          0.04927712805944057,
+          0.04937311931818182
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          861,
+          861,
+          861,
+          861,
+          861,
+          861,
+          861,
+          861,
+          861
+        ],
+        "branch_default": [
+          2196,
+          2196,
+          2196,
+          2196,
+          2196,
+          2196,
+          2196,
+          2196,
+          2196
+        ],
+        "branch_6x16": [
+          2358,
+          2358,
+          2358,
+          2358,
+          2358,
+          2358,
+          2358,
+          2358,
+          2358
+        ],
+        "openblas": [
+          2325,
+          2325,
+          2325,
+          2325,
+          2325,
+          2325,
+          2325,
+          2325,
+          2325
+        ],
+        "pytorch": [
+          2288,
+          2288,
+          2288,
+          2288,
+          2288,
+          2288,
+          2288,
+          2288,
+          2288
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "sq256",
+      "shape": [
+        256,
+        256,
+        256
+      ],
+      "reps": 100,
+      "max_abs_error": {
+        "origin_master": 1.609866959384476e-05,
+        "branch_default": 1.609866959384476e-05,
+        "branch_6x16": 1.609866959384476e-05,
+        "openblas": 1.609866959384476e-05,
+        "pytorch": 1.609866959384476e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/256_256_256/kernel.so",
+          "sha256": "dc1f9a03cb04e3f85cf79a25b8020d5b8942df642749fa420af0c8f65d192522"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/256_256_256/kernel.so",
+          "sha256": "bf372ad904bc0f0c6d91cb6f85a3bfa026397371b7a5c5fadf5cff4018ebc3ae"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/256_256_256/kernel.so",
+          "sha256": "5535217cec430da27ee4f87cf2a5016a6259b7abf88c22dcccb13f35109c6775"
+        }
+      },
+      "ms": {
+        "origin_master": 0.7788118961038961,
+        "branch_default": 0.5338446726457399,
+        "branch_6x16": 0.378296644654088,
+        "openblas": 0.3673524737081291,
+        "pytorch": 0.35987381458966566
+      },
+      "batches_ms": {
+        "origin_master": [
+          0.7788118961038961,
+          0.7786248311688312,
+          0.7780772402597402,
+          0.7796650714285714,
+          0.7791063571428571,
+          0.7799248181818181,
+          0.7784366948051948,
+          0.7793989350649351,
+          0.778516551948052
+        ],
+        "branch_default": [
+          0.5338446726457399,
+          0.5338209058295964,
+          0.5348343094170404,
+          0.5346161704035874,
+          0.533833260089686,
+          0.5337178744394618,
+          0.5338396816143498,
+          0.5346509641255606,
+          0.5348591165919282
+        ],
+        "branch_6x16": [
+          0.3762554213836478,
+          0.38010544339622643,
+          0.38254524842767296,
+          0.3754969559748427,
+          0.3795460503144654,
+          0.37958025471698115,
+          0.37596697169811316,
+          0.3754331918238994,
+          0.378296644654088
+        ],
+        "openblas": [
+          0.36718493944535685,
+          0.367109049630608,
+          0.3673352773990424,
+          0.36739267916317697,
+          0.36737750120022716,
+          0.3673524737081291,
+          0.36739273683020945,
+          0.3712933579742355,
+          0.3673165990472209
+        ],
+        "pytorch": [
+          0.35995199392097266,
+          0.3598652917933131,
+          0.3598406838905775,
+          0.3598290972644377,
+          0.3735787781155015,
+          0.361031726443769,
+          0.35987381458966566,
+          0.35980332522796354,
+          0.36030694224924015
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          154,
+          154,
+          154,
+          154,
+          154,
+          154,
+          154,
+          154,
+          154
+        ],
+        "branch_default": [
+          223,
+          223,
+          223,
+          223,
+          223,
+          223,
+          223,
+          223,
+          223
+        ],
+        "branch_6x16": [
+          318,
+          318,
+          318,
+          318,
+          318,
+          318,
+          318,
+          318,
+          318
+        ],
+        "openblas": [
+          323,
+          323,
+          323,
+          323,
+          323,
+          323,
+          323,
+          323,
+          323
+        ],
+        "pytorch": [
+          329,
+          329,
+          329,
+          329,
+          329,
+          329,
+          329,
+          329,
+          329
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "sq512",
+      "shape": [
+        512,
+        512,
+        512
+      ],
+      "reps": 20,
+      "max_abs_error": {
+        "origin_master": 4.3386870316908244e-05,
+        "branch_default": 4.3386870316908244e-05,
+        "branch_6x16": 4.3386870316908244e-05,
+        "openblas": 1.8865535757583984e-05,
+        "pytorch": 1.3463768759436334e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/512_512_512/kernel.so",
+          "sha256": "f46f68a325a029742ea71d5e8e1563b4c4c0d7756729267e6fdbd3cc7a51599b"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/512_512_512/kernel.so",
+          "sha256": "0e8c8057ad94ac660fc47ad8c85f5fc326495963910957bbe3dfdf2f0bcf45f4"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/512_512_512/kernel.so",
+          "sha256": "6954620ea7e7959fccd2f612ae2a99f0755de8bb647c4b235c77a102b7b09fc5"
+        }
+      },
+      "ms": {
+        "origin_master": 6.973597750000001,
+        "branch_default": 3.64388628125,
+        "branch_6x16": 3.204557864864865,
+        "openblas": 2.9067686963372115,
+        "pytorch": 2.8750634878048777
+      },
+      "batches_ms": {
+        "origin_master": [
+          7.03192335,
+          6.9602451499999995,
+          6.949535799999999,
+          6.971337449999999,
+          6.9582355,
+          6.9834840499999995,
+          6.973597750000001,
+          7.0300375,
+          7.0639372
+        ],
+        "branch_default": [
+          3.6552513125,
+          3.64770521875,
+          3.639220625,
+          3.64606103125,
+          3.6383775625,
+          3.6384232499999998,
+          3.64388628125,
+          3.6506644374999997,
+          3.6386145937500003
+        ],
+        "branch_6x16": [
+          3.2075763243243247,
+          3.2025957297297296,
+          3.200927810810811,
+          3.2007878648648647,
+          3.204557864864865,
+          3.2048359459459457,
+          3.210042648648649,
+          3.199990837837838,
+          3.2084324594594595
+        ],
+        "openblas": [
+          2.904232364238762,
+          2.9094338689635437,
+          2.9193832107433457,
+          2.9115398846021514,
+          2.912053611220383,
+          2.906257740971519,
+          2.9063108490734564,
+          2.905711577069469,
+          2.9067686963372115
+        ],
+        "pytorch": [
+          2.874159487804878,
+          2.874696170731707,
+          2.8750634878048777,
+          2.8960046097560976,
+          2.9070048292682924,
+          2.883993756097561,
+          2.8746345853658535,
+          2.877262926829268,
+          2.874614292682927
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20
+        ],
+        "branch_default": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "branch_6x16": [
+          37,
+          37,
+          37,
+          37,
+          37,
+          37,
+          37,
+          37,
+          37
+        ],
+        "openblas": [
+          41,
+          41,
+          41,
+          41,
+          41,
+          41,
+          41,
+          41,
+          41
+        ],
+        "pytorch": [
+          41,
+          41,
+          41,
+          41,
+          41,
+          41,
+          41,
+          41,
+          41
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "sq1000",
+      "shape": [
+        1000,
+        1000,
+        1000
+      ],
+      "reps": 5,
+      "max_abs_error": {
+        "origin_master": 7.08122794392807e-05,
+        "branch_default": 7.08122794392807e-05,
+        "branch_6x16": 7.08122794392807e-05,
+        "openblas": 2.4246917725179173e-05,
+        "pytorch": 2.281338950638201e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/1000_1000_1000/kernel.so",
+          "sha256": "be8fd281c74bddc9831f66268ef012ef31accc9848c6883ffa2be2a2d33637e2"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/1000_1000_1000/kernel.so",
+          "sha256": "b5023615df19af069ccd6134a0fe071b32fa9e54d8e24830d919a818f92e081f"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/1000_1000_1000/kernel.so",
+          "sha256": "e2bbcc45f03ffda0d00a91bc700f131db07ca70ad54e5137d295717a92b86b75"
+        }
+      },
+      "ms": {
+        "origin_master": 120.8881396,
+        "branch_default": 26.155683000000003,
+        "branch_6x16": 21.8773762,
+        "openblas": 21.17195874452591,
+        "pytorch": 21.173691799999997
+      },
+      "batches_ms": {
+        "origin_master": [
+          120.8344904,
+          120.82191540000001,
+          122.5740028,
+          122.61786219999999,
+          120.8247432,
+          120.8881396,
+          120.81534060000001,
+          122.2050994,
+          120.94982940000001
+        ],
+        "branch_default": [
+          26.155683000000003,
+          26.200079799999997,
+          26.144692200000005,
+          26.4205226,
+          26.0744392,
+          26.1301112,
+          26.2237194,
+          26.2735538,
+          26.1430158
+        ],
+        "branch_6x16": [
+          21.8773762,
+          21.9236524,
+          21.7993856,
+          21.840093999999997,
+          22.005616200000002,
+          21.8764456,
+          21.871211600000002,
+          21.9226556,
+          21.937074000000003
+        ],
+        "openblas": [
+          21.175330504775047,
+          21.17195874452591,
+          21.153850108385086,
+          21.228960528969765,
+          21.155179664492607,
+          21.15086168050766,
+          21.201828867197037,
+          21.1857371032238,
+          21.161894127726555
+        ],
+        "pytorch": [
+          21.1760142,
+          21.3106526,
+          21.0699146,
+          21.0870434,
+          21.1804652,
+          21.173691799999997,
+          21.2048606,
+          21.0513962,
+          21.1421634
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "branch_default": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "branch_6x16": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "openblas": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "pytorch": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "sq1024",
+      "shape": [
+        1024,
+        1024,
+        1024
+      ],
+      "reps": 5,
+      "max_abs_error": {
+        "origin_master": 6.844057457655595e-05,
+        "branch_default": 6.844057457655595e-05,
+        "branch_6x16": 6.844057457655595e-05,
+        "openblas": 2.6264683651966436e-05,
+        "pytorch": 1.9735615676808038e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/1024_1024_1024/kernel.so",
+          "sha256": "064586412c988d162019d525079234753617c3153e6eb3300f1a2a660f1680b7"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/1024_1024_1024/kernel.so",
+          "sha256": "5ecd4481cd049df3b8fa7a73be4dce8967628bbd2107cae080b6aaf4dfdab34e"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/1024_1024_1024/kernel.so",
+          "sha256": "333e942f8d1e826c5be821804570858b49a7e29236599f4b443e645c59e91396"
+        }
+      },
+      "ms": {
+        "origin_master": 129.85113679999998,
+        "branch_default": 28.123876199999998,
+        "branch_6x16": 23.5305174,
+        "openblas": 23.07727187871933,
+        "pytorch": 22.7126792
+      },
+      "batches_ms": {
+        "origin_master": [
+          129.8628396,
+          129.748307,
+          129.82566200000002,
+          129.74396,
+          129.85113679999998,
+          130.6166178,
+          129.8970156,
+          129.7570784,
+          131.4995974
+        ],
+        "branch_default": [
+          28.162774600000002,
+          28.123876199999998,
+          28.1532188,
+          28.162918399999995,
+          28.069881600000002,
+          28.036905,
+          28.086668,
+          28.0351322,
+          28.1383394
+        ],
+        "branch_6x16": [
+          23.5032448,
+          23.570304399999998,
+          23.5260804,
+          23.5305174,
+          23.603472399999998,
+          23.9418948,
+          23.545809000000002,
+          23.468207200000002,
+          23.4766896
+        ],
+        "openblas": [
+          23.020105063915253,
+          23.217131569981575,
+          23.043115809559822,
+          23.07727187871933,
+          23.028763383626938,
+          23.092036321759224,
+          23.305344209074974,
+          23.332664370536804,
+          23.027769848704338
+        ],
+        "pytorch": [
+          22.806541399999997,
+          22.7070534,
+          22.6473604,
+          22.7167468,
+          22.7006688,
+          22.7126792,
+          22.7133874,
+          22.588060600000002,
+          22.7834188
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "branch_default": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "branch_6x16": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "openblas": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "pytorch": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "skinny",
+      "shape": [
+        8,
+        512,
+        2304
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "origin_master": 8.343132248000984e-05,
+        "branch_default": 8.343132248000984e-05,
+        "branch_6x16": 8.343132248000984e-05,
+        "openblas": 2.4217142467364283e-05,
+        "pytorch": 2.0104079558436183e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/8_512_2304/kernel.so",
+          "sha256": "6f04f99e04b31b16dd3c1eab05ee8e7f6528dd14385c80a7c60827a51f5aed92"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/8_512_2304/kernel.so",
+          "sha256": "da3ee7f773e682719d29d8fbe2b521a489fcc018cdf709711c1a3e8431e3fb36"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/8_512_2304/kernel.so",
+          "sha256": "139a28c555f2bcfcfa1e8cdbc4298d605652edd7438aee855c64fcb6e3da9ad8"
+        }
+      },
+      "ms": {
+        "origin_master": 1.1130310300000001,
+        "branch_default": 0.47439117131474107,
+        "branch_6x16": 0.5097535608695652,
+        "openblas": 0.43599770059076587,
+        "pytorch": 0.29665910831234255
+      },
+      "batches_ms": {
+        "origin_master": [
+          1.11384348,
+          1.1135759100000002,
+          1.11310118,
+          1.1137828449999998,
+          1.1125351749999999,
+          1.1130310300000001,
+          1.1124458550000003,
+          1.112618025,
+          1.11287958
+        ],
+        "branch_default": [
+          0.47407414342629484,
+          0.47601288844621514,
+          0.47439117131474107,
+          0.47444583665338647,
+          0.4743062709163347,
+          0.476030593625498,
+          0.47441775298804784,
+          0.4742204780876494,
+          0.4741722709163346
+        ],
+        "branch_6x16": [
+          0.5091574,
+          0.5092016391304348,
+          0.5102136304347825,
+          0.5097535608695652,
+          0.5090611043478261,
+          0.5090377434782609,
+          0.5437429260869565,
+          0.5148190652173913,
+          0.5132896565217391
+        ],
+        "openblas": [
+          0.43941317788893813,
+          0.4962189716011397,
+          0.4365435811910736,
+          0.43305847445007567,
+          0.4330076877209131,
+          0.4403010108386086,
+          0.43262025055367404,
+          0.43599770059076587,
+          0.43373972819315804
+        ],
+        "pytorch": [
+          0.2968821083123426,
+          0.2964056397984886,
+          0.2996268866498741,
+          0.296165717884131,
+          0.29665910831234255,
+          0.2961900629722922,
+          0.29727098992443324,
+          0.2962187506297229,
+          0.2968643526448363
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200
+        ],
+        "branch_default": [
+          251,
+          251,
+          251,
+          251,
+          251,
+          251,
+          251,
+          251,
+          251
+        ],
+        "branch_6x16": [
+          230,
+          230,
+          230,
+          230,
+          230,
+          230,
+          230,
+          230,
+          230
+        ],
+        "openblas": [
+          267,
+          267,
+          267,
+          267,
+          267,
+          267,
+          267,
+          267,
+          267
+        ],
+        "pytorch": [
+          397,
+          397,
+          397,
+          397,
+          397,
+          397,
+          397,
+          397,
+          397
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "pack",
+      "shape": [
+        64,
+        512,
+        130
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "origin_master": 8.795735986666386e-06,
+        "branch_default": 8.795735986666386e-06,
+        "branch_6x16": 8.795735986666386e-06,
+        "openblas": 8.795735986666386e-06,
+        "pytorch": 8.795735986666386e-06
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/64_512_130/kernel.so",
+          "sha256": "af0002b75624081b64e7dcd01380af2edf26995ce235161aafa8129d658e5173"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/64_512_130/kernel.so",
+          "sha256": "87d39c26cf9a5d805aa4a6e63424d6c6c851a126d719405eba632caa241f67dc"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/64_512_130/kernel.so",
+          "sha256": "3175c1bb67cc19d1c7e081623fc2221f66fe0dc1a46984cd4c89fc8be21713e1"
+        }
+      },
+      "ms": {
+        "origin_master": 0.3726135,
+        "branch_default": 0.13098276864864863,
+        "branch_6x16": 0.10300513292253521,
+        "openblas": 0.10002309253038807,
+        "pytorch": 0.0886511990483743
+      },
+      "batches_ms": {
+        "origin_master": [
+          0.3730439391025641,
+          0.37200073717948723,
+          0.3718267243589744,
+          0.3719015641025641,
+          0.37281971794871793,
+          0.38167926282051284,
+          0.3726135,
+          0.371441266025641,
+          0.3783707852564102
+        ],
+        "branch_default": [
+          0.1304139091891892,
+          0.13098276864864863,
+          0.13143139891891892,
+          0.1308960691891892,
+          0.13099983783783783,
+          0.13211403567567567,
+          0.1301541610810811,
+          0.13016055891891892,
+          0.13196205297297298
+        ],
+        "branch_6x16": [
+          0.10308626672535211,
+          0.10300513292253521,
+          0.10285309066901409,
+          0.1034036522887324,
+          0.10280071919014085,
+          0.10297418045774648,
+          0.10428912323943662,
+          0.10280983362676055,
+          0.10300979137323944
+        ],
+        "openblas": [
+          0.10000546097297718,
+          0.10002309253038807,
+          0.10110823590143142,
+          0.09998186481894081,
+          0.10001178474861606,
+          0.10114371039151332,
+          0.10002834830471273,
+          0.10001293857146448,
+          0.10016982351452011
+        ],
+        "pytorch": [
+          0.08917909278350515,
+          0.0883298977002379,
+          0.08863232593180016,
+          0.08880158049167326,
+          0.0887054321966693,
+          0.08991667406819984,
+          0.08863495559080095,
+          0.08863708802537669,
+          0.0886511990483743
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          312,
+          312,
+          312,
+          312,
+          312,
+          312,
+          312,
+          312,
+          312
+        ],
+        "branch_default": [
+          925,
+          925,
+          925,
+          925,
+          925,
+          925,
+          925,
+          925,
+          925
+        ],
+        "branch_6x16": [
+          1136,
+          1136,
+          1136,
+          1136,
+          1136,
+          1136,
+          1136,
+          1136,
+          1136
+        ],
+        "openblas": [
+          1172,
+          1172,
+          1172,
+          1172,
+          1172,
+          1172,
+          1172,
+          1172,
+          1172
+        ],
+        "pytorch": [
+          1261,
+          1261,
+          1261,
+          1261,
+          1261,
+          1261,
+          1261,
+          1261,
+          1261
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "k49",
+      "shape": [
+        64,
+        1024,
+        49
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "origin_master": 2.6812540880882807e-06,
+        "branch_default": 2.6812540880882807e-06,
+        "branch_6x16": 2.6812540880882807e-06,
+        "openblas": 2.6812540880882807e-06,
+        "pytorch": 2.6812540880882807e-06
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/64_1024_49/kernel.so",
+          "sha256": "b955998043ca1db57e612916cb91e287ca3c781dbb1c3c22881f27d61fa9cefe"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/64_1024_49/kernel.so",
+          "sha256": "284e09327e651be3af94296ebf4fa1219963b8c6784bba6e50d9121e46a26c93"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/64_1024_49/kernel.so",
+          "sha256": "e40536afd2d7ea51410f2666e04c62dcfd8c63dbc3dc4775da1b3c6c04c998e3"
+        }
+      },
+      "ms": {
+        "origin_master": 0.2708489158653846,
+        "branch_default": 0.08502430960854092,
+        "branch_6x16": 0.07916366158940398,
+        "openblas": 0.08005238314511308,
+        "pytorch": 0.07777216081081081
+      },
+      "batches_ms": {
+        "origin_master": [
+          0.2698119254807692,
+          0.2708489158653846,
+          0.2703613221153846,
+          0.27001482932692306,
+          0.27092775240384614,
+          0.2720362307692307,
+          0.27086471153846153,
+          0.26923889663461537,
+          0.27157221875
+        ],
+        "branch_default": [
+          0.08496710106761567,
+          0.08509035373665481,
+          0.08616838932384342,
+          0.08501068185053381,
+          0.08502430960854092,
+          0.08513280711743773,
+          0.0850077644128114,
+          0.08501753665480427,
+          0.08502600711743773
+        ],
+        "branch_6x16": [
+          0.07901941589403973,
+          0.07902247880794702,
+          0.07920845033112583,
+          0.07916869337748345,
+          0.07902603311258279,
+          0.08042057880794702,
+          0.07916961125827814,
+          0.07901653178807946,
+          0.07916366158940398
+        ],
+        "openblas": [
+          0.08008443469937909,
+          0.07994059970502167,
+          0.08129156022160142,
+          0.08005238314511308,
+          0.07992465202621776,
+          0.08470256462078841,
+          0.08100210308278881,
+          0.07993406547815296,
+          0.07993882036475682
+        ],
+        "pytorch": [
+          0.07776782094594595,
+          0.0779033418918919,
+          0.0777620804054054,
+          0.07775979189189189,
+          0.07777216081081081,
+          0.07779562770270271,
+          0.07776216216216217,
+          0.07788051959459459,
+          0.07990540878378379
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          416,
+          416,
+          416,
+          416,
+          416,
+          416,
+          416,
+          416,
+          416
+        ],
+        "branch_default": [
+          1405,
+          1405,
+          1405,
+          1405,
+          1405,
+          1405,
+          1405,
+          1405,
+          1405
+        ],
+        "branch_6x16": [
+          1510,
+          1510,
+          1510,
+          1510,
+          1510,
+          1510,
+          1510,
+          1510,
+          1510
+        ],
+        "openblas": [
+          1431,
+          1431,
+          1431,
+          1431,
+          1431,
+          1431,
+          1431,
+          1431,
+          1431
+        ],
+        "pytorch": [
+          1480,
+          1480,
+          1480,
+          1480,
+          1480,
+          1480,
+          1480,
+          1480,
+          1480
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "k147",
+      "shape": [
+        64,
+        1024,
+        147
+      ],
+      "reps": 100,
+      "max_abs_error": {
+        "origin_master": 8.799128568881542e-06,
+        "branch_default": 8.799128568881542e-06,
+        "branch_6x16": 8.799128568881542e-06,
+        "openblas": 8.799128568881542e-06,
+        "pytorch": 8.799128568881542e-06
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/64_1024_147/kernel.so",
+          "sha256": "0ac975d9d017acff75241389daac8d384c3d779d1f0a807254c9ab85239a44e8"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/64_1024_147/kernel.so",
+          "sha256": "19c149cef11002482dcd65bbfad52f1e45dcd25c3c4e7c0912100533bf888bcd"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/64_1024_147/kernel.so",
+          "sha256": "fe44b9b073c93e23cd0163fb88c1ad443b1b54404b155552fd7b22c6b3291afb"
+        }
+      },
+      "ms": {
+        "origin_master": 0.8758548814814815,
+        "branch_default": 0.32184396246648794,
+        "branch_6x16": 0.239098786,
+        "openblas": 0.2268811525071709,
+        "pytorch": 0.22491284200385356
+      },
+      "batches_ms": {
+        "origin_master": [
+          0.8747631407407408,
+          0.883741162962963,
+          0.8938826888888889,
+          0.8722148370370371,
+          0.8981730666666667,
+          0.9381052814814815,
+          0.8758548814814815,
+          0.8703847259259259,
+          0.8738961703703705
+        ],
+        "branch_default": [
+          0.32184396246648794,
+          0.3493907721179625,
+          0.3199450831099196,
+          0.327192254691689,
+          0.3311224638069705,
+          0.3245624959785523,
+          0.3209376434316354,
+          0.31995849329758713,
+          0.3207337882037533
+        ],
+        "branch_6x16": [
+          0.235884394,
+          0.235580904,
+          0.239403942,
+          0.239098786,
+          0.271465034,
+          0.25014605,
+          0.236425424,
+          0.235705368,
+          0.239634546
+        ],
+        "openblas": [
+          0.22692700612892225,
+          0.2264321754568989,
+          0.2268811525071709,
+          0.22697456325720813,
+          0.23285706428069514,
+          0.2293783628824845,
+          0.22658119068562407,
+          0.2265106669618088,
+          0.22648992107331176
+        ],
+        "pytorch": [
+          0.22491284200385356,
+          0.2246470655105973,
+          0.22874463776493253,
+          0.22488387861271675,
+          0.22483895953757227,
+          0.22537592292870906,
+          0.2249750346820809,
+          0.22542926204238922,
+          0.22434857996146435
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          135,
+          135,
+          135,
+          135,
+          135,
+          135,
+          135,
+          135,
+          135
+        ],
+        "branch_default": [
+          373,
+          373,
+          373,
+          373,
+          373,
+          373,
+          373,
+          373,
+          373
+        ],
+        "branch_6x16": [
+          500,
+          500,
+          500,
+          500,
+          500,
+          500,
+          500,
+          500,
+          500
+        ],
+        "openblas": [
+          515,
+          515,
+          515,
+          515,
+          515,
+          515,
+          515,
+          515,
+          515
+        ],
+        "pytorch": [
+          519,
+          519,
+          519,
+          519,
+          519,
+          519,
+          519,
+          519,
+          519
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "k245",
+      "shape": [
+        64,
+        1024,
+        245
+      ],
+      "reps": 100,
+      "max_abs_error": {
+        "origin_master": 1.1774730960922852e-05,
+        "branch_default": 1.1774730960922852e-05,
+        "branch_6x16": 1.1774730960922852e-05,
+        "openblas": 1.1774730960922852e-05,
+        "pytorch": 1.1774730960922852e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/64_1024_245/kernel.so",
+          "sha256": "14adcddec59c167878c2a0375274c639c758eca1e8cc1804695f1f75f12a1999"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/64_1024_245/kernel.so",
+          "sha256": "507eb221b19744410d11fad8e4e41c61589c156bdc0a6ce12ba2bddcbe725122"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/64_1024_245/kernel.so",
+          "sha256": "158d52721804b188e4364d1168ce00a112880a6da98fdb60505e25e22beafa2c"
+        }
+      },
+      "ms": {
+        "origin_master": 1.5433721599999999,
+        "branch_default": 0.5641211184834123,
+        "branch_6x16": 0.4121099052631579,
+        "openblas": 0.39600154732243487,
+        "pytorch": 0.4128505510948905
+      },
+      "batches_ms": {
+        "origin_master": [
+          1.65560478,
+          1.53655893,
+          1.6753273299999998,
+          1.65242439,
+          1.57768249,
+          1.5433721599999999,
+          1.53325142,
+          1.5339529299999999,
+          1.5328289000000002
+        ],
+        "branch_default": [
+          0.5677204881516587,
+          0.5641211184834123,
+          0.5721020331753555,
+          0.5591520236966825,
+          0.5591342085308056,
+          0.5674104976303318,
+          0.5591054644549763,
+          0.5592127535545023,
+          0.5941794170616114
+        ],
+        "branch_6x16": [
+          0.41071732280701756,
+          0.4121099052631579,
+          0.42476587017543854,
+          0.4115788912280701,
+          0.45709465614035094,
+          0.4124437263157895,
+          0.41190528070175436,
+          0.410646449122807,
+          0.42027315087719297
+        ],
+        "openblas": [
+          0.3961488036280971,
+          0.4182020170708834,
+          0.3953019378043838,
+          0.39645166972936213,
+          0.39540449062646443,
+          0.3953560555385331,
+          0.39618140307523436,
+          0.39600154732243487,
+          0.3958985777729649
+        ],
+        "pytorch": [
+          0.41472420802919713,
+          0.4179414781021898,
+          0.41710683211678834,
+          0.43692573722627737,
+          0.4124499416058394,
+          0.4128505510948905,
+          0.4116982554744526,
+          0.41169166423357667,
+          0.41162216788321165
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "branch_default": [
+          211,
+          211,
+          211,
+          211,
+          211,
+          211,
+          211,
+          211,
+          211
+        ],
+        "branch_6x16": [
+          285,
+          285,
+          285,
+          285,
+          285,
+          285,
+          285,
+          285,
+          285
+        ],
+        "openblas": [
+          295,
+          295,
+          295,
+          295,
+          295,
+          295,
+          295,
+          295,
+          295
+        ],
+        "pytorch": [
+          274,
+          274,
+          274,
+          274,
+          274,
+          274,
+          274,
+          274,
+          274
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "sq2000",
+      "shape": [
+        2000,
+        2000,
+        2000
+      ],
+      "reps": 1,
+      "max_abs_error": {
+        "origin_master": 0.00013473900441596243,
+        "branch_default": 0.00013473900441596243,
+        "branch_6x16": 0.00013473900441596243,
+        "openblas": 3.557865796466331e-05,
+        "pytorch": 2.5822453631363373e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/2000_2000_2000/kernel.so",
+          "sha256": "f9a842d6b325d9b024bd397247b15cbde1b54014de4905fecfd1ffb2ca7488c3"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/2000_2000_2000/kernel.so",
+          "sha256": "79e8ebb041cd7ad2017558c4afc05a2bd0190a97014ac0faac5410e215cf7f04"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/2000_2000_2000/kernel.so",
+          "sha256": "fd48725c6981d1e1f186cc2af5d4da5c93fda1036c65d01c94f218aeb682501d"
+        }
+      },
+      "ms": {
+        "origin_master": 1193.2900129999998,
+        "branch_default": 209.19585800000002,
+        "branch_6x16": 173.2507,
+        "openblas": 167.8095329552889,
+        "pytorch": 170.098564
+      },
+      "batches_ms": {
+        "origin_master": [
+          1193.2900129999998,
+          1190.984652,
+          1190.202105,
+          1197.63802,
+          1190.777273,
+          1200.603004,
+          1205.583415,
+          1190.64094,
+          1203.112934
+        ],
+        "branch_default": [
+          209.058583,
+          210.204748,
+          209.650168,
+          209.576755,
+          209.623238,
+          208.726933,
+          208.900754,
+          209.19585800000002,
+          209.096636
+        ],
+        "branch_6x16": [
+          173.125314,
+          173.2507,
+          173.019163,
+          172.76182,
+          173.3163,
+          175.33574499999997,
+          173.261401,
+          172.837571,
+          173.485676
+        ],
+        "openblas": [
+          167.9577361792326,
+          167.79391281306744,
+          168.27126033604145,
+          167.8095329552889,
+          167.7841879427433,
+          167.74591989815235,
+          169.15515437722206,
+          167.80219785869122,
+          167.8099948912859
+        ],
+        "pytorch": [
+          169.86358700000002,
+          169.92075300000002,
+          170.981156,
+          170.098564,
+          171.33614599999999,
+          170.06007,
+          170.227189,
+          169.14501800000002,
+          183.02913600000002
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "branch_default": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "branch_6x16": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "openblas": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "pytorch": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "sq2048",
+      "shape": [
+        2048,
+        2048,
+        2048
+      ],
+      "reps": 1,
+      "max_abs_error": {
+        "origin_master": 0.00015725656743370564,
+        "branch_default": 0.00015725656743370564,
+        "branch_6x16": 0.00015725656743370564,
+        "openblas": 3.561335538648791e-05,
+        "pytorch": 2.8131504386408324e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/2048_2048_2048/kernel.so",
+          "sha256": "825631c6d81fb05690225258907aa5fd9934854e32e327909865d6038bedfa33"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/2048_2048_2048/kernel.so",
+          "sha256": "7d801ce565aaacd511b249a9e4cf34419f7bd475245c1e1f310f9dd4cea24d3c"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/2048_2048_2048/kernel.so",
+          "sha256": "fcd2a46197e7e9a0cd3d6821447e163691c9d711295c50a7bd39b75ce6fa7dcd"
+        }
+      },
+      "ms": {
+        "origin_master": 1143.440622,
+        "branch_default": 227.88439499999998,
+        "branch_6x16": 187.40833700000002,
+        "openblas": 181.18072301149368,
+        "pytorch": 190.30681099999998
+      },
+      "batches_ms": {
+        "origin_master": [
+          1144.410713,
+          1151.733188,
+          1143.414044,
+          1142.007915,
+          1143.440622,
+          1149.548105,
+          1142.070462,
+          1151.952545,
+          1142.902973
+        ],
+        "branch_default": [
+          228.93276600000002,
+          227.424599,
+          228.42775400000002,
+          244.44270500000002,
+          227.72983599999998,
+          227.375092,
+          227.448778,
+          230.002346,
+          227.88439499999998
+        ],
+        "branch_6x16": [
+          187.150336,
+          188.778319,
+          187.347914,
+          187.1687,
+          188.813171,
+          187.40833700000002,
+          187.719837,
+          187.150156,
+          187.76984099999999
+        ],
+        "openblas": [
+          181.1693198978901,
+          181.10360018908978,
+          181.14633113145828,
+          182.46104009449482,
+          181.18072301149368,
+          181.11338280141354,
+          181.32557533681393,
+          197.40241393446922,
+          181.2766082584858
+        ],
+        "pytorch": [
+          190.388836,
+          191.81314799999998,
+          190.30681099999998,
+          189.759131,
+          190.51953899999998,
+          189.626163,
+          190.23744000000002,
+          188.357216,
+          192.140073
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "branch_default": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "branch_6x16": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "openblas": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "pytorch": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "wide2048",
+      "shape": [
+        64,
+        2048,
+        2048
+      ],
+      "reps": 5,
+      "max_abs_error": {
+        "origin_master": 0.00013006007081628468,
+        "branch_default": 0.00013006007081628468,
+        "branch_6x16": 0.00013006007081628468,
+        "openblas": 2.9142693939832043e-05,
+        "pytorch": 2.5636636383552514e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/64_2048_2048/kernel.so",
+          "sha256": "205e805a9d0eb0bf47d2ac15aa7c6ac56d17508326e2cf9dbc9bebb4e9066128"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/64_2048_2048/kernel.so",
+          "sha256": "cfed45bcc964be10c525c6f8ba0fb1ab75b95dcafd5fc64d33dc3462cf2007c8"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/64_2048_2048/kernel.so",
+          "sha256": "cddaa76533ebb3ffda9908b98ec96de5f097b5ed95cd991fdca25d773bd2487e"
+        }
+      },
+      "ms": {
+        "origin_master": 35.772031,
+        "branch_default": 7.903767666666667,
+        "branch_6x16": 7.3371650625,
+        "openblas": 6.627836319453576,
+        "pytorch": 9.954536545454545
+      },
+      "batches_ms": {
+        "origin_master": [
+          35.6046592,
+          35.624459,
+          37.724884,
+          35.4178248,
+          35.7831938,
+          35.8164738,
+          35.5743906,
+          35.9075074,
+          35.772031
+        ],
+        "branch_default": [
+          8.787828866666668,
+          7.901548466666667,
+          7.998695666666666,
+          7.8907816,
+          7.908322733333332,
+          7.887556733333334,
+          7.987143066666667,
+          7.903767666666667,
+          7.903149733333334
+        ],
+        "branch_6x16": [
+          7.6833388125,
+          7.3546260625,
+          7.3371650625,
+          7.305933,
+          7.282360687500001,
+          7.285614937499999,
+          7.289037937500001,
+          7.4568146875,
+          7.3567230624999995
+        ],
+        "openblas": [
+          6.616400335641468,
+          6.615250426180222,
+          6.627836319453576,
+          6.62654178107486,
+          6.6290708149180695,
+          6.649232743417516,
+          6.618346142418244,
+          6.6315761822111465,
+          7.41728745839175
+        ],
+        "pytorch": [
+          9.956856181818182,
+          9.940327090909092,
+          10.059607090909092,
+          9.910242181818182,
+          9.992275363636365,
+          9.954536545454545,
+          9.94868309090909,
+          9.937895000000001,
+          10.490688636363636
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5,
+          5
+        ],
+        "branch_default": [
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15
+        ],
+        "branch_6x16": [
+          16,
+          16,
+          16,
+          16,
+          16,
+          16,
+          16,
+          16,
+          16
+        ],
+        "openblas": [
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17,
+          17
+        ],
+        "pytorch": [
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "tall2048",
+      "shape": [
+        2048,
+        128,
+        512
+      ],
+      "reps": 10,
+      "max_abs_error": {
+        "origin_master": 3.948681305843138e-05,
+        "branch_default": 3.948681305843138e-05,
+        "branch_6x16": 3.948681305843138e-05,
+        "openblas": 2.0648578995974276e-05,
+        "pytorch": 1.3973239710196594e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/2048_128_512/kernel.so",
+          "sha256": "251f163b92745a3905250e2169e2a4b2f0644a8b0ff987e2a2987c0ff2c14c51"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/2048_128_512/kernel.so",
+          "sha256": "ec2cdd4ffcdee4c6b4a72f800a23081313ad418e140f82572679cdc5560927f3"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/2048_128_512/kernel.so",
+          "sha256": "09a00de41f63747db684f230932f4a91efc3433f68d03b551bf74298176ffb66"
+        }
+      },
+      "ms": {
+        "origin_master": 8.122784785714284,
+        "branch_default": 3.71304309375,
+        "branch_6x16": 3.6061116875,
+        "openblas": 3.0008617501992445,
+        "pytorch": 3.0741549999999997
+      },
+      "batches_ms": {
+        "origin_master": [
+          8.146199285714285,
+          8.122784785714284,
+          8.143814357142858,
+          8.092939785714286,
+          8.14150007142857,
+          8.104179714285713,
+          8.107519285714286,
+          8.110925142857143,
+          8.209356714285713
+        ],
+        "branch_default": [
+          3.7349128125,
+          3.71304309375,
+          3.7100290625,
+          3.71035371875,
+          3.7101638749999997,
+          3.7138619687500003,
+          3.71944621875,
+          3.71656225,
+          3.7109064375000003
+        ],
+        "branch_6x16": [
+          3.61021925,
+          3.59888425,
+          3.5996658750000003,
+          3.5895492499999997,
+          3.6061116875,
+          3.637342375,
+          3.5996691875,
+          3.6091145,
+          3.60671875
+        ],
+        "openblas": [
+          3.003372022738824,
+          2.999384147234452,
+          2.9988171867071056,
+          3.005810655080355,
+          3.0042456510739446,
+          2.9986905745970898,
+          3.00369072609987,
+          3.0008617501992445,
+          2.9979091710769215
+        ],
+        "pytorch": [
+          3.0741549999999997,
+          3.112326210526316,
+          3.0779436578947372,
+          3.0716820263157896,
+          3.0707290789473687,
+          3.0721126842105266,
+          3.0785183684210526,
+          3.070795552631579,
+          3.076466078947368
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14,
+          14
+        ],
+        "branch_default": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "branch_6x16": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "openblas": [
+          39,
+          39,
+          39,
+          39,
+          39,
+          39,
+          39,
+          39,
+          39
+        ],
+        "pytorch": [
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "odd2048",
+      "shape": [
+        2049,
+        513,
+        2047
+      ],
+      "reps": 2,
+      "max_abs_error": {
+        "origin_master": 0.00013728743293484058,
+        "branch_default": 0.00013728743293484058,
+        "branch_6x16": 0.00013728743293484058,
+        "openblas": 3.205931861316458e-05,
+        "pytorch": 2.6182890493942068e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/2049_513_2047/kernel.so",
+          "sha256": "0f07147b853a34cb2ee9ee7bbc028a68883737cb472895988553b59fcd46ffc8"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/2049_513_2047/kernel.so",
+          "sha256": "3c696d2bd6f9347aaa0c9420c52f54cc208ccb857faba379dd515fdaaa2549bc"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/2049_513_2047/kernel.so",
+          "sha256": "62c5bd69310dbb2f54b9774908c421d941354142712d63bdc491fb7e1798bfc5"
+        }
+      },
+      "ms": {
+        "origin_master": 264.4649035,
+        "branch_default": 59.3553055,
+        "branch_6x16": 49.405291999999996,
+        "openblas": 46.914237240950264,
+        "pytorch": 48.06727466666667
+      },
+      "batches_ms": {
+        "origin_master": [
+          264.0774845,
+          264.6966405,
+          264.27754949999996,
+          264.99383250000005,
+          264.4649035,
+          265.0153335,
+          264.24885850000004,
+          264.690369,
+          264.285569
+        ],
+        "branch_default": [
+          59.939628500000005,
+          59.3357765,
+          59.25945299999999,
+          59.2779295,
+          59.4308325,
+          59.3553055,
+          59.390747,
+          59.275380000000006,
+          59.6426435
+        ],
+        "branch_6x16": [
+          49.913142,
+          49.48269933333333,
+          49.38795400000001,
+          49.350937666666674,
+          49.45191433333334,
+          49.40343033333333,
+          49.27327700000001,
+          49.405291999999996,
+          49.595490999999996
+        ],
+        "openblas": [
+          46.91336862742901,
+          46.9046775251627,
+          46.911450723807015,
+          48.73578126231829,
+          46.983893339832626,
+          46.99627993007501,
+          46.914237240950264,
+          46.998610720038414,
+          46.89629251758257
+        ],
+        "pytorch": [
+          48.158696666666664,
+          48.07236266666666,
+          47.983934,
+          48.02314033333333,
+          48.06727466666667,
+          48.136706000000004,
+          48.16606066666667,
+          48.01327966666666,
+          48.016510000000004
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "branch_default": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "branch_6x16": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "openblas": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "pytorch": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "m49_k4608",
+      "shape": [
+        49,
+        512,
+        4608
+      ],
+      "reps": 20,
+      "max_abs_error": {
+        "origin_master": 0.00028315070959195054,
+        "branch_default": 0.00028315070959195054,
+        "branch_6x16": 0.00028315070959195054,
+        "openblas": 3.879712296850357e-05,
+        "pytorch": 3.25623835379929e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/49_512_4608/kernel.so",
+          "sha256": "dd388b50c5f23cff71f7f5f45b3a7ae6689ed3788e0d44574b854bfbccfecb40"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/49_512_4608/kernel.so",
+          "sha256": "5731a5cc0632f96cbc33308a21e5003e332856f182b07f5c9eed7e291fc41dda"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/49_512_4608/kernel.so",
+          "sha256": "06ea37e6893acf6cf0ef6f9f4918a8df8904aa8c5ae0329023cf943418f174b2"
+        }
+      },
+      "ms": {
+        "origin_master": 13.571601950000002,
+        "branch_default": 3.528891575757576,
+        "branch_6x16": 3.312058057142857,
+        "openblas": 3.124201523238107,
+        "pytorch": 2.6845622954545454
+      },
+      "batches_ms": {
+        "origin_master": [
+          13.571601950000002,
+          13.588195249999998,
+          13.5663231,
+          13.5782746,
+          13.559591,
+          13.818614349999999,
+          13.576496050000001,
+          13.558955500000001,
+          13.5607822
+        ],
+        "branch_default": [
+          3.53085006060606,
+          3.528891575757576,
+          3.528765212121212,
+          3.5308761818181815,
+          3.527882333333334,
+          3.535312303030303,
+          3.5337530000000004,
+          3.527602787878788,
+          3.52784596969697
+        ],
+        "branch_6x16": [
+          3.308631742857143,
+          3.312058057142857,
+          3.3096725142857144,
+          3.3025001714285716,
+          3.315318085714286,
+          3.3154002,
+          3.308849,
+          3.3153604285714287,
+          3.3137285714285714
+        ],
+        "openblas": [
+          3.118348454958514,
+          3.1248520765649643,
+          3.123466219556959,
+          3.1283057147735045,
+          3.154214373544643,
+          3.124201523238107,
+          3.11955721362641,
+          3.1265189969225937,
+          3.119286688926973
+        ],
+        "pytorch": [
+          2.68362525,
+          2.6835542272727273,
+          2.6841249318181815,
+          2.720593659090909,
+          2.683502340909091,
+          2.7139664772727268,
+          2.7124161818181816,
+          2.6899016363636363,
+          2.6845622954545454
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20,
+          20
+        ],
+        "branch_default": [
+          33,
+          33,
+          33,
+          33,
+          33,
+          33,
+          33,
+          33,
+          33
+        ],
+        "branch_6x16": [
+          35,
+          35,
+          35,
+          35,
+          35,
+          35,
+          35,
+          35,
+          35
+        ],
+        "openblas": [
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38,
+          38
+        ],
+        "pytorch": [
+          44,
+          44,
+          44,
+          44,
+          44,
+          44,
+          44,
+          44,
+          44
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "m49_k512",
+      "shape": [
+        49,
+        2048,
+        512
+      ],
+      "reps": 50,
+      "max_abs_error": {
+        "origin_master": 2.7990814743361625e-05,
+        "branch_default": 2.7990814743361625e-05,
+        "branch_6x16": 2.7990814743361625e-05,
+        "openblas": 1.6836522807039955e-05,
+        "pytorch": 1.6836522807039955e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/49_2048_512/kernel.so",
+          "sha256": "87fcac8e331b8199ad37e0aa8ea48853e6815e9ecff94cbbf154b9b31596471e"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/49_2048_512/kernel.so",
+          "sha256": "d57cbff34b872fccf0fd59a9cb3560d7353b8193fa996962f107fb674e748893"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/49_2048_512/kernel.so",
+          "sha256": "2e5d177ae5ba0d454b771bdb8b2da143daa88ba6da293544f6679911deee841e"
+        }
+      },
+      "ms": {
+        "origin_master": 6.218405959999999,
+        "branch_default": 1.5883433866666667,
+        "branch_6x16": 1.4030980352941176,
+        "openblas": 1.4275433832263373,
+        "pytorch": 1.7623502461538463
+      },
+      "batches_ms": {
+        "origin_master": [
+          6.14935318,
+          6.15669894,
+          6.218405959999999,
+          6.21730904,
+          6.2249206,
+          6.21914344,
+          6.30885146,
+          6.21765228,
+          6.22104204
+        ],
+        "branch_default": [
+          1.6635253466666666,
+          1.64845208,
+          1.7889466666666667,
+          1.5865469066666666,
+          1.5867252266666667,
+          1.5896153999999998,
+          1.5883433866666667,
+          1.58645064,
+          1.5864379466666667
+        ],
+        "branch_6x16": [
+          1.4188621647058826,
+          1.4000921411764706,
+          1.4046768235294118,
+          1.402719376470588,
+          1.4030023176470587,
+          1.402492376470588,
+          1.406106705882353,
+          1.4056870705882354,
+          1.4030980352941176
+        ],
+        "openblas": [
+          1.427135306848101,
+          1.431579690381705,
+          1.4422709144741654,
+          1.4275433832263373,
+          1.4287285641374357,
+          1.426722113806081,
+          1.4271561325673598,
+          1.4493394957249421,
+          1.4266122401837844
+        ],
+        "pytorch": [
+          1.8340111230769232,
+          1.833535753846154,
+          1.762888353846154,
+          1.7605062153846154,
+          1.7604750461538463,
+          1.7608296615384613,
+          1.760839676923077,
+          1.771274123076923,
+          1.7623502461538463
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          50,
+          50,
+          50,
+          50,
+          50,
+          50,
+          50,
+          50,
+          50
+        ],
+        "branch_default": [
+          75,
+          75,
+          75,
+          75,
+          75,
+          75,
+          75,
+          75,
+          75
+        ],
+        "branch_6x16": [
+          85,
+          85,
+          85,
+          85,
+          85,
+          85,
+          85,
+          85,
+          85
+        ],
+        "openblas": [
+          83,
+          83,
+          83,
+          83,
+          83,
+          83,
+          83,
+          83,
+          83
+        ],
+        "pytorch": [
+          65,
+          65,
+          65,
+          65,
+          65,
+          65,
+          65,
+          65,
+          65
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "m7_k1024",
+      "shape": [
+        7,
+        1024,
+        1024
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "origin_master": 4.742817839442637e-05,
+        "branch_default": 4.742817839442637e-05,
+        "branch_6x16": 4.742817839442637e-05,
+        "openblas": 1.6107126135977978e-05,
+        "pytorch": 1.7089691073834956e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/7_1024_1024/kernel.so",
+          "sha256": "d96bc76fe3f95ef065d0a126a142a704099ea811959197da21dfe95d8d15e16f"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/7_1024_1024/kernel.so",
+          "sha256": "55f818c768f9f072ddf1efd34a51e2e516f6cc16cf73ead1d86ab314e335ec53"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/7_1024_1024/kernel.so",
+          "sha256": "96b7cf7e3decae8628125985938d5ecd6d74e5a99eb262ca0e2ffceb9e7bfa52"
+        }
+      },
+      "ms": {
+        "origin_master": 0.8924130600000001,
+        "branch_default": 0.46701547265625,
+        "branch_6x16": 0.531863151111111,
+        "openblas": 0.6020219624042511,
+        "pytorch": 0.3670798198757764
+      },
+      "batches_ms": {
+        "origin_master": [
+          0.894096565,
+          0.8923443050000001,
+          0.894652495,
+          0.8924130600000001,
+          0.89212796,
+          0.892465065,
+          0.891719655,
+          0.89229187,
+          0.892433295
+        ],
+        "branch_default": [
+          0.46673363281249997,
+          0.467149484375,
+          0.46693456640625,
+          0.46706233984375,
+          0.46708226171875,
+          0.46656670703125,
+          0.47401513281249996,
+          0.46640526171875,
+          0.46701547265625
+        ],
+        "branch_6x16": [
+          0.5367184622222222,
+          0.5309703644444445,
+          0.5311883466666667,
+          0.5308314355555556,
+          0.537164128888889,
+          0.5319626222222221,
+          0.531863151111111,
+          0.5309097866666667,
+          0.5351682622222221
+        ],
+        "openblas": [
+          0.6015014555305243,
+          0.6038068141788244,
+          0.60271006077528,
+          0.6007219944149256,
+          0.6005219742655754,
+          0.6068584881722927,
+          0.6032660230994225,
+          0.6020219624042511,
+          0.6000482384115458
+        ],
+        "pytorch": [
+          0.36759606832298136,
+          0.36661454347826083,
+          0.36660810248447206,
+          0.36718627018633543,
+          0.3666664316770186,
+          0.36876744720496896,
+          0.368056201863354,
+          0.3666284844720497,
+          0.3670798198757764
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200
+        ],
+        "branch_default": [
+          256,
+          256,
+          256,
+          256,
+          256,
+          256,
+          256,
+          256,
+          256
+        ],
+        "branch_6x16": [
+          225,
+          225,
+          225,
+          225,
+          225,
+          225,
+          225,
+          225,
+          225
+        ],
+        "openblas": [
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200
+        ],
+        "pytorch": [
+          322,
+          322,
+          322,
+          322,
+          322,
+          322,
+          322,
+          322,
+          322
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "m97_n257",
+      "shape": [
+        97,
+        257,
+        383
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "origin_master": 1.6969028422408883e-05,
+        "branch_default": 1.6969028422408883e-05,
+        "branch_6x16": 1.6969028422408883e-05,
+        "openblas": 1.4329407338919964e-05,
+        "pytorch": 1.4329407338919964e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/97_257_383/kernel.so",
+          "sha256": "32cc4b8c18f9b47fd110e195e48a5a3cf84358566b9fb90b25fce3bd9ef9d228"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/97_257_383/kernel.so",
+          "sha256": "bc91d20645671972659cde533576bd8ffd72a7d5b583f62edebae5d252a48afd"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/97_257_383/kernel.so",
+          "sha256": "162829e69462ed40f568b36d3aca862332a7006ae6e4243c7f49f7203d816e3e"
+        }
+      },
+      "ms": {
+        "origin_master": 0.7359322349999999,
+        "branch_default": 0.2874108293269231,
+        "branch_6x16": 0.2639004647577093,
+        "openblas": 0.22845706259903983,
+        "pytorch": 0.22787900775193798
+      },
+      "batches_ms": {
+        "origin_master": [
+          0.73633617,
+          0.73670395,
+          0.7342656999999999,
+          0.7359322349999999,
+          0.73604496,
+          0.734703015,
+          0.736038475,
+          0.73436459,
+          0.7357547600000001
+        ],
+        "branch_default": [
+          0.2874290552884615,
+          0.2904346418269231,
+          0.28735968509615384,
+          0.2874108293269231,
+          0.28737436298076924,
+          0.2890448846153846,
+          0.2879249543269231,
+          0.2873834447115385,
+          0.2873760240384615
+        ],
+        "branch_6x16": [
+          0.2639004647577093,
+          0.26406848898678414,
+          0.2636011497797357,
+          0.2637447290748899,
+          0.26657454625550664,
+          0.2689092004405287,
+          0.26349844493392066,
+          0.2639916740088106,
+          0.26338821365638765
+        ],
+        "openblas": [
+          0.22845706259903983,
+          0.2283396906861963,
+          0.2293103490053683,
+          0.22835246207871177,
+          0.24656985359367473,
+          0.2315907428661982,
+          0.22834231138460395,
+          0.22839206133702006,
+          0.23083497459689775
+        ],
+        "pytorch": [
+          0.22790846511627907,
+          0.22762925,
+          0.22805324031007754,
+          0.22771041666666667,
+          0.2276183120155039,
+          0.22765906395348834,
+          0.22787900775193798,
+          0.22796400968992248,
+          0.2280735058139535
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200,
+          200
+        ],
+        "branch_default": [
+          416,
+          416,
+          416,
+          416,
+          416,
+          416,
+          416,
+          416,
+          416
+        ],
+        "branch_6x16": [
+          454,
+          454,
+          454,
+          454,
+          454,
+          454,
+          454,
+          454,
+          454
+        ],
+        "openblas": [
+          516,
+          516,
+          516,
+          516,
+          516,
+          516,
+          516,
+          516,
+          516
+        ],
+        "pytorch": [
+          516,
+          516,
+          516,
+          516,
+          516,
+          516,
+          516,
+          516,
+          516
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "n1000",
+      "shape": [
+        256,
+        1000,
+        2048
+      ],
+      "reps": 10,
+      "max_abs_error": {
+        "origin_master": 0.00013933947264632707,
+        "branch_default": 0.00013933947264632707,
+        "branch_6x16": 0.00013933947264632707,
+        "openblas": 3.4375976809997155e-05,
+        "pytorch": 2.199170847205778e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/256_1000_2048/kernel.so",
+          "sha256": "078d5a40366b5c25bc26722478892fd602174115efbee21c9cbb278c2fbe4ad0"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/256_1000_2048/kernel.so",
+          "sha256": "a112a6d1776b2da507628a3ea1ba3209b30bed07d49d84b11f5884ed1ee96583"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/256_1000_2048/kernel.so",
+          "sha256": "0586d7bd99c4a48af125b6deae082759eb514fc232c844279ddb9aacd1e4b069"
+        }
+      },
+      "ms": {
+        "origin_master": 62.1446414,
+        "branch_default": 13.642547,
+        "branch_6x16": 11.731411699999999,
+        "openblas": 11.355062015354633,
+        "pytorch": 11.1623944
+      },
+      "batches_ms": {
+        "origin_master": [
+          62.17825270000001,
+          62.12370659999999,
+          62.0787176,
+          62.55712919999999,
+          62.1158302,
+          62.0905768,
+          62.176771200000005,
+          62.1756721,
+          62.1446414
+        ],
+        "branch_default": [
+          14.9813723,
+          13.606579799999999,
+          13.5925337,
+          13.722305100000002,
+          13.7260148,
+          13.592775800000002,
+          13.6447765,
+          13.642453199999999,
+          13.642547
+        ],
+        "branch_6x16": [
+          11.693383,
+          11.7184867,
+          11.731411699999999,
+          11.7325581,
+          11.853807900000001,
+          11.7342747,
+          11.765387200000001,
+          11.7011897,
+          11.7030919
+        ],
+        "openblas": [
+          11.777597479522228,
+          11.355062015354633,
+          11.352714709937572,
+          11.342172138392925,
+          11.36201024055481,
+          11.335727572441101,
+          11.371340043842793,
+          11.341146752238274,
+          11.360524035990238
+        ],
+        "pytorch": [
+          11.1510239,
+          11.1623944,
+          11.1787811,
+          11.1445151,
+          11.133216899999999,
+          11.240154500000001,
+          11.1679189,
+          11.1383716,
+          11.187527499999998
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "branch_default": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "branch_6x16": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "openblas": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "pytorch": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    },
+    {
+      "op": "gemm",
+      "name": "big_odd",
+      "shape": [
+        1999,
+        2047,
+        4095
+      ],
+      "reps": 1,
+      "max_abs_error": {
+        "origin_master": 0.0003957659733089258,
+        "branch_default": 0.0003957659733089258,
+        "branch_6x16": 0.0003957659733089258,
+        "openblas": 4.288646523065154e-05,
+        "pytorch": 3.505303091344558e-05
+      },
+      "identities": {
+        "origin_master": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/origin_master/1999_2047_4095/kernel.so",
+          "sha256": "f070d73163b71d8f31f95cf2cff945af9063ea78192af3da43ccb25681fb6aa2"
+        },
+        "branch_default": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_default/1999_2047_4095/kernel.so",
+          "sha256": "5f434c84bca7015b0409e4f47a52563a9137307336d6407e329b488be0fb6878"
+        },
+        "branch_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111/ir/branch_6x16/1999_2047_4095/kernel.so",
+          "sha256": "23c28237b6cf0780404a3e2f06c1fb498c6d4b6d4254ee8e00b07aefcc9b1289"
+        }
+      },
+      "ms": {
+        "origin_master": 4005.153139,
+        "branch_default": 439.814009,
+        "branch_6x16": 365.959283,
+        "openblas": 359.5188055187464,
+        "pytorch": 365.041168
+      },
+      "batches_ms": {
+        "origin_master": [
+          4004.281701,
+          4005.541787,
+          4005.716896,
+          4003.47631,
+          4002.2683629999997,
+          4005.6162549999995,
+          4003.988488,
+          4005.153139,
+          4005.8494189999997
+        ],
+        "branch_default": [
+          439.814009,
+          440.27054300000003,
+          439.193628,
+          440.37151600000004,
+          440.858466,
+          438.776442,
+          439.015508,
+          442.825584,
+          438.71824399999997
+        ],
+        "branch_6x16": [
+          367.050353,
+          365.959283,
+          365.43004299999996,
+          365.18043,
+          366.930396,
+          365.82721000000004,
+          365.57863499999996,
+          372.12062000000003,
+          366.128904
+        ],
+        "openblas": [
+          359.3631014227867,
+          359.5137670636177,
+          360.39686389267445,
+          359.52980257570744,
+          360.9433099627495,
+          359.5188055187464,
+          359.2354003340006,
+          359.4656568020582,
+          360.644793137908
+        ],
+        "pytorch": [
+          364.738796,
+          374.682836,
+          364.670328,
+          364.887166,
+          365.069568,
+          365.95289199999996,
+          365.041168,
+          365.30724399999997,
+          364.72278
+        ]
+      },
+      "counts": {
+        "origin_master": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "branch_default": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "branch_6x16": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "openblas": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "pytorch": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "pytorch",
+          "branch_default"
+        ],
+        [
+          "openblas",
+          "branch_default",
+          "branch_6x16",
+          "origin_master",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "branch_6x16",
+          "openblas",
+          "pytorch",
+          "origin_master"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "branch_6x16",
+          "origin_master",
+          "branch_default"
+        ],
+        [
+          "branch_6x16",
+          "branch_default",
+          "origin_master",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "branch_default",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "origin_master",
+          "branch_default",
+          "branch_6x16",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "origin_master",
+          "branch_6x16",
+          "branch_default"
+        ]
+      ]
+    }
+  ]
+}

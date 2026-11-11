@@ -1,0 +1,398 @@
+[
+  {
+    "case": "sq1000",
+    "seconds": 0.165573722217232,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/1000_1000_1000/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/1000_1000_1000/final.mim"
+    ],
+    "source_sha256": "681f29893d34321e85ff6e3a0d47aff69bfe7c97c5fb7fd1bcc5a9b6706612d1",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "sq1024",
+    "seconds": 0.16519204014912248,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/1024_1024_1024/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/1024_1024_1024/final.mim"
+    ],
+    "source_sha256": "db6f13f60eff33fae9376f29ff6da636099eb0fbb46fb198e5f744da5ec3259f",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "sq128",
+    "seconds": 0.16414225893095136,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/128_128_128/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/128_128_128/final.mim"
+    ],
+    "source_sha256": "95b2725a7875fb918521c3c23ec28c2aec6695a7b0cecd447ed32d7d8aa9011f",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "big_odd",
+    "seconds": 0.16456423420459032,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/1999_2047_4095/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/1999_2047_4095/final.mim"
+    ],
+    "source_sha256": "75960cb6bf9c8d2c3aaf3766dbfbc4a3e56f2d7b49ab0fa408ac6839a7e5fbe5",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "sq2000",
+    "seconds": 0.16571105597540736,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/2000_2000_2000/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/2000_2000_2000/final.mim"
+    ],
+    "source_sha256": "af200340436e96649a58a70fb73430312f167b29a767314c670d4a05ecd71373",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "tall2048",
+    "seconds": 0.1653691940009594,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/2048_128_512/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/2048_128_512/final.mim"
+    ],
+    "source_sha256": "b184bf4497f58d900d63986d7675e7a1a95f8f1a9bec3d7b84c2c6dc1e7eb297",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "sq2048",
+    "seconds": 0.16622099373489618,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/2048_2048_2048/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/2048_2048_2048/final.mim"
+    ],
+    "source_sha256": "b132f3002a76a7d58f0f07031b143f98efcf9482d1f256770331740cd12d8eb9",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "odd2048",
+    "seconds": 0.16436534794047475,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/2049_513_2047/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/2049_513_2047/final.mim"
+    ],
+    "source_sha256": "76e6251251ef658790a3ad652384df59a202f8348c2860f2f992a9878c1405c3",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "n1000",
+    "seconds": 0.16506313858553767,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/256_1000_2048/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/256_1000_2048/final.mim"
+    ],
+    "source_sha256": "93f3ecc8bbf79518883048ce0e343c15b5933e18aa805c851ac098f4c7241671",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "sq256",
+    "seconds": 0.1642413679510355,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/256_256_256/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/256_256_256/final.mim"
+    ],
+    "source_sha256": "f8a21b58f3e58a3827f162c6092eb1f2c9c7253c9b5cf1b8facbd316d1d20020",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "m49_k512",
+    "seconds": 0.1643142099492252,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/49_2048_512/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/49_2048_512/final.mim"
+    ],
+    "source_sha256": "91c481c63981487e485fc38e921c468c8e7f351b0b51d9360e40848b9a3a63f5",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "m49_k4608",
+    "seconds": 0.16429425962269306,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/49_512_4608/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/49_512_4608/final.mim"
+    ],
+    "source_sha256": "0a350ac92f2e4a9263f5a99115c5a915f2310ef5ec155f4b2ec6bb9e86bda8e5",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "sq512",
+    "seconds": 0.1642910330556333,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/512_512_512/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/512_512_512/final.mim"
+    ],
+    "source_sha256": "4338fe4f742d82e454cd9ed2dd439699ebef2c47851377c715176d474f4cc092",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "k147",
+    "seconds": 0.16506300633773208,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_1024_147/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_1024_147/final.mim"
+    ],
+    "source_sha256": "367e3ab136ef3ad75746c4bdfa5036424642784f7a6f8b4733bef01f6aa5f330",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "k245",
+    "seconds": 0.16622600378468633,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_1024_245/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_1024_245/final.mim"
+    ],
+    "source_sha256": "a457c8547deb9778fd617f921a15432082b258bfb773c0e24bf019aa521f9147",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "k49",
+    "seconds": 0.16415415285155177,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_1024_49/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_1024_49/final.mim"
+    ],
+    "source_sha256": "d94b7cbf995eaaedbf7d10f25e7ef5b7c6a63c0cfe6da2a54c06cbc7a3f6efcc",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "wide2048",
+    "seconds": 0.16503531578928232,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_2048_2048/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_2048_2048/final.mim"
+    ],
+    "source_sha256": "931506968a02bab09ca339dba587a1c450fc7aa8f3b0df8e9840144599e4fd13",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "pack",
+    "seconds": 0.1642056182026863,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_512_130/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_512_130/final.mim"
+    ],
+    "source_sha256": "2c64b8df6b79381012221a9c6b490f45228ebdb4d6c95c19e3d1b304b42f08e9",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "sq64",
+    "seconds": 0.16571445995941758,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_64_64/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/64_64_64/final.mim"
+    ],
+    "source_sha256": "a625bbf647c200b69bf140a2dc4abb2f733337fa48b19c224cd914d1f1a0e4e2",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "m7_k1024",
+    "seconds": 0.16445699287578464,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/7_1024_1024/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/7_1024_1024/final.mim"
+    ],
+    "source_sha256": "48b71b002f47f560f6ea180fa1e6cd233a165e3d5867039465ca6af9990767ea",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "skinny",
+    "seconds": 0.16442060796543956,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/8_512_2304/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/8_512_2304/final.mim"
+    ],
+    "source_sha256": "7f4b4f1bacea9016e9e0f0924739ba99518181e01149a5c4e2807ff42e0e9015",
+    "source_identical_to_branch_default": true
+  },
+  {
+    "case": "m97_n257",
+    "seconds": 0.16415543295443058,
+    "command": [
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/bin/mim",
+      "-P",
+      "/tmp/mimir-origin-master-cpu-19d6c2de/build/lib/mim",
+      "-p",
+      "opt",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/97_257_383/kernel.mim",
+      "-p",
+      "ll",
+      "--output-mim",
+      "/tmp/mimir-origin-master-cpu-ir/ir/origin_master/97_257_383/final.mim"
+    ],
+    "source_sha256": "a3c541dae4c3bf45c4c6a968e703987dc1f7a6a22162d0aaa3aef1343bfea8dd",
+    "source_identical_to_branch_default": true
+  }
+]

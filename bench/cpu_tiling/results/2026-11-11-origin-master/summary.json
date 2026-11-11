@@ -1,0 +1,32 @@
+{
+  "origin_master": {
+    "throughput_vs_origin_master": 1.0,
+    "throughput_vs_branch_default": 0.312128290245525,
+    "throughput_vs_openblas": 0.2606351399486762,
+    "throughput_vs_pytorch": 0.25447281736022886
+  },
+  "branch_default": {
+    "throughput_vs_origin_master": 3.2038108407712236,
+    "throughput_vs_branch_default": 1.0,
+    "throughput_vs_openblas": 0.8350256868534938,
+    "throughput_vs_pytorch": 0.8152827709402969
+  },
+  "branch_6x16": {
+    "throughput_vs_origin_master": 3.651885246362699,
+    "throughput_vs_branch_default": 1.1398566981200473,
+    "throughput_vs_openblas": 0.951809622262248,
+    "throughput_vs_pytorch": 0.9293055273181696
+  },
+  "openblas": {
+    "throughput_vs_origin_master": 3.8367811807606533,
+    "throughput_vs_branch_default": 1.1975679499970295,
+    "throughput_vs_openblas": 1.0,
+    "throughput_vs_pytorch": 0.9763565166628692
+  },
+  "pytorch": {
+    "throughput_vs_origin_master": 3.929692807166949,
+    "throughput_vs_branch_default": 1.2265682970911573,
+    "throughput_vs_openblas": 1.0242160347512637,
+    "throughput_vs_pytorch": 1.0
+  }
+}

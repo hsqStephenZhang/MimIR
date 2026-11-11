@@ -1,0 +1,14 @@
+{
+  "upstream_ref": "origin/master",
+  "upstream_commit": "19d6c2de627cf060655c3a811d459cb4a039c406",
+  "optimized_lowering_commit": "124047b43e7d7c89e303899c5d97f9a92dbf7899",
+  "upstream_worktree": "/tmp/mimir-origin-master-cpu-19d6c2de",
+  "upstream_source_clean": true,
+  "upstream_build_type": "Debug (same as optimized compiler build)",
+  "native_compiler": "/usr/lib/llvm-20/bin/clang++ -O3 -march=icelake-server -mno-avx512f",
+  "remote_root": "/home/sunqi/zc/mimir-bench/cpu-master-comparison-20261111",
+  "ir_archive_sha256": "91285f8849b24bf9ffa44911684e5874321752a7338a5155aaef143da9102b11",
+  "runner_sha256": "ab5f96b6bba4547eedc22a698a14e355f1a64bf9ca8e088cff95ad4a4e14ec12",
+  "lowering_input": "byte-identical kernel.mim from branch-default gemm-bench artifacts",
+  "note": "This measures cumulative branch differences versus upstream; it does not attribute the entire improvement to the latest MC/tail/SSA commits."
+}

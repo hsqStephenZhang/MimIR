@@ -1,5 +1,7 @@
 # ss420e CPU GEMM（2026-11-11）
 
+**基线说明：本报告的 `default`/“MimIR 默认”是已包含本次优化的分支默认参数，不是 `origin/master`；`haswell96` 是同一修复源码的显式参数配置。**
+
 远端：`sunqi@ss420e:/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36`。
 CPU 为 2× Xeon Silver 4310（Ice Lake），本轮仅测 **CPU 0 单线程**，SMT sibling 为 CPU 24，
 不是双路/多线程吞吐。没有设置锁频或修改系统库。
@@ -37,13 +39,13 @@ PyTorch `mm.out` 使用预分配 C，排除 Python 和输入复制。
 
 | 实现 | 相对 OpenBLAS | 相对 PyTorch |
 |---|---:|---:|
-| MimIR 默认 4×16 | 43.54% | 38.04% |
+| MimIR 优化分支默认 4×16 | 43.54% | 38.04% |
 | MimIR 固定 6×16 | 51.14% | 44.69% |
 | PyTorch / MKL | 114.44% | 100.00% |
 
 单个形状中位时间，单位 ms，形状按 M×K×N：
 
-| 形状 | MimIR 默认 | MimIR 6×16 | OpenBLAS | PyTorch |
+| 形状 | MimIR 优化分支默认 | MimIR 6×16 | OpenBLAS | PyTorch |
 |---|---:|---:|---:|---:|
 | 256×256×256 | 0.6464 | 0.4804 | 0.2235 | 0.2014 |
 | 1024×1024×1024 | 38.1648 | 29.6895 | 13.5024 | 12.1663 |

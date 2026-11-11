@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--clang", default="/usr/lib/llvm-20/bin/clang++")
     parser.add_argument("--cpu", type=int, default=0)
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument("--calibrate-once", action="store_true")
     parser.add_argument("--isa", choices=["native", "avx2"], default="native")
     args = parser.parse_args()
     required_env = {
@@ -250,6 +251,23 @@ def main():
             times = {name: [] for name in kernels}
             counts = {name: [] for name in kernels}
             orders = []
+            calibrated_counts = {}
+            if args.calibrate_once:
+                for name, kernel in kernels.items():
+                    kernel.measure(100, case["reps"])
+                    calibrated_counts[name] = kernel.last_iterations
+
+            def fixed_time(name, kernel, count):
+                if name == "openblas":
+                    seconds = kernel.timer(*kernel.arguments, count)
+                elif name == "pytorch":
+                    seconds = kernel.library.measure(kernel.handle, count)
+                else:
+                    seconds = kernel.time(count)
+                if seconds <= 0:
+                    raise RuntimeError("Native measurement failed: " + name)
+                return seconds
+
             rng = random.Random(42)
             for _ in range(9):
                 order = list(kernels)
@@ -257,7 +275,16 @@ def main():
                 orders.append(order)
                 for name in order:
                     kernel = kernels[name]
-                    times[name].append(kernel.measure(100, case["reps"]) * 1000)
+                    if args.calibrate_once:
+                        count = calibrated_counts[name]
+                        seconds = fixed_time(name, kernel, count)
+                        while seconds * count < 0.1:
+                            count = max(count + 1, int(0.12 / seconds))
+                            seconds = fixed_time(name, kernel, count)
+                        calibrated_counts[name] = kernel.last_iterations = count
+                    else:
+                        seconds = kernel.measure(100, case["reps"])
+                    times[name].append(seconds * 1000)
                     counts[name].append(kernel.last_iterations)
             record.update(
                 ms={name: statistics.median(v) for name, v in times.items()},
@@ -290,6 +317,7 @@ def main():
                 min_repeat_ms=100,
                 isa=args.isa,
                 target_flags=target_flags,
+                calibrate_once=args.calibrate_once,
                 rows=records,
             ),
         )
