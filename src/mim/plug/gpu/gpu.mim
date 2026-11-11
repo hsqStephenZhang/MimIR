@@ -244,12 +244,12 @@ anx lam synced_scope (m1: GlobalM, m3: SharedM,
 /// Identity annotation on the body of an `affine.For`.
 /// `gpu.outline` runs a `group`-bound loop one iteration per work-group, an `item`-bound loop one iteration per work-item,
 /// and spreads a `cooperative` loop's iterations over the work-items of a work-group with a barrier before and after.
-/// A `staged` loop is cooperative with a barrier before only, and a `chained` one with no barrier at all: a later `fence` publishes their writes.
+/// A `chained` loop is cooperative with no barrier at all: a later `fence` publishes its writes.
 /// An `async` loop is chained, and its stores into shared memory become `store_async`; an `async_wait` before the `fence` publishes them.
 ///
 /// A `warp` loop runs one iteration per warp of 32 work-items, which see their lane as `lane_id ()`.
 ///
-axm bind.(group, item, cooperative, staged, chained, async, warp): {T: *} → T → T;
+axm bind.(group, item, cooperative, chained, async, warp): {T: *} → T → T;
 ///
 /// #### lane_id
 ///

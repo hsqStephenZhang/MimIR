@@ -151,8 +151,7 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         app->blame("gpu.outline: a warp collective cannot execute under a non-warp-aligned item guard").bail();
     auto async   = bound_loop(app, bind::async);
     auto chained = async ? async : bound_loop(app, bind::chained);
-    auto staged  = chained ? chained : bound_loop(app, bind::staged);
-    if (auto loop = staged ? staged : bound_loop(app, bind::cooperative)) {
+    if (auto loop = chained ? chained : bound_loop(app, bind::cooperative)) {
         if (!item_id_) app->blame("gpu.outline: a cooperative loop must nest inside a work-group loop").bail();
         if (item_divergent_ && !chained)
             app->blame("gpu.outline: a work-item barrier cannot execute under a divergent item guard").bail();
@@ -166,7 +165,7 @@ const Def* Outline::rewrite_imm_App(const App* app) {
             return w.tuple(DefVec(n, [&](size_t i) { return i == mem_i ? mem : acc->proj(n, i); }));
         };
         auto done = rewrite(exit);
-        if (!staged) {
+        if (!chained) {
             auto after = w.mut_con(new_init->type())->set("cooperativeDone");
             after->app(true, done, with_mem(after->var(), sync(after->var()->proj(n, mem_i))));
             done = after;

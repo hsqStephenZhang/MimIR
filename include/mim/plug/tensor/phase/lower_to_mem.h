@@ -107,7 +107,7 @@ private:
     const Def* region_input(const Def*);
     void forward_storage(const Def* inputs, const Def* proxy);
     void forward_layouts(const Def* buffers, const Def* params);
-    std::pair<const Def*, const Def*> allocate(const Def*, const Def*, const Def*, bool = true);
+    std::pair<const Def*, const Def*> allocate(const Def*, const Def*, const Def*, bool = true, const Def* = nullptr);
     void prepare_realizations(const Def*, const Lam* = nullptr, Defs = {});
 
     const Def* materialize(const Def*, const Def*);
@@ -175,9 +175,6 @@ private:
     u64 batches_ = 0;
     std::optional<Batch> open_batch(const Def* start);
     const Def* close_batch(const Def* mem, const Def* result, const std::function<const Def*(const Def*)>& consume);
-    /// While a consumer rewrites its inputs, their uniform fills are `staged`; it then fences them once.
-    bool staging_       = false;
-    bool fence_pending_ = false;
     /// The fills of a pipelined fold copy asynchronously; its loop waits for them before its fence.
     bool async_fill_ = false;
     /// Whether tensor-core operands are rounded to TF32 to nearest before `mma` (`-X tensor:tf32-rna`).
