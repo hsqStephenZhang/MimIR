@@ -734,6 +734,19 @@ const Def* normalize_group_impl(const Def*, const Def* callee, const Def* arg) {
     return w.app(tiled, body);
 }
 
+const Def* normalize_root_loops(const Def*, const Def*, const Def* op) {
+    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op)))
+        if (auto ranks = btensor::MapRedPost::of(root->callee()->as<App>()).ranks())
+            return op->world().lit_nat(ranks->nloops());
+    return nullptr;
+}
+
+const Def* normalize_root_acc(const Def*, const Def*, const Def* op) {
+    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op)))
+        return btensor::MapRedPost::of(root->callee()->as<App>()).To;
+    return nullptr;
+}
+
 const Def* normalize_stage(const Def*, const Def* c, const Def*) {
     auto [meta, shape, layout, scope] = c->as<App>()->uncurry_args<4>();
     auto [type, r, k]                 = meta->projs<3>();

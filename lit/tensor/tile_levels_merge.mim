@@ -1,7 +1,6 @@
-// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
 
-// The level accumulator is independent of the output element type, so TileFuse checks it against the root's
-// accumulator and leaves a mismatched request unrealized.
+// The levels are indexed by the root's accumulator type, so a merge over another accumulator does not type-check.
 
 plugin tensor;
 plugin core;
@@ -20,4 +19,4 @@ extern fun bad (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 F32 =
     return (tile_req (root, (), serial_group ((4, 0), 1, 0, group_red_merge ((0, 4), 1, bad_merge, group_done ())),
         default_control));
 
-// CHECK: unrealized tensor.tile_req {{.*}}: the levels' accumulator type {{.*}} does not match the root's accumulator type
+// CHECK: error: argument is not assignable to callee's domain

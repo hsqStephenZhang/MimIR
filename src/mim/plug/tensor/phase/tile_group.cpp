@@ -224,8 +224,7 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
         = w.tuple(DefVec(group->second.members.size(), [&](size_t i) { return rewrite(group->second.members[i]); }));
     auto control = w.annex<default_control>();
     auto tensor  = *TensorType::isa(value->type());
-    auto request = w.app(w.annex<tile_req>(), {tensor.T, tensor.r, tensor.s, members->type(), control->type(),
-                                               w.lit_nat(ranks.nloops()), mr.To});
+    auto request = w.app(w.annex<tile_req>(), {tensor.T, tensor.r, tensor.s, members->type(), control->type()});
     return w.app(request, {value, members, levels, control});
 }
 

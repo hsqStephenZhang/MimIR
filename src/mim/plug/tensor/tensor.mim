@@ -2019,8 +2019,13 @@ anx lam warp_red_pipelined {n: Nat, Acc: *} (sizes: «n; Nat», tail promote pip
 anx lam warp_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpLevels (n, Acc) = (WarpLevels (n, Acc))#Mma shape;
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
-axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *, n: Nat, Acc: *}
-            → [op: Tensor r s T, members: M, levels: TileLevels (n, Acc), control: K] → Tensor r s T;
+/// The loop count and accumulator type of the `map_reduce_post` that computes a tile request's root; they index the
+/// request's levels, so a chain over other loops or another accumulator does not type-check.
+axm root_loops: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Nat, normalize_root_loops;
+axm root_acc: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → *, normalize_root_acc;
+axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *}
+            → [op: Tensor r s T, members: M, levels: TileLevels (root_loops op, root_acc op), control: K]
+            → Tensor r s T;
 axm tile_fuse: compile.Phase;
 axm tile_group: compile.Phase;
 ///

@@ -1643,18 +1643,6 @@ const Def* TileFuse::rewrite_imm_App(const App* app) {
 
 const Def* TileFuse::realize(const App* request, const DefSet& outside) {
     auto [op, members, levels, control] = request->args<4>();
-    if (auto root = graph::map_reduce(op)) {
-        auto mr  = btensor::MapRedPost::of(root->callee()->as<App>());
-        auto Acc = Hole::find(request->callee()->as<App>()->arg(7, 6));
-        if (Hole::isa_unset(Acc)) Acc = mr.To;
-        if (!Check::test_alpha(Acc, mr.To)) {
-            report_tile_request(request,
-                                std::format("the levels' accumulator type {} does not match the root's accumulator "
-                                            "type {}",
-                                            Acc, mr.To));
-            return op;
-        }
-    }
     auto parsed = tile_levels(levels);
     if (!parsed || parsed->empty()) {
         report_tile_request(request, "the levels are not a literal chain");
