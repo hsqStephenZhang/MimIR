@@ -262,6 +262,8 @@ axm sync_reclaim: GM (g, e, Reading) → GM (g, e + 1, Synced);   // 一道 barr
 
 - **循环携带的 token。** `affine.For` 的累加器类型是固定的 `«i: n; Ts#i»`，不依赖迭代变量，而流水和 R8 的每一轮都让 `e` 加一。要么给 `For` 加依赖迭代的累加器类型，要么在循环入口用一个公理把代数换成循环体绑定的新变量（`e` 在体内是 `e₀ + i·k` 的抽象）。这决定了第一步之后的形状。
 - **R8 的轮次**在 LowerToMem 里是展开的（每轮一段代码），可以逐轮推进 `e`；流水环是真正的循环，受上一条约束。但 R8 的每一轮是同一超步里对同一块 partials 的读改写：item `i` 读 `i` 与 `i + s`、写回 `i`，写下标只被写它的 item 读到，所以无竞争。三相位模型里已发布的 buffer 没有写公理，按它写每轮要两道 barrier（现在一道）。可选：每轮写一份新快照（两块 partials 交替，shared 翻倍）；或者加一个只允许按 owner 互不相交读改写的相位，轮间以一道 barrier 推进代数。
+- **填充批的现状与映射。** 消费者（`lower_map_reduce`、`lower_mma`）改写输入时打开 `staging_`：批里第一个填充打 `staged`（循环前一道 barrier，结束上一轮对这些面板的读，即 `sync_reclaim`），其余打 `chained`（同在 `Writing`），消费者最后在自己的输入内存上加 `fence`（即 `sync_publish`）。填充的内存是 `fresh_mem` 占位，由 `AddMem` 事后排序；类型化要改为沿 token 显式传递，可沿用流水环已有的 `fill_target_`/`filled_mem_` 机制。
+- **循环体里的填充批**也撞上循环携带 token：体以 `GM (g, E, Synced)` 进入、以 `GM (g, E + 1, Synced)` 结束。体内分配的面板是体内局部值，按词法作用域带不到下一轮（S1 禁止经 continuation 捕获），所以可在回边用一个不发 barrier 的 `rebase: GM (g, e, Synced) → GM (g, 0, Synced)` 重置代数；经累加器跨轮传递的流水槽不适用，仍属第三步。
 - **擦除的时机**：要在 `mem.add_mem` 线程化内存之前还是之后擦除，取决于 token 是否参与 AddMem 的 fresh-mem 机制。
 - **`staged`/`chained` 的协议**（`fence_pending_`）要整个替换成显式的 `Writing` 批，不能两套并存。
 
