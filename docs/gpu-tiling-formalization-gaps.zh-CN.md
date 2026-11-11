@@ -153,6 +153,12 @@ TileFuse 输出里只有 `bind 2` 和 `merge_with` 两个标注；lowering 之�
 - `ldmatrix` 把指针直接 cast 成 shared，不验证 16 字节行地址对齐和 `n ∈ {1, 2, 4}`。
 - `slot_shared` 按整个 kernel 静态累加、逐槽按 16 字节取整，超过 48 KiB 改用动态 shared，不考虑循环内复用和目标的 shared 上限。
 
+### G16 universe 层级约束的求解（评审）—— 未检查
+
+- `RWPhase` 结束、交换 world 之前求解它推迟的层级约束（`b4dd6a16a`）。
+- 仍未覆盖（评审）：直接继承 `Phase` 原地改 world 的 pass、`GraphRewrite::publish`、`Driver::move_to_library` 的导入、`SplitOffKernels` 的辅助 `RWPhase`。可改为在 `Phase::run` 的 `start()` 之后统一求解。
+- 求解器本身（评审）：右侧不是字面量的 `LMax` 约束只被推迟、不做合一，`solve_levels` 把未绑定的洞置 0 后比较，`max(?a, 0) = 1 + ?b` 这类有唯一最小解的约束会被报成没有唯一解。
+
 ## 2.5 两轮评审报告的实现缺陷
 
 这些不是形式化空白，是评审认为现存的 bug。它们恰好都落在"C++ 相信而没有检查"的地方，所以列在这里；修它们先于后面所有的重构。
@@ -167,6 +173,9 @@ TileFuse 输出里只有 `bind 2` 和 `merge_with` 两个标注；lowering 之�
 | D6 | `Fill::contiguous` 的两个问题（见 G13） | 评审，未复现 |
 | D7 | `outline.cpp` 的发散检查对 `chained`/`async` 循环豁免（条件里的 `&& !chained`），但这些循环仍按全组线程数分摊；落进较短 item 守卫时面板填不全 | 评审，未复现 |
 | D8 | 流水深度没有限制到 wait 立即数范围 | 两轮评审都指出，未复现 |
+| D9 | 外层 cap 模式下的 work-item 归约是 bounded 的，`lower_into` 回退到协作拷贝，却按运行时外延而不是源的存储上界折叠读下标，类型不合 | **已修**：拷贝按 `storage_shapes_` 中的源存储形状读；`lit/{gpu,nvptx}/tile_reduce_cap.mim` 在 CPU 与 A100 上执行 |
+| D10 | 剥离尾块的面板：`stage_block` 把字面量余数 `k` 写进 `PanelSite.caps`，代换时把所有等于它的维度改成块长；单个 work-group 时只有第 0 维的偏移依赖 group 变量，沿其他维切片的尾块面板被提升到 group 循环之外，`gpu.outline` 报错 | **已修**：字面量的 `k` 不作代换键；一个 tile 的绑定级每一维偏移都依赖绑定变量；`lit/{gpu,nvptx}/tile_panel_tail.mim`（32×24×32）在 CPU 与 A100 上执行 |
+| D11 | `layout_expr.make` 不要求 `split = 1` 时单位维在第 2 位（`panel::decode` 按位置跳过它，否则越界读），也不检查 swizzle 的 `shift < 64`（`2^shift` 溢出为 0 后除零） | **已修**：两条 `refly.check`，`lit/error/layout_expr_{unit,shift}.mim` |
 
 ## 3. 消解办法
 
