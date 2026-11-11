@@ -262,10 +262,10 @@ axm sync_reclaim: GM (g, e, Reading) → GM (g, e + 1, Synced);   // 一道 barr
 
 - **循环携带的 token。** `affine.For` 的累加器类型是固定的 `«i: n; Ts#i»`，不依赖迭代变量，而流水和 R8 的每一轮都让 `e` 加一。要么给 `For` 加依赖迭代的累加器类型，要么在循环入口用一个公理把代数换成循环体绑定的新变量（`e` 在体内是 `e₀ + i·k` 的抽象）。这决定了第一步之后的形状。
 - **R8 的轮次**在 LowerToMem 里是展开的（每轮一段代码），可以逐轮推进 `e`；流水环是真正的循环，受上一条约束。但 R8 的每一轮是同一超步里对同一块 partials 的读改写：item `i` 读 `i` 与 `i + s`、写回 `i`，写下标只被写它的 item 读到，所以无竞争。三相位模型里已发布的 buffer 没有写公理，按它写每轮要两道 barrier（现在一道）。可选：每轮写一份新快照（两块 partials 交替，shared 翻倍）；或者加一个只允许按 owner 互不相交读改写的相位，轮间以一道 barrier 推进代数。
-- **填充批的现状与映射。** 消费者（`lower_map_reduce`、`lower_mma`）改写输入时打开 `staging_`：批里第一个填充打 `staged`（循环前一道 barrier，结束上一轮对这些面板的读，即 `sync_reclaim`），其余打 `chained`（同在 `Writing`），消费者最后在自己的输入内存上加 `fence`（即 `sync_publish`）。填充的内存是 `fresh_mem` 占位，由 `AddMem` 事后排序；类型化要改为沿 token 显式传递，可沿用流水环已有的 `fill_target_`/`filled_mem_` 机制。
+- **填充批的映射**（落地前的旧协议，已删除）。消费者（`lower_map_reduce`、`lower_mma`）改写输入时打开 `staging_`：批里第一个填充打 `staged`（循环前一道 barrier，结束上一轮对这些面板的读，即 `sync_reclaim`），其余打 `chained`（同在 `Writing`），消费者最后在自己的输入内存上加 `fence`（即 `sync_publish`）。填充的内存是 `fresh_mem` 占位，由 `AddMem` 事后排序；类型化要改为沿 token 显式传递，可沿用流水环已有的 `fill_target_`/`filled_mem_` 机制。
 - **循环体里的填充批**也撞上循环携带 token：体以 `GM (g, E, Synced)` 进入、以 `GM (g, E + 1, Synced)` 结束。体内分配的面板是体内局部值，按词法作用域带不到下一轮（S1 禁止经 continuation 捕获），所以可在回边用一个不发 barrier 的 `rebase: GM (g, e, Synced) → GM (g, 0, Synced)` 重置代数；经累加器跨轮传递的流水槽不适用，仍属第三步。
 - **擦除的时机**：要在 `mem.add_mem` 线程化内存之前还是之后擦除，取决于 token 是否参与 AddMem 的 fresh-mem 机制。
-- **`staged`/`chained` 的协议**（`fence_pending_`）要整个替换成显式的 `Writing` 批，不能两套并存。
+- **`staged`/`chained` 的协议**（`fence_pending_`）要整个替换成显式的 `Writing` 批，不能两套并存（已完成）。
 
 **顺序**：第一步只引入 `GM` 与 `SharedBuf`，用它重写填充批与 R8 合并轮（不含流水环），预计覆盖现有六处手工 fence 中的五处；`WM`/`IM` 与 `run_items` 是第二步；流水槽自动机依赖循环携带 token 的解决，是第三步；`gpu.check_sync` 第四步。
 
@@ -276,7 +276,7 @@ axm sync_reclaim: GM (g, e, Reading) → GM (g, e + 1, Synced);   // 一道 barr
 - membar 按区间粒度表达不了按 owner 不相交的原地更新，R8 每轮会多插一道；
 - 它和我们一样依赖别名信息与全组一致到达。
 
-所以相位类型仍是主机制。membar 式分析适合放在擦除之后、按 buffer 身份做"只检查不插入"的验证（兜住 `view` 逃逸和旧的 `staged`/`chained` 路径），兼做多余 barrier 的删除；一旦 shared 内存按活跃区间复用，它就是必需的。
+所以相位类型仍是主机制。membar 式分析适合放在擦除之后、按 buffer 身份做"只检查不插入"的验证（兜住 `view` 逃逸和流水环的异步填充），兼做多余 barrier 的删除；一旦 shared 内存按活跃区间复用，它就是必需的。
 
 - 相位扩成 `Synced | Writing | Reading | Updating`，可见性扩成 `Empty | Unpublished | Published | Owned`。
   - `shared_panel` 给出 `Empty`，`coop_fill` 把它变成 `Unpublished`，所以未填充的面板不能发布。
@@ -290,7 +290,7 @@ axm sync_reclaim: GM (g, e, Reading) → GM (g, e + 1, Synced);   // 一道 barr
 - **仍未覆盖的限制**：
   - S3 发散不检查；
   - owner 不相交（每个 item 只写自己的元素，`owned_update`/`coop_fill` 的 body 是任意代码）不检查；
-  - `view` 返回的裸 `buffer.Buf` 在类型上仍能逃逸到 `sync_reclaim`/`leave_reading` 之后。现在 `read_phase {R}` 的 body 返回 `[mem, R]`，R8 的合并和填充批的两个消费者（`lower_map_reduce` 有目标内存时、`lower_mma`）都在 body 里读面板，不再在 leave 之后读，但检查不强制这一点；
+  - `view` 返回的裸 `buffer.Buf` 在类型上仍能逃逸到 `sync_reclaim`/`leave_reading` 之后。现在 `read_phase {R}` 的 body 返回 `[mem, R]`，R8 的合并和填充批的消费者（`lower_map_reduce`、`lower_mma`）都在 body 里读面板，不再在 leave 之后读，但检查不强制这一点；
   - 同一批里两块类型相同的面板可以互换，面板没有身份；
   - 循环里的构造每轮都是 `e = 0`，跨轮的隔离靠的是"面板是体内局部值、lam 参数不许带面板"，而不是代数；
   - 原始 `mem.M` 不是线性的，用同一 `mem` 进入两个构造只能靠"构造唯一"兜底。
@@ -302,9 +302,10 @@ axm sync_reclaim: GM (g, e, Reading) → GM (g, e + 1, Synced);   // 一道 barr
   - `g` 重复。
 
   `view` 逃逸已在生成侧改成作用域化读取，但检查不强制。
+  没有目标内存的消费者也进批了：批的起点在第一次填充时取一块 fresh 内存，输出 buffer 在 `read_phase` 的 body 里分配。
+  于是 `staged` 标注、`staging_` 和 `fence_pending_` 都删掉了。`chained` 只剩填充批内部（`coop_fill` 的 body）在用，`async` 只剩流水环在用。
 
   尚未修的：
-  - 没有目标内存的消费者不进批（Issue 7）；
   - 批发布依赖 `Hole`，建议改成一次性的 `publish_batch`。
 
 ### C. 局部数值条件的检查
