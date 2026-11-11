@@ -32,7 +32,20 @@ def main():
     parser.add_argument("--clang", default="/usr/lib/llvm-20/bin/clang++")
     parser.add_argument("--cpu", type=int, default=0)
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument("--isa", choices=["native", "avx2"], default="native")
     args = parser.parse_args()
+    required_env = {
+        "ATEN_CPU_CAPABILITY": "avx2",
+        "MKL_ENABLE_INSTRUCTIONS": "AVX2",
+        "OPENBLAS_CORETYPE": "Haswell",
+    }
+    if args.isa == "avx2":
+        for name, value in required_env.items():
+            if os.environ.get(name) != value:
+                parser.error(f"--isa avx2 requires {name}={value} before Python starts")
+    target_flags = ["-march=icelake-server"]
+    if args.isa == "avx2":
+        target_flags.append("-mno-avx512f")
     root = args.root.resolve()
     sys.path.insert(0, str(root / "harness"))
     import numpy as np
@@ -42,6 +55,8 @@ def main():
     from mimir.benchmark import Kernel as MimKernel
     from pytorch.benchmark import PyTorch, Kernel as TorchKernel
 
+    if args.isa == "avx2" and torch.backends.cpu.get_cpu_capability() != "AVX2":
+        raise RuntimeError("PyTorch did not select the requested AVX2 dispatch")
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     os.sched_setaffinity(0, {args.cpu})
@@ -80,7 +95,7 @@ def main():
             command = [
                 args.clang,
                 "-O3",
-                "-march=icelake-server",
+                *target_flags,
                 "-shared",
                 "-fPIC",
                 "-std=c++20",
@@ -90,7 +105,12 @@ def main():
                 "-o",
                 str(directory / "kernel.so"),
             ]
-            if not (directory / "kernel.so").is_file():
+            previous = directory / "compile.json"
+            cached = (
+                previous.is_file()
+                and json.loads(previous.read_text())["command"] == command
+            )
+            if not (directory / "kernel.so").is_file() or not cached:
                 start = time.monotonic()
                 with (directory / "compile.log").open("w") as log:
                     subprocess.run(
@@ -123,6 +143,17 @@ def main():
             rng="np.random.default_rng(np.random.SeedSequence([42,M,N,K])); uniform(-1,1) cast float32",
             cpu=args.cpu,
             threads=1,
+            isa=args.isa,
+            target_flags=target_flags,
+            isa_environment={
+                name: os.environ.get(name)
+                for name in [
+                    *required_env,
+                    "NPY_DISABLE_CPU_FEATURES",
+                    "DNNL_MAX_CPU_ISA",
+                    "ONEDNN_MAX_CPU_ISA",
+                ]
+            },
         )
         try:
             metadata["openblas_blocks_before_gemm"] = {
@@ -133,6 +164,21 @@ def main():
             metadata["openblas_blocks_before_gemm"] = None
         save(output / "metadata.json", metadata)
     else:
+        prepared = json.loads((output / "metadata.json").read_text())
+        if prepared.get("isa", "native") != args.isa:
+            raise RuntimeError(
+                "Prepared ISA differs; use a separate output root and prepare it first"
+            )
+        for variant in manifest["variants"]:
+            for case in manifest["cases"]:
+                directory = root / "ir" / variant / "_".join(map(str, case["shape"]))
+                command = json.loads((directory / "compile.json").read_text())[
+                    "command"
+                ]
+                if ("-mno-avx512f" in command) != (args.isa == "avx2"):
+                    raise RuntimeError(
+                        "Kernel ISA differs from requested run: " + str(directory)
+                    )
         # The wrappers were built and verified during preparation; loading them does not compile anything.
         blaslib = ctypes.CDLL(str(args.openblas))
         blaslib.openblas_set_num_threads(1)
@@ -164,7 +210,9 @@ def main():
         stem = "_".join(map(str, case["shape"]))
         inputs = output / "inputs" / stem
         inputs.mkdir(parents=True, exist_ok=True)
-        if args.phase == "prepare":
+        if args.phase == "prepare" and not (
+            (inputs / "A.npy").is_file() and (inputs / "B.npy").is_file()
+        ):
             rng = np.random.default_rng(np.random.SeedSequence([42, m, n, k]))
             a = rng.uniform(-1, 1, (m, k)).astype("float32")
             b = rng.uniform(-1, 1, (k, n)).astype("float32")
@@ -240,6 +288,8 @@ def main():
                 warmup=5,
                 repeats=9,
                 min_repeat_ms=100,
+                isa=args.isa,
+                target_flags=target_flags,
                 rows=records,
             ),
         )

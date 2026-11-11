@@ -1,0 +1,34 @@
+{
+  "aten_cpu": "AVX2",
+  "numpy_blas": [
+    {
+      "path": "/home/sunqi/anaconda3/lib/python3.12/site-packages/numpy.libs/libopenblas64_p-r0-0cf96a72.3.23.dev.so",
+      "core": "Haswell"
+    }
+  ],
+  "numpy_avx512_features": {
+    "AVX512F": false,
+    "AVX512CD": false,
+    "AVX512ER": false,
+    "AVX512PF": false,
+    "AVX5124FMAPS": false,
+    "AVX5124VNNIW": false,
+    "AVX512VPOPCNTDQ": true,
+    "AVX512VL": true,
+    "AVX512BW": true,
+    "AVX512DQ": true,
+    "AVX512VNNI": true,
+    "AVX512IFMA": true,
+    "AVX512VBMI": true,
+    "AVX512VBMI2": true,
+    "AVX512BITALG": true,
+    "AVX512FP16": false,
+    "AVX512_KNL": false,
+    "AVX512_KNM": false,
+    "AVX512_SKX": false,
+    "AVX512_CLX": false,
+    "AVX512_CNL": false,
+    "AVX512_ICL": false,
+    "AVX512_SPR": false
+  }
+}

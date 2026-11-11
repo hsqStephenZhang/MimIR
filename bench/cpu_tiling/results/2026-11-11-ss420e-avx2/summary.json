@@ -1,0 +1,22 @@
+{
+  "default": {
+    "throughput_vs_openblas": 0.8324629303310539,
+    "throughput_vs_pytorch": 0.8127593878999438,
+    "absolute_speedup_vs_native": 1.2547474318659224
+  },
+  "haswell96": {
+    "throughput_vs_openblas": 0.9463652030631731,
+    "throughput_vs_pytorch": 0.923965710840179,
+    "absolute_speedup_vs_native": 1.2142636426794995
+  },
+  "openblas": {
+    "throughput_vs_openblas": 1.0,
+    "throughput_vs_pytorch": 0.9763310272287147,
+    "absolute_speedup_vs_native": 0.6562166688339494
+  },
+  "pytorch": {
+    "throughput_vs_openblas": 1.0242427743369673,
+    "throughput_vs_pytorch": 1.0,
+    "absolute_speedup_vs_native": 0.587300062724292
+  }
+}

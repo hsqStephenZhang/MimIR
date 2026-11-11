@@ -1,0 +1,374 @@
+{
+  "isa": "avx2",
+  "all_evex_zero": true,
+  "checked_binaries": 45,
+  "records": [
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/64_64_64/kernel.so",
+      "sha256": "71becc122d55fb813648466027a99bd7143a538a9a0aee9917967492d93533a6",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 32
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/128_128_128/kernel.so",
+      "sha256": "5bca86348f01acc379571c5d6a647509a3137aecfa6fccd3b723c38b103f40d7",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 32
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/256_256_256/kernel.so",
+      "sha256": "bf372ad904bc0f0c6d91cb6f85a3bfa026397371b7a5c5fadf5cff4018ebc3ae",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/512_512_512/kernel.so",
+      "sha256": "0e8c8057ad94ac660fc47ad8c85f5fc326495963910957bbe3dfdf2f0bcf45f4",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/1000_1000_1000/kernel.so",
+      "sha256": "b5023615df19af069ccd6134a0fe071b32fa9e54d8e24830d919a818f92e081f",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/1024_1024_1024/kernel.so",
+      "sha256": "5ecd4481cd049df3b8fa7a73be4dce8967628bbd2107cae080b6aaf4dfdab34e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/8_512_2304/kernel.so",
+      "sha256": "da3ee7f773e682719d29d8fbe2b521a489fcc018cdf709711c1a3e8431e3fb36",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/64_512_130/kernel.so",
+      "sha256": "87d39c26cf9a5d805aa4a6e63424d6c6c851a126d719405eba632caa241f67dc",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 48
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/64_1024_49/kernel.so",
+      "sha256": "284e09327e651be3af94296ebf4fa1219963b8c6784bba6e50d9121e46a26c93",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 8
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/64_1024_147/kernel.so",
+      "sha256": "19c149cef11002482dcd65bbfad52f1e45dcd25c3c4e7c0912100533bf888bcd",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/64_1024_245/kernel.so",
+      "sha256": "507eb221b19744410d11fad8e4e41c61589c156bdc0a6ce12ba2bddcbe725122",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/2000_2000_2000/kernel.so",
+      "sha256": "79e8ebb041cd7ad2017558c4afc05a2bd0190a97014ac0faac5410e215cf7f04",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/2048_2048_2048/kernel.so",
+      "sha256": "7d801ce565aaacd511b249a9e4cf34419f7bd475245c1e1f310f9dd4cea24d3c",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/64_2048_2048/kernel.so",
+      "sha256": "cfed45bcc964be10c525c6f8ba0fb1ab75b95dcafd5fc64d33dc3462cf2007c8",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/2048_128_512/kernel.so",
+      "sha256": "ec2cdd4ffcdee4c6b4a72f800a23081313ad418e140f82572679cdc5560927f3",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/2049_513_2047/kernel.so",
+      "sha256": "3c696d2bd6f9347aaa0c9420c52f54cc208ccb857faba379dd515fdaaa2549bc",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 96,
+        "scalar_or_xmm": 24
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/49_512_4608/kernel.so",
+      "sha256": "5731a5cc0632f96cbc33308a21e5003e332856f182b07f5c9eed7e291fc41dda",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/49_2048_512/kernel.so",
+      "sha256": "d57cbff34b872fccf0fd59a9cb3560d7353b8193fa996962f107fb674e748893",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/7_1024_1024/kernel.so",
+      "sha256": "55f818c768f9f072ddf1efd34a51e2e516f6cc16cf73ead1d86ab314e335ec53",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 112
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/97_257_383/kernel.so",
+      "sha256": "bc91d20645671972659cde533576bd8ffd72a7d5b583f62edebae5d252a48afd",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 96,
+        "scalar_or_xmm": 24
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/256_1000_2048/kernel.so",
+      "sha256": "a112a6d1776b2da507628a3ea1ba3209b30bed07d49d84b11f5884ed1ee96583",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 160
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/default/1999_2047_4095/kernel.so",
+      "sha256": "5f434c84bca7015b0409e4f47a52563a9137307336d6407e329b488be0fb6878",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 522,
+        "scalar_or_xmm": 221
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/64_64_64/kernel.so",
+      "sha256": "223ac4c6551756c71f45416b0ea45e289e4e994ef7734b40c30d517645afafe2",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/128_128_128/kernel.so",
+      "sha256": "cd380ee2313e964015b96ae3416c7fc6a13e737a1ce7b86ea3a0f5e22daf0919",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/256_256_256/kernel.so",
+      "sha256": "5535217cec430da27ee4f87cf2a5016a6259b7abf88c22dcccb13f35109c6775",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/512_512_512/kernel.so",
+      "sha256": "6954620ea7e7959fccd2f612ae2a99f0755de8bb647c4b235c77a102b7b09fc5",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 256
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/1000_1000_1000/kernel.so",
+      "sha256": "e2bbcc45f03ffda0d00a91bc700f131db07ca70ad54e5137d295717a92b86b75",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 632
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/1024_1024_1024/kernel.so",
+      "sha256": "333e942f8d1e826c5be821804570858b49a7e29236599f4b443e645c59e91396",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/8_512_2304/kernel.so",
+      "sha256": "139a28c555f2bcfcfa1e8cdbc4298d605652edd7438aee855c64fcb6e3da9ad8",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/64_512_130/kernel.so",
+      "sha256": "3175c1bb67cc19d1c7e081623fc2221f66fe0dc1a46984cd4c89fc8be21713e1",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/64_1024_49/kernel.so",
+      "sha256": "e40536afd2d7ea51410f2666e04c62dcfd8c63dbc3dc4775da1b3c6c04c998e3",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/64_1024_147/kernel.so",
+      "sha256": "fe44b9b073c93e23cd0163fb88c1ad443b1b54404b155552fd7b22c6b3291afb",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/64_1024_245/kernel.so",
+      "sha256": "158d52721804b188e4364d1168ce00a112880a6da98fdb60505e25e22beafa2c",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/2000_2000_2000/kernel.so",
+      "sha256": "fd48725c6981d1e1f186cc2af5d4da5c93fda1036c65d01c94f218aeb682501d",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/2048_2048_2048/kernel.so",
+      "sha256": "fcd2a46197e7e9a0cd3d6821447e163691c9d711295c50a7bd39b75ce6fa7dcd",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/64_2048_2048/kernel.so",
+      "sha256": "cddaa76533ebb3ffda9908b98ec96de5f097b5ed95cd991fdca25d773bd2487e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/2048_128_512/kernel.so",
+      "sha256": "09a00de41f63747db684f230932f4a91efc3433f68d03b551bf74298176ffb66",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 128
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/2049_513_2047/kernel.so",
+      "sha256": "62c5bd69310dbb2f54b9774908c421d941354142712d63bdc491fb7e1798bfc5",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 336,
+        "scalar_or_xmm": 52
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/49_512_4608/kernel.so",
+      "sha256": "06ea37e6893acf6cf0ef6f9f4918a8df8904aa8c5ae0329023cf943418f174b2",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 336
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/49_2048_512/kernel.so",
+      "sha256": "2e5d177ae5ba0d454b771bdb8b2da143daa88ba6da293544f6679911deee841e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 224
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/7_1024_1024/kernel.so",
+      "sha256": "96b7cf7e3decae8628125985938d5ecd6d74e5a99eb262ca0e2ffceb9e7bfa52",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 360
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/97_257_383/kernel.so",
+      "sha256": "162829e69462ed40f568b36d3aca862332a7006ae6e4243c7f49f7203d816e3e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 74,
+        "scalar_or_xmm": 25
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/256_1000_2048/kernel.so",
+      "sha256": "0586d7bd99c4a48af125b6deae082759eb514fc232c844279ddb9aacd1e4b069",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 632
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36-avx2/ir/haswell96/1999_2047_4095/kernel.so",
+      "sha256": "23c28237b6cf0780404a3e2f06c1fb498c6d4b6d4254ee8e00b07aefcc9b1289",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 324,
+        "scalar_or_xmm": 176
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/OpenBLAS-8e57c86-haswell/libopenblas.so",
+      "sha256": "17a92b0ff67274b2aae8537b5659b2dd58d56a66cfee1591bdf53fa7bccf993e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 5728,
+        "scalar_or_xmm": 4142
+      }
+    }
+  ]
+}

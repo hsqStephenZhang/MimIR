@@ -138,3 +138,21 @@ SKYLAKEX，远端 PyTorch 2.2.1/MKL。系统 OpenBLAS 0.3.8 错误检测为 Pres
 
 这组结果不能沿用本地 97.1% 的结论。完整口径、版本差异和复现命令见
 [ss420e 报告](results/2026-11-11-ss420e/README.md)，原始批次在同目录 `paired-native.json`。
+
+## ss420e 禁用 AVX-512 对照
+
+相同 Ice Lake 机器、CPU 0 单线程、Clang 20、IR、tiling 参数和输入，MimIR 仅增加
+`-mno-avx512f`；OpenBLAS 与 MKL/ATen 也切换为 AVX2。44 个 MimIR 二进制及 Haswell
+OpenBLAS 均核验没有 EVEX 指令，MKL verbose 与 PyTorch capability 也确认 AVX2。
+全部 22 形状、四种实现通过完整 FP64 校验。
+
+禁用后，默认配置达到 AVX2 OpenBLAS 的 **83.25%**，固定 6×16 达到 **94.64%**
+（启用时分别为 43.54%、51.14%）。6×16 自身的吞吐几何平均提高 **21.43%**；
+OpenBLAS 与 PyTorch 切到 AVX2 后的耗时几何平均分别增加到原来的约 1.524×、1.703×，
+相对差距收敛包含双方的变化。
+1024³ 的 6×16 / OpenBLAS / PyTorch 为 23.5540 / 22.9868 / 22.6133 ms，
+2048³ 为 186.1774 / 180.6148 / 189.4988 ms。
+
+这表明当前固定微内核在 AVX2 下更接近 BLAS，AVX-512 配置仍需单独优化；
+尚未用硬件计数器区分频率、依赖链和代码调度的贡献。
+[完整 AVX2 报告和前后对照](results/2026-11-11-ss420e-avx2/README.md)。
