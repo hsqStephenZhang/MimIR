@@ -252,6 +252,12 @@ axm sync_reclaim: GM (g, e, Reading) → GM (g, e + 1, Synced);   // 一道 barr
 
 **可信边界**（方案自列）：不同线程写入的下标互不重叠且覆盖完整、物理存储不别名、`cp.async` 源地址有效、`n_items` 与 launch 配置一致、公理的后端展开正确、硬件提交组的 FIFO 顺序。
 
+**类型层原型（已验证）。** 在一个独立的 Mim 文件里声明 `Phase`、`Vis`、`GM`、`SharedBuf` 与 `enter_write/sync_publish/sync_reclaim/shared_alloc/coop_write/publish_view/shared_read`，不改插件：
+
+- 正确的一个超步（写、发布、读、回收）通过类型检查，`sync_reclaim` 产生的 `GM (g, e + 1, Synced)` 在 `e` 是变量时也能对上；
+- 四种误用都是类型错误：读未发布的 buffer；没有经过 `sync_publish` 就发布；进入下一代后写上一代的 buffer；进入下一代后读上一代已发布的视图；
+- 用上一代留在作用域里的旧 token 读（S2，非线性使用）**能**通过类型检查，确认这一类必须由 `gpu.check_sync` 承担。
+
 **落地要先解决的问题**：
 
 - **循环携带的 token。** `affine.For` 的累加器类型是固定的 `«i: n; Ts#i»`，不依赖迭代变量，而流水和 R8 的每一轮都让 `e` 加一。要么给 `For` 加依赖迭代的累加器类型，要么在循环入口用一个公理把代数换成循环体绑定的新变量（`e` 在体内是 `e₀ + i·k` 的抽象）。这决定了第一步之后的形状。
