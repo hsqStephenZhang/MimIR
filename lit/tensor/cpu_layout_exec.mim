@@ -1,0 +1,27 @@
+// RUN: %mim -p opt -p ll -X tensor:strict=1 %s -X ll:o=%t.ll
+// RUN: clang++ -O3 -fsanitize=address %S/cpu_layout_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -p opt -p ll -X tensor:cpu-order=1 -X tensor:strict=1 %s -X ll:o=%t.reverse.ll
+// RUN: clang++ -O3 -fsanitize=address %S/cpu_layout_aux.cpp %t.reverse.ll -o %t.reverse -Wno-override-module
+// RUN: %t.reverse
+
+// Padded, offset views in all four input layouts; produce column-major C directly as B^T A^T.
+plugin tensor; plugin core; plugin math;
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+extern fun layout_00 (a: tensor.Tensor 2 (15,40) F32, b: tensor.Tensor 2 (39,24) F32): tensor.Tensor 2 (19,13) F32 =
+    let av = tensor.slice @(F32,2) (15,40) ((1,1),(1,1),(13,37)) (tensor.buf a);
+    let bv = tensor.slice @(F32,2) (39,24) ((1,2),(1,1),(37,19)) (tensor.buf b);
+    return (tensor.dot_product R @(2,2) @(1,0) (0₂,1₂,(),()) (bv,av));
+extern fun layout_01 (a: tensor.Tensor 2 (15,40) F32, b: tensor.Tensor 2 (21,42) F32): tensor.Tensor 2 (19,13) F32 =
+    let av = tensor.slice @(F32,2) (15,40) ((1,1),(1,1),(13,37)) (tensor.buf a);
+    let bv = tensor.slice @(F32,2) (21,42) ((1,2),(1,1),(19,37)) (tensor.buf b);
+    return (tensor.dot_product R @(2,2) @(1,0) (1₂,1₂,(),()) (bv,av));
+extern fun layout_10 (a: tensor.Tensor 2 (39,16) F32, b: tensor.Tensor 2 (39,24) F32): tensor.Tensor 2 (19,13) F32 =
+    let av = tensor.slice @(F32,2) (39,16) ((1,1),(1,1),(37,13)) (tensor.buf a);
+    let bv = tensor.slice @(F32,2) (39,24) ((1,2),(1,1),(37,19)) (tensor.buf b);
+    return (tensor.dot_product R @(2,2) @(1,0) (0₂,0₂,(),()) (bv,av));
+extern fun layout_11 (a: tensor.Tensor 2 (39,16) F32, b: tensor.Tensor 2 (21,42) F32): tensor.Tensor 2 (19,13) F32 =
+    let av = tensor.slice @(F32,2) (39,16) ((1,1),(1,1),(37,13)) (tensor.buf a);
+    let bv = tensor.slice @(F32,2) (21,42) ((1,2),(1,1),(19,37)) (tensor.buf b);
+    return (tensor.dot_product R @(2,2) @(1,0) (1₂,0₂,(),()) (bv,av));

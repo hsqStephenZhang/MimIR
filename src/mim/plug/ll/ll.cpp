@@ -520,6 +520,7 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
 
     auto vec = vectorize(tuple->type()).has_value();
     if (tuple->is_closed()) {
+        bool constant   = true;
         auto padding    = aggregate_padding(tuple->type());
         bool is_array   = tuple->type()->isa<Arr>();
         auto simd_array = is_array && convert(tuple->type()).front() == '<';
@@ -533,6 +534,9 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
             }
             auto e = tuple->proj(n, i);
             if (auto v_elem = emit_unsafe(e); !v_elem.empty()) {
+                // A closed expression can still compute a function-local SSA value (for example a
+                // call with no free variables). Such values cannot occur in an LLVM constant aggregate.
+                constant &= !v_elem.contains('%');
                 auto t_elem = convert(e->type());
                 s += sep + t_elem + " " + v_elem;
                 sep = ", ";
@@ -540,7 +544,7 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
         }
 
         if (!padding.empty() && padding.back()) s += sep + std::format("[{} x i8] zeroinitializer", padding.back());
-        return s += simd_array ? ">" : is_array ? "]" : padding.empty() ? "}" : "}>";
+        if (constant) return s += simd_array ? ">" : is_array ? "]" : padding.empty() ? "}" : "}>";
     }
 
     std::string prev = "undef";

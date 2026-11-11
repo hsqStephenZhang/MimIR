@@ -1710,3 +1710,21 @@ MC 内的 packing 支持 `slice_box`，直接组合到原输入的 read map，�
 尚未把独立 packing 的容量信息完整传过手写 fold 携带的动态 K，因此自动 selector 对 runtime K
 保留旧的 reduction-scoped packing level chain；已由显式 fold 初始化的 partial root 不再自动重新分组。
 这条兼容路径同样使用 multi-level tiling。当前没有加入跨调用 packing 或 CPU persistent scratch。
+
+### CPU leaf 的行向量累加器与布局边界
+
+CPU blocked leaf 允许 MR 或 NR 等于 1，只要求 MR·NR > 1。这样 peeled singleton
+尾块仍共享 K 遍历，不会退化为每个输出 cell 各自运行一次标量 dot product。
+SSA accumulator 使用 `«MR; «NR; To»»`；MR 个行向量在 LLVM 中保留独立的 PHI，
+避免把非 2 的幂大小的 MR·NR 面板当作一个宽向量进行寄存器分配。
+例如本机 6×16 配置需要显式提高 `btensor:registers`，行表示能避免原扁平 96-cell
+表示在重点 GEMM 热循环中的 SIMD spill；通用默认参数及 64-cell 预算保持不变。
+完整实测、单变量消融和复现配置见 [CPU benchmark 排查](../bench/cpu_tiling/README.md)。
+
+输入的静态 row/column-major 布局，以及通过 slice 表达的 offset/padded leading dimension，
+均可由访问映射和 packing 处理。`cpu-order` 控制 cache 复用方向，不自动表示存储布局；
+selector 尚不按输入物理 stride 选择参数。column-major 输出可改写为 canonical 的 BᵀAᵀ，
+但产品输出后的 `transpose` 仍会额外物化 C；直接非 canonical `map_out` 尚不支持显式
+multi-level tiling。当前 Tensor ABI 也不支持运行时 inner extent，因此动态 lda/ldb/ldc
+还不是这套接口的能力。`cpu_layout_exec` 验证四种带 padding 输入的直接 column-major
+输出，并运行两种 cache 复用方向。

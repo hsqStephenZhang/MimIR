@@ -5,11 +5,15 @@
 #include <vector>
 
 extern "C" float* block_full(float*, float*);
+extern "C" float* block_wide(float*, float*);
 extern "C" float* block_tail(float*, float*);
+extern "C" float* block_row(float*, float*);
+extern "C" float* block_col(float*, float*);
+extern "C" float* block_peeled(float*, float*);
 extern "C" float* block_empty(float*);
 extern "C" int64_t* block_order(int64_t*);
 
-static void check(int m, int k, int n, float* (*compute)(float*, float*)) {
+static void check(int m, int k, int n, float* (*compute)(float*, float*), float seed = 1) {
     std::vector<float> a(m * k), b(k * n);
     for (int i = 0; i < m * k; ++i)
         a[i] = float(i % 7 - 3) / 2;
@@ -18,7 +22,7 @@ static void check(int m, int k, int n, float* (*compute)(float*, float*)) {
     auto out = compute(a.data(), b.data());
     for (int i = 0; i < m; ++i)
         for (int j = 0; j < n; ++j) {
-            float expected = 1;
+            float expected = seed;
             for (int p = 0; p < k; ++p)
                 expected += a[i * k + p] * b[p * n + j];
             assert(out[i * n + j] == expected);
@@ -28,7 +32,11 @@ static void check(int m, int k, int n, float* (*compute)(float*, float*)) {
 
 int main() {
     check(4, 24, 16, block_full);
+    check(6, 128, 16, block_wide);
     check(3, 7, 5, block_tail);
+    check(1, 128, 16, block_row);
+    check(4, 128, 1, block_col);
+    check(5, 256, 17, block_peeled, 0);
     float input[64] = {};
     auto out        = block_empty(input);
     for (int i = 0; i < 64; ++i)

@@ -1,13 +1,17 @@
-// RUN: %mim -p opt %s -p ll -X tensor:group=0
+// RUN: %mim -p opt %s -p ll -X tensor:group=0 -X btensor:registers=128
 // RUN: clang++ -O0 %S/register_block_aux.cpp %{s:stem}.ll -o %t -Wno-override-module
 // RUN: %t
 // RUN: clang++ -O3 %S/register_block_aux.cpp %{s:stem}.ll -o %t.opt -Wno-override-module
 // RUN: %t.opt
 // RUN: %FileCheck %s < %{s:stem}.ll
+// RUN: %FileCheck %s --check-prefix=WIDE < %{s:stem}.ll
 // RUN: %mim -p opt %s -p ll -X ll:o=%t.group.ll
 // RUN: clang++ -O3 %S/register_block_aux.cpp %t.group.ll -o %t.group -Wno-override-module
 // RUN: %t.group
 // RUN: %FileCheck %s --check-prefix=GROUP < %t.group.ll
+// RUN: clang++ -O3 -S -emit-llvm %t.group.ll -o %t.opt.ll -Wno-override-module
+// RUN: %FileCheck %s --check-prefix=PEEL < %t.opt.ll
+// RUN: %FileCheck %s --check-prefix=OPT < %t.opt.ll
 
 plugin tensor;
 plugin math;
@@ -33,8 +37,19 @@ lam kernel {M K N: Nat} (a: tensor.Tensor 2 (M, K) F32, b: tensor.Tensor 2 (K, N
 
 extern fun block_full (a: tensor.Tensor 2 (4, 24) F32, b: tensor.Tensor 2 (24, 16) F32): tensor.Tensor 2 (4, 16) F32 =
     return (kernel @(4, 24, 16) (a, b));
+// A non-power-of-two panel must retain independent row vectors through LLVM lowering.
+extern fun block_wide (a: tensor.Tensor 2 (6, 128) F32, b: tensor.Tensor 2 (128, 16) F32): tensor.Tensor 2 (6, 16) F32 =
+    return (kernel @(6, 128, 16) (a, b));
 extern fun block_tail (a: tensor.Tensor 2 (3, 7) F32, b: tensor.Tensor 2 (7, 5) F32): tensor.Tensor 2 (3, 5) F32 =
     return (kernel @(3, 7, 5) (a, b));
+extern fun block_row (a: tensor.Tensor 2 (1, 128) F32, b: tensor.Tensor 2 (128, 16) F32): tensor.Tensor 2 (1, 16) F32 =
+    return (kernel @(1, 128, 16) (a, b));
+extern fun block_col (a: tensor.Tensor 2 (4, 128) F32, b: tensor.Tensor 2 (128, 1) F32): tensor.Tensor 2 (4, 1) F32 =
+    return (kernel @(4, 128, 1) (a, b));
+// Unlike a whole singleton axis, peeled singleton axes retain the root's rank and need the blocked leaf.
+extern fun block_peeled (a: tensor.Tensor 2 (5, 256) F32, b: tensor.Tensor 2 (256, 17) F32): tensor.Tensor 2 (5, 17) F32 =
+    return (tensor.product_2d (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract)
+        (buf a, buf b));
 extern fun block_empty (a: tensor.Tensor 2 (4, 16) F32): tensor.Tensor 2 (4, 16) F32 =
     fun keep (acc: F32, _: F32)@tt: F32 = return acc;
     return (map_reduce_post @(1, 0) @(F32, F32, 2, 3, SchedT)
@@ -51,8 +66,20 @@ extern fun block_order (a: tensor.Tensor 1 5 I64): tensor.Tensor 2 (2, 3) I64 =
         (proj_map @(3, 1) 2, ()) (buf a, ()));
 
 // CHECK-LABEL: define {{.*}}@block_full
-// CHECK-NOT: alloca
+// CHECK-COUNT-4: phi <16 x float>
+// CHECK: ret
+// WIDE-LABEL: define {{.*}}@block_wide
+// WIDE-COUNT-6: phi <16 x float>
+// WIDE: ret
 // GROUP-LABEL: define {{.*}}@block_full
-// GROUP: phi <64 x float>
-// CHECK: phi <64 x float>
-// CHECK-NOT: alloca
+// GROUP-COUNT-4: phi <16 x float>
+// GROUP: ret
+// PEEL-LABEL: define {{.*}}@block_peeled
+// PEEL-DAG: phi <{{(4|8|16)}} x float>
+// PEEL-DAG: phi <{{(4|8|16)}} x float>
+// PEEL-DAG: phi <{{(4|8|16)}} x float>
+// OPT-LABEL: define {{.*}}@block_full
+// OPT-NOT: alloca
+// OPT: phi <{{(4|8|16)}} x float>
+// OPT-NOT: alloca
+// OPT: ret

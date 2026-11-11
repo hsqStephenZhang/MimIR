@@ -465,8 +465,10 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
         let pd_c    = (0, vdim)#(vdim < r);
         let sd_r    = vdim + 1;
         let sd_c    = (0, sd_r)#(sd_r < r);
+        // A peeled M=1 or N=1 tail still has independent output cells to keep in registers.
+        // Rejecting either singleton turns the whole tail into one scalar K dot product per cell.
         let block_ok = core.bit2.and 2 (vdim + 2 == ro,
-                       core.bit2.and 2 (Sr#(core.idx 0 r pd_c) != 1, Sr#(core.idx 0 r sd_c) != 1));
+                       1 < Sr#(core.idx 0 r pd_c) * Sr#(core.idx 0 r sd_c));
 
         con blocked (m: mem.M 0, u: U, done: Cn [mem.M 0, U])@tt =
             let Sp = Sr#(core.idx 0 r pd_c);
@@ -511,34 +513,40 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
             Sr#(core.idx 0 r pd_c) * Sr#(core.idx 0 r sd_c) <= register_budget ());
         let Sp = (1, Sr#(core.idx 0 r pd_c))#register_ok;
         let Sv = (1, Sr#(core.idx 0 r sd_c))#register_ok;
-        let Regs = «Sp * Sv; To»;
+        // Keep each row as a vector instead of one Sp*Sv-wide vector. LLVM otherwise widens a
+        // 6x16 panel to 128 lanes and can spill accumulators; six 16-lane rows expose 96 live cells.
+        let Regs = «Sp; «Sv; To»»;
         let Sr_regs = ‹j: r; let d = core.idx2nat j;
             core.select (d == pd_c, Sp, core.select (d == sd_c, Sv, Sr#j))›;
         con registers (m: mem.M 0, u: U, done: Cn [mem.M 0, U])@tt =
             con at_block (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
-                let vi = lm (p: «r; I32»): Idx (Sp * Sv) =
-                    core.conv.u (Sp * Sv) (core.wrap.add 0
-                        (core.wrap.mul 0 (p#(core.idx 0 r pd_c), core.bitcast I32 Sv),
-                         p#(core.idx 0 r sd_c)));
+                let vi = lm (p: «r; I32»): [Idx Sp, Idx Sv] =
+                    (core.conv.u Sp (p#(core.idx 0 r pd_c)), core.conv.u Sv (p#(core.idx 0 r sd_c)));
+                let get = lm (acc: Regs, p: «r; I32»): To =
+                    let (i, j) = vi p;
+                    acc#i#j;
+                let put = lm (acc: Regs, p: «r; I32», value: To): Regs =
+                    let (i, j) = vi p;
+                    acc#i#j ← value;
                 con fill (pref: «r; I32», m: mem.M 0, acc: Regs, k: Cn [mem.M 0, Regs])@tt =
                     con seeded (m: mem.M 0, value: To) =
-                        k (m, acc#(vi pref) ← value);
+                        k (m, put (acc, pref, value));
                     init_cell (m, pref, seeded);
                 con point (pref: «r; I32», m: mem.M 0, acc: Regs, k: Cn [mem.M 0, Regs])@tt =
                     con updated (m: mem.M 0, value: To) =
-                        k (m, acc#(vi pref) ← value);
-                    cell_at (pref, m, acc#(vi pref), updated);
+                        k (m, put (acc, pref, value));
+                    cell_at (pref, m, get (acc, pref), updated);
                 con seeded (m: mem.M 0, acc: Regs) =
                     con folded (m: mem.M 0, acc: Regs) =
                         con write (pref: «r; I32», m: mem.M 0, u: U, k: Cn [mem.M 0, U]) =
-                            wb (m, u, acc#(vi pref), pref, k);
+                            wb (m, u, get (acc, pref), pref, k);
                         (range_unroll (r, Sr_regs) U (pd_c, ro) write) (pref, m, u, k);
                     (range_nest (r, Sr) Regs (novec_for @Regs, ro, u_lo)
                         (range_unroll (r, Sr) Regs (u_lo, r)
                             (range_unroll (r, Sr_regs) Regs (pd_c, ro) point)))
                         (pref, m, acc, folded);
                 (range_unroll (r, Sr_regs) Regs (pd_c, ro) fill)
-                    (pref, m, ‹Sp * Sv; ⊥:To›, seeded);
+                    (pref, m, ‹Sp; ‹Sv; ⊥:To››, seeded);
             (range_nest (r, Sr) U (novec_for @U, 0, pd_c) at_block) (‹r; 0I32›, m, u, done);
 
         // REDUCTION-VECTORIZED (`ro ≤ vdim < r`: the schedule names the innermost REDUCTION dim):
