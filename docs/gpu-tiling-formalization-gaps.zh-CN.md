@@ -54,7 +54,7 @@
 现在按 `affine.mim` 里本来就写着的约定处理："box 的 extent 为正"，只有字面量为 0 的 box 才返回空区域。非空由 region 一层保证：`lower_tiled` 对 extent 为 0 的 tile 走跳过分支，不进 body。
 同时给 `affine.op.add/sub` 加了归一化（加减同一项相消、加减 `lit 0` 消去）。四级 1024³ GEMM 在 TileFuse 之后的 IR 从 113 行降到 64 行，面板的读映射就是 `(k, (i + ioff) / 8, (i + ioff) % 8)`。
 验证：全量 lit 与单元测试不变，GEMM 0.737 ms、常驻 softmax 0.613 ms。
-两点范围说明：绑定级本来就要求字面量 extent，所以"残缺 group 里的空 item tile"在 GPU 路径上不会出现（会直接报错）；CPU 的 cap 路径由 `tile_fuse_levels_exec.mim` 覆盖。`tile_ends_` 旁表还在，没有顺手删。
+两点范围说明：绑定级本来就要求字面量 extent，所以"残缺 group 里的空 item tile"在 GPU 路径上不会出现（会直接报错）；CPU 的 cap 路径由 `tile_fuse_levels_exec.mim` 覆盖。`tile_ends_` 旁表里把"extent 等于 0"改写成假的那一半已删除；折叠钳位 `min(off + ext, 形状)` 的那一半还需要，去掉会让 12 个 GPU tile 测试失败。cap 模式的尾 tile 靠这个钳位得到有效 extent，所以它不是冗余防御；要删掉它得先在 IR 里把请求的 extent 和有效的 extent 分开（G1、G2）。
 
 ### G2 两级偏移的包含 —— 未检查
 

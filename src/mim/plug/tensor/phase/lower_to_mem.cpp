@@ -457,7 +457,7 @@ const Def* LowerToMem::rewrite_imm_Extract(const Extract* extract) {
     if (auto clamp = result->isa<Extract>())
         if (auto pair = clamp->tuple()->isa<Tuple>(); pair && pair->num_ops() == 2)
             for (auto [end, bound] : tile_ends_)
-                if (bound && pair->op(0) == bound && pair->op(1) == end
+                if (pair->op(0) == bound && pair->op(1) == end
                     && clamp->index() == new_world().call(core::ncmp::l, Defs{end, bound}))
                     return end;
     return result;
@@ -636,12 +636,6 @@ void LowerToMem::prepare_realizations(const Def* root, const Lam* region, Defs d
 
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
     auto& w = new_world();
-    if (Axm::isa(core::ncmp::e, app) && !tile_ends_.empty()) {
-        auto result = RWPhase::rewrite_imm_App(app);
-        for (auto [extent, none] : tile_ends_)
-            if (!none && result == w.call(core::ncmp::e, Defs{extent, w.lit_nat_0()})) return w.lit_ff();
-        return result;
-    }
     if (Axm::isa<tensor::frozen>(app)) return rewrite(app->arg());
     if (Axm::isa<tensor::mma>(app) || Axm::isa<tensor::pipeline>(app)) return rewrite(app->arg());
     if (Axm::isa<tensor::prepack>(app)) return lower_prepack(app);
@@ -1361,7 +1355,6 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
         auto high  = old.call(core::nat::add, Defs{specialized->proj(rank, d), last});
         auto bound = plan.shape->proj(rank, d);
         tile_ends_.emplace_back(rewrite(end), rewrite(bound));
-        tile_ends_.emplace_back(rewrite(ext->proj(rank, d)), nullptr);
         tile_ends_.emplace_back(rewrite(high), rewrite(old.call(core::nat::sub, Defs{bound, old.lit_nat_1()})));
     }
     const Def* mem = state[0];
