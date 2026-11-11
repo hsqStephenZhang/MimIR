@@ -61,6 +61,24 @@ anx let Ring = [
 /// The mem-threaded CPS identity (with an empty epilogue-input pack) — the neutral `post` epilogue
 /// `normalize_map_reduce` delegates with.
 anx fun id {T: *} (m: mem.M 0, x: T, _: [])@tt: [mem.M 0, T] = return (m, x);
+
+priv anx lam lift_mem {A B C: *} (f: Fn [A, B] → C): Fn [mem.M 0, A, B] → [mem.M 0, C] =
+    fun lifted (m: mem.M 0, acc: A, values: B)@tt: [mem.M 0, C] =
+        con after (value: C)@tt = return (m, value);
+        f ((acc, values), after);
+    lifted;
+
+priv anx lam tile_write_map {n r: Nat}
+    (origin: «r; Nat», map: «n; affine.Index» → «r; affine.Index»)
+    (o: «n; affine.Index»): «r; affine.Index» =
+    let coords = map o;
+    ‹d: r; affine.op.add (coords#d, affine.lit (origin#d))›;
+
+priv anx lam tile_post_maps {r n: Nat, rs: «n; Nat»}
+    (origin: «r; Nat», maps: «j: n; «r; affine.Index» → «rs#j; affine.Index»»)
+    : «j: n; «r; affine.Index» → «rs#j; affine.Index»» =
+    ‹j: n; λ (o: «r; affine.Index»): «rs#j; affine.Index» =
+        maps#j ‹d: r; affine.op.sub (o#d, affine.lit (origin#d))››;
 ///
 /// ### map_reduce
 ///

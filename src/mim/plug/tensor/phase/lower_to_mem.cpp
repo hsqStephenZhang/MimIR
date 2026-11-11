@@ -1163,25 +1163,10 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         seed = rewrite(old_mr.init);
     }
     if (destination) {
-        auto ro     = Lit::as(mr.Ro);
-        auto map    = w.mut_lam(mr.map_out->type()->as<Pi>())->set("tileWriteMap");
-        auto coords = w.app(mr.map_out, map->var());
-        map->set(true, w.tuple(DefVec(ro, [&](size_t d) {
-            return w.call(affine::op::add,
-                          Defs{coords->proj(ro, d), w.call<affine::lit>(destination->origin->proj(ro, d))});
-        })));
-        mr.map_out   = map;
-        auto maps    = DefVec(Lit::as(mr.nps), [&](size_t i) -> const Def* {
-            auto old   = mr.post_maps->proj(Lit::as(mr.nps), i);
-            auto local = w.mut_lam(old->type()->as<Pi>())->set("tilePostMap");
-            auto index = w.tuple(DefVec(ro, [&](size_t d) {
-                return w.call(affine::op::sub,
-                              Defs{local->var(ro, d), w.call<affine::lit>(destination->origin->proj(ro, d))});
-            }));
-            local->set(true, w.app(old, index));
-            return local;
-        });
-        mr.post_maps = w.tuple(maps);
+        mr.map_out = w.app(w.app(w.annex<btensor::tile_write_map>(), {mr.Rn, mr.Ro}), {destination->origin, mr.map_out})
+                         ->set<true>("tileWriteMap");
+        mr.post_maps = w.app(w.app(w.annex<btensor::tile_post_maps>(), {mr.Ro, mr.nps, mr.Rps}),
+                             {destination->origin, mr.post_maps});
         mr.maps_all  = w.tuple({mr.maps, mr.post_maps});
         mr.So        = destination->shape;
         mr.shapes    = w.tuple({mr.So, mr.Sr, mr.sched});
@@ -1236,29 +1221,10 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     mr.maps     = w.tuple(input_maps);
     mr.maps_all = w.tuple({mr.maps, mr.post_maps});
 
-    // Wrap the pure tensor combiner `Fn [To, «nis; Tis»] → To` into the mem-threaded combiner
-    // `Fn [mem.M 0, To, «nis; Tis»] → [mem.M 0, To]` that `btensor.map_reduce_post` expects.
-    auto mem_ty           = w.call<mem::M>(0);
-    auto inner            = mr.comb->type()->as<Pi>()->dom()->proj(2, 0); // [To, «nis; Tis»]
-    auto [cTo, ins_ty]    = inner->projs<2>();
-    auto memcomb          = w.mut_fun(w.sigma({mem_ty, cTo, ins_ty}), w.sigma({mem_ty, cTo}))->set("memComb");
-    auto [cdata, cret]    = memcomb->vars<2>();
-    auto [cm, cacc, cins] = cdata->projs<3>();
-    auto after            = w.mut_con(cTo)->set("afterComb");
-    after->app(true, cret, w.tuple({cm, after->var()}));
-    memcomb->set(true, w.app(mr.comb, w.tuple({w.tuple({cacc, cins}), after})));
-
-    // Likewise wrap the pure epilogue `Fn [To, «nps; Tps»] → Tp` into
-    // `Fn [mem.M 0, To, «nps; Tps»] → [mem.M 0, Tp]`.
-    auto pTp               = mr.Tp;
-    auto pin               = mr.post->type()->as<Pi>()->dom()->proj(2, 0); // [To, «nps; Tps»]
-    auto [pTo, pexts_ty]   = pin->projs<2>();
-    auto mempost           = w.mut_fun(w.sigma({mem_ty, pTo, pexts_ty}), w.sigma({mem_ty, pTp}))->set("memPost");
-    auto [pdata, pret]     = mempost->vars<2>();
-    auto [pm, pacc, pexts] = pdata->projs<3>();
-    auto pafter            = w.mut_con(pTp)->set("afterPost");
-    pafter->app(true, pret, w.tuple({pm, pafter->var()}));
-    mempost->set(true, w.app(mr.post, w.tuple({w.tuple({pacc, pexts}), pafter})));
+    auto [cTo, ins_ty]   = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+    auto memcomb         = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
+    auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+    auto mempost         = w.app(w.app(w.annex<btensor::lift_mem>(), {pTo, pexts_ty, mr.Tp}), mr.post);
 
     // NB: no `w.call` here — the meta groups are *forwarded* from the tensor op on purpose. Leaving them to
     // inference would re-derive `{Tis, Ris, Sis}` from the `buffer.Buf` operands, whose literal size-1 axes are
@@ -1845,23 +1811,9 @@ const Def* LowerToMem::lower_stage(const App* app) {
         }
         auto element = vec == 1 ? type : old.arr(vec, type);
         auto getter  = old.app(old.annex<tensor::get>(), {physical_rank, physical_shape, type});
-        if (vec != 1) {
-            // `λ (t, i). get (vectorize vec t) (i with its last coordinate in runs)`
-            auto n      = old.lit_nat(vec);
-            auto runs   = DefVec(physical_shape->projs(ri));
-            runs.back() = old.call(core::nat::div, Defs{runs.back(), n});
-            auto view   = old.app(old.app(old.annex<tensor::as_vectors>(), {physical_rank, physical_shape, type}),
-                                  {n, old.tuple(runs)});
-            auto lam    = old.mut_lam(old.pi(getter->type()->as<Pi>()->dom(), old.arr(n, type)))->set("getVector");
-            auto [t, i] = lam->var()->projs<2>();
-            auto run    = DefVec(i->projs(ri));
-            run.back()  = old.call<core::idx>(old.lit_nat_0(), runs.back(),
-                                              old.call(core::nat::div, Defs{old.call<core::idx2nat>(run.back()), n}));
-            lam->set(true,
-                     old.app(old.app(old.annex<tensor::get>(), {physical_rank, old.tuple(runs), old.arr(n, type)}),
-                             old.tuple({old.app(view, t), old.tuple(run)})));
-            getter = lam;
-        }
+        if (vec != 1)
+            getter = old.app(old.app(old.annex<tensor::get_vector>(), {physical_rank, physical_shape, type}),
+                             old.lit_nat(vec));
         auto scale = old.tuple(DefVec(rk, [&](size_t d) { return old.lit_nat(d == inner ? vec : 1); }));
         if (vec != 1) {
             auto dims    = DefVec(s_out->projs(rk));

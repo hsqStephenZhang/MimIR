@@ -274,6 +274,14 @@ axm item: {T: *} → Tensor 0 () T → T, normalize_item;
 /// divided by `n`, which must divide it.
 /// A `get` on the view reads one aligned vector (see `buffer.vectorize`).
 axm as_vectors: {r: Nat, s: «r; Nat», T: *} → [n: Nat, c: «r; Nat»] → Tensor r s T → Tensor r c «n; T»;
+
+priv anx lam get_vector {r: Nat, s: «r; Nat», T: *} (n: Nat)
+    (t: Tensor r s T, i: «d: r; Idx (s#d)»): «n; T» =
+    let runs = ‹d: r; (s#d, s#d / n)#(core.idx2nat d + 1 == r)›;
+    let indices = ‹d: r;
+        let coord = core.idx2nat (i#d);
+        (core.bitcast (Idx (runs#d)) (i#d), core.idx 0 (runs#d) (coord / n))#(core.idx2nat d + 1 == r)›;
+    get @(r, runs, «n; T») (as_vectors @(r, s, T) (n, runs) t, indices);
 ///
 /// ## Constructors
 ///
@@ -2178,6 +2186,80 @@ anx lam AccumulatorDefault {T: *, Ro: Nat}: * =
     [shape: «Ro; Nat», outs: Tensor Ro shape T];
 anx lam outs_default {T: *, Ro: Nat} (shape: «Ro; Nat») (value: Tensor Ro shape T): AccumulatorDefault @(T, Ro) =
     (shape, value);
+
+priv anx lam tile_rebuild {nis nps: Nat}
+    {To Tp: *, Ro Rn: Nat, TSched: □}
+    (So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched)
+    {Tis: «nis; *», Ris: «nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
+     Tps: «nps; *», Rps: «nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+    {Init: *}
+    (f: Fn [To, «i: nis; Tis#i»] → To, init: Init, post: Fn [To, «j: nps; Tps#j»] → Tp)
+    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+    (maps: «i: nis; «Rn; affine.Index» → «Ris#i; affine.Index»»,
+     post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»») =
+    lam full {Seed: *} (seed: Seed)
+        (ext: «Ro; Nat», size: «Rn; Nat», schedule: TSched)
+        (sis: «i: nis; «Ris#i; Nat»», sps: «j: nps; «Rps#j; Nat»»)
+        (lo: «Rn; Nat», off: «Ro; Nat», starts: «i: nis; «Ris#i; Nat»», post_starts: «j: nps; «Rps#j; Nat»»)
+        (inputs: «i: nis; Tensor (Ris#i) (sis#i) (Tis#i)», extras: «j: nps; Tensor (Rps#j) (sps#j) (Tps#j)»)
+        : Tensor Ro ext Tp =
+        map_reduce_post @(nis, nps) @(To, Tp, Ro, Rn, TSched) (ext, size, schedule)
+            @(Tis, Ris, sis, Tps, Rps, sps) @Seed (f, seed, post)
+            (tile_shift @(Rn, Ro) map_out (lo, off))
+            (‹i: nis; tile_shift @(Rn, Ris#i) (maps#i) (lo, starts#i)›,
+             ‹j: nps; tile_shift @(Ro, Rps#j) (post_maps#j) (off, post_starts#j)›)
+            (inputs, extras);
+    lam cut_reduction (ext: «Ro; Nat», size: «Rn; Nat», schedule: TSched)
+        (sis: «i: nis; «Ris#i; Nat»»)
+        (lo: «Rn; Nat», off: «Ro; Nat», starts: «i: nis; «Ris#i; Nat»»)
+        (acc: Tensor Ro ext To, inputs: «i: nis; Tensor (Ris#i) (sis#i) (Tis#i)»): Tensor Ro ext To =
+        map_reduce_post @(nis, 0) @(To, To, Ro, Rn, TSched) (ext, size, schedule)
+            @(Tis, Ris, sis, (), (), ()) (f, outs_default @(To, Ro) ext acc, id @To)
+            (tile_shift @(Rn, Ro) map_out (lo, off))
+            (‹i: nis; tile_shift @(Rn, Ris#i) (maps#i) (lo, starts#i)›, ()) (inputs, ());
+    (full, cut_reduction);
+
+priv anx lam tile_init {T: *, r n: Nat} (s: «r; Nat»)
+    (map: «n; affine.Index» → «r; affine.Index», value: Tensor r s T)
+    (lo: «n; Nat», start ext: «r; Nat») =
+    (ext, tile_shift @(n, r) map (lo, start), slice @(T, r) s (start, ‹r; 1›, ext) value);
+
+// Bind the literal slot before specializing dependent map tuples.
+priv anx lam stage_input (slot: Nat) {nis nps: Nat}
+    {To Tp: *, Ro Rn: Nat, TSched: □}
+    (So: «Ro; Nat», Sr: «Rn; Nat», sched: TSched)
+    {Tis: «nis; *», Ris: «nis; Nat», Sis: «i: nis; «Ris#i; Nat»»,
+     Tps: «nps; *», Rps: «nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+    {Init: *}
+    (f: Fn [To, «i: nis; Tis#i»] → To, init: Init, post: Fn [To, «j: nps; Tps#j»] → Tp)
+    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+    (maps: «i: nis; «Rn; affine.Index» → «Ris#i; affine.Index»»,
+     post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»»)
+    (inputs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», extras: «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)»)
+    (axis: Idx (Ris#(core.idx 0 nis slot)), tile: Nat,
+     perm: «Ris#(core.idx 0 nis slot); Idx (Ris#(core.idx 0 nis slot))», shifted: Bool, inner: Nat)
+    (shape: «Ris#(core.idx 0 nis slot) + 1; Nat»)
+    (staged: Tensor (Ris#(core.idx 0 nis slot) + 1) shape (Tis#(core.idx 0 nis slot))): Tensor Ro So Tp =
+    let slot = core.idx 0 nis slot;
+    let r = Ris#slot;
+    lam read (o: «Rn; affine.Index»): «r + 1; affine.Index» =
+        let coords = (maps#slot) o;
+        let at = (coords#axis, affine.op.add (coords#axis, affine.lit inner))#shifted;
+        let outer = ‹d: r;
+            let p = perm#d;
+            (coords#p, affine.semiop.floordiv (at, tile))#(core.icmp.e (p, axis))›;
+        tuple.append @r @(‹r; affine.Index›, affine.Index) (outer, affine.semiop.rem (at, tile));
+    let ris = ‹i: nis; (Ris#i, r + 1)#(core.icmp.e (i, slot))›;
+    let sis = ‹i: nis;
+        (core.bitcast «ris#i; Nat» (Sis#i), core.bitcast «ris#i; Nat» shape)#(core.icmp.e (i, slot))›;
+    let reads = ‹i: nis;
+        let Map = «Rn; affine.Index» → «ris#i; affine.Index»;
+        (core.bitcast Map (maps#i), core.bitcast Map read)#(core.icmp.e (i, slot))›;
+    let values = ‹i: nis;
+        let Input = Tensor (ris#i) (sis#i) (Tis#i);
+        (core.bitcast Input (inputs#i), core.bitcast Input staged)#(core.icmp.e (i, slot))›;
+    map_reduce_post @(nis, nps) @(To, Tp, Ro, Rn, TSched) (So, Sr, sched)
+        @(Tis, ris, sis, Tps, Rps, Sps) @Init (f, init, post) map_out (reads, post_maps) (values, extras);
 
 ///
 /// `tail` is 0 to cover a partial tile with one body of extent `min (ts, s - off)` and 1 to peel it.

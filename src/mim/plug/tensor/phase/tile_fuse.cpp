@@ -845,13 +845,13 @@ const App* promote_input(const App* app,
                          const LevelScope* item,
                          const Block* block,
                          const PanelSite* site) {
-    auto& w            = app->world();
-    auto mr            = btensor::MapRedPost::of(app->callee()->as<App>());
-    auto nis           = Lit::as(mr.nis);
-    auto [is, post_is] = app->args<2>();
-    auto input         = is->proj(nis, slot);
-    auto rank          = Lit::as(TensorType::isa(input->type())->r);
-    const Def* inner   = nullptr;
+    auto& w          = app->world();
+    auto mr          = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto nis         = Lit::as(mr.nis);
+    auto is          = app->arg(2, 0);
+    auto input       = is->proj(nis, slot);
+    auto rank        = Lit::as(TensorType::isa(input->type())->r);
+    const Def* inner = nullptr;
     if (group)
         if (auto widened = group_slice(input, mr.maps->proj(nis, slot), axis, loop, rank, *group, *item, *block))
             std::tie(input, inner) = *widened;
@@ -872,28 +872,13 @@ const App* promote_input(const App* app,
                                           TensorType::isa(stage_app->type())->s),
                                     chosen),
                               stage_app);
-    auto old_map = mr.maps->proj(nis, slot);
-    auto map     = w.mut_lam(w.pi(old_map->type()->as<Pi>()->dom(), w.arr(rank + 1, w.annex<affine::Index>())));
-    auto coords  = w.app(old_map, map->var());
-    auto at      = coords->proj(rank, axis);
-    if (inner) at = w.call(affine::op::add, Defs{at, w.call<affine::lit>(inner)});
-    auto layout = DefVec(rank, [&](size_t i) -> const Def* {
-        auto p = source(i);
-        return p == axis ? w.call(affine::semiop::floordiv, Defs{at, w.lit_nat(tile)}) : coords->proj(rank, p);
-    });
-    layout.push_back(w.call(affine::semiop::rem, Defs{at, w.lit_nat(tile)}));
-    map->set(true, w.tuple(layout));
-    auto replace = [&](const Def* tuple, u64 n, const Def* value) {
-        return w.tuple(DefVec(n, [&](size_t i) { return i == slot ? value : tuple->proj(n, i); }));
-    };
-    auto staged = TensorType::isa(stage_app->type());
-    auto in_tys = w.tuple(
-        {mr.Tis, replace(mr.Ris, nis, w.lit_nat(rank + 1)), replace(mr.Sis, nis, staged->s), mr.Tps, mr.Rps, mr.Sps});
-    auto result = build(w.annex<map_reduce_post>(),
-                        {mr.nis_nps, mr.meta, mr.shapes, in_tys, mr.init->type(), w.tuple({mr.comb, mr.init, mr.post}),
-                         mr.map_out, w.tuple({replace(mr.maps, nis, map), mr.post_maps}),
-                         w.tuple({replace(is, nis, stage_app), post_is})});
-    return result->as<App>();
+    const Def* builder = w.app(w.annex<stage_input>(), w.lit_nat(slot));
+    for (auto arg : app->uncurry_args<9>())
+        builder = w.app(builder, arg);
+    builder = w.app(builder, {w.lit_idx(rank, axis), w.lit_nat(tile), perm, w.lit_bool(bool(inner)),
+                              inner ? inner : w.lit_nat_0()});
+    builder = w.app(builder, TensorType::isa(stage_app->type())->s);
+    return w.app(builder, stage_app)->as<App>();
 }
 
 /// Realizes the levels of one `tile_req`, each inside the region body of the level before.

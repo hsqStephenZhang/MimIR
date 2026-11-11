@@ -187,7 +187,7 @@ superstep    = forall item ∈ items. (本地计算 ; 对 shared 的写)
 |---|---|---|---|
 | 填充批 | `B ; (fill₁ ∥ … ∥ fillₖ) ; B ; consume` | 各 fill 写各自分配的面板，互不相交；fill 只读 global 或已发布的值；首个 `B` 结束上一个读这些面板的超步（WAR） | `cooperative()` 的 `staged`/`chained` 标签，`lower_map_reduce`、`lower_mma` 在消费者输入内存上的 `fence` |
 | R8 合并轮 | `write partial ; B ; (merge 一轮 ; B)*` | 每轮的配对互不相交且覆盖所有存活 partial；`B` 位于 item 守卫之外 | `lower_bound_fold` |
-| 流水环槽 | `wait_group(n − 2) ; B ; compute(slot b) ∥ refill(slot b + n − 1) ; commit` | 读槽前其写组已 wait 且其后有 `B`；重填的槽上一次读它的超步已被同一个 `B` 结束 | `lower_tile_fold` |
+| 流水环槽 | `wait_group(n − 2) ; B ; refill(slot b + n − 1) ; commit ; compute(slot b)`（内存链是线性的：先发起最远一槽的异步拷贝并提交，再计算，拷贝才能与计算重叠） | 读槽前其写组已 wait 且其后有 `B`；重填的槽上一次读它的超步已被同一个 `B` 结束 | `lower_tile_fold` |
 
 单个不成批的一致填充是 `B ; fill ; B`（`cooperative` 标签）；异步填充在批末 `B` 前加 `async_wait`（`async` 标签）。
 
@@ -327,6 +327,17 @@ T5–T7 还涉及 GPU 内存模型、并发、shared 生命周期、数值近似
 - 原语"实现 ~ 参考"的一次性论证是否要机械化，例如在 Coq 中对核心演算形式化；以及怎样让 C++ 中的判定过程（preimage、OrderedChunk）本身可信。
 - 动态形状下 ExactCover 与 Injective 依赖 `core.nat` 的归一化强度，这与论文 §6 是同一前提。
 - T0 与 T8 如何进入同一框架。
+
+### 7.x 评审报告的实现缺陷与本文的偏差
+
+`gpu-tiling-formalization-gaps.zh-CN.md` §2.5 汇总了两轮评审报告的八个实现缺陷（D1–D8）。其中 D1 已复现：非乘加的 combiner 经 `warp_red` 接 `warp_mma` 会被编译成 `gpu.mma_tf32`。
+它们直接影响本文的几处说法，在缺陷修复之前这些说法应读作"意图"而不是"现状"：
+
+- **T5 协作填充**：`staged` 只有前 barrier，`chained` 和 `async` 前后都没有，后 barrier 由消费者之前的 fence 承担；`outline` 的发散检查对 `chained`/`async` 豁免（D7）。
+- **T6 流水**：`store_async` 可能静默退化成同步写（D4）；深度没有限制到立即数范围（D8）；出口的 wait 之后没有 fence。
+- **T7 tensor core**：算子与输入轴没有匹配检查（D1、D2）；K 不超过块长时 `mma` 被丢弃（D3）。
+- **T1**：绑定级不支持非整除尾块的 peel，直接报错。
+- **T2 的归约三段**：`tile_of_init/partial/post` 没有 Mim 实现，语义在 C++ 的 `cut_reduction` 里；`control` 虽是 Mim 函数，但它的七个输入由 C++ 分析算出，返回值必须在编译期化简成字面量，否则按不融合处理。
 
 ## 8. 相关工作
 

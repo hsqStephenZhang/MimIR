@@ -361,10 +361,6 @@ producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* bo
               call      = w.app(call, {lo, w.pack(rank, w.lit_nat_1()), size});
               return w.app(call, value);
           };
-    auto shift = [&](const Def* map, const Def* n, const Def* m, const Def* lo, const Def* origin) {
-        auto call = w.app(w.annex<tile_shift>(), {n, m});
-        return w.app(w.app(call, map), {lo, origin});
-    };
     auto image = [&](const Def* map, const Def* n, const Def* m, const Def* lo, const Def* size, const Def* shape) {
         auto call = w.app(w.app(w.annex<affine::image>(), {n, m}), map);
         return w.app(call, {lo, size, shape});
@@ -417,12 +413,12 @@ producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* bo
     }
 
     auto [values, post_values] = app->args<2>();
-    auto shapes = DefVec(), maps = DefVec(), inputs = DefVec();
-    auto post_shapes = DefVec(), post_maps = DefVec(), post_inputs = DefVec();
+    auto shapes = DefVec(), starts = DefVec(), inputs = DefVec();
+    auto post_shapes = DefVec(), post_starts = DefVec(), post_inputs = DefVec();
     auto boxes
         = [&](u64 count, const Def* ranks, const Def* source_shapes, const Def* source_maps, const Def* source_types,
               const Def* source_values, const Def* n, const Def* origin, const Def* domain, const Def* domain_cap,
-              DefVec& result_shapes, DefVec& result_maps, DefVec& result_values) -> bool {
+              DefVec& result_shapes, DefVec& result_starts, DefVec& result_values) -> bool {
         for (u64 i = 0; i != count; ++i) {
             auto rank = ranks->proj(count, i);
             if (!Lit::isa(rank)) return false;
@@ -439,7 +435,7 @@ producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* bo
                 extent = shape;
             }
             result_shapes.push_back(extent);
-            result_maps.push_back(shift(map, n, rank, origin, start));
+            result_starts.push_back(start);
             auto value = source_values->proj(count, i);
             if (!empty && box_cap) {
                 auto storage = image(map, n, rank, origin, domain_cap, shape);
@@ -453,40 +449,42 @@ producer_tile(const Def* producer, const Def* off, const Def* ext, const Def* bo
         }
         return true;
     };
-    if (!boxes(rks->nis, mr.Ris, mr.Sis, mr.maps, mr.Tis, values, mr.Rn, lo, size, cap, shapes, maps, inputs))
+    if (!boxes(rks->nis, mr.Ris, mr.Sis, mr.maps, mr.Tis, values, mr.Rn, lo, size, cap, shapes, starts, inputs))
         return {nullptr, "input map does not beta-reduce or has symbolic rank"};
     if (!cut
         && !boxes(rks->nps, mr.Rps, mr.Sps, mr.post_maps, mr.Tps, post_values, mr.Ro, off, ext, output_cap, post_shapes,
-                  post_maps, post_inputs))
+                  post_starts, post_inputs))
         return {nullptr, "post map does not beta-reduce or has symbolic rank"};
     auto init = mr.init;
-    if (cut) {
-        init = w.app(w.app(w.app(w.annex<outs_default>(), {mr.To, mr.Ro}), ext), cut->acc);
-    } else if (auto outs = tensor_init(mr)) {
-        auto cells = w.tuple(DefVec(rn, [&](size_t d) { return d < ro ? size->proj(rn, d) : w.lit_nat_1(); }));
-        auto box   = image(outs->map, mr.Rn, mr.Ro, lo, cells, outs->shape);
-        if (Axm::isa<affine::image>(box)) return {nullptr, "outs map does not beta-reduce"};
-        auto start = box->proj(4, 0), extent = box->proj(4, 1);
-        auto value = slice(mr.To, mr.Ro, outs->shape, outs->outs, start, extent);
-        init       = w.tuple({extent, shift(outs->map, mr.Rn, mr.Ro, lo, start), value});
+    if (!cut) {
+        if (auto outs = tensor_init(mr)) {
+            auto cells = w.tuple(DefVec(rn, [&](size_t d) { return d < ro ? size->proj(rn, d) : w.lit_nat_1(); }));
+            auto box   = image(outs->map, mr.Rn, mr.Ro, lo, cells, outs->shape);
+            if (Axm::isa<affine::image>(box)) return {nullptr, "outs map does not beta-reduce"};
+            auto start = box->proj(4, 0), extent = box->proj(4, 1);
+            auto builder = w.app(w.app(w.annex<tile_init>(), {mr.To, mr.Ro, mr.Rn}), outs->shape);
+            init         = w.app(w.app(builder, {outs->map, outs->outs}), {lo, start, extent});
+        }
     }
-    auto ins    = cut ? w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), w.tuple(), w.tuple(), w.tuple()})
-                      : w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), mr.Tps, mr.Rps, w.tuple(post_shapes)});
-    auto counts = cut ? w.tuple({mr.nis, w.lit_nat_0()}) : mr.nis_nps;
-    auto meta   = cut ? w.tuple({mr.To, mr.To, mr.Ro, mr.Rn, mr.TSched}) : mr.meta;
-    auto post   = cut ? w.app(w.annex<tensor::id>(), mr.To) : mr.post;
-    auto write  = shift(mr.map_out, mr.Rn, mr.Ro, lo, off);
-    auto sched  = schedule;
+    auto sched = schedule;
     if (cap != size || output_cap != ext) {
         auto parallel = w.tuple(DefVec(ro, [&](size_t d) { return size->proj(rn, d); }));
         sched = w.app(w.app(w.annex<btensor::clip_sched>(), {mr.Ro, mr.Rn}), {parallel, output_cap, cap, sched});
     }
-    const Def* result = w.annex<map_reduce_post>();
-    for (auto arg :
-         {counts, meta, w.tuple({ext, size, sched}), ins, init->type(), w.tuple({mr.comb, init, post}), write,
-          w.tuple({w.tuple(maps), w.tuple(post_maps)}), w.tuple({w.tuple(inputs), w.tuple(post_inputs)})})
-        result = w.app(result, arg);
-    return {result, {}};
+    const Def* builder = w.annex<tile_rebuild>();
+    for (auto arg : app->callee()->as<App>()->uncurry_args<8>())
+        builder = w.app(builder, arg);
+    if (cut) {
+        auto result = w.app(builder->proj(2, 1), {ext, size, sched});
+        result      = w.app(result, w.tuple(shapes));
+        result      = w.app(result, {lo, off, w.tuple(starts)});
+        return {w.app(result, {cut->acc, w.tuple(inputs)}), {}};
+    }
+    auto result = w.app(w.app(builder->proj(2, 0), init->type()), init);
+    result      = w.app(result, {ext, size, sched});
+    result      = w.app(result, {w.tuple(shapes), w.tuple(post_shapes)});
+    result      = w.app(result, {lo, off, w.tuple(starts), w.tuple(post_starts)});
+    return {w.app(result, {w.tuple(inputs), w.tuple(post_inputs)}), {}};
 }
 
 namespace {
@@ -521,9 +519,8 @@ ProducerTile producer_init(const Def* producer, const Def* off, const Def* ext) 
     auto& w = producer->world();
     if (auto outs = tensor_init(mr)) {
         if (outs->map != mr.map_out) return {nullptr, "accumulator is not stored in the output layout"};
-        auto call = w.app(w.app(w.annex<tensor::slice>(), {mr.To, mr.Ro}), outs->shape);
-        call      = w.app(call, {off, w.pack(mr.Ro, w.lit_nat_1()), ext});
-        return {w.app(call, outs->outs), {}};
+        auto call = w.app(w.app(w.annex<tile_of_ref>(), {mr.To, mr.Ro}), outs->shape);
+        return {w.app(call, {outs->outs, off, ext}), {}};
     }
     return {w.app(w.app(w.annex<tensor::splat>(), {mr.To, mr.Ro}), {ext, mr.init}), {}};
 }
