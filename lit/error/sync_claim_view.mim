@@ -1,0 +1,28 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: published panel {{.*}} is claimed and used elsewhere in its superstep
+
+// Once claimed, a published panel's old handle must not be read in the same superstep.
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin gpu;
+plugin compile;
+
+lam fill (m: mem.M 0, b: buffer.Buf (1, 4, I32)): [mem.M 0, buffer.Buf (1, 4, I32)] = buffer.write (1, 4, I32) (m, b, 0₄, 7I32);
+
+lam bump (m: mem.M 0, _: buffer.Buf (1, 4, I32)): mem.M 0 = m;
+
+extern lam stale (m: mem.M 0): [mem.M 0, I32] =
+    let t = gpu.enter_write (gpu.group_enter @0 m);
+    let (t, p) = gpu.shared_panel @(0, 0) @(1, 4, I32) t;
+    let (t, p) = gpu.coop_fill (t, p, fill);
+    let t = gpu.sync_publish t;
+    let p = gpu.publish_view (t, p);
+    let v = gpu.view p;
+    let t = gpu.enter_update t;
+    let (t, o) = gpu.owned_update (t, gpu.claim (t, p), bump);
+    let (t, _) = gpu.sync_carry (t, o);
+    buffer.read (1, 4, I32) (gpu.group_leave t, v, 0₄);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

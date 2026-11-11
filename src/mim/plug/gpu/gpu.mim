@@ -367,37 +367,64 @@ axm mem_checks: compile.Phase;
 ///
 /// ### Work-group phases
 ///
-/// A work-group's shared memory moves through supersteps: `Synced`, `Writing` its panels, then `Reading` them.
+/// A work-group's shared memory moves through supersteps: `Synced`, `Writing` its panels, then `Reading` them, and
+/// possibly `Updating` claimed panels in place.
 /// `GM (g, e, p)` is the memory of construct `g` in phase `p` of its `e`-th superstep, and `SharedBuf (g, e, v, …)` a panel
 /// it fills; their indices keep a token or panel of another construct, superstep or phase out.
-/// An unpublished panel can only be filled and a published one only read.
-/// `erase_phases` lowers them to `mem.M 0`, `buffer.Buf` and `fence`s.
+/// An `Empty` panel can only be filled, an `Unpublished` one only published and a `Published` one only read or claimed.
+/// An `Owned` panel is updated in place: each work-item rewrites only elements no other work-item reads or writes in
+/// that superstep, which nothing verifies.
+/// `check_sync` checks the linear use these types cannot express, and `erase_phases` lowers them to `mem.M 0`,
+/// `buffer.Buf` and `fence`s.
 ///
-anx nom GroupPhase = | Synced | Writing | Reading;
-anx nom Vis = | Unpublished | Published;
+anx nom GroupPhase = | Synced | Writing | Reading | Updating;
+anx nom Vis = | Empty | Unpublished | Published | Owned;
 axm GM: [g e: Nat, p: GroupPhase] → *;
 axm SharedBuf: [g e: Nat, v: Vis, r: Nat, s: «r; Nat», T: *] → *;
 /// Enters construct `g` behind a barrier, so earlier readers of the memory it fills are done.
 axm group_enter: {g: Nat} → mem.M 0 → GM (g, 0, GroupPhase#Synced);
 axm enter_write: {g e: Nat} → GM (g, e, GroupPhase#Synced) → GM (g, e, GroupPhase#Writing);
+/// Nothing is pending behind a barrier, so reading starts at once.
+axm enter_read: {g e: Nat} → GM (g, e, GroupPhase#Synced) → GM (g, e, GroupPhase#Reading);
+/// Claimed panels were never read in this superstep, so updating them starts at once.
+axm enter_update: {g e: Nat} → GM (g, e, GroupPhase#Reading) → GM (g, e, GroupPhase#Updating);
 /// A barrier: the superstep's fills are visible to every work-item after it.
 axm sync_publish: {g e: Nat} → GM (g, e, GroupPhase#Writing) → GM (g, e, GroupPhase#Reading);
 /// A barrier: the superstep's reads are done, so the next one may overwrite its panels.
 axm sync_reclaim: {g e: Nat} → GM (g, e, GroupPhase#Reading) → GM (g, e + 1, GroupPhase#Synced);
-axm group_leave: {g e: Nat, p: GroupPhase} → GM (g, e, p) → mem.M 0;
+axm group_leave: {g e: Nat} → GM (g, e, GroupPhase#Synced) → mem.M 0;
+/// Leaves while panels may still be read; the next `group_enter` waits for those readers.
+axm leave_reading: {g e: Nat} → GM (g, e, GroupPhase#Reading) → mem.M 0;
 axm shared_panel: {g e: Nat} → {r: Nat, s: «r; Nat», T: *}
-                → GM (g, e, GroupPhase#Writing) → [GM (g, e, GroupPhase#Writing), SharedBuf (g, e, Vis#Unpublished, r, s, T)];
-/// The work-items fill the panel together with `fill`, which runs its loop as a `chained` cooperative loop.
+                → GM (g, e, GroupPhase#Writing) → [GM (g, e, GroupPhase#Writing), SharedBuf (g, e, Vis#Empty, r, s, T)];
+/// The work-items fill the panel together with `fill`, each writing elements no other one writes.
 axm coop_fill: {g e: Nat} → {r: Nat, s: «r; Nat», T: *}
-             → [GM (g, e, GroupPhase#Writing), SharedBuf (g, e, Vis#Unpublished, r, s, T),
+             → [GM (g, e, GroupPhase#Writing), SharedBuf (g, e, Vis#Empty, r, s, T),
                 fill: [mem.M 0, buffer.Buf (r, s, T)] → [mem.M 0, buffer.Buf (r, s, T)]]
              → [GM (g, e, GroupPhase#Writing), SharedBuf (g, e, Vis#Unpublished, r, s, T)];
 axm publish_view: {g e: Nat} → {r: Nat, s: «r; Nat», T: *}
                 → [GM (g, e, GroupPhase#Reading), SharedBuf (g, e, Vis#Unpublished, r, s, T)]
                 → SharedBuf (g, e, Vis#Published, r, s, T);
 axm view: {g e: Nat} → {r: Nat, s: «r; Nat», T: *} → SharedBuf (g, e, Vis#Published, r, s, T) → buffer.Buf (r, s, T);
+/// Takes a published panel over for in-place updates.
+axm claim: {g e: Nat} → {r: Nat, s: «r; Nat», T: *}
+         → [GM (g, e, GroupPhase#Updating), SharedBuf (g, e, Vis#Published, r, s, T)]
+         → SharedBuf (g, e, Vis#Owned, r, s, T);
+/// The work-items update the claimed panel with `body`, each only its own elements.
+axm owned_update: {g e: Nat} → {r: Nat, s: «r; Nat», T: *}
+                → [GM (g, e, GroupPhase#Updating), SharedBuf (g, e, Vis#Owned, r, s, T),
+                   body: [mem.M 0, buffer.Buf (r, s, T)] → mem.M 0]
+                → [GM (g, e, GroupPhase#Updating), SharedBuf (g, e, Vis#Owned, r, s, T)];
+/// A barrier: the updates are visible, and the panel is published to the next superstep.
+axm sync_carry: {g e: Nat} → {r: Nat, s: «r; Nat», T: *}
+              → [GM (g, e, GroupPhase#Updating), SharedBuf (g, e, Vis#Owned, r, s, T)]
+              → [GM (g, e + 1, GroupPhase#Synced), SharedBuf (g, e + 1, Vis#Published, r, s, T)];
 /// Runs `body` on the memory while the published panels are read.
-axm read_phase: {g e: Nat} → [GM (g, e, GroupPhase#Reading), body: mem.M 0 → mem.M 0] → GM (g, e, GroupPhase#Reading);
+axm read_phase: {g e: Nat} → {R: *}
+              → [GM (g, e, GroupPhase#Reading), body: mem.M 0 → [mem.M 0, R]] → [GM (g, e, GroupPhase#Reading), R];
+/// Rejects a token or an unpublished, owned or claimed panel used other than exactly once, a panel or token outside the
+/// function that made it, and a construct entered twice.
+axm check_sync: compile.Phase;
 axm erase_phases: compile.Phase;
 ///
 /// ### remove_double_syncs

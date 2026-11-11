@@ -174,7 +174,7 @@ private:
     std::optional<Batch> batch_;
     u64 batches_ = 0;
     std::optional<Batch> open_batch(const Def* start);
-    const Def* close_batch(const Def* mem);
+    const Def* close_batch(const Def* mem, const Def* result, const std::function<const Def*(const Def*)>& consume);
     /// While a consumer rewrites its inputs, their uniform fills are `staged`; it then fences them once.
     bool staging_       = false;
     bool fence_pending_ = false;

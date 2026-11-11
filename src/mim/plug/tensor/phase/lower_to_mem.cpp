@@ -31,7 +31,6 @@ namespace {
 
 const Def* group_phase(World& w, nat_t phase) { return w.inj(w.annex<gpu::GroupPhase>(), phase, w.tuple()); }
 
-
 /// Does `t` (recursively through immutable sigmas) contain a Pi?
 bool contains_pi(const Def* t) {
     if (t->isa<Pi>()) return true;
@@ -526,15 +525,19 @@ std::optional<LowerToMem::Batch> LowerToMem::open_batch(const Def* start) {
     return Batch{start, batches_++};
 }
 
-// Publishes the batch's panels behind one barrier; the consumer computes on the published memory.
-const Def* LowerToMem::close_batch(const Def* mem) {
-    if (!batch_ || !batch_->token) return mem;
+// Publishes the batch's panels behind one barrier; @p consume computes `[mem, result]` while they are read.
+const Def*
+LowerToMem::close_batch(const Def* mem, const Def* result, const std::function<const Def*(const Def*)>& consume) {
+    if (!batch_ || !batch_->token) return consume(mem);
     auto& w        = new_world();
     auto g         = w.lit_nat(batch_->group);
     auto e         = w.lit_nat_0();
     auto published = w.app(w.app(w.annex<gpu::sync_publish>(), {g, e}), batch_->token);
     batch_->published->set(published);
-    return w.app(w.app(w.annex<gpu::group_leave>(), {g, e, group_phase(w, gpu::GroupPhase_ctor::Reading)}), published);
+    auto reader = w.mut_lam(w.pi(mem->type(), w.sigma({mem->type(), result})))->set("batchRead");
+    reader->set(true, consume(reader->var()));
+    auto read = w.app(w.app(w.app(w.annex<gpu::read_phase>(), {g, e}), result), w.tuple({published, reader}));
+    return w.tuple({w.app(w.app(w.annex<gpu::leave_reading>(), {g, e}), read->proj(2, 0)), read->proj(2, 1)});
 }
 
 // A work-group's uniform buffers live in shared memory.
@@ -922,12 +925,13 @@ const Def* LowerToMem::lower_generate(const App* app) {
     const Def* filled = nullptr;
     if (batch_ && uniform_ && !target && !probe_fill_ && !async_fill_) {
         // The panel joins its consumer's batch: filled cooperatively without a barrier, read once the batch publishes.
-        auto g       = w.lit_nat(batch_->group);
-        auto e       = w.lit_nat_0();
+        auto g = w.lit_nat(batch_->group);
+        auto e = w.lit_nat_0();
         if (!batch_->token) {
-            batch_->token     = w.app(w.app(w.annex<gpu::enter_write>(), {g, e}),
-                                      w.app(w.app(w.annex<gpu::group_enter>(), g), batch_->start));
-            batch_->published = w.mut_hole(w.app(w.annex<gpu::GM>(), {g, e, group_phase(w, gpu::GroupPhase_ctor::Reading)}));
+            batch_->token = w.app(w.app(w.annex<gpu::enter_write>(), {g, e}),
+                                  w.app(w.app(w.annex<gpu::group_enter>(), g), batch_->start));
+            batch_->published
+                = w.mut_hole(w.app(w.annex<gpu::GM>(), {g, e, group_phase(w, gpu::GroupPhase_ctor::Reading)}));
         }
         auto panel    = w.app(w.app(w.app(w.annex<gpu::shared_panel>(), {g, e}), {br, bs, bT}), batch_->token);
         auto fill     = w.mut_lam(w.pi(result_ty, result_ty))->set("panelFill");
@@ -1141,11 +1145,11 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         if (auto shape = fe::lookup(storage_shapes_, result)) storage_shapes_[app] = shape;
         return value;
     }
-    auto initial       = tensor_init(old_mr);
-    auto staging       = fe::Restore(staging_, bound_level_ != 0);
-    auto fence         = fe::Restore(fence_pending_, false);
-    auto batch         = fe::Restore<std::optional<Batch>>(batch_, destination ? open_batch(destination->mem) : std::nullopt);
-    auto args          = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
+    auto initial = tensor_init(old_mr);
+    auto staging = fe::Restore(staging_, bound_level_ != 0);
+    auto fence   = fe::Restore(fence_pending_, false);
+    auto batch   = fe::Restore<std::optional<Batch>>(batch_, destination ? open_batch(destination->mem) : std::nullopt);
+    auto args    = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
     auto [is, post_is] = args->projs<2>();
 
     auto mr = btensor::MapRedPost::decode(
@@ -1275,26 +1279,24 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     // NB: no `w.call` here — the meta groups are *forwarded* from the tensor op on purpose. Leaving them to
     // inference would re-derive `{Tis, Ris, Sis}` from the `buffer.Buf` operands, whose literal size-1 axes are
     // already folded away, so they would no longer agree with the logical shapes the loop generation iterates.
-    auto op = w.annex<btensor::map_reduce_post>();
-    op      = w.app(op, mr.nis_nps);
-    op      = w.app(op, mr.meta);
-    op      = w.app(op, mr.shapes);
-    op      = w.app(op, mr.in_tys);
-    op      = w.app(op, seed->type());
-    op      = w.app(op, w.tuple({memcomb, seed, mempost}));
-    op      = w.app(op, mr.map_out);
-    op      = w.app(op, mr.maps_all);
-    const Def* am;
-    const Def* dst;
-    if (destination) {
-        am  = close_batch(destination->mem);
-        dst = destination->buffer;
-    } else {
-        std::tie(am, dst) = allocate(mr.Ro, mr.So, mr.Tp, full_output(old_mr));
-    }
-    if (fence_pending_) am = w.app(w.annex<gpu::fence>(), am);
-    auto [m, out] = w.app(op, w.tuple({am, dst, is, post_is}))->projs<2>();
-    if (destination) return w.tuple({m, out});
+    auto op      = w.annex<btensor::map_reduce_post>();
+    op           = w.app(op, mr.nis_nps);
+    op           = w.app(op, mr.meta);
+    op           = w.app(op, mr.shapes);
+    op           = w.app(op, mr.in_tys);
+    op           = w.app(op, seed->type());
+    op           = w.app(op, w.tuple({memcomb, seed, mempost}));
+    op           = w.app(op, mr.map_out);
+    op           = w.app(op, mr.maps_all);
+    auto consume = [&](const Def* dst) {
+        return [&, dst](const Def* am) {
+            if (fence_pending_) am = w.app(w.annex<gpu::fence>(), am);
+            return w.app(op, w.tuple({am, dst, is, post_is}));
+        };
+    };
+    if (destination) return close_batch(destination->mem, destination->buffer->type(), consume(destination->buffer));
+    auto [am, dst] = allocate(mr.Ro, mr.So, mr.Tp, full_output(old_mr));
+    auto [m, out]  = consume(dst)(am)->projs<2>();
     return scalar_result(app, m, out);
 }
 
@@ -2066,82 +2068,85 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
     auto panels  = fe::Restore(mma_panels_, true);
     auto batch   = fe::Restore<std::optional<Batch>>(batch_, open_batch(destination.mem));
     auto is      = rewrite(root->arg())->proj(2, 0);
-    auto mem     = close_batch(destination.mem);
-    if (fence_pending_) mem = w.app(w.annex<gpu::fence>(), mem);
-    auto Sr = rewrite(old_mr.Sr);
-    for (u64 d = 0; d != 3; ++d) {
-        auto extent = Lit::isa(Sr->proj(3, d));
-        auto tile   = std::array{fragments.m, fragments.n, u64(8)}[d];
-        if (!extent || *extent % tile)
-            app->blame("the tensor-core tile does not divide the warp's block {}", Sr).bail();
-    }
-    auto depth = Lit::as(Sr->proj(3, 2));
-    // Input `i` read at loops `(m, n, k)`: its placed physical coordinates and storage.
-    auto old_is = root->arg()->proj(2, 0);
-    auto coords = [&](size_t i, const Def* m, const Def* n, const Def* k) {
-        auto buffer  = is->proj(2, i);
-        auto r       = rewrite(old_mr.Ris->proj(2, i));
-        auto storage = fe::lookup(storage_shapes_, old_is->proj(2, i));
-        if (!storage) storage = rewrite(old_mr.Sis->proj(2, i));
-        auto map = rewrite(old_mr.maps->proj(2, i));
-        if (auto layout = fe::lookup(layouts_, buffer)) {
-            auto placed = w.mut_lam(map->type()->as<Pi>())->set("placedMap");
-            placed->set(true, w.app(layout_lam(layout, logical_shapes_[buffer]), w.app(map, placed->var())));
-            map = placed;
+    return close_batch(destination.mem, destination.buffer->type(), [&](const Def* mem) -> const Def* {
+        if (fence_pending_) mem = w.app(w.annex<gpu::fence>(), mem);
+        auto Sr = rewrite(old_mr.Sr);
+        for (u64 d = 0; d != 3; ++d) {
+            auto extent = Lit::isa(Sr->proj(3, d));
+            auto tile   = std::array{fragments.m, fragments.n, u64(8)}[d];
+            if (!extent || *extent % tile)
+                app->blame("the tensor-core tile does not divide the warp's block {}", Sr).bail();
         }
-        auto loops              = w.tuple(DefVec(3, [&](size_t d) {
-            auto at = std::array{m, n, k}[d];
-            return w.call<core::idx>(w.lit_nat_0(), Sr->proj(3, d), at);
-        }));
-        auto [mapped, physical] = btensor::op_affine_map(map, r, w.lit_nat(3), Sr, storage, loops, mem)->projs<2>();
-        mem                     = mapped;
-        return std::tuple{buffer, storage, physical, Lit::as(r)};
-    };
-    auto nat  = [&](u64 v) { return w.lit_nat(v); };
-    auto add  = [&](const Def* a, const Def* b) { return w.call(core::nat::add, Defs{a, b}); };
-    auto lane = lane_index(w);
-    // Without the explicit rounding, `mma` reads the F32 operands truncated to TF32.
-    auto rounded = [&](const Def* fragment, u64 size) {
-        if (!tf32_rna_) return fragment;
-        return w.tuple(DefVec(
-            size, [&](size_t i) { return w.app(w.annex<gpu::tf32_rna>(), w.extract(fragment, w.lit_idx(size, i))); }));
-    };
-    auto ms = fragments.rows / fragments.m, ns = fragments.cols / fragments.n;
-    auto acc = DefVec(destination.buffer->projs(fragments.count()));
-    for (u64 ks = 0; ks != depth / 8; ++ks) {
-        auto a = DefVec(ms);
-        for (u64 mi = 0; mi != ms; ++mi) {
-            auto [row, col]                     = fragment_coords(w, mma_m16n8k8_tf32::panel_a_addr, lane);
-            auto [buffer, storage, physical, r] = coords(0, add(nat(mi * 16), row), nat(0), add(nat(ks * 8), col));
-            auto runs                           = DefVec(storage->projs(r));
-            runs.back()                         = w.call(core::nat::div, Defs{runs.back(), nat(4)});
-            auto run                            = DefVec(physical->projs(r));
-            auto last                           = w.call<core::idx2nat>(run.back());
-            run.back()   = w.call<core::idx>(w.lit_nat_0(), runs.back(), w.call(core::nat::div, Defs{last, nat(4)}));
-            auto vectors = buffer::op_vectorize(nat(4), buffer);
-            auto index   = *Shape(w.tuple(run)).fold(w.tuple(runs));
-            auto [vr, vs, vT]    = Axm::as<buffer::Buf>(vectors->type())->args<3>();
-            auto loaded          = w.app(w.app(w.annex<gpu::buf_ldmatrix>(), {vr, vs}), {nat(4), mem, vectors, index});
-            std::tie(mem, a[mi]) = loaded->projs<2>();
-            a[mi]                = rounded(a[mi], 4);
-        }
-        auto b = DefVec(ns);
-        for (u64 ni = 0; ni != ns; ++ni) {
-            auto half = DefVec(2);
-            for (u64 h = 0; h != 2; ++h) {
-                auto [row, col] = fragment_coords(w, mma_m16n8k8_tf32::l_b, w.tuple({lane, w.lit_idx(2, h)}));
-                auto [buffer, storage, physical, r] = coords(1, nat(0), add(nat(ni * 8), col), add(nat(ks * 8), row));
-                std::tie(mem, half[h]) = buffer::op_read(mem, buffer, *Shape(physical).fold(storage))->projs<2>();
+        auto depth = Lit::as(Sr->proj(3, 2));
+        // Input `i` read at loops `(m, n, k)`: its placed physical coordinates and storage.
+        auto old_is = root->arg()->proj(2, 0);
+        auto coords = [&](size_t i, const Def* m, const Def* n, const Def* k) {
+            auto buffer  = is->proj(2, i);
+            auto r       = rewrite(old_mr.Ris->proj(2, i));
+            auto storage = fe::lookup(storage_shapes_, old_is->proj(2, i));
+            if (!storage) storage = rewrite(old_mr.Sis->proj(2, i));
+            auto map = rewrite(old_mr.maps->proj(2, i));
+            if (auto layout = fe::lookup(layouts_, buffer)) {
+                auto placed = w.mut_lam(map->type()->as<Pi>())->set("placedMap");
+                placed->set(true, w.app(layout_lam(layout, logical_shapes_[buffer]), w.app(map, placed->var())));
+                map = placed;
             }
-            b[ni] = rounded(w.tuple(half), 2);
-        }
-        for (u64 mi = 0; mi != ms; ++mi)
+            auto loops              = w.tuple(DefVec(3, [&](size_t d) {
+                auto at = std::array{m, n, k}[d];
+                return w.call<core::idx>(w.lit_nat_0(), Sr->proj(3, d), at);
+            }));
+            auto [mapped, physical] = btensor::op_affine_map(map, r, w.lit_nat(3), Sr, storage, loops, mem)->projs<2>();
+            mem                     = mapped;
+            return std::tuple{buffer, storage, physical, Lit::as(r)};
+        };
+        auto nat  = [&](u64 v) { return w.lit_nat(v); };
+        auto add  = [&](const Def* a, const Def* b) { return w.call(core::nat::add, Defs{a, b}); };
+        auto lane = lane_index(w);
+        // Without the explicit rounding, `mma` reads the F32 operands truncated to TF32.
+        auto rounded = [&](const Def* fragment, u64 size) {
+            if (!tf32_rna_) return fragment;
+            return w.tuple(DefVec(size, [&](size_t i) {
+                return w.app(w.annex<gpu::tf32_rna>(), w.extract(fragment, w.lit_idx(size, i)));
+            }));
+        };
+        auto ms = fragments.rows / fragments.m, ns = fragments.cols / fragments.n;
+        auto acc = DefVec(destination.buffer->projs(fragments.count()));
+        for (u64 ks = 0; ks != depth / 8; ++ks) {
+            auto a = DefVec(ms);
+            for (u64 mi = 0; mi != ms; ++mi) {
+                auto [row, col]                     = fragment_coords(w, mma_m16n8k8_tf32::panel_a_addr, lane);
+                auto [buffer, storage, physical, r] = coords(0, add(nat(mi * 16), row), nat(0), add(nat(ks * 8), col));
+                auto runs                           = DefVec(storage->projs(r));
+                runs.back()                         = w.call(core::nat::div, Defs{runs.back(), nat(4)});
+                auto run                            = DefVec(physical->projs(r));
+                auto last                           = w.call<core::idx2nat>(run.back());
+                run.back() = w.call<core::idx>(w.lit_nat_0(), runs.back(), w.call(core::nat::div, Defs{last, nat(4)}));
+                auto vectors      = buffer::op_vectorize(nat(4), buffer);
+                auto index        = *Shape(w.tuple(run)).fold(w.tuple(runs));
+                auto [vr, vs, vT] = Axm::as<buffer::Buf>(vectors->type())->args<3>();
+                auto loaded       = w.app(w.app(w.annex<gpu::buf_ldmatrix>(), {vr, vs}), {nat(4), mem, vectors, index});
+                std::tie(mem, a[mi]) = loaded->projs<2>();
+                a[mi]                = rounded(a[mi], 4);
+            }
+            auto b = DefVec(ns);
             for (u64 ni = 0; ni != ns; ++ni) {
-                auto& c = acc[mi * ns + ni];
-                c       = w.app(w.annex<gpu::mma_tf32>(), w.tuple({a[mi], b[ni], c}));
+                auto half = DefVec(2);
+                for (u64 h = 0; h != 2; ++h) {
+                    auto [row, col] = fragment_coords(w, mma_m16n8k8_tf32::l_b, w.tuple({lane, w.lit_idx(2, h)}));
+                    auto [buffer, storage, physical, r]
+                        = coords(1, nat(0), add(nat(ni * 8), col), add(nat(ks * 8), row));
+                    std::tie(mem, half[h]) = buffer::op_read(mem, buffer, *Shape(physical).fold(storage))->projs<2>();
+                }
+                b[ni] = rounded(w.tuple(half), 2);
             }
-    }
-    return w.tuple({mem, w.tuple(acc)});
+            for (u64 mi = 0; mi != ms; ++mi)
+                for (u64 ni = 0; ni != ns; ++ni) {
+                    auto& c = acc[mi * ns + ni];
+                    c       = w.app(w.annex<gpu::mma_tf32>(), w.tuple({a[mi], b[ni], c}));
+                }
+        }
+        return w.tuple({mem, w.tuple(acc)});
+    });
 }
 
 // Writes each lane's accumulator fragments to their rows and columns of @p destination.
@@ -2552,13 +2557,27 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     auto rows            = rank ? dims[0] : 1;
     auto prank           = rank ? rank : 1;
     // The partials of all work-items, stacked along the tile's first dim.
-    auto pdims          = std::vector<u64>(rank ? dims : std::vector<u64>{1});
-    pdims[0]            = rows * *n;
-    auto pshape         = w.tuple(DefVec(prank, [&](size_t d) { return w.lit_nat(pdims[d]); }));
-    auto start          = destination ? destination->mem : fresh_mem();
-    auto [m0, partials] = buffer::op_alloc(w.lit_nat(prank), pshape, el, shared_mem(start))->projs<2>();
-    auto [run, run_call]
-        = btensor::ds_splice(w.tuple({m0, partials}), w.sigma({m0->type(), partials->type()}), "boundFold");
+    auto pdims       = std::vector<u64>(rank ? dims : std::vector<u64>{1});
+    pdims[0]         = rows * *n;
+    auto pshape      = w.tuple(DefVec(prank, [&](size_t d) { return w.lit_nat(pdims[d]); }));
+    const Def* start = destination ? destination->mem : fresh_mem();
+    const Def* rbuf  = destination ? destination->buffer : nullptr;
+    if (!destination) {
+        std::tie(start, rbuf) = buffer::op_alloc(r, literal_storage, el, shared_mem(start))->projs<2>();
+        transient(r, literal_storage, el, rbuf);
+    }
+    // One superstep writes the partials and each merge round claims them for one more.
+    auto g     = w.lit_nat(batches_++);
+    u64 epoch  = 0;
+    auto panel = [&](auto axiom) { return w.app(w.app(axiom, {g, w.lit_nat(epoch)}), {w.lit_nat(prank), pshape, el}); };
+    const Def* token     = w.app(w.app(w.annex<gpu::enter_write>(), {g, w.lit_nat(epoch)}),
+                                 w.app(w.app(w.annex<gpu::group_enter>(), g), start));
+    auto fresh           = w.app(panel(w.annex<gpu::shared_panel>()), token);
+    auto state           = w.sigma({w.call<mem::M>(0), buffer::type_buf(w.lit_nat(prank), pshape, el)});
+    auto fill            = w.mut_lam(w.pi(state, state))->set("boundFoldFill");
+    auto [fm, fb]        = fill->var()->projs<2>();
+    auto [run, run_call] = btensor::ds_splice(w.tuple({fm, fb}), w.sigma({fm->type(), fb->type()}), "boundFold");
+    fill->set(true, run_call);
     auto [run_mem, run_partials] = run->var(2, 0)->projs<2>();
     auto acc_ty                  = run_mem->type();
     auto items                   = w.mut_con({w.type_i64(), acc_ty, w.cn(acc_ty)})->set("boundFoldItems");
@@ -2611,14 +2630,11 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto wm = buffer::op_write(rm, run_partials, btensor::folded_idx(pshape, at), value)->proj(2, 0);
         cur->app(true, exit, wm);
     }
-    auto [after_mem, after_partials] = run_call->projs<2>();
-    auto fenced                      = w.app(w.annex<gpu::fence>(), after_mem);
-    auto op                          = rewrite(merge);
-    const Def *rm = fenced, *rbuf = destination ? destination->buffer : nullptr;
-    if (!destination) {
-        std::tie(rm, rbuf) = buffer::op_alloc(r, literal_storage, el, shared_mem(fenced))->projs<2>();
-        transient(r, literal_storage, el, rbuf);
-    }
+    auto [filled, partials]
+        = w.app(panel(w.annex<gpu::coop_fill>()), w.tuple({fresh->proj(2, 0), fresh->proj(2, 1), fill}))->projs<2>();
+    token                = w.app(w.app(w.annex<gpu::sync_publish>(), {g, w.lit_nat(epoch)}), filled);
+    const Def* published = w.app(panel(w.annex<gpu::publish_view>()), w.tuple({token, partials}));
+    auto op              = rewrite(merge);
     // The merged tile lands in the destination at its origin, or in a work-group buffer of its own.
     auto target = [&](const DefVec& coords) {
         if (!destination) return btensor::folded_idx(literal_storage, coords);
@@ -2628,11 +2644,6 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         });
         return btensor::folded_idx(destination->shape, at);
     };
-    auto [crun, ccall] = btensor::ds_splice(w.tuple({rm, rbuf}), w.sigma({rm->type(), rbuf->type()}), "boundCombine");
-    auto [cmem, cbuf]  = crun->var(2, 0)->projs<2>();
-    auto cdone         = w.mut_con(acc_ty)->set("boundCombineDone");
-    // The join must not inline into the paths that reach it, or its fence would run divergently.
-    cdone->app(false, crun->ret_var(), w.tuple({w.app(w.annex<gpu::fence>(), cdone->var()), cbuf}));
     u64 elems = 1;
     for (auto dim : dims)
         elems *= dim;
@@ -2660,17 +2671,21 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         from->set(first, w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(trip), w.lit_i64(1), mem}));
         return body;
     };
-    Lam* cur       = crun;
-    const Def* mem = cmem;
-    bool first     = true;
-    // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each fence.
+    auto combine                     = w.mut_lam(w.pi(acc_ty, w.sigma({acc_ty, w.sigma()})))->set("boundCombine");
+    auto [run_combine, combine_call] = btensor::ds_splice(combine->var(), acc_ty, "boundCombineRun");
+    combine->set(true, w.tuple({combine_call, w.tuple()}));
+    auto view_of = [&](const Def* buf) { return w.app(panel(w.annex<gpu::view>()), buf); };
+    // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each barrier.
     if (Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(*n)))) {
         auto rounds = w.app(w.annex(tensor::r8_plan::rounds), {w.lit_nat(*n), w.lit_nat(elems)});
         for (auto round : rounds->projs()) {
             auto [active, s, pairs, trip] = round->projs<4>([](auto value) { return Lit::as(value); });
             if (!active) continue;
-            auto next              = w.mut_con(acc_ty)->set("boundTreeDone");
-            auto step              = item_loop(cur, first, trip, mem, next, "boundTreeItems");
+            auto merge_round             = w.mut_lam(w.pi(fill->var()->type(), acc_ty))->set("boundTreeRound");
+            auto [round_mem, parts]      = merge_round->var()->projs<2>();
+            auto [run_round, round_call] = btensor::ds_splice(w.tuple({round_mem, parts}), acc_ty, "boundTreeRun");
+            merge_round->set(true, round_call);
+            auto step = item_loop(run_round, true, trip, round_mem, run_round->ret_var(), "boundTreeItems");
             auto [t, tmem, tyield] = step->vars<3>();
             // The pair loop's exit is its own continuation; `lower_for` copies an exit's body into the loop.
             auto after = w.mut_con(acc_ty)->set("boundTreeAfter");
@@ -2682,39 +2697,52 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
                                        {w.call<core::bitcast>(w.type_nat(), pair), w.lit_nat(elems), w.lit_nat(s)});
             auto [i, e, other] = plan->projs<3>([&](auto value) { return w.call<core::bitcast>(w.type_i64(), value); });
             auto coords        = coords_of(e);
-            auto [m1, a]       = buffer::op_read(qmem, after_partials, partial_at(i, coords))->projs<2>();
-            auto [m2, b]       = buffer::op_read(m1, after_partials, partial_at(other, coords))->projs<2>();
+            auto [m1, a]       = buffer::op_read(qmem, parts, partial_at(i, coords))->projs<2>();
+            auto [m2, b]       = buffer::op_read(m1, parts, partial_at(other, coords))->projs<2>();
             auto merged        = w.app(op, w.tuple({a, b}));
-            qbody->app(true, qyield, buffer::op_write(m2, after_partials, partial_at(i, coords), merged)->proj(2, 0));
-            cur   = next;
-            mem   = w.app(w.annex<gpu::fence>(), next->var());
-            first = false;
+            qbody->app(true, qyield, buffer::op_write(m2, parts, partial_at(i, coords), merged)->proj(2, 0));
+            token        = w.app(w.app(w.annex<gpu::enter_update>(), {g, w.lit_nat(epoch)}), token);
+            auto owned   = w.app(panel(w.annex<gpu::claim>()), w.tuple({token, published}));
+            auto updated = w.app(panel(w.annex<gpu::owned_update>()), w.tuple({token, owned, merge_round}));
+            auto carried = w.app(panel(w.annex<gpu::sync_carry>()), updated);
+            ++epoch;
+            token     = w.app(w.app(w.annex<gpu::enter_read>(), {g, w.lit_nat(epoch)}), carried->proj(2, 0));
+            published = carried->proj(2, 1);
         }
         // One work-item per tile element publishes the first partial.
-        auto citems            = item_loop(cur, first, elems, mem, cdone, "boundCombineItems");
+        auto citems = item_loop(run_combine, true, elems, combine->var(), run_combine->ret_var(), "boundCombineItems");
         auto [j, jmem, jyield] = citems->vars<3>();
         auto coords            = coords_of(j);
-        auto [pmem, pval]      = buffer::op_read(jmem, after_partials, partial_at(w.lit_i64(0), coords))->projs<2>();
-        citems->app(true, jyield, buffer::op_write(pmem, cbuf, target(coords), pval)->proj(2, 0));
+        auto [pmem, pval] = buffer::op_read(jmem, view_of(published), partial_at(w.lit_i64(0), coords))->projs<2>();
+        citems->app(true, jyield, buffer::op_write(pmem, rbuf, target(coords), pval)->proj(2, 0));
     } else {
         // One work-item per tile element merges that element's partials in order.
-        auto citems            = item_loop(cur, first, elems, mem, cdone, "boundCombineItems");
+        auto citems = item_loop(run_combine, true, elems, combine->var(), run_combine->ret_var(), "boundCombineItems");
         auto [j, jmem, jyield] = citems->vars<3>();
         auto coords            = coords_of(j);
         auto write             = w.mut_con({acc_ty, el})->set("boundCombineWrite");
         auto [wmem, wval]      = write->vars<2>();
-        write->app(true, jyield, buffer::op_write(wmem, cbuf, target(coords), wval)->proj(2, 0));
+        write->app(true, jyield, buffer::op_write(wmem, rbuf, target(coords), wval)->proj(2, 0));
         auto [tbody, tcall]
             = affine::counting_for(w.lit_i64(*n), w.tuple({jmem, rewrite(seed)}), write, w.sym("boundCombineStep"));
         citems->set(true, tcall);
         auto [t, tacc, tyield] = tbody->vars<3>();
         auto [tmem, tval]      = tacc->projs<2>();
-        auto [pmem, pval]      = buffer::op_read(tmem, after_partials, partial_at(t, coords))->projs<2>();
+        auto [pmem, pval]      = buffer::op_read(tmem, view_of(published), partial_at(t, coords))->projs<2>();
         tbody->app(true, tyield, w.tuple({pmem, w.app(op, w.tuple({tval, pval}))}));
     }
-    if (destination) return ccall;
+    auto at = w.lit_nat(epoch);
+    auto read
+        = w.app(w.app(w.app(w.annex<gpu::read_phase>(), {g, at}), w.sigma()), w.tuple({token, combine}))->proj(2, 0);
+    auto reclaimed = w.app(w.app(w.annex<gpu::sync_reclaim>(), {g, at}), read);
+    auto out_mem   = w.app(w.app(w.annex<gpu::group_leave>(), {g, w.lit_nat(epoch + 1)}), reclaimed);
+    // The result buffer must depend on the merge's memory.
+    auto [result_run, result_call]
+        = btensor::ds_splice(w.tuple({out_mem, rbuf}), w.sigma({out_mem->type(), rbuf->type()}), "boundFoldResult");
+    result_run->app(true, result_run->ret_var(), result_run->var(2, 0));
+    if (destination) return result_call;
     if (bounded) storage_shapes_[app] = literal_storage;
-    return scalar_result(app, ccall->proj(2, 0), ccall->proj(2, 1));
+    return scalar_result(app, result_call->proj(2, 0), result_call->proj(2, 1));
 }
 
 const Def* LowerToMem::lower_product_fold(const App* app) {

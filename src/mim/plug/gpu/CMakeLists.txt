@@ -1,6 +1,7 @@
 add_mim_plugin(gpu
     SOURCES
         gpu.cpp
+        phase/check_sync.cpp
         phase/erase_phases.cpp
         phase/lower_map_reduce.cpp
         phase/mem_checks.cpp

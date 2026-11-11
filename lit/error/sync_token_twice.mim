@@ -1,0 +1,22 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: work-group phase token {{.*}} is consumed 2 times
+
+// A token is consumed exactly once: reusing it would fill a panel the barrier does not cover.
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin gpu;
+plugin compile;
+
+lam fill (m: mem.M 0, b: buffer.Buf (1, 4, I32)): [mem.M 0, buffer.Buf (1, 4, I32)] = buffer.write (1, 4, I32) (m, b, 0₄, 7I32);
+
+extern lam twice (m: mem.M 0): [mem.M 0, mem.M 0] =
+    let t = gpu.enter_write (gpu.group_enter @0 m);
+    let (a, p) = gpu.shared_panel @(0, 0) @(1, 4, I32) t;
+    let (b, q) = gpu.shared_panel @(0, 0) @(1, 8, I32) t;
+    let a = gpu.leave_reading (gpu.sync_publish a);
+    let b = gpu.leave_reading (gpu.sync_publish b);
+    (a, b);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

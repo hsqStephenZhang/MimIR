@@ -17,10 +17,17 @@ extern lam superstep (m: mem.M 0): [mem.M 0, I32] =
     let (t, p) = gpu.coop_fill (t, p, fill);
     let t = gpu.sync_publish t;
     let v = gpu.view (gpu.publish_view (t, p));
-    let (m, x) = buffer.read (1, 4, I32) (gpu.group_leave t, v, 0₄);
+    let (m, x) = buffer.read (1, 4, I32) (gpu.leave_reading t, v, 0₄);
     (m, x);
 
-extern lam _compile (): compile.Phase = compile.named "gpu.erase_phases";
+extern lam _compile (): compile.Phase =
+    compile.phases ff (compile.named "gpu.check_sync", compile.named "gpu.erase_phases");
+
+// CHECK-LABEL: rounds
+// CHECK: buffer.write
+// CHECK: buffer.read {{.*}} (gpu.fence
+// CHECK: buffer.write
+// CHECK: buffer.read {{.*}} (gpu.fence
 
 // CHECK-LABEL: superstep
 // CHECK: gpu.shared_scope (gpu.fence
@@ -28,3 +35,22 @@ extern lam _compile (): compile.Phase = compile.named "gpu.erase_phases";
 // CHECK: buffer.read {{.*}} (gpu.fence
 // CHECK-NOT: gpu.GM
 // CHECK-NOT: gpu.SharedBuf
+
+lam bump (m: mem.M 0, b: buffer.Buf (1, 4, I32)): mem.M 0 =
+    let (m, x) = buffer.read (1, 4, I32) (m, b, 0₄);
+    let (m, _) = buffer.write (1, 4, I32) (m, b, 0₄, core.wrap.add 0 (x, 1I32));
+    m;
+
+// An owned round updates the published panel in place and carries it to the next superstep behind one barrier.
+extern lam rounds (m: mem.M 0): [mem.M 0, I32] =
+    let t = gpu.enter_write (gpu.group_enter @1 m);
+    let (t, p) = gpu.shared_panel @(1, 0) @(1, 4, I32) t;
+    let (t, p) = gpu.coop_fill (t, p, fill);
+    let t = gpu.sync_publish t;
+    let p = gpu.publish_view (t, p);
+    let t = gpu.enter_update t;
+    let (t, o) = gpu.owned_update (t, gpu.claim (t, p), bump);
+    let (t, p) = gpu.sync_carry (t, o);
+    let t = gpu.enter_read t;
+    let (m, x) = buffer.read (1, 4, I32) (gpu.leave_reading t, gpu.view p, 0₄);
+    (m, x);
