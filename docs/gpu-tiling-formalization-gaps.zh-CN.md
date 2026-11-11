@@ -50,6 +50,12 @@
 - 未检查：逐维的 `off ≤ shape` 与 `ext ≤ shape − off`、`ext ≤ cap`、各 tile 恰好覆盖输出一次、box 包含 body 会读的全部元素。
 - body 内迭代域与 `ext` 的关系只在写映射是 canonical 的情形下是简单相等；一般情形要检查的是输出映射。
 
+**空 tile 不再由每个 box 防御**（已实施）。`affine.image/cover` 原来在 extent 可能为 0 时把结果的每个分量包进 `(x, 0)#empty`，于是偏移和 extent 都成了选择项，逐级累积。
+现在按 `affine.mim` 里本来就写着的约定处理："box 的 extent 为正"，只有字面量为 0 的 box 才返回空区域。非空由 region 一层保证：`lower_tiled` 对 extent 为 0 的 tile 走跳过分支，不进 body。
+同时给 `affine.op.add/sub` 加了归一化（加减同一项相消、加减 `lit 0` 消去）。四级 1024³ GEMM 在 TileFuse 之后的 IR 从 113 行降到 64 行，面板的读映射就是 `(k, (i + ioff) / 8, (i + ioff) % 8)`。
+验证：全量 lit 与单元测试不变，GEMM 0.737 ms、常驻 softmax 0.613 ms。
+两点范围说明：绑定级本来就要求字面量 extent，所以"残缺 group 里的空 item tile"在 GPU 路径上不会出现（会直接报错）；CPU 的 cap 路径由 `tile_fuse_levels_exec.mim` 覆盖。`tile_ends_` 旁表还在，没有顺手删。
+
 ### G2 两级偏移的包含 —— 未检查
 
 - `compose` 把"tile 的 tile"化成原 producer 在复合偏移处的 box；`resident_` 把读换成共享 tile 的视图，偏移是两个起点相减。

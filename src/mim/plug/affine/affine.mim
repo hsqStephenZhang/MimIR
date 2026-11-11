@@ -71,8 +71,8 @@ axm semiop.(mul,ceildiv,floordiv,rem): [Index, Nat] → Index;
 /// The second argument must be a *closed* constant - a stronger requirement than affine.semiop imposes - which is enforced via refly.check.
 ///
 pub mod op
-    axm (add, sub, xor): [Index, Index] → Index;
-    axm neg: Index → Index;
+    axm (add, sub, xor): [Index, Index] → Index, normalize_op;
+    axm neg: Index → Index, normalize_op;
     anx lam mul (d: Index, c: Nat): Index =
         semiop.mul (d, refly.check (core.pe.is_closed c, c, "The second argument of affine.op.mul must be a constant."));
 end

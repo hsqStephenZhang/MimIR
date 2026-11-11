@@ -79,7 +79,7 @@ extern fun restream (x: Tensor 2 (33, 768) F32, b: Tensor 2 (768, 64) F32):
 extern lam _compile (): compile.Phase =
     compile.phases ff (group_default, compile.cond "ll" (opt._default_compile ()), compile.cleanup);
 
-// CHECK: lam [[OUTER:_[0-9]+]] ({{_[0-9]+}}: Nat, [[EXT:_[0-9]+]]: Nat)
+// CHECK: lam [[OUTER:_[0-9]+]] ({{[a-z_0-9]+}}: Nat, [[EXT:_[0-9]+]]: Nat)
 // CHECK: let [[PRODUCER:_[0-9]+]] = tensor.map_reduce_post
 // CHECK: lam [[INNER:_[0-9]+]]
 // CHECK: tensor.tile_fold

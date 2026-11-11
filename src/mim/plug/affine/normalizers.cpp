@@ -521,18 +521,15 @@ const Def* boxes(const Def* fs, u64 k, u64 n, u64 m, const Def* box) {
 
     auto [lo, ext, s] = box->projs<3>();
     auto region       = Region(w, var, n, lo, ext);
-    // An empty domain reaches nothing, while the closed bounds `lo + ext − 1` would saturate to a value.
-    const Def* empty = w.lit_ff();
+    // A box has positive extents; only a literally empty one is answered, as its closed bounds would saturate.
     for (u64 i = 0; i != n; ++i)
-        empty = w.call(core::bit2::or_, w.lit_nat(2),
-                       Defs{empty, w.call(core::ncmp::e, Defs{ext->proj(n, i), w.lit_nat_0()})});
-    if (empty == w.lit_tt()) return empty_region(w, m);
+        if (Lit::isa(ext->proj(n, i)) == 0) return empty_region(w, m);
 
     auto res = std::array<DefVec, 4>{DefVec(m), DefVec(m), DefVec(m), DefVec(m)};
     for (u64 j = 0; j != m; ++j) {
         auto h = hull(region, bodies, m, j, s->proj(m, j));
         for (size_t x = 0; x != 4; ++x)
-            res[x][j] = x == 2 ? h[x] : region.select(empty, x == 3 ? w.lit_tt() : w.lit_nat_0(), h[x]);
+            res[x][j] = h[x];
     }
     return w.tuple({w.tuple(res[0]), w.tuple(res[1]), w.tuple(res[2]), w.tuple(res[3])});
 }
@@ -715,6 +712,30 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
 
     exact &= !region.wraps();
     return w.tuple({w.tuple(los), w.tuple(exts), w.tuple(caps), exact ? w.lit_tt() : w.lit_ff()});
+}
+
+// Indices wrap, so a term cancels exactly against the same term of the opposite sign.
+template<op id>
+const Def* normalize_op(const Def*, const Def*, const Def* arg) {
+    if (id == op::neg || id == op::xor_) return nullptr;
+    auto [a, b] = arg->projs<2>();
+    auto zero   = [](const Def* x) {
+        auto l = Axm::isa<affine::lit>(x);
+        return l && Lit::isa(l->arg()) == 0;
+    };
+    if (id == op::add) {
+        if (zero(a)) return b;
+        if (zero(b)) return a;
+        if (auto sub = Axm::isa(op::sub, a); sub && sub->arg(2, 1) == b) return sub->arg(2, 0);
+        if (auto sub = Axm::isa(op::sub, b); sub && sub->arg(2, 1) == a) return sub->arg(2, 0);
+    } else if (id == op::sub) {
+        if (zero(b)) return a;
+        if (auto add = Axm::isa(op::add, a)) {
+            if (add->arg(2, 1) == b) return add->arg(2, 0);
+            if (add->arg(2, 0) == b) return add->arg(2, 1);
+        }
+    }
+    return nullptr;
 }
 
 MIM_affine_NORMALIZER_IMPL
