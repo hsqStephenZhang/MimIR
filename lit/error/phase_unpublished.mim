@@ -1,0 +1,14 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: argument is not assignable to callee's domain
+
+// A panel is readable only once a barrier has published it.
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin gpu;
+
+extern lam early (m: mem.M 0): buffer.Buf (1, 4, I32) =
+    let t = gpu.enter_write (gpu.group_enter @0 m);
+    let (t, p) = gpu.shared_panel @(0, 0) @(1, 4, I32) t;
+    gpu.view p;

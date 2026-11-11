@@ -7,6 +7,7 @@
 
 #include <mim/plug/mem/mem.h>
 
+#include "mim/plug/gpu/phase/erase_phases.h"
 #include "mim/plug/gpu/phase/lower_map_reduce.h"
 #include "mim/plug/gpu/phase/mem_checks.h"
 #include "mim/plug/gpu/phase/outline.h"
@@ -63,6 +64,7 @@ static void reg_phases(Flags2Phases& phases) {
     });
 
     // clang-format off
+    Phase::hook<gpu::erase_phases,              gpu::phase::ErasePhases      >(phases);
     Phase::hook<gpu::mem_checks,                gpu::phase::MemChecks        >(phases);
     Phase::hook<gpu::outline,                   gpu::phase::Outline          >(phases);
     Phase::hook<gpu::remove_double_syncs,       gpu::phase::RemoveDoubleSyncs>(phases);
