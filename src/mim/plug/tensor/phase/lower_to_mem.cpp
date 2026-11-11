@@ -2244,7 +2244,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     }
     // A work-group fold with at least two blocks keeps the panels of `pipeline - 1` blocks ahead in flight while it
     // computes on the current ones; each block's fills form one group of asynchronous copies.
-    auto depth     = std::min<u64>(pipeline, literal_count ? *literal_count : 0);
+    auto depth     = Lit::as(w.app(w.annex(tensor::pipeline_plan::depth),
+                                   {w.lit_nat(pipeline), w.lit_nat(literal_count ? *literal_count : 0)}));
     auto stages    = depth > 1 && bound_level_ != 0 && driver().is_loaded("gpu") && inplace && !first_scalar
                        ? staged_panels(root, parameter->var())
                        : DefVec();
@@ -2358,11 +2359,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         auto waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat(ring.size() - 2)), loop_mem);
         loop_mem    = w.app(w.annex<gpu::fence>(), waited);
         // The last blocks fill their own panels once more, which keeps the loop body free of a branch.
-        auto ahead = w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)});
-        auto last  = w.lit_nat(*literal_count - 1);
-        auto next  = w.extract(w.tuple({last, ahead}), w.call(core::ncmp::l, Defs{ahead, w.lit_nat(*literal_count)}));
-        auto free  = DefVec(panels, [&](size_t j) { return at_stage(ring.size() - 1, j); });
-        loop_mem   = fill_block(loop_mem, next, free);
+        auto next = w.app(w.annex(tensor::pipeline_plan::refill_block),
+                          {iteration, w.lit_nat(ring.size()), w.lit_nat(*literal_count)});
+        auto free = DefVec(panels, [&](size_t j) { return at_stage(ring.size() - 1, j); });
+        loop_mem  = fill_block(loop_mem, next, free);
     }
     prepare_realizations(root);
     const Def* update;
@@ -2382,9 +2382,11 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     }
     if (panels != 0) {
         auto next = DefVec{update->proj(2, 0), update->proj(2, 1)};
-        for (u64 s = 1; s <= ring.size(); ++s)
+        for (u64 s = 0; s != ring.size(); ++s)
             for (size_t j = 0; j != panels; ++j)
-                next.push_back(at_stage(s % ring.size(), j));
+                next.push_back(at_stage(Lit::as(w.app(w.annex(tensor::pipeline_plan::rotated_source),
+                                                      {w.lit_nat(s), w.lit_nat(ring.size())})),
+                                        j));
         update = w.tuple(next);
     }
     loop->app(true, yield, update);
@@ -2606,9 +2608,11 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     const Def* mem = cmem;
     bool first     = true;
     // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each fence.
-    if ((*n & (*n - 1)) == 0) {
-        for (u64 s = *n / 2; s != 0; s /= 2) {
-            auto pairs = s * elems, trip = std::min(*n, pairs);
+    if (Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(*n)))) {
+        auto rounds = w.app(w.annex(tensor::r8_plan::rounds), {w.lit_nat(*n), w.lit_nat(elems)});
+        for (auto round : rounds->projs()) {
+            auto [active, s, pairs, trip] = round->projs<4>([](auto value) { return Lit::as(value); });
+            if (!active) continue;
             auto next              = w.mut_con(acc_ty)->set("boundTreeDone");
             auto step              = item_loop(cur, first, trip, mem, next, "boundTreeItems");
             auto [t, tmem, tyield] = step->vars<3>();
@@ -2618,14 +2622,13 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
             auto qbody = w.mut_con({w.type_i64(), acc_ty, w.cn(acc_ty)})->set("boundTreePairs");
             step->set(true, w.call<affine::For>(qbody, after, Defs{t, w.lit_i64(pairs), w.lit_i64(trip), tmem}));
             auto [pair, qmem, qyield] = qbody->vars<3>();
-            auto pnat                 = w.call<core::bitcast>(w.type_nat(), pair);
-            auto i       = w.call<core::bitcast>(w.type_i64(), w.call(core::nat::div, Defs{pnat, w.lit_nat(elems)}));
-            auto e       = w.call<core::bitcast>(w.type_i64(), w.call(core::nat::rem, Defs{pnat, w.lit_nat(elems)}));
-            auto coords  = coords_of(e);
-            auto [m1, a] = buffer::op_read(qmem, after_partials, partial_at(i, coords))->projs<2>();
-            auto other   = w.call(core::wrap::add, core::Mode::none, Defs{i, w.lit_i64(s)});
-            auto [m2, b] = buffer::op_read(m1, after_partials, partial_at(other, coords))->projs<2>();
-            auto merged  = w.app(op, w.tuple({a, b}));
+            auto plan          = w.app(w.annex(tensor::r8_plan::pair_coords),
+                                       {w.call<core::bitcast>(w.type_nat(), pair), w.lit_nat(elems), w.lit_nat(s)});
+            auto [i, e, other] = plan->projs<3>([&](auto value) { return w.call<core::bitcast>(w.type_i64(), value); });
+            auto coords        = coords_of(e);
+            auto [m1, a]       = buffer::op_read(qmem, after_partials, partial_at(i, coords))->projs<2>();
+            auto [m2, b]       = buffer::op_read(m1, after_partials, partial_at(other, coords))->projs<2>();
+            auto merged        = w.app(op, w.tuple({a, b}));
             qbody->app(true, qyield, buffer::op_write(m2, after_partials, partial_at(i, coords), merged)->proj(2, 0));
             cur   = next;
             mem   = w.app(w.annex<gpu::fence>(), next->var());

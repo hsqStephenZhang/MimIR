@@ -18,7 +18,7 @@ extern fun rowsum64 (x: tensor.Tensor 2 (6, 64) I64): tensor.Tensor 1 6 I64 =
 // CHECK: gpu.slot_shared
 // CHECK: gpu.sync_work_items
 // CHECK: let [[NEXT:_[0-9]+]] = core.wrap.add {{.*}} (8I64, [[PAIR:_[0-9]+]])
-// CHECK: core.wrap.add {{.*}} (4I64,
+// CHECK: core.nat.add (4,
 // CHECK: head{{.*}} ([[NEXT]], {{.*}})
 // CHECK: let {{_[0-9]+}} = core.icmp.{{.*}} ([[PAIR]], 12I64)
 // CHECK: gpu.launch

@@ -1,0 +1,106 @@
+// RUN: %mim %s
+
+plugin tensor;
+plugin refly;
+plugin core;
+plugin vec;
+
+use core.ops.n;
+
+lam implies (a b: Bool): Bool = core.bit2.or 0 (core.bit2.xor 0 (a, tt), b);
+
+lam round_ok (n elems: Nat) (round: [active: Bool, span pairs trip: Nat]): Bool =
+    let (_, span, pairs, trip) = round;
+    let endpoints = ‹x: 2 * pairs;
+        let p = core.idx2nat x / 2;
+        let (partial, element, partner) = tensor.r8_plan.pair_coords (p, elems, span);
+        let owner = (partial, partner)#(core.idx 0 2 (core.idx2nat x % 2));
+        owner * elems + element›;
+    let assigned = vec.scan.for_all @(Idx pairs) @pairs
+        (λ (p: Idx pairs): Bool =
+            let pp = core.idx2nat p;
+            pp % trip + pp / trip * trip == pp)
+        ‹p: pairs; p›;
+    let bounded = vec.scan.for_all @(Idx pairs) @pairs
+        (λ (p: Idx pairs): Bool =
+            let (partial, element, partner) = tensor.r8_plan.pair_coords (core.idx2nat p, elems, span);
+            core.bit2.and 0 (core.bit2.and 0 (partial < span, partner < 2 * span), element < elems))
+        ‹p: pairs; p›;
+    core.bit2.and 0 (core.bit2.and 0 (pairs == span * elems, trip == core.select (n < pairs, n, pairs)),
+        core.bit2.and 0 (core.bit2.and 0 (assigned, bounded), vec.is_unique endpoints));
+
+lam tree_ok (n elems: Nat): Bool =
+    let plan = tensor.r8_plan.rounds (n, elems);
+    let count = vec.len plan;
+    let valid = vec.scan.for_all @(Idx count) @count
+        (λ (i: Idx count): Bool =
+            let (active, _, _, _) = plan#i;
+            implies (active, round_ok (n, elems) (plan#i))) ‹i: count; i›;
+    let linked = vec.scan.for_all @(Idx count) @count
+        (λ (i: Idx count): Bool =
+            let current = plan#i;
+            let (active, span, _, _) = current;
+            let next_span = core.select (span > 1, span / 2, 1);
+            let next = plan#(core.idx 0 count (count - next_span));
+            let (next_active, next_value, _, _) = next;
+            implies (core.bit2.and 0 (active, span > 1),
+                     core.bit2.and 0 (next_active, next_value == span / 2)))
+        ‹i: count; i›;
+    let first = plan#(core.idx 0 count 0);
+    let last = plan#(core.idx 0 count (count - 1));
+    let (first_active, first_span, _, _) = first;
+    let (last_active, last_span, _, _) = last;
+    let (partial, _, _) = tensor.r8_plan.pair_coords (0, elems, last_span);
+    core.bit2.and 0 (core.bit2.and 0 (valid, linked),
+        core.bit2.and 0 (core.bit2.and 0 (first_active, first_span == n / 2),
+                         core.bit2.and 0 (last_active, core.bit2.and 0 (last_span == 1, partial == 0))));
+
+lam r8_ok (n elems: Nat): Bool =
+    core.select (tensor.r8_plan.is_tree n, tree_ok (n, elems), tt);
+
+let ns = (2, 3, 4, 8);
+let element_counts = (1, 3, 4);
+let r8_checks = vec.scan.for_all @(Idx 4) @4
+    (λ (i: Idx 4): Bool =
+        vec.scan.for_all @(Idx 3) @3
+            (λ (j: Idx 3): Bool = r8_ok (ns#i, element_counts#j)) (0₃, 1₃, 2₃))
+    (0₄, 1₄, 2₄, 3₄);
+let _ = refly.check (r8_checks, tt, "R8 plans must cover each live partial exactly once");
+
+lam pipeline_ok (requested blocks: Nat): Bool =
+    let depth = tensor.pipeline_plan.depth (requested, blocks);
+    let active = depth > 1;
+    let first_fills = ‹b: blocks;
+        let block = core.idx2nat b;
+        core.select (block < depth - 1,
+            tensor.pipeline_plan.ring_block (0, block, blocks),
+            tensor.pipeline_plan.refill_block (block - (depth - 1), depth, blocks))›;
+    let filled_once = core.bit2.and 0 (vec.is_unique first_fills,
+        vec.scan.for_all @(Idx blocks) @blocks
+            (λ (b: Idx blocks): Bool = first_fills#b == core.idx2nat b) ‹b: blocks; b›);
+    let refills = vec.scan.for_all @(Idx blocks) @blocks
+        (λ (i: Idx blocks): Bool =
+            let iteration = core.idx2nat i;
+            let ahead = iteration + depth - 1;
+            let block = tensor.pipeline_plan.refill_block (iteration, depth, blocks);
+            core.bit2.and 0 (block < blocks, block == core.select (ahead < blocks, ahead, blocks - 1)))
+        ‹i: blocks; i›;
+    let ready = vec.scan.for_all @(Idx blocks) @blocks
+        (λ (b: Idx blocks): Bool =
+            let block = core.idx2nat b;
+            let first_iteration = core.select (block < depth - 1, 0, block - (depth - 1));
+            first_iteration <= block)
+        ‹b: blocks; b›;
+    let rotation = ‹s: depth; tensor.pipeline_plan.rotated_source (core.idx2nat s, depth)›;
+    core.bit2.and 0 (core.bit2.and 0 (core.bit2.and 0 (filled_once, refills), ready),
+        implies (active,
+            core.bit2.and 0 (depth - 1 != 0, vec.is_unique rotation)));
+
+let depths = (2, 3, 4);
+let block_counts = (1, 2, 5);
+let pipeline_checks = vec.scan.for_all @(Idx 3) @3
+    (λ (i: Idx 3): Bool =
+        vec.scan.for_all @(Idx 3) @3
+            (λ (j: Idx 3): Bool = pipeline_ok (depths#i, block_counts#j)) (0₃, 1₃, 2₃))
+    (0₃, 1₃, 2₃);
+let _ = refly.check (pipeline_checks, tt, "pipeline plans must fill ready blocks without reusing the read slot");

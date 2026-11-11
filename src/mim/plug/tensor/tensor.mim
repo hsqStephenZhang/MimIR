@@ -179,6 +179,27 @@ pub anx lam map_i64 {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; I64» �
     λ (x: «r; I64»): «r; I64» = interpret @r @s (i64_index_ops, layout, x);
 end
 
+pub mod r8_plan
+pub anx lam is_tree (n: Nat): Bool =
+    core.bit2.and 0 (n != 0,
+        core.icmp.e (core.bit2.and 0 (core.bitcast I64 n, core.bitcast I64 (n - 1)), 0I64));
+pub anx lam rounds (n elems: Nat): «n / 2; [active: Bool, span pairs trip: Nat]» =
+    ‹level: n / 2;
+        let span = n / 2 - core.idx2nat level;
+        let pairs = span * elems;
+        (is_tree span, span, pairs, core.select (n < pairs, n, pairs))›;
+pub anx lam pair_coords (pair elems span: Nat): [partial element partner: Nat] =
+    (pair / elems, pair % elems, pair / elems + span);
+end
+
+pub mod pipeline_plan
+pub anx lam depth (requested blocks: Nat): Nat = core.select (requested < blocks, requested, blocks);
+pub anx lam ring_block (iteration slot blocks: Nat): Nat =
+    (blocks - 1, iteration + slot)#(iteration + slot < blocks);
+pub anx lam refill_block (iteration depth blocks: Nat): Nat = ring_block (iteration, depth - 1, blocks);
+pub anx lam rotated_source (slot depth: Nat): Nat = (slot + 1) % depth;
+end
+
 /// ### mma_m16n8k8_tf32
 ///
 /// Fragment coordinates follow the `mma.sync.m16n8k8` fragment tables in the PTX ISA.
