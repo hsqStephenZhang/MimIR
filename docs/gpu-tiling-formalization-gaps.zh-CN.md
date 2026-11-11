@@ -119,8 +119,9 @@ TileFuse 输出里只有 `bind 2` 和 `merge_with` 两个标注；lowering 之�
 
 ### G11 level 链残留的 C++ 检查 —— 非类型
 
-- sizes 是字面量；链的 `n` 等于 root 循环数；`Acc` 等于 root 累加器类型（不匹配只是警告；链里没有 `Merge` 时可能完全不检查，评审）。
-- `tile_req` 的 root 类型是 `Tensor r s T`，不含归约维数、输入个数和累加器类型，所以类型系统无从得知 `n`、`nis`、`Acc`。这是 A4 的前置问题。
+- sizes 是字面量。
+- 链的 `n` 与 `Acc` 已由类型给出：`tile_req` 的 levels 类型是 `TileLevels (root_loops op, root_acc op)`，两个公理在 `op` 归一化为 `map_reduce_post` 时得到它的循环数和累加器类型，链的循环数或累加器类型不符是类型错误（`lit/error/tile_req_{loops,acc}.mim`）。`op` 不是 `map_reduce_post` 时两者卡住，请求无法构造。
+- 输入个数 `nis` 还没有这样的公理，所以 `promote` 位掩码的范围仍是 C++ 检查。
 - 每个归约级只切一个归约维（不是"root 只能有一个归约维"）。
 - 向量级必须最内层；在一个并行维上标 1；另外还支持最后一个归约维的拆分因子。
 - `promote` 位掩码不超过输入个数；tail 是 0 或 1。
@@ -208,6 +209,8 @@ A4 只动约 60 行，B 类的每个新公理还会在 LowerToMem、outline、nv
 | **A4** level 链的残留检查进类型 | `Vec` 去掉 `rest`；`tail` 改成变体；`promote` 改成按 `nis` 索引的 `Bool` 数组 | `Idx n` 要收紧到并行维并保留归约拆分因子；类型不能保证一个 `Nat` 可归一化成字面量；root descriptor 要由受控构造子和 root 一起封装，否则只是并列的两个值。descriptor 的设计必须先于 A4，B6 的 contraction 描述也依赖它 |
 | **A1** R8 | 树归并的计划、pair 分配、非 2 的幂的退路写成 Mim，在 CPU 上测试 | shared 的生成、发布、复用没有可用契约；step 的签名要绑定 block、stride、输入和线程分配。`lower_bound_fold` 还有两条特化路径：标量累加器走寄存器，最后一步直接写进 destination；值层的纯 Tensor 写法会丢掉它们（评审）。删除 `lower_bound_fold` 是后续的验收项，不是第一步 |
 | **A2** 流水 | 环的旋转、prologue、clamp、提交序列 | 不能只包装 `tile_fold`：先要让 step 显式分成 `prepare (block)` 和 `compute (acc, ready_panels)`，否则只是把隐式的 C++ 分析藏进新公理 |
+
+A1、A2 的纯计划部分已完成：`tensor.mim` 的 `r8_plan`（`is_tree`、`rounds`、`pair_coords`）与 `pipeline_plan`（`depth`、`ring_block`、`refill_block`、`rotated_source`）由 LowerToMem 经部分求值消费，C++ 行数不变；`lit/tensor/gpu_plans.mim` 在编译期对多组字面量参数检查整份 R8 计划的覆盖、互斥、轮次衔接与结果位置，以及流水每块恰好填一次、读前就绪、clamp 与重填槽。上表的卡点（shared 的契约、prepare/compute 的分离）仍在。
 
 A1、A2 的 Mim 展开不能在 TileFuse 阶段写死成 GPU 公理：同一个 `tile_req` 在不加载 gpu 插件时要退化成 CPU 循环（`lit/gpu/tile_reduce.mim` 的 `-p ll` 那一行）。展开要在 LowerToMem 或 gpu 专用阶段按目标注入。
 
