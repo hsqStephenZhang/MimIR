@@ -221,11 +221,45 @@ A1、A2 的 Mim 展开不能在 TileFuse 阶段写死成 GPU 公理：同一个 
 | 方案 | 修正后的提法 |
 |---|---|
 | **B1** 放置 | 初稿的 `placed_in: … → T → T` 仍是恒等标注，只传达意图。要让跨 owner 的读成为类型错误，得是 `Placed (p, T)` 或带 place 的 buffer 类型，并约束所有访问操作、group/item 身份的来源和逃逸。`uniform` 检查不能删：别人也可能给依赖 item 的值贴上 Shared |
-| **B2** 同步 | 拆成两个设计。**同步 collective**：全组协作算出一个新的不可变结果，返回时可见；它能覆盖"新分配的协作填充"和"每轮生成新快照的 R8"。复用存储、原地更新 partials 还需要独占访问和轮间顺序。**异步传输**：至少要表达 pending/ready、提交组、等待、槽位复用，通过内存顺序和受限 region 的检查落实。仅有签名拦不住 item 相关分支里的调用，所以 `outline` 的发散检查不能撤，反而要先补上 D7。拆成两个仍不够（评审）：多面板共用一道 barrier（`staged` 加 `chained`）需要批量的面板元组或"写阶段/已发布视图"的区分；异步的重填要消费上一轮释放的槽，不能是无状态的生成；group 级 collective（barrier）和 warp 级 collective（`ldmatrix`、`mma`）要两种作用域 |
+| **B2** 同步 | 改为 §3 B′ 的相位类型方案：内存 token 按 (group, 代数, 相位) 索引，shared buffer 带可见性，发散靠三层 token，剩下的由 `gpu.check_sync` 的四条规则检查 |
 | **B3** 执行形状 | region 按物理 block 形状索引；逻辑工作量和 active 谓词是另外两个量；barrier 位于统一的物理 group 层 |
 | **B4** `Frag` | 能避免把普通四元素数组当 fragment。删旁表还要求 fragment 数、tile 形状、布局随 fold 状态和 region 参数传播，并区分 A/B/C 角色与数值格式。TileFuse 阶段的 fold 状态是 `Tensor`（`tile_of_partial/post` 的签名要求），在那里换成 `Frag` 会让整套 `tf_reduce` 类型不合；留到 LowerToMem 再换则消不掉旁表（评审） |
 | **B5** 归约律 | `[merge, identity, commutative]` 是声明不是证明。用受限的"已识别律"构造子加独立匹配；用户自己构造的明确叫 permission |
 | **B6** MMA 算子匹配（新增） | 已完成：`root_contraction` 公理在 root 归一化为 `map_reduce_post` 时判定它是否为 F32 矩阵乘（访问关系与乘加 combiner，含融合后经局部 continuation 返回的 combiner）；level 链的类型以它为索引，`Mma` 变体携带单例证据 `‹tt›: «mma»`，所以只有矩阵乘的请求能以 `warp_mma` 结尾。索引必须出现在字段类型里才区分 nom 实例，只在递归引用里出现的索引会被忽略 |
+
+### B′. 同步与相位类型（方案，2026-11-11）
+
+**相位进内存 token 的类型。** group 级内存 token 是
+
+```mim
+nom GM (g e: Nat, p: Phase) = [witness: «(g, e, p)», raw: mem.M 0];
+axm enter_write:  GM (g, e, Synced)  → GM (g, e, Writing);      // 不发 barrier
+axm sync_publish: GM (g, e, Writing) → GM (g, e, Reading);      // 一道 barrier
+axm sync_reclaim: GM (g, e, Reading) → GM (g, e + 1, Synced);   // 一道 barrier，代数加一
+```
+
+`g` 是 group 标识，`e` 是超步代数，`p` 是相位。单例字段让不同 `(g, e, p)` 的 token 互不相容（索引必须出现在字段类型里，见 B6）；后端由擦除 pass 退化回 `mem.M 0`。没有线性类型，但代数 `e` 让大部分"在错误的超步复用 token 或 buffer"成为类型不匹配。
+
+**shared buffer 带可见性。** `SharedBuf (g, e, Unpublished | Published, …)`：未发布的没有读公理，已发布的没有写公理。staged/chained 的"多面板共用一道 barrier"变成：一批 `coop_fill` 都停在 `Writing`，一次 `sync_publish`，再逐个 `publish_view`。
+
+**发散靠三层 token。** `GM`（全组一致）、`WM`（warp 内一致）、`IM`（单线程，可发散）。barrier 只接受 `GM`，`ldmatrix`/`mma` 只接受 `WM`。逐线程代码只能经 `run_items` 进入，它的回调只拿得到 `IM`；全局的 `item_id`、`lane_id` 撤掉。逐线程的值回到 group 层是 `PerItem (g, T)`，不是 `Bool`，不能当分支条件。
+
+**流水的槽**是六状态自动机，由 `Slot (g, round, state, …)` 的类型索引表达，每轮的顺序由公理签名锁定。
+
+**类型拦不住的**交给独立检查 `gpu.check_sync`：S1 禁止 continuation 经词法作用域捕获 token；S2 每个 token 恰好线性使用一次；S3 对分支条件做污点分析；S4 检查 `store_async` 的源和宽度。
+
+**对接。** TileFuse 不变；LowerToMem 是唯一生成这些原语的地方；`outline` 退化成机械展开；`remove_double_syncs`、`fence_pending_`、七种 `bind` 标注和裸 `fence` 删除。不加载 gpu 插件时，这些原语改写成恒等和顺序循环。
+
+**可信边界**（方案自列）：不同线程写入的下标互不重叠且覆盖完整、物理存储不别名、`cp.async` 源地址有效、`n_items` 与 launch 配置一致、公理的后端展开正确、硬件提交组的 FIFO 顺序。
+
+**落地要先解决的问题**：
+
+- **循环携带的 token。** `affine.For` 的累加器类型是固定的 `«i: n; Ts#i»`，不依赖迭代变量，而流水和 R8 的每一轮都让 `e` 加一。要么给 `For` 加依赖迭代的累加器类型，要么在循环入口用一个公理把代数换成循环体绑定的新变量（`e` 在体内是 `e₀ + i·k` 的抽象）。这决定了第一步之后的形状。
+- **R8 的轮次**在 LowerToMem 里是展开的（每轮一段代码），可以直接逐轮推进 `e`；流水环是真正的循环，受上一条约束。
+- **擦除的时机**：要在 `mem.add_mem` 线程化内存之前还是之后擦除，取决于 token 是否参与 AddMem 的 fresh-mem 机制。
+- **`staged`/`chained` 的协议**（`fence_pending_`）要整个替换成显式的 `Writing` 批，不能两套并存。
+
+**顺序**：第一步只引入 `GM` 与 `SharedBuf`，用它重写填充批与 R8 合并轮（不含流水环），预计覆盖现有六处手工 fence 中的五处；`WM`/`IM` 与 `run_items` 是第二步；流水槽自动机依赖循环携带 token 的解决，是第三步；`gpu.check_sync` 第四步。
 
 ### C. 局部数值条件的检查
 
