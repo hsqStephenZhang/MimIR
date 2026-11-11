@@ -163,6 +163,18 @@ private:
     /// The origin var of the work-item region being lowered; a value free of it is the same in every work-item.
     const Var* item_origin_ = nullptr;
     bool uniform_           = false;
+    /// The work-group fill batch of a consumer: the memory it starts from, its `gpu.GM` token while its panels are
+    /// filled, and the hole its fills read the published token from, which the consumer sets once it publishes.
+    struct Batch {
+        const Def* start;
+        u64 group;
+        const Def* token = nullptr;
+        Hole* published  = nullptr;
+    };
+    std::optional<Batch> batch_;
+    u64 batches_ = 0;
+    std::optional<Batch> open_batch(const Def* start);
+    const Def* close_batch(const Def* mem);
     /// While a consumer rewrites its inputs, their uniform fills are `staged`; it then fences them once.
     bool staging_       = false;
     bool fence_pending_ = false;

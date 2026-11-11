@@ -29,6 +29,9 @@ namespace mim::plug::tensor::phase {
 
 namespace {
 
+const Def* group_phase(World& w, nat_t phase) { return w.inj(w.annex<gpu::GroupPhase>(), phase, w.tuple()); }
+
+
 /// Does `t` (recursively through immutable sigmas) contain a Pi?
 bool contains_pi(const Def* t) {
     if (t->isa<Pi>()) return true;
@@ -517,6 +520,23 @@ std::function<const Def*(const Def*)> LowerToMem::cooperative() {
         [&w = new_world(), tag](const Def* body) { return w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body); };
 }
 
+// A consumer inside a work-group fills the panels it reads as one batch, starting from its own memory.
+std::optional<LowerToMem::Batch> LowerToMem::open_batch(const Def* start) {
+    if (bound_level_ == 0 || !driver().is_loaded("gpu")) return {};
+    return Batch{start, batches_++};
+}
+
+// Publishes the batch's panels behind one barrier; the consumer computes on the published memory.
+const Def* LowerToMem::close_batch(const Def* mem) {
+    if (!batch_ || !batch_->token) return mem;
+    auto& w        = new_world();
+    auto g         = w.lit_nat(batch_->group);
+    auto e         = w.lit_nat_0();
+    auto published = w.app(w.app(w.annex<gpu::sync_publish>(), {g, e}), batch_->token);
+    batch_->published->set(published);
+    return w.app(w.app(w.annex<gpu::group_leave>(), {g, e, group_phase(w, gpu::GroupPhase_ctor::Reading)}), published);
+}
+
 // A work-group's uniform buffers live in shared memory.
 const Def* LowerToMem::shared_mem(const Def* mem) {
     if (!uniform_) return mem;
@@ -553,6 +573,7 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     // their own requests (and their own per-lam op memo).
     auto _              = fe::Restore(pending_, {});
     auto nested_staging = fe::Restore(staging_, false);
+    auto nested_batch   = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
     auto __             = fe::Restore(fresh_memo_, {});
     auto storage        = fe::Restore(storage_shapes_, storage_shapes_);
     auto cache          = fe::Restore(realizations_, realizations_);
@@ -898,14 +919,42 @@ const Def* LowerToMem::lower_generate(const App* app) {
         };
     auto target = std::exchange(fill_target_, std::nullopt);
     if (target && std::get<1>(*target)->type() != out_ty) app->blame("a pipelined panel changed its type").bail();
-    auto [am, dst]    = target ? *target : allocate(br, bs, bT);
-    const Def* filled = dst;
-    if (!probe_fill_) {
-        auto fill
-            = btensor::build_pointwise(result_ty, am, dst, w.tuple(captures), s_out, rn, "generate", compute,
-                                       bounded ? storage : nullptr, cooperative(), inner ? *inner : size_t(-1), write);
-        filled = fill->proj(2, 1);
-        if (target) filled_mem_ = fill->proj(2, 0);
+    const Def* filled = nullptr;
+    if (batch_ && uniform_ && !target && !probe_fill_ && !async_fill_) {
+        // The panel joins its consumer's batch: filled cooperatively without a barrier, read once the batch publishes.
+        auto g       = w.lit_nat(batch_->group);
+        auto e       = w.lit_nat_0();
+        if (!batch_->token) {
+            batch_->token     = w.app(w.app(w.annex<gpu::enter_write>(), {g, e}),
+                                      w.app(w.app(w.annex<gpu::group_enter>(), g), batch_->start));
+            batch_->published = w.mut_hole(w.app(w.annex<gpu::GM>(), {g, e, group_phase(w, gpu::GroupPhase_ctor::Reading)}));
+        }
+        auto panel    = w.app(w.app(w.app(w.annex<gpu::shared_panel>(), {g, e}), {br, bs, bT}), batch_->token);
+        auto fill     = w.mut_lam(w.pi(result_ty, result_ty))->set("panelFill");
+        auto [fm, fb] = fill->var()->projs<2>();
+        auto chained  = [&w](const Def* body) {
+            return w.app(w.app(w.annex<gpu::bind>(gpu::bind::chained), body->type()), body);
+        };
+        fill->set(true,
+                  btensor::build_pointwise(result_ty, fm, fb, w.tuple(captures), s_out, rn, "generate", compute,
+                                           bounded ? storage : nullptr, chained, inner ? *inner : size_t(-1), write));
+        auto filling      = w.app(w.app(w.annex<gpu::coop_fill>(), {g, e}), {br, bs, bT});
+        auto [token, buf] = w.app(filling, w.tuple({panel->proj(2, 0), panel->proj(2, 1), fill}))->projs<2>();
+        batch_->token     = token;
+        auto publish      = w.app(w.app(w.annex<gpu::publish_view>(), {g, e}), {br, bs, bT});
+        auto view         = w.app(w.app(w.annex<gpu::view>(), {g, e}), {br, bs, bT});
+        filled            = w.app(view, w.app(publish, w.tuple({batch_->published, buf})));
+    }
+    if (!filled) {
+        auto [am, dst] = target ? *target : allocate(br, bs, bT);
+        filled         = dst;
+        if (!probe_fill_) {
+            auto fill = btensor::build_pointwise(result_ty, am, dst, w.tuple(captures), s_out, rn, "generate", compute,
+                                                 bounded ? storage : nullptr, cooperative(),
+                                                 inner ? *inner : size_t(-1), write);
+            filled    = fill->proj(2, 1);
+            if (target) filled_mem_ = fill->proj(2, 0);
+        }
     }
     if (uniform_) shared_fills_.insert(filled);
     if (layout) {
@@ -1095,6 +1144,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     auto initial       = tensor_init(old_mr);
     auto staging       = fe::Restore(staging_, bound_level_ != 0);
     auto fence         = fe::Restore(fence_pending_, false);
+    auto batch         = fe::Restore<std::optional<Batch>>(batch_, destination ? open_batch(destination->mem) : std::nullopt);
     auto args          = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
     auto [is, post_is] = args->projs<2>();
 
@@ -1237,7 +1287,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     const Def* am;
     const Def* dst;
     if (destination) {
-        am  = destination->mem;
+        am  = close_batch(destination->mem);
         dst = destination->buffer;
     } else {
         std::tie(am, dst) = allocate(mr.Ro, mr.So, mr.Tp, full_output(old_mr));
@@ -1344,6 +1394,7 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
         plan.body->blame("tensor.tiled body must be a defined lambda").bail();
     auto pending        = fe::Restore(pending_, {});
     auto nested_staging = fe::Restore(staging_, false);
+    auto nested_batch   = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
     auto memo           = fe::Restore(fresh_memo_, {});
     auto storage        = fe::Restore(storage_shapes_, storage_shapes_);
     auto cache          = fe::Restore(realizations_, realizations_);
@@ -1642,6 +1693,7 @@ const Def* LowerToMem::lower_tiled_n(const App* app) {
     auto [current, outputs, inputs] = run->var(2, 0)->projs<3>();
     auto pending                    = fe::Restore(pending_, {});
     auto nested_staging             = fe::Restore(staging_, false);
+    auto nested_batch               = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
     auto nested                     = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
     push();
     bind_new(run->has_var());
@@ -2012,8 +2064,9 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
     auto staging = fe::Restore(staging_, true);
     auto fence   = fe::Restore(fence_pending_, false);
     auto panels  = fe::Restore(mma_panels_, true);
+    auto batch   = fe::Restore<std::optional<Batch>>(batch_, open_batch(destination.mem));
     auto is      = rewrite(root->arg())->proj(2, 0);
-    auto mem     = destination.mem;
+    auto mem     = close_batch(destination.mem);
     if (fence_pending_) mem = w.app(w.annex<gpu::fence>(), mem);
     auto Sr = rewrite(old_mr.Sr);
     for (u64 d = 0; d != 3; ++d) {
@@ -2219,6 +2272,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         auto [first_mem, first_buffer] = first->var(2, 0)->projs<2>();
         auto pending                   = fe::Restore(pending_, {});
         auto nested_staging            = fe::Restore(staging_, false);
+        auto nested_batch              = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
         auto memo                      = fe::Restore(fresh_memo_, {});
         auto cache                     = fe::Restore(realizations_, realizations_);
         auto nested                    = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
@@ -2338,6 +2392,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto at_stage       = [&](u64 s, size_t j) { return loop_state[2 + s * panels + j]; };
     auto pending        = fe::Restore(pending_, {});
     auto nested_staging = fe::Restore(staging_, false);
+    auto nested_batch   = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
     auto memo           = fe::Restore(fresh_memo_, {});
     auto cache          = fe::Restore(realizations_, realizations_);
     auto nested         = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
@@ -2521,6 +2576,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto private_scope  = fe::Restore(uniform_, false);
         auto pending        = fe::Restore(pending_, {});
         auto nested_staging = fe::Restore(staging_, false);
+        auto nested_batch   = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
         auto memo           = fe::Restore(fresh_memo_, {});
         auto cache          = fe::Restore(realizations_, realizations_);
         auto nested         = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
@@ -2733,6 +2789,7 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
     {
         auto pending        = fe::Restore(pending_, {});
         auto nested_staging = fe::Restore(staging_, false);
+        auto nested_batch   = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
         auto memo           = fe::Restore(fresh_memo_, {});
         auto cache          = fe::Restore(realizations_, realizations_);
         auto nested         = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
