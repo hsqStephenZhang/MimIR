@@ -232,10 +232,20 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
     }
 }
 
+/// The value @p lam returns, also when it hands its mapped element to a local continuation that returns the result.
+const Def* returned(Lam* lam) {
+    if (auto value = Lam::isa_ret_arg(lam)) return value;
+    auto call = lam->body()->isa<App>();
+    auto next = call ? call->callee()->isa_mut<Lam>() : nullptr;
+    if (!next || !next->is_set()) return nullptr;
+    auto app = next->reduce(call->arg()).back()->isa<App>();
+    return app && app->callee() == lam->ret_var() ? app->arg() : nullptr;
+}
+
 const Def* combiner_app(const Def* comb) {
     auto lam = comb->isa_mut<Lam>();
     if (!lam || !lam->is_set()) return nullptr;
-    auto value = Lam::isa_ret_arg(lam);
+    auto value = returned(lam);
     auto app   = value ? value->isa<App>() : nullptr;
     if (!app || app->arg()->num_projs() != 2) return nullptr;
     auto acc   = lam->var(2, 0)->proj(2, 0);
