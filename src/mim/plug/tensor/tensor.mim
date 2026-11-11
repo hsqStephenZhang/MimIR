@@ -54,14 +54,15 @@ axm buf: {r: Nat, s: «r; Nat», T: *} → Tensor r s T → Tensor r s T;
 ///
 /// An opaque physical-layout value stores only canonical layout data.
 pub mod layout_expr
-anx nom Data =
-    [rank: Nat,
+anx nom Data (r: Nat, s: «r; Nat») =
+    [logical: «s»,
      split: Nat,
-     perm: «rank + 1; Idx (rank + 1)»,
-     pad: «rank; Nat»,
+     perm: «r + 1; Idx (r + 1)»,
+     pad: «r; Nat»,
      width groups shift chunks: Nat,
      xor: Bool];
-pub anx nom Expr = Data;
+/// A storage layout of a panel whose unpadded logical shape is `s`; carrying `s` as a singleton keeps it in the type.
+pub anx nom Expr (r: Nat, s: «r; Nat») = Data (r, s);
 
 /// The index algebra lets one layout interpreter serve affine indices and concrete I64 coordinates.
 pub let IndexOps =
@@ -105,10 +106,10 @@ lam shape_impl {r: Nat}
 /// So is an exclusive or with a group below a power-of-two chunk count.
 pub anx lam make {r: Nat}
     (logical: «r; Nat», split: Nat, perm: «r + 1; Idx (r + 1)», pad: «r; Nat»,
-     width groups shift chunks: Nat, xor: Bool): Expr =
-    let logical = refly.check (r >= 2, logical, "layout rank must be at least two");
+     width groups shift chunks: Nat, xor: Bool): Expr (r, logical) =
+    let checked = refly.check (r >= 2, logical, "layout rank must be at least two");
     let split = refly.check (split > 0, split, "layout split must be nonzero");
-    let split = refly.check (logical#(core.idx 0 r (r - 1)) % split == 0, split,
+    let split = refly.check (checked#(core.idx 0 r (r - 1)) % split == 0, split,
                              "layout split must divide the last logical extent");
     let perm = refly.check (vec.is_unique perm, perm, "layout permutation must contain every dimension once");
     let perm = refly.check (core.bit2.or 0 (split != 1, core.idx2nat (perm#(core.idx 0 (r + 1) 2)) == r), perm,
@@ -120,7 +121,7 @@ pub anx lam make {r: Nat}
     let groups = core.select (enabled, refly.check (groups > 0, groups, "layout swizzle groups must be nonzero"), 1);
     let groups = core.select (enabled,
         refly.check (groups <= chunks, groups, "layout swizzle groups must not exceed chunks"), 1);
-    let physical = shape_impl (split, perm, pad, logical);
+    let physical = shape_impl (split, perm, pad, checked);
     let columns = vec.fold.r @(Nat, Idx r) @r
         (λ (p: Idx r, acc: Nat): Nat = acc * (1, physical#p)#(0 < core.idx2nat p)) (‹p: r; p›, 1);
     let chunks = refly.check (core.bit2.or 0 (core.bit2.xor 0 (enabled, tt), chunks * width == columns), chunks,
@@ -129,15 +130,13 @@ pub anx lam make {r: Nat}
     let power = core.icmp.e (core.bit2.and 0 (core.bitcast I64 chunks, core.bitcast I64 (chunks - 1)), 0I64);
     let chunks = refly.check (core.bit2.or 0 (core.bit2.xor 0 (xor, tt), power), chunks,
                               "an exclusive-or swizzle needs a power-of-two chunk count");
-    ((r, split, perm, pad, width, groups, shift, chunks, xor) inj Data) inj Expr;
+    ((‹logical›, split, perm, pad, width, groups, shift, chunks, xor) inj Data (r, logical)) inj Expr (r, logical);
 
-pub anx lam shape (layout: Expr, logical: «(#layout)#rank; Nat»): «(#layout)#rank; Nat» =
-    shape_impl ((#layout)#split, (#layout)#perm, (#layout)#pad, logical);
+pub anx lam shape {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; Nat» =
+    shape_impl ((#layout)#split, (#layout)#perm, (#layout)#pad, s);
 
-lam interpret
-    (ops: IndexOps, layout: Expr, logical: «(#layout)#rank; Nat»,
-     x: «(#layout)#rank; ops#C»): «(#layout)#rank; ops#C» =
-    let r = (#layout)#rank;
+lam interpret {r: Nat} {s: «r; Nat»} (ops: IndexOps, layout: Expr (r, s), x: «r; ops#C»): «r; ops#C» =
+    let logical = s;
     let split = (#layout)#split;
     let perm = (#layout)#perm;
     let last = core.idx 0 r (r - 1);
@@ -174,19 +173,11 @@ lam interpret
            let rotated = ops#remainder (ops#floordiv (swizzled, strides#p), physical#p);
            (placed#p, rotated)#(core.bit2.and 0 ((#layout)#groups != 1, 0 < pp))›;
 
-pub anx lam map_affine (layout: Expr, logical: «(#layout)#rank; Nat»)
-    : «(#layout)#rank; affine.Index» → «(#layout)#rank; affine.Index» =
-    λ (x: «(#layout)#rank; affine.Index»): «(#layout)#rank; affine.Index» =
-        interpret (affine_index_ops, layout, logical, x);
-pub anx lam map_i64 (layout: Expr, logical: «(#layout)#rank; Nat»)
-    : «(#layout)#rank; I64» → «(#layout)#rank; I64» =
-    λ (x: «(#layout)#rank; I64»): «(#layout)#rank; I64» =
-        interpret (i64_index_ops, layout, logical, x);
+pub anx lam map_affine {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; affine.Index» → «r; affine.Index» =
+    λ (x: «r; affine.Index»): «r; affine.Index» = interpret @r @s (affine_index_ops, layout, x);
+pub anx lam map_i64 {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; I64» → «r; I64» =
+    λ (x: «r; I64»): «r; I64» = interpret @r @s (i64_index_ops, layout, x);
 end
-anx layout_make = layout_expr.make;
-anx layout_shape = layout_expr.shape;
-anx layout_map = layout_expr.map_affine;
-anx layout_i64 = layout_expr.map_i64;
 
 /// ### mma_m16n8k8_tf32
 ///
@@ -2580,8 +2571,8 @@ axm stage: {T: *, r k: Nat}
 
 axm frozen: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Tensor r s T;
 
-/// Identity annotation on a staged work-group panel: `layout` is the storage layout the scheduler chose for it.
-axm placed: {T: *, r: Nat} → {s: «r; Nat»} → [layout: layout_expr.Expr] → Tensor r s T → Tensor r s T;
+/// Identity annotation on a staged work-group panel: it is stored at capacity `cap` in the layout the scheduler chose.
+axm placed: {T: *, r: Nat} → {s: «r; Nat»} → [cap: «r; Nat», layout: layout_expr.Expr (r, cap)] → Tensor r s T → Tensor r s T;
 
 axm prepack: {T: *, r k: Nat}
            → [s: «r; Nat»]

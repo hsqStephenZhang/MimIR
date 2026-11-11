@@ -675,7 +675,8 @@ std::optional<size_t> site_origin(const PanelSite& site, const Def* def) {
     return {};
 }
 
-/// The storage layout the panel cost model picks for the work-group panel @p staged, or `nullptr` for its plain one.
+/// The capacity and the storage layout the panel cost model picks for the work-group panel @p staged, or `nullptr`
+/// for its plain one.
 /// It sees the fill as `lower_to_mem` will: the panel dim along the source's contiguous one runs fastest and moves a
 /// 16-byte vector where the run is provably aligned.
 const Def* panel_term(const App* staged, const PanelSite& site) {
@@ -779,7 +780,7 @@ const Def* panel_term(const App* staged, const PanelSite& site) {
     auto choice  = site.mma ? panel::mma(storage, *inner)
                             : panel::choose(storage, *inner, vec, *bytes, reads ? &*reads : nullptr);
     if (choice.layout.identity() && choice.physical == storage) return nullptr;
-    return choice.expr;
+    return w.tuple({storage, choice.expr});
 }
 
 /// The input dim that reads loop @p loop with unit slope, if any.

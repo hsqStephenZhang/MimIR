@@ -140,6 +140,11 @@ struct Fill {
 
 } // namespace
 
+const Def* at_shape(const Def* map, const Def* expr, const Def* logical) {
+    auto& w = logical->world();
+    return w.app(w.app(w.app(map, w.lit_nat(logical->num_projs())), logical), expr);
+}
+
 const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>& physical) {
     auto& w       = logical->world();
     auto rank     = logical->num_projs();
@@ -154,7 +159,7 @@ const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>
     };
     auto base_expr = make(w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat_0(); })));
     if (physical.empty()) return base_expr;
-    auto base = w.app(w.annex(tensor::layout_expr::shape), {base_expr, logical});
+    auto base = at_shape(w.annex(tensor::layout_expr::shape), base_expr, logical);
     auto pad  = w.tuple(DefVec(rank, [&](size_t p) { return w.lit_nat(physical[p] - Lit::as(base->proj(rank, p))); }));
     return make(pad);
 }
@@ -179,7 +184,7 @@ Choice mma(const Def* storage, size_t inner) {
     else if (last > 32 && last % 32 == 0)
         last += 8;
     auto expr     = term(layout, storage, shape);
-    auto physical = w.app(w.annex(tensor::layout_expr::shape), {expr, storage});
+    auto physical = at_shape(w.annex(tensor::layout_expr::shape), expr, storage);
     return {expr, physical, layout, true};
 }
 
@@ -332,7 +337,7 @@ Choice choose(const Def* storage, size_t inner, u64 vec, u64 bytes, const Reads*
                                     best_layout.swizzle->shift, best_layout.swizzle->groups)
                       : "none");
     auto expr     = term(best_layout, storage, best_shape);
-    auto physical = w.app(w.annex(tensor::layout_expr::shape), {expr, storage});
+    auto physical = at_shape(w.annex(tensor::layout_expr::shape), expr, storage);
     return {expr, physical, best_layout, vec != 1 && fill.contiguous(best_layout, best_shape)};
 }
 
@@ -419,7 +424,7 @@ Choice decode(const Def* expr, const Def* storage, size_t inner, u64 vec, u64 by
     if (swizzle.width != 1 || swizzle.groups != 1 || swizzle.shift != 0 || swizzle.chunks != 1)
         layout.swizzle = swizzle;
     layout.permuted = permuted_dims(dims, layout);
-    auto physical   = w.app(w.annex(tensor::layout_expr::shape), {expr, storage});
+    auto physical   = at_shape(w.annex(tensor::layout_expr::shape), expr, storage);
     auto shape      = std::vector<u64>(n);
     for (size_t d = 0; d != n; ++d)
         shape[d] = Lit::as(physical->proj(n, d));

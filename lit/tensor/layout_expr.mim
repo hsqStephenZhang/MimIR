@@ -31,21 +31,21 @@ let rotated = tensor.layout_expr.make @(2) ((2, 4), 2, (1₃, 0₃, 2₃), (0, 2
 
 let inputs_23 = ‹i: 6; let ii = core.idx2nat i; (core.bitcast I64 (ii / 3), core.bitcast I64 (ii % 3))›;
 let inputs_24 = ‹i: 8; let ii = core.idx2nat i; (core.bitcast I64 (ii / 4), core.bitcast I64 (ii % 4))›;
-let perm_coords = ‹i: 6; tensor.layout_expr.map_i64 (perm, (2, 3)) (inputs_23#i)›;
-let split_coords = ‹i: 8; tensor.layout_expr.map_i64 (split, (2, 4)) (inputs_24#i)›;
-let padded_coords = ‹i: 8; tensor.layout_expr.map_i64 (padded, (2, 4)) (inputs_24#i)›;
-let rotated_coords = ‹i: 8; tensor.layout_expr.map_i64 (rotated, (2, 4)) (inputs_24#i)›;
+let perm_coords = ‹i: 6; tensor.layout_expr.map_i64 @2 @(2, 3) perm (inputs_23#i)›;
+let split_coords = ‹i: 8; tensor.layout_expr.map_i64 @2 @(2, 4) split (inputs_24#i)›;
+let padded_coords = ‹i: 8; tensor.layout_expr.map_i64 @2 @(2, 4) padded (inputs_24#i)›;
+let rotated_coords = ‹i: 8; tensor.layout_expr.map_i64 @2 @(2, 4) rotated (inputs_24#i)›;
 let xored = tensor.layout_expr.make @(2) ((8, 32), 1, (0₃, 1₃, 2₃), (0, 0), 4, 8, 0, 8, tt);
 let inputs_832 = ‹i: 256; let ii = core.idx2nat i; (core.bitcast I64 (ii / 32), core.bitcast I64 (ii % 32))›;
-let xored_coords = ‹i: 256; tensor.layout_expr.map_i64 (xored, (8, 32)) (inputs_832#i)›;
+let xored_coords = ‹i: 256; tensor.layout_expr.map_i64 @2 @(8, 32) xored (inputs_832#i)›;
 
-let _ = refly.check (check_coords (tensor.layout_expr.shape (perm, (2, 3)), perm_coords), tt,
+let _ = refly.check (check_coords (tensor.layout_expr.shape @2 @(2, 3) perm, perm_coords), tt,
                          "permuted layout must be injective and in bounds");
-let _ = refly.check (check_coords (tensor.layout_expr.shape (split, (2, 4)), split_coords), tt,
+let _ = refly.check (check_coords (tensor.layout_expr.shape @2 @(2, 4) split, split_coords), tt,
                          "split layout must be injective and in bounds");
-let _ = refly.check (check_coords (tensor.layout_expr.shape (padded, (2, 4)), padded_coords), tt,
+let _ = refly.check (check_coords (tensor.layout_expr.shape @2 @(2, 4) padded, padded_coords), tt,
                          "padded layout must be injective and in bounds");
-let _ = refly.check (check_coords (tensor.layout_expr.shape (rotated, (2, 4)), rotated_coords), tt,
+let _ = refly.check (check_coords (tensor.layout_expr.shape @2 @(2, 4) rotated, rotated_coords), tt,
                          "rotated layout must be injective and in bounds");
-let _ = refly.check (check_coords (tensor.layout_expr.shape (xored, (8, 32)), xored_coords), tt,
+let _ = refly.check (check_coords (tensor.layout_expr.shape @2 @(8, 32) xored, xored_coords), tt,
                          "xor-swizzled layout must be injective and in bounds");

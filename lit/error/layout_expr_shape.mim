@@ -1,0 +1,7 @@
+// RUN: not %mim %s 2>&1 | %FileCheck %s
+// CHECK: error: argument is not assignable to callee's domain
+
+plugin tensor;
+
+let layout = tensor.layout_expr.make @(2) ((2, 3), 1, (1₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1, ff);
+let wrong  = tensor.layout_expr.shape @2 @(2, 4) layout;

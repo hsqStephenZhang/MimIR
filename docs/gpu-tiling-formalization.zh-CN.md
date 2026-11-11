@@ -114,10 +114,11 @@ MimIR 的依赖类型靠归一化工作：没有证明项、没有 tactic，用�
 
 - **IR 表示**：
   - `tensor.stage (pos, tiles, perm, pad) scope x` 给出逻辑的 split/perm 形状。
-  - 物理布局是 `tensor.placed L (stage …)` 中的项 `L: tensor.layout_expr.Expr`。
+  - 物理布局是 `tensor.placed (cap, L) (stage …)` 中的项 `L: tensor.layout_expr.Expr (r, cap)`，`cap` 是面板的存储容量。
+  - `Expr (r, s)` 以单例字段携带它的逻辑形状 `s`，所以布局只能用在形状相同的面板上，`shape`、`map_affine`、`map_i64` 不再另传形状。
   - 布局由调度器 TileFuse 在 promotion 时选出，LowerToMem 只解码 L，不再自己选择。
 - **布局代数**：`layout_expr.Data` 有以下字段：
-  - 逻辑秩；
+  - 逻辑形状，以单例类型 `«s»` 携带；
   - 末维常数 split；
   - `rank + 1` 维置换；
   - 各物理维的 pad；

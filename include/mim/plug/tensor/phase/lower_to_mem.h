@@ -139,7 +139,7 @@ private:
     DefMap<size_t> fill_inner_;
     /// How many elements along that dim a staged panel's fill moves per step.
     DefMap<u64> fill_vector_;
-    /// The layouts `tensor.placed` assigns to stages, and to the generates that fill them.
+    /// The capacities and layouts `tensor.placed` assigns to stages, and to the generates that fill them.
     DefMap<const Def*> placed_layouts_, fill_layouts_;
     /// The panels stored in a non-identity layout, by buffer; every access goes through the layout term's interpreter.
     DefMap<const Def*> layouts_;

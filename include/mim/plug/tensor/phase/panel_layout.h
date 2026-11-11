@@ -45,6 +45,9 @@ struct Choice {
     bool contiguous;
 };
 
+/// @p map, one of `tensor.layout_expr`'s `shape`, `map_affine` and `map_i64`, applied to @p expr over @p logical.
+const Def* at_shape(const Def* map, const Def* expr, const Def* logical);
+
 /// The `tensor.layout_expr.make` term of @p layout over @p logical, padded to @p physical unless that is empty.
 const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>& physical);
 

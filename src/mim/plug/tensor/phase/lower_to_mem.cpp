@@ -845,7 +845,9 @@ const Def* LowerToMem::lower_generate(const App* app) {
     // TileFuse chose a work-group panel's storage layout; its fill and reads follow it.
     auto size = Lit::isa(core::op(core::trait::size, T));
     if (auto chosen = fe::lookup(fill_layouts_, app); chosen && size && inner && uniform_) {
-        auto choice  = panel::decode(chosen, storage, *inner, vec, *size);
+        auto [cap, expr] = chosen->projs<2>();
+        if (cap != storage) app->blame("a placed panel's capacity {} differs from its storage {}", cap, storage).bail();
+        auto choice  = panel::decode(expr, storage, *inner, vec, *size);
         storage      = choice.physical;
         vector_store = mma_panels_ || choice.contiguous;
         layout = choice.expr, layout_view = choice.layout;
@@ -962,13 +964,13 @@ std::array<const Def*, 2> fragment_coords(World& w, Enum auto map, const Def* ar
 DefVec LowerToMem::layout_coords(const Def* layout, const Def* logical, Defs coords) {
     auto& w  = new_world();
     auto n   = coords.size();
-    auto map = w.app(w.annex(tensor::layout_expr::map_i64), {layout, logical});
+    auto map = panel::at_shape(w.annex(tensor::layout_expr::map_i64), layout, logical);
     return w.app(map, w.tuple(coords))->projs(n);
 }
 
 const Def* LowerToMem::layout_lam(const Def* layout, const Def* logical) {
     auto& w = new_world();
-    return w.app(w.annex(tensor::layout_expr::map_affine), {layout, logical});
+    return panel::at_shape(w.annex(tensor::layout_expr::map_affine), layout, logical);
 }
 
 void LowerToMem::plain(const Def* buffer) const {

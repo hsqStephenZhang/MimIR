@@ -137,7 +137,8 @@ TileFuse 输出里只有 `bind 2` 和 `merge_with` 两个标注；lowering 之�
 - **非空事实**：`tile_ends_` 被用来把空 extent 的判断直接改成假。
 - **表示能力限制**：buffer 的内维必须静态；绑定级要求字面量 extent，不能 peel 非整除的尾块。这些情况是直接报错，没有串行退路。
 - **有限整数**：形式化里的自然数公式不能直接当成 `Nat/u64` 上的定理，尺寸乘积可能溢出。
-- **`panel_layout.cpp` 里与正确性相关的部分**：`Fill::contiguous` 只检查前 `min(total, 64)` 个填充位置，结果决定向量写是否合法；`layout_expr.make` 检查过的逻辑形状没有存进 `Expr`，`placed` 接受的 `Expr` 与输入形状没有类型关系。
+- **`panel_layout.cpp` 里与正确性相关的部分**：`Fill::contiguous` 只检查前 `min(total, 64)` 个填充位置，结果决定向量写是否合法。
+  布局与形状的关系已进类型：`Expr (r, s)` 以单例字段 `logical: «s»` 携带它的逻辑形状，所以 `s` 不同的两个 `Expr` 是不同的类型（只作类型参数的索引不会区分 nom 实例）；`placed` 携带容量 `cap` 与 `Expr (r, cap)`，LowerToMem 核对 `cap` 等于它算出的存储形状。容量与张量逻辑形状 `s` 的关系（`s ≤ cap`）仍未检查。
   agy 给了两个"前 64 个位置通过、第 65 个失败"的布局（奇数 pad 的 `(2, 256)`；`shift = 6` 的 swizzle），并指出它检查的是一维线性偏移连续，而 `lower_generate` 是对存储的**最后一维**除以向量宽度（评审）。改法不是找周期性论证，而是按布局结构做 O(1) 判定。
 - **NVPTX 发射侧**：`cp.async` 只在目标支持、大小为 4/8/16 字节、值恰好来自整块 global 读时发射，目标地址直接 cast 成 shared；mma 固定按 4/2/4 寄存器的 ABI 发射；shared 超过 48 KiB 后改用动态 shared，这些决策在 emitter 里。
 
@@ -235,7 +236,7 @@ A1、A2 的 Mim 展开不能在 TileFuse 阶段写死成 GPU 公理：同一个 
 | G9 | 流水深度在目标的立即数范围内 | 静态，必检 |
 | G12 | 实际访问要求的对齐量；断言包住指针值本身，再交给 `mem.align` | 只删声明会丢优化信息，所以是"检查后声明" |
 | G12 | 按 cap 分配之前：`ext ≤ cap`，容量乘积不溢出 | 不能验证物理布局和生命周期 |
-| G13 | `layout` 在应用处与实际 logical/storage shape 重新核对 | 或把形状绑进 `Expr` |
+| G13 | `layout` 在应用处与实际 logical/storage shape 重新核对 | 已把形状绑进 `Expr (r, s)`；`cap` 与张量形状的关系待补 |
 
 **不在这张表里的**：原地更新（`linear_step` 的完整条件不是一次下标比较）、同步的全员到达、归约律、R8 的 2 的幂。前者属第 2 类，后三者属第 3 类或根本不是合法性条件。
 
