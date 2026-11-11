@@ -5,6 +5,7 @@
 协作填充、跨 item 归约、cp.async 多级流水和 tensor-core fragment。
 对每一部分，本文给出参考语义、实现、合法性条件，以及该条件在没有用户证明的前提下由谁消解，并标明哪些已经是 IR 中的项、哪些仍在 C++。
 设计与实现步骤见 `gpu-tiling-implementation.zh-CN.md`，初稿的审阅意见见 `gpu-tiling-formalization-review.zh-CN.md`，文献调研见 `gpu-tiling-literature.zh-CN.md`。
+仍由 C++ 决定或相信的前提及其消解办法见 `gpu-tiling-formalization-gaps.zh-CN.md`，那份文档的评审见 `gpu-tiling-formalization-gaps-review.zh-CN.md`。
 实现参照以 IREE 为主：两者都在结构化 op 上做 op→op 的多级 tiling，并把各级绑定到 GPU 执行层次。
 
 ## 0. 概要
@@ -54,7 +55,7 @@ MimIR 的依赖类型靠归一化工作：没有证明项、没有 tactic，用�
 | 构造即正确 | 组合子的形式本身蕴含 P，开发者对组合子论证一次 | 网格公式给出的分块满足 ExactCover；`layout_expr` 的构造子都是单射；三种同步构造；流水环满足 AsyncSafe；ISA 给出的 fragment 布局 |
 | 可判定检查 | 编译器对具体实例判定，条件归一化为 `tt` 才应用 | `OrderedChunk`；`reduction_law` 识别的归约律与 seed 单位元；`layout_expr.make` 的参数检查；fragment 布局的有限域双射检查 |
 | 许可 | 用户表态接受语义变化，编译器不声称等价 | `fast` 的浮点重结合；TF32；`merge_with` 给出的 merge |
-| 保守退路 | 以上都不成立时 | 不融合、不提升、按串行 fold；cp.async 不可用时同步填充；或作为 `refly.check` 残留报错 |
+| 保守退路 | 以上都不成立时 | 不融合、不提升、按串行 fold；cp.async 不可用时同步填充；或作为 `refly.check` 残留报错。不是所有情况都有退路：绑定级的动态 extent、非整除尾块的 peel、MMA 的不整除是直接报错 |
 
 设计原则：**能构造即正确的，就不留给判定；能判定的，就不留给许可。**
 例如布局只接受 `layout_expr` 的构造子而不接受任意 Mim 函数，于是单射不需要判定器。
@@ -73,7 +74,8 @@ MimIR 的依赖类型靠归一化工作：没有证明项、没有 tactic，用�
 
 - **必须成为项**：选出的物理布局、fragment 布局、流水深度、作用域与所有者。前三者已经是项，作用域由 `tensor.bind` 表示，所有者尚未表示。
 - **可重算但要验证**：一致性、依赖、覆盖。
-- **纯 lowering 缓存**：`fresh_memo_`、`storage_shapes_`、`fill_inner_`、`multiples_`，以及把布局项从填充处带到读取处的 `layouts_`。
+- **lowering 内部的表**：`fill_inner_`、把布局项从填充处带到读取处的 `layouts_` 是纯缓存。
+  `storage_shapes_`（容量）、`multiples_`（整除与对齐）和 `fresh_memo_`（按 lambda 限定以避免悬空变量）可以不公开，但它们承载的事实与正确性相关，属于上一类：可重算，但要有依据。
 
 代价模型（选哪个 L、选哪组 tile 尺寸）留在 C++，但它选出的结果必须是项，供检查和后续变换引用。
 
@@ -95,6 +97,7 @@ MimIR 的依赖类型靠归一化工作：没有证明项、没有 tactic，用�
 ### 3.2 T2 融合
 
 `tile_of(c ∘ p, box) ≡value tile_of(c, box)[p ↦ tile_of(p, pre_c(box))]`。
+请求、参考切片 `tile_of_ref` 和部分 builder 是 Mim 定义；一般 producer 的重写由 C++ 的 `producer_tile` 构造，这条方程描述的是它应满足的规格。
 
 - **参考**：`tile_of_box` 规格化为"整个生产者的切片"；`tensor:tile-ref=1` 用它做差分。
 - **合法性**：
@@ -106,7 +109,8 @@ MimIR 的依赖类型靠归一化工作：没有证明项、没有 tactic，用�
 
 ### 3.3 T3 放置与布局
 
-`stage(x, L) ≡value x`：值不变，只改排布。
+值不变，只改排布。按当前接口这是两条等价，不是一条同类型的相等：
+`stage` 是逻辑重索引，改变秩和形状，等价的是"经读映射读回的元素"；`placed L` 类型上是恒等，等价的是"物理布局不改变逻辑值"。
 
 - **IR 表示**：
   - `tensor.stage (pos, tiles, perm, pad) scope x` 给出逻辑的 split/perm 形状。
@@ -218,12 +222,12 @@ superstep    = forall item ∈ items. (本地计算 ; 对 shared 的写)
 - **异步拷贝的语义**：
   - `store_async` 是一个延迟完成的写，属于当前组；`async_commit` 关闭这一组。
   - `async_wait_group k` 只保证**本线程**除最新 k 组之外都已完成，不为其他线程提供可见性，所以跨线程消费还需要其后的 `B`。
-  - NVPTX 只在 sm_80 且源是整块 global 读时发射 `cp.async`，否则是同步写。
+  - NVPTX 只在目标的 compute capability 支持异步拷贝、大小为 4/8/16 字节、且值恰好来自整块 global 读时发射 `cp.async`，否则是同步写。这个开关不是 MMA/ldmatrix 的完整 feature 检查。
 - **等价是整程序的**：`store_async` 不能在任意上下文中替换 `store`。可论证的是，满足 `AsyncSafe` 的完整流水程序精化同步 staging 的程序。`AsyncSafe` 由环的构造满足：
   - prologue 恰好提交 n − 1 组；每轮每个线程提交相同数量与顺序的组（含空组），所以 `wait_group (n − 2)` 等到当前块；
   - 读环槽之前，写它的组已 wait 且之后有 `B`；写环槽之前，上一次读它的超步已被同一个 `B` 结束；
   - 同一组内的写目标互不相交；末尾 clamp 后重复填充的槽不再被消费；循环出口的 wait-all 在 shared 生命周期结束前；
-  - `n = min(pipeline, 块数)`，在 PTX 立即数与硬件范围内。
+  - `n = min(pipeline, 块数)`。它还必须在 PTX 的 wait 立即数与硬件的异步组范围内，这一条目前**没有检查**：`ring.size() − 2` 直接作为立即数发射。
 - **保守退路**：没有 stage、块数不是字面量、step 不是原地更新时，不流水。
 
 ### 3.7 T7 分布式值：warp fragment 与 tensor core
@@ -246,7 +250,7 @@ tensor core 引入了**分布在 lane 上的值**：一个 16×8 的块不在任
   - 面板布局由 `panel::mma` 选出：源的连续维放在最内，并 pad 以消除 ldmatrix 的银行冲突。
 - **消解**：
   - `lit/tensor/mma_reference.mim` 穷举检查三个布局是双射，以及 `ld_a = l_a`；
-  - 它还在 CPU 上把 `mma_ref` 与普通矩阵乘逐元素比对；
+  - 它还在 CPU 上把 `mma_ref` 与普通矩阵乘逐元素比对。`mma_ref` 用普通 F32 乘加，不模拟 TF32 转换，所以这验证的是布局和乘加参考，不是完整的 TF32 数值语义；
   - 布局表本身来自 PTX ISA，属于可信边界。
 - **数值**：TF32 是许可（`≈mode`）：`warp_mma` 的语义是"操作数先转成 TF32 再做 map_reduce"。转换有两种实现：
   - 默认由 `mma` 截断 F32 的低 13 位；
@@ -275,12 +279,12 @@ TileFuse 解释这条链：它在 C++ 中做各级的合法性判定，并把选
 | 分面 | 是项 | 公理（实现交给后端） | 留在 C++ 的可信部分 |
 |---|---|---|---|
 | T1 | 网格、box、level 链 | `tiled`、`tile_fold` | 动态形状、cap/peel 下的覆盖；OrderedChunk 判定 |
-| T2 | 生产者方程 | `tile_of_box` | preimage/image 计算 |
-| T3 | `stage`、`placed L`、`layout_expr` 及其解释器 | — | 代价模型（只影响选择，不影响正确性） |
+| T2 | 请求、参考切片、部分 builder | `tile_of_box` | 一般 producer 的重写（`producer_tile`）；preimage/image 计算；resident 视图的包含关系 |
+| T3 | `stage`、`placed L`、`layout_expr` 及其解释器 | — | 银行冲突评分只影响选择；`Fill::contiguous`（只查前 64 个填充位置）决定向量写是否合法，与正确性相关；`placed` 的布局与实际形状的对应 |
 | T4 | `tensor.bind n` | `gpu.bind.*`、`gpu.outline` | launch 形状推导；作用域与分歧检查 |
 | T5 | 挂在内存值上的 `gpu.fence` | `sync_work_items` | 三种同步构造的生成 |
 | T6 | 流水深度 | `store_async`、`async_commit`、`async_wait_group` | 环的生成 |
-| T7 | fragment 布局、ldmatrix 关系、`mma_ref`、`tf32_rna_ref` | `mma_tf32`、`ldmatrix`、`tf32_rna` | PTX 的 fragment 表、intrinsic ABI、对齐与收敛前提 |
+| T7 | fragment 布局、ldmatrix 关系、`mma_ref`、`tf32_rna_ref` | `mma_tf32`、`ldmatrix`、`tf32_rna` | 算子匹配（`Levels::mma` 不核实 combiner 是乘加，lowering 固定生成 `mma_tf32`）；PTX 的 fragment 表、intrinsic ABI、对齐与收敛前提 |
 
 证明义务的形状只在纯函数部分与论文一致：T1–T3 只需证明一次"实现 ≡value 参考（在 P 下）"，再加 rewriter 与部分求值的正确性。
 T5–T7 还涉及 GPU 内存模型、并发、shared 生命周期、数值近似与 collective 的未定义行为。
