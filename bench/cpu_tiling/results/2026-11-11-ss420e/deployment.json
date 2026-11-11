@@ -1,0 +1,23 @@
+{
+  "host": "sunqi@ss420e",
+  "root": "/home/sunqi/zc/mimir-bench/cpu-gemm-20261111-fc398e36",
+  "source_commit": "fc398e36b78da9fda35023c00e91f226e034b898",
+  "lowering_source_commit": "124047b43e7d7c89e303899c5d97f9a92dbf7899",
+  "openblas_commit": "8e57c8667da06cb55a777975b6c2435c9b304079",
+  "openblas_make_flags": [
+    "TARGET=SKYLAKEX",
+    "DYNAMIC_ARCH=0",
+    "USE_THREAD=0",
+    "NOFORTRAN=1",
+    "NO_LAPACK=1",
+    "NO_LAPACKE=1",
+    "BUILD_SINGLE=1",
+    "BUILD_DOUBLE=0",
+    "BUILD_COMPLEX=0",
+    "BUILD_COMPLEX16=0",
+    "CC=/usr/lib/llvm-20/bin/clang"
+  ],
+  "bundle_sha256": "88f5b6fd4e29143195309da66d930aae9c8a37a1b6ae97c575939cdef28d6b5d",
+  "openblas_source_archive_sha256": "d42fc5c239370350e16ccd49084c0f1824ddc61381e0bed61d788e9a66eca1cb",
+  "runner_sha256": "834e90a2990030c63babde86049b4f3b0f5b7955ae051ac901eef4dcd8b86268"
+}

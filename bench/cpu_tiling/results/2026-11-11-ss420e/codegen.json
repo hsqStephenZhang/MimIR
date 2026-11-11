@@ -1,0 +1,210 @@
+[
+  {
+    "variant": "default",
+    "shape": [
+      1024,
+      1024,
+      1024
+    ],
+    "static_fma_instructions_by_vector_bits": {
+      "512": 32
+    },
+    "notes": "Static instruction count across complete kernel, including tail/specialized loops; not dynamic performance attribution.",
+    "innermost_fma_loops": [
+      {
+        "start": "0x2bd0",
+        "end": "0x2c79",
+        "fma": 16,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x40a0",
+        "end": "0x4148",
+        "fma": 16,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3"
+        ],
+        "vector_rsp_references": 0
+      }
+    ]
+  },
+  {
+    "variant": "haswell96",
+    "shape": [
+      1024,
+      1024,
+      1024
+    ],
+    "static_fma_instructions_by_vector_bits": {
+      "512": 240
+    },
+    "notes": "Static instruction count across complete kernel, including tail/specialized loops; not dynamic performance attribution.",
+    "innermost_fma_loops": [
+      {
+        "start": "0x1e30",
+        "end": "0x1f1c",
+        "fma": 24,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3",
+          "zmm4",
+          "zmm5"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x2020",
+        "end": "0x20fd",
+        "fma": 16,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x3130",
+        "end": "0x321c",
+        "fma": 24,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3",
+          "zmm4",
+          "zmm5"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x37a0",
+        "end": "0x387d",
+        "fma": 16,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x3de0",
+        "end": "0x3ecc",
+        "fma": 24,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3",
+          "zmm4",
+          "zmm5"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x3fd0",
+        "end": "0x407c",
+        "fma": 16,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x4580",
+        "end": "0x466c",
+        "fma": 24,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3",
+          "zmm4",
+          "zmm5"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x4760",
+        "end": "0x480c",
+        "fma": 16,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x4b40",
+        "end": "0x4c2c",
+        "fma": 24,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3",
+          "zmm4",
+          "zmm5"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x4d20",
+        "end": "0x4dfd",
+        "fma": 16,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x5da0",
+        "end": "0x5e8c",
+        "fma": 24,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3",
+          "zmm4",
+          "zmm5"
+        ],
+        "vector_rsp_references": 0
+      },
+      {
+        "start": "0x6400",
+        "end": "0x64e5",
+        "fma": 16,
+        "zmm_accumulators": [
+          "zmm0",
+          "zmm1",
+          "zmm2",
+          "zmm3"
+        ],
+        "vector_rsp_references": 0
+      }
+    ]
+  }
+]

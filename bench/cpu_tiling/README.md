@@ -123,3 +123,18 @@ malloc/free 统计调用成本，输出 C 的释放由 driver 完成，不计入
 
 验证：260/260 单元测试通过；823 个 lit 中 814 通过、8 unsupported、1 个此前已复现的
 `tensor/group_rules_exec.mim` reference-tiles 内存泄漏失败。新增的 register/tail/layout 测试均通过。
+
+## ss420e / Ice Lake CPU 补测
+
+同一修复版本已在 2× Xeon Silver 4310 的 CPU 0 单线程完成全部 22 形状对照，
+全部通过 FP64 校验。Clang 20.1.8 `-march=icelake-server`，新编译 OpenBLAS 0.3.33.dev
+SKYLAKEX，远端 PyTorch 2.2.1/MKL。系统 OpenBLAS 0.3.8 错误检测为 Prescott，未用作正式基线。
+
+吞吐比几何平均：默认 4×16 为 OpenBLAS 的 **43.54%**，迁移的固定 6×16 为 **51.14%**；
+6×16 比默认快 **17.47%**。1024³ 的 6×16 / OpenBLAS / PyTorch 为
+29.6895 / 13.5024 / 12.1663 ms，2048³ 为 208.5525 / 109.8915 / 93.9872 ms。
+已确认生成 AVX-512 ZMM FMA；6×16 主循环只有 6 个 ZMM 累加器，仍需针对该架构选择
+微内核和 cache 参数，并核对代码生成。此轮没有对剩余差距做完整因果归因。
+
+这组结果不能沿用本地 97.1% 的结论。完整口径、版本差异和复现命令见
+[ss420e 报告](results/2026-11-11-ss420e/README.md)，原始批次在同目录 `paired-native.json`。
