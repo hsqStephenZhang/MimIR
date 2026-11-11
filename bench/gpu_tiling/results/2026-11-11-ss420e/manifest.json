@@ -1,0 +1,410 @@
+{
+  "revision": "5e360c58b49b6895f68fb49c60be15fb3f06b28d",
+  "prepared_utc": "2026-11-11T15:34:10.099361+00:00",
+  "sm": 86,
+  "cases": [
+    {
+      "name": "g1",
+      "n": 256,
+      "stem": "g1_256",
+      "kernel": "tileKernel_617584",
+      "groups": 16,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g2",
+      "n": 256,
+      "stem": "g2_256",
+      "kernel": "tileKernel_617724",
+      "groups": 16,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3",
+      "n": 256,
+      "stem": "g3_256",
+      "kernel": "tileKernel_617662",
+      "groups": 16,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_128",
+      "n": 256,
+      "stem": "g3_128_256",
+      "kernel": "tileKernel_617663",
+      "groups": 4,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_128w",
+      "n": 256,
+      "stem": "g3_128w_256",
+      "kernel": "tileKernel_617664",
+      "groups": 4,
+      "items": 128,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_pipe2",
+      "n": 256,
+      "stem": "g3_pipe2_256",
+      "kernel": "tileKernel_617664",
+      "groups": 4,
+      "items": 128,
+      "smem": 0,
+      "pipeline": 2
+    },
+    {
+      "name": "g3_pipe3",
+      "n": 256,
+      "stem": "g3_pipe3_256",
+      "kernel": "tileKernel_617664",
+      "groups": 4,
+      "items": 128,
+      "smem": 49536,
+      "pipeline": 3
+    },
+    {
+      "name": "tc",
+      "n": 256,
+      "stem": "tc_256",
+      "kernel": "tileKernel_617593",
+      "groups": 4,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "tc_pipe2",
+      "n": 256,
+      "stem": "tc_pipe2_256",
+      "kernel": "tileKernel_617593",
+      "groups": 4,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 2
+    },
+    {
+      "name": "tc_pipe3",
+      "n": 256,
+      "stem": "tc_pipe3_256",
+      "kernel": "tileKernel_617593",
+      "groups": 4,
+      "items": 256,
+      "smem": 56832,
+      "pipeline": 3
+    },
+    {
+      "name": "g1",
+      "n": 512,
+      "stem": "g1_512",
+      "kernel": "tileKernel_617590",
+      "groups": 64,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g2",
+      "n": 512,
+      "stem": "g2_512",
+      "kernel": "tileKernel_617730",
+      "groups": 64,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3",
+      "n": 512,
+      "stem": "g3_512",
+      "kernel": "tileKernel_617668",
+      "groups": 64,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_128",
+      "n": 512,
+      "stem": "g3_128_512",
+      "kernel": "tileKernel_617669",
+      "groups": 16,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_128w",
+      "n": 512,
+      "stem": "g3_128w_512",
+      "kernel": "tileKernel_617669",
+      "groups": 16,
+      "items": 128,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_pipe2",
+      "n": 512,
+      "stem": "g3_pipe2_512",
+      "kernel": "tileKernel_617669",
+      "groups": 16,
+      "items": 128,
+      "smem": 0,
+      "pipeline": 2
+    },
+    {
+      "name": "g3_pipe3",
+      "n": 512,
+      "stem": "g3_pipe3_512",
+      "kernel": "tileKernel_617669",
+      "groups": 16,
+      "items": 128,
+      "smem": 49536,
+      "pipeline": 3
+    },
+    {
+      "name": "tc",
+      "n": 512,
+      "stem": "tc_512",
+      "kernel": "tileKernel_617599",
+      "groups": 16,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "tc_pipe2",
+      "n": 512,
+      "stem": "tc_pipe2_512",
+      "kernel": "tileKernel_617599",
+      "groups": 16,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 2
+    },
+    {
+      "name": "tc_pipe3",
+      "n": 512,
+      "stem": "tc_pipe3_512",
+      "kernel": "tileKernel_617599",
+      "groups": 16,
+      "items": 256,
+      "smem": 56832,
+      "pipeline": 3
+    },
+    {
+      "name": "g1",
+      "n": 1024,
+      "stem": "g1_1024",
+      "kernel": "tileKernel_617588",
+      "groups": 256,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g2",
+      "n": 1024,
+      "stem": "g2_1024",
+      "kernel": "tileKernel_617728",
+      "groups": 256,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3",
+      "n": 1024,
+      "stem": "g3_1024",
+      "kernel": "tileKernel_617666",
+      "groups": 256,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_128",
+      "n": 1024,
+      "stem": "g3_128_1024",
+      "kernel": "tileKernel_617670",
+      "groups": 64,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_128w",
+      "n": 1024,
+      "stem": "g3_128w_1024",
+      "kernel": "tileKernel_617670",
+      "groups": 64,
+      "items": 128,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_pipe2",
+      "n": 1024,
+      "stem": "g3_pipe2_1024",
+      "kernel": "tileKernel_617670",
+      "groups": 64,
+      "items": 128,
+      "smem": 0,
+      "pipeline": 2
+    },
+    {
+      "name": "g3_pipe3",
+      "n": 1024,
+      "stem": "g3_pipe3_1024",
+      "kernel": "tileKernel_617670",
+      "groups": 64,
+      "items": 128,
+      "smem": 49536,
+      "pipeline": 3
+    },
+    {
+      "name": "tc",
+      "n": 1024,
+      "stem": "tc_1024",
+      "kernel": "tileKernel_617600",
+      "groups": 64,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "tc_pipe2",
+      "n": 1024,
+      "stem": "tc_pipe2_1024",
+      "kernel": "tileKernel_617600",
+      "groups": 64,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 2
+    },
+    {
+      "name": "tc_pipe3",
+      "n": 1024,
+      "stem": "tc_pipe3_1024",
+      "kernel": "tileKernel_617600",
+      "groups": 64,
+      "items": 256,
+      "smem": 56832,
+      "pipeline": 3
+    },
+    {
+      "name": "g1",
+      "n": 2048,
+      "stem": "g1_2048",
+      "kernel": "tileKernel_617590",
+      "groups": 1024,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g2",
+      "n": 2048,
+      "stem": "g2_2048",
+      "kernel": "tileKernel_617730",
+      "groups": 1024,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3",
+      "n": 2048,
+      "stem": "g3_2048",
+      "kernel": "tileKernel_617668",
+      "groups": 1024,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_128",
+      "n": 2048,
+      "stem": "g3_128_2048",
+      "kernel": "tileKernel_617668",
+      "groups": 256,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_128w",
+      "n": 2048,
+      "stem": "g3_128w_2048",
+      "kernel": "tileKernel_617670",
+      "groups": 256,
+      "items": 128,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "g3_pipe2",
+      "n": 2048,
+      "stem": "g3_pipe2_2048",
+      "kernel": "tileKernel_617670",
+      "groups": 256,
+      "items": 128,
+      "smem": 0,
+      "pipeline": 2
+    },
+    {
+      "name": "g3_pipe3",
+      "n": 2048,
+      "stem": "g3_pipe3_2048",
+      "kernel": "tileKernel_617670",
+      "groups": 256,
+      "items": 128,
+      "smem": 49536,
+      "pipeline": 3
+    },
+    {
+      "name": "tc",
+      "n": 2048,
+      "stem": "tc_2048",
+      "kernel": "tileKernel_617598",
+      "groups": 256,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 1
+    },
+    {
+      "name": "tc_pipe2",
+      "n": 2048,
+      "stem": "tc_pipe2_2048",
+      "kernel": "tileKernel_617598",
+      "groups": 256,
+      "items": 256,
+      "smem": 0,
+      "pipeline": 2
+    },
+    {
+      "name": "tc_pipe3",
+      "n": 2048,
+      "stem": "tc_pipe3_2048",
+      "kernel": "tileKernel_617598",
+      "groups": 256,
+      "items": 256,
+      "smem": 56832,
+      "pipeline": 3
+    }
+  ],
+  "run_utc": "2026-11-11T15:35:10.957681+00:00",
+  "cuda_visible_devices": "0",
+  "iterations": 200
+}

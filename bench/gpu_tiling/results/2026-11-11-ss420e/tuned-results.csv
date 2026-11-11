@@ -1,0 +1,13 @@
+config,n,pipeline,groups,items,dynamic_smem,status,result
+g3_128w_u,256,1,4,128,0,OK,OK median 0.0573 ms  min 0.0563 ms  585 GFLOP/s
+g3_pipe2_u,256,2,4,128,0,OK,OK median 0.0553 ms  min 0.0543 ms  607 GFLOP/s
+g3_pipe3_u,256,3,4,128,49536,OK,OK median 0.0553 ms  min 0.0543 ms  607 GFLOP/s
+g3_128w_u,512,1,16,128,0,OK,OK median 0.0942 ms  min 0.0932 ms  2849 GFLOP/s
+g3_pipe2_u,512,2,16,128,0,OK,OK median 0.0922 ms  min 0.0911 ms  2913 GFLOP/s
+g3_pipe3_u,512,3,16,128,49536,OK,OK median 0.0922 ms  min 0.0911 ms  2913 GFLOP/s
+g3_128w_u,1024,1,64,128,0,OK,OK median 0.1884 ms  min 0.1874 ms  11398 GFLOP/s
+g3_pipe2_u,1024,2,64,128,0,OK,OK median 0.1894 ms  min 0.1884 ms  11336 GFLOP/s
+g3_pipe3_u,1024,3,64,128,49536,OK,OK median 0.1894 ms  min 0.1884 ms  11336 GFLOP/s
+g3_128w_u,2048,1,256,128,0,OK,OK median 0.9615 ms  min 0.9472 ms  17867 GFLOP/s
+g3_pipe2_u,2048,2,256,128,0,OK,OK median 0.9800 ms  min 0.9011 ms  17531 GFLOP/s
+g3_pipe3_u,2048,3,256,128,49536,OK,OK median 0.9933 ms  min 0.9175 ms  17296 GFLOP/s

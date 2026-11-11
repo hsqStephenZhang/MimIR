@@ -1,0 +1,44 @@
+config,n,pipeline,groups,items,dynamic_smem,status,result
+g1,256,1,16,256,0,OK,OK median 0.0543 ms  min 0.0532 ms  618 GFLOP/s
+g2,256,1,16,256,0,OK,OK median 0.0358 ms  min 0.0348 ms  936 GFLOP/s
+g3,256,1,16,256,0,OK,OK median 0.0195 ms  min 0.0195 ms  1725 GFLOP/s
+g3_128,256,1,4,256,0,OK,OK median 0.0553 ms  min 0.0543 ms  607 GFLOP/s
+g3_128w,256,1,4,128,0,OK,OK median 17.1335 ms  min 15.3938 ms  2 GFLOP/s
+g3_pipe2,256,2,4,128,0,OK,OK median 17.3711 ms  min 14.6575 ms  2 GFLOP/s
+g3_pipe3,256,3,4,128,49536,OK,OK median 17.3496 ms  min 15.2975 ms  2 GFLOP/s
+tc,256,1,4,256,0,OK,OK median 0.0307 ms  min 0.0297 ms  1092 GFLOP/s
+tc_pipe2,256,2,4,256,0,OK,OK median 0.0256 ms  min 0.0246 ms  1311 GFLOP/s
+tc_pipe3,256,3,4,256,56832,OK,OK median 0.0256 ms  min 0.0246 ms  1311 GFLOP/s
+g1,512,1,64,256,0,OK,OK median 0.0922 ms  min 0.0911 ms  2913 GFLOP/s
+g2,512,1,64,256,0,OK,OK median 0.0594 ms  min 0.0584 ms  4520 GFLOP/s
+g3,512,1,64,256,0,OK,OK median 0.0328 ms  min 0.0317 ms  8192 GFLOP/s
+g3_128,512,1,16,256,0,OK,OK median 0.0840 ms  min 0.0829 ms  3197 GFLOP/s
+g3_128w,512,1,16,128,0,OK,OK median 47.7594 ms  min 40.8904 ms  6 GFLOP/s
+g3_pipe2,512,2,16,128,0,OK,OK median 51.1355 ms  min 40.8125 ms  5 GFLOP/s
+g3_pipe3,512,3,16,128,49536,OK,OK median 51.2993 ms  min 44.1856 ms  5 GFLOP/s
+tc,512,1,16,256,0,OK,OK median 0.0594 ms  min 0.0584 ms  4520 GFLOP/s
+tc_pipe2,512,2,16,256,0,OK,OK median 0.0492 ms  min 0.0492 ms  5461 GFLOP/s
+tc_pipe3,512,3,16,256,56832,OK,OK median 0.0501 ms  min 0.0492 ms  5357 GFLOP/s
+g1,1024,1,256,256,0,OK,OK median 0.3400 ms  min 0.3348 ms  6317 GFLOP/s
+g2,1024,1,256,256,0,OK,OK median 0.3226 ms  min 0.3164 ms  6658 GFLOP/s
+g3,1024,1,256,256,0,OK,OK median 0.1669 ms  min 0.1649 ms  12866 GFLOP/s
+g3_128,1024,1,64,256,0,OK,OK median 0.1751 ms  min 0.1731 ms  12264 GFLOP/s
+g3_128w,1024,1,64,128,0,OK,OK median 163.7560 ms  min 156.7457 ms  13 GFLOP/s
+g3_pipe2,1024,2,64,128,0,OK,OK median 166.4225 ms  min 157.8517 ms  13 GFLOP/s
+g3_pipe3,1024,3,64,128,49536,OK,OK median 168.2688 ms  min 160.0563 ms  13 GFLOP/s
+tc,1024,1,64,256,0,OK,OK median 0.1260 ms  min 0.1260 ms  17050 GFLOP/s
+tc_pipe2,1024,2,64,256,0,OK,OK median 0.0963 ms  min 0.0963 ms  22310 GFLOP/s
+tc_pipe3,1024,3,64,256,56832,OK,OK median 0.0973 ms  min 0.0963 ms  22075 GFLOP/s
+g1,2048,1,1024,256,0,OK,OK median 2.6184 ms  min 2.3695 ms  6561 GFLOP/s
+g2,2048,1,1024,256,0,OK,OK median 2.1484 ms  min 2.1432 ms  7997 GFLOP/s
+g3,2048,1,1024,256,0,OK,OK median 1.2165 ms  min 1.0885 ms  14122 GFLOP/s
+g3_128,2048,1,256,256,0,OK,OK median 1.0936 ms  min 1.0086 ms  15709 GFLOP/s
+g3_128w,2048,1,256,128,0,FAIL,"cuCtxSynchronize() failed: 700
+"
+g3_pipe2,2048,2,256,128,0,FAIL,"cuCtxSynchronize() failed: 700
+"
+g3_pipe3,2048,3,256,128,49536,FAIL,"cuCtxSynchronize() failed: 700
+"
+tc,2048,1,256,256,0,OK,OK median 0.6738 ms  min 0.6707 ms  25497 GFLOP/s
+tc_pipe2,2048,2,256,256,0,OK,OK median 0.6021 ms  min 0.5960 ms  28533 GFLOP/s
+tc_pipe3,2048,3,256,256,56832,OK,OK median 0.7014 ms  min 0.6973 ms  24492 GFLOP/s

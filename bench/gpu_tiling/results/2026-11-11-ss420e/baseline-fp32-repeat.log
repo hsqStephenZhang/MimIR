@@ -1,0 +1,6 @@
+torch=2.2.1+cu121 allow_tf32=False
+NVIDIA GeForce RTX 3090
+torch.mm n=  256  median    0.018 ms    1820.4 GFLOP/s
+torch.mm n=  512  median    0.033 ms    8192.0 GFLOP/s
+torch.mm n= 1024  median    0.124 ms   17331.8 GFLOP/s
+torch.mm n= 2048  median    0.830 ms   20687.1 GFLOP/s

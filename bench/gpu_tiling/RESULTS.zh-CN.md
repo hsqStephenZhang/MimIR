@@ -305,3 +305,59 @@ TF32 tensor core（128×128 work-group，8 个 warp，BK=16），同一时段背
 
 BK=8 时每级只有 10 KiB，但每块的 mma 只有一步 k8，流水再深也只有 0.11–0.13 ms（1024³），不如 BK=16。
 FP32 SIMT kernel 在 3、4 级下仍然正确，速度与 2 级相当。
+
+
+## ss420e：RTX 3090（2026-11-11）
+
+远端目录：`sunqi@ss420e:~/zc/mimir-bench/gpu-gemm-20261111-5e360c58`。
+GPU 0，RTX 3090 24 GiB，sm_86，驱动 535.230.02，远端 CUDA 12.1；
+本地从 `5e360c58b49b6895f68fb49c60be15fb3f06b28d` 的 GEMM 输入生成 PTX，远端 ptxas 汇编。
+`run.py prepare` 保存输入、编译日志及 launch manifest，`run.py run` 在一个 context 内
+用 CUDA events 测量 20 次 warmup 后的 200 次 kernel，取中位数。
+每个配置先用 64 个采样点与 CPU 双精度结果比较（容差 `0.01 * (1 + abs(reference))`）；
+这是采样校验，TF32 配置不能当作严格 FP32 精度。
+cuBLAS 基线通过 PyTorch 2.2.1+cu121 测量，分别显式关闭、开启 TF32；
+表中使用整轮 kernel 结束后的独立基线，不使用首轮中途启动的那次基线。
+
+首轮全部 40 个配置保存在 `results/2026-11-11-ss420e/results.csv`，37 个通过采样校验。
+其中未调优的 8×16 thread tile（`g3_128w`、`g3_pipe2`、`g3_pipe3`）
+超过默认 64-cell leaf 预算，PTX 含每线程 512 B 的 device `malloc/free`，因此速度极慢；
+2048³ 三个配置报 CUDA 700。memcheck 在 `g3_128w_2048` 检出空地址写入。
+ptxas 报告 640 B stack frame、0 spill store/load；不能把这个慢速归为寄存器 spill。
+原始失败项保留，不计作可用性能结果。
+
+| n | G3 64×64 FP32 | G3 128×128 FP32 | TF32 depth 1 | TF32 depth 2 | TF32 depth 3 | cuBLAS FP32 | cuBLAS TF32 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 0.0195 | 0.0553 | 0.0307 | 0.0256 | 0.0256 | 0.018 | 0.019 |
+| 512 | 0.0328 | 0.0840 | 0.0594 | 0.0492 | 0.0501 | 0.033 | 0.023 |
+| 1024 | 0.1669 | 0.1751 | 0.1260 | 0.0963 | 0.0973 | 0.124 | 0.085 |
+| 2048 | 1.2165 | 1.0936 | 0.6738 | 0.6021 | 0.7014 | 0.830 | 0.590 |
+
+单位 ms。1024³ 的 TF32 depth 2 为 22.31 TFLOP/s，2048³ 为 28.53 TFLOP/s。
+这些是固定 tile 配置的测量，未做设备锁频或穷举调参。
+元数据、原始 CSV、隔离基线和 ptxas 资源汇总保存在同一 results 目录。
+
+
+补测 `-X btensor:registers=256` 和 LLVM `-unroll-threshold=20000` 的 8×16 leaf：
+12 个配置全部通过采样校验，数据见 `tuned-results.csv`，资源见 `tuned-resources.csv`。
+
+| n | 8×16 depth 1 | depth 2 | depth 3 |
+|---|---:|---:|---:|
+| 256 | 0.0573 | 0.0553 | 0.0553 |
+| 512 | 0.0942 | 0.0922 | 0.0922 |
+| 1024 | 0.1884 | 0.1894 | 0.1894 |
+| 2048 | 0.9615 | 0.9800 | 0.9933 |
+
+单位 ms。增加预算消除了这里的 device-malloc 退路，但 RTX 3090 上它仍没有超过 TF32 配置。
+以上是自带 harness 的诊断数据；按维护者随后要求，正式的 MimIR/PyTorch/TVM 对比改用
+`/workspaces/ml-compiler/gemm-bench` 的 `feat/mimir-nominal-tensor` 分支。
+
+
+正式框架已完成 GPU 三方对比：
+`/workspaces/ml-compiler/gemm-bench/results/gpu-ss420e-20261111/comparison.csv`。
+GPU 0 / RTX 3090，全部 22 个用例在 MimIR、PyTorch、TVM 均通过完整 FP64 校验。
+该框架的 GPU 结果统一为 FP32、TF32 关闭、原生 CUDA events；
+1024³ 的 MimIR / PyTorch / TVM 分别为 0.20797 / 0.13316 / 0.23761 ms，
+2048³ 分别为 1.33520 / 0.84391 / 1.76769 ms。
+非整齐尺寸的 MimIR 输入在 prepare 中零填充，实际计算量记录在结果 JSON；
+这些正式数字不与前面自带 harness 的配置、数值模式和测量轮次混合。
