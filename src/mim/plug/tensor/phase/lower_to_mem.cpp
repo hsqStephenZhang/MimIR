@@ -1292,8 +1292,12 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
                                   : affine::counting_nest(cur, exit, acc, shape->projs(rank), "tileCopy");
     auto [loop_mem, loop_dst] = acc->projs<2>();
     const Def* element        = src;
+    // A capped source is stored at its cap, which the copied extent may undercut.
+    auto source_shape = fe::lookup(storage_shapes_, root);
     if (Axm::isa<buffer::Buf>(src->type()))
-        std::tie(loop_mem, element) = buffer::op_read(loop_mem, src, btensor::folded_idx(shape, iters))->projs<2>();
+        std::tie(loop_mem, element)
+            = buffer::op_read(loop_mem, src, btensor::folded_idx(source_shape ? source_shape : shape, iters))
+                  ->projs<2>();
     DefVec coords(rank);
     for (size_t d = 0; d != rank; ++d) {
         auto offset = destination.origin->proj(rank, d);
@@ -1565,8 +1569,11 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         auto stride                = total;
         for (size_t d = 0; d != *rank; ++d) {
             if (counts[d] == 1) {
-                // Keep a one-tile bound region dependent on its binder so nested binding scopes cannot float out.
-                offsets[d] = total == 1 && d == 0 ? linear : w.lit_nat_0();
+                // A one-tile bound region depends on its binder in every dim, so nothing it stages floats out.
+                // The binder is 0 there, and scaling it by the step keeps the offset a known multiple of the step.
+                offsets[d] = total != 1 ? w.lit_nat_0()
+                           : d == 0     ? linear
+                                        : w.call(core::nat::mul, Defs{linear, w.lit_nat(steps[d])});
                 extents[d] = whole[d] ? shape->proj(*rank, d) : old.lit_nat(steps[d]);
                 continue;
             }

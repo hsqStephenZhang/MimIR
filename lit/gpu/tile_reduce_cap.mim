@@ -1,0 +1,19 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_reduce_tree_tail_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A capped work-group tile merges its work-items' partials into a buffer stored at the cap, and copies its valid rows out.
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+let levels = serial_group ((4, 0), 0, 0, group_red_items ((0, 8), 1, group_done ()));
+
+extern fun rowsum64 (x: tensor.Tensor 2 (6, 64) I64): tensor.Tensor 1 6 I64 =
+    return (tile_req (reduce (core.wrap.add 0 @0, 0I64) 1₂ (buf x), (), levels, default_control));
+
+// CHECK: gpu.launch

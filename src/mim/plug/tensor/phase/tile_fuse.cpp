@@ -1452,8 +1452,10 @@ const Def* Levels::reduction(const Def* anchor,
     auto stage_block = [&](const Def* value, const Def* k0, const Def* k) -> const Def* {
         auto block = Block{loop, k0, k};
         if (site) {
-            auto literal_k      = Lit::isa(K);
-            site->caps[k]       = {sizes[loop], literal_k && *literal_k % sizes[loop] == 0};
+            auto literal_k = Lit::isa(K);
+            // A literal block, such as a peeled tail's, is its own bound, and substituting it would rewrite every equal
+            // extent.
+            if (!Lit::isa(k)) site->caps[k] = {sizes[loop], literal_k && *literal_k % sizes[loop] == 0};
             site->multiples[k0] = sizes[loop];
         }
         for (auto [slot, axis, panel_loop, tile] : panels) {

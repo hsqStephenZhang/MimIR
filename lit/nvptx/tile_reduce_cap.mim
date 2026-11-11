@@ -1,0 +1,6 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_reduce_tree_tail_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// The capped work-group's merged rows are copied out of their cap-sized buffer on the device.
