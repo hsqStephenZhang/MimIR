@@ -36,6 +36,6 @@ extern fun chain (m: Nat, x: tensor.Tensor 2 (m, 9) I64): tensor.Tensor 2 (m, 9)
 // CHECK-DAG: tensor.tile_group root {{.*}} kind 1 members 1
 // CHECK-DAG: tensor.tile_group root {{.*}} kind 2 members 0
 // CHECK-DAG: tensor.tile_group root {{.*}} kind 0 members 0
-// CHECK-DAG: L1 promote input 0 axis 0 panel 4
-// CHECK-DAG: L1 promote input 1 axis 1 panel 16
+// CHECK-DAG: L4 pack input 0 axis 0 panel 4
+// CHECK-DAG: L2 pack input 1 axis 1 panel 16
 // CHECK-DAG: L1 red loop=2 ks=64 tail=peel inputs=2 fused=1 tail_fused=1

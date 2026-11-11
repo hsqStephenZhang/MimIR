@@ -57,8 +57,8 @@ extern fun row_max (a: tensor.Tensor 2 (5, 7) F32, b: tensor.Tensor 2 (5, 11) F3
 // CHECK: tensor.tiled
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((5, 3), (5, 3),
 // CHECK-LABEL: extern fun mlp (
-// CHECK: let h = tensor.tiled {{.*}} ((13, 11), (13, 32), 1)
-// CHECK: tensor.tiled {{.*}} ((13, 5), (13, 32), 1)
+// CHECK: let h = tensor.tiled {{.*}} ((13, 11), (13, 11), 1)
+// CHECK: tensor.tiled {{.*}} ((13, 5), (13, 5), 1)
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),
 // CHECK: tensor.map_reduce_post {{.*}} btensor.clip_sched {{.*}} (maximum,
 // CHECK-NOT: tensor.map_reduce_post {{.*}} (5, (5, 7),

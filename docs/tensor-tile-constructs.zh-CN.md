@@ -1682,3 +1682,31 @@ TileFuse 已逐级实现 fusion/yield，因此新路径不再次运行旧 FuseAn
 验证：260 个单元测试全部通过；完整 lit 为 812 通过、8 不适用、1 失败。
 失败的 `group_rules_exec` 在 `reference-tiles=1` 下有泄漏，使用 `tile-fuse=0` 也可复现；
 本次迁移的 BLIS、symbolic、batched、view、epilogue、计算次数和新默认 workload 测试通过。
+
+## CPU MC 分块与独立 packing scope（2026-11-11）
+
+`TileLevels#Pack` / `serial_pack (panel_sizes, promote, rest)` 在当前作用域打包输入，
+不增加循环。`panel_sizes` 指定被选输入的一个 parallel 投影轴及其面板宽度，
+不再由后续第一个 parallel 层的 cache block 尺寸决定布局；reduction 轴必须为零。
+因此可表达 NC → KC → pack B → MC → pack A → MR/NR → vector，B 在不同 MC 间复用。
+`cpu_contraction_levels` 实现这个链；`contraction_levels` 保留原先没有 MC 的链。
+
+`cpu_contraction_order_levels (..., transpose)` 还支持交换 cache 循环与打包复用方向。
+`transpose=tt` 对应 OpenBLAS 的 row-major CBLAS 调用：其接口交换 M/N 与 A/B，
+所以原矩阵的 M 在外层、N 按 MC 分块，A 在 cache blocks 间复用。
+这不转置数据、不改变 GEMM 结果的逻辑布局。
+
+CPU 自动 contraction 对静态 K 采用新的 MC 链，默认仍使用共享 MR/NR/NC/KC selector，
+MC 根据 cache budget 和 KC 计算。`tensor:cpu-mr/nr/mc/nc/kc` 提供独立的非零 override；
+`tensor:cpu-order=0` 为外 N/内 M，`=1` 为 OpenBLAS row-major 的外 M/内 N。
+微内核超过默认 64 个 cells 时还须显式增加 `btensor:registers`；这只放宽 SSA cell 预算，
+不能保证 LLVM 分配寄存器后没有 spill。
+
+MC 内的 packing 支持 `slice_box`，直接组合到原输入的 read map，避免先把带容量上界的 view
+物化为另一份 copy。串行 cache block 的容量限制在已有 tile 的容量内，避免把瘦矩阵填充到 MC。
+原地更新检查在证明一个 tiled 轴只有一块时使用零 origin，保留跨 MC 的 accumulator 原地更新。
+`cpu_mc_exec` 检查两种方向、全部尾块、ASan，以及实际动态 A/B panel 分配次数。
+
+尚未把独立 packing 的容量信息完整传过手写 fold 携带的动态 K，因此自动 selector 对 runtime K
+保留旧的 reduction-scoped packing level chain；已由显式 fold 初始化的 partial root 不再自动重新分组。
+这条兼容路径同样使用 multi-level tiling。当前没有加入跨调用 packing 或 CPU persistent scratch。

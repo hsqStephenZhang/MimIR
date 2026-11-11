@@ -1788,9 +1788,16 @@ const Def* LowerToMem::lower_stage(const App* app) {
         for (size_t j = 0; j != *k; ++j)
             if (Lit::isa(pos->proj(*k, j)) == contiguous->first) inner = *r + j;
     };
-    if (auto slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(app->arg()))) {
+    const App* slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(app->arg()));
+    auto boxed       = Axm::isa<tensor::slice_box>(Axm::peel<tensor::buf>(app->arg()));
+    if (slice || boxed) {
+        if (!slice) slice = boxed;
         auto [slice_meta, source_shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
         auto [start, step, extent]           = box->projs<3>();
+        if (boxed) {
+            extent = step;
+            step   = old.pack(rank, old.lit_nat_1());
+        }
         auto source = slice->arg(), physical_shape = source_shape, physical_rank = rank;
         const Def* read = old.app(old.annex<affine::id>(), rank);
         while (auto view = panel::tensor_read(source, physical_shape)) {
@@ -1879,7 +1886,13 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
         auto lam                           = region_body(app->arg()).first->isa<Lam>();
         if (!lam || !lam->is_set()) return false;
         auto param = w.mut_lam(w.pi(w.arr(rank, w.type_nat()), w.type_nat()));
-        auto off   = param->var();
+        // A tile that covers an axis has only the zero origin on that axis. Treating its offset as
+        // arbitrary loses the in-place proof when an MC level leaves N whole.
+        auto off   = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
+            return nat_bounded_by(shapes->proj(3, 0)->proj(rank, d), shapes->proj(3, 1)->proj(rank, d))
+                     ? w.lit_nat_0()
+                     : param->var()->proj(rank, d);
+        }));
         auto next  = w.tuple(DefVec(
             rank, [&](size_t d) { return w.call(core::nat::add, Defs{origin->proj(rank, d), off->proj(rank, d)}); }));
         return linear_step(w.app(lam->reduce(w.tuple({off, shapes->proj(3, 1)})).back(), ins), accumulator, next);

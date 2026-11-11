@@ -1954,7 +1954,8 @@ anx mutual
         | Par: [sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc)]
         | Group: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)]
         | Red: [sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc)]
-        | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc)];
+        | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc)]
+        | Pack: [sizes: «n; Nat», promote: Nat, rest: TileLevels (n, Acc)];
     nom GroupLevels (n: Nat, Acc: *) =
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc)]
@@ -1985,6 +1986,10 @@ anx lam serial_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest:
     (TileLevels (n, Acc))#Red (sizes, tail, promote, rest);
 anx lam serial_vec {n: Nat, Acc: *} (sizes: «n; Nat», rest: TileLevels (n, Acc)): TileLevels (n, Acc) =
     (TileLevels (n, Acc))#Vec (sizes, rest);
+/// Pack selected inputs at this scope, independently of loop blocking. Nonzero parallel sizes name each
+/// input's panel axis and width; packing does not split a loop. Reduction sizes must be zero.
+anx lam serial_pack {n: Nat, Acc: *} (sizes: «n; Nat», promote: Nat, rest: TileLevels (n, Acc)): TileLevels (n, Acc) =
+    (TileLevels (n, Acc))#Pack (sizes, promote, rest);
 anx lam group_done {n: Nat, Acc: *} (_: []): GroupLevels (n, Acc) = (GroupLevels (n, Acc))#Done;
 anx lam group_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc)): GroupLevels (n, Acc) =
     (GroupLevels (n, Acc))#Par (sizes, tail, rest);
@@ -2077,9 +2082,43 @@ anx lam contraction_levels {Acc: *} (ro mr nr nc kc promote: Nat): TileLevels (r
     let vector = ‹d: n; ((0, 4)#(is (d, ro)), 1)#(is (d, ro - 2))›;
     serial_par (outer, 1, serial_red (block, 1, promote,
         serial_par (micro, 1, serial_vec (vector, serial_done ()))));
+/// OpenBLAS-style NC/KC/MC blocking. B is packed once per NC/KC box, then reused across MC blocks;
+/// A is packed per MC/KC box. Panel widths remain MR/NR regardless of the cache block sizes.
+anx lam cpu_contraction_order_levels {Acc: *} (ro mr nr mc nc kc promote: Nat, transpose: Bool): TileLevels (ro + 1, Acc) =
+    let n = ro + 1;
+    lam is (d: Idx n, k: Nat): Bool = core.idx2nat d == k;
+    let outer_axis = (ro - 1, ro - 2)#transpose;
+    let cache_axis = (ro - 2, ro - 1)#transpose;
+    let outer = ‹d: n; ((0, nc)#(is (d, outer_axis)), 1)#(core.idx2nat d < ro - 2)›;
+    let block = ‹d: n; (0, kc)#(is (d, ro))›;
+    let rows = ‹d: n; (0, mc)#(is (d, cache_axis))›;
+    let ap = ‹d: n; (0, mr)#(is (d, ro - 2))›;
+    let bp = ‹d: n; (0, nr)#(is (d, ro - 1))›;
+    let micro = ‹d: n; ((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2))›;
+    let vector = ‹d: n; ((0, 4)#(is (d, ro)), 1)#(is (d, ro - 2))›;
+    serial_par (outer, 1, serial_red (block, 1, 0,
+        serial_pack ((bp, ap)#transpose, (promote / 2 % 2 * 2, promote % 2)#transpose,
+            serial_par (rows, 1, serial_pack ((ap, bp)#transpose, (promote % 2, promote / 2 % 2 * 2)#transpose,
+                serial_par (micro, 1, serial_vec (vector, serial_done ())))))));
+anx lam cpu_contraction_levels {Acc: *} (ro mr nr mc nc kc promote: Nat): TileLevels (ro + 1, Acc) =
+    cpu_contraction_order_levels @Acc (ro, mr, nr, mc, nc, kc, promote, ff);
+
+/// CPU selector overrides are zero for the shared defaults. `order=1` follows OpenBLAS's column-major
+/// driver as called through row-major CBLAS: outer M, reduction K, cache-blocked N, with packed A reused.
+anx lam cpu_default_levels {Acc: *} (ro bytes lanes registers cache_bytes mr0 nr0 mc0 nc0 kc0 order: Nat): TileLevels (ro + 1, Acc) =
+    let (mr1, nr1, kc1, nc1) = group_blocks (bytes, lanes, registers, cache_bytes);
+    let mr = (mr1, mr0)#(0 < mr0);
+    let nr = (nr1, nr0)#(0 < nr0);
+    let kc = (kc1, kc0)#(0 < kc0);
+    let nc = (nc1, nc0)#(0 < nc0);
+    let mc_budget = cache_bytes / (kc * bytes * 2);
+    let mc1 = core.select (mc_budget < mr, mr, mc_budget / mr * mr);
+    let mc = (mc1, mc0)#(0 < mc0);
+    cpu_contraction_order_levels @Acc (ro, mr, nr, mc, nc, kc, 3, order == 1);
 ///
 /// The levels `tensor.tile_group` requests for a root with `ro` parallel and `rr` reduction loops:
-/// always parallel, reduction, parallel, vector, where a level of zeros changes nothing.
+/// NC parallel, KC reduction, B packing, MC parallel, A packing, micro parallel, vector;
+/// non-contractions leave the extra levels empty.
 /// `kind` 1 is a contraction (BLIS blocks, both operands packed, register-blocked micro tiles),
 /// 2 another reduction and 0 an elementwise root, both one tile per index of all parallel loops but the last
 /// (one per row for a row reduction).
@@ -2097,11 +2136,19 @@ anx lam default_tile_config {Acc: *} (ro rr kind: Nat, bytes lanes registers cac
     let block  = ‹d: n; (0, kc)#(is (d, n - 1))›;
     let micro  = ‹d: n; ((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2))›;
     let vector = ‹d: n; ((0, 4)#(is (d, n - 1)), 1)#(is (d, ro - 2))›;
+    let mc_budget = cache_bytes / (kc * bytes * 2);
+    let mc = core.select (mc_budget < mr, mr, mc_budget / mr * mr);
+    let cache_rows = ‹d: n; (0, mc)#(is (d, ro - 2))›;
+    let ap = ‹d: n; (0, mr)#(is (d, ro - 2))›;
+    let bp = ‹d: n; (0, nr)#(is (d, ro - 1))›;
     // One chain for both shapes: a select of two chains would be a union of two nominal instances.
     lam pick (elementwise contraction: «n; Nat»): «n; Nat» = (elementwise, contraction)#(kind == 1);
     serial_par (pick (rows, outer), 1,
-        serial_red (pick (none, block), 1, (0, 3)#(kind == 1),
-            serial_par (pick (none, micro), 1, serial_vec (pick (none, vector), serial_done ()))));
+        serial_red (pick (none, block), 1, 0,
+            serial_pack (pick (none, bp), (0, 2)#(kind == 1),
+                serial_par (pick (none, cache_rows), 1,
+                    serial_pack (pick (none, ap), (0, 1)#(kind == 1),
+                        serial_par (pick (none, micro), 1, serial_vec (pick (none, vector), serial_done ())))))));
 
 axm within_budget: {P C: *} → [producer: P, reader: C, budget: Nat] → Bool;
 axm region_fusion_ok: {P R B: *}

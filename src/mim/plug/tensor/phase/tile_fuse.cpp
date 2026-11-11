@@ -162,9 +162,9 @@ const Def* close(const Def* value, const Var* var, const Def* binder, const DefV
     return rewriter.rewrite(value);
 }
 
-/// One level of a `tile_req`: `kind` 0 parallel, 1 reduction, 2 vector, 3 tensor-core block; `bind` 0 serial,
-/// 1 work-group, 2 work-item, 3 warp.
-/// `pipeline` is a reduction's depth inside a work-group, 0 until TileFuse::realize resolves the default.
+/// One level of a `tile_req`: `kind` 0 parallel, 1 reduction, 2 vector, 3 tensor-core block, 4 CPU pack; `bind` 0
+/// serial, 1 work-group, 2 work-item, 3 warp. `pipeline` is a reduction's depth inside a work-group, 0 until
+/// TileFuse::realize resolves the default.
 struct LevelSpec {
     u64 kind, tail, promote, bind;
     const Def* sizes;
@@ -195,20 +195,20 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         // (kind, bind) per constructor of TileLevels / GroupLevels / ItemLevels / WarpLevels; -1 marks a case without
         // one.
         static constexpr int table[4][7][2] = {
-            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0}, {-1, -1}, {-1, -1}},
+            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0},   {4, 0}, {-1, -1}},
             {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3}},
             {{0, 0}, {0, 0},   {1, 0},   {2, 0}, {-1, -1}, {-1, -1}, {-1, -1}},
             {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}}
         };
         if (i > 6 || table[scope][i][0] < 0) return std::nullopt;
         spec.kind = table[scope][i][0], spec.bind = table[scope][i][1];
-        if (spec.kind != 2) {
+        if (spec.kind != 2 && spec.kind != 4) {
             auto tail = lit(1);
             if (!tail) return std::nullopt;
             spec.tail = *tail;
         }
-        if ((spec.kind == 1 && spec.bind == 0) || (spec.kind == 0 && spec.bind == 1)) {
-            auto promote = lit(2);
+        if ((spec.kind == 1 && spec.bind == 0) || (spec.kind == 0 && spec.bind == 1) || spec.kind == 4) {
+            auto promote = lit(spec.kind == 4 ? 1 : 2);
             if (!promote) return std::nullopt;
             spec.promote = *promote;
         }
@@ -958,6 +958,13 @@ private:
                          fe::Span<const LevelSpec> rest,
                          u64 depth);
     const Def* vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const LevelSpec> rest, u64 depth);
+    const Def* pack(const App* root,
+                    const btensor::MapRedPost& mr,
+                    u64 ro,
+                    fe::Span<const u64> sizes,
+                    u64 promote,
+                    fe::Span<const LevelSpec> rest,
+                    u64 depth);
     const Def* mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 depth);
 
     const fe::Log& log_;
@@ -1151,8 +1158,33 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64
             return reduction(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, level.merge,
                              level.pipeline, rest, depth);
         case 2: return vector(root, rn, literal, rest, depth);
+        case 4: return pack(root, mr, ro, literal, level.promote, rest, depth);
         default: return mma(root, rn, literal, depth);
     }
+}
+
+const Def* Levels::pack(const App* root,
+                        const btensor::MapRedPost& mr,
+                        u64 ro,
+                        fe::Span<const u64> sizes,
+                        u64 promote,
+                        fe::Span<const LevelSpec> rest,
+                        u64 depth) {
+    if (bound_) return fail("a CPU pack level must be outside GPU bindings");
+    for (u64 d = ro; d != sizes.size(); ++d)
+        if (sizes[d]) return fail("a CPU pack level specifies only parallel panel axes");
+    auto nis = Lit::as(mr.nis);
+    if (promote >> nis) return fail("a promoted input does not exist");
+    const App* value = root;
+    for (u64 slot = 0; slot != nis; ++slot) {
+        if (!(promote >> slot & 1)) continue;
+        auto panel = panel_axis(mr.maps->proj(nis, slot), Lit::as(mr.Ris->proj(nis, slot)), sizes.first(ro));
+        if (!panel) return fail("a CPU packed input needs one projected parallel panel axis");
+        value = promote_input(value, slot, panel->axis, panel->loop, panel->tile, false, nullptr, nullptr, nullptr,
+                              nullptr);
+        log_.d("tensor.tile_fuse {} L{} pack input {} axis {} panel {}", op_, depth, slot, panel->axis, panel->tile);
+    }
+    return tile(value, rest, depth + 1);
 }
 
 const Def* Levels::parallel(const Def* anchor,
@@ -1179,6 +1211,10 @@ const Def* Levels::parallel(const Def* anchor,
         // An untiled runtime extent takes its constant storage bound, so the inner write preimage is exact.
         auto bound = storage(anchor)->proj(ro, d);
         tiles[d]   = sizes[d] ? w.lit_nat(sizes[d]) : Lit::isa(extent) || !Lit::isa(bound) ? extent : bound;
+        // Serial cache blocks need no capacity beyond the enclosing tile. In particular, MC must not
+        // turn a skinny M-by-K panel into an MC-by-K allocation filled mostly with padding.
+        if (!bind && !bound_ && sizes[d])
+            if (auto cap = Lit::isa(bound); cap && *cap) tiles[d] = w.lit_nat(std::min(sizes[d], *cap));
         whole &= !sizes[d] || tiles[d] == extent;
     }
     // The outermost level stays a region even over the whole shape, so tile bodies own every intermediate buffer.

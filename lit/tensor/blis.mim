@@ -33,7 +33,7 @@ lam packed_with_post {M K N: Nat} (config: Config, a: tensor.Tensor 2 (M, K) I64
         (proj_map @(3, 2) (0, 1))
         ((proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)), proj_map @(2, 1) 1)
         ((a, b), bias);
-    tile_req (root, (a, b), contraction_levels @I64 (2, MR, NR, NC, KC, (2, 3)#pack_a), default_control);
+    tile_req (root, (a, b), cpu_contraction_levels @I64 (2, MR, NR, MR * 2, NC, KC, (2, 3)#pack_a), default_control);
 
 lam packed {M K N: Nat} (config: Config, a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64,
     add mul: «2; I64» → I64): tensor.Tensor 2 (M, N) I64 =

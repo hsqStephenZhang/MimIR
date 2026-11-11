@@ -4,6 +4,7 @@
 
 #include <mim/plug/core/core.h>
 
+#include "mim/plug/tensor/phase/panel_layout.h"
 #include "mim/plug/tensor/tensor.h"
 
 namespace mim::plug::tensor::phase {
@@ -170,6 +171,16 @@ void TileGroup::start() {
             auto plain = w.app(w.annex<btensor::mk_sched>(),
                                w.tuple({w.lit_nat(mr.ranks()->nloops()), w.lit_nat_0()}));
             if (!Check::test_alpha(mr.sched, plain) || !pure_scalar(mr.comb) || !pure_scalar(mr.post)) continue;
+            // A partial reduction seeded by an explicit fold already owns its K decomposition.
+            // Repartitioning its tail can change the storage caps of the fold's carried panels.
+            if (auto initial = tensor_init(mr)) {
+                auto seed = initial->outs, shape = initial->shape;
+                while (auto read = panel::tensor_read(seed, shape)) {
+                    seed  = read->src;
+                    shape = read->S;
+                }
+                if (Axm::isa<tile_fold>(seed)) continue;
+            }
             claimed.insert(op);
             DefVec members;
             // A batched contraction's producers also feed other roots' reductions, so fusing them would compute them
@@ -226,6 +237,24 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
                            w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
                            w.lit_nat(driver().arg_nat("tensor", "group-cache").value_or(262144))});
     auto levels = w.app(w.app(w.annex<default_tile_config>(), mr.To), facts);
+    if (group->second.kind == 1) {
+        auto args = DefVec{w.lit_nat(ranks.ro), bytes, lanes,
+                           w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
+                           w.lit_nat(driver().arg_nat("tensor", "group-cache").value_or(262144))};
+        for (auto name : {"cpu-mr", "cpu-nr", "cpu-mc", "cpu-nc", "cpu-kc", "cpu-order"})
+            args.push_back(w.lit_nat(driver().arg_nat("tensor", name).value_or(0)));
+        if (Lit::isa(mr.Sr->proj(ranks.nloops(), ranks.nloops() - 1))) {
+            levels = w.app(w.app(w.annex<cpu_default_levels>(), mr.To), w.tuple(args));
+        } else {
+            // A runtime K carried through an explicit fold still needs the reduction's panel-cap forwarding.
+            // Keep that existing level chain until independent pack scopes forward those caps as well.
+            auto blocks = w.app(w.annex<group_blocks>(), w.tuple({bytes, lanes, args[3], args[4]}));
+            levels = w.app(w.app(w.annex<contraction_levels>(), mr.To),
+                           w.tuple({w.lit_nat(ranks.ro), blocks->proj(4, 0), blocks->proj(4, 1), blocks->proj(4, 3),
+                                    blocks->proj(4, 2), w.lit_nat(3)}));
+            log().d("tensor.tile_group {} keeps reduction-scoped packing for runtime K", value);
+        }
+    }
     auto members
         = w.tuple(DefVec(group->second.members.size(), [&](size_t i) { return rewrite(group->second.members[i]); }));
     auto control = w.annex<default_control>();

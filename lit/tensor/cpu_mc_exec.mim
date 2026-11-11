@@ -1,0 +1,30 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:strict=1 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: %FileCheck %s --implicit-check-not='destination fallback' < %t.log
+// RUN: clang++ -O2 -fsanitize=address %S/cpu_mc_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: sed 's/@malloc(/@counted_malloc(/g' %t.ll > %t.count.ll
+// RUN: clang++ -O2 -DCOUNT_MALLOC %S/cpu_mc_aux.cpp %t.count.ll -o %t.count -Wno-override-module
+// RUN: %t.count
+
+// Three MC blocks share each packed B panel. A is packed at MC scope, rather than once per MR tile
+// or as a whole M-by-KC panel. The second kernel exercises MC, NC, KC, MR and NR tails together.
+plugin tensor;
+plugin core;
+plugin math;
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+lam gemm {M K N: Nat} (a: tensor.Tensor 2 (M, K) F32, b: tensor.Tensor 2 (K, N) F32): tensor.Tensor 2 (M, N) F32 =
+    tensor.tile_req (tensor.product_2d R (tensor.buf a, tensor.buf b), (),
+        tensor.cpu_contraction_levels @F32 (2, 4, 8, 8, 16, 4, 3), tensor.default_control);
+extern fun full (a: tensor.Tensor 2 (24, 12) F32, b: tensor.Tensor 2 (12, 32) F32): tensor.Tensor 2 (24, 32) F32 =
+    return (gemm (a, b));
+extern fun tails (a: tensor.Tensor 2 (22, 11) F32, b: tensor.Tensor 2 (11, 29) F32): tensor.Tensor 2 (22, 29) F32 =
+    return (gemm (a, b));
+extern fun row_major (a: tensor.Tensor 2 (24, 12) F32, b: tensor.Tensor 2 (12, 32) F32): tensor.Tensor 2 (24, 32) F32 =
+    return (tensor.tile_req (tensor.product_2d R (tensor.buf a, tensor.buf b), (),
+        tensor.cpu_contraction_order_levels @F32 (2, 4, 8, 16, 8, 4, 3, tt), tensor.default_control));
+
+// CHECK-DAG: L2 pack input 1 axis 1 panel 8
+// CHECK-DAG: L4 pack input 0 axis 0 panel 4
+// CHECK-DAG: L3 par
+// CHECK-NOT: unrealized tensor.tile_req
