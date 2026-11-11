@@ -1,4 +1,4 @@
-// RUN: %mim -p opt -p ll %s -X ll:o=%t.ll -V -V -V -V 2> %t.log
+// RUN: %mim -X tensor:tile-fuse=0 -p opt -p ll %s -X ll:o=%t.ll -V -V -V -V 2> %t.log
 // RUN: %FileCheck %s < %t.log
 // RUN: sed 's/(p):/(_):/' %s > %t.bad.mim
 // RUN: (! %mim %t.bad.mim 2>&1) | %FileCheck %s --check-prefix=CAPTURE

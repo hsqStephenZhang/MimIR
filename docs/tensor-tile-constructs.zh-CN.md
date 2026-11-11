@@ -1657,3 +1657,28 @@ Task 7 的 tiled generate 参考实现可为每个 output cell 重算整个 tile
 不能原地写时须显式 copy/report；fold 中间 buffers 的释放与 reuse 也需实现。
 因此本实验验证 generic Rule、closures、tail 数值与完整 lowering 通路，不是 packed GEMM
 的性能实现；GPU storage scopes 和 fused bias/ReLU epilogue 尚未在该实验验证。
+
+
+## CPU 默认调度迁移到 level chain（2026-11-11）
+
+`feat/symbolic-tiled` 的 CPU 工作已在 GPU tiling 分支中。CPU 默认的 `GroupDefault`
+现在使用 `TileGroup → tile_req(default_tile_config) → TileFuse`；`group=0` 仍关闭自动分组，
+`tile-fuse=0` 保留旧 grouping pipeline，`tile-fuse=1` 只实现显式请求。
+GPU 仍需要显式请求，不自动套用 CPU 配置。
+
+新增 `contraction_levels {Acc} (ro, MR, NR, NC, KC, promote)`：batch 轴逐个访问，
+N/NC parallel → ordered K/KC reduction/packing → MR/NR parallel → vector leaf。
+K extent 整除四时拆成外层 K/4 与内层四次展开，否则保留有序 scalar K；各级 peel 尾块。
+CPU 的 `promote` 表示面板 packing，work-group 内才表示 shared memory。
+`lit/tensor/blis.mim` 原先的手写多层模板已改为这个请求，producer 通过 members 传入，
+bias/ReLU 作为 root 的 post 由归约实现保持单次执行。
+
+自动 partition 保留已有 vector/unroll leaf，并检查 root 和 member 的 scalar purity。
+TileFuse 已逐级实现 fusion/yield，因此新路径不再次运行旧 FuseAndYield，避免重捕获内层 tile 变量；
+权重 prepack 仍在实现请求后执行。`reference-tiles=1` 不自动重新分块已展开的 reference region。
+`cpu_levels_exec` 在新默认路径验证原 default workloads，并与 `group=0` 对照；
+原 grouping cost/profile/region-form 测试显式选择 `tile-fuse=0`，继续覆盖兼容路径。
+
+验证：260 个单元测试全部通过；完整 lit 为 812 通过、8 不适用、1 失败。
+失败的 `group_rules_exec` 在 `reference-tiles=1` 下有泄漏，使用 `tile-fuse=0` 也可复现；
+本次迁移的 BLIS、symbolic、batched、view、epilogue、计算次数和新默认 workload 测试通过。

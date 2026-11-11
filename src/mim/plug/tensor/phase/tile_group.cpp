@@ -164,6 +164,12 @@ void TileGroup::start() {
             auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
             if (!mr.ranks() || kind_of(mr) != kind || !canonical_write(mr, mr.ranks()->ro, mr.ranks()->nloops()))
                 continue;
+            // A leaf with an explicit vector/unroll schedule already owns its register blocking.
+            // In particular, reference tiling can expose these leaves outside a region.
+            auto& w = old_world();
+            auto plain = w.app(w.annex<btensor::mk_sched>(),
+                               w.tuple({w.lit_nat(mr.ranks()->nloops()), w.lit_nat_0()}));
+            if (!Check::test_alpha(mr.sched, plain) || !pure_scalar(mr.comb) || !pure_scalar(mr.post)) continue;
             claimed.insert(op);
             DefVec members;
             // A batched contraction's producers also feed other roots' reductions, so fusing them would compute them
@@ -189,7 +195,7 @@ void TileGroup::start() {
                     auto producer = graph::map_reduce(input);
                     if (!producer || claimed.contains(input)) continue;
                     auto pr = btensor::MapRedPost::of(producer->callee()->as<App>());
-                    if (!pr.ranks() || pr.ranks()->rr) continue;
+                    if (!pr.ranks() || pr.ranks()->rr || !pure_scalar(pr.comb) || !pure_scalar(pr.post)) continue;
                     bool scope = true;
                     for (auto var : input->free_vars())
                         scope &= op->has_free_var(var);

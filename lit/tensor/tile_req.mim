@@ -1,6 +1,6 @@
 // RUN: %mim %s -o - | %FileCheck %s --check-prefix=CONTROL
-// RUN: %mim -p opt %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
-// RUN: not %mim -p opt -X tensor:strict=1 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=STRICT
+// RUN: %mim -X tensor:tile-fuse=0 -p opt %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=WARN
+// RUN: not %mim -X tensor:tile-fuse=0 -p opt -X tensor:strict=1 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=STRICT
 
 plugin tensor;
 plugin core;

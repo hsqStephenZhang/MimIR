@@ -1,0 +1,18 @@
+// RUN: %mim -I %S -p opt -X tensor:strict=1 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: clang++ -O3 -fsanitize=address %S/group_default_aux.cpp %t.ll -o %t -Wno-override-module
+// RUN: %t
+// RUN: %mim -I %S -p opt -X tensor:group=0 %s -p ll -X ll:o=%t.off.ll -VVVV 2> %t.off.log
+// RUN: %FileCheck %s --check-prefix=OFF < %t.off.log
+// RUN: clang++ -O3 -fsanitize=address %S/group_default_aux.cpp %t.off.ll -o %t.off -Wno-override-module
+// RUN: %t.off
+
+// Run the previous default CPU workloads through the default multi-level partition and realizer:
+// GEMM+bias+ReLU, an MLP, softmax, layer normalization and a convolution chain.
+import group_default;
+
+// CHECK: tensor.tile_group root {{.*}} kind 1
+// CHECK: tensor.tile_fuse
+// CHECK-NOT: unrealized tensor.tile_req
+// OFF-NOT: tensor.tile_group root
+// OFF-NOT: tensor.tile_fuse

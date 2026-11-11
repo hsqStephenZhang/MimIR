@@ -491,12 +491,25 @@ void AttentionRaise::start() {
 }
 
 void GroupDefault::start() {
-    if (auto mode = driver().arg_nat("tensor", "tile-fuse").value_or(0)) {
-        if (mode == 2) TileGroup(world(), Annex::base<tile_group>()).run();
-        return TileFuse(world(), Annex::base<tile_fuse>()).run();
+    auto automatic = !driver().is_loaded("gpu") && driver().arg_nat("tensor", "group").value_or(1);
+    auto mode = driver().arg_nat("tensor", "tile-fuse").value_or(automatic ? 2 : 0);
+    if (mode) {
+        // Explicit group_req schedules retain their rules; automatic CPU schedules use the level chain.
+        if (mode == 2) {
+            GroupRules(world(), Annex::base<group_rules>()).run();
+            // Reference tiling has already expanded explicit regions into reads of their original tensors.
+            // Repartitioning those reads would apply another schedule to the reference implementation.
+            if (!driver().arg_nat("tensor", "reference-tiles").value_or(0))
+                TileGroup(world(), Annex::base<tile_group>()).run();
+        }
+        TileFuse(world(), Annex::base<tile_fuse>()).run();
+        // TileFuse already fuses and yields on each level. The legacy region pass can recapture
+        // its nested tile variables, so only legacy schedules go through FuseAndYield below.
+        if (mode == 2 && automatic && driver().arg_nat("tensor", "prepack").value_or(1))
+            PrepackWeights(world(), "tensor.prepack_weights").run();
+        return;
     }
-    if (driver().is_loaded("gpu")) return;
-    if (!driver().arg_nat("tensor", "group").value_or(1)) return;
+    if (!automatic) return;
     Phases stages;
     stages.push_back(std::make_unique<Group>(world(), Annex::base<group>()));
     stages.push_back(std::make_unique<GroupRules>(world(), Annex::base<group_rules>()));

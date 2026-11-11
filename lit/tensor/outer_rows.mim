@@ -1,14 +1,14 @@
-// RUN: %mim %s -X tensor:group-cache=8192 -VVVV -o - > %t.mim 2> %t.log
+// RUN: %mim -X tensor:tile-fuse=0 %s -X tensor:group-cache=8192 -VVVV -o - > %t.mim 2> %t.log
 // RUN: %FileCheck %s < %t.mim
 // RUN: %FileCheck %s --check-prefix=GUARD < %t.log
-// RUN: %mim %s -X tensor:group-cache=8192 -p ll -X ll:o=%t.ll
+// RUN: %mim -X tensor:tile-fuse=0 %s -X tensor:group-cache=8192 -p ll -X ll:o=%t.ll
 // RUN: python3 %S/realization_count.py %t.ll %t.mul.ll
 // RUN: python3 %S/realization_count.py %t.ll %t.center.ll --center
 // RUN: clang++ -O3 -fsanitize=address %S/outer_rows_aux.cpp %t.mul.ll -o %t.mul -Wno-override-module
 // RUN: clang++ -O3 -fsanitize=address -DCOUNT_CENTER %S/outer_rows_aux.cpp %t.center.ll -o %t.center -Wno-override-module
 // RUN: %t.mul
 // RUN: %t.center
-// RUN: %mim %s -X tensor:group-cache=8192 -X tensor:outer-rows=0 -p ll -X ll:o=%t.off.ll
+// RUN: %mim -X tensor:tile-fuse=0 %s -X tensor:group-cache=8192 -X tensor:outer-rows=0 -p ll -X ll:o=%t.off.ll
 // RUN: python3 %S/realization_count.py %t.off.ll %t.off.mul.ll
 // RUN: clang++ -O3 -fsanitize=address %S/outer_rows_aux.cpp %t.off.mul.ll -o %t.off.mul -Wno-override-module
 // RUN: %t.off.mul

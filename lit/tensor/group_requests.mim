@@ -1,30 +1,30 @@
-// RUN: python3 %S/group_run.py %mim %s %t > %t.out 2> %t.log
+// RUN: python3 %S/group_run.py %mim %s %t -Xtensor:tile-fuse=0 > %t.out 2> %t.log
 // RUN: %FileCheck %s < %t.out
 // RUN: %FileCheck %s --check-prefix=REDUCTION < %t.log
-// RUN: python3 %S/group_run.py %mim %s %t.twice twice > %t.twice.out 2> %t.twice.log
+// RUN: python3 %S/group_run.py %mim %s %t.twice twice -Xtensor:tile-fuse=0 > %t.twice.out 2> %t.twice.log
 // RUN: diff %t.out %t.twice.out
-// RUN: python3 %S/group_run.py %mim %s %t.small -Xtensor:group-cache=4096 > %t.small.out 2> %t.small.log
+// RUN: python3 %S/group_run.py %mim %s %t.small -Xtensor:group-cache=4096 -Xtensor:tile-fuse=0 > %t.small.out 2> %t.small.log
 // RUN: %FileCheck %s --check-prefix=SMALL < %t.small.out
 // RUN: %FileCheck %s --check-prefix=LOG < %t.small.log
-// RUN: python3 %S/group_run.py %mim %s %t.off -Xtensor:group=0 > %t.off.out 2> %t.off.log
+// RUN: python3 %S/group_run.py %mim %s %t.off -Xtensor:group=0 -Xtensor:tile-fuse=0 > %t.off.out 2> %t.off.log
 // RUN: %FileCheck %s --check-prefix=OFF < %t.off.out
-// RUN: python3 %S/group_run.py %mim %s %t.report report > %t.report.out 2> %t.report.log
+// RUN: python3 %S/group_run.py %mim %s %t.report report -Xtensor:tile-fuse=0 > %t.report.out 2> %t.report.log
 // RUN: %FileCheck %s --check-prefix=REPORT < %t.report.log
 // RUN: %FileCheck %s --check-prefix=OFF < %t.report.out
 // RUN: diff %t.off.out %t.report.out
-// RUN: not python3 %S/group_run.py %mim %s %t.strict report -Xtensor:strict=1 > %t.strict.out 2> %t.strict.log
+// RUN: not python3 %S/group_run.py %mim %s %t.strict report -Xtensor:strict=1 -Xtensor:tile-fuse=0 > %t.strict.out 2> %t.strict.log
 // RUN: %FileCheck %s --check-prefix=STRICT < %t.strict.log
-// RUN: python3 %S/group_run.py %mim %s %t.lanes -Xtensor:vec-width=1 > %t.lanes.out 2> %t.lanes.log
+// RUN: python3 %S/group_run.py %mim %s %t.lanes -Xtensor:vec-width=1 -Xtensor:tile-fuse=0 > %t.lanes.out 2> %t.lanes.log
 // RUN: %FileCheck %s --check-prefix=LANES < %t.lanes.out
-// RUN: python3 %S/group_run.py %mim %s %t.lower lower > %t.lower.out 2> %t.lower.log
+// RUN: python3 %S/group_run.py %mim %s %t.lower lower -Xtensor:tile-fuse=0 > %t.lower.out 2> %t.lower.log
 // RUN: %FileCheck %s --check-prefix=BUFFER < %t.lower.log
-// RUN: python3 %S/group_run.py %mim %s %t.buffer buffer > %t.buffer.out 2> %t.buffer.log
+// RUN: python3 %S/group_run.py %mim %s %t.buffer buffer -Xtensor:tile-fuse=0 > %t.buffer.out 2> %t.buffer.log
 // RUN: %FileCheck %s --check-prefix=DIRECT < %t.buffer.log
-// RUN: python3 %S/group_run.py %mim %s %t.realize realize > %t.realize.out 2> %t.realize.log
+// RUN: python3 %S/group_run.py %mim %s %t.realize realize -Xtensor:tile-fuse=0 > %t.realize.out 2> %t.realize.log
 // RUN: %FileCheck %s --check-prefix=REALIZED < %t.realize.out
 // RUN: %FileCheck %s --check-prefix=REALIZE-LOG < %t.realize.log
-// RUN: python3 %S/group_run.py %mim %s %t.gpu gpu -Xtensor:group=1 > %t.gpu.out 2> %t.gpu.log
-// RUN: python3 %S/group_run.py %mim %s %t.gpu.off gpu -Xtensor:group=0 > %t.gpu.off.out 2> %t.gpu.off.log
+// RUN: python3 %S/group_run.py %mim %s %t.gpu gpu -Xtensor:group=1 -Xtensor:tile-fuse=0 > %t.gpu.out 2> %t.gpu.log
+// RUN: python3 %S/group_run.py %mim %s %t.gpu.off gpu -Xtensor:group=0 -Xtensor:tile-fuse=0 > %t.gpu.off.out 2> %t.gpu.off.log
 // RUN: diff %t.gpu.off.out %t.gpu.out
 
 plugin tensor;

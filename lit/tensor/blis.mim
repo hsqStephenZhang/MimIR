@@ -2,7 +2,7 @@
 // RUN: %FileCheck %s --implicit-check-not='mark @' < %t.out
 // TF-RULES: pack
 // TF-PURE: mark
-// CHECK-DAG: tensor.tiled
+// CHECK-DAG: tensor.tile_req
 
 plugin tensor;
 plugin core;
@@ -19,55 +19,21 @@ lam valid (M K N MR KR NR: Nat): Bool =
 lam select_config (lanes registers cache_bytes: Nat, pack_a: Bool): Config =
     let (mr, nr, kc, nc) = group_blocks (core.trait.size I64, lanes, registers, cache_bytes);
     (mr, nr, nc, kc, pack_a);
-lam blocked_leaf (m n k: Nat): [kt: Nat, sched: Sched] =
-    let kt = core.select (k / 4 * 4 == k, 4, 1);
-    let vd = core.select (core.bit2.and 0 (1 < m, 1 < n), 0,
-        core.select (1 < n, 1, 4));
-    (kt, (vd, 1));
 axm mark: {M K N: Nat} → [config: Config, tensor.Tensor 2 (M, N) I64] → tensor.Tensor 2 (M, N) I64;
 
 lam packed_with_post {M K N: Nat} (config: Config, a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64,
     add mul: «2; I64» → I64, bias: tensor.Tensor 1 N I64, epilogue: Fn [I64, I64] → I64, apply_post: Bool): tensor.Tensor 2 (M, N) I64 =
     let (MR, NR, NC, KC, pack_a) = config;
     fun combine (acc: I64, pair: «2; I64»)@tt: I64 = return (add (acc, mul pair));
-    tiled @(I64, 2) ((M, N), (M, NC), 1) (a, b, bias)
-        (λ (off ext: «2; Nat») (a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64, bias: tensor.Tensor 1 N I64): tensor.Tensor 2 ext I64 =
-            let rows = ext#ff;
-            let n = ext#tt;
-            lam block (a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64, bias: tensor.Tensor 1 N I64)
-                (k ko: Nat, acc: tensor.Tensor 2 (rows, n) I64, last: Bool): tensor.Tensor 2 (rows, n) I64 =
-                let bp = stage @(I64, 2, 1) (k, n) (1, NR, (1₂, 0₂), 0I64) 0
-                    (slice @(I64, 2) (K, N) ((ko, off#tt), (1, 1), (k, n)) b);
-                tiled @(I64, 2) ((rows, n), (MR, NR), 1) (a, bp, acc, bias)
-                    (λ (row size: «2; Nat») (a, bp, acc, bias): tensor.Tensor 2 size I64 =
-                        let m = size#ff;
-                        let cols = size#tt;
-                        let (kt, sched) = blocked_leaf (m, cols, k);
-                        let ap = slice @(I64, 2) (M, K) ((off#ff + row#ff, ko), (1, 1), (m, k)) a;
-                        let ap = (ap, stage @(I64, 2, 0) (m, k) ((), (), (0₂, 1₂), 0I64) 0 ap)#pack_a;
-                        let cp = slice @(I64, 2) (rows, n) (row, (1, 1), size) acc;
-                        lam leaf {nps: Nat} (post: Fn [I64, «nps; I64»] → I64, extras: «nps; tensor.Tensor 1 N I64»): tensor.Tensor 2 size I64 =
-                            map_reduce_post @(2, nps) @(I64, I64, 2, 4, SchedT)
-                                (size, (m, cols, k / kt, kt), mk_sched sched)
-                                @((I64, I64), (2, 3), ((m, k), ((n + NR - 1) / NR, k, NR)), ‹nps; I64›, ‹nps; 1›, ‹nps; N›)
-                                (combine, outs_default @(I64, 2) size cp, post)
-                                (proj_map @(4, 2) (0, 1))
-                                ((λ (o: «4; affine.Index»): «2; affine.Index» =
-                                    (o#0₄, affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄)),
-                                  λ (o: «4; affine.Index»): «3; affine.Index» =
-                                    let j = affine.op.add (o#1₄, affine.lit (row#tt));
-                                    (affine.semiop.floordiv (j, NR),
-                                     affine.op.add (affine.semiop.mul (o#2₄, kt), o#3₄),
-                                     affine.semiop.rem (j, NR))), ‹nps;
-                                     λ (_ j: affine.Index): affine.Index = affine.op.add (j, affine.lit (off#tt + row#tt))›)
-                                ((ap, bp), extras);
-                        (λ (): tensor.Tensor 2 size I64 = leaf @0 (id @I64, ()),
-                         λ (): tensor.Tensor 2 size I64 = leaf @1 (epilogue, (bias,)))#last ());
-            let blocks = (K - 1) / KC;
-            let acc = tile_fold (blocks, KC) (splat ((rows, n), 0I64)) (a, b, bias)
-                (λ (acc: tensor.Tensor 2 (rows, n) I64, ko: Nat) (a, b, bias): tensor.Tensor 2 (rows, n) I64 =
-                    block (a, b, bias) (KC, ko, acc, ff));
-            block (a, b, bias) (K - blocks * KC, blocks * KC, acc, apply_post));
+    fun identity (value _: I64)@tt: I64 = return value;
+    let root = map_reduce_post @(2, 1) @(I64, I64, 2, 3, SchedT)
+        ((M, N), (M, N, K), mk_sched (3, 0))
+        @((I64, I64), (2, 2), ((M, K), (K, N)), I64, 1, N)
+        (combine, 0I64, (identity, epilogue)#apply_post)
+        (proj_map @(3, 2) (0, 1))
+        ((proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)), proj_map @(2, 1) 1)
+        ((a, b), bias);
+    tile_req (root, (a, b), contraction_levels @I64 (2, MR, NR, NC, KC, (2, 3)#pack_a), default_control);
 
 lam packed {M K N: Nat} (config: Config, a: tensor.Tensor 2 (M, K) I64, b: tensor.Tensor 2 (K, N) I64,
     add mul: «2; I64» → I64): tensor.Tensor 2 (M, N) I64 =

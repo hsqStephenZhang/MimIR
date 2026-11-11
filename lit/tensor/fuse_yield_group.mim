@@ -1,5 +1,5 @@
-// RUN: %mim %s -X tensor:group-budget=1 -o - | %FileCheck %s
-// RUN: %mim %s -X tensor:group-budget=1 -p ll -X ll:o=%t.ll
+// RUN: %mim -X tensor:tile-fuse=0 %s -X tensor:group-budget=1 -o - | %FileCheck %s
+// RUN: %mim -X tensor:tile-fuse=0 %s -X tensor:group-budget=1 -p ll -X ll:o=%t.ll
 // RUN: python3 %S/realization_count.py %t.ll %t.count.ll
 // RUN: clang++ -O3 -fsanitize=address %S/fuse_yield_group_aux.cpp %t.count.ll -o %t -Wno-override-module
 // RUN: %t

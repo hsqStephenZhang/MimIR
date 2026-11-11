@@ -47,7 +47,7 @@ extern fun row_max (a: tensor.Tensor 2 (5, 7) F32, b: tensor.Tensor 2 (5, 11) F3
         (affine.id @2) (row, affine.id @2) (p, buf b));
 
 // CHECK-LABEL: extern fun ew_a (
-// CHECK: tensor.map_reduce_post {{.*}} ((5, 9), (5, 9),
+// CHECK-NOT: tensor.map_reduce_post {{.*}} ((5, 9), (5, 9),
 // CHECK: tensor.tiled
 // CHECK-NOT: tensor.map_reduce_post {{.*}} ((5, 3), (5, 3),
 // CHECK: tensor.map_reduce_post {{.*}} btensor.clip_sched

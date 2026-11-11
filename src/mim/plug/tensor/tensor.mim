@@ -1935,8 +1935,8 @@ axm report_groups: compile.Phase;
 ///
 /// Every level tiles the root's `n` loops; `sizes#d = 0` leaves loop `d` untiled at that level.
 /// `tail` is 0 for one capped body over a runtime tail and 1 for peeling full tiles from the tail.
-/// `promote` sets bit `i` to stage input `i` into shared memory: a reduction level stages a panel per block,
-/// a work-group level its whole box.
+/// `promote` sets bit `i` to stage input `i`: a reduction level packs a panel per block in CPU code,
+/// or shared memory inside a work-group; a work-group level stages its whole box.
 /// `RedItems` splits a reduction over the work-items and merges their partials.
 /// `Combiner` is accepted only for a recognized reassociable law whose identity is the seed.
 /// `Merge` supplies an explicit permission and a merge function whose accumulator type is checked.
@@ -2064,6 +2064,20 @@ anx lam group_blocks (bytes lanes registers cache_bytes: Nat): «4; Nat» =
     (mr, nr, kc, nc);
 
 ///
+/// A CPU contraction's BLIS schedule, with any batch loops before its M/N/K loops.
+/// Zero leaves M whole at the outer level; batches are visited one at a time.
+/// The reduction packs the operands selected by `promote`, and the innermost level splits K by four
+/// when its extent permits it. Peeling keeps full register tiles literal while handling all tails.
+anx lam contraction_levels {Acc: *} (ro mr nr nc kc promote: Nat): TileLevels (ro + 1, Acc) =
+    let n = ro + 1;
+    lam is (d: Idx n, k: Nat): Bool = core.idx2nat d == k;
+    let outer = ‹d: n; ((0, nc)#(is (d, ro - 1)), 1)#(core.idx2nat d < ro - 2)›;
+    let block = ‹d: n; (0, kc)#(is (d, ro))›;
+    let micro = ‹d: n; ((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2))›;
+    let vector = ‹d: n; ((0, 4)#(is (d, ro)), 1)#(is (d, ro - 2))›;
+    serial_par (outer, 1, serial_red (block, 1, promote,
+        serial_par (micro, 1, serial_vec (vector, serial_done ()))));
+///
 /// The levels `tensor.tile_group` requests for a root with `ro` parallel and `rr` reduction loops:
 /// always parallel, reduction, parallel, vector, where a level of zeros changes nothing.
 /// `kind` 1 is a contraction (BLIS blocks, both operands packed, register-blocked micro tiles),
@@ -2082,7 +2096,7 @@ anx lam default_tile_config {Acc: *} (ro rr kind: Nat, bytes lanes registers cac
     let outer  = ‹d: n; ((0, nc)#(is (d, ro - 1)), 1)#(below (d, ro - 2))›;
     let block  = ‹d: n; (0, kc)#(is (d, n - 1))›;
     let micro  = ‹d: n; ((0, nr)#(is (d, ro - 1)), mr)#(is (d, ro - 2))›;
-    let vector = ‹d: n; (0, 1)#(is (d, ro - 2))›;
+    let vector = ‹d: n; ((0, 4)#(is (d, n - 1)), 1)#(is (d, ro - 2))›;
     // One chain for both shapes: a select of two chains would be a union of two nominal instances.
     lam pick (elementwise contraction: «n; Nat»): «n; Nat» = (elementwise, contraction)#(kind == 1);
     serial_par (pick (rows, outer), 1,

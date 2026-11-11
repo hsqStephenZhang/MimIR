@@ -28,6 +28,6 @@ extern fun tn (a: tensor.Tensor 2 (7, 13) F32, b: tensor.Tensor 2 (7, 11) F32, c
 extern fun both (a: tensor.Tensor 2 (7, 13) F32, b: tensor.Tensor 2 (11, 7) F32, c: tensor.Tensor 1 11 F32): tensor.Tensor 2 (13, 11) F32 =
     return (finish (tensor.dot_product R @(2, 2) @(1, 0) (0₂, 1₂, (), ()) (tensor.buf a, tensor.buf b), tensor.buf c));
 
-// CHECK-COUNT-4: tensor.group contraction {{.*}}: MR=
-// CHECK-NOT: tensor.group contraction
+// CHECK-COUNT-4: tensor.tile_group root {{.*}} kind 1
+// CHECK-NOT: tensor.tile_group root {{.*}} kind 1
 // CHECK-NOT: not realized

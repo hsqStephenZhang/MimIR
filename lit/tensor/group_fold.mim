@@ -1,4 +1,4 @@
-// RUN: %mim -p opt -p ll -X tensor:group=1 -X tensor:strict=1 -X ll:o=%t.ll %s -V -V -V -V 2> %t.log
+// RUN: %mim -X tensor:tile-fuse=0 -p opt -p ll -X tensor:group=1 -X tensor:strict=1 -X ll:o=%t.ll %s -V -V -V -V 2> %t.log
 // RUN: %FileCheck %s --check-prefix=LOG < %t.log
 // RUN: clang++ -O3 -fsanitize=address %S/group_fold_aux.cpp %t.ll -o %t -Wno-override-module
 // RUN: %t

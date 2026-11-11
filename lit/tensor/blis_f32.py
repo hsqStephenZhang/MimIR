@@ -57,7 +57,7 @@ if workloads:
         "tensor.fuse_region_inputs (0, 1, ff), compile.cleanup)",
     )
 if "schedule" in reference:
-    text = text.replace("opt._default_compile ()", "compile.null")
+    text = text.replace("opt._default_compile ()", "compile.phases ff (tensor.tile_fuse, compile.cleanup)")
 directory = pathlib.Path(output)
 directory.mkdir(exist_ok=True)
 generated = directory / "probe.mim"

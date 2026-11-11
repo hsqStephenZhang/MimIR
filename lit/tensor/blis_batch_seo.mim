@@ -14,5 +14,5 @@ let R: tensor.Ring = (math.F32, 0:math.F32, math.arith.add math.mode.contract, m
 extern fun dot (a: tensor.Tensor 3 (256, 2, 2) math.F32, b: tensor.Tensor 3 (256, 2, 2) math.F32): tensor.Tensor 3 (256, 2, 2) math.F32 =
     return (tensor.bmm R @(256, 2, 2, 2) (tensor.buf a, tensor.buf b));
 
-// CHECK: tensor.group contraction
+// CHECK: tensor.tile_group root {{.*}} kind 1
 // CHECK-NOT: not realized

@@ -1,18 +1,18 @@
-// RUN: %mim -p opt -p ll %s -X ll:o=%t.on.ll --profile summary --output-profile %t.profile -V -V -V -V 2> %t.on.log
+// RUN: %mim -X tensor:tile-fuse=0 -p opt -p ll %s -X ll:o=%t.on.ll --profile summary --output-profile %t.profile -V -V -V -V 2> %t.on.log
 // RUN: %FileCheck %s --check-prefix=OUTCOME < %t.on.log
 // RUN: %FileCheck %s --check-prefix=PROFILE < %t.profile
 // RUN: %FileCheck %s --check-prefix=REPORTED < %t.on.log
 // RUN: clang++ -O3 -fsanitize=address %S/group_default_aux.cpp %t.on.ll -o %t.on -Wno-override-module
 // RUN: %t.on
-// RUN: %mim -p opt -p ll -X tensor:group=0 %s -X ll:o=%t.off.ll
+// RUN: %mim -X tensor:tile-fuse=0 -p opt -p ll -X tensor:group=0 %s -X ll:o=%t.off.ll
 // RUN: clang++ -O3 -fsanitize=address %S/group_default_aux.cpp %t.off.ll -o %t.off -Wno-override-module
 // RUN: %t.off
-// RUN: %mim -p opt -p ll -X tensor:group=1 -X tensor:group-budget=3 -X tensor:strict=1 %s -X ll:o=%t.halo.ll --profile summary --output-profile %t.halo.profile -V -V -V -V 2> %t.halo.log
+// RUN: %mim -X tensor:tile-fuse=0 -p opt -p ll -X tensor:group=1 -X tensor:group-budget=3 -X tensor:strict=1 %s -X ll:o=%t.halo.ll --profile summary --output-profile %t.halo.profile -V -V -V -V 2> %t.halo.log
 // RUN: %FileCheck %s --check-prefix=HALO < %t.halo.profile
 // RUN: %FileCheck %s --check-prefix=CLEAN < %t.halo.log
 // RUN: clang++ -O3 -fsanitize=address %S/group_default_aux.cpp %t.halo.ll -o %t.halo -Wno-override-module
 // RUN: %t.halo
-// RUN: python3 %S/group_run.py %mim %s %t.structure realize -Xtensor:group-budget=3 > %t.structure.out 2> %t.structure.log
+// RUN: python3 %S/group_run.py %mim %s %t.structure realize -Xtensor:group-budget=3 -Xtensor:tile-fuse=0 > %t.structure.out 2> %t.structure.log
 // RUN: %FileCheck %s --check-prefix=STRUCTURE < %t.structure.out
 
 plugin tensor;
