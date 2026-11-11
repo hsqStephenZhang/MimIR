@@ -1,0 +1,17 @@
+{
+  "old": {
+    "relative_to_old": 1.0,
+    "relative_to_openblas": 0.7777615162004812,
+    "relative_to_pytorch": 0.716940915020866
+  },
+  "mc": {
+    "relative_to_old": 1.0053113546755117,
+    "relative_to_openblas": 0.7818924834659856,
+    "relative_to_pytorch": 0.7207488425019277
+  },
+  "aligned": {
+    "relative_to_old": 1.06561938523922,
+    "relative_to_openblas": 0.8287977487562803,
+    "relative_to_pytorch": 0.763986137117379
+  }
+}

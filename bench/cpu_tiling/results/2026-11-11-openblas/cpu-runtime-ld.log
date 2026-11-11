@@ -1,0 +1,4 @@
+/tmp/cpu-runtime-ld.mim:4:53-4:61: error: cannot bufferize: runtime inner extent is not supported
+    4 | extern fun runtime_ld (lda: Nat, a: tensor.Tensor 2 (13, lda) F32, b: tensor.Tensor 2 (7, 11) F32): tensor.Tensor 2 (13, 11) F32 =
+      |                                                     ^^^^^^^^^
+1 error(s) encountered

@@ -1,0 +1,11 @@
+{
+  "path": "/workspaces/compile/OpenBLAS/libopenblas_haswellp-r0.3.33.dev.so",
+  "sha256": "290b1f1f19fd0df87df96b73b00f4c299734d4b955403bf94e3b90b8f56b3499",
+  "config": "OpenBLAS 0.3.33.dev NO_AFFINITY HASWELL MAX_THREADS=20",
+  "threads": 1,
+  "blocks": {
+    "P": 320,
+    "Q": 320,
+    "R": 104512
+  }
+}

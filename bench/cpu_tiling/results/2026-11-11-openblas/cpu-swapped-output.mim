@@ -1,0 +1,12 @@
+plugin tensor; plugin core; plugin math; plugin affine;
+use tensor;
+let F32 = math.F32;
+fun combine (acc: F32, pair: «2; F32»)@tt: F32 =
+ return (math.arith.add math.mode.contract (acc, math.arith.mul math.mode.contract pair));
+extern fun swapped (a: Tensor 2 (13,7) F32, b: Tensor 2 (7,11) F32): Tensor 2 (11,13) F32 =
+ let c = map_reduce_post @(2,0) @(F32,F32,2,3,SchedT)
+  ((11,13),(13,11,7),mk_sched (0,1))
+  @((F32,F32),(2,2),((13,7),(7,11)),(),(),())
+  (combine,0:F32,id @F32) (proj_map @(3,2) (1,0))
+  ((proj_map @(3,2) (0,2),proj_map @(3,2) (2,1)),()) ((buf a,buf b),());
+ return (tile_req (c,(),cpu_contraction_levels @F32 (2,4,8,8,16,4,3),default_control));

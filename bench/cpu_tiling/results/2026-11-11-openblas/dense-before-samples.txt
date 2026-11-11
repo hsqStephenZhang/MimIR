@@ -1,0 +1,45 @@
+[
+  {
+    "start": 6448,
+    "end": 6783,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 27.23
+  },
+  {
+    "start": 9904,
+    "end": 10247,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 2.28
+  },
+  {
+    "start": 11472,
+    "end": 11815,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 55.34
+  },
+  {
+    "start": 13296,
+    "end": 13639,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 3.38
+  },
+  {
+    "start": 14528,
+    "end": 14862,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 5.16
+  },
+  {
+    "start": 17312,
+    "end": 17656,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 0.47
+  }
+]
+scalar 0 vector 93.86

@@ -1,0 +1,6 @@
+plugin tensor; plugin core; plugin math;
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+extern fun runtime_ld (lda: Nat, a: tensor.Tensor 2 (13, lda) F32, b: tensor.Tensor 2 (7, 11) F32): tensor.Tensor 2 (13, 11) F32 =
+ let av = tensor.slice @(F32,2) (13,lda) ((0,0),(1,1),(13,7)) (tensor.buf a);
+ return (tensor.product_2d R (av,tensor.buf b));

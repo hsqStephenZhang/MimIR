@@ -1,0 +1,31 @@
+{
+  "notes": "Instrumented malloc/free in generated LLVM, native driver; excludes output free in driver; clock instrumentation included.",
+  "rows": [
+    {
+      "shape": [
+        1024,
+        1024,
+        1024
+      ],
+      "mallocs": 23,
+      "frees": 22,
+      "bytes": 20971520,
+      "malloc_us": 8.892,
+      "free_us": 1.164,
+      "total_ms": 18.02
+    },
+    {
+      "shape": [
+        49,
+        512,
+        4608
+      ],
+      "mallocs": 48,
+      "frees": 47,
+      "bytes": 10696704,
+      "malloc_us": 3.63,
+      "free_us": 1.096,
+      "total_ms": 2.192
+    }
+  ]
+}

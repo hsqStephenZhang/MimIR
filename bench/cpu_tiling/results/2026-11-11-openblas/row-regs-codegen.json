@@ -1,0 +1,185 @@
+[
+  {
+    "shape_stem": "1024_1024_1024",
+    "loops": [
+      {
+        "line": 477,
+        "end": 565,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 612,
+        "end": 675,
+        "fma": 32,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 1231,
+        "end": 1318,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 1515,
+        "end": 1577,
+        "fma": 32,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 1912,
+        "end": 2001,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2050,
+        "end": 2114,
+        "fma": 32,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2385,
+        "end": 2473,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2520,
+        "end": 2583,
+        "fma": 32,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2786,
+        "end": 2874,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2924,
+        "end": 2987,
+        "fma": 32,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 3497,
+        "end": 3584,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 3777,
+        "end": 3840,
+        "fma": 32,
+        "vector_stack_references": 0
+      }
+    ]
+  },
+  {
+    "shape_stem": "2048_128_512",
+    "loops": [
+      {
+        "line": 878,
+        "end": 965,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 1063,
+        "end": 1102,
+        "fma": 16,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 1493,
+        "end": 1580,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 1678,
+        "end": 1717,
+        "fma": 16,
+        "vector_stack_references": 0
+      }
+    ]
+  },
+  {
+    "shape_stem": "49_512_4608",
+    "loops": [
+      {
+        "line": 517,
+        "end": 604,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 645,
+        "end": 663,
+        "fma": 8,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 1613,
+        "end": 1700,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 1768,
+        "end": 1786,
+        "fma": 8,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2148,
+        "end": 2236,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2261,
+        "end": 2280,
+        "fma": 8,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2425,
+        "end": 2513,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2537,
+        "end": 2556,
+        "fma": 8,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2730,
+        "end": 2817,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 2839,
+        "end": 2857,
+        "fma": 8,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 3937,
+        "end": 4024,
+        "fma": 48,
+        "vector_stack_references": 0
+      },
+      {
+        "line": 4095,
+        "end": 4113,
+        "fma": 8,
+        "vector_stack_references": 0
+      }
+    ]
+  }
+]

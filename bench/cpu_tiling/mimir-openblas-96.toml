@@ -1,0 +1,18 @@
+[mimir]
+existing_source = "/workspaces/compile/MimIR/.worktrees/gpu-tiling"
+existing_build = "/workspaces/compile/MimIR/.worktrees/gpu-tiling/build"
+# GitHub owner/repo, HTTPS/SSH URL, or local Git remote.
+remote = "mimir/mimir"
+ref = "master"
+variant = "tensor-llvm"
+# linear (frozen W): "kn" passes W[K,N] as-is; "nk" transposes it once outside timing.
+linear_weight_layout = "kn"
+plugins = ["opt", "ll"]
+compiler_flags = ["-X", "btensor:registers=128", "-X", "tensor:cpu-order=1", "-X", "tensor:cpu-mr=6", "-X", "tensor:cpu-nr=16", "-X", "tensor:cpu-mc=320", "-X", "tensor:cpu-nc=104512", "-X", "tensor:cpu-kc=320"]
+cmake = "cmake"
+cmake_flags = []
+jobs = 4
+clangxx = "clang++"
+compile_flags = ["-O3", "-std=c++20", "-shared", "-fPIC", "-Wno-override-module"]
+# Match benchmark.mcpu; generic uses the compiler's default target.
+target_flags = ["auto"] # -mcpu=<cpu> on ARM, -march=<cpu> on x86; generic adds neither.

@@ -1,0 +1,87 @@
+[
+  {
+    "start": 5888,
+    "end": 6231,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 2.09
+  },
+  {
+    "start": 6304,
+    "end": 6465,
+    "scalar": 8,
+    "vector": 0,
+    "percent": 1.72
+  },
+  {
+    "start": 12416,
+    "end": 12750,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 1.16
+  },
+  {
+    "start": 12816,
+    "end": 12977,
+    "scalar": 8,
+    "vector": 0,
+    "percent": 1.05
+  },
+  {
+    "start": 14144,
+    "end": 14487,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 27.41
+  },
+  {
+    "start": 14560,
+    "end": 14721,
+    "scalar": 8,
+    "vector": 0,
+    "percent": 22.26
+  },
+  {
+    "start": 15408,
+    "end": 15751,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 18.1
+  },
+  {
+    "start": 15824,
+    "end": 15985,
+    "scalar": 8,
+    "vector": 0,
+    "percent": 13.77
+  },
+  {
+    "start": 16864,
+    "end": 17207,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 0.8400000000000001
+  },
+  {
+    "start": 17296,
+    "end": 17458,
+    "scalar": 8,
+    "vector": 0,
+    "percent": 0.62
+  },
+  {
+    "start": 23440,
+    "end": 23775,
+    "scalar": 0,
+    "vector": 32,
+    "percent": 0.46
+  },
+  {
+    "start": 23856,
+    "end": 24017,
+    "scalar": 8,
+    "vector": 0,
+    "percent": 0.38
+  }
+]
+scalar 39.800000000000004 vector 50.06

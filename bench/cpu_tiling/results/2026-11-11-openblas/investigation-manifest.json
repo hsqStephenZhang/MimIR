@@ -1,0 +1,25 @@
+{
+  "source_commit": "124047b43e7d7c89e303899c5d97f9a92dbf7899",
+  "old_source_commit": "2d24a4894911ef5f008b77b365223d99daf3edb6",
+  "mc_source_commit": "e5e809f189",
+  "benchmark_revision": "d562d65a06771a0d32fe97b25170682b13263197",
+  "benchmark_branch": "feat/mimir-nominal-tensor",
+  "hardware": "Intel Core i5-14600KF; CPU 0; single thread",
+  "compiler": "Clang 22; -O3 -march=raptorlake",
+  "correctness": "All 22 cases, all variants: full FP64 reference rtol=atol=1e-3",
+  "variant_dirs": {
+    "mc": "default",
+    "aligned": "aligned",
+    "current": "current-default",
+    "rows96": "row-regs"
+  },
+  "validation": {
+    "ctest_pass": 260,
+    "lit_pass": 814,
+    "lit_unsupported": 8,
+    "lit_failed": 1,
+    "known_failure": "tensor/group_rules_exec.mim reference-tiles leak"
+  },
+  "timing": "5 warmups; 9 shuffled interleaved batches >=100ms; no compilation/test activity; native timers",
+  "source_artifact_root": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111"
+}

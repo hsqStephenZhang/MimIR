@@ -1,0 +1,5027 @@
+{
+  "affinity": [
+    0
+  ],
+  "threads": 1,
+  "warmup": 5,
+  "repeats": 9,
+  "min_repeat_ms": 100,
+  "order_seed": 42,
+  "identities": [
+    {
+      "case": "sq64",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/64_64_64/kernel.so",
+      "sha256": "8ab5b4af98cfc32acf732316d9fdde51bf1b7eb0ed9cc1df8b69c2c535548205"
+    },
+    {
+      "case": "sq64",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/64_64_64/kernel.so",
+      "sha256": "1c2b71a94cce3d42a329c37a1bef2d96bac14e54a428197418bb17538bdced33"
+    },
+    {
+      "case": "sq64",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/64_64_64/kernel.so",
+      "sha256": "29821c43e1ebda54685e0cb3ab29b2e2cebbee51e850e7b58508381de7a2f31f"
+    },
+    {
+      "case": "sq128",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/128_128_128/kernel.so",
+      "sha256": "4489f0bcb00bc10a984d94d210b4b6e1d4bc8753fbf70f8a0905a5e7bf3a51ef"
+    },
+    {
+      "case": "sq128",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/128_128_128/kernel.so",
+      "sha256": "11bf9a495c88af20867390021302341be65fa2000c3b92f02b88d88f1b559f18"
+    },
+    {
+      "case": "sq128",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/128_128_128/kernel.so",
+      "sha256": "b78a575231d56f4ff23f668e3647fb61b61192e4da70ff47f163e58a1fd4515d"
+    },
+    {
+      "case": "sq256",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/256_256_256/kernel.so",
+      "sha256": "1d8abeb7fe4f6e19df4d4331fc89b18ce25b5c84d34dbd4d606abba045377b19"
+    },
+    {
+      "case": "sq256",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/256_256_256/kernel.so",
+      "sha256": "3c2141a5523e1edeccf43e0ec737309c7ca1dc19d518830d3161a44f59d6fbca"
+    },
+    {
+      "case": "sq256",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/256_256_256/kernel.so",
+      "sha256": "3a20c19bc629e3822575002439f70dd0c563fd187be5f48dc343e29bce3e8c23"
+    },
+    {
+      "case": "sq256",
+      "variant": "micro96",
+      "path": "/tmp/cpu-mc-tune-micro/256_256_256/6_16_320_104512_320_3_True/kernel.so",
+      "sha256": "e71d34e481fff196602e8db783944754ee67bc727797dda18456650700c84b0f"
+    },
+    {
+      "case": "sq512",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/512_512_512/kernel.so",
+      "sha256": "00c29fa0e3958fa2ac9e38528f92e469e48001a763f490965eff1191f96c9f6e"
+    },
+    {
+      "case": "sq512",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/512_512_512/kernel.so",
+      "sha256": "b0b47e3b9383ce664519d8e9c11cb54166be47f995142c50d78b3099c0d4f5e1"
+    },
+    {
+      "case": "sq512",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/512_512_512/kernel.so",
+      "sha256": "f654cc69a3c3431ee954f1a2d19d85ef4326c41956e36e11bcaf2e515fd3a91e"
+    },
+    {
+      "case": "sq1000",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/1000_1000_1000/kernel.so",
+      "sha256": "2b399117dd2d66548e78034d1bca6168cd49ee2974465276f6b61bcadc4e372b"
+    },
+    {
+      "case": "sq1000",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/1000_1000_1000/kernel.so",
+      "sha256": "9c312711b581988d76e30b99612ce17cea2dca3b070868732af72526aa0c2dde"
+    },
+    {
+      "case": "sq1000",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/1000_1000_1000/kernel.so",
+      "sha256": "419dc7557246f48c2e66c593539b8892c5cd4b194872ff72c0a20f0b6cd1a254"
+    },
+    {
+      "case": "sq1024",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/1024_1024_1024/kernel.so",
+      "sha256": "890c367b93daeb8687c49b3a2fa645b348cbd8b063d89ab356b4dd993008a2a9"
+    },
+    {
+      "case": "sq1024",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/1024_1024_1024/kernel.so",
+      "sha256": "3f64241b3e1dd29d91b18d8ba9584124928e5440a8d9645173dcc9516eea922b"
+    },
+    {
+      "case": "sq1024",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/1024_1024_1024/kernel.so",
+      "sha256": "6d8900f9cae87fe078b1b87da72191112dd2de021f5d4d570963a6d78862d8b9"
+    },
+    {
+      "case": "sq1024",
+      "variant": "micro96",
+      "path": "/tmp/cpu-mc-tune-micro/1024_1024_1024/6_16_320_104512_320_3_True/kernel.so",
+      "sha256": "c09585ae2c31aceeaeb0a167b78f5920493b58a21138797468016870e8a4cca9"
+    },
+    {
+      "case": "skinny",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/8_512_2304/kernel.so",
+      "sha256": "50ea7ee728878c5b0cc16016ed2345020de64a319eef88858b4817fb6d3aea21"
+    },
+    {
+      "case": "skinny",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/8_512_2304/kernel.so",
+      "sha256": "9f84f067eae0ec5c629bc7eca0abe35ff2619bee20e600a38905f37eececc96c"
+    },
+    {
+      "case": "skinny",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/8_512_2304/kernel.so",
+      "sha256": "7fdf6630c2a3a6daa829d038b38b06273e5ae3023f9a6ea6827de51793016d4f"
+    },
+    {
+      "case": "skinny",
+      "variant": "micro96",
+      "path": "/tmp/cpu-mc-tune-micro/8_512_2304/6_16_320_104512_320_3_True/kernel.so",
+      "sha256": "8c039edac0ab39499434860a016b184bb4e3cff19490612fc361bee1e4fa5f30"
+    },
+    {
+      "case": "pack",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/64_512_130/kernel.so",
+      "sha256": "89f8828d8b1727d8cf3c2c00cdede75cb5fcda9f14215d69e71aaf7ea7197713"
+    },
+    {
+      "case": "pack",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/64_512_130/kernel.so",
+      "sha256": "d704e2a4b4aa6ab8cce7ccf294068529f33a89865c97ecb5148f2d88656eedec"
+    },
+    {
+      "case": "pack",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/64_512_130/kernel.so",
+      "sha256": "1eefaa5f66599888023b13f2a6ca3b74b35e02330f7f0176904507ec80734c5a"
+    },
+    {
+      "case": "k49",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/64_1024_49/kernel.so",
+      "sha256": "da09af40e8daa00db319c1cbc604161449633ae9d403b25f283929c77d98363a"
+    },
+    {
+      "case": "k49",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/64_1024_49/kernel.so",
+      "sha256": "77b9db507a1fb9efafe5b023e4bfd517f53945f0ac3b73417cad90fd7f0e91b1"
+    },
+    {
+      "case": "k49",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/64_1024_49/kernel.so",
+      "sha256": "2126c3524d82f2af4c67742e20856d342a62601726855384cd0ff6fbe8d6c8ce"
+    },
+    {
+      "case": "k147",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/64_1024_147/kernel.so",
+      "sha256": "befe3c5726385e5736644017beb759430a5b8b9f830e08b0597f9b201c9ddc9f"
+    },
+    {
+      "case": "k147",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/64_1024_147/kernel.so",
+      "sha256": "abb5997b76b431da61b9b21a003c7b6c9647e50fabde5d8b2b4254934a9db89b"
+    },
+    {
+      "case": "k147",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/64_1024_147/kernel.so",
+      "sha256": "7059e33aba382dea7d223d0827600186d7c4eac291dc551bba4213618e3fd560"
+    },
+    {
+      "case": "k245",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/64_1024_245/kernel.so",
+      "sha256": "f1a8cc2f226a79ea0d97ad3e9e2fb83766baa32b9ba4bdf1eb873165d205288a"
+    },
+    {
+      "case": "k245",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/64_1024_245/kernel.so",
+      "sha256": "73da9d2356e5f19f1a83003d35a391af023fa4b71fa0260dc5a0b9c5a667e54c"
+    },
+    {
+      "case": "k245",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/64_1024_245/kernel.so",
+      "sha256": "0d5998cf2533e8991a5fe03aa50e9931d722d4c3ac3800fe394f3e849ad132c1"
+    },
+    {
+      "case": "sq2000",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/2000_2000_2000/kernel.so",
+      "sha256": "b96462d4ded751891a35757e059919b90671c18997b62a4186b6feca0d235fbe"
+    },
+    {
+      "case": "sq2000",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/2000_2000_2000/kernel.so",
+      "sha256": "b1ff113b4f6ea1c7f62548b919df5e8e7c1daa39be59d6b8d1fb98ffdb3de40f"
+    },
+    {
+      "case": "sq2000",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/2000_2000_2000/kernel.so",
+      "sha256": "34ff57c17cc199f13c1e4496627f470daff33f89ce7251e7b34c524b1d9c31d9"
+    },
+    {
+      "case": "sq2048",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/2048_2048_2048/kernel.so",
+      "sha256": "ef7059ab00595671a8ffa7a9a0cad52c30afece93559ec4e6035f6abbd493e70"
+    },
+    {
+      "case": "sq2048",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/2048_2048_2048/kernel.so",
+      "sha256": "7abe5fac23f65d810ea2d5ae92caade46fee4e91532d41e1224dbc772571a8aa"
+    },
+    {
+      "case": "sq2048",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/2048_2048_2048/kernel.so",
+      "sha256": "53494f38834df8ef1da253afb50c2199f8c719c0def9315b607f6d7bdac31569"
+    },
+    {
+      "case": "wide2048",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/64_2048_2048/kernel.so",
+      "sha256": "f24c5ca53ecb285a8a71a024115dd243e94b0cbe01a9661202b8d58dedc57f5c"
+    },
+    {
+      "case": "wide2048",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/64_2048_2048/kernel.so",
+      "sha256": "494caf7582eb519d5caf9fa053fc933a826c5241f37a1a0fd743bf93d9c98bc0"
+    },
+    {
+      "case": "wide2048",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/64_2048_2048/kernel.so",
+      "sha256": "979c90efde7b270aa12908abab882d0cebdecb0559c71c4fbcb3195234109514"
+    },
+    {
+      "case": "tall2048",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/2048_128_512/kernel.so",
+      "sha256": "4455811d4d824c461ab31817ad8097e8e9dd04d1a0244da45e380c66e4db6115"
+    },
+    {
+      "case": "tall2048",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/2048_128_512/kernel.so",
+      "sha256": "f28e28648abb5b2765b2f6b9947b11b588648176a5423560b05446a153c0ac53"
+    },
+    {
+      "case": "tall2048",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/2048_128_512/kernel.so",
+      "sha256": "2b5dea1921fe882f3e9991a5915629fe037995b570219e4fc82b5a75421c6852"
+    },
+    {
+      "case": "tall2048",
+      "variant": "micro96",
+      "path": "/tmp/cpu-mc-tune-micro/2048_128_512/6_16_320_104512_320_3_True/kernel.so",
+      "sha256": "55308c0ea0bc4bbc804a0b023ab8038d978a72fb850f74e089d3f37f901bbb02"
+    },
+    {
+      "case": "odd2048",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/2049_513_2047/kernel.so",
+      "sha256": "ca95abff0cd997f412ef25dea063382aec2906aa969ba2404040bf01f327f407"
+    },
+    {
+      "case": "odd2048",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/2049_513_2047/kernel.so",
+      "sha256": "27145a7981a00b47608a5c89731e9c8b168f13939ab89994fef19a873455baaa"
+    },
+    {
+      "case": "odd2048",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/2049_513_2047/kernel.so",
+      "sha256": "bd2cb73fa714b4867332bbf827b2b2e7fd363ccd29fdb84b000e48ce092b0435"
+    },
+    {
+      "case": "m49_k4608",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/49_512_4608/kernel.so",
+      "sha256": "3ba390353178b289f4e4b27b9b984f713fb36510e66241eb5e12210e1b087dfb"
+    },
+    {
+      "case": "m49_k4608",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/49_512_4608/kernel.so",
+      "sha256": "611218bd0c08ef9e6a29515f124ca163e8bae1ef628f33669d9b081f5ba614dc"
+    },
+    {
+      "case": "m49_k4608",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/49_512_4608/kernel.so",
+      "sha256": "6ecfe20a83bc25f86ed4b9e4a4a0ef61d1272b59466624d2b9734db3af7c3f8b"
+    },
+    {
+      "case": "m49_k4608",
+      "variant": "micro96",
+      "path": "/tmp/cpu-mc-tune-micro/49_512_4608/6_16_320_104512_320_3_True/kernel.so",
+      "sha256": "376adfd542e470ce01f3b14cd4f37b51550ed38f6353be34411ac3f28e2abf15"
+    },
+    {
+      "case": "m49_k512",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/49_2048_512/kernel.so",
+      "sha256": "950ed90d0f73cc4876660e9acddfa771e980ed4ba4dcaf1c237a3b26bf579ee2"
+    },
+    {
+      "case": "m49_k512",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/49_2048_512/kernel.so",
+      "sha256": "05e944a95a9cfc8c299e297f358947454919da9ad4c9cacaf805a433f5e98461"
+    },
+    {
+      "case": "m49_k512",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/49_2048_512/kernel.so",
+      "sha256": "f0dc8bc9b5f5304449f11ee9c1bda0e18c536ee9a140e831bd3e43da33e4d3c4"
+    },
+    {
+      "case": "m7_k1024",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/7_1024_1024/kernel.so",
+      "sha256": "9ff3c9f11f823c5c5c18d6aab7b7d589716b7c9132a738d6e32dfd6940f10a87"
+    },
+    {
+      "case": "m7_k1024",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/7_1024_1024/kernel.so",
+      "sha256": "913fb0d4d3b462b2e0f3775d9cb78d5567bb63d25dff719f37dcf26ccb516160"
+    },
+    {
+      "case": "m7_k1024",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/7_1024_1024/kernel.so",
+      "sha256": "5472d00932a60751c4b478201dd20fe5fc9ce2f8f582830028f786f97746d7ea"
+    },
+    {
+      "case": "m97_n257",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/97_257_383/kernel.so",
+      "sha256": "0a5c6ae80a248e97d3feee1bdc921cabfb474ee42d1ca9540df1420a5049768d"
+    },
+    {
+      "case": "m97_n257",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/97_257_383/kernel.so",
+      "sha256": "a28ba9234fe6ff0db8228c41bf4844fa83e08007283cd5c8c1cc6458b71c948c"
+    },
+    {
+      "case": "m97_n257",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/97_257_383/kernel.so",
+      "sha256": "d5b605f0ff3265037dea438aa58c9513990ae17827203006352e007178c0669b"
+    },
+    {
+      "case": "n1000",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/256_1000_2048/kernel.so",
+      "sha256": "e14be730afd50c151ba6e47ccb6464e85d0fdaabfc38fd20318f5d55bf30b3fc"
+    },
+    {
+      "case": "n1000",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/256_1000_2048/kernel.so",
+      "sha256": "29e78be86a1baa6e3825ea0d875caa2bde31166b7be06640c057bbe99622842b"
+    },
+    {
+      "case": "n1000",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/256_1000_2048/kernel.so",
+      "sha256": "5dcf844760e569c0881fb3a7af5d4e8ae9aa5b8f83c2e46082e171dba2029943"
+    },
+    {
+      "case": "big_odd",
+      "variant": "old",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-multilevel-20261111/mimir/artifacts/1999_2047_4095/kernel.so",
+      "sha256": "28f9e5a6555864050407c05c15039952ee2a09b36c54ba8ce4fd66aca66c7204"
+    },
+    {
+      "case": "big_odd",
+      "variant": "mc",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/default/mimir/artifacts/1999_2047_4095/kernel.so",
+      "sha256": "b330d6f62f61125a01b915c0203902b86dbd82dd24cff455063cd921739a44ca"
+    },
+    {
+      "case": "big_odd",
+      "variant": "aligned",
+      "path": "/workspaces/ml-compiler/gemm-bench/results/cpu-openblas-mc-20261111/aligned/mimir/artifacts/1999_2047_4095/kernel.so",
+      "sha256": "e75430e3eaf625fc34cd7632f12367fa04ac9cb468a6c1cadd4c33e08cc5a469"
+    }
+  ],
+  "rows": [
+    {
+      "name": "sq64",
+      "shape": [
+        64,
+        64,
+        64
+      ],
+      "ms": {
+        "old": 0.004554842044403331,
+        "mc": 0.004230621432417878,
+        "aligned": 0.004460702837812441,
+        "openblas": 0.0038871358469996686,
+        "pytorch": 0.0034751446515397084
+      },
+      "batches_ms": {
+        "old": [
+          0.004553373628947266,
+          0.004555399045382226,
+          0.004555345924908426,
+          0.004553661406917994,
+          0.004554842044403331,
+          0.004553175874630037,
+          0.0045555586528659925,
+          0.004553590816773525,
+          0.0045554747539409465
+        ],
+        "mc": [
+          0.004230669520236057,
+          0.004232787693666507,
+          0.004227291338876254,
+          0.00423146933106156,
+          0.004230195633155938,
+          0.00422701930392122,
+          0.004230621432417878,
+          0.004233519727589014,
+          0.00422819889339727
+        ],
+        "aligned": [
+          0.0044606981304845476,
+          0.004459795752939834,
+          0.004462237668665667,
+          0.004462596954196699,
+          0.004463077548591828,
+          0.004460702837812441,
+          0.004467023682976395,
+          0.004458915019313792,
+          0.004460016043584445
+        ],
+        "openblas": [
+          0.0038871358469996686,
+          0.003890431061282128,
+          0.0038836225020455486,
+          0.0038853887112477183,
+          0.003890298506597279,
+          0.0038859832057326457,
+          0.0038869014662455533,
+          0.0038894340149523434,
+          0.0038896084569281127
+        ],
+        "pytorch": [
+          0.003474161322093798,
+          0.0034778022242173247,
+          0.0034751446515397084,
+          0.003476360008121356,
+          0.0034736410439293237,
+          0.0034761822236381015,
+          0.0034779136761551393,
+          0.003473715596870036,
+          0.0034737643260460403
+        ]
+      },
+      "counts": {
+        "old": [
+          25619,
+          26398,
+          26208,
+          25730,
+          25944,
+          26354,
+          25506,
+          25111,
+          24994
+        ],
+        "mc": [
+          27451,
+          27173,
+          26821,
+          26998,
+          27434,
+          28129,
+          25998,
+          27018,
+          27110
+        ],
+        "aligned": [
+          26210,
+          26277,
+          26680,
+          25806,
+          25210,
+          26605,
+          25588,
+          26406,
+          26615
+        ],
+        "openblas": [
+          26727,
+          25987,
+          26615,
+          30882,
+          30880,
+          30905,
+          26212,
+          30842,
+          27974
+        ],
+        "pytorch": [
+          34521,
+          34529,
+          34552,
+          34477,
+          30845,
+          34529,
+          34498,
+          33994,
+          34535
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 3.3711581046702577e-06,
+        "mc": 3.3711581046702577e-06,
+        "aligned": 3.3711581046702577e-06,
+        "openblas": 3.3711581046702577e-06,
+        "pytorch": 3.3711581046702577e-06
+      }
+    },
+    {
+      "name": "sq128",
+      "shape": [
+        128,
+        128,
+        128
+      ],
+      "ms": {
+        "old": 0.03194310358565737,
+        "mc": 0.03300200739476678,
+        "aligned": 0.032834068474390576,
+        "openblas": 0.02902787268610556,
+        "pytorch": 0.028059157673440784
+      },
+      "batches_ms": {
+        "old": [
+          0.031986542599672305,
+          0.032069206268416826,
+          0.031960018138170176,
+          0.031948491816693944,
+          0.03194310358565737,
+          0.03193990207557211,
+          0.031942244587008825,
+          0.03192527354382145,
+          0.03192728848783156
+        ],
+        "mc": [
+          0.03300200739476678,
+          0.0329660843575419,
+          0.03302484583448658,
+          0.0329873135995532,
+          0.03299142545554942,
+          0.03309811263736264,
+          0.03299666088901314,
+          0.0330835829201102,
+          0.03300639266870314
+        ],
+        "aligned": [
+          0.03283546266189032,
+          0.032925438333333334,
+          0.03283720543060888,
+          0.032814529605263154,
+          0.032806574757281555,
+          0.032825024986271274,
+          0.03281234396480616,
+          0.032834068474390576,
+          0.03285678851963746
+        ],
+        "openblas": [
+          0.02906971832475701,
+          0.02902787268610556,
+          0.029019868714267996,
+          0.02903125263009271,
+          0.029008208645622816,
+          0.029052382334056683,
+          0.02901460663471026,
+          0.029013083883397583,
+          0.02905160353796408
+        ],
+        "pytorch": [
+          0.02808610777009047,
+          0.02803721209610605,
+          0.028057294924554187,
+          0.028084329062019478,
+          0.02803626756018863,
+          0.028055537184284378,
+          0.028105057971014494,
+          0.02809620644251117,
+          0.028059157673440784
+        ]
+      },
+      "counts": {
+        "old": [
+          3662,
+          3733,
+          3749,
+          3666,
+          3765,
+          3758,
+          3741,
+          3674,
+          3657
+        ],
+        "mc": [
+          3516,
+          3580,
+          3613,
+          3581,
+          3622,
+          3640,
+          3577,
+          3630,
+          3601
+        ],
+        "aligned": [
+          3629,
+          3600,
+          3646,
+          3648,
+          3605,
+          3642,
+          3637,
+          3651,
+          3641
+        ],
+        "openblas": [
+          4051,
+          3752,
+          3710,
+          3749,
+          3786,
+          3688,
+          3941,
+          3717,
+          3982
+        ],
+        "pytorch": [
+          3758,
+          3621,
+          3645,
+          3902,
+          4029,
+          4276,
+          3933,
+          4253,
+          4281
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 7.124181298223675e-06,
+        "mc": 7.124181298223675e-06,
+        "aligned": 7.124181298223675e-06,
+        "openblas": 7.124181298223675e-06,
+        "pytorch": 7.124181298223675e-06
+      }
+    },
+    {
+      "name": "sq256",
+      "shape": [
+        256,
+        256,
+        256
+      ],
+      "ms": {
+        "old": 0.2733710457665904,
+        "mc": 0.2714713588516746,
+        "aligned": 0.25087910920770884,
+        "micro96": 0.21948670192307693,
+        "openblas": 0.21611071442197444,
+        "pytorch": 0.21294436121673005
+      },
+      "batches_ms": {
+        "old": [
+          0.2732487162471396,
+          0.2740008252873563,
+          0.273912,
+          0.2731569643705464,
+          0.27301387214611866,
+          0.2734454396355353,
+          0.2740312505694761,
+          0.2733710457665904,
+          0.27331028372093025
+        ],
+        "mc": [
+          0.27159566588235295,
+          0.2713376690140845,
+          0.27234658447488586,
+          0.2714713588516746,
+          0.27130861399548534,
+          0.2715157511415525,
+          0.27178448441247005,
+          0.27131688089887646,
+          0.2713729084668192
+        ],
+        "aligned": [
+          0.25076511727078893,
+          0.2518876223628692,
+          0.25069849052631576,
+          0.25118681567796614,
+          0.2506076972860125,
+          0.25087910920770884,
+          0.25058298097251586,
+          0.25117072304439747,
+          0.25109495168067225
+        ],
+        "micro96": [
+          0.21945749725776964,
+          0.21956874531835205,
+          0.21999155229357797,
+          0.21979961552680222,
+          0.21940027889908256,
+          0.2194127504587156,
+          0.21948670192307693,
+          0.21938681447124303,
+          0.2196595871212121
+        ],
+        "openblas": [
+          0.21611986826960142,
+          0.21640019627170004,
+          0.2159982849404497,
+          0.21679611938573612,
+          0.21611071442197444,
+          0.2160311751979668,
+          0.21607319693871296,
+          0.21603572945874017,
+          0.21644650167664892
+        ],
+        "pytorch": [
+          0.21319522344322345,
+          0.21294436121673005,
+          0.21426775144508672,
+          0.21318479135338345,
+          0.21260042056074768,
+          0.2126939226519337,
+          0.21397288120567376,
+          0.21255527342256214,
+          0.21262466233766233
+        ]
+      },
+      "counts": {
+        "old": [
+          437,
+          435,
+          432,
+          421,
+          438,
+          439,
+          439,
+          437,
+          430
+        ],
+        "mc": [
+          425,
+          426,
+          438,
+          418,
+          443,
+          438,
+          417,
+          445,
+          437
+        ],
+        "aligned": [
+          469,
+          474,
+          475,
+          472,
+          479,
+          467,
+          473,
+          473,
+          476
+        ],
+        "micro96": [
+          547,
+          534,
+          545,
+          541,
+          545,
+          545,
+          520,
+          539,
+          528
+        ],
+        "openblas": [
+          539,
+          521,
+          530,
+          511,
+          528,
+          531,
+          528,
+          555,
+          517
+        ],
+        "pytorch": [
+          546,
+          526,
+          519,
+          532,
+          535,
+          543,
+          564,
+          523,
+          539
+        ]
+      },
+      "orders": [
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "openblas",
+          "old",
+          "pytorch"
+        ],
+        [
+          "micro96",
+          "old",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "micro96",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "mc",
+          "micro96",
+          "aligned",
+          "old",
+          "pytorch",
+          "openblas"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "micro96",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mc",
+          "micro96",
+          "old",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "openblas",
+          "micro96",
+          "old",
+          "mc",
+          "pytorch",
+          "aligned"
+        ],
+        [
+          "aligned",
+          "mc",
+          "openblas",
+          "micro96",
+          "pytorch",
+          "old"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 1.3583925831284205e-05,
+        "mc": 1.3583925831284205e-05,
+        "aligned": 1.3583925831284205e-05,
+        "micro96": 1.3583925831284205e-05,
+        "openblas": 1.3583925831284205e-05,
+        "pytorch": 1.3583925831284205e-05
+      }
+    },
+    {
+      "name": "sq512",
+      "shape": [
+        512,
+        512,
+        512
+      ],
+      "ms": {
+        "old": 2.0919360357142858,
+        "mc": 2.1119771071428572,
+        "aligned": 2.0224953389830507,
+        "openblas": 1.6804828537978989,
+        "pytorch": 1.6912057571428571
+      },
+      "batches_ms": {
+        "old": [
+          2.0913085999999996,
+          2.089408596491228,
+          2.0905843508771933,
+          2.0894617272727274,
+          2.0953054210526316,
+          2.092980842105263,
+          2.0919360357142858,
+          2.1033865535714282,
+          2.093364821428571
+        ],
+        "mc": [
+          2.1148154727272725,
+          2.1174406607142857,
+          2.1119771071428572,
+          2.1114341071428573,
+          2.113667017857143,
+          2.1156912500000002,
+          2.1114216428571426,
+          2.111913196428571,
+          2.108497607142857
+        ],
+        "aligned": [
+          2.0216626101694914,
+          2.021671137931034,
+          2.0224953389830507,
+          2.021352779661017,
+          2.0239964137931032,
+          2.0236965593220337,
+          2.026822344827586,
+          2.0237470517241376,
+          2.021137322033898
+        ],
+        "openblas": [
+          1.6902902562703406,
+          1.680159549890221,
+          1.6804828537978989,
+          1.684966227174669,
+          1.6804350121621636,
+          1.6795703736336334,
+          1.6817034288708654,
+          1.681237987109593,
+          1.6795090124220915
+        ],
+        "pytorch": [
+          1.6885909428571428,
+          1.6909292285714286,
+          1.6921579857142857,
+          1.6975561739130436,
+          1.6904237,
+          1.6912057571428571,
+          1.6941306176470587,
+          1.691406042253521,
+          1.689996420289855
+        ]
+      },
+      "counts": {
+        "old": [
+          55,
+          57,
+          57,
+          55,
+          57,
+          57,
+          56,
+          56,
+          56
+        ],
+        "mc": [
+          55,
+          56,
+          56,
+          56,
+          56,
+          56,
+          56,
+          56,
+          56
+        ],
+        "aligned": [
+          59,
+          58,
+          59,
+          59,
+          58,
+          59,
+          58,
+          58,
+          59
+        ],
+        "openblas": [
+          70,
+          69,
+          69,
+          69,
+          69,
+          69,
+          70,
+          70,
+          71
+        ],
+        "pytorch": [
+          70,
+          70,
+          70,
+          69,
+          70,
+          70,
+          68,
+          71,
+          69
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 2.9232220867925207e-05,
+        "mc": 2.9232220867925207e-05,
+        "aligned": 2.9232220867925207e-05,
+        "openblas": 1.7682673735919252e-05,
+        "pytorch": 1.5256379896300132e-05
+      }
+    },
+    {
+      "name": "sq1000",
+      "shape": [
+        1000,
+        1000,
+        1000
+      ],
+      "ms": {
+        "old": 15.082939857142856,
+        "mc": 15.056036428571428,
+        "aligned": 14.450628374999999,
+        "openblas": 12.36125599179003,
+        "pytorch": 12.471079000000001
+      },
+      "batches_ms": {
+        "old": [
+          15.044466714285715,
+          15.042202428571429,
+          15.051689857142858,
+          15.126360428571429,
+          15.042136142857142,
+          15.086945857142858,
+          15.265536142857142,
+          15.100675714285712,
+          15.082939857142856
+        ],
+        "mc": [
+          15.05285842857143,
+          15.05288257142857,
+          15.08678157142857,
+          15.045134142857142,
+          15.155346714285715,
+          15.143580428571429,
+          15.048692714285714,
+          15.449436571428572,
+          15.056036428571428
+        ],
+        "aligned": [
+          14.4386455,
+          14.450628374999999,
+          14.471242625,
+          14.442545625000001,
+          14.506907,
+          14.443879625,
+          14.46829825,
+          14.467410125,
+          14.396615749999999
+        ],
+        "openblas": [
+          12.352336456792223,
+          12.36125599179003,
+          12.356256548729208,
+          12.492917322864136,
+          12.358020784126388,
+          12.357456092205313,
+          12.379131331625912,
+          12.363734241161081,
+          12.382510997768906
+        ],
+        "pytorch": [
+          12.498121555555556,
+          12.445594888888891,
+          12.49882,
+          12.456318666666668,
+          12.471079000000001,
+          12.504020999999998,
+          12.467069777777777,
+          12.471301444444446,
+          12.449023666666667
+        ]
+      },
+      "counts": {
+        "old": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "mc": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "aligned": [
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ],
+        "openblas": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9
+        ],
+        "pytorch": [
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9,
+          9
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 6.966832702914871e-05,
+        "mc": 6.966832702914871e-05,
+        "aligned": 6.966832702914871e-05,
+        "openblas": 2.280137440635599e-05,
+        "pytorch": 2.0049418672840602e-05
+      }
+    },
+    {
+      "name": "sq1024",
+      "shape": [
+        1024,
+        1024,
+        1024
+      ],
+      "ms": {
+        "old": 16.38503657142857,
+        "mc": 16.474259857142858,
+        "aligned": 15.76204657142857,
+        "micro96": 18.2609425,
+        "openblas": 13.343268365133554,
+        "pytorch": 13.466457875000001
+      },
+      "batches_ms": {
+        "old": [
+          16.455569999999998,
+          16.40010757142857,
+          16.365721714285712,
+          16.38503657142857,
+          16.37344142857143,
+          16.373329285714284,
+          16.390060285714288,
+          16.380189857142856,
+          16.40094057142857
+        ],
+        "mc": [
+          16.48629485714286,
+          16.57134514285714,
+          16.423138714285713,
+          16.378860428571432,
+          16.735389285714284,
+          16.474259857142858,
+          16.468429,
+          16.47918814285714,
+          16.377858
+        ],
+        "aligned": [
+          15.759970571428573,
+          15.831444285714285,
+          15.83248542857143,
+          15.747432714285713,
+          15.732093999999998,
+          15.747491714285713,
+          15.794511857142858,
+          15.81161257142857,
+          15.76204657142857
+        ],
+        "micro96": [
+          18.253195666666667,
+          18.237435666666666,
+          18.2609425,
+          18.257692666666667,
+          18.275302166666666,
+          18.3706265,
+          18.586406333333333,
+          18.330198833333334,
+          18.241033666666667
+        ],
+        "openblas": [
+          13.347673288080841,
+          13.334516144823283,
+          13.596536766272038,
+          13.343268365133554,
+          13.370088476222008,
+          13.353391666896641,
+          13.332359259948134,
+          13.317038098143207,
+          13.332187489140779
+        ],
+        "pytorch": [
+          13.4755325,
+          13.59909525,
+          13.436913375,
+          13.468952875000001,
+          13.427427250000001,
+          13.436445,
+          13.466457875000001,
+          13.447788375,
+          13.609865375
+        ]
+      },
+      "counts": {
+        "old": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "mc": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "aligned": [
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7,
+          7
+        ],
+        "micro96": [
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6,
+          6
+        ],
+        "openblas": [
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          9,
+          8
+        ],
+        "pytorch": [
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ]
+      },
+      "orders": [
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "openblas",
+          "old",
+          "pytorch"
+        ],
+        [
+          "micro96",
+          "old",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "micro96",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "mc",
+          "micro96",
+          "aligned",
+          "old",
+          "pytorch",
+          "openblas"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "micro96",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mc",
+          "micro96",
+          "old",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "openblas",
+          "micro96",
+          "old",
+          "mc",
+          "pytorch",
+          "aligned"
+        ],
+        [
+          "aligned",
+          "mc",
+          "openblas",
+          "micro96",
+          "pytorch",
+          "old"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 8.271761005573808e-05,
+        "mc": 8.271761005573808e-05,
+        "aligned": 8.271761005573808e-05,
+        "micro96": 8.271761005573808e-05,
+        "openblas": 2.637404252681108e-05,
+        "pytorch": 1.7924404074776135e-05
+      }
+    },
+    {
+      "name": "skinny",
+      "shape": [
+        8,
+        512,
+        2304
+      ],
+      "ms": {
+        "old": 0.30714027877237854,
+        "mc": 0.307626956185567,
+        "aligned": 0.26815469574944073,
+        "micro96": 0.30660918617021277,
+        "openblas": 0.23606172918336565,
+        "pytorch": 0.1774339894419306
+      },
+      "batches_ms": {
+        "old": [
+          0.30657911794871795,
+          0.3068713367875648,
+          0.30695276517150394,
+          0.30841418253968256,
+          0.30714027877237854,
+          0.3074917474489796,
+          0.3065288516624041,
+          0.30727255789473684,
+          0.30758079487179485
+        ],
+        "mc": [
+          0.3070033192612137,
+          0.30669459383033415,
+          0.30679570542635654,
+          0.307626956185567,
+          0.3076878917525773,
+          0.3085677723785166,
+          0.30795259016393445,
+          0.30653824808184144,
+          0.30770826041666666
+        ],
+        "aligned": [
+          0.26815469574944073,
+          0.26805549430523923,
+          0.26843786117647056,
+          0.2682336751740139,
+          0.2672953385300668,
+          0.2674851962616822,
+          0.26827962416107387,
+          0.26766198873873875,
+          0.26857665178571427
+        ],
+        "micro96": [
+          0.30596262340966923,
+          0.30758395324675325,
+          0.30660918617021277,
+          0.30690309207161126,
+          0.3062450647668394,
+          0.31018011053984573,
+          0.3064848620689655,
+          0.3063340621761658,
+          0.30680653213367604
+        ],
+        "openblas": [
+          0.23524863029683915,
+          0.23543645568697405,
+          0.24381780107072007,
+          0.2358322329435152,
+          0.23588630157049562,
+          0.23615606572838532,
+          0.2360656835739906,
+          0.23606172918336565,
+          0.2367983379887666
+        ],
+        "pytorch": [
+          0.17732591693811073,
+          0.17711794444444443,
+          0.1806682365079365,
+          0.1774984107946027,
+          0.17735333733133432,
+          0.18249426008968608,
+          0.17848058074534162,
+          0.1774339894419306,
+          0.17720732530120484
+        ]
+      },
+      "counts": {
+        "old": [
+          390,
+          386,
+          379,
+          378,
+          391,
+          392,
+          391,
+          380,
+          390
+        ],
+        "mc": [
+          379,
+          389,
+          387,
+          388,
+          388,
+          391,
+          366,
+          391,
+          384
+        ],
+        "aligned": [
+          447,
+          439,
+          425,
+          431,
+          449,
+          428,
+          447,
+          444,
+          448
+        ],
+        "micro96": [
+          393,
+          385,
+          376,
+          391,
+          386,
+          389,
+          377,
+          386,
+          389
+        ],
+        "openblas": [
+          484,
+          457,
+          494,
+          485,
+          488,
+          487,
+          471,
+          509,
+          494
+        ],
+        "pytorch": [
+          614,
+          666,
+          630,
+          667,
+          667,
+          669,
+          644,
+          663,
+          664
+        ]
+      },
+      "orders": [
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "openblas",
+          "old",
+          "pytorch"
+        ],
+        [
+          "micro96",
+          "old",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "micro96",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "mc",
+          "micro96",
+          "aligned",
+          "old",
+          "pytorch",
+          "openblas"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "micro96",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mc",
+          "micro96",
+          "old",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "openblas",
+          "micro96",
+          "old",
+          "mc",
+          "pytorch",
+          "aligned"
+        ],
+        [
+          "aligned",
+          "mc",
+          "openblas",
+          "micro96",
+          "pytorch",
+          "old"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 8.994087395564065e-05,
+        "mc": 8.994087395564065e-05,
+        "aligned": 8.994087395564065e-05,
+        "micro96": 8.994087395564065e-05,
+        "openblas": 1.8200988904482074e-05,
+        "pytorch": 2.2236475942349898e-05
+      }
+    },
+    {
+      "name": "pack",
+      "shape": [
+        64,
+        512,
+        130
+      ],
+      "ms": {
+        "old": 0.08273473012399708,
+        "mc": 0.082706404964539,
+        "aligned": 0.06783500952914798,
+        "openblas": 0.058585779150365024,
+        "pytorch": 0.05315310912511759
+      },
+      "batches_ms": {
+        "old": [
+          0.0827078718682892,
+          0.08280063560500694,
+          0.08283203344947736,
+          0.08276567739520957,
+          0.08267203563941301,
+          0.08272215546218487,
+          0.08263253824160115,
+          0.08301297893972404,
+          0.08273473012399708
+        ],
+        "mc": [
+          0.08265006899166036,
+          0.08266673977433003,
+          0.082706404964539,
+          0.0825385746320953,
+          0.08271896247394023,
+          0.08263703252595155,
+          0.08276979090242113,
+          0.08271381077348067,
+          0.08279518074792243
+        ],
+        "aligned": [
+          0.06787765527065527,
+          0.06783429971181557,
+          0.06773278579545455,
+          0.06772457492877493,
+          0.06771471072463768,
+          0.06783500952914798,
+          0.06785972866026004,
+          0.06789298004561004,
+          0.06789244225352112
+        ],
+        "openblas": [
+          0.05879616727451199,
+          0.05860749013197033,
+          0.058587014356049474,
+          0.05853252407199472,
+          0.058538521440646134,
+          0.05858468636283416,
+          0.05860283224433354,
+          0.058585779150365024,
+          0.05857504675622115
+        ],
+        "pytorch": [
+          0.05315616393442622,
+          0.0531347387068202,
+          0.05313366571018652,
+          0.05337544177449169,
+          0.05318552925045704,
+          0.05313866519043401,
+          0.05315310912511759,
+          0.053267978713968954,
+          0.053132668945312496
+        ]
+      },
+      "counts": {
+        "old": [
+          1397,
+          1438,
+          1435,
+          1336,
+          1431,
+          1428,
+          1399,
+          1377,
+          1371
+        ],
+        "mc": [
+          1319,
+          1418,
+          1410,
+          1427,
+          1439,
+          1445,
+          1363,
+          1448,
+          1444
+        ],
+        "aligned": [
+          1755,
+          1735,
+          1760,
+          1755,
+          1725,
+          1784,
+          1769,
+          1754,
+          1775
+        ],
+        "openblas": [
+          2029,
+          1902,
+          1938,
+          1858,
+          1878,
+          1904,
+          1944,
+          1831,
+          2004
+        ],
+        "pytorch": [
+          1952,
+          2258,
+          2091,
+          2164,
+          2188,
+          2258,
+          2126,
+          2255,
+          2048
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 7.305829999637581e-06,
+        "mc": 7.305829999637581e-06,
+        "aligned": 7.305829999637581e-06,
+        "openblas": 7.305829999637581e-06,
+        "pytorch": 7.305829999637581e-06
+      }
+    },
+    {
+      "name": "k49",
+      "shape": [
+        64,
+        1024,
+        49
+      ],
+      "ms": {
+        "old": 0.050164878110501895,
+        "mc": 0.04712498846459825,
+        "aligned": 0.04616578515318146,
+        "openblas": 0.04695193539510268,
+        "pytorch": 0.041664629173989456
+      },
+      "batches_ms": {
+        "old": [
+          0.05058007356122891,
+          0.05090884592901879,
+          0.050164878110501895,
+          0.05002181015358362,
+          0.050592002508361204,
+          0.05010390746144226,
+          0.05016442405884899,
+          0.05070032989247311,
+          0.05009495116681072
+        ],
+        "mc": [
+          0.04716755031695721,
+          0.04734032797029703,
+          0.0471662107455227,
+          0.04715077507961783,
+          0.04709268675179569,
+          0.04710676785714285,
+          0.04711858457943926,
+          0.04712498846459825,
+          0.0470717132
+        ],
+        "aligned": [
+          0.04611516031128404,
+          0.04629439080911233,
+          0.046306109311740895,
+          0.046425977559055115,
+          0.045887192968750004,
+          0.04600592140600315,
+          0.04616578515318146,
+          0.04636848927038626,
+          0.04606320938485805
+        ],
+        "openblas": [
+          0.046982882304651905,
+          0.04697478297310018,
+          0.04721001175044624,
+          0.04692494044580911,
+          0.04693670529835173,
+          0.04691493118055393,
+          0.04695193539510268,
+          0.04694153919382386,
+          0.04699639920676614
+        ],
+        "pytorch": [
+          0.04168551047904192,
+          0.04169070100409074,
+          0.04162645293644408,
+          0.041647341076267906,
+          0.04162096987951807,
+          0.04174366358024691,
+          0.04169686992715921,
+          0.041664629173989456,
+          0.04159734851266985
+        ]
+      },
+      "counts": {
+        "old": [
+          2311,
+          2395,
+          2371,
+          2344,
+          2392,
+          2399,
+          2311,
+          2325,
+          2314
+        ],
+        "mc": [
+          2524,
+          2424,
+          2401,
+          2512,
+          2506,
+          2520,
+          2140,
+          2514,
+          2500
+        ],
+        "aligned": [
+          2570,
+          2546,
+          2470,
+          2540,
+          2560,
+          2532,
+          2546,
+          2563,
+          2536
+        ],
+        "openblas": [
+          2525,
+          2369,
+          2219,
+          2270,
+          2416,
+          2313,
+          2555,
+          2268,
+          2524
+        ],
+        "pytorch": [
+          2672,
+          2689,
+          2486,
+          2583,
+          2822,
+          2592,
+          2883,
+          2845,
+          2723
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 2.439990085534305e-06,
+        "mc": 2.439990085534305e-06,
+        "aligned": 2.439990085534305e-06,
+        "openblas": 2.439990085534305e-06,
+        "pytorch": 2.439990085534305e-06
+      }
+    },
+    {
+      "name": "k147",
+      "shape": [
+        64,
+        1024,
+        147
+      ],
+      "ms": {
+        "old": 0.17379733431952663,
+        "mc": 0.1733697001455604,
+        "aligned": 0.14726465201465203,
+        "openblas": 0.1327291428322083,
+        "pytorch": 0.12083845100105374
+      },
+      "batches_ms": {
+        "old": [
+          0.17380936930091184,
+          0.1737283245614035,
+          0.17384362957540264,
+          0.17446881872213968,
+          0.1737742525849335,
+          0.17377023726346433,
+          0.17364619530102787,
+          0.17379733431952663,
+          0.17392916589147286
+        ],
+        "mc": [
+          0.1734773215859031,
+          0.17330405899705012,
+          0.17360199558823527,
+          0.1731335067466267,
+          0.17330465401459855,
+          0.1734016447368421,
+          0.1734309568452381,
+          0.1733697001455604,
+          0.17328100145772596
+        ],
+        "aligned": [
+          0.14816303160556257,
+          0.14680531065468547,
+          0.14726465201465203,
+          0.1472045792682927,
+          0.14749431483870967,
+          0.14781085347985348,
+          0.14718623926380367,
+          0.14704160317460316,
+          0.14742358977556108
+        ],
+        "openblas": [
+          0.13297320089934925,
+          0.1327291428322083,
+          0.13261003462823828,
+          0.13264471160650537,
+          0.13324941172405091,
+          0.13264119296389468,
+          0.13260219913686633,
+          0.13276387799636158,
+          0.13289964090010922
+        ],
+        "pytorch": [
+          0.12080923591923484,
+          0.12081210782241014,
+          0.12087540658174098,
+          0.12074868750000001,
+          0.12083845100105374,
+          0.12083919807280513,
+          0.120929,
+          0.12079409371671991,
+          0.12117617647058823
+        ]
+      },
+      "counts": {
+        "old": [
+          658,
+          684,
+          683,
+          673,
+          677,
+          687,
+          681,
+          676,
+          645
+        ],
+        "mc": [
+          681,
+          678,
+          680,
+          667,
+          685,
+          684,
+          672,
+          687,
+          686
+        ],
+        "aligned": [
+          791,
+          779,
+          819,
+          820,
+          775,
+          819,
+          815,
+          819,
+          802
+        ],
+        "openblas": [
+          896,
+          827,
+          865,
+          842,
+          848,
+          850,
+          865,
+          852,
+          813
+        ],
+        "pytorch": [
+          941,
+          946,
+          942,
+          960,
+          949,
+          934,
+          870,
+          939,
+          952
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 7.928532774315045e-06,
+        "mc": 7.928532774315045e-06,
+        "aligned": 7.928532774315045e-06,
+        "openblas": 7.893833565475461e-06,
+        "pytorch": 7.928532774315045e-06
+      }
+    },
+    {
+      "name": "k245",
+      "shape": [
+        64,
+        1024,
+        245
+      ],
+      "ms": {
+        "old": 0.2746122319587629,
+        "mc": 0.2732823456221198,
+        "aligned": 0.23207855078125,
+        "openblas": 0.2185243350409326,
+        "pytorch": 0.1979152179054054
+      },
+      "batches_ms": {
+        "old": [
+          0.2747140046948357,
+          0.27448928110599075,
+          0.2746122319587629,
+          0.2754113252427185,
+          0.2745046612903226,
+          0.27374314055299537,
+          0.274647603286385,
+          0.2755898186397985,
+          0.2742348114558472
+        ],
+        "mc": [
+          0.2732637633410673,
+          0.2732823456221198,
+          0.27334059574468084,
+          0.27328026980198017,
+          0.2732829565217392,
+          0.27278488787185357,
+          0.2734594928571429,
+          0.2737034299065421,
+          0.2730869266055046
+        ],
+        "aligned": [
+          0.23207855078125,
+          0.23233547389558232,
+          0.23222364901960782,
+          0.23199257945736435,
+          0.2322018926441352,
+          0.23198616472868216,
+          0.23372361689587426,
+          0.23170583889980353,
+          0.23206686773547094
+        ],
+        "openblas": [
+          0.2184011964801291,
+          0.21827740448654867,
+          0.2185725218190527,
+          0.21845224637218053,
+          0.2185243350409326,
+          0.21867214594269613,
+          0.21880030509014173,
+          0.21837599240170533,
+          0.2190267294288481
+        ],
+        "pytorch": [
+          0.19798227882960412,
+          0.1976354766839378,
+          0.19798896085409254,
+          0.1979152179054054,
+          0.1975381105527638,
+          0.19767318038528897,
+          0.1984384650735294,
+          0.198227093220339,
+          0.19749358710801396
+        ]
+      },
+      "counts": {
+        "old": [
+          426,
+          434,
+          388,
+          412,
+          434,
+          434,
+          426,
+          397,
+          419
+        ],
+        "mc": [
+          431,
+          434,
+          423,
+          404,
+          437,
+          437,
+          420,
+          428,
+          436
+        ],
+        "aligned": [
+          512,
+          498,
+          510,
+          516,
+          503,
+          516,
+          509,
+          509,
+          499
+        ],
+        "openblas": [
+          539,
+          510,
+          527,
+          512,
+          525,
+          527,
+          530,
+          511,
+          522
+        ],
+        "pytorch": [
+          581,
+          579,
+          562,
+          592,
+          597,
+          571,
+          544,
+          590,
+          574
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 1.1810072173545905e-05,
+        "mc": 1.1810072173545905e-05,
+        "aligned": 1.1810072173545905e-05,
+        "openblas": 1.1810072173545905e-05,
+        "pytorch": 1.1810072173545905e-05
+      }
+    },
+    {
+      "name": "sq2000",
+      "shape": [
+        2000,
+        2000,
+        2000
+      ],
+      "ms": {
+        "old": 123.811359,
+        "mc": 123.497805,
+        "aligned": 120.877926,
+        "openblas": 102.64157876372337,
+        "pytorch": 105.60184
+      },
+      "batches_ms": {
+        "old": [
+          123.66674900000001,
+          123.217261,
+          123.811359,
+          127.90869099999999,
+          123.979671,
+          123.990959,
+          123.59808699999999,
+          124.331517,
+          123.415421
+        ],
+        "mc": [
+          123.312043,
+          123.520695,
+          123.197659,
+          123.754666,
+          123.497805,
+          123.533021,
+          123.399072,
+          123.474694,
+          124.064294
+        ],
+        "aligned": [
+          123.18778900000001,
+          120.73362399999999,
+          120.836281,
+          122.005594,
+          120.752394,
+          120.877926,
+          120.81802599999999,
+          121.92603000000001,
+          121.379877
+        ],
+        "openblas": [
+          103.71276922523975,
+          102.4129563011229,
+          102.20890818163753,
+          102.88558388128877,
+          102.64960071071982,
+          102.79298201203346,
+          102.64157876372337,
+          102.62628924101591,
+          102.63835219666362
+        ],
+        "pytorch": [
+          106.03015500000001,
+          105.18334999999999,
+          105.920825,
+          105.285882,
+          105.611614,
+          105.450277,
+          105.092669,
+          106.228146,
+          105.60184
+        ]
+      },
+      "counts": {
+        "old": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "mc": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "aligned": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "openblas": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "pytorch": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 0.00014427894529944751,
+        "mc": 0.00014427894529944751,
+        "aligned": 0.00014427894529944751,
+        "openblas": 3.6578706030354624e-05,
+        "pytorch": 2.9241623224152136e-05
+      }
+    },
+    {
+      "name": "sq2048",
+      "shape": [
+        2048,
+        2048,
+        2048
+      ],
+      "ms": {
+        "old": 139.065608,
+        "mc": 139.15385899999998,
+        "aligned": 131.301898,
+        "openblas": 110.1476508192718,
+        "pytorch": 112.707104
+      },
+      "batches_ms": {
+        "old": [
+          138.274826,
+          138.964854,
+          145.669445,
+          139.065608,
+          142.633535,
+          142.47785499999998,
+          138.278607,
+          142.356155,
+          138.389309
+        ],
+        "mc": [
+          141.949136,
+          139.056131,
+          139.187561,
+          139.342149,
+          139.15385899999998,
+          140.256512,
+          138.537321,
+          138.499147,
+          138.441081
+        ],
+        "aligned": [
+          131.010983,
+          131.69366599999998,
+          129.525208,
+          131.680497,
+          131.722346,
+          132.690158,
+          131.26054200000002,
+          130.844065,
+          131.301898
+        ],
+        "openblas": [
+          109.73206022754312,
+          110.37309700623155,
+          109.28899934515357,
+          110.4552992619574,
+          109.89431478083134,
+          110.28031492605805,
+          110.05186708644032,
+          110.1476508192718,
+          110.30810605734587
+        ],
+        "pytorch": [
+          112.941547,
+          112.22971299999999,
+          113.609173,
+          112.116895,
+          113.301117,
+          112.707104,
+          112.625996,
+          113.06575500000001,
+          112.52444200000001
+        ]
+      },
+      "counts": {
+        "old": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "mc": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "aligned": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "openblas": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "pytorch": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 0.00015664782816315892,
+        "mc": 0.00015664782816315892,
+        "aligned": 0.00015664782816315892,
+        "openblas": 3.7741719609130087e-05,
+        "pytorch": 2.584763862145678e-05
+      }
+    },
+    {
+      "name": "wide2048",
+      "shape": [
+        64,
+        2048,
+        2048
+      ],
+      "ms": {
+        "old": 5.137509347826087,
+        "mc": 5.131398913043478,
+        "aligned": 4.64822692,
+        "openblas": 3.7265377904986963,
+        "pytorch": 3.431091714285714
+      },
+      "batches_ms": {
+        "old": [
+          5.137509347826087,
+          5.125939739130434,
+          5.1207841739130435,
+          5.667288086956521,
+          5.178213043478261,
+          5.131718043478261,
+          5.13308747826087,
+          5.147171652173913,
+          5.138669434782608
+        ],
+        "mc": [
+          5.116231318181819,
+          5.101412217391304,
+          5.130213304347826,
+          5.142034,
+          5.173344545454545,
+          5.131398913043478,
+          5.177208391304347,
+          5.13434852173913,
+          5.125071608695652
+        ],
+        "aligned": [
+          4.661857076923076,
+          4.64822692,
+          4.6084221923076925,
+          4.633147038461538,
+          4.62498068,
+          4.657889846153846,
+          4.65716456,
+          4.666733538461538,
+          4.613296346153846
+        ],
+        "openblas": [
+          3.8356308134332777,
+          3.7355669046519324,
+          3.719214259857132,
+          3.8098280201666057,
+          3.722405031083092,
+          3.735393195623352,
+          3.716002578937238,
+          3.7265377904986963,
+          3.716702227510752
+        ],
+        "pytorch": [
+          3.4285495999999998,
+          3.433023176470588,
+          3.4232296,
+          3.4075604285714287,
+          3.4391648235294117,
+          3.444466485714286,
+          3.4629298823529413,
+          3.431091714285714,
+          3.428790205882353
+        ]
+      },
+      "counts": {
+        "old": [
+          23,
+          23,
+          23,
+          23,
+          23,
+          23,
+          23,
+          23,
+          23
+        ],
+        "mc": [
+          22,
+          23,
+          23,
+          23,
+          22,
+          23,
+          23,
+          23,
+          23
+        ],
+        "aligned": [
+          26,
+          25,
+          26,
+          26,
+          25,
+          26,
+          25,
+          26,
+          26
+        ],
+        "openblas": [
+          31,
+          32,
+          31,
+          32,
+          31,
+          31,
+          31,
+          32,
+          31
+        ],
+        "pytorch": [
+          35,
+          34,
+          35,
+          35,
+          34,
+          35,
+          34,
+          35,
+          34
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 0.00014178175489121259,
+        "mc": 0.00014178175489121259,
+        "aligned": 0.00014178175489121259,
+        "openblas": 2.9212715901394404e-05,
+        "pytorch": 2.5378586762769828e-05
+      }
+    },
+    {
+      "name": "tall2048",
+      "shape": [
+        2048,
+        128,
+        512
+      ],
+      "ms": {
+        "old": 2.179190145454545,
+        "mc": 2.172775418181818,
+        "aligned": 2.206351716981132,
+        "micro96": 10.437179272727272,
+        "openblas": 1.7523128511523134,
+        "pytorch": 1.779211409090909
+      },
+      "batches_ms": {
+        "old": [
+          2.1830323518518515,
+          2.178514425925926,
+          2.182466109090909,
+          2.184715685185185,
+          2.174990148148148,
+          2.1753974727272727,
+          2.2100958703703704,
+          2.179190145454545,
+          2.1768432222222223
+        ],
+        "mc": [
+          2.1793224363636363,
+          2.173512203703704,
+          2.1715358148148147,
+          2.171476872727273,
+          2.172639181818182,
+          2.183314509090909,
+          2.1718815,
+          2.176800963636363,
+          2.172775418181818
+        ],
+        "aligned": [
+          2.207098641509434,
+          2.206351716981132,
+          2.203876074074074,
+          2.2058929433962264,
+          2.2034087962962965,
+          2.20482036,
+          2.208024230769231,
+          2.2099661153846153,
+          2.2083345925925926
+        ],
+        "micro96": [
+          10.437775636363638,
+          10.437179272727272,
+          10.412431181818182,
+          10.436728727272728,
+          10.431253727272727,
+          10.46616581818182,
+          10.447411,
+          10.450540454545454,
+          10.424193181818183
+        ],
+        "openblas": [
+          1.7532278487289492,
+          1.7523128511523134,
+          1.7540159065331986,
+          1.7536935311826791,
+          1.751740122519767,
+          1.7488485188292924,
+          1.7560937117333666,
+          1.7479221637853806,
+          1.7492651327777264
+        ],
+        "pytorch": [
+          1.7868069393939394,
+          1.7744376666666666,
+          1.779211409090909,
+          1.7927464179104475,
+          1.9231018484848483,
+          1.7742819242424244,
+          1.776984015151515,
+          1.779800090909091,
+          1.7772940303030302
+        ]
+      },
+      "counts": {
+        "old": [
+          54,
+          54,
+          55,
+          54,
+          54,
+          55,
+          54,
+          55,
+          54
+        ],
+        "mc": [
+          55,
+          54,
+          54,
+          55,
+          55,
+          55,
+          54,
+          55,
+          55
+        ],
+        "aligned": [
+          53,
+          53,
+          54,
+          53,
+          54,
+          50,
+          52,
+          52,
+          54
+        ],
+        "micro96": [
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11,
+          11
+        ],
+        "openblas": [
+          66,
+          67,
+          67,
+          66,
+          67,
+          67,
+          66,
+          68,
+          67
+        ],
+        "pytorch": [
+          66,
+          66,
+          66,
+          67,
+          66,
+          66,
+          66,
+          66,
+          66
+        ]
+      },
+      "orders": [
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "openblas",
+          "old",
+          "pytorch"
+        ],
+        [
+          "micro96",
+          "old",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "micro96",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "mc",
+          "micro96",
+          "aligned",
+          "old",
+          "pytorch",
+          "openblas"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "micro96",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mc",
+          "micro96",
+          "old",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "openblas",
+          "micro96",
+          "old",
+          "mc",
+          "pytorch",
+          "aligned"
+        ],
+        [
+          "aligned",
+          "mc",
+          "openblas",
+          "micro96",
+          "pytorch",
+          "old"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 3.194670178174874e-05,
+        "mc": 3.194670178174874e-05,
+        "aligned": 3.194670178174874e-05,
+        "micro96": 3.194670178174874e-05,
+        "openblas": 1.6678146856463627e-05,
+        "pytorch": 1.4502927196957671e-05
+      }
+    },
+    {
+      "name": "odd2048",
+      "shape": [
+        2049,
+        513,
+        2047
+      ],
+      "ms": {
+        "old": 36.669249666666666,
+        "mc": 36.114516,
+        "aligned": 35.21499833333334,
+        "openblas": 28.02006248384714,
+        "pytorch": 28.581733500000002
+      },
+      "batches_ms": {
+        "old": [
+          36.481737,
+          36.483645,
+          36.609034666666666,
+          36.565128666666666,
+          36.669249666666666,
+          38.46763333333333,
+          36.784355999999995,
+          36.849131,
+          36.82233933333334
+        ],
+        "mc": [
+          36.13179933333333,
+          36.09085433333333,
+          35.77746833333333,
+          36.04647366666667,
+          36.206241,
+          36.147768000000006,
+          36.114516,
+          36.31698633333333,
+          35.996639333333334
+        ],
+        "aligned": [
+          35.342307999999996,
+          35.65473166666667,
+          34.86246966666667,
+          35.17851666666667,
+          35.10549833333333,
+          35.107089,
+          35.21499833333334,
+          38.474149,
+          35.415154333333334
+        ],
+        "openblas": [
+          27.98175672069192,
+          28.132581734098494,
+          28.205909999087453,
+          28.058794559910893,
+          28.027986525557935,
+          28.02006248384714,
+          27.900901739485562,
+          27.7251930674538,
+          27.697728713974357
+        ],
+        "pytorch": [
+          28.61462675,
+          28.5867535,
+          28.581733500000002,
+          28.6069365,
+          28.54767575,
+          28.485570000000003,
+          28.60548225,
+          28.52208075,
+          28.37942425
+        ]
+      },
+      "counts": {
+        "old": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "mc": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "aligned": [
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3,
+          3
+        ],
+        "openblas": [
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4
+        ],
+        "pytorch": [
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4,
+          4
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 0.00014481864700854885,
+        "mc": 0.00014481864700854885,
+        "aligned": 0.00014481864700854885,
+        "openblas": 3.457388945804496e-05,
+        "pytorch": 2.4331801842691902e-05
+      }
+    },
+    {
+      "name": "m49_k4608",
+      "shape": [
+        49,
+        512,
+        4608
+      ],
+      "ms": {
+        "old": 2.996893325,
+        "mc": 2.999931564102564,
+        "aligned": 3.24172954054054,
+        "micro96": 3.2672175,
+        "openblas": 1.761713190310037,
+        "pytorch": 1.5062841025641025
+      },
+      "batches_ms": {
+        "old": [
+          2.99626885,
+          3.00010795,
+          2.998620641025641,
+          3.0302371794871794,
+          2.997281435897436,
+          2.99061705,
+          2.9935966153846154,
+          2.996849487179487,
+          2.996893325
+        ],
+        "mc": [
+          3.00058758974359,
+          2.999931564102564,
+          3.00100255,
+          3.0013753333333333,
+          2.9930608,
+          2.997753717948718,
+          2.995850925,
+          2.99877445,
+          3.0042817499999996
+        ],
+        "aligned": [
+          3.2404395675675675,
+          3.242741513513513,
+          3.242354722222222,
+          3.2354211944444446,
+          3.2369791111111113,
+          3.230797,
+          3.2474061944444443,
+          3.2425606756756755,
+          3.24172954054054
+        ],
+        "micro96": [
+          3.2672175,
+          3.2672216,
+          3.2657848888888887,
+          3.2613899444444443,
+          3.2620980555555557,
+          3.258628611111111,
+          3.268577027777778,
+          3.2709223888888888,
+          3.2681663055555554
+        ],
+        "openblas": [
+          1.7605195961781401,
+          1.759617909121869,
+          1.7617565018179662,
+          1.7632225166950652,
+          1.7527458326452796,
+          1.7677287447868901,
+          1.7774324434307907,
+          1.76059949531484,
+          1.761713190310037
+        ],
+        "pytorch": [
+          1.5091223717948719,
+          1.5072286329113926,
+          1.50640625,
+          1.502248576923077,
+          1.5062841025641025,
+          1.5059190126582278,
+          1.503916025,
+          1.5083736538461539,
+          1.5051153625
+        ]
+      },
+      "counts": {
+        "old": [
+          40,
+          40,
+          39,
+          39,
+          39,
+          40,
+          39,
+          39,
+          40
+        ],
+        "mc": [
+          39,
+          39,
+          40,
+          39,
+          40,
+          39,
+          40,
+          40,
+          40
+        ],
+        "aligned": [
+          37,
+          37,
+          36,
+          36,
+          36,
+          36,
+          36,
+          37,
+          37
+        ],
+        "micro96": [
+          36,
+          35,
+          36,
+          36,
+          36,
+          36,
+          36,
+          36,
+          36
+        ],
+        "openblas": [
+          67,
+          67,
+          68,
+          67,
+          68,
+          68,
+          65,
+          67,
+          67
+        ],
+        "pytorch": [
+          78,
+          79,
+          80,
+          78,
+          78,
+          79,
+          80,
+          78,
+          80
+        ]
+      },
+      "orders": [
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "openblas",
+          "old",
+          "pytorch"
+        ],
+        [
+          "micro96",
+          "old",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "micro96",
+          "mc",
+          "aligned",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "micro96",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "mc",
+          "micro96",
+          "aligned",
+          "old",
+          "pytorch",
+          "openblas"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "micro96",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mc",
+          "micro96",
+          "old",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "openblas",
+          "micro96",
+          "old",
+          "mc",
+          "pytorch",
+          "aligned"
+        ],
+        [
+          "aligned",
+          "mc",
+          "openblas",
+          "micro96",
+          "pytorch",
+          "old"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 0.00019256569653691713,
+        "mc": 0.00019256569653691713,
+        "aligned": 0.00019256569653691713,
+        "micro96": 0.00019256569653691713,
+        "openblas": 3.412976849714866e-05,
+        "pytorch": 3.2137236182450124e-05
+      }
+    },
+    {
+      "name": "m49_k512",
+      "shape": [
+        49,
+        2048,
+        512
+      ],
+      "ms": {
+        "old": 1.424028130952381,
+        "mc": 1.4227887023809525,
+        "aligned": 1.413762743902439,
+        "openblas": 0.7835640259487117,
+        "pytorch": 0.6763588806818183
+      },
+      "batches_ms": {
+        "old": [
+          1.4235694939759036,
+          1.4240207261904763,
+          1.4248985357142858,
+          1.4268516626506025,
+          1.4254599166666666,
+          1.424028130952381,
+          1.422852654761905,
+          1.4265742738095237,
+          1.4219530240963856
+        ],
+        "mc": [
+          1.4194945,
+          1.4227887023809525,
+          1.4272720119047617,
+          1.4249567023809524,
+          1.4223017349397589,
+          1.422399869047619,
+          1.4219571463414635,
+          1.4264845833333335,
+          1.427144226190476
+        ],
+        "aligned": [
+          1.4162989047619048,
+          1.4121614939759037,
+          1.414584096385542,
+          1.409050738095238,
+          1.422345012345679,
+          1.4149474047619046,
+          1.4092429166666667,
+          1.4101177261904763,
+          1.413762743902439
+        ],
+        "openblas": [
+          0.7850384463866551,
+          0.782716040801559,
+          0.7835640259487117,
+          0.7836713092018888,
+          0.7827788063635429,
+          0.7844908794687762,
+          0.7841837114507431,
+          0.7829626210386286,
+          0.7834483655421315
+        ],
+        "pytorch": [
+          0.6774677443181818,
+          0.6736614375,
+          0.6763588806818183,
+          0.677115220338983,
+          0.6792071073446327,
+          0.6757186647727272,
+          0.6755373103448276,
+          0.6756284655172414,
+          0.6794523850574713
+        ]
+      },
+      "counts": {
+        "old": [
+          83,
+          84,
+          84,
+          83,
+          84,
+          84,
+          84,
+          84,
+          83
+        ],
+        "mc": [
+          84,
+          84,
+          84,
+          84,
+          83,
+          84,
+          82,
+          84,
+          84
+        ],
+        "aligned": [
+          84,
+          83,
+          83,
+          84,
+          81,
+          84,
+          84,
+          84,
+          82
+        ],
+        "openblas": [
+          150,
+          148,
+          149,
+          146,
+          150,
+          143,
+          152,
+          148,
+          148
+        ],
+        "pytorch": [
+          176,
+          176,
+          176,
+          177,
+          177,
+          176,
+          174,
+          174,
+          174
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 3.40568140728692e-05,
+        "mc": 3.40568140728692e-05,
+        "aligned": 3.40568140728692e-05,
+        "openblas": 1.6329883791854627e-05,
+        "pytorch": 1.6329883791854627e-05
+      }
+    },
+    {
+      "name": "m7_k1024",
+      "shape": [
+        7,
+        1024,
+        1024
+      ],
+      "ms": {
+        "old": 0.31758522314049586,
+        "mc": 0.3162542201086957,
+        "aligned": 0.24378213513513516,
+        "openblas": 0.3081423901887827,
+        "pytorch": 0.15333115340909093
+      },
+      "batches_ms": {
+        "old": [
+          0.31758173866666667,
+          0.3194196376021798,
+          0.3319529045092838,
+          0.31758522314049586,
+          0.31744378514588856,
+          0.3172390217983651,
+          0.32220980585106385,
+          0.31726176203208556,
+          0.3190063201058201
+        ],
+        "mc": [
+          0.3159846074270557,
+          0.31734096296296294,
+          0.31587841269841266,
+          0.31569578201634874,
+          0.31819817195767197,
+          0.3162542201086957,
+          0.316394,
+          0.3158073879781421,
+          0.3169043068493151
+        ],
+        "aligned": [
+          0.2425765491803279,
+          0.2418198319672131,
+          0.24228269665271968,
+          0.24378213513513516,
+          0.24673388726513568,
+          0.24564176170212765,
+          0.24492184965831434,
+          0.242814211790393,
+          0.2467163520518359
+        ],
+        "openblas": [
+          0.3081423901887827,
+          0.3089022357016802,
+          0.30730571229217235,
+          0.30819790690463594,
+          0.3076497575694043,
+          0.3082824752889049,
+          0.3078297380716565,
+          0.30786677806533597,
+          0.3084130007927575
+        ],
+        "pytorch": [
+          0.15366227793696274,
+          0.15333115340909093,
+          0.14831196907216496,
+          0.15380041575757578,
+          0.1538965464632455,
+          0.15183636005434784,
+          0.15004374907749077,
+          0.15071654285714284,
+          0.15474732727272725
+        ]
+      },
+      "counts": {
+        "old": [
+          375,
+          367,
+          377,
+          363,
+          377,
+          367,
+          376,
+          374,
+          378
+        ],
+        "mc": [
+          377,
+          378,
+          378,
+          367,
+          378,
+          368,
+          347,
+          366,
+          365
+        ],
+        "aligned": [
+          488,
+          488,
+          478,
+          481,
+          479,
+          470,
+          439,
+          458,
+          463
+        ],
+        "openblas": [
+          387,
+          364,
+          379,
+          376,
+          363,
+          355,
+          374,
+          374,
+          363
+        ],
+        "pytorch": [
+          698,
+          704,
+          679,
+          825,
+          721,
+          736,
+          813,
+          770,
+          715
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 6.114338697216226e-05,
+        "mc": 6.114338697216226e-05,
+        "aligned": 6.114338697216226e-05,
+        "openblas": 2.3972992927667747e-05,
+        "pytorch": 1.7965799127495075e-05
+      }
+    },
+    {
+      "name": "m97_n257",
+      "shape": [
+        97,
+        257,
+        383
+      ],
+      "ms": {
+        "old": 0.20833045567375888,
+        "mc": 0.21121925357142857,
+        "aligned": 0.21942290693069305,
+        "openblas": 0.13232818847998631,
+        "pytorch": 0.13295231213872832
+      },
+      "batches_ms": {
+        "old": [
+          0.2085775292035398,
+          0.20811601754385964,
+          0.2082495035335689,
+          0.2083671735241503,
+          0.20833045567375888,
+          0.20828234912280702,
+          0.20840095414462081,
+          0.20816424865831842,
+          0.208744228980322
+        ],
+        "mc": [
+          0.21121161989342807,
+          0.21121925357142857,
+          0.21114507978723404,
+          0.21142943267504488,
+          0.211910729390681,
+          0.21109301423487545,
+          0.2117361582733813,
+          0.21131122281639927,
+          0.21117109318996413
+        ],
+        "aligned": [
+          0.21923493726937268,
+          0.2197598120155039,
+          0.21929729074074075,
+          0.21930532902033273,
+          0.2197526291913215,
+          0.21942290693069305,
+          0.21975693148148148,
+          0.21933052029520297,
+          0.22006349722735674
+        ],
+        "openblas": [
+          0.13225270767313566,
+          0.13317314871636998,
+          0.13232818847998631,
+          0.13249731411020924,
+          0.13291381804619803,
+          0.13213975080023185,
+          0.13216441475796975,
+          0.13238525644760055,
+          0.13219709179602973
+        ],
+        "pytorch": [
+          0.13308707709750567,
+          0.13279219467956468,
+          0.1330000960648148,
+          0.1330279304750869,
+          0.13283737807606263,
+          0.13288955005889283,
+          0.13289142707117851,
+          0.1329796152993348,
+          0.13295231213872832
+        ]
+      },
+      "counts": {
+        "old": [
+          565,
+          570,
+          566,
+          559,
+          564,
+          570,
+          567,
+          559,
+          559
+        ],
+        "mc": [
+          563,
+          560,
+          564,
+          557,
+          558,
+          562,
+          556,
+          561,
+          558
+        ],
+        "aligned": [
+          542,
+          516,
+          540,
+          541,
+          507,
+          505,
+          540,
+          542,
+          541
+        ],
+        "openblas": [
+          903,
+          873,
+          860,
+          867,
+          885,
+          806,
+          870,
+          859,
+          893
+        ],
+        "pytorch": [
+          882,
+          827,
+          864,
+          863,
+          894,
+          849,
+          857,
+          902,
+          865
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 2.3372538008104016e-05,
+        "mc": 2.3372538008104016e-05,
+        "aligned": 2.3372538008104016e-05,
+        "openblas": 1.0733530153572701e-05,
+        "pytorch": 1.0733530153572701e-05
+      }
+    },
+    {
+      "name": "n1000",
+      "shape": [
+        256,
+        1000,
+        2048
+      ],
+      "ms": {
+        "old": 7.995189714285716,
+        "mc": 8.006479714285714,
+        "aligned": 7.6640384,
+        "openblas": 6.605854878822963,
+        "pytorch": 6.643497666666667
+      },
+      "batches_ms": {
+        "old": [
+          7.993331642857144,
+          7.989049857142857,
+          7.984403857142856,
+          7.978700357142857,
+          8.001616933333334,
+          8.002878133333335,
+          8.108112357142858,
+          8.019467214285715,
+          7.995189714285716
+        ],
+        "mc": [
+          8.027098214285713,
+          8.002908857142856,
+          8.000530571428571,
+          8.001245428571428,
+          8.006479714285714,
+          8.015522,
+          8.002987428571428,
+          8.030596933333333,
+          8.118896928571429
+        ],
+        "aligned": [
+          7.661922666666667,
+          7.678217666666667,
+          7.789301,
+          7.6640384,
+          7.6581638666666665,
+          7.659074133333333,
+          7.658731866666667,
+          7.671880266666667,
+          7.6962735333333345
+        ],
+        "openblas": [
+          6.601440901350643,
+          6.5899096015426855,
+          6.616557611980372,
+          6.627263785857294,
+          6.612871385489901,
+          6.679354882281687,
+          6.605221320771509,
+          6.605854878822963,
+          6.590915740364128
+        ],
+        "pytorch": [
+          6.643497666666667,
+          6.630596588235294,
+          6.644237777777778,
+          6.6375200588235295,
+          6.637210111111111,
+          6.613265111111111,
+          6.652591117647059,
+          6.666335833333333,
+          6.649696588235295
+        ]
+      },
+      "counts": {
+        "old": [
+          14,
+          14,
+          14,
+          14,
+          15,
+          15,
+          14,
+          14,
+          14
+        ],
+        "mc": [
+          14,
+          14,
+          14,
+          14,
+          14,
+          15,
+          14,
+          15,
+          14
+        ],
+        "aligned": [
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15,
+          15
+        ],
+        "openblas": [
+          18,
+          18,
+          18,
+          18,
+          18,
+          18,
+          18,
+          18,
+          18
+        ],
+        "pytorch": [
+          18,
+          17,
+          18,
+          17,
+          18,
+          18,
+          17,
+          18,
+          17
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 0.00012652673460422648,
+        "mc": 0.00012652673460422648,
+        "aligned": 0.00012652673460422648,
+        "openblas": 3.2488850505885125e-05,
+        "pytorch": 2.1063913003160906e-05
+      }
+    },
+    {
+      "name": "big_odd",
+      "shape": [
+        1999,
+        2047,
+        4095
+      ],
+      "ms": {
+        "old": 268.18782200000004,
+        "mc": 267.445909,
+        "aligned": 252.785078,
+        "openblas": 216.9950776733458,
+        "pytorch": 223.07128
+      },
+      "batches_ms": {
+        "old": [
+          273.443803,
+          268.151598,
+          267.406361,
+          271.571936,
+          268.017966,
+          267.84465,
+          268.263087,
+          268.20135,
+          268.18782200000004
+        ],
+        "mc": [
+          269.69429299999996,
+          267.445909,
+          266.52770799999996,
+          268.318556,
+          266.190121,
+          266.97564800000004,
+          266.74447899999996,
+          269.972886,
+          269.48438699999997
+        ],
+        "aligned": [
+          252.946383,
+          252.871183,
+          253.25909299999998,
+          252.435488,
+          252.24512399999998,
+          252.00664499999996,
+          252.43144099999998,
+          252.785078,
+          253.46951299999998
+        ],
+        "openblas": [
+          216.37939987704158,
+          216.05201484635472,
+          217.03375969082117,
+          217.14078728109598,
+          217.00555179268122,
+          215.7233520410955,
+          216.9950776733458,
+          214.1157491132617,
+          217.80389174818993
+        ],
+        "pytorch": [
+          223.584536,
+          223.44157,
+          223.07128,
+          222.032342,
+          222.172745,
+          222.77922999999998,
+          223.270155,
+          221.983923,
+          223.19285
+        ]
+      },
+      "counts": {
+        "old": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "mc": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "aligned": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "openblas": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "pytorch": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "orders": [
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "pytorch",
+          "old"
+        ],
+        [
+          "openblas",
+          "aligned",
+          "old",
+          "pytorch",
+          "mc"
+        ],
+        [
+          "openblas",
+          "mc",
+          "aligned",
+          "old",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "aligned",
+          "openblas",
+          "pytorch",
+          "old"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "aligned",
+          "old",
+          "mc"
+        ],
+        [
+          "aligned",
+          "mc",
+          "old",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "mc",
+          "openblas",
+          "old",
+          "aligned",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "old",
+          "mc",
+          "aligned",
+          "openblas"
+        ],
+        [
+          "pytorch",
+          "openblas",
+          "old",
+          "aligned",
+          "mc"
+        ]
+      ],
+      "max_abs_error": {
+        "old": 0.0003009619831857435,
+        "mc": 0.0003009619831857435,
+        "aligned": 0.0003009619831857435,
+        "openblas": 4.429681323614432e-05,
+        "pytorch": 4.027866634714883e-05
+      }
+    }
+  ]
+}

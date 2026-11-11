@@ -1,0 +1,4 @@
+/tmp/cpu-swapped-output.mim:12:10-12:85: error: unrealized tensor.tile_req at /tmp/cpu-swapped-output.mim:12:10-12:85: the root does not write loop d to output axis d
+   12 |  return (tile_req (c,(),cpu_contraction_levels @F32 (2,4,8,8,16,4,3),default_control));
+      |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+1 error(s) encountered

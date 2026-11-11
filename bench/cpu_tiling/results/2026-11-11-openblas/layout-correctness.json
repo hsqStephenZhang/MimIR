@@ -1,0 +1,839 @@
+{
+  "metadata": {
+    "variant": "tensor-llvm",
+    "mimir": "mim 0.5-dev (2d24a48949)",
+    "mimir_git": "e5e809f18956583c5417e3de7fb5abb415fe014e",
+    "mimir_checkout": {
+      "mode": "existing-build",
+      "revision": "e5e809f18956583c5417e3de7fb5abb415fe014e",
+      "dirty": true,
+      "source": "/workspaces/compile/MimIR/.worktrees/gpu-tiling",
+      "build": "/workspaces/compile/MimIR/.worktrees/gpu-tiling/build"
+    },
+    "mimir_source": "/workspaces/compile/MimIR/.worktrees/gpu-tiling",
+    "mimir_binary": "/workspaces/compile/MimIR/.worktrees/gpu-tiling/build/bin/mim",
+    "mimir_build": {
+      "bin/mim": "04eaa5126bba0c075fb9986c042e7413426bffe5b3b14d99b54c5b611dc26cfe",
+      "lib/mim/affine.mim": "6af2536207e6d3447d6a5c705b44e4f167dac201bf086d06f5901ac8e4eb718c",
+      "lib/mim/autodiff.mim": "ede43f9518b5c2175e3e1e7620f42b62623637d80625da7f36acb3a6eebd3432",
+      "lib/mim/btensor.mim": "ac0d5ee9580643239139b87a70e3b10eef99a740e72c42ef2703614c6220d8e6",
+      "lib/mim/buffer.mim": "9488fcd85f23afa8479fdbfc80510e7ea5770e23bb0cf0f88d320fe4f8c829e5",
+      "lib/mim/clos.mim": "8ea704aaeec6175844ba71741647e8e2b6abc80cc9a00b566fd6ec9948a9c01d",
+      "lib/mim/compile.mim": "cba6432b377043140cdba63c8c43a4021318301ea7729f874f35a3b28ca436e5",
+      "lib/mim/core.mim": "930da9bf32a509439b513afc0969f20a114023471fe8d45e2eb8c2480c43a096",
+      "lib/mim/cps.mim": "00b4e882b5bdd68ef4e538f1eab9baa549443a142f85f2886a516c6097d60f12",
+      "lib/mim/demo.mim": "a5a8a830beb4dd2a1613875fecf42ebf12b9cd08c8a361b6fee3ece69031426e",
+      "lib/mim/gpu.mim": "7efd448f5842300185c3a35fbfd1b5829480084cf26531b0e0149bcaea465ece",
+      "lib/mim/ll.mim": "365f24eb6424379c141dcb38b8118d38574ec48fb4305504537932546c7475c9",
+      "lib/mim/math.mim": "5352ee47bdaf53fb93e4324878675210c4a3ccb4734ba9d8828b6874026f9131",
+      "lib/mim/mem.mim": "c02e9ff69a63ad79c7236211119d1aff9fbfd565e6b38e3b8395f3f6528d7f17",
+      "lib/mim/nvptx.mim": "a2a6cae23ca8d252ed84c00d7950c6f7e26ffedd6c5ad328f2e50c7abdb963bf",
+      "lib/mim/opt.mim": "eacbecd63a407f6778f945fd8d335debe3e26b6602ded6c428e56698d171712c",
+      "lib/mim/option.mim": "b094e3bb523236f36edcac846f5942f66b31cfcde5101757908832c09442d35a",
+      "lib/mim/ord.mim": "0de924fbb72aac77cc90a790325207ef953666f424644da36aa5a3bf2db402b3",
+      "lib/mim/refly.mim": "e26d8902ef9d8cae4a23bc25742b6be1b73442fedf0e79502fd16291383487c0",
+      "lib/mim/regex.mim": "51b1111c4b9c2c97a3ee8aa15e75b1c51663d9f2d9dd8ccc54bdf85f8af4e171",
+      "lib/mim/tensor.mim": "b7252e5413813c8f6bddad1d96685eb7a37a33ed88f4a5a60d983577f36253b4",
+      "lib/mim/tuple.mim": "151195dd5e00e9dc0d18de67e2716309f381258014857e3d28a1cd9e102fd459",
+      "lib/mim/vec.mim": "90d3240b9bc970a6ef53825dc8cb793fa55f0abe863e0a9b2c8965af35fc0b8b",
+      "lib/mim/libmim_affine.so": "5625d06e95a7d841b370086b94db10dcdc25179b3255ce05dfcfa5190535df59",
+      "lib/mim/libmim_autodiff.so": "f58aca728960da7d32bb770abceb81e8931b365b3974b301c619bf579845425b",
+      "lib/mim/libmim_btensor.so": "9693b72b3fd689ebd50b73c138f6f960aed487d2ef85db24ed2b484dcaa67405",
+      "lib/mim/libmim_buffer.so": "2ef219540614b63695459309d1c64dab6948aea88b805025f7188899e309edef",
+      "lib/mim/libmim_clos.so": "1832fb1d7accc3399827b503061247c8e2133e950b77ca5beaf28104ffffd6c6",
+      "lib/mim/libmim_compile.so": "cddc2ce52e398aa4149d313df1296b77971056f3e3fd18c5295c1bccb492e28e",
+      "lib/mim/libmim_core.so": "e5e0c26460747d6a67995fcb9fa240058373a8d59917cb95e418bdeb02a3d8a4",
+      "lib/mim/libmim_cps.so": "4f18bb79555eca0db507d67c4beb2b395f62811dcc5e5a3d8f70bb157d738d3d",
+      "lib/mim/libmim_demo.so": "bc54bff796a8eff14fd378b0e5fdff9cae42c163e601a6ad2ed79339a43bb6e7",
+      "lib/mim/libmim_gpu.so": "05d9d06fe544f76c92a87cbd56d56abf6439a134bda1d18e1c33fb0bc9420624",
+      "lib/mim/libmim_ll.so": "12742d9a474ab94ad7dc581f496c7f38b70e9e5ce9c5dec6cf19cd971c50521d",
+      "lib/mim/libmim_math.so": "0220ba618a418417817c5b2edf0b7378544b10bb766bdb4ee450ce019bbe2b89",
+      "lib/mim/libmim_mem.so": "f115c0b56484cd79fab541757757db37f5c36459492789bed59e15f182894733",
+      "lib/mim/libmim_nvptx.so": "f0e179370807fed14aab8208c413f5c27a159cfa36971769cc6e8948c3b19821",
+      "lib/mim/libmim_opt.so": "0be4835d4d20040853e18164a1a2035e21e44282e1636dd811e522ff9bc9caf8",
+      "lib/mim/libmim_option.so": "0f5ba5dd2d67353c4aa3abf143643d6c5b40d412c8082190a7c5ce3eeeaa3866",
+      "lib/mim/libmim_ord.so": "aed643fe182d0b4d274840b359c976fae7af2aa96d23641a78b16949a322e49b",
+      "lib/mim/libmim_refly.so": "02fe463e09cd11bc271d52ccb11a1dc6409fdd40c90777e038fd09193c816664",
+      "lib/mim/libmim_regex.so": "fdd54dd82aff9321424eebe8573a7f3ab7a3f42f778419fc83c1bbbc54977d8b",
+      "lib/mim/libmim_tensor.so": "2d916fef7200751df75e61ca2b440a3e21bf2554f824a2a61d5bd121c46ef14e",
+      "lib/mim/libmim_tuple.so": "ff4a77714deb16f60a38e833fe1d85ae5e4ddacf5a3a133d4e3c6919b399163a",
+      "lib/mim/libmim_vec.so": "ec75d5bcf5a2972b58cd5365a8ff7eb0ac6672b45f52d92c0dacf61b95ba01b7"
+    },
+    "mimir_clang": "clang version 22.1.3\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin",
+    "mimir_target_flags": [
+      "-march=raptorlake"
+    ],
+    "mimir_parallel": "none: single-threaded",
+    "reference_pr": "https://github.com/hsqStephenZhang/MimIR/pull/1"
+  },
+  "rows": [
+    {
+      "name": "13_7_11_Ar_Br_row",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": false,
+      "b_col": false,
+      "out": "row",
+      "padded": false,
+      "shape": [
+        13,
+        11
+      ],
+      "physical_a": [
+        13,
+        7
+      ],
+      "physical_b": [
+        7,
+        11
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ar_Br_row_pad",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": false,
+      "b_col": false,
+      "out": "row",
+      "padded": true,
+      "shape": [
+        13,
+        11
+      ],
+      "physical_a": [
+        15,
+        10
+      ],
+      "physical_b": [
+        9,
+        16
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ar_Br_transpose",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": false,
+      "b_col": false,
+      "out": "transpose",
+      "padded": false,
+      "shape": [
+        11,
+        13
+      ],
+      "physical_a": [
+        13,
+        7
+      ],
+      "physical_b": [
+        7,
+        11
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ar_Br_direct",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": false,
+      "b_col": false,
+      "out": "direct",
+      "padded": false,
+      "shape": [
+        11,
+        13
+      ],
+      "physical_a": [
+        13,
+        7
+      ],
+      "physical_b": [
+        7,
+        11
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ar_Bc_row",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": false,
+      "b_col": true,
+      "out": "row",
+      "padded": false,
+      "shape": [
+        13,
+        11
+      ],
+      "physical_a": [
+        13,
+        7
+      ],
+      "physical_b": [
+        11,
+        7
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ar_Bc_row_pad",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": false,
+      "b_col": true,
+      "out": "row",
+      "padded": true,
+      "shape": [
+        13,
+        11
+      ],
+      "physical_a": [
+        15,
+        10
+      ],
+      "physical_b": [
+        13,
+        12
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ar_Bc_transpose",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": false,
+      "b_col": true,
+      "out": "transpose",
+      "padded": false,
+      "shape": [
+        11,
+        13
+      ],
+      "physical_a": [
+        13,
+        7
+      ],
+      "physical_b": [
+        11,
+        7
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ar_Bc_direct",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": false,
+      "b_col": true,
+      "out": "direct",
+      "padded": false,
+      "shape": [
+        11,
+        13
+      ],
+      "physical_a": [
+        13,
+        7
+      ],
+      "physical_b": [
+        11,
+        7
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ac_Br_row",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": true,
+      "b_col": false,
+      "out": "row",
+      "padded": false,
+      "shape": [
+        13,
+        11
+      ],
+      "physical_a": [
+        7,
+        13
+      ],
+      "physical_b": [
+        7,
+        11
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ac_Br_row_pad",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": true,
+      "b_col": false,
+      "out": "row",
+      "padded": true,
+      "shape": [
+        13,
+        11
+      ],
+      "physical_a": [
+        9,
+        16
+      ],
+      "physical_b": [
+        9,
+        16
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ac_Br_transpose",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": true,
+      "b_col": false,
+      "out": "transpose",
+      "padded": false,
+      "shape": [
+        11,
+        13
+      ],
+      "physical_a": [
+        7,
+        13
+      ],
+      "physical_b": [
+        7,
+        11
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ac_Br_direct",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": true,
+      "b_col": false,
+      "out": "direct",
+      "padded": false,
+      "shape": [
+        11,
+        13
+      ],
+      "physical_a": [
+        7,
+        13
+      ],
+      "physical_b": [
+        7,
+        11
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ac_Bc_row",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": true,
+      "b_col": true,
+      "out": "row",
+      "padded": false,
+      "shape": [
+        13,
+        11
+      ],
+      "physical_a": [
+        7,
+        13
+      ],
+      "physical_b": [
+        11,
+        7
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ac_Bc_row_pad",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": true,
+      "b_col": true,
+      "out": "row",
+      "padded": true,
+      "shape": [
+        13,
+        11
+      ],
+      "physical_a": [
+        9,
+        16
+      ],
+      "physical_b": [
+        13,
+        12
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ac_Bc_transpose",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": true,
+      "b_col": true,
+      "out": "transpose",
+      "padded": false,
+      "shape": [
+        11,
+        13
+      ],
+      "physical_a": [
+        7,
+        13
+      ],
+      "physical_b": [
+        11,
+        7
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "13_7_11_Ac_Bc_direct",
+      "m": 13,
+      "k": 7,
+      "n": 11,
+      "a_col": true,
+      "b_col": true,
+      "out": "direct",
+      "padded": false,
+      "shape": [
+        11,
+        13
+      ],
+      "physical_a": [
+        7,
+        13
+      ],
+      "physical_b": [
+        11,
+        7
+      ],
+      "max_abs_error": 2.3637266055587247e-07,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ar_Br_row",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": false,
+      "b_col": false,
+      "out": "row",
+      "padded": false,
+      "shape": [
+        128,
+        192
+      ],
+      "physical_a": [
+        128,
+        256
+      ],
+      "physical_b": [
+        256,
+        192
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ar_Br_row_pad",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": false,
+      "b_col": false,
+      "out": "row",
+      "padded": true,
+      "shape": [
+        128,
+        192
+      ],
+      "physical_a": [
+        130,
+        259
+      ],
+      "physical_b": [
+        258,
+        197
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ar_Br_transpose",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": false,
+      "b_col": false,
+      "out": "transpose",
+      "padded": false,
+      "shape": [
+        192,
+        128
+      ],
+      "physical_a": [
+        128,
+        256
+      ],
+      "physical_b": [
+        256,
+        192
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ar_Br_direct",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": false,
+      "b_col": false,
+      "out": "direct",
+      "padded": false,
+      "shape": [
+        192,
+        128
+      ],
+      "physical_a": [
+        128,
+        256
+      ],
+      "physical_b": [
+        256,
+        192
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ar_Bc_row",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": false,
+      "b_col": true,
+      "out": "row",
+      "padded": false,
+      "shape": [
+        128,
+        192
+      ],
+      "physical_a": [
+        128,
+        256
+      ],
+      "physical_b": [
+        192,
+        256
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ar_Bc_row_pad",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": false,
+      "b_col": true,
+      "out": "row",
+      "padded": true,
+      "shape": [
+        128,
+        192
+      ],
+      "physical_a": [
+        130,
+        259
+      ],
+      "physical_b": [
+        194,
+        261
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ar_Bc_transpose",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": false,
+      "b_col": true,
+      "out": "transpose",
+      "padded": false,
+      "shape": [
+        192,
+        128
+      ],
+      "physical_a": [
+        128,
+        256
+      ],
+      "physical_b": [
+        192,
+        256
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ar_Bc_direct",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": false,
+      "b_col": true,
+      "out": "direct",
+      "padded": false,
+      "shape": [
+        192,
+        128
+      ],
+      "physical_a": [
+        128,
+        256
+      ],
+      "physical_b": [
+        192,
+        256
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ac_Br_row",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": true,
+      "b_col": false,
+      "out": "row",
+      "padded": false,
+      "shape": [
+        128,
+        192
+      ],
+      "physical_a": [
+        256,
+        128
+      ],
+      "physical_b": [
+        256,
+        192
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ac_Br_row_pad",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": true,
+      "b_col": false,
+      "out": "row",
+      "padded": true,
+      "shape": [
+        128,
+        192
+      ],
+      "physical_a": [
+        258,
+        131
+      ],
+      "physical_b": [
+        258,
+        197
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ac_Br_transpose",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": true,
+      "b_col": false,
+      "out": "transpose",
+      "padded": false,
+      "shape": [
+        192,
+        128
+      ],
+      "physical_a": [
+        256,
+        128
+      ],
+      "physical_b": [
+        256,
+        192
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ac_Br_direct",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": true,
+      "b_col": false,
+      "out": "direct",
+      "padded": false,
+      "shape": [
+        192,
+        128
+      ],
+      "physical_a": [
+        256,
+        128
+      ],
+      "physical_b": [
+        256,
+        192
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ac_Bc_row",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": true,
+      "b_col": true,
+      "out": "row",
+      "padded": false,
+      "shape": [
+        128,
+        192
+      ],
+      "physical_a": [
+        256,
+        128
+      ],
+      "physical_b": [
+        192,
+        256
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ac_Bc_row_pad",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": true,
+      "b_col": true,
+      "out": "row",
+      "padded": true,
+      "shape": [
+        128,
+        192
+      ],
+      "physical_a": [
+        258,
+        131
+      ],
+      "physical_b": [
+        194,
+        261
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ac_Bc_transpose",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": true,
+      "b_col": true,
+      "out": "transpose",
+      "padded": false,
+      "shape": [
+        192,
+        128
+      ],
+      "physical_a": [
+        256,
+        128
+      ],
+      "physical_b": [
+        192,
+        256
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    },
+    {
+      "name": "128_256_192_Ac_Bc_direct",
+      "m": 128,
+      "k": 256,
+      "n": 192,
+      "a_col": true,
+      "b_col": true,
+      "out": "direct",
+      "padded": false,
+      "shape": [
+        192,
+        128
+      ],
+      "physical_a": [
+        256,
+        128
+      ],
+      "physical_b": [
+        192,
+        256
+      ],
+      "max_abs_error": 1.2004571180668222e-05,
+      "ok": true
+    }
+  ]
+}

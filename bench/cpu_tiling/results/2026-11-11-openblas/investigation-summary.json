@@ -1,0 +1,37 @@
+{
+  "old": {
+    "throughput_vs_old": 1.0,
+    "throughput_vs_mc": 0.9925348987694805,
+    "throughput_vs_aligned": 0.9326849833785278,
+    "throughput_vs_openblas": 0.7763738427974064,
+    "throughput_vs_pytorch": 0.7143129633980166
+  },
+  "mc": {
+    "throughput_vs_old": 1.0075212481090332,
+    "throughput_vs_mc": 1.0,
+    "throughput_vs_aligned": 0.9396999385460872,
+    "throughput_vs_openblas": 0.7822131430944492,
+    "throughput_vs_pytorch": 0.719685488423232
+  },
+  "aligned": {
+    "throughput_vs_old": 1.0721733680943726,
+    "throughput_vs_mc": 1.064169485364881,
+    "throughput_vs_aligned": 1.0,
+    "throughput_vs_openblas": 0.832407357932466,
+    "throughput_vs_pytorch": 0.7658673358399238
+  },
+  "current": {
+    "throughput_vs_old": 1.0476419729025084,
+    "throughput_vs_mc": 1.03982121952145,
+    "throughput_vs_aligned": 0.977119936083224,
+    "throughput_vs_openblas": 0.8133618243781766,
+    "throughput_vs_pytorch": 0.7483442422441353
+  },
+  "rows96": {
+    "throughput_vs_old": 1.2501740069528977,
+    "throughput_vs_mc": 1.2408413314352302,
+    "throughput_vs_aligned": 1.166018522895131,
+    "throughput_vs_openblas": 0.9706023979434526,
+    "throughput_vs_pytorch": 0.8930154996696971
+  }
+}
