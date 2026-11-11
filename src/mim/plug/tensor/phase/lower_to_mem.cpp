@@ -1305,6 +1305,8 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
             return buffer::op_write(destination.mem, destination.buffer, new_world().tuple(), rewrite(app->arg()));
         if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app, &destination);
         if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app, &destination);
+        if (Axm::isa<tensor::tile_fold>(app))
+            if (auto merged = lower_tile_fold(app, &destination)) return merged;
         if (Axm::isa<tensor::mma>(app)) {
             if (auto fragments = fe::lookup(fragments_, destination.buffer))
                 return lower_mma(app, destination, *fragments);
@@ -2183,8 +2185,8 @@ DefVec LowerToMem::staged_panels(const Def* root, const Def* var) const {
     return result;
 }
 
-const Def* LowerToMem::lower_tile_fold(const App* app) {
-    if (app->type()->isa_imm<Sigma>()) return lower_product_fold(app);
+const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destination) {
+    if (app->type()->isa_imm<Sigma>()) return destination ? nullptr : lower_product_fold(app);
     auto scope                                          = fe::Restore(uniform_, uniform(app));
     auto& w                                             = new_world();
     auto& old                                           = old_world();
@@ -2226,9 +2228,12 @@ const Def* LowerToMem::lower_tile_fold(const App* app) {
     auto storage      = bounded_shape(extent, bound_level_ != 0);
     auto bounded      = storage != extent;
     // Without the gpu plugin a bound reduction runs as the sequential fold, like bound parallel levels run as loops.
-    if (level == 2 && driver().is_loaded("gpu"))
+    auto bound_fold = level == 2 && driver().is_loaded("gpu");
+    // Only a work-item bound reduction over a whole tile merges straight into a destination.
+    if (destination && (!bound_fold || bounded)) return nullptr;
+    if (bound_fold)
         return lower_bound_fold(app, parameter, root, result, merge, rank, shape, element, extent, storage, bounded,
-                                inplace);
+                                inplace, destination);
     // A warp's tensor-core block keeps the accumulator as fragments in every lane's registers.
     auto mma       = driver().is_loaded("gpu") && bound_level_ != 0 ? Axm::isa<tensor::mma>(result) : nullptr;
     auto fragments = std::optional<Fragments>();
@@ -2493,7 +2498,8 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
                                         const Def* extent,
                                         const Def* storage,
                                         bool bounded,
-                                        bool inplace) {
+                                        bool inplace,
+                                        const Destination* destination) {
     auto& w                                             = new_world();
     auto [type, blocks, init, input_type, inputs, body] = app->uncurry_args<6>();
     auto [count, stride]                                = blocks->projs<2>();
@@ -2538,7 +2544,8 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     auto pdims          = std::vector<u64>(rank ? dims : std::vector<u64>{1});
     pdims[0]            = rows * *n;
     auto pshape         = w.tuple(DefVec(prank, [&](size_t d) { return w.lit_nat(pdims[d]); }));
-    auto [m0, partials] = buffer::op_alloc(w.lit_nat(prank), pshape, el, shared_mem(fresh_mem()))->projs<2>();
+    auto start          = destination ? destination->mem : fresh_mem();
+    auto [m0, partials] = buffer::op_alloc(w.lit_nat(prank), pshape, el, shared_mem(start))->projs<2>();
     auto [run, run_call]
         = btensor::ds_splice(w.tuple({m0, partials}), w.sigma({m0->type(), partials->type()}), "boundFold");
     auto [run_mem, run_partials] = run->var(2, 0)->projs<2>();
@@ -2595,8 +2602,20 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     auto [after_mem, after_partials] = run_call->projs<2>();
     auto fenced                      = w.app(w.annex<gpu::fence>(), after_mem);
     auto op                          = rewrite(merge);
-    auto [rm, rbuf]                  = buffer::op_alloc(r, literal_storage, el, shared_mem(fenced))->projs<2>();
-    transient(r, literal_storage, el, rbuf);
+    const Def *rm = fenced, *rbuf = destination ? destination->buffer : nullptr;
+    if (!destination) {
+        std::tie(rm, rbuf) = buffer::op_alloc(r, literal_storage, el, shared_mem(fenced))->projs<2>();
+        transient(r, literal_storage, el, rbuf);
+    }
+    // The merged tile lands in the destination at its origin, or in a work-group buffer of its own.
+    auto target = [&](const DefVec& coords) {
+        if (!destination) return btensor::folded_idx(literal_storage, coords);
+        auto at = DefVec(rank, [&](size_t d) {
+            auto origin = w.call<core::bitcast>(w.type_i64(), destination->origin->proj(rank, d));
+            return w.call(core::wrap::add, core::Mode::none, Defs{origin, coords[d]});
+        });
+        return btensor::folded_idx(destination->shape, at);
+    };
     auto [crun, ccall] = btensor::ds_splice(w.tuple({rm, rbuf}), w.sigma({rm->type(), rbuf->type()}), "boundCombine");
     auto [cmem, cbuf]  = crun->var(2, 0)->projs<2>();
     auto cdone         = w.mut_con(acc_ty)->set("boundCombineDone");
@@ -2663,8 +2682,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto [j, jmem, jyield] = citems->vars<3>();
         auto coords            = coords_of(j);
         auto [pmem, pval]      = buffer::op_read(jmem, after_partials, partial_at(w.lit_i64(0), coords))->projs<2>();
-        citems->app(true, jyield,
-                    buffer::op_write(pmem, cbuf, btensor::folded_idx(literal_storage, coords), pval)->proj(2, 0));
+        citems->app(true, jyield, buffer::op_write(pmem, cbuf, target(coords), pval)->proj(2, 0));
     } else {
         // One work-item per tile element merges that element's partials in order.
         auto citems            = item_loop(cur, first, elems, mem, cdone, "boundCombineItems");
@@ -2672,8 +2690,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto coords            = coords_of(j);
         auto write             = w.mut_con({acc_ty, el})->set("boundCombineWrite");
         auto [wmem, wval]      = write->vars<2>();
-        write->app(true, jyield,
-                   buffer::op_write(wmem, cbuf, btensor::folded_idx(literal_storage, coords), wval)->proj(2, 0));
+        write->app(true, jyield, buffer::op_write(wmem, cbuf, target(coords), wval)->proj(2, 0));
         auto [tbody, tcall]
             = affine::counting_for(w.lit_i64(*n), w.tuple({jmem, rewrite(seed)}), write, w.sym("boundCombineStep"));
         citems->set(true, tcall);
@@ -2682,6 +2699,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto [pmem, pval]      = buffer::op_read(tmem, after_partials, partial_at(t, coords))->projs<2>();
         tbody->app(true, tyield, w.tuple({pmem, w.app(op, w.tuple({tval, pval}))}));
     }
+    if (destination) return ccall;
     if (bounded) storage_shapes_[app] = literal_storage;
     return scalar_result(app, ccall->proj(2, 0), ccall->proj(2, 1));
 }

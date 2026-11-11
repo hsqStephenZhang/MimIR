@@ -66,7 +66,7 @@ private:
 
     const Def* lower_tiled(const App*, const Destination* = nullptr);
     const Def* lower_tiled_n(const App*);
-    const Def* lower_tile_fold(const App*);
+    const Def* lower_tile_fold(const App*, const Destination* = nullptr);
     /// A warp's accumulator held as tensor-core fragments: every lane keeps a value of `count` `«4; F32»` of the
     /// `rows × cols` tile, fragment `mi · cols / n + ni` covering rows `mi · m + …` and columns `ni · n + …` in the PTX
     /// layout.
@@ -90,7 +90,8 @@ private:
                                 const Def*,
                                 const Def*,
                                 bool,
-                                bool);
+                                bool,
+                                const Destination* = nullptr);
     const Def* lower_product_fold(const App*);
     const Def* lower_stage(const App*);
     const Def* lower_prepack(const App*);
