@@ -921,7 +921,8 @@ const Def* normalize_get_fused(const Def*, const Def*, const Def* arg) {
     auto unknown = Axm::peel<tensor::buf>(tensor);
     while (auto extract = unknown->isa<Extract>())
         unknown = extract->tuple();
-    if (unknown->isa<Var>() || unknown->isa_mut()) return nullptr;
+    if (unknown->isa<Var>() || unknown->isa_mut())
+        return tensor == arg->proj(2, 0) ? nullptr : op_get_fused(tensor, index);
     return op_get(tensor, index);
 }
 
