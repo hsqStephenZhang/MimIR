@@ -257,6 +257,7 @@ static constexpr PluginArg known_args[] = {
     {"Xllc=<args>",                     "When embedding: passes `<args>` to `llc` (default: none)."},
     {"Xptxas=<args>",                   "When embedding: passes `<args>` to `ptxas` (default: none); also passed to `fatbinary` via `--cmdline` when the PTX image is embedded."},
     {"Xfatbinary=<args>",               "When embedding: passes `<args>` to `fatbinary` (default: none)."},
+    {"profile=1",                       "Sums each kernel's cycles before and at every barrier site; the first thread of the first work-group prints them as `prof <site> c|w <cycles>`."},
 };
 
 static constexpr PluginEnv known_envs[] = {

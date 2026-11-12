@@ -86,6 +86,7 @@ public:
     std::string prepare() override;
 
     std::optional<std::string> isa_targetspecific_intrinsic(ll::BB&, const Def*) final;
+    void emit_epilogue(Lam*) override;
 
     bool is_using_libdevice() const { return uses_libdevice; }
     const std::map<std::string, u64>& dynamic_shared() const { return dynamic_shared_; }
@@ -102,6 +103,11 @@ private:
     }
 
     LamSet kernels_;
+    /// Under `-X nvptx:profile=1` a kernel sums the cycles before and at each barrier site; the first thread prints
+    /// them.
+    bool profile_                      = false;
+    u64 profile_sites_                 = 0;
+    static constexpr u64 Profile_Slots = 64;
     /// A kernel whose shared slots exceed the static limit, or overlay panels, carves them out of one array, at these
     /// offsets.
     DefMap<u64> dynamic_slots_;
@@ -593,6 +599,7 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
 }
 
 void DeviceEmitter::start() {
+    profile_ = world().driver().arg_nat("nvptx", "profile").value_or(0) != 0;
     for (auto kernel : world().externals().muts()) {
         auto kernel_lam = kernel->expect_mut<Lam>("an external kernel to be a mutable lambda");
         kernels_.emplace(kernel_lam);
@@ -687,6 +694,17 @@ std::string DeviceEmitter::prepare() {
     };
     register_sreg_idx(group_id, "ctaid.x");
     register_sreg_idx(item_id, "tid.x");
+    if (profile_) {
+        declare("i64 @llvm.nvvm.read.ptx.sreg.clock64()");
+        declare("void @llvm.memset.p0.i64(ptr, i8, i64, i1)");
+        profile_sites_ = 0;
+        bb.assign("%prof.acc", "alloca [{} x i64]", 2 * Profile_Slots);
+        std::print(bb.body().emplace_back(), "call void @llvm.memset.p0.i64(ptr %prof.acc, i8 0, i64 {}, i1 false)",
+                   16 * Profile_Slots);
+        bb.assign("%prof.last", "alloca i64");
+        bb.assign("%prof.t0", "call i64 asm sideeffect \"mov.u64 $0, %clock64;\", \"=l\"()");
+        std::print(bb.body().emplace_back(), "store i64 %prof.t0, ptr %prof.last");
+    }
 
     auto shared_as = Lit::expect(world().annex<gpu::addr_space_shared>(), "the shared address space");
     if (auto sigma = smem->type()->isa<Sigma>()) {
@@ -706,6 +724,46 @@ std::string DeviceEmitter::prepare() {
     return kernel->unique_name();
 }
 
+// The first thread of the first work-group prints each barrier site's cycles before (`c`) and at (`w`) the barrier.
+void DeviceEmitter::emit_epilogue(Lam* lam) {
+    auto app = lam->body()->isa<App>();
+    if (profile_ && kernels_.contains(root()) && app && app->callee() == root()->ret_var()) {
+        auto& bb    = lam2bb_[lam];
+        auto label  = id(lam).substr(1) + ".prof";
+        auto format = "@" + root()->unique_name() + ".prof.format";
+        std::println(
+            vars_decls_,
+            "{} = private unnamed_addr addrspace(1) constant [20 x i8] c\"prof %2d %c %12lld\\0A\\00\", align 1",
+            format);
+        declare("i32 @vprintf(ptr, ptr)");
+        declare("i32 @llvm.nvvm.read.ptx.sreg.tid.x()");
+        declare("i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()");
+        auto tid   = bb.assign("%" + label + ".tid", "call i32 @llvm.nvvm.read.ptx.sreg.tid.x()");
+        auto cta   = bb.assign("%" + label + ".cta", "call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x()");
+        auto who   = bb.assign("%" + label + ".who", "or i32 {}, {}", tid, cta);
+        auto first = bb.assign("%" + label + ".first", "icmp eq i32 {}, 0", who);
+        auto args  = bb.assign("%" + label + ".args", "alloca {{ i32, i32, i64 }}");
+        std::print(bb.body().emplace_back(), "br i1 {}, label %{}.print, label %{}.done", first, label, label);
+        std::print(bb.body().emplace_back(), "{}.print:", label);
+        for (u64 slot = 0; slot != 2 * profile_sites_ && slot != 2 * Profile_Slots; ++slot) {
+            auto n  = "%" + label + "." + std::to_string(slot);
+            auto at = bb.assign(n + ".at", "getelementptr [{} x i64], ptr %prof.acc, i64 0, i64 {}", 2 * Profile_Slots,
+                                slot);
+            auto v  = bb.assign(n + ".v", "load i64, ptr {}", at);
+            std::print(bb.body().emplace_back(), "store i32 {}, ptr {}", slot / 2, args);
+            auto k = bb.assign(n + ".k", "getelementptr {{ i32, i32, i64 }}, ptr {}, i32 0, i32 1", args);
+            std::print(bb.body().emplace_back(), "store i32 {}, ptr {}", int(slot % 2 ? 'w' : 'c'), k);
+            auto x = bb.assign(n + ".x", "getelementptr {{ i32, i32, i64 }}, ptr {}, i32 0, i32 2", args);
+            std::print(bb.body().emplace_back(), "store i64 {}, ptr {}", v, x);
+            bb.assign(n + ".r", "call i32 @vprintf(ptr addrspacecast (ptr addrspace(1) {} to ptr), ptr {})", format,
+                      args);
+        }
+        std::print(bb.body().emplace_back(), "br label %{}.done", label);
+        std::print(bb.body().emplace_back(), "{}.done:", label);
+    }
+    Super::emit_epilogue(lam);
+}
+
 std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& bb, const Def* def) {
     auto name = id(def);
 
@@ -714,7 +772,21 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
 
         emit_unsafe(sync_work_items->arg(2, 0));
         emit_unsafe(sync_work_items->arg(2, 1));
+        auto site    = profile_ && kernels_.contains(root()) ? profile_sites_++ : Profile_Slots;
+        auto measure = [&](std::string tag, u64 slot) {
+            auto now = bb.assign(name + ".prof." + tag, "call i64 asm sideeffect \"mov.u64 $0, %clock64;\", \"=l\"()");
+            auto at  = bb.assign(name + ".prof." + tag + "at", "getelementptr [{} x i64], ptr %prof.acc, i64 0, i64 {}",
+                                 2 * Profile_Slots, slot);
+            auto was = bb.assign(name + ".prof." + tag + "was", "load i64, ptr {}", at);
+            auto last = bb.assign(name + ".prof." + tag + "last", "load i64, ptr %prof.last");
+            auto d    = bb.assign(name + ".prof." + tag + "d", "sub i64 {}, {}", now, last);
+            auto sum  = bb.assign(name + ".prof." + tag + "sum", "add i64 {}, {}", was, d);
+            std::print(bb.body().emplace_back(), "store i64 {}, ptr {}", sum, at);
+            std::print(bb.body().emplace_back(), "store i64 {}, ptr %prof.last", now);
+        };
+        if (site < Profile_Slots) measure("c", 2 * site);
         std::print(bb.body().emplace_back(), "call void @llvm.nvvm.barrier0()");
+        if (site < Profile_Slots) measure("w", 2 * site + 1);
         return name;
     } else if (auto store = Axm::isa<gpu::store_async>(def)) {
         auto [mem, dst, val] = store->args<3>();
