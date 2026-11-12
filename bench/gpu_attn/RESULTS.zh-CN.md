@@ -81,11 +81,11 @@ D=64，非 causal，单位 ms（括号里 TFLOP/s）：
 
 | BH × L | 最初（BK=32） | 现在 BK=32 | 现在 BK=64 | 手写 FA2 | torch fp32 | `attn_tiled`（3 kernel） |
 |---|---:|---:|---:|---:|---:|---:|
-| 32 × 1024 | 10.8 ms | 0.675 | 0.407 | 0.090 | 0.328 | 0.517 |
-| 32 × 2048 | 43.1 ms | 2.65 | 1.36 | 0.317 | 1.15 | 2.00 |
-| 32 × 4096 | — | — | 5.18 | 1.20 | 9.55 | — |
-| 128 × 1024 | — | — | 1.36 | — | — | — |
-| 128 × 2048 | — | — | 4.97 | 1.21 | 4.39 | — |
+| 32 × 1024 | 10.8 ms | 0.675 | 0.319 | 0.090 | 0.328 | 0.517 |
+| 32 × 2048 | 43.1 ms | 2.65 | 1.02 | 0.317 | 1.15 | 2.00 |
+| 32 × 4096 | — | — | 4.07 | 1.20 | 9.55 | — |
+| 128 × 1024 | — | — | 1.03 | — | — | — |
+| 128 × 2048 | — | — | 4.81 | 1.21 | 4.39 | — |
 
 性能修正（ms 为 32 × 1024、BK=64 时的变化）：
 1. fold 输入里的 `slice` 被 `tensor.lower` 降成恒等 `map_reduce_post`，`is_view` 也不认 Var 的投影：每步每个线程串行拷整块 Q。改为视图后 10.8 → 1.73（BK=32）。
@@ -98,12 +98,17 @@ D=64，非 causal，单位 ms（括号里 TFLOP/s）：
    shared 降到 81.7 KB。0.401 → 0.373。
 6. 逐元素读一个 work-group 请求结果、且该结果的其余读者都先于它运行的请求，直接写进那块缓冲（`reusable_input`）：P 复用 S。
    shared 降到 64 KB，每 SM 3 个块。32 × 2048：1.61 → 1.36；32 × 1024 因 512 个块按 3 个/SM 只有 1.3 波，0.373 → 0.407。
+7. PV 直接累加进 O：`o = o·c` 原地写进状态，再 `o = map_reduce_acc (mac, o) (P, V)` 让 tensor core 从 O 的元素起累加。
+   通用部分：`map_reduce_acc`（张量初值的 `map_reduce`）；`producer_init` 按语义比较初值映射（`Linear::expanded`）；
+   tensor-core fold 的累加器分片从初值张量装载（`load_fragments`）；`reusable_input` 也复用 fold 状态分量；
+   不读累加器的步骤（只经已完成的请求间接用到）可以原地写。测试：`lit/{gpu,nvptx}/group_tile_req_acc.mim`。
+   少一块 PV 结果和一遍逐元素读写。32 × 1024：0.407 → 0.319；32 × 2048：1.36 → 1.02。
 - 占用率的影响：把同一 kernel 启动时的 shared 人为调到 120 KB（每 SM 1 个块），32 × 1024 从 0.371 变成 0.675 ms。
 - BK=64 时逐元素请求必须是 `(32, 1)`：`(1, 16)` 会切出 256 个 item，多于 128 个线程，barrier 落进发散分支。
 - 消融（BK=64，修正 1 之后）：PV 约 0.3 ms，行统计约 0.44 ms，O 的修正约 0.5 ms；mma 的 k 块大小和 cp.async 流水线影响都在 ±10% 内。
 
-- 结果正确（`lit/gpu/attention_fold.mim` 与 nvptx 版本），一个 kernel，S 与 P 不落全局内存；现在比手写版本慢 4–4.5 倍；与 torch fp32 相当（L=4096 时快 1.8 倍）。
+- 结果正确（`lit/gpu/attention_fold.mim` 与 nvptx 版本），一个 kernel，S 与 P 不落全局内存；现在比手写版本慢 3.2–4 倍；L≤2048 时与 torch fp32 相当或略快，L=4096 时快 2.3 倍。
 - 为此修的问题：work-group 层级的分配（请求结果、fold 状态）进 shared；原地 work-group 级里 item/warp region 之后的 barrier；
   `root_contraction` 接受带偏移的映射和转置读的 B；`group_slice` 在切片自己的坐标系里放宽（batch 维、k 方向的起点）；
   `reshape(slice)` 作 region 输入时是视图，`get_fused` 读穿只改单位维的 reshape。
-- 剩余的性能问题：每个 fold 步约 40 道 barrier（mma 的每个 k 块两道）；行归约每线程一整行、只用一半线程（应改为 warp shuffle）；Q 面板每步重填；PV 结果仍单独占 17 KB shared（直接累加进 O 需要 mma 支持张量种子）。
+- 剩余的性能问题：每个 fold 步约 40 道 barrier（mma 的每个 k 块两道）；行归约每线程一整行、只用一半线程（应改为 warp shuffle）；Q 面板每步重填；S 与 O 仍经 shared 往返（手写版本全在寄存器里）。

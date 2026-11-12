@@ -37,9 +37,9 @@ fun probs (_: F, sm: [F, F])@tt: F =
 fun summed (_: F, lcr: [F, F, F])@tt: F =
     let (l, c, r) = lcr;
     return (math.arith.add mode (math.arith.mul mode (l, c), r));
-fun updated (_: F, ocp: [F, F, F])@tt: F =
-    let (o, c, p) = ocp;
-    return (math.arith.add mode (math.arith.mul mode (o, c), p));
+fun scaled (_: F, oc: [F, F])@tt: F =
+    let (o, c) = oc;
+    return (math.arith.mul mode (o, c));
 fun divided (_: F, ol: [F, F])@tt: F =
     let (o, l) = ol;
     return (math.arith.div mode (o, l));
@@ -78,12 +78,11 @@ lam body (off ext: «2; Nat») (q: Tensor 2 (HL, D) F, k: Tensor 2 (HL, D) F, v:
         let l = group_tile_req (map_reduce (rows, rows) (summed, ⊥:F) (proj_map @(1, 1) 0)
             (proj_map @(1, 1) 0, proj_map @(1, 1) 0, proj_map @(1, 1) 0) (l, c, r), (), (bm,), group_item ((1,), 1, item_done ()),
             default_control);
-        let pv = map_reduce ((rows, D), (rows, D, bk)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
+        let o = group_tile_req (map_reduce @2 @(F, 2, 2) ((rows, D), (rows, D)) @((F, F), (2, 1), ((rows, D), rows)) (scaled, ⊥:F) (proj_map @(2, 2) (0, 1))
+            (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, c), (), (bm, D), o_elem_levels, default_control);
+        let o = map_reduce_acc ((rows, D), (rows, D, bk)) (mac, o) (proj_map @(3, 2) (0, 1))
             (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (p, vt);
-        let pv = group_tile_req (pv, (), (bm, D, 0), pv_levels, default_control);
-        let o = group_tile_req (map_reduce @3 @(F, 2, 2) ((rows, D), (rows, D)) @((F, F, F), (2, 1, 2), ((rows, D), rows, (rows, D))) (updated, ⊥:F) (proj_map @(2, 2) (0, 1))
-            (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0, proj_map @(2, 2) (0, 1)) (o, c, pv), (), (bm, D), o_elem_levels,
-            default_control);
+        let o = group_tile_req (o, (), (bm, D, 0), pv_levels, default_control);
         (mx, l, o);
     let (_, l, o) = tile_fold @Acc (core.nat.div (L, bk), bk) init (qt, k, v) step;
     group_tile_req (map_reduce @2 @(F, 2, 2) (ext, ext) @((F, F), (2, 1), ((rows, D), rows)) (divided, ⊥:F) (proj_map @(2, 2) (0, 1))
