@@ -1,0 +1,51 @@
+// Attention for HH heads of LL × 64 as one tile request: each output element folds its keys online with its own
+// (max, sum, acc), and the scores S = QKᵀ are a member the reduction level computes per block of keys.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F    = math.F32;
+let fast = math.mode.fast;
+let MLA  = [F, F, F];
+
+fun mac (acc: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+fun step (acc: MLA, sv: [F, F])@tt: MLA =
+    let (m, l, a) = acc;
+    let (s, v)    = sv;
+    let s         = math.arith.mul fast (s, SCALE:F);
+    let m2        = math.extrema.fmax fast (m, s);
+    let c         = math.exp.exp fast (math.arith.sub fast (m, m2));
+    let e         = math.exp.exp fast (math.arith.sub fast (s, m2));
+    return (m2, math.arith.add fast (math.arith.mul fast (l, c), e),
+            math.arith.add fast (math.arith.mul fast (a, c), math.arith.mul fast (e, v)));
+
+lam merge (x y: MLA): MLA =
+    let (m1, l1, a1) = x;
+    let (m2, l2, a2) = y;
+    let m            = math.extrema.fmax fast (m1, m2);
+    let c1           = math.exp.exp fast (math.arith.sub fast (m1, m));
+    let c2           = math.exp.exp fast (math.arith.sub fast (m2, m));
+    (m, math.arith.add fast (math.arith.mul fast (l1, c1), math.arith.mul fast (l2, c2)),
+     math.arith.add fast (math.arith.mul fast (a1, c1), math.arith.mul fast (a2, c2)));
+
+fun post (acc: MLA, _: [])@tt: F =
+    let (_, l, a) = acc;
+    return (math.arith.div fast (a, l));
+
+let levels = serial_group ((1, BM, 64, 0), 1, 0, group_item ((1, 4, 4, 0), 1, item_red ((0, 0, 0, BK), 1, 0, item_done ())));
+
+extern fun attn (q k v: tensor.Tensor 3 (HH, LL, 64) F): tensor.Tensor 3 (HH, LL, 64) F =
+    let (q, k, v) = (buf q, buf k, buf v);
+    let s = map_reduce ((HH, LL, LL), (HH, LL, LL, 64)) (mac, 0.0:F) (proj_map @(4, 3) (0, 1, 2))
+        (proj_map @(4, 3) (0, 1, 3), proj_map @(4, 3) (0, 2, 3)) (q, k);
+    let o = map_reduce_post @(2, 0) @(MLA, F, 3, 4, SchedT) ((HH, LL, 64), (HH, LL, 64, LL), mk_sched (4, 0))
+        @((F, F), (3, 3), ((HH, LL, LL), (HH, LL, 64)), (), (), ())
+        (step, (math.neg_inf math.f32, 0.0:F, 0.0:F), post) (proj_map @(4, 3) (0, 1, 2))
+        ((proj_map @(4, 3) (0, 1, 3), proj_map @(4, 3) (0, 3, 2)), ()) ((s, v), ());
+    return (tile_req (o, s, levels, default_control));

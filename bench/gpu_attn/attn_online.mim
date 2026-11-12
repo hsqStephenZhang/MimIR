@@ -1,0 +1,51 @@
+// The online attention of `tensor.sdpa_online` for HH heads of LL × 64, with the query blocks bound to work-groups.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F    = math.F32;
+let mode = math.mode.fast;
+let add  = math.arith.add mode;
+let mul  = math.arith.mul mode;
+let sub  = math.arith.sub mode;
+let maximum = math.extrema.fmax mode;
+let R: Ring = (F, 0:F, add, mul);
+let H = HH;
+let M = LL;
+let S = LL;
+let K = 64;
+let N = 64;
+let bm = BM;
+let bk = BK;
+
+lam body (off ext: «3; Nat») (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 3 ext F =
+    let rows = ext#1₃;
+    let qt = reshape (1, rows, K) (rows, K) (slice @(F, 3) (H, M, K) ((off#0₃, off#1₃, 0), (1, 1, 1), (1, rows, K)) q);
+    let Acc = [Tensor 1 rows F, Tensor 1 rows F, Tensor 2 (rows, N) F];
+    let init: Acc = (splat (rows, math.neg_inf math.f32), splat (rows, 0:F), splat ((rows, N), 0:F));
+    lam block (qt: Tensor 2 (rows, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F)
+        (width ko: Nat, (old_max old_sum: Tensor 1 rows F, old_out: Tensor 2 (rows, N) F)): Acc =
+        let kt = reshape (1, width, K) (width, K) (slice @(F, 3) (H, S, K) ((off#0₃, ko, 0), (1, 1, 1), (1, width, K)) k);
+        let vt = reshape (1, width, N) (width, N) (slice @(F, 3) (H, S, N) ((off#0₃, ko, 0), (1, 1, 1), (1, width, N)) v);
+        let scores = dot_product R @(2, 2) @(1, 0) (1₂, 1₂, (), ()) @((rows, K), (width, K)) (qt, kt);
+        let scores = unary (λ x: F: F = mul (x, SCALE:F)) @(2, (rows, width)) scores;
+        let next_max = binary maximum @(1, rows) (old_max, reduce (maximum, math.neg_inf math.f32) @2 1₂ @(rows, width) scores);
+        let correction = binary (λ (x y: F): F = math.exp.exp mode (sub (x, y))) @(1, rows) (old_max, next_max);
+        let p = binary_ax (λ (x y: F): F = math.exp.exp mode (sub (x, y))) @2 1₂ @(rows, width) (scores, next_max);
+        let next_sum = binary add @(1, rows) (binary mul @(1, rows) (old_sum, correction), reduce (add, 0:F) @2 1₂ @(rows, width) p);
+        let pv = dot_product R @(2, 2) @(1, 0) (1₂, 0₂, (), ()) @((rows, width), (width, N)) (p, vt);
+        let next_out = binary add @(2, (rows, N)) (binary_ax mul @2 1₂ @(rows, N) (old_out, correction), pv);
+        (next_max, next_sum, next_out);
+    let blocks = core.nat.div (S, bk);
+    let acc = tile_fold @Acc (blocks, bk) init (qt, k, v)
+        (λ (acc: Acc, ko: Nat) (qt: Tensor 2 (rows, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Acc =
+            block (qt, k, v) (bk, ko, acc));
+    let (_, sums, result) = acc;
+    reshape (rows, N) ext (binary_ax (math.arith.div mode) @2 1₂ @(rows, N) (result, sums));
+
+extern fun attn (q k v: tensor.Tensor 3 (H, M, K) F): tensor.Tensor 3 (H, M, N) F =
+    return (tiled ((H, M, N), (1, bm, N), 1) (buf q, buf k, buf v)
+        (bind @([off ext: «3; Nat»] → [Tensor 3 (H, M, K) F, Tensor 3 (H, S, K) F, Tensor 3 (H, S, N) F] → Tensor 3 ext F) 1 body));

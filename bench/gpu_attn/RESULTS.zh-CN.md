@@ -45,3 +45,11 @@ P 不经 shared 直接作 PV 的 A 操作数：每 8 个 key 内把 2t、2t+1 �
 - 比 PyTorch 的 FP32 路径快 2.4–3.5 倍，比 fp16 flash 慢约 3 倍（精度和带宽不同，P2 的目标）。
 - 0 字节寄存器溢出，126 个寄存器；BC=64 时 shared 68 KB，每个 SM 只能驻留 2 个 work-group，BC=32 时 34 KB、4 个，快约 30%。
 - 新原语 `gpu.shfl_xor`（`llvm.nvvm.shfl.sync.bfly.f32`），测试 `lit/nvptx/shfl_xor.mim`。
+
+## P1 探索：让编译器生成单 kernel（2026-11-12）
+
+- `attn_online.mim`：照搬 `sdpa_online` 的结构（Q 行块的 `tiled`，块内按 key 的 product `tile_fold`，状态 `(max, sum, out)`），把外层 `tiled` 标成 `bind 1`。
+  编译成 1 个 kernel，CPU 路径结果正确，GPU 上错误且极慢（2×128 要 22.9 ms）：work-group region 里的 `map_reduce`（两个积、行归约、逐元素）没有再分给 work-item，每个线程重算整块并写同一 buffer。
+  region 内的分配只有 TileFuse 对 `tile_req` 的根做，它不认状态是向量的 product fold。
+- `attn_elem.mim`：把输出写成对 key 归约的单个 `map_reduce_post`，每个输出元素一份 `(m, l, acc)`，`S = QKᵀ` 作为成员在归约级按块计算，能套用现有 TileFuse；
+  代价是 `(m, l)` 与 exp 在 D=64 列上各算一遍。目前在 LowerToMem 里失败：融合的 S tile 存储形状是上界 `(4, 64)`，下游期望运行时长度。
