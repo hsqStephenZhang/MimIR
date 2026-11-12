@@ -750,13 +750,23 @@ const Def* returned(Lam* lam) {
 namespace {
 
 // Whether @p map sends the loop index `(i0, i1, i2)` exactly to `(i_a, i_b)`.
+// Whether `map` reads loops `a` and `b` of three, each as is up to an offset free of the loops.
 bool reads_loops(const Def* map, u64 a, u64 b) {
     auto& w = map->world();
     auto pi = map->type()->isa<Pi>();
     if (!pi) return false;
     auto var = w.mut_lam(pi)->var();
     auto out = w.app(map, var);
-    return Lit::isa(out->arity()) == 2 && out->proj(2, 0) == var->proj(3, a) && out->proj(2, 1) == var->proj(3, b);
+    if (Lit::isa(out->arity()) != 2) return false;
+    auto reads = [&](const Def* index, u64 loop) {
+        auto form = Linear::of(index);
+        for (u64 l = 0; l != 3; ++l) {
+            auto atom = form.atoms.find(var->proj(3, l));
+            if ((atom == form.atoms.end() ? 0 : atom->second) != (l == loop ? 1 : 0)) return false;
+        }
+        return true;
+    };
+    return reads(out->proj(2, 0), a) && reads(out->proj(2, 1), b);
 }
 
 // Whether `x` and `y` are `a` and `b` in either order.

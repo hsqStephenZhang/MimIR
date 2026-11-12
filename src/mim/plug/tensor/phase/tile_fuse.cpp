@@ -815,17 +815,21 @@ std::optional<std::pair<const Def*, const Def*>> group_slice(const Def* input,
     auto& w                 = input->world();
     auto [meta, shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
     auto ro                 = group.tiles.size();
-    auto off = group.var->proj(2, 0)->proj(ro, loop), ext = group.var->proj(2, 1)->proj(ro, loop);
-    // Any other dim, such as a batch, keeps the work-item's box.
+    auto ext                = group.var->proj(2, 1)->proj(ro, loop);
+    auto inner              = item.var->proj(2, 0)->proj(ro, loop);
+    // The work-group's tile starts the work-item's offset before the work-item's box, in whatever frame the slice has;
+    // any other dim, such as a batch, keeps the work-item's box.
     auto [first, step, extent] = box->projs<3>();
     auto start                 = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
-        return d == axis ? off : d == *kdim ? block.k0 : first->proj(rank, d);
+        return d == axis  ? w.call(core::nat::sub, Defs{first->proj(rank, d), inner})
+             : d == *kdim ? block.k0
+                          : first->proj(rank, d);
     }));
     auto size                  = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
         return d == axis ? ext : d == *kdim ? block.k : extent->proj(rank, d);
     }));
     auto wide = w.app(w.app(w.app(w.annex<tensor::slice>(), meta), shape), {start, w.pack(rank, w.lit_nat_1()), size});
-    return std::pair{w.app(wide, slice->arg()), item.var->proj(2, 0)->proj(ro, loop)};
+    return std::pair{w.app(wide, slice->arg()), inner};
 }
 
 /// A fused pointwise producer widened like group_slice: each input slice the map reads from @p axis starts the

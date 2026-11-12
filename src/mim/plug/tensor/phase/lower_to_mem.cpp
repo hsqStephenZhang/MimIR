@@ -1653,8 +1653,9 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         body->set(true, emit(*rank, state, yield));
         return loop;
     };
-    auto done  = w.mut_con(call->type())->set("tileScratchDone");
-    auto bound = plan.bind && driver().is_loaded("gpu");
+    auto done = w.mut_con(call->type())->set("tileScratchDone");
+    // A work-group level inside a work-group, as a `group_tile_req` has, is its one tile and runs in place.
+    auto bound = plan.bind && driver().is_loaded("gpu") && !(plan.bind == 1 && bound_level_ != 0);
     run->set(true, bound ? emit_bound(runtime->proj(2, 0), done) : emit(0, runtime->proj(2, 0), done));
     auto done_mem = done->var()->proj(plan.count + 1, 0);
     for (auto [binding, invoke] : scratch.bindings | std::views::reverse) {

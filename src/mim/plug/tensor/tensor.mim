@@ -2056,6 +2056,13 @@ axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *}
             → [op: Tensor r s T, members: M,
                levels: TileLevels (root_loops op, root_acc op, root_contraction op), control: K]
             → Tensor r s T;
+/// A tile request inside a work-group: `levels` start at the work-group's scope, whose tile is `sizes`, at least as
+/// large as `op`, so the work-group runs it in place.
+anx lam group_tile_req {T: *, r: Nat, s: «r; Nat», M K: *}
+    (op: Tensor r s T, members: M, sizes: «root_loops op; Nat»,
+     levels: GroupLevels (root_loops op, root_acc op, root_contraction op), control: K)
+    : Tensor r s T =
+    tile_req (op, members, serial_group (sizes, 1, 0, levels), control);
 axm tile_fuse: compile.Phase;
 axm tile_group: compile.Phase;
 ///
