@@ -261,6 +261,109 @@ pub anx lam mma_ref
             (‹k: 8; k›, c#lane#reg)››;
 end
 ///
+/// ### warp
+///
+/// A warp's value is an array over its 32 lanes, lane `l` holding component `l`; see `docs/warp-schedule.zh-CN.md`.
+/// The functions here are the specifications: they evaluate on any target, and `gpu` keeps only each lane's component.
+/// `C (mt, nt) T` holds an `mt·16 × nt·8` tile in the accumulator layout of `mma.m16n8k8`, tile `(i, j)` in registers `i, j`.
+/// `R mt T` holds a row vector of that tile, lane `l` keeping rows `16 i + l / 4` and `16 i + l / 4 + 8`.
+pub mod warp
+pub anx lam C (mt nt: Nat) (T: *): * = «32, mt, nt, 4; T»;
+pub anx lam R (mt: Nat) (T: *): * = «32, mt, 2; T»;
+
+pub anx lam c_pos {mt nt: Nat} (lane: Idx 32, i: Idx mt, j: Idx nt, reg: Idx 4): [Idx (16 * mt), Idx (8 * nt)] =
+    let (r, c) = mma_m16n8k8_tf32.l_c (lane, reg);
+    (core.idx 0 (16 * mt) (16 * core.idx2nat i + core.idx2nat r), core.idx 0 (8 * nt) (8 * core.idx2nat j + core.idx2nat c));
+
+pub anx lam r_pos {mt: Nat} (lane: Idx 32, i: Idx mt, h: Idx 2): Idx (16 * mt) =
+    core.idx 0 (16 * mt) (16 * core.idx2nat i + core.idx2nat lane / 4 + 8 * core.idx2nat h);
+
+/// Distributes a tile over the warp.
+pub anx lam c_of {mt nt: Nat} {T: *} (t: «16 * mt, 8 * nt; T»): C (mt, nt) T =
+    ‹lane: 32; ‹i: mt; ‹j: nt; ‹reg: 4; let (r, c) = c_pos (lane, i, j, reg); t#r#c››››;
+
+/// Gathers a distributed tile; `c_tile (c_of t) = t` since `c_pos` is a bijection.
+pub anx lam c_tile {mt nt: Nat} {T: *} (f: C (mt, nt) T): «16 * mt, 8 * nt; T» =
+    ‹r: 16 * mt; ‹c: 8 * nt;
+        let row = core.idx2nat r % 16;
+        let col = core.idx2nat c % 8;
+        f#(core.idx 0 32 (4 * (row % 8) + col / 2))#(core.idx 0 mt (core.idx2nat r / 16))#(core.idx 0 nt (core.idx2nat c / 8))
+         #(core.idx 0 4 (2 * (row / 8) + col % 2))››;
+
+pub anx lam r_of {mt: Nat} {T: *} (v: «16 * mt; T»): R mt T = ‹lane: 32; ‹i: mt; ‹h: 2; v#(r_pos (lane, i, h))›››;
+
+pub anx lam r_vec {mt: Nat} {T: *} (v: R mt T): «16 * mt; T» =
+    ‹r: 16 * mt;
+        let row = core.idx2nat r % 16;
+        v#(core.idx 0 32 (4 * (row % 8)))#(core.idx 0 mt (core.idx2nat r / 16))#(core.idx 0 2 (row / 8))›;
+
+pub anx lam c_map {mt nt: Nat} {T U: *} (g: T → U) (f: C (mt, nt) T): C (mt, nt) U =
+    ‹lane: 32; ‹i: mt; ‹j: nt; ‹reg: 4; g (f#lane#i#j#reg)››››;
+
+pub anx lam c_zip {mt nt: Nat} {T U V: *} (g: [T, U] → V) (x: C (mt, nt) T, y: C (mt, nt) U): C (mt, nt) V =
+    ‹lane: 32; ‹i: mt; ‹j: nt; ‹reg: 4; g (x#lane#i#j#reg, y#lane#i#j#reg)››››;
+
+/// Broadcasts each lane's rows over their columns: register `reg` lies in row half `reg / 2`.
+pub anx lam c_rows {mt nt: Nat} {T: *} (v: R mt T): C (mt, nt) T =
+    ‹lane: 32; ‹i: mt; ‹j: nt; ‹reg: 4; v#lane#i#(core.idx 0 2 (core.idx2nat reg / 2))››››;
+
+/// The specification of a row reduction: `op` folded over each row of the gathered tile from `init`.
+pub anx lam row_fold_spec {mt nt: Nat} {T: *} (op: [T, T] → T, init: T) (f: C (mt, nt) T): «16 * mt; T» =
+    let t = c_tile f;
+    ‹r: 16 * mt; vec.fold.l @(T, T) @(8 * nt) op (init, t#r)›;
+
+/// A row reduction folds a lane's own columns, then merges the quad's partials across lanes `l xor 1` and `l xor 2`.
+/// For an associative and commutative `op` with identity `init` it equals `r_of (row_fold_spec op init f)`, since
+/// the four lanes of a quad hold the row's columns exactly once (`quad_covers_rows`).
+pub anx lam row_fold {mt nt: Nat} {T: *} (op: [T, T] → T, init: T) (f: C (mt, nt) T): R mt T =
+    let own = ‹lane: 32; ‹i: mt; ‹h: 2;
+        vec.fold.l @(T, T) @(2 * nt) op
+            (init, ‹k: 2 * nt; f#lane#i#(core.idx 0 nt (core.idx2nat k / 2))#(core.idx 0 4 (2 * core.idx2nat h + core.idx2nat k % 2))›)›››;
+    let pair = ‹lane: 32; ‹i: mt; ‹h: 2; op (own#lane#i#h, own#(core.bit2.xor 0 (lane, core.idx 0 32 1))#i#h)›››;
+    ‹lane: 32; ‹i: mt; ‹h: 2; op (pair#lane#i#h, pair#(core.bit2.xor 0 (lane, core.idx 0 32 2))#i#h)›››;
+
+/// Whether the four lanes `l xor m` of a quad hold row `r_pos (l, i, h)` at registers of half `h`, each column once.
+pub anx lam quad_covers_rows (mt nt: Nat): Bool =
+    vec.scan.for_all @(Idx (32 * mt * 2)) @(32 * mt * 2)
+        (λ (x: Idx (32 * mt * 2)): Bool =
+            let lane = core.idx 0 32 (core.idx2nat x / (2 * mt));
+            let i    = core.idx 0 mt (core.idx2nat x / 2 % mt);
+            let h    = core.idx 0 2 (core.idx2nat x % 2);
+            let at   = ‹k: 8 * nt;
+                let m   = core.idx 0 32 (core.idx2nat k / (2 * nt));
+                let j   = core.idx 0 nt (core.idx2nat k / 2 % nt);
+                let reg = core.idx 0 4 (2 * core.idx2nat h + core.idx2nat k % 2);
+                c_pos @(mt, nt) (core.bit2.xor 0 (lane, m), i, j, reg)›;
+            core.bit2.and 0 (
+                vec.scan.for_all @([Idx (16 * mt), Idx (8 * nt)]) @(8 * nt)
+                    (λ (p: [Idx (16 * mt), Idx (8 * nt)]): Bool = core.idx2nat p#0_2 == core.idx2nat (r_pos (lane, i, h)))
+                    at,
+                vec.is_unique ‹k: 8 * nt; core.idx2nat (at#k#1_2)›))
+        ‹x: 32 * mt * 2; x›;
+
+/// The keys a C fragment's columns become as an A fragment: A column `k` holds C column `2 k` for `k < 4`, else `2 k - 7`.
+pub anx lam key_perm (k: Idx 8): Idx 8 =
+    let n = core.idx2nat k;
+    core.idx 0 8 ((2 * n, 2 * (n - 4) + 1)#(4 <= n));
+
+/// Reads C tile `j` of row block `i` as an A fragment over the permuted keys: registers `(c0, c2, c1, c3)`.
+pub anx lam a_of_c {mt nt: Nat} {T: *} (f: C (mt, nt) T): «32, mt, nt, 4; T» =
+    ‹lane: 32; ‹i: mt; ‹j: nt; ‹reg: 4;
+        f#lane#i#j#(core.idx 0 4 (2 * (core.idx2nat reg % 2) + core.idx2nat reg / 2))››››;
+
+/// Whether `a_of_c` places at A position `(row, k)` the C element `(row, key_perm k)` of the same 16 × 8 tile.
+pub anx let c_to_a_permutes: Bool =
+    vec.scan.for_all @(Idx 128) @128
+        (λ (x: Idx 128): Bool =
+            let lane = core.idx 0 32 (core.idx2nat x / 4);
+            let reg  = core.idx 0 4 (core.idx2nat x % 4);
+            let (a_row, a_col) = mma_m16n8k8_tf32.l_a (lane, reg);
+            let (c_row, c_col) = mma_m16n8k8_tf32.l_c (lane, core.idx 0 4 (2 * (core.idx2nat reg % 2) + core.idx2nat reg / 2));
+            core.bit2.and 0 (core.idx2nat a_row == core.idx2nat c_row,
+                             core.idx2nat (key_perm (core.idx 0 8 (core.idx2nat a_col))) == core.idx2nat c_col))
+        ‹x: 128; x›;
+end
+///
 /// ### from_array
 ///
 /// Constructs a tensor from an array; bufferization accepts only static shapes and literal elements here.

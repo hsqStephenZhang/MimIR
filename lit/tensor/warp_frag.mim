@@ -1,0 +1,78 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll
+// RUN: clang %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// The warp algebra's index lemmas hold by evaluation, and its implementations agree with their specifications.
+
+plugin tensor;
+plugin refly;
+plugin vec;
+plugin core;
+plugin math;
+plugin mem;
+
+use core.ops.n;
+
+let F = math.F32;
+
+let _ = refly.check (tensor.warp.quad_covers_rows (1, 8), tt, "a quad must hold each of its rows once");
+let _ = refly.check (tensor.warp.quad_covers_rows (2, 4), tt, "a quad must hold each of its rows once");
+let _ = refly.check (tensor.warp.c_to_a_permutes, tt, "a C fragment read as A must permute the keys");
+
+lam f (x: Nat): F = math.conv.s2f math.f32 (core.bitcast I32 x);
+lam add (x y: I32): I32 = core.wrap.add 0 (x, y);
+lam fmax (x y: F): F = math.extrema.fmax 0 (x, y);
+
+lam count (ok: Bool): I32 = (1I32, 0I32)#ok;
+
+extern fun main (_: I32, _: mem.Ptr0 (mem.Ptr0 mem.Char)): I32 =
+    let t = ‹r: 32; ‹c: 32; core.bitcast I32 ((7 * core.idx2nat r + 3 * core.idx2nat c + 1) % 23)››;
+    let fr = tensor.warp.c_of @(2, 4) t;
+    let back = tensor.warp.c_tile fr;
+    let round = vec.scan.for_all @(Idx 32) @32
+        (λ (r: Idx 32): Bool =
+            vec.scan.for_all @(Idx 32) @32 (λ (c: Idx 32): Bool = core.icmp.e (back#r#c, t#r#c)) ‹c: 32; c›)
+        ‹r: 32; r›;
+
+    let sums = tensor.warp.row_fold @(2, 4) (add, 0I32) fr;
+    let spec = tensor.warp.r_of @2 (tensor.warp.row_fold_spec @(2, 4) (add, 0I32) fr);
+    let summed = vec.scan.for_all @(Idx 32) @32
+        (λ (lane: Idx 32): Bool =
+            vec.scan.for_all @(Idx 4) @4
+                (λ (x: Idx 4): Bool =
+                    let i = core.idx 0 2 (core.idx2nat x / 2);
+                    let h = core.idx 0 2 (core.idx2nat x % 2);
+                    core.icmp.e (sums#lane#i#h, spec#lane#i#h))
+                ‹x: 4; x›)
+        ‹lane: 32; lane›;
+
+    let ft = tensor.warp.c_map @(2, 4) (λ (x: I32): F = math.conv.s2f math.f32 x) fr;
+    let maxes = tensor.warp.row_fold @(2, 4) (fmax, math.neg_inf math.f32) ft;
+    let max_spec = tensor.warp.r_of @2 (tensor.warp.row_fold_spec @(2, 4) (fmax, math.neg_inf math.f32) ft);
+    let maxed = vec.scan.for_all @(Idx 32) @32
+        (λ (lane: Idx 32): Bool =
+            vec.scan.for_all @(Idx 4) @4
+                (λ (x: Idx 4): Bool =
+                    let i = core.idx 0 2 (core.idx2nat x / 2);
+                    let h = core.idx 0 2 (core.idx2nat x % 2);
+                    math.cmp.e 0 (maxes#lane#i#h, max_spec#lane#i#h))
+                ‹x: 4; x›)
+        ‹lane: 32; lane›;
+
+    let p = ‹row: 16; ‹col: 8; f ((3 * core.idx2nat row + 5 * core.idx2nat col + 1) % 7)››;
+    let v = ‹row: 8; ‹col: 8; f ((7 * core.idx2nat row + 2 * core.idx2nat col + 3) % 5)››;
+    let acc = ‹lane: 32; ‹reg: 4; f (core.idx2nat lane % 3)››;
+    let direct = ‹lane: 32; ‹reg: 4; let (r, k) = tensor.mma_m16n8k8_tf32.l_a (lane, reg); p#r#k››;
+    let b = ‹lane: 32; ‹reg: 2; let (k, n) = tensor.mma_m16n8k8_tf32.l_b (lane, reg); v#k#n››;
+    let a = tensor.warp.a_of_c @(1, 1) (tensor.warp.c_of @(1, 1) p);
+    let b_perm = ‹lane: 32; ‹reg: 2;
+        let (k, n) = tensor.mma_m16n8k8_tf32.l_b (lane, reg);
+        v#(tensor.warp.key_perm k)#n››;
+    let want = tensor.mma_m16n8k8_tf32.mma_ref (direct, b, acc);
+    let got = tensor.mma_m16n8k8_tf32.mma_ref (a, b_perm, acc);
+    let product = vec.scan.for_all @(Idx 32) @32
+        (λ (lane: Idx 32): Bool =
+            vec.scan.for_all @(Idx 4) @4 (λ (reg: Idx 4): Bool = math.cmp.e 0 (got#lane#reg, want#lane#reg)) ‹reg: 4; reg›)
+        ‹lane: 32; lane›;
+
+    return (core.wrap.add 0 (core.wrap.add 0 (count round, count summed), core.wrap.add 0 (count maxed, count product)));
