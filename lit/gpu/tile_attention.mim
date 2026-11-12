@@ -1,0 +1,59 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_attention_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Attention as three tile requests over two heads: the batched products stage each head's own panels, and the softmax
+// splits its row statistics, of a lower rank than the work-group, over the work-items.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let ML   = [F32, F32];
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+fun step (acc: ML, xs: [F32])@tt: ML =
+    let (m, l) = acc;
+    let (x)    = xs;
+    let x      = math.arith.mul fast (x, 0.125:F32);
+    let m2     = math.extrema.fmax fast (m, x);
+    return (m2, math.arith.add fast (math.arith.mul fast (l, math.exp.exp fast (math.arith.sub fast (m, m2))),
+                                     math.exp.exp fast (math.arith.sub fast (x, m2))));
+
+lam merge (a b: ML): ML =
+    let (m1, l1) = a;
+    let (m2, l2) = b;
+    let m        = math.extrema.fmax fast (m1, m2);
+    (m, math.arith.add fast (math.arith.mul fast (l1, math.exp.exp fast (math.arith.sub fast (m1, m))),
+                            math.arith.mul fast (l2, math.exp.exp fast (math.arith.sub fast (m2, m)))));
+
+fun normalize (_: F32, xv_ml: [F32, ML])@tt: F32 =
+    let (xv, ml) = xv_ml;
+    let (m, l)   = ml;
+    let xv       = math.arith.mul fast (xv, 0.125:F32);
+    return (math.arith.div fast (math.exp.exp fast (math.arith.sub fast (xv, m)), l));
+
+let gemm_levels = serial_group ((1, 64, 64, 0), 1, 0, group_item ((1, 4, 4, 0), 1, item_red ((0, 0, 0, 16), 1, 3, item_vec ((0, 1, 0, 0), item_done ()))));
+let softmax_levels = serial_group ((1, 4, 0), 1, 1, group_item ((1, 4, 4), 1, item_done ()));
+
+extern fun attn (q k v: tensor.Tensor 3 (2, 64, 64) F32): tensor.Tensor 3 (2, 64, 64) F32 =
+    let (q, k, v) = (buf q, buf k, buf v);
+    let s = map_reduce ((2, 64, 64), (2, 64, 64, 64)) (mac, 0.0:F32) (proj_map @(4, 3) (0, 1, 2))
+        (proj_map @(4, 3) (0, 1, 3), proj_map @(4, 3) (0, 2, 3)) (q, k);
+    let s = tile_req (s, (), gemm_levels, default_control);
+    let ml = merge_with merge (map_reduce ((2, 64), (2, 64, 64)) (step, (math.neg_inf math.f32, 0.0:F32))
+        (proj_map @(3, 2) (0, 1)) (proj_map @(3, 3) (0, 1, 2)) s);
+    let p = map_reduce ((2, 64, 64), (2, 64, 64)) (normalize, ⊥:F32) (affine.id @3)
+        (affine.id @3, proj_map @(3, 2) (0, 1)) (s, ml);
+    let p = tile_req (p, ml, softmax_levels, default_control);
+    let o = map_reduce ((2, 64, 64), (2, 64, 64, 64)) (mac, 0.0:F32) (proj_map @(4, 3) (0, 1, 2))
+        (proj_map @(4, 3) (0, 1, 3), proj_map @(4, 3) (0, 3, 2)) (p, v);
+    return (tile_req (o, (), gemm_levels, default_control));

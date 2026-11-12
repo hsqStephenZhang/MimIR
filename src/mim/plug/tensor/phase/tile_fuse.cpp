@@ -816,13 +816,15 @@ std::optional<std::pair<const Def*, const Def*>> group_slice(const Def* input,
     auto [meta, shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
     auto ro                 = group.tiles.size();
     auto off = group.var->proj(2, 0)->proj(ro, loop), ext = group.var->proj(2, 1)->proj(ro, loop);
-    auto start = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
-        return d == axis ? off : d == *kdim ? block.k0 : w.lit_nat_0();
+    // Any other dim, such as a batch, keeps the work-item's box.
+    auto [first, step, extent] = box->projs<3>();
+    auto start                 = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
+        return d == axis ? off : d == *kdim ? block.k0 : first->proj(rank, d);
     }));
-    auto size  = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
-        return d == axis ? ext : d == *kdim ? block.k : shape->proj(rank, d);
+    auto size                  = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
+        return d == axis ? ext : d == *kdim ? block.k : extent->proj(rank, d);
     }));
-    auto wide  = w.app(w.app(w.app(w.annex<tensor::slice>(), meta), shape), {start, w.pack(rank, w.lit_nat_1()), size});
+    auto wide = w.app(w.app(w.app(w.annex<tensor::slice>(), meta), shape), {start, w.pack(rank, w.lit_nat_1()), size});
     return std::pair{w.app(wide, slice->arg()), item.var->proj(2, 0)->proj(ro, loop)};
 }
 
@@ -1500,7 +1502,8 @@ const Def* Levels::reduction(const Def* anchor,
     // A work-group's panels are filled by all its work-items, so their layout is chosen here.
     auto uniform = bound_ == 1 || group_wide;
     auto site    = std::optional<PanelSite>();
-    if (uniform && group_scope_) {
+    // A reduction split off a member of another rank, such as a row statistic, keeps its panels' default layout.
+    if (uniform && group_scope_ && group_scope_->tiles.size() == ro) {
         site.emplace();
         site->mma   = std::ranges::any_of(rest, [](const LevelSpec& level) { return level.kind == 3; });
         auto& group = *group_scope_;

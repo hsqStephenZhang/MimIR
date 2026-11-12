@@ -1,0 +1,8 @@
+// Scaled dot-product attention of HH heads of LL × DD, with the stable softmax in between.
+plugin tensor;
+plugin math;
+
+extern fun attn (q: tensor.Tensor 3 (HH, LL, DD) math.F32, k: tensor.Tensor 3 (HH, LL, DD) math.F32,
+                 v: tensor.Tensor 3 (HH, LL, DD) math.F32): tensor.Tensor 3 (HH, LL, DD) math.F32 =
+    return (tensor.sdpa math.mode.fast @(HH, LL, LL, DD, DD)
+        (SCALE:math.F32, tensor.buf q, tensor.buf k, tensor.buf v));
