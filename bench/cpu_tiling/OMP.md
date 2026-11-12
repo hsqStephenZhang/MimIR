@@ -43,10 +43,15 @@ Reproduction scripts:
 
 Set `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS` consistently.
 Use one socket, distinct physical cores, `MKL_DYNAMIC=FALSE`, `OMP_DYNAMIC=FALSE`,
-`OMP_PROC_BIND=FALSE` (so later pthread pools inherit the full mask),
+`OMP_PROC_BIND=TRUE`, explicit `GOMP_CPU_AFFINITY` for the selected cores,
 `OMP_WAIT_POLICY=PASSIVE`, `GOMP_SPINCOUNT=0`, and `OPENBLAS_THREAD_TIMEOUT=4`.
 The last three prevent idle pools from competing with the timed backend. The
 OpenBLAS timeout is a log2 cycle count clamped to at least 4, not a duration.
 AVX2 experiments additionally use `--isa avx2` and the dispatch controls recorded
 in the result metadata. All compilation/validation finishes before measurement;
 9 shuffled rounds use native batches of at least 100ms and report medians.
+
+The runner restores the full primary-thread mask before initializing pthread
+OpenBLAS, then pins the primary thread to `--cpu`. OpenMP workers retain their
+individual bindings; OpenBLAS workers inherit the full selected CPU set. Check
+`worker-audit.json` and the metadata thread masks before trusting scaling.

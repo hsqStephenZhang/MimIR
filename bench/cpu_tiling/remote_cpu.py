@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--openblas", type=Path, required=True)
     parser.add_argument("--clang", default="/usr/lib/llvm-20/bin/clang++")
-    parser.add_argument("--cpu", type=int, default=0)
+    parser.add_argument("--cpu", type=int, help="Primary thread CPU (default: first selected CPU)")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--cpus", help="Comma-separated physical CPUs (one NUMA node)")
     parser.add_argument("--runtime-source", type=Path)
@@ -39,7 +39,10 @@ def main():
     parser.add_argument("--calibrate-once", action="store_true")
     parser.add_argument("--isa", choices=["native", "avx2"], default="native")
     args = parser.parse_args()
-    cpus = {int(cpu) for cpu in args.cpus.split(",")} if args.cpus else {args.cpu}
+    cpus = {int(cpu) for cpu in args.cpus.split(",")} if args.cpus else {args.cpu or 0}
+    args.cpu = min(cpus) if args.cpu is None else args.cpu
+    if args.cpu not in cpus:
+        parser.error("--cpu must belong to --cpus")
     if args.threads < 1 or len(cpus) != args.threads:
         parser.error("Provide exactly --threads physical CPUs")
     if bool(args.runtime_source) != bool(args.omp_runtime):
@@ -74,6 +77,9 @@ def main():
         raise RuntimeError("PyTorch did not select the requested AVX2 dispatch")
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
+    # OpenMP binding can narrow its primary thread at initialization. Pthread
+    # OpenBLAS workers must instead inherit the entire benchmark CPU budget.
+    os.sched_setaffinity(0, cpus)
     manifest = json.loads((root / "manifest.json").read_text())
     if manifest.get("threads", 1) != args.threads:
         raise RuntimeError("IR thread hint differs from requested runtime thread count")
@@ -210,6 +216,7 @@ def main():
                     )
         # The wrappers were built and verified during preparation; loading them does not compile anything.
         blaslib = ctypes.CDLL(str(args.openblas))
+        os.sched_setaffinity(0, cpus)
         blaslib.openblas_set_num_threads(args.threads)
         if blaslib.openblas_get_num_threads() != args.threads:
             raise RuntimeError("OpenBLAS thread count differs")
@@ -235,6 +242,9 @@ def main():
         ptlib.destroy_kernel.restype = None
         ptlib.last_error.restype = ctypes.c_char_p
 
+    # OpenMP workers use GOMP_CPU_AFFINITY. Keep the primary thread on the first
+    # physical core after the independent pthread pool has been initialized.
+    os.sched_setaffinity(0, {args.cpu})
     records = []
     for case in manifest["cases"]:
         m, n, k = case["shape"]
@@ -341,6 +351,7 @@ def main():
             / ("paired-native.json" if args.phase == "run" else "validation.json"),
             dict(
                 affinity=sorted(os.sched_getaffinity(0)),
+                cpus=sorted(cpus),
                 threads=args.threads,
                 warmup=5,
                 repeats=9,
@@ -353,6 +364,10 @@ def main():
         )
 
     if args.phase == "prepare":
+        metadata["thread_affinities_after_validation"] = {
+            path.name: sorted(os.sched_getaffinity(int(path.name)))
+            for path in Path("/proc/self/task").iterdir()
+        }
         try:
             metadata["openblas_blocks_after_gemm"] = {
                 n: ctypes.c_int.in_dll(blas.blas, "sgemm_" + n).value
