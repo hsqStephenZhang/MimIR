@@ -2062,7 +2062,10 @@ bool LowerToMem::is_view(const Def* input) {
     input = view_slice(input);
     if (!Axm::isa<tensor::slice>(input) && !Axm::isa<tensor::slice_box>(input)) return false;
     auto source = Axm::peel<tensor::buf>(input->as<App>()->arg());
-    return lookup(source) || source->isa<Var>() || Axm::isa<tensor::stage>(source) || Axm::isa<tensor::placed>(source);
+    if (lookup(source)) return true;
+    while (auto extract = source->isa<Extract>())
+        source = extract->tuple();
+    return source->isa<Var>() || Axm::isa<tensor::stage>(source) || Axm::isa<tensor::placed>(source);
 }
 
 // A single tensor input is one component, not the two fields of its record type.

@@ -84,6 +84,19 @@ const Def* Lower::rewrite_imm_App(const App* app) {
         && (driver().arg_nat("tensor", "reference-tiles").value_or(0)
             || (!TensorType::isa(app->type()) && !app->type()->isa_imm<Sigma>())))
         return lower_via_impl(app, impl<tensor::tile_fold_impl>());
+    // A fold's inputs are read on every step, so a slice among them stays a view of its source.
+    if (Axm::isa<tensor::tile_fold>(app)) {
+        auto inputs = app->callee()->as<App>();
+        auto ins    = inputs->arg();
+        auto n      = ins->isa<Tuple>() ? ins->num_ops() : 1;
+        auto kept   = DefVec(n, [&](size_t i) {
+            auto in = n == 1 && !ins->isa<Tuple>() ? ins : ins->op(i);
+            if (auto slice = Axm::isa<tensor::slice>(in)) return RWPhase::rewrite_imm_App(slice);
+            return rewrite(in);
+        });
+        auto new_ins = ins->isa<Tuple>() ? w.tuple(kept) : kept[0];
+        return w.app(w.app(rewrite(inputs->callee()), new_ins), rewrite(app->arg()));
+    }
     if (Axm::isa<tensor::stage>(app) && driver().arg_nat("tensor", "reference-tiles").value_or(0))
         return lower_via_impl(app, impl<tensor::stage_impl>());
     if (Axm::isa<tensor::stage>(app)) {
