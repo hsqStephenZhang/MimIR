@@ -555,6 +555,7 @@ LowerToMem::close_batch(const Def* mem, const Def* result, const std::function<c
     auto M      = w.call<mem::M>(0);
     auto reader = w.mut_lam(w.pi(M, w.sigma({M, result})))->set("batchRead");
     reader->set(true, consume(reader->var()));
+    --entered_;
     auto read = w.app(w.app(w.app(w.annex<gpu::read_phase>(), {g, e}), result), w.tuple({published, reader}));
     return w.tuple({w.app(w.app(w.annex<gpu::leave_reading>(), {g, e}), read->proj(2, 0)), read->proj(2, 1)});
 }
@@ -961,6 +962,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
         auto g = w.lit_nat(batch_->group);
         auto e = w.lit_nat_0();
         if (!batch_->token) {
+            if (entered_++) app->blame("a work-group batch cannot open while another is open").bail();
             batch_->token
                 = w.app(w.app(w.annex<gpu::enter_write>(), {g, e}),
                         w.app(w.app(w.annex<gpu::group_enter>(), g), batch_->start ? batch_->start : fresh_mem()));
@@ -2938,6 +2940,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     auto g     = w.lit_nat(batches_++);
     u64 epoch  = 0;
     auto panel = [&](auto axiom) { return w.app(w.app(axiom, {g, w.lit_nat(epoch)}), {w.lit_nat(prank), pshape, el}); };
+    if (entered_++) app->blame("a work-item bound reduction cannot run inside a work-group batch").bail();
     const Def* token     = w.app(w.app(w.annex<gpu::enter_write>(), {g, w.lit_nat(epoch)}),
                                  w.app(w.app(w.annex<gpu::group_enter>(), g), start));
     auto fresh           = w.app(panel(w.annex<gpu::shared_panel>()), token);
@@ -3103,6 +3106,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         = w.app(w.app(w.app(w.annex<gpu::read_phase>(), {g, at}), w.sigma()), w.tuple({token, combine}))->proj(2, 0);
     auto reclaimed = w.app(w.app(w.annex<gpu::sync_reclaim>(), {g, at}), read);
     auto out_mem   = w.app(w.app(w.annex<gpu::group_leave>(), {g, w.lit_nat(epoch + 1)}), reclaimed);
+    --entered_;
     // The result buffer must depend on the merge's memory.
     auto [result_run, result_call]
         = btensor::ds_splice(w.tuple({out_mem, rbuf}), w.sigma({out_mem->type(), rbuf->type()}), "boundFoldResult");

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <format>
+#include <map>
 
 #include <fe/log.h>
 #include <fe/sys.h>
@@ -101,7 +102,8 @@ private:
     }
 
     LamSet kernels_;
-    /// A kernel whose shared slots exceed the static limit carves them out of one dynamic array, at these offsets.
+    /// A kernel whose shared slots exceed the static limit, or overlay panels, carves them out of one array, at these
+    /// offsets.
     DefMap<u64> dynamic_slots_;
     std::string dynamic_array_;
     std::map<std::string, u64> dynamic_shared_;
@@ -217,6 +219,7 @@ constexpr auto Cu_Module_Load_Fatbin  = "cuModuleLoadFatBinary";
 constexpr auto Cu_Module_Get_Function = "cuModuleGetFunction";
 constexpr auto Cu_Func_Set_Attribute  = "cuFuncSetAttribute";
 constexpr auto Cu_Max_Dynamic_Shared  = 8; // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
+constexpr auto Cu_Shared_Carveout     = 9; // CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT
 constexpr auto Cu_Module_Unload       = "cuModuleUnload";
 constexpr auto Cu_Stream_Create       = "cuStreamCreate";
 constexpr auto Cu_Stream_Destroy      = "cuStreamDestroy_v2";
@@ -297,6 +300,10 @@ void HostEmitter::emit_gpu_setup(ll::BB& bb, const std::string& name) {
             auto res  = bb.assign(name + "_" + kname + "_setattr", "call i32 @{}(ptr {}, i32 {}, i32 {})",
                                   Cu_Func_Set_Attribute, func, Cu_Max_Dynamic_Shared, bytes->second);
             emit_cu_error_handling(bb, res);
+            // Without a preference the driver may split the SM's storage toward L1, which caps the resident groups.
+            auto carveout = bb.assign(name + "_" + kname + "_carveout", "call i32 @{}(ptr {}, i32 {}, i32 100)",
+                                      Cu_Func_Set_Attribute, func, Cu_Shared_Carveout);
+            emit_cu_error_handling(bb, carveout);
         }
     }
 }
@@ -613,13 +620,36 @@ std::string DeviceEmitter::prepare() {
         for (auto dep : def->deps())
             todo.push_back(dep);
     }
-    u64 total = 0;
+    auto bytes = [](const Def* slot) {
+        auto size = Lit::as(core::op(core::trait::size, slot->as<App>()->decurry()->arg()));
+        return (size + 15) / 16 * 16;
+    };
+    u64 plain = 0;
+    for (auto slot : slots)
+        plain += bytes(slot);
+    // The panels of different constructs are never live together, so each construct's panels may start at one base.
+    // Overlaying hides that the panels never alias, so it only pays where the slots outgrow the static limit.
+    u64 total   = 0;
+    auto panels = std::map<u64, DefVec>();
     for (auto slot : slots) {
+        if (auto scope = Axm::isa<gpu::panel_scope>(slot->as<App>()->arg()); scope && plain > Static_Shared_Limit) {
+            panels[Lit::as(scope->decurry()->arg())].push_back(slot);
+            continue;
+        }
         dynamic_slots_[slot] = total;
-        auto bytes           = Lit::as(core::op(core::trait::size, slot->as<App>()->decurry()->arg()));
-        total += (bytes + 15) / 16 * 16;
+        total += bytes(slot);
     }
-    if (total > Static_Shared_Limit) {
+    u64 arena = 0;
+    for (auto& [_, group] : panels) {
+        u64 offset = total;
+        for (auto slot : group) {
+            dynamic_slots_[slot] = offset;
+            offset += bytes(slot);
+        }
+        arena = std::max(arena, offset - total);
+    }
+    total += arena;
+    if (plain > Static_Shared_Limit) {
         auto kname             = id(kernel).substr(1);
         dynamic_array_         = "@" + kname + "_dynamic_shared";
         dynamic_shared_[kname] = total;
@@ -791,7 +821,7 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
             std::print(bb.body().emplace_back(), "call void @llvm.nvvm.cp.async.wait.all()");
         }
         return std::string();
-    } else if (Axm::isa<gpu::generic_mem>(def) || Axm::isa<gpu::global_mem>(def)) {
+    } else if (Axm::isa<gpu::generic_mem>(def) || Axm::isa<gpu::global_mem>(def) || Axm::isa<gpu::panel_scope>(def)) {
         emit_unsafe(def->as<App>()->arg());
         return std::string();
     } else if (auto slot = Axm::isa<gpu::slot_shared>(def); slot && dynamic_slots_.contains(def)) {

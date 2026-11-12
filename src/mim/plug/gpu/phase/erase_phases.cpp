@@ -21,7 +21,8 @@ const Def* ErasePhases::rewrite_imm_App(const App* app) {
     if (Axm::isa<gpu::claim>(app)) return rewrite(app->arg())->proj(2, 1);
     if (auto panel = Axm::isa<gpu::shared_panel>(app)) {
         auto [r, s, T] = panel->decurry()->args<3>();
-        auto mem       = w.app(w.annex<gpu::shared_scope>(), rewrite(app->arg()));
+        auto g         = panel->decurry()->decurry()->arg(2, 0);
+        auto mem       = w.app(w.app(w.annex<gpu::panel_scope>(), rewrite(g)), rewrite(app->arg()));
         return buffer::op_alloc(rewrite(r), rewrite(s), rewrite(T), mem);
     }
     if (Axm::isa<gpu::coop_fill>(app)) {

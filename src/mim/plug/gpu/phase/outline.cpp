@@ -188,14 +188,23 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         return w.call<affine::For>(new_body, done, strided);
     }
     // A work-group's shared allocations become static slots; their frees vanish with the kernel.
-    if (auto alloc = Axm::isa<mem::alloc>(app); alloc && item_id_)
-        if (auto scope = Axm::isa<gpu::shared_scope>(alloc->arg())) {
-            auto [T, a] = alloc->decurry()->args<2>();
-            auto slot   = w.app(w.app(w.annex<gpu::slot_shared>(), rewrite(T)), rewrite(scope->arg()));
+    if (auto alloc = Axm::isa<mem::alloc>(app); alloc && item_id_) {
+        auto [T, a]     = alloc->decurry()->args<2>();
+        const Def* slot = nullptr;
+        if (auto scope = Axm::isa<gpu::shared_scope>(alloc->arg()))
+            slot = w.app(w.app(w.annex<gpu::slot_shared>(), rewrite(T)), rewrite(scope->arg()));
+        // The slot keeps a panel's construct for the backend to overlay the panels of different constructs.
+        if (auto scope = Axm::isa<gpu::panel_scope>(alloc->arg()))
+            slot = w.app(
+                w.app(w.annex<gpu::slot_shared>(), rewrite(T)),
+                w.app(w.app(w.annex<gpu::panel_scope>(), rewrite(scope->decurry()->arg())), rewrite(scope->arg())));
+        if (slot) {
             shared_.emplace(slot->proj(2, 1));
             return slot;
         }
+    }
     if (auto scope = Axm::isa<gpu::shared_scope>(app)) return rewrite(scope->arg());
+    if (auto scope = Axm::isa<gpu::panel_scope>(app)) return rewrite(scope->arg());
     if (auto free = Axm::isa<mem::free>(app); free && item_id_) {
         auto [mem, ptr] = free->args<2>();
         if (shared_.contains(rewrite(ptr))) return rewrite(mem);

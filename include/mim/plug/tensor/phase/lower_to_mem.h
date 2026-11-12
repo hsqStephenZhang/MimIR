@@ -188,6 +188,8 @@ private:
     };
     std::optional<Batch> batch_;
     u64 batches_ = 0;
+    /// Work-group constructs entered and not yet left; `gpu.panel_scope` lets panels overlap since they never nest.
+    u64 entered_ = 0;
     std::optional<Batch> open_batch(const Def* start);
     const Def* close_batch(const Def* mem, const Def* result, const std::function<const Def*(const Def*)>& consume);
     /// The fills of a pipelined fold copy asynchronously; its loop waits for them before its fence.

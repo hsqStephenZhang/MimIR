@@ -30,7 +30,7 @@ extern lam _compile (): compile.Phase =
 // CHECK: buffer.read {{.*}} (gpu.fence
 
 // CHECK-LABEL: superstep
-// CHECK: gpu.shared_scope (gpu.fence
+// CHECK: gpu.panel_scope {{.*}} (gpu.fence
 // CHECK: buffer.write
 // CHECK: buffer.read {{.*}} (gpu.fence
 // CHECK-NOT: gpu.GM

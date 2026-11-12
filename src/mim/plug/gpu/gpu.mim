@@ -296,6 +296,14 @@ axm slot_shared: [T: *] → mem.M 0 → [mem.M 0, mem.Ptr (T, 0)];
 ///
 axm shared_scope: mem.M 0 → mem.M 0;
 ///
+/// #### panel_scope
+///
+/// Marks the allocation on this memory as a panel of construct `g`, empty when `g` enters and dead once it leaves.
+/// `gpu.outline` turns it into a `slot_shared` that keeps the mark, so the panels of different constructs may share
+/// storage: constructs never nest and each enters behind a barrier.
+///
+axm panel_scope: {g: Nat} → mem.M 0 → mem.M 0;
+///
 /// #### generic_mem / global_mem
 ///
 /// Convert between global memory and the generic `mem.M 0` an outlined kernel body threads; both erase to nothing.
