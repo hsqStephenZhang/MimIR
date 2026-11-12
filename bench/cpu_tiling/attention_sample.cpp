@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -20,11 +21,13 @@ static size_t live_bytes() {
     return info.uordblks + info.hblkhd;
 }
 
-// Fresh process per sample: any compiler leaks are bounded and reclaimed only
-// after the native timer stops. No intermediate is freed by this benchmark.
+// Leaking kernels get a fresh process per sample. Clean kernels may serve
+// multiple requests after a longer warmup. No intermediate is freed here.
 int main(int argc, char** argv) {
     try {
-        if (argc != 13) throw std::runtime_error("library inputs H M S D N causal threads cpus kind leak_bound");
+        if (argc != 13 && argc != 14)
+            throw std::runtime_error("library inputs H M S D N causal threads cpus kind leak_bound [stream]");
+        bool stream = argc == 14;
         int64_t dims[6];
         for (int i = 0; i < 6; ++i)
             dims[i] = std::stoll(argv[3 + i]);
@@ -78,21 +81,43 @@ int main(int argc, char** argv) {
             if (!(seconds > 0) || !std::isfinite(seconds)) throw std::runtime_error("native timer failed");
             return seconds;
         };
-        for (int i = 0; i < 3; ++i)
+        auto warm_start  = std::chrono::steady_clock::now();
+        int warmup_calls = 3;
+        for (int i = 0; i < warmup_calls; ++i)
             measure(1);
-        auto estimate = measure(1);
-        int limit     = leak_bound ? std::max<size_t>(1, (256 * 1024 * 1024) / leak_bound) : 10000000;
-        int count     = std::clamp<int>(std::ceil(0.03 / estimate), 1, limit);
-        auto before   = live_bytes();
-        auto seconds  = measure(count);
-        auto after    = live_bytes();
-        rusage usage;
-        getrusage(RUSAGE_SELF, &usage);
+        if (!leak_bound) {
+            while (std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_start).count() < 0.2) {
+                measure(8);
+                warmup_calls += 8;
+            }
+        }
+        auto warmup_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_start).count();
         std::cout.precision(16);
-        std::cout << "{\"seconds\":" << seconds << ",\"iterations\":" << count
-                  << ",\"total_ms\":" << seconds * count * 1000 << ",\"maxrss_kib\":" << usage.ru_maxrss
-                  << ",\"live_growth_bytes\":" << static_cast<int64_t>(after) - static_cast<int64_t>(before)
-                  << ",\"leak_limited\":" << (count == limit && leak_bound ? "true" : "false") << "}\n";
+        auto sample = [&]() {
+            auto estimate = measure(1);
+            int limit     = leak_bound ? std::max<size_t>(1, (256 * 1024 * 1024) / leak_bound) : 10000000;
+            int count     = std::clamp<int>(std::ceil(0.03 / estimate), 1, limit);
+            auto before   = live_bytes();
+            auto seconds  = measure(count);
+            auto after    = live_bytes();
+            rusage usage;
+            getrusage(RUSAGE_SELF, &usage);
+            std::cout << "{\"seconds\":" << seconds << ",\"iterations\":" << count
+                      << ",\"total_ms\":" << seconds * count * 1000 << ",\"maxrss_kib\":" << usage.ru_maxrss
+                      << ",\"live_growth_bytes\":" << static_cast<int64_t>(after) - static_cast<int64_t>(before)
+                      << ",\"warmup_calls\":" << warmup_calls << ",\"warmup_seconds\":" << warmup_seconds
+                      << ",\"leak_limited\":" << (count == limit && leak_bound ? "true" : "false") << "}\n"
+                      << std::flush;
+        };
+        if (stream) {
+            if (leak_bound) throw std::runtime_error("Leaking kernels require fresh processes");
+            std::cout << "{\"ready\":true}\n" << std::flush;
+            std::string request;
+            while (std::getline(std::cin, request))
+                sample();
+        } else {
+            sample();
+        }
         if (handle) reinterpret_cast<void (*)(void*)>(symbol("destroy_attention"))(handle);
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

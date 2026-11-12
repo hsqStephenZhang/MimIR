@@ -221,20 +221,41 @@ def run(args, cases):
         samples = {name: [] for name in kernels}
         orders = []
         rng = random.Random(42)
-        for repeat in range(9):
-            order = list(kernels)
-            rng.shuffle(order)
-            orders.append(order)
-            for name in order:
-                library, kind, launches = kernels[name]
-                cells = math.prod(case["shape"][:3])
-                bound = cells * 16 if name == "mimir_default" and launches else 0
+        commands, workers = {}, {}
+        try:
+            for name, (library, kind, launches) in kernels.items():
+                bound = math.prod(case["shape"][:3]) * 16 if name == "mimir_default" and launches else 0
                 command = [str(args.root / "sample"), str(library), str(args.root / "inputs" / case["name"] / "qkv.bin"),
                            *map(str, case["shape"]), str(int(case["causal"])), str(args.threads),
                            ",".join(map(str, MASKS[args.threads])), str(kind), str(bound)]
-                result = subprocess.run(command, env=environment(args.threads), capture_output=True, text=True,
-                                        check=True, timeout=180)
-                samples[name].append(json.loads(result.stdout))
+                commands[name] = command
+                if not bound:
+                    worker = subprocess.Popen([*command, "stream"], env=environment(args.threads),
+                                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                              stderr=subprocess.PIPE, text=True)
+                    workers[name] = worker
+                    assert json.loads(worker.stdout.readline())["ready"]
+            for repeat in range(9):
+                order = list(kernels)
+                rng.shuffle(order)
+                orders.append(order)
+                for name in order:
+                    if name in workers:
+                        worker = workers[name]
+                        worker.stdin.write("sample\n")
+                        worker.stdin.flush()
+                        value = json.loads(worker.stdout.readline())
+                    else:
+                        result = subprocess.run(commands[name], env=environment(args.threads), capture_output=True,
+                                                text=True, check=True, timeout=180)
+                        value = json.loads(result.stdout)
+                    samples[name].append(value)
+        finally:
+            for worker in workers.values():
+                worker.stdin.close()
+                worker.wait(timeout=30)
+                if worker.returncode:
+                    raise RuntimeError(worker.stderr.read())
         row = dict(case=case, ms={name: statistics.median(s["seconds"] for s in values) * 1000
                                  for name, values in samples.items()}, samples=samples, orders=orders)
         records.append(row)
