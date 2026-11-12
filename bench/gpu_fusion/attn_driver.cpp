@@ -18,7 +18,10 @@ int main(int argc, char** argv) {
     }
     float* o = attn(q.data(), k.data(), v.data());
     auto t0  = std::chrono::steady_clock::now();
-    for (int it = 0; it < iters; ++it) o = attn(q.data(), k.data(), v.data());
+    for (int it = 0; it < iters; ++it) {
+        std::free(o);
+        o = attn(q.data(), k.data(), v.data());
+    }
     auto t1 = std::chrono::steady_clock::now();
     std::printf("attn end-to-end: %.3f ms/call\n", std::chrono::duration<double, std::milli>(t1 - t0).count() / iters);
     int failures = 0;
@@ -45,5 +48,6 @@ int main(int argc, char** argv) {
             }
         }
     std::printf("%s\n", failures ? "FAIL" : "OK");
+    std::free(o);
     return failures ? 1 : 0;
 }

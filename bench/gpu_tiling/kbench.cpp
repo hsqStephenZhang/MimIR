@@ -41,6 +41,11 @@ int main(int argc, char** argv) {
     }
     std::array<CUdeviceptr, 3> buf;
     for (auto& p : buf) CHECK(cuMemAlloc(&p, N * N * sizeof(float)));
+    auto cleanup = [&] {
+        for (auto p : buf) CHECK(cuMemFree(p));
+        CHECK(cuModuleUnload(mod));
+        CHECK(cuDevicePrimaryCtxRelease(dev));
+    };
     auto check = [&](int ia, int ib, int ic) {
         CHECK(cuMemcpyHtoD(buf[ia], a.data(), N * N * 4));
         CHECK(cuMemcpyHtoD(buf[ib], b.data(), N * N * 4));
@@ -66,6 +71,7 @@ int main(int argc, char** argv) {
             }
     if (order[0] < 0) {
         std::printf("FAIL\n");
+        cleanup();
         return 1;
     }
     void* params[] = {buf.data()};
@@ -86,4 +92,7 @@ int main(int argc, char** argv) {
     std::sort(ms.begin(), ms.end());
     double med = ms[ms.size() / 2];
     std::printf("OK median %.4f ms  min %.4f ms  %.0f GFLOP/s\n", med, ms[0], 2.0 * N * N * N / (med * 1e-3) / 1e9);
+    CHECK(cuEventDestroy(start));
+    CHECK(cuEventDestroy(stop));
+    cleanup();
 }

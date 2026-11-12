@@ -1,0 +1,37 @@
+========= COMPUTE-SANITIZER
+========= Leaked 1,024 bytes at 0x7fa8a6a00000
+=========     Saved host backtrace up to driver entry point at allocation time
+=========     Host Frame: [0x2d8c9f]
+=========                in /lib/x86_64-linux-gnu/libcuda.so.1
+=========     Host Frame:main [0x162d]
+=========                in /home/sunqi/zc/mimir-bench/gpu-leak-check-20261112/./kbench-before
+=========     Host Frame:__libc_start_main [0x24083]
+=========                in /lib/x86_64-linux-gnu/libc.so.6
+=========     Host Frame:_start [0x123e]
+=========                in /home/sunqi/zc/mimir-bench/gpu-leak-check-20261112/./kbench-before
+=========
+========= Leaked 1,024 bytes at 0x7fa8a6a00400
+=========     Saved host backtrace up to driver entry point at allocation time
+=========     Host Frame: [0x2d8c9f]
+=========                in /lib/x86_64-linux-gnu/libcuda.so.1
+=========     Host Frame:main [0x1647]
+=========                in /home/sunqi/zc/mimir-bench/gpu-leak-check-20261112/./kbench-before
+=========     Host Frame:__libc_start_main [0x24083]
+=========                in /lib/x86_64-linux-gnu/libc.so.6
+=========     Host Frame:_start [0x123e]
+=========                in /home/sunqi/zc/mimir-bench/gpu-leak-check-20261112/./kbench-before
+=========
+========= Leaked 1,024 bytes at 0x7fa8a6a00800
+=========     Saved host backtrace up to driver entry point at allocation time
+=========     Host Frame: [0x2d8c9f]
+=========                in /lib/x86_64-linux-gnu/libcuda.so.1
+=========     Host Frame:main [0x1661]
+=========                in /home/sunqi/zc/mimir-bench/gpu-leak-check-20261112/./kbench-before
+=========     Host Frame:__libc_start_main [0x24083]
+=========                in /lib/x86_64-linux-gnu/libc.so.6
+=========     Host Frame:_start [0x123e]
+=========                in /home/sunqi/zc/mimir-bench/gpu-leak-check-20261112/./kbench-before
+=========
+OK median 0.1116 ms  min 0.0707 ms  0 GFLOP/s
+========= LEAK SUMMARY: 3072 bytes leaked in 3 allocations
+========= ERROR SUMMARY: 3 errors

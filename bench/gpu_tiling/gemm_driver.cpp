@@ -17,7 +17,10 @@ int main(int argc, char** argv) {
     }
     float* c = gemm1024(a.data(), b.data());
     auto t0  = std::chrono::steady_clock::now();
-    for (int it = 0; it < iters; ++it) c = gemm1024(a.data(), b.data());
+    for (int it = 0; it < iters; ++it) {
+        std::free(c);
+        c = gemm1024(a.data(), b.data());
+    }
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
     std::printf("gemm1024 end-to-end: %.3f ms/call  (%.1f GFLOP/s incl. copies)\n", ms, 2.0 * N * N * N / ms / 1e6);
@@ -32,5 +35,6 @@ int main(int argc, char** argv) {
         }
     }
     std::printf("%s\n", bad ? "FAIL" : "OK");
+    std::free(c);
     return bad ? 1 : 0;
 }

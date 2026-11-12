@@ -1,0 +1,166 @@
+{
+  "compiler_source_commit": "08e40d6fc4d297855bbbf4d15eae4fc5ac00bcff",
+  "host": "ss420e",
+  "sm": 86,
+  "cases": {
+    "tile_pipeline": {
+      "launch": {
+        "name": "tile_pipeline",
+        "shape": [
+          16,
+          16,
+          16
+        ],
+        "kernel": "tileKernel_624488",
+        "groups": 4,
+        "items": 16,
+        "smem": 0,
+        "commands": [
+          [
+            "/workspaces/compile/MimIR/.worktrees/gpu-tiling/build/bin/mim",
+            "-p",
+            "opt",
+            "-p",
+            "gpu",
+            "-X",
+            "tensor:tile-fuse=1",
+            "-X",
+            "tensor:strict=1",
+            "/workspaces/compile/MimIR/.worktrees/gpu-tiling/lit/gpu/tile_pipeline.mim",
+            "-p",
+            "nvptx",
+            "-X",
+            "nvptx:no-embed",
+            "-X",
+            "nvptx:sm=86"
+          ],
+          [
+            "opt",
+            "-mtriple=nvptx64-nvidia-cuda",
+            "-passes=default<O2>,nvvm-reflect",
+            "tile_pipeline_dev.ll",
+            "-o",
+            "kernel.bc"
+          ],
+          [
+            "llc",
+            "-march=nvptx64",
+            "-mcpu=sm_86",
+            "kernel.bc",
+            "-o",
+            "kernel.ptx"
+          ]
+        ],
+        "device_heap_alloc_sites": 0,
+        "device_heap_free_sites": 0
+      },
+      "ptx_sha256": "002ce270637392d4e02a7ace3100bb4ede4529e60fb575041eebf6de251f84e1"
+    },
+    "tile_panel_tail": {
+      "launch": {
+        "name": "tile_panel_tail",
+        "shape": [
+          32,
+          32,
+          24
+        ],
+        "kernel": "tileKernel_624673",
+        "groups": 1,
+        "items": 64,
+        "smem": 0,
+        "commands": [
+          [
+            "/workspaces/compile/MimIR/.worktrees/gpu-tiling/build/bin/mim",
+            "-p",
+            "opt",
+            "-p",
+            "gpu",
+            "-X",
+            "tensor:tile-fuse=1",
+            "-X",
+            "tensor:strict=1",
+            "/workspaces/compile/MimIR/.worktrees/gpu-tiling/lit/gpu/tile_panel_tail.mim",
+            "-p",
+            "nvptx",
+            "-X",
+            "nvptx:no-embed",
+            "-X",
+            "nvptx:sm=86"
+          ],
+          [
+            "opt",
+            "-mtriple=nvptx64-nvidia-cuda",
+            "-passes=default<O2>,nvvm-reflect",
+            "tile_panel_tail_dev.ll",
+            "-o",
+            "kernel.bc"
+          ],
+          [
+            "llc",
+            "-march=nvptx64",
+            "-mcpu=sm_86",
+            "kernel.bc",
+            "-o",
+            "kernel.ptx"
+          ]
+        ],
+        "device_heap_alloc_sites": 1,
+        "device_heap_free_sites": 1
+      },
+      "ptx_sha256": "f1051093de73533edc65a8c705af5a5e64f83c8448b0fbe8c3b30f8851c8fc1c"
+    },
+    "tile_mma": {
+      "launch": {
+        "name": "tile_mma",
+        "shape": [
+          16,
+          16,
+          16
+        ],
+        "kernel": "tileKernel_624433",
+        "groups": 1,
+        "items": 64,
+        "smem": 0,
+        "commands": [
+          [
+            "/workspaces/compile/MimIR/.worktrees/gpu-tiling/build/bin/mim",
+            "-p",
+            "opt",
+            "-p",
+            "gpu",
+            "-X",
+            "tensor:tile-fuse=1",
+            "-X",
+            "tensor:strict=1",
+            "/workspaces/compile/MimIR/.worktrees/gpu-tiling/lit/gpu/tile_mma.mim",
+            "-p",
+            "nvptx",
+            "-X",
+            "nvptx:no-embed",
+            "-X",
+            "nvptx:sm=86"
+          ],
+          [
+            "opt",
+            "-mtriple=nvptx64-nvidia-cuda",
+            "-passes=default<O2>,nvvm-reflect",
+            "tile_mma_dev.ll",
+            "-o",
+            "kernel.bc"
+          ],
+          [
+            "llc",
+            "-march=nvptx64",
+            "-mcpu=sm_86",
+            "kernel.bc",
+            "-o",
+            "kernel.ptx"
+          ]
+        ],
+        "device_heap_alloc_sites": 0,
+        "device_heap_free_sites": 0
+      },
+      "ptx_sha256": "fe01e9556a55225963b3fcc118bc1d72d017b368197ec34733f72caad32fc468"
+    }
+  }
+}

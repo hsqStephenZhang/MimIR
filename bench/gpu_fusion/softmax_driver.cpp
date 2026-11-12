@@ -14,7 +14,10 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < x.size(); ++i) x[i] = float(i % 113) / 37.0f - 1.5f;
     float* y = softmax_rows(x.data());
     auto t0  = std::chrono::steady_clock::now();
-    for (int it = 0; it < iters; ++it) y = softmax_rows(x.data());
+    for (int it = 0; it < iters; ++it) {
+        std::free(y);
+        y = softmax_rows(x.data());
+    }
     auto t1 = std::chrono::steady_clock::now();
     std::printf("softmax end-to-end: %.3f ms/call\n", std::chrono::duration<double, std::milli>(t1 - t0).count() / iters);
     int failures = 0;
@@ -32,5 +35,6 @@ int main(int argc, char** argv) {
         }
     }
     std::printf("%s\n", failures ? "FAIL" : "OK");
+    std::free(y);
     return failures ? 1 : 0;
 }

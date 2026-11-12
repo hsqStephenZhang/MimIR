@@ -18,7 +18,10 @@ int main(int argc, char** argv) {
     }
     float* c = gemm_bias_relu(a.data(), b.data(), bias.data());
     auto t0  = std::chrono::steady_clock::now();
-    for (int it = 0; it < iters; ++it) c = gemm_bias_relu(a.data(), b.data(), bias.data());
+    for (int it = 0; it < iters; ++it) {
+        std::free(c);
+        c = gemm_bias_relu(a.data(), b.data(), bias.data());
+    }
     auto t1 = std::chrono::steady_clock::now();
     std::printf("end-to-end: %.3f ms/call\n", std::chrono::duration<double, std::milli>(t1 - t0).count() / iters);
     int failures = 0;
@@ -33,5 +36,6 @@ int main(int argc, char** argv) {
             }
         }
     std::printf("%s\n", failures ? "FAIL" : "OK");
+    std::free(c);
     return failures ? 1 : 0;
 }

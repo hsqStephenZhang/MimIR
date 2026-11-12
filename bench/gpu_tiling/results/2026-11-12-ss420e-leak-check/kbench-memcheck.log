@@ -1,0 +1,4 @@
+========= COMPUTE-SANITIZER
+OK median 0.1116 ms  min 0.1106 ms  0 GFLOP/s
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors

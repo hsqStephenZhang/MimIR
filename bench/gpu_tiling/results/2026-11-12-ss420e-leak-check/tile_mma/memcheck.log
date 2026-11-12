@@ -1,0 +1,4 @@
+========= COMPUTE-SANITIZER
+{"case": "tile_mma", "launches": 1000, "argument_map": [0, 1, 2], "correct": true, "free_before": 25098387456, "free_after": 25098387456, "device_memory_growth": 0}
+========= LEAK SUMMARY: 0 bytes leaked in 0 allocations
+========= ERROR SUMMARY: 0 errors
