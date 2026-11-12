@@ -824,6 +824,8 @@ bool contraction(const App* root) {
 
 } // namespace
 
+bool is_contraction(const App* root) { return contraction(root); }
+
 const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) return op->world().lit_bool(contraction(root));
     return nullptr;

@@ -79,8 +79,14 @@ private:
     std::pair<const Def*, const Def*> load_fragments(const Def* init, const Fragments&, const Def* mem);
     u64 lane_count(const Def* body) const;
     const Def* warp_term(const Def*);
-    const Def*
-    warp_element(const btensor::MapRedPost&, u64 k, Defs coords, const Def* lane, const Def* j, const Def* reg);
+    const Def* warp_fold(const App*);
+    const Def* warp_element(const btensor::MapRedPost&,
+                            u64 k,
+                            Defs coords,
+                            const Def* lane,
+                            const Def* j,
+                            const Def* reg,
+                            bool post = false);
     const Def* store_warp(const Def* root, const Destination&);
     const Def* lower_lane_fold(const App*,
                                Lam*,
@@ -218,6 +224,7 @@ private:
     const Def* warp_self_ = nullptr;
     DefMap<const Def*> warp_terms_;
     const Def* mr_inputs_ = nullptr;
+    const Def* mr_posts_  = nullptr;
     /// The warp accumulators in fragment form, by value.
     DefMap<Fragments> fragments_;
     /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.

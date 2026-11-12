@@ -80,6 +80,14 @@ W1（完成）：`tensor.bind 5` 标出 warp 拥有的区域；LowerToMem 的 `w
 `store_warp` 让每个 lane 写自己的分量。`tensor.mma_warp`（原 `gpu.warp_mma`）没有 gpu 插件时就是 `mma_ref`。
 `lit/{gpu,nvptx}/warp_owned.mim`：区域里的乘积与逐元素映射降成 32 条 `mma_tf32` 与寄存器上的运算，GPU 上结果正确。
 
+W2（完成）：区域里的 `tile_fold` 由 `warp_fold` 发成循环，状态是每个 lane 的分量（`R` 为 `«2; F»`，`C nt` 为 `«nt, 4; F»`），
+步内以 `gpu.lanes (self, x)` 作 warp 值；fold 的结果同样是 warp 值。
+翻译也处理融进 `map_reduce_post` 的 epilogue 输入（按输出坐标读），以及融进收缩的 epilogue（逐位置作用在累加的 tile 上）；
+收缩只接受 `acc + a · b`（`is_contraction`）。`lit/{gpu,nvptx}/warp_fold.mim`。
+`bench/gpu_attn/attn_warp.mim`：attention 写成 work-group（`bind 1`）→ warp 拥有的 16 行（`bind 5`）→ fold，
+不用 `group_tile_req`；K/V 由每个 lane 直接从全局内存读（W3 未做）。RTX PRO 6000 上 32 × 2048 为 0.590 ms
+（`attn_fa` 0.827，手写 0.305），没有 shared 与 barrier，140 个寄存器。
+
 步骤：W1 上表的翻译；W2 区域里的 fold，状态在寄存器里跨步；W3 K/V 面板由 work-group 协作填充；W4 attention。
 区域可以由用户显式写出，也可以由 TileFuse 的层级生成；W1 对两者相同，先用显式标记。
 

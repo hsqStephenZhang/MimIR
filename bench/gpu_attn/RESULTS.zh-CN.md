@@ -119,3 +119,17 @@ RTX PRO 6000，D=64，非 causal，单位 ms：
   `root_contraction` 接受带偏移的映射和转置读的 B；`group_slice` 在切片自己的坐标系里放宽（batch 维、k 方向的起点）；
   `reshape(slice)` 作 region 输入时是视图，`get_fused` 读穿只改单位维的 reshape。
 - 剩余的性能问题：S（17 KB）与 O（16 KB）在 shared 里，手写版本全在寄存器里（shared 35 KB 只放 K/V）；Q 面板每步重填；每个 fold 步十余道 barrier。
+
+## warp 拥有的区域（`attn_warp.mim`，RTX PRO 6000，2026-11-12）
+
+attention 写成 work-group → 每个 warp 拥有 16 行（`tensor.bind 5`）→ 按 key 的 fold；区域里的张量是 warp 值，
+LowerToMem 把它们翻译成 `tensor.warp` 的 Mim 函数（见 `docs/warp-schedule.zh-CN.md`），S、P、O 与行统计都在寄存器里。
+K/V 目前由每个 lane 直接从全局内存读，还没有经 shared 协作装载与预取。
+
+| BH × L | `attn_warp` | `attn_fa` | 手写 FA2 | PyTorch fp32 efficient |
+|---|---:|---:|---:|---:|
+| 32 × 1024 | 0.158 | 0.244 | 0.100 | 0.228 |
+| 32 × 2048 | 0.590 | 0.827 | 0.305 | 0.781 |
+| 32 × 4096 | 2.56 | 3.13 | 1.10 | 2.64 |
+| 128 × 1024 | 0.640 | 0.787 | 0.300 | 0.725 |
+| 128 × 2048 | 3.66 | 3.30 | 1.09 | 2.62 |

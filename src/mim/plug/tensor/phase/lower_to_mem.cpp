@@ -1488,7 +1488,8 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
         auto value = plan.multiple ? root->proj(plan.count, i) : root;
         if (Axm::isa<tensor::map_reduce_post>(value) || Axm::isa<tensor::tiled>(value)) destinations.push_back(value);
     }
-    prepare_realizations(root, nullptr, destinations);
+    // A warp-owned region's tensors are warp values, never realized into buffers.
+    if (!warp_self_) prepare_realizations(root, nullptr, destinations);
     Rewriter substitutions(old);
     for (auto var : root->free_vars())
         substitutions.map(var, var);
@@ -2494,16 +2495,25 @@ const Def* LowerToMem::warp_element(const btensor::MapRedPost& mr,
                                     Defs coords,
                                     const Def* lane,
                                     const Def* j,
-                                    const Def* reg) {
-    auto& old  = old_world();
-    auto rn    = Lit::as(mr.Rn);
-    auto nis   = Lit::as(mr.nis);
-    auto input = mr_inputs_->proj(nis, k);
-    auto map   = mr.maps->proj(nis, k);
+                                    const Def* reg,
+                                    bool post) {
+    auto& old = old_world();
+    // An epilogue input is read at the output's coordinates.
+    auto rn    = Lit::as(post ? mr.Ro : mr.Rn);
+    auto nis   = Lit::as(post ? mr.nps : mr.nis);
+    auto input = (post ? mr_posts_ : mr_inputs_)->proj(nis, k);
+    auto map   = (post ? mr.post_maps : mr.maps)->proj(nis, k);
+    auto shape = post ? mr.So : mr.Sr;
+    auto Ri    = (post ? mr.Rps : mr.Ris)->proj(nis, k);
+    auto Si    = (post ? mr.Sps : mr.Sis)->proj(nis, k);
     auto dims  = map_dims(map, rn);
     if (!dims) input->blame("a warp-owned region reads `{}` through a map that is no projection", input).bail();
     auto value = Axm::peel<tensor::buf>(input);
-    if (Axm::isa<tensor::map_reduce_post>(value) && j) {
+    // The region's own tensors, its fold's state and results among them, are warp values.
+    auto resident = fe::lookup(warp_terms_, value) || Axm::isa<tensor::map_reduce_post>(value)
+                 || Axm::isa<tensor::splat>(value)
+                 || (value->isa<Extract>() && Axm::isa<tensor::tile_fold>(value->as<Extract>()->tuple()));
+    if (resident && j) {
         auto term = warp_term(value);
         if (dims->size() == 2 && (*dims)[0] == 0 && (*dims)[1] == 1)
             return old.extract(old.extract(old.extract(term, lane), j), reg);
@@ -2514,15 +2524,15 @@ const Def* LowerToMem::warp_element(const btensor::MapRedPost& mr,
                                     old.call(core::nat::div, Defs{old.call<core::idx2nat>(reg), old.lit_nat(2)})));
         input->blame("a warp-owned region reads its own `{}` across positions", input).bail();
     }
-    if (Axm::isa<tensor::map_reduce_post>(value) && !j) {
+    if (resident && !j) {
         auto term = warp_term(value);
         if (dims->size() == 1 && (*dims)[0] == 0) return old.extract(old.extract(term, lane), reg);
         input->blame("a warp-owned region reads its own `{}` across positions", input).bail();
     }
     auto loops = old.tuple(
-        DefVec(rn, [&](size_t d) { return old.call<core::idx>(old.lit_nat_0(), mr.Sr->proj(rn, d), coords[d]); }));
+        DefVec(rn, [&](size_t d) { return old.call<core::idx>(old.lit_nat_0(), shape->proj(rn, d), coords[d]); }));
     auto none = old.bot(old.call<mem::M>(0));
-    auto at   = btensor::op_affine_map(map, mr.Ris->proj(nis, k), mr.Rn, mr.Sr, mr.Sis->proj(nis, k), loops, none);
+    auto at   = btensor::op_affine_map(map, Ri, old.lit_nat(rn), shape, Si, loops, none);
     return op_get_fused(input, at->proj(2, 1));
 }
 
@@ -2538,12 +2548,30 @@ const Def* LowerToMem::warp_term(const Def* def) {
     }
     if (auto term = fe::lookup(warp_terms_, def)) return term;
     auto& old = old_world();
-    auto app  = Axm::isa<tensor::map_reduce_post>(def);
+    if (auto extract = def->isa<Extract>())
+        if (auto fold = Axm::isa<tensor::tile_fold>(extract->tuple()))
+            return old.extract(warp_fold(fold), extract->index());
+    if (auto splat = Axm::isa<tensor::splat>(Axm::peel<tensor::buf>(def))) {
+        auto [shape, value] = splat->args<2>();
+        auto T              = value->type();
+        if (Lit::isa(shape->arity()) == 1) {
+            auto g = old.mut_lam(old.pi(old.sigma({old.type_idx(32), old.type_idx(2)}), T));
+            g->set(true, value);
+            return warp_terms_[def] = old.app(old.app(old.annex(tensor::warp::r_gen), T), g);
+        }
+        auto nt = Lit::as(shape->proj(2, 1)) / 8;
+        auto g  = old.mut_lam(old.pi(old.sigma({old.type_idx(32), old.type_idx(nt), old.type_idx(4)}), T));
+        g->set(true, value);
+        return warp_terms_[def] = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), T), g);
+    }
+    auto app = Axm::isa<tensor::map_reduce_post>(def);
     if (!app) def->blame("a warp-owned region keeps only map_reduce results in registers, not `{}`", def).bail();
     auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
     auto ro = Lit::isa(mr.Ro), rn = Lit::isa(mr.Rn), nis = Lit::isa(mr.nis), nps = Lit::isa(mr.nps);
-    if (!ro || !rn || !nis || nps != 0)
-        def->blame("a warp-owned region needs literal ranks and no epilogue inputs").bail();
+    if (!ro || !rn || !nis || !nps)
+        def->blame("a warp-owned region needs literal ranks and no epilogue inputs: {}, {}, {}, {}", mr.Ro, mr.Rn,
+                   mr.nis, mr.nps)
+            .bail();
     auto dim = [&](const Def* shape, u64 n, u64 d) {
         auto extent = Lit::isa(shape->proj(n, d));
         if (!extent) def->blame("a warp-owned region needs literal extents, not `{}`", shape).bail();
@@ -2552,16 +2580,20 @@ const Def* LowerToMem::warp_term(const Def* def) {
     if (dim(mr.So, *ro, 0) != 16) def->blame("a warp-owned region holds 16 rows, not `{}`", mr.So).bail();
     auto nt = *ro == 2 ? dim(mr.So, 2, 1) / 8 : 0;
     if (*ro == 2 && dim(mr.So, 2, 1) % 8) def->blame("a warp-owned tile's columns are a multiple of 8").bail();
-    auto inputs     = app->arg()->proj(2, 0);
-    auto scope      = fe::Restore(mr_inputs_, inputs);
-    auto input      = [&](u64 k) { return inputs->proj(*nis, k); };
-    auto map        = [&](u64 k) { return mr.maps->proj(*nis, k); };
-    auto I          = [&](u64 n) { return old.type_idx(n); };
-    auto nat        = [&](const Def* x) { return old.call<core::idx2nat>(x); };
-    auto tensor     = TensorType::isa(def->type());
-    auto T          = tensor->T;
-    auto call       = [&](const Def* f, const Def* x) { return old.app(cps::op_cps2ds_dep(f), x); };
-    auto post       = [&](const Def* x) { return call(mr.post, old.tuple({x, old.tuple()})); };
+    auto inputs = app->arg()->proj(2, 0);
+    auto scope  = fe::Restore(mr_inputs_, inputs);
+    auto posts  = fe::Restore(mr_posts_, app->arg()->proj(2, 1));
+    auto input  = [&](u64 k) { return inputs->proj(*nis, k); };
+    auto map    = [&](u64 k) { return mr.maps->proj(*nis, k); };
+    auto I      = [&](u64 n) { return old.type_idx(n); };
+    auto nat    = [&](const Def* x) { return old.call<core::idx2nat>(x); };
+    auto tensor = TensorType::isa(def->type());
+    auto T      = tensor->T;
+    auto call   = [&](const Def* f, const Def* x) { return old.app(cps::op_cps2ds_dep(f), x); };
+    auto post   = [&](const Def* x, Defs coords, const Def* lane, const Def* j, const Def* reg) {
+        auto ps = old.tuple(DefVec(*nps, [&](size_t k) { return warp_element(mr, k, coords, lane, j, reg, true); }));
+        return call(mr.post, old.tuple({x, ps}));
+    };
     const Def* term = nullptr;
     if (*rn == *ro) {
         // Pointwise: each position combines its inputs at its own coordinates.
@@ -2578,7 +2610,7 @@ const Def* LowerToMem::warp_term(const Def* def) {
             coords = {nat(old.app(old.annex(tensor::warp::r_pos), {lane, reg}))};
         }
         auto ins = old.tuple(DefVec(*nis, [&](size_t k) { return warp_element(mr, k, coords, lane, j, reg); }));
-        g->set(true, post(call(mr.comb, old.tuple({mr.init, ins}))));
+        g->set(true, post(call(mr.comb, old.tuple({mr.init, ins})), coords, lane, j, reg));
         term = *ro == 2 ? old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), T), g)
                         : old.app(old.app(old.annex(tensor::warp::r_gen), T), g);
     } else if (*ro == 1 && *rn == 2) {
@@ -2599,9 +2631,12 @@ const Def* LowerToMem::warp_term(const Def* def) {
             old.app(old.app(old.app(old.annex(tensor::warp::row_fold), old.lit_nat(nt)), mr.To), {op, mr.init}), elems);
         auto p        = old.mut_lam(old.pi(old.sigma({I(32), I(2)}), T));
         auto [pl, ph] = p->vars<2>();
-        p->set(true, post(old.extract(old.extract(rows, pl), ph)));
+        auto row      = nat(old.app(old.annex(tensor::warp::r_pos), {pl, ph}));
+        p->set(true, post(old.extract(old.extract(rows, pl), ph), DefVec{row}, pl, nullptr, ph));
         term = old.app(old.app(old.annex(tensor::warp::r_gen), T), p);
     } else if (*ro == 2 && *rn == 3 && *nis == 2) {
+        if (!is_contraction(app))
+            def->blame("a warp-owned product must combine `acc + a · b`, not `{}`", mr.comb).bail();
         // A contraction `c + a·b` over k-chunks of 8 on the tensor cores.
         auto da = map_dims(map(0), 3), db = map_dims(map(1), 3);
         if (!da || !db || da->size() != 2 || db->size() != 2)
@@ -2640,10 +2675,75 @@ const Def* LowerToMem::warp_term(const Def* def) {
             c = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), F), g);
         }
         term = old.app(old.app(old.annex(tensor::warp::c_mma), {old.lit_nat(nk), old.lit_nat(nt)}), {a, b, c});
+        // An epilogue fused into the product applies at each position of the accumulated tile.
+        auto g            = old.mut_lam(old.pi(old.sigma({I(32), I(nt), I(4)}), T));
+        auto [pl, pj, pr] = g->vars<3>();
+        auto [row, col]   = old.app(old.app(old.annex(tensor::warp::c_pos), old.lit_nat(nt)), {pl, pj, pr})->projs<2>();
+        auto acc          = old.extract(old.extract(old.extract(term, pl), pj), pr);
+        g->set(true, post(acc, DefVec{nat(row), nat(col)}, pl, pj, pr));
+        term = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), T), g);
     } else {
         def->blame("a warp-owned region has no translation for `{}`", def).bail();
     }
     return warp_terms_[def] = term;
+}
+
+// A fold in a warp-owned region keeps its state as each lane's components, carried by the loop; the step sees them as
+// the warp values `gpu.lanes (self, x)`. Its results are such warp values too.
+const Def* LowerToMem::warp_fold(const App* app) {
+    if (auto terms = fe::lookup(warp_terms_, app)) return terms;
+    auto& w                                             = new_world();
+    auto& old                                           = old_world();
+    auto [type, blocks, init, input_type, inputs, body] = app->uncurry_args<6>();
+    auto [count, stride]                                = blocks->projs<2>();
+    auto step                                           = app->arg()->isa<Lam>();
+    auto sigma                                          = type->isa_imm<Sigma>();
+    if (!step || !step->is_set() || !sigma) app->blame("a warp-owned fold needs a product state and a step").bail();
+    auto n                     = sigma->num_ops();
+    auto parameter             = old.mut_lam(old.pi(old.sigma({type, old.type_nat()}), old.type_nat()));
+    auto [accumulator, offset] = parameter->var()->projs<2>();
+    auto root                  = old.app(step->reduce(parameter->var()).back(), region_input(inputs));
+    auto lane                  = rewrite(warp_self_);
+    auto lanes = [&](const Def* x) { return old.app(old.app(old.annex<gpu::lanes>(), x->type()), {warp_self_, x}); };
+    auto inits = DefVec(n, [&](size_t i) { return warp_term(init->proj(n, i)); });
+    auto local = old.sigma(DefVec(n, [&](size_t i) { return old.extract(inits[i], warp_self_)->type(); }));
+    auto first = w.tuple(DefVec(n, [&](size_t i) { return w.extract(rewrite(inits[i]), lane); }));
+    auto state = w.tuple({fresh_mem(), first});
+    auto [run, call]       = btensor::ds_splice(state, state->type(), "warpFold");
+    auto [loop, loop_call] = affine::counting_for(w.call<core::bitcast>(w.type_i64(), rewrite(count)), run->var(2, 0),
+                                                  run->ret_var(), w.sym("warpFoldStep"));
+    auto [index, carried, yield] = loop->vars<3>();
+    auto [loop_mem, locals]      = carried->projs<2>();
+    {
+        auto pending = fe::Restore(pending_, {});
+        auto memo    = fe::Restore(fresh_memo_, {});
+        auto cache   = fe::Restore(realizations_, realizations_);
+        auto terms   = fe::Restore(warp_terms_, warp_terms_);
+        push();
+        bind_old(parameter->has_var());
+        map(offset, w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), rewrite(stride)}));
+        auto proxy = old.mut_lam(old.pi(local, old.type_nat()));
+        bind_old(proxy->has_var());
+        map(proxy->var(), locals);
+        for (size_t i = 0; i != n; ++i)
+            warp_terms_[accumulator->proj(n, i)] = lanes(proxy->var(n, i));
+        for (size_t i = 0; i != 128; ++i) {
+            auto call = root->isa<App>();
+            if (!call) break;
+            auto lam = call->callee()->isa<Lam>();
+            if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
+            root = lam->reduce(call->arg()).back();
+        }
+        auto next = w.tuple(DefVec(n, [&](size_t i) { return w.extract(rewrite(warp_term(root->proj(n, i))), lane); }));
+        loop->app(true, yield, w.tuple({loop_mem, next}));
+        loop->set(true, wrap_fresh_mem(loop->body()));
+        pop();
+    }
+    run->set(true, loop_call);
+    auto result = old.mut_lam(old.pi(local, old.type_nat()));
+    bind_old(result->has_var());
+    map(result->var(), call->proj(2, 1));
+    return warp_terms_[app] = old.tuple(DefVec(n, [&](size_t i) { return lanes(result->var(n, i)); }));
 }
 
 // Each lane writes its components of the warp-owned region's root at their coordinates of @p destination.

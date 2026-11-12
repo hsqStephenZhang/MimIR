@@ -1,0 +1,53 @@
+// RUN: %mim -p opt %s -p gpu -o - | %FileCheck %s
+
+// A fold in a warp-owned region keeps its state in registers across the steps: a tile `o ← o / 2 + x_blk + l` and its row
+// sums `l ← l + Σ x_blk`, read back by the final broadcast.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+use tensor;
+let F    = math.F32;
+let fast = math.mode.fast;
+let NB   = 4;
+fun fsum (acc: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.arith.add fast (acc, x));
+fun halfadd (_: F, oxl: [F, F, F])@tt: F =
+    let (o, x, l) = oxl;
+    return (math.arith.add fast (math.arith.add fast (math.arith.mul fast (o, 0.5:F), x), l));
+fun addl (_: F, lr: [F, F])@tt: F =
+    let (l, r) = lr;
+    return (math.arith.add fast (l, r));
+fun bcast (_: F, ol: [F, F])@tt: F =
+    let (o, l) = ol;
+    return (math.arith.add fast (o, l));
+
+lam warp_body (goff: Nat) (off ext: «2; Nat») (x: Tensor 2 (256, 64) F): Tensor 2 ext F =
+    let rows = ext#0₂;
+    let row0 = core.nat.add (goff, off#0₂);
+    let Acc  = [Tensor 1 rows F, Tensor 2 (rows, 64) F];
+    let init: Acc = (splat (rows, 0:F), splat ((rows, 64), 0:F));
+    lam step (acc: Acc, ko: Nat) (x: Tensor 2 (256, 64) F): Acc =
+        let (l, o) = acc;
+        let xt = slice @(F, 2) (256, 64) ((core.nat.add (core.nat.mul (row0, NB), ko), 0), (1, 1), (rows, 64)) x;
+        let o = map_reduce @3 @(F, 2, 2) ((rows, 64), (rows, 64)) @((F, F, F), (2, 2, 1), ((rows, 64), (rows, 64), rows)) (halfadd, ⊥:F) (proj_map @(2, 2) (0, 1))
+            (proj_map @(2, 2) (0, 1), proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, xt, l);
+        let r = map_reduce (rows, (rows, 64)) (fsum, 0.0:F) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1),) xt;
+        let l = map_reduce (rows, rows) (addl, ⊥:F) (proj_map @(1, 1) 0) (proj_map @(1, 1) 0, proj_map @(1, 1) 0) (l, r);
+        (l, o);
+    let (l, o) = tile_fold @Acc (NB, 16) init x step;
+    map_reduce @2 @(F, 2, 2) (ext, ext) @((F, F), (2, 1), ((rows, 64), rows)) (bcast, ⊥:F) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, l);
+
+lam group_body (off ext: «2; Nat») (x: Tensor 2 (256, 64) F): Tensor 2 ext F =
+    tiled @(F, 2) (ext, (16, 64), 1) x
+        (bind @([off ext: «2; Nat»] → Tensor 2 (256, 64) F → Tensor 2 ext F) 5 (warp_body (off#0₂)));
+
+extern fun warp_fold (x: tensor.Tensor 2 (256, 64) F): tensor.Tensor 2 (64, 64) F =
+    return (tiled ((64, 64), (64, 64), 1) (buf x)
+        (bind @([off ext: «2; Nat»] → Tensor 2 (256, 64) F → Tensor 2 ext F) 1 group_body));
+
+// CHECK-NOT: mem.malloc
+// CHECK: gpu.shfl_xor
