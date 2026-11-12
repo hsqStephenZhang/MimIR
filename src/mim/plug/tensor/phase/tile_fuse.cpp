@@ -1551,7 +1551,8 @@ const Def* Levels::reduction(const Def* anchor,
         return value;
     };
     // A reduction that fits one block is not split, but its promoted inputs are still staged, once.
-    if (auto k = Lit::isa(K); k && *k <= sizes[loop]) {
+    // Group-wide panels take the blocked path, which places them in the work-group's shared ring.
+    if (auto k = Lit::isa(K); k && *k <= sizes[loop] && !group_wide) {
         if (panels.empty()) return tile(anchor, rest, depth + 1);
         auto block  = fuse(anchor, nullptr, depth, 1);
         block.value = stage_block(block.value, w.lit_nat_0(), K);
