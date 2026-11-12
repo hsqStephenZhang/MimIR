@@ -1504,6 +1504,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         steps[d] = sizes[d] ? std::min(*sizes[d], *tile) : *tile;
     }
     const Def* mem = destination ? destination->mem : fresh_mem();
+    auto in_group  = bound_level_ == 1 && driver().is_loaded("gpu");
     DefVec buffers(plan.count);
     if (destination) {
         mem        = destination->mem;
@@ -1511,9 +1512,16 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     } else {
         for (u64 i = 0; i != plan.count; ++i) {
             auto rank = rewrite(plan.ranks->proj(plan.count, i)), type = rewrite(plan.types->proj(plan.count, i));
-            auto shape                = bounded_shape(rewrite(plan.shapes->proj(plan.count, i)));
-            std::tie(mem, buffers[i]) = buffer::op_alloc(rank, shape, type, mem)->projs<2>();
-            transient(rank, shape, type, buffers[i]);
+            auto shape = bounded_shape(rewrite(plan.shapes->proj(plan.count, i)), in_group);
+            if (in_group) {
+                // A work-group's result is shared by its work-items.
+                auto scope                = w.app(w.annex<gpu::shared_scope>(), mem);
+                std::tie(mem, buffers[i]) = buffer::op_alloc(rank, shape, type, scope)->projs<2>();
+                group_buffers_.insert(buffers[i]);
+            } else {
+                std::tie(mem, buffers[i]) = buffer::op_alloc(rank, shape, type, mem)->projs<2>();
+                transient(rank, shape, type, buffers[i]);
+            }
         }
     }
     auto views     = view_flags(inputs);
@@ -1656,7 +1664,18 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     auto done = w.mut_con(call->type())->set("tileScratchDone");
     // A work-group level inside a work-group, as a `group_tile_req` has, is its one tile and runs in place.
     auto bound = plan.bind && driver().is_loaded("gpu") && !(plan.bind == 1 && bound_level_ != 0);
-    run->set(true, bound ? emit_bound(runtime->proj(2, 0), done) : emit(0, runtime->proj(2, 0), done));
+    // Work-items that fill a work-group's buffer publish it to the others behind a barrier.
+    const Def* exit = done;
+    auto shared_out = std::ranges::any_of(buffers, [&](const Def* b) { return group_buffers_.contains(b); });
+    if (bound && plan.bind >= 2 && bound_level_ == 1 && (shared_out || composed_)) {
+        auto published = w.mut_con(done->type()->as<Pi>()->dom())->set("tilePublished");
+        auto state     = DefVec(published->var()->projs(plan.count + 1));
+        state[0]       = w.app(w.annex<gpu::fence>(), state[0]);
+        published->app(true, done, w.tuple(state));
+        exit = published;
+    }
+    auto composed = fe::Restore(composed_, composed_ || (plan.bind == 1 && !bound));
+    run->set(true, bound ? emit_bound(runtime->proj(2, 0), exit) : emit(0, runtime->proj(2, 0), exit));
     auto done_mem = done->var()->proj(plan.count + 1, 0);
     for (auto [binding, invoke] : scratch.bindings | std::views::reverse) {
         auto buffer              = binding->var(2, 0)->proj(2, 1);
@@ -1676,7 +1695,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     if (destination) return call;
     for (u64 i = 0; i != plan.count; ++i) {
         auto shape = rewrite(plan.shapes->proj(plan.count, i));
-        if (auto storage = bounded_shape(shape); storage != shape)
+        if (auto storage = bounded_shape(shape, in_group); storage != shape)
             storage_shapes_[plan.multiple ? app->proj(plan.count, i) : app] = storage;
     }
     auto out_mem = call->proj(plan.count + 1, 0);
@@ -2016,7 +2035,31 @@ void LowerToMem::forward_layouts(const Def* buffers, const Def* params) {
 }
 
 // A slice of a realized tensor among region inputs stays a read of its source, which the body composes.
+// A reshape that only adds or drops unit dims, which a buffer of the same storage serves unchanged.
+bool unit_reshape(const Def* def) {
+    auto reshape = Axm::isa<tensor::reshape>(def);
+    if (!reshape) return false;
+    auto [meta, s_in, s_out] = reshape->callee()->as<App>()->uncurry_args<3>();
+    auto r_in = Lit::isa<u64>(meta->proj(3, 1)), r_out = Lit::isa<u64>(meta->proj(3, 2));
+    if (!r_in || !r_out) return false;
+    auto kept = [](const Def* s, u64 r) {
+        auto dims = DefVec();
+        for (auto d : s->projs(r))
+            if (Lit::isa(d) != 1) dims.push_back(d);
+        return dims;
+    };
+    return kept(s_in, *r_in) == kept(s_out, *r_out);
+}
+
+// The slice under any unit reshapes of @p input.
+const Def* view_slice(const Def* input) {
+    while (unit_reshape(input))
+        input = input->as<App>()->arg();
+    return input;
+}
+
 bool LowerToMem::is_view(const Def* input) {
+    input = view_slice(input);
     if (!Axm::isa<tensor::slice>(input) && !Axm::isa<tensor::slice_box>(input)) return false;
     auto source = Axm::peel<tensor::buf>(input->as<App>()->arg());
     return lookup(source) || source->isa<Var>() || Axm::isa<tensor::stage>(source) || Axm::isa<tensor::placed>(source);
@@ -2037,21 +2080,31 @@ std::vector<bool> LowerToMem::view_flags(const Def* inputs) {
 }
 
 const Def* LowerToMem::view_sources(const Def* inputs, const std::vector<bool>& views) {
-    auto n = input_count(inputs);
-    if (n == 1) return views[0] ? inputs->as<App>()->arg() : inputs;
+    auto n      = input_count(inputs);
+    auto source = [](const Def* input) { return view_slice(input)->as<App>()->arg(); };
+    if (n == 1) return views[0] ? source(inputs) : inputs;
     return old_world().tuple(DefVec(n, [&](size_t i) {
         auto input = inputs->proj(n, i);
-        return views[i] ? input->as<App>()->arg() : input;
+        return views[i] ? source(input) : input;
     }));
 }
 
+// Re-applies a view's slice and unit reshapes to the region's parameter @p proxy.
 const Def* LowerToMem::view_reads(const Def* inputs, const Def* proxy, const std::vector<bool>& views) {
+    auto& old  = old_world();
+    auto apply = [&](const Def* input, const Def* p) {
+        auto callees = DefVec();
+        for (auto cur = input; unit_reshape(cur); cur = cur->as<App>()->arg())
+            callees.push_back(cur->as<App>()->callee());
+        auto read = old.app(view_slice(input)->as<App>()->callee(), p);
+        for (auto callee : callees | std::views::reverse)
+            read = old.app(callee, read);
+        return read;
+    };
     auto n = input_count(inputs);
-    if (n == 1) return views[0] ? old_world().app(inputs->as<App>()->callee(), proxy) : proxy;
-    return old_world().tuple(DefVec(n, [&](size_t i) {
-        return views[i] ? old_world().app(inputs->proj(n, i)->as<App>()->callee(), proxy->proj(n, i))
-                        : proxy->proj(n, i);
-    }));
+    if (n == 1) return views[0] ? apply(inputs, proxy) : proxy;
+    return old.tuple(DefVec(
+        n, [&](size_t i) { return views[i] ? apply(inputs->proj(n, i), proxy->proj(n, i)) : proxy->proj(n, i); }));
 }
 
 const Def* LowerToMem::region_input(const Def* inputs) {
@@ -2205,8 +2258,8 @@ DefVec LowerToMem::staged_panels(const Def* root, const Def* var) const {
 }
 
 const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destination) {
+    auto scope = fe::Restore(uniform_, uniform(app));
     if (app->type()->isa_imm<Sigma>()) return destination ? nullptr : lower_product_fold(app);
-    auto scope                                          = fe::Restore(uniform_, uniform(app));
     auto& w                                             = new_world();
     auto& old                                           = old_world();
     auto [type, blocks, init, input_type, inputs, body] = app->uncurry_args<6>();
@@ -2776,13 +2829,17 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
         return std::pair{tensor.s, tensor.T};
     };
     const Def* mem = fresh_mem();
-    DefVec primary, spare;
+    DefVec primary, spare, storages;
     fe::Vector<bool> pooled;
+    // A work-group's fold keeps its state in shared memory at its bounded storage, written by all its work-items.
+    auto group      = bound_level_ == 1 && driver().is_loaded("gpu");
+    auto shared     = [&w](const Def* m) { return w.app(w.annex<gpu::shared_scope>(), m); };
     auto initialize = [&](const Def* t, const Def* value) -> const Def* {
         if (!TensorType::isa(t)) {
             auto scalar = rewrite(value);
             primary.push_back(scalar);
             spare.push_back(scalar);
+            storages.push_back(nullptr);
             pooled.push_back(false);
             return scalar;
         }
@@ -2790,18 +2847,34 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
         auto rank             = w.lit_nat(Lit::as(shape->arity()));
         auto owned            = scratch_ && lit_projs(rewrite(shape), Lit::as(rank)) && rewrite(element)->is_closed();
         const Def *current, *next;
-        if (owned) {
-            current = allocate(rank, rewrite(shape), rewrite(element)).second;
-            next    = allocate(rank, rewrite(shape), rewrite(element)).second;
+        auto extent  = rewrite(shape);
+        auto storage = group ? bounded_shape(extent, true) : nullptr;
+        if (group) {
+            std::tie(mem, current) = buffer::op_alloc(rank, storage, rewrite(element), shared(mem))->projs<2>();
+            std::tie(mem, next)    = buffer::op_alloc(rank, storage, rewrite(element), shared(mem))->projs<2>();
+        } else if (owned) {
+            current = allocate(rank, extent, rewrite(element)).second;
+            next    = allocate(rank, extent, rewrite(element)).second;
         } else {
-            std::tie(mem, current) = buffer::op_alloc(rank, rewrite(shape), rewrite(element), mem)->projs<2>();
-            std::tie(mem, next)    = buffer::op_alloc(rank, rewrite(shape), rewrite(element), mem)->projs<2>();
+            std::tie(mem, current) = buffer::op_alloc(rank, extent, rewrite(element), mem)->projs<2>();
+            std::tie(mem, next)    = buffer::op_alloc(rank, extent, rewrite(element), mem)->projs<2>();
         }
-        pooled.push_back(owned);
+        pooled.push_back(owned || group);
+        if (group) group_buffers_.insert({current, next});
         primary.push_back(current);
         spare.push_back(next);
-        plain(value);
-        mem = copy_buffer(mem, current, make_buffer(value, rank, rewrite(shape)), rewrite(shape), cooperative());
+        storages.push_back(storage);
+        if (!group) {
+            plain(value);
+            mem = copy_buffer(mem, current, make_buffer(value, rank, extent), extent, cooperative());
+        } else if (auto scalar = splat_scalar(value)) {
+            mem = copy_box(mem, current, storage, rewrite(scalar), nullptr, extent, cooperative());
+        } else {
+            plain(value);
+            auto source = fe::lookup(storage_shapes_, value);
+            mem = copy_box(mem, current, storage, make_buffer(value, rank, extent), source ? source : extent, extent,
+                           cooperative());
+        }
         return current;
     };
     auto current           = fields(fields, type, init, initialize);
@@ -2814,6 +2887,9 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
                                                   run->ret_var(), w.sym("productFoldStep"));
     auto [index, carried, yield]         = loop->vars<3>();
     auto [loop_mem, source, destination] = carried->projs<3>();
+    if (group)
+        for (size_t i = 0, n = storages.size(); i != n; ++i)
+            if (storages[i]) group_buffers_.insert({source->proj(n, i), destination->proj(n, i)});
     {
         auto pending      = fe::Restore(pending_, {});
         auto nested_batch = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
@@ -2823,6 +2899,9 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
         push();
         bind_old(parameter->has_var());
         map(accumulator, source);
+        if (auto sigma = type->isa_imm<Sigma>(); sigma && sigma->num_ops() == storages.size())
+            for (size_t i = 0; i != storages.size(); ++i)
+                if (storages[i]) storage_shapes_[accumulator->proj(storages.size(), i)] = storages[i];
         map(offset, w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), rewrite(stride)}));
         prepare_realizations(root);
         DefVec targets;
@@ -2845,7 +2924,8 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
             }
             auto rank    = Lit::as(shape->arity());
             auto zero    = w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat(0); }));
-            auto written = lower_into(value, {updated_mem, target, rewrite(shape), zero, rewrite(shape)});
+            auto storage = storages[cursor - 1] ? storages[cursor - 1] : rewrite(shape);
+            auto written = lower_into(value, {updated_mem, target, storage, zero, rewrite(shape)});
             updated_mem  = written->proj(2, 0);
             return target;
         };
@@ -2883,6 +2963,9 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
     };
     fields(fields, type, unused, release);
     finish->app(true, finish->ret_var(), w.tuple({released, output}));
+    if (auto sigma = type->isa_imm<Sigma>(); sigma && sigma->num_ops() == storages.size())
+        for (size_t i = 0; i != storages.size(); ++i)
+            if (storages[i]) storage_shapes_[app->proj(storages.size(), i)] = storages[i];
     return finished->proj(2, 1);
 }
 

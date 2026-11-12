@@ -72,3 +72,20 @@ D=64，非 causal，单位 ms（括号里 TFLOP/s）：
 - 手写 FA2 比 PyTorch 的 FP32 路径快 3.6–8 倍；比 fp16 flash（FA2 后端，未用 FA3）慢约 2.2 倍。BC=64 在 H200 上同样慢 20–30%。
 - H200 上 PyTorch 的 fp32 efficient 在 L=4096 时反而变慢（14 TFLOP/s），L≤2048 时约 26–31。
 - Hopper 的 TF32 峰值要靠 WGMMA 才能接近，`mma.sync` 远达不到；P6（WGMMA、TMA、warp 特化）现在可以实测。
+
+## P1：用 `group_tile_req` 组合出的单 kernel（H200，2026-11-12）
+
+`attn_fa.mim`（`kattn.sh attn_fa.mim BH L 64`，`BM`/`BK` 选块大小）：Q 行块的 `tiled` 绑定到 work-group，块内是按 key 块的 product fold，状态 `(m, l, O)` 在 shared memory；
+每步由 `group_tile_req` 组成：`S = Q·K_blkᵀ` 与 `P·V_blk` 走 warp + TF32 mma，行 max/sum、exp、O 的修正分给 work-item。
+输入以 `(H·L) × 64` 的二维矩阵给出，块都是二维 `slice`，面板才能按整个 work-group 放宽。
+
+| BH × L | 时间（BM=64，BK=32） | 手写 FA2 | `attn_tiled`（3 kernel） |
+|---|---:|---:|---:|
+| 32 × 1024 | 10.8 ms | 0.090 | 0.517 |
+| 32 × 2048 | 43.1 ms | 0.317 | 2.00 |
+
+- 结果正确（`lit/gpu/attention_fold.mim` 与 nvptx 版本），一个 kernel，S 与 P 不落全局内存；但比手写版本慢约 120 倍。
+- 为此修的问题：work-group 层级的分配（请求结果、fold 状态）进 shared；原地 work-group 级里 item/warp region 之后的 barrier；
+  `root_contraction` 接受带偏移的映射和转置读的 B；`group_slice` 在切片自己的坐标系里放宽（batch 维、k 方向的起点）；
+  `reshape(slice)` 作 region 输入时是视图，`get_fused` 读穿只改单位维的 reshape。
+- 已知的性能问题：每个 fold 步有十余道 barrier、多次面板填充，行运算只用一半线程；状态在 shared 里双缓冲，每步整块写回。

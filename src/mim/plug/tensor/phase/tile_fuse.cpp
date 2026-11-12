@@ -818,11 +818,11 @@ std::optional<std::pair<const Def*, const Def*>> group_slice(const Def* input,
     auto ext                = group.var->proj(2, 1)->proj(ro, loop);
     auto inner              = item.var->proj(2, 0)->proj(ro, loop);
     // The work-group's tile starts the work-item's offset before the work-item's box, in whatever frame the slice has;
-    // any other dim, such as a batch, keeps the work-item's box.
+    // the box already spans the block along k, and any other dim, such as a batch, keeps it.
     auto [first, step, extent] = box->projs<3>();
     auto start                 = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
         return d == axis  ? w.call(core::nat::sub, Defs{first->proj(rank, d), inner})
-             : d == *kdim ? block.k0
+             : d == *kdim ? first->proj(rank, d)
                           : first->proj(rank, d);
     }));
     auto size                  = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
@@ -1643,12 +1643,13 @@ const Def* Levels::mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 d
     auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
     // The request's type admits `warp_mma` only for an F32 matrix product.
     if (shape[0] != 16 || shape[1] != 8 || shape[2] != 8) return fail("a TF32 tensor-core tile is (16, 8, 8)");
-    // A's rows and B's columns are its panels' tiled axes, so their contiguous dims are k and n.
+    // A's panels are tiled along its rows; B's along the dim it reads n from, which promotion chose, as either of the
+    // orders its type admits.
     for (u64 slot = 0; slot != 2; ++slot) {
         auto staged = Axm::isa<tensor::stage>(Axm::peel<tensor::placed>(root->arg(2, 0)->proj(2, slot)));
         if (!staged) return fail("the tensor-core operands must be promoted into work-group panels");
         auto layout = staged->callee()->as<App>()->uncurry_args<4>()[2];
-        if (Lit::isa(layout->proj(4, 0)) != slot) return fail("the tensor-core operands must be row-major");
+        if (slot == 0 && Lit::isa(layout->proj(4, 0)) != 0) return fail("the tensor-core operand A must be row-major");
     }
     // The warp's extents become literal once lower_to_mem specializes the tile bodies, which checks them again.
     for (u64 d = 0; d != rn; ++d)

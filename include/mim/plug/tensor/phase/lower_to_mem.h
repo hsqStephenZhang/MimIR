@@ -186,6 +186,10 @@ private:
     const Def* filled_mem_ = nullptr;
     /// The work-group buffers that uniform fills wrote.
     DefSet shared_fills_;
+    /// A work-group's buffers in shared memory that its work-items write and then read each other's parts of.
+    DefSet group_buffers_;
+    /// Inside a work-group level that runs in place, whose work-items read each other's results.
+    bool composed_ = false;
     /// The warp accumulators in fragment form, by value.
     DefMap<Fragments> fragments_;
     /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.

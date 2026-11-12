@@ -772,7 +772,7 @@ bool reads_loops(const Def* map, u64 a, u64 b) {
 // Whether `x` and `y` are `a` and `b` in either order.
 bool either(const Def* x, const Def* y, const Def* a, const Def* b) { return (x == a && y == b) || (x == b && y == a); }
 
-// `C (m, n) += A (m, k) · B (k, n)` over F32, whose combiner returns `acc + a · b`.
+// `C (m, n) += A (m, k) · B (k, n)` over F32, with B also read transposed, whose combiner returns `acc + a · b`.
 bool contraction(const App* root) {
     auto& w    = root->world();
     auto mr    = btensor::MapRedPost::of(root->callee()->as<App>());
@@ -781,7 +781,7 @@ bool contraction(const App* root) {
     if (!ranks || ranks->ro != 2 || ranks->rr != 1 || Lit::isa(mr.nis) != 2) return false;
     if (mr.To != F32 || mr.Tis->proj(2, 0) != F32 || mr.Tis->proj(2, 1) != F32) return false;
     if (!reads_loops(mr.map_out, 0, 1) || !reads_loops(mr.maps->proj(2, 0), 0, 2)
-        || !reads_loops(mr.maps->proj(2, 1), 2, 1))
+        || !(reads_loops(mr.maps->proj(2, 1), 2, 1) || reads_loops(mr.maps->proj(2, 1), 1, 2)))
         return false;
     auto lam   = mr.comb->isa_mut<Lam>();
     auto value = lam && lam->is_set() ? returned(lam) : nullptr;
@@ -841,19 +841,51 @@ const Def* normalize_stage(const Def*, const Def* c, const Def*) {
 
 // @p tensor read at @p index through any slices, as its base tensor and the index there.
 std::pair<const Def*, const Def*> through_slices(const Def* tensor, const Def* index) {
-    while (auto slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(tensor))) {
-        auto [meta, s_in, box]     = slice->callee()->as<App>()->uncurry_args<3>();
-        auto [start, step, extent] = box->projs<3>();
-        auto rank                  = Lit::isa<u64>(meta->proj(2, 1));
-        if (!rank) break;
-        auto& w = tensor->world();
-        index   = w.tuple(DefVec(*rank, [&](size_t d) {
-            auto offset
-                = w.call(core::nat::mul, Defs{step->proj(*rank, d), w.call<core::idx2nat>(index->proj(*rank, d))});
-            auto x = w.call(core::nat::add, Defs{start->proj(*rank, d), offset});
-            return w.call<core::idx>(w.lit_nat_0(), s_in->proj(*rank, d), x);
-        }));
-        tensor  = slice->arg();
+    auto& w = tensor->world();
+    for (;;) {
+        auto source = Axm::peel<tensor::buf>(tensor);
+        if (auto slice = Axm::isa<tensor::slice>(source)) {
+            auto [meta, s_in, box]     = slice->callee()->as<App>()->uncurry_args<3>();
+            auto [start, step, extent] = box->projs<3>();
+            auto rank                  = Lit::isa<u64>(meta->proj(2, 1));
+            if (!rank) break;
+            index  = w.tuple(DefVec(*rank, [&](size_t d) {
+                auto offset
+                    = w.call(core::nat::mul, Defs{step->proj(*rank, d), w.call<core::idx2nat>(index->proj(*rank, d))});
+                auto x = w.call(core::nat::add, Defs{start->proj(*rank, d), offset});
+                return w.call<core::idx>(w.lit_nat_0(), s_in->proj(*rank, d), x);
+            }));
+            tensor = slice->arg();
+        } else if (auto reshape = Axm::isa<tensor::reshape>(source)) {
+            // A reshape that only adds or drops unit dims reads its input at the same coordinates.
+            auto [meta, s_in, s_out] = reshape->callee()->as<App>()->uncurry_args<3>();
+            auto r_in = Lit::isa<u64>(meta->proj(3, 1)), r_out = Lit::isa<u64>(meta->proj(3, 2));
+            if (!r_in || !r_out) break;
+            auto unit = [](const Def* d) { return Lit::isa(d) == 1; };
+            auto ins = DefVec(s_in->projs(*r_in)), outs = DefVec(s_out->projs(*r_out));
+            auto coord = DefVec(*r_in);
+            size_t o   = 0;
+            bool plain = true;
+            for (size_t i = 0; i != *r_in && plain; ++i) {
+                while (o != *r_out && unit(outs[o]) && !unit(ins[i]))
+                    ++o;
+                if (unit(ins[i])) {
+                    coord[i] = w.lit_idx(1, 0);
+                    if (o != *r_out && unit(outs[o])) ++o;
+                } else if (o != *r_out && outs[o] == ins[i]) {
+                    coord[i] = index->proj(*r_out, o++);
+                } else {
+                    plain = false;
+                }
+            }
+            for (; o != *r_out && plain; ++o)
+                plain = unit(outs[o]);
+            if (!plain) break;
+            index  = w.tuple(coord);
+            tensor = reshape->arg();
+        } else {
+            break;
+        }
     }
     return {tensor, index};
 }

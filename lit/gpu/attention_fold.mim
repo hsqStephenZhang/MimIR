@@ -1,0 +1,99 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_attention_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Attention as one work-group per block of query rows: a fold over key blocks keeps (max, sum, out) in shared memory
+// and computes each step from group_tile_req requests, the two products on tensor cores.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F    = math.F32;
+let mode = math.mode.fast;
+let H    = 2;
+let L    = 64;
+let D    = 64;
+let bm   = 64;
+let bk   = 32;
+
+fun mac (acc: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.arith.add mode (acc, math.arith.mul mode (x, y)));
+fun fmax (acc: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.extrema.fmax mode (acc, x));
+fun fsum (acc: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.arith.add mode (acc, x));
+fun maxed (_: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.extrema.fmax mode (x, math.arith.mul mode (y, 0.125:F)));
+fun rescale (_: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.exp.exp mode (math.arith.sub mode (x, y)));
+fun probs (_: F, sm: [F, F])@tt: F =
+    let (s, m) = sm;
+    return (math.exp.exp mode (math.arith.sub mode (math.arith.mul mode (s, 0.125:F), m)));
+fun summed (_: F, lcr: [F, F, F])@tt: F =
+    let (l, c, r) = lcr;
+    return (math.arith.add mode (math.arith.mul mode (l, c), r));
+fun updated (_: F, ocp: [F, F, F])@tt: F =
+    let (o, c, p) = ocp;
+    return (math.arith.add mode (math.arith.mul mode (o, c), p));
+fun divided (_: F, ol: [F, F])@tt: F =
+    let (o, l) = ol;
+    return (math.arith.div mode (o, l));
+
+let s_levels  = group_warp ((16, 32, 0), 1, warp_red ((0, 0, 8), 1, 3, warp_mma (16, 8, 8)));
+let pv_levels = group_warp ((16, 64, 0), 1, warp_red ((0, 0, 8), 1, 3, warp_mma (16, 8, 8)));
+let row_levels = group_item ((1, 0), 1, item_done ());
+let s_elem_levels = group_item ((1, 16), 1, item_done ());
+let o_elem_levels = group_item ((1, 32), 1, item_done ());
+
+let HL = core.nat.mul (H, L);
+
+lam body (off ext: «2; Nat») (q: Tensor 2 (HL, D) F, k: Tensor 2 (HL, D) F, v: Tensor 2 (HL, D) F): Tensor 2 ext F =
+    let rows = ext#0₂;
+    let head = core.nat.mul (core.nat.div (off#0₂, L), L);
+    let qt = slice @(F, 2) (HL, D) ((off#0₂, 0), (1, 1), (rows, D)) q;
+    let Acc = [Tensor 1 rows F, Tensor 1 rows F, Tensor 2 (rows, D) F];
+    let init: Acc = (splat (rows, math.neg_inf math.f32), splat (rows, 0:F), splat ((rows, D), 0:F));
+    lam step (acc: Acc, ko: Nat) (qt: Tensor 2 (rows, D) F, k: Tensor 2 (HL, D) F, v: Tensor 2 (HL, D) F): Acc =
+        let (m, l, o) = acc;
+        let kt = slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (bk, D)) k;
+        let vt = slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (bk, D)) v;
+        let s = map_reduce ((rows, bk), (rows, bk, D)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
+            (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (1, 2)) (qt, kt);
+        let s = group_tile_req (s, (), (bm, bk, 0), s_levels, default_control);
+        let mx = map_reduce (rows, (rows, bk)) (fmax, math.neg_inf math.f32) (proj_map @(2, 1) 0)
+            (proj_map @(2, 2) (0, 1),) (map_reduce @2 @(F, 2, 2) ((rows, bk), (rows, bk)) @((F, F), (1, 2), (rows, (rows, bk))) (maxed, ⊥:F) (proj_map @(2, 2) (0, 1))
+                (proj_map @(2, 1) 0, proj_map @(2, 2) (0, 1)) (m, s));
+        let mx = group_tile_req (mx, (), (bm, 0), row_levels, default_control);
+        let c = group_tile_req (map_reduce (rows, rows) (rescale, ⊥:F) (proj_map @(1, 1) 0)
+            (proj_map @(1, 1) 0, proj_map @(1, 1) 0) (m, mx), (), (bm,), group_item ((1,), 1, item_done ()), default_control);
+        let p = group_tile_req (map_reduce @2 @(F, 2, 2) ((rows, bk), (rows, bk)) @((F, F), (2, 1), ((rows, bk), rows)) (probs, ⊥:F) (proj_map @(2, 2) (0, 1))
+            (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (s, mx), (), (bm, bk), s_elem_levels, default_control);
+        let r = group_tile_req (map_reduce (rows, (rows, bk)) (fsum, 0.0:F) (proj_map @(2, 1) 0)
+            (proj_map @(2, 2) (0, 1),) p, (), (bm, 0), row_levels, default_control);
+        let l = group_tile_req (map_reduce (rows, rows) (summed, ⊥:F) (proj_map @(1, 1) 0)
+            (proj_map @(1, 1) 0, proj_map @(1, 1) 0, proj_map @(1, 1) 0) (l, c, r), (), (bm,), group_item ((1,), 1, item_done ()),
+            default_control);
+        let pv = map_reduce ((rows, D), (rows, D, bk)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
+            (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (p, vt);
+        let pv = group_tile_req (pv, (), (bm, D, 0), pv_levels, default_control);
+        let o = group_tile_req (map_reduce @3 @(F, 2, 2) ((rows, D), (rows, D)) @((F, F, F), (2, 1, 2), ((rows, D), rows, (rows, D))) (updated, ⊥:F) (proj_map @(2, 2) (0, 1))
+            (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0, proj_map @(2, 2) (0, 1)) (o, c, pv), (), (bm, D), o_elem_levels,
+            default_control);
+        (mx, l, o);
+    let (_, l, o) = tile_fold @Acc (core.nat.div (L, bk), bk) init (qt, k, v) step;
+    let out = group_tile_req (map_reduce @2 @(F, 2, 2) ((rows, D), (rows, D)) @((F, F), (2, 1), ((rows, D), rows)) (divided, ⊥:F) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, l), (), (bm, D), o_elem_levels, default_control);
+    reshape (rows, D) ext out;
+
+extern fun attn (q k v: tensor.Tensor 2 (HL, D) F): tensor.Tensor 2 (HL, D) F =
+    return (tiled ((HL, D), (bm, D), 1) (buf q, buf k, buf v)
+        (bind @([off ext: «2; Nat»] → [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F] → Tensor 2 ext F) 1 body));
