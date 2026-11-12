@@ -1,0 +1,13 @@
+[
+  {"name": "h1_s128_d64", "shape": [1, 128, 128, 64, 64], "causal": false},
+  {"name": "h8_s128_d64", "shape": [8, 128, 128, 64, 64], "causal": false},
+  {"name": "h8_s256_d64", "shape": [8, 256, 256, 64, 64], "causal": false},
+  {"name": "h8_s512_d64", "shape": [8, 512, 512, 64, 64], "causal": false},
+  {"name": "h8_s128_d128", "shape": [8, 128, 128, 128, 128], "causal": false},
+  {"name": "h4_cross_128_512", "shape": [4, 128, 512, 64, 64], "causal": false},
+  {"name": "h8_decode_512", "shape": [8, 1, 512, 64, 64], "causal": false},
+  {"name": "h1_odd", "shape": [1, 97, 129, 32, 48], "causal": false},
+  {"name": "h8_s128_causal", "shape": [8, 128, 128, 64, 64], "causal": true},
+  {"name": "h8_s256_causal", "shape": [8, 256, 256, 64, 64], "causal": true},
+  {"name": "h32_s128_d64", "shape": [32, 128, 128, 64, 64], "causal": false}
+]
