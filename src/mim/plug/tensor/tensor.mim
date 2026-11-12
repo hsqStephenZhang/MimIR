@@ -269,6 +269,13 @@ end
 ///
 axm warp_keep: {T: *} → «32; T» → «32; T», normalize_warp_keep;
 ///
+/// ### mma_warp
+///
+/// A warp's tensor-core product `mma_m16n8k8_tf32.mma_ref (a, b, c)` on warp values.
+/// It is `mma_ref` unless the `gpu` plugin is loaded; then `tensor.distribute` lowers it to each lane's `gpu.mma_tf32`.
+///
+axm mma_warp: [a: «32, 4; math.F32», b: «32, 2; math.F32», c: «32, 4; math.F32»] → «32, 4; math.F32», normalize_mma_warp;
+///
 /// ### warp
 ///
 /// A warp's value is an array over its 32 lanes, lane `l` holding component `l`; see `docs/warp-schedule.zh-CN.md`.
@@ -358,6 +365,35 @@ pub anx lam key_perm (k: Idx 8): Idx 8 =
 /// Reads C tile `j` as an A fragment over the permuted keys: registers `(c0, c2, c1, c3)`.
 pub anx lam a_of_c {nt: Nat} {T: *} (f: C nt T): «32, nt, 4; T» =
     ‹lane: 32; ‹j: nt; ‹reg: 4; f#lane#j#(core.idx 0 4 (2 * (core.idx2nat reg % 2) + core.idx2nat reg / 2))›››;
+
+/// A C fragment, a row vector, and the A and B fragments of `nk` k-chunks, from their elements at each position.
+pub anx lam c_gen {nt: Nat} {T: *} (g: [Idx 32, Idx nt, Idx 4] → T): C nt T = ‹lane: 32; ‹j: nt; ‹reg: 4; g (lane, j, reg)›››;
+pub anx lam r_gen {T: *} (g: [Idx 32, Idx 2] → T): R T = ‹lane: 32; ‹h: 2; g (lane, h)››;
+pub anx lam a_gen {nk: Nat} {T: *} (g: [Idx nk, Idx 32, Idx 4] → T): «nk, 32, 4; T» =
+    ‹kc: nk; ‹lane: 32; ‹reg: 4; g (kc, lane, reg)›››;
+pub anx lam b_gen {nk nt: Nat} {T: *} (g: [Idx nk, Idx nt, Idx 32, Idx 2] → T): «nk, nt, 32, 2; T» =
+    ‹kc: nk; ‹j: nt; ‹lane: 32; ‹reg: 2; g (kc, j, lane, reg)››››;
+
+/// The `(row, k)` of A register `reg` in lane `lane` of chunk `kc`, and the `(k, col)` of B register `reg` of chunk `kc`
+/// and column tile `j`; `permuted` reads B's keys in the order an A from `a_from_c` holds them.
+pub anx lam a_pos {nk: Nat} (kc: Idx nk, lane: Idx 32, reg: Idx 4): [Idx 16, Idx (8 * nk)] =
+    let (r, k) = mma_m16n8k8_tf32.l_a (lane, reg);
+    (r, core.idx 0 (8 * nk) (8 * core.idx2nat kc + core.idx2nat k));
+pub anx lam b_pos {nk nt: Nat} (permuted: Bool) (kc: Idx nk, j: Idx nt, lane: Idx 32, reg: Idx 2): [Idx (8 * nk), Idx (8 * nt)] =
+    let (k, n) = mma_m16n8k8_tf32.l_b (lane, reg);
+    let k      = (k, key_perm k)#permuted;
+    (core.idx 0 (8 * nk) (8 * core.idx2nat kc + core.idx2nat k), core.idx 0 (8 * nt) (8 * core.idx2nat j + core.idx2nat n));
+
+/// A C tile of keys read as the A fragments of as many k-chunks, keys permuted (`b_pos` with `permuted`).
+pub anx lam a_from_c {nk: Nat} (p: C nk math.F32): «nk, 32, 4; math.F32» = ‹kc: nk; ‹lane: 32; (a_of_c @nk p)#lane#kc››;
+
+/// `c + a·b` on `nt` column tiles accumulated over `nk` k-chunks.
+pub anx lam c_mma {nk nt: Nat} (a: «nk, 32, 4; math.F32», b: «nk, nt, 32, 2; math.F32», c: C nt math.F32): C nt math.F32 =
+    let tiles = ‹j: nt;
+        vec.fold.l @(«32, 4; math.F32», Idx nk) @nk
+            (λ (acc: «32, 4; math.F32», kc: Idx nk): «32, 4; math.F32» = mma_warp (‹lane: 32; a#kc#lane›, ‹lane: 32; b#kc#j#lane›, acc))
+            (‹lane: 32; c#lane#j›, ‹kc: nk; kc›)›;
+    ‹lane: 32; ‹j: nt; tiles#j#lane››;
 
 /// Whether `a_of_c` places at A position `(row, k)` the C element `(row, key_perm k)` of the same 16 × 8 tile.
 pub anx let c_to_a_permutes: Bool =
@@ -1994,7 +2030,7 @@ axm lower_tensor: compile.Phase;
 ///
 /// ### distribute
 ///
-/// Keeps each lane's component of the warp values built by `gpu.lanes`, `gpu.warp_mma` and `warp_keep`: reading the
+/// Keeps each lane's component of the warp values built by `gpu.lanes`, `tensor.mma_warp` and `warp_keep`: reading the
 /// own lane's component is the local value, another lane's a shuffle (`shfl_xor` for `self xor c`, else `shfl_idx`).
 ///
 axm distribute: compile.Phase;
@@ -2194,6 +2230,7 @@ axm tile_group: compile.Phase;
 /// Identity annotation on the body of a `tiled` or `tiled_multi` region: `to` is the level's binding, 1 for a
 /// work-group, 2 for a work-item and 3 for a warp.
 /// On a reduction step, 2 runs its blocks on the work-items and 4 on the lanes of one work-item.
+/// 5 binds a region of 16 rows to a warp that owns it: its tensors are warp values (`tensor.warp`) in registers.
 ///
 axm bind: {T: *} → [to: Nat] → T → T;
 ///

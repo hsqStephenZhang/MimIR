@@ -589,6 +589,11 @@ bool reduction_types(const Def* callee, const Def* producer) {
 
 } // namespace
 
+const Def* normalize_mma_warp(const Def*, const Def*, const Def* arg) {
+    auto& w = arg->world();
+    return w.driver().is_loaded("gpu") ? nullptr : w.app(w.annex(mma_m16n8k8_tf32::mma_ref), arg);
+}
+
 const Def* normalize_warp_keep(const Def*, const Def*, const Def* arg) {
     return arg->world().driver().is_loaded("gpu") ? nullptr : arg;
 }

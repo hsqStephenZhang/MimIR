@@ -1041,6 +1041,36 @@ const Def* lane_index(World& w) {
     return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(32), lane);
 }
 
+/// The warp loop's lane as an index; `tensor.distribute` takes the same term for the own lane.
+const Def* warp_lane(World& w) {
+    auto lane = w.call<core::bitcast>(w.type_nat(), w.app(w.annex<gpu::lane_id>(), w.tuple()));
+    return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(32), lane);
+}
+
+/// The loop each coordinate of @p map reads, unscaled and up to an offset free of the loops.
+std::optional<std::vector<u64>> map_dims(const Def* map, u64 rn) {
+    auto& w = map->world();
+    auto pi = map->type()->isa<Pi>();
+    if (!pi) return {};
+    auto var = w.mut_lam(pi)->var();
+    auto out = w.app(map, var);
+    auto ri  = Lit::isa(out->type()->arity());
+    if (!ri) return {};
+    auto dims = std::vector<u64>();
+    for (u64 d = 0; d != *ri; ++d) {
+        auto form = Linear::of(out->proj(*ri, d));
+        auto loop = rn;
+        for (u64 l = 0; l != rn; ++l)
+            if (auto atom = form.atoms.find(var->proj(rn, l)); atom != form.atoms.end()) {
+                if (atom->second != 1 || loop != rn) return {};
+                loop = l;
+            }
+        if (loop == rn) return {};
+        dims.push_back(loop);
+    }
+    return dims;
+}
+
 /// The `(row, col)` that a `tensor.mma_m16n8k8_tf32` coordinate map assigns to `arg`, as Nats.
 std::array<const Def*, 2> fragment_coords(World& w, Enum auto map, const Def* arg) {
     auto [row, col]
@@ -1347,6 +1377,7 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
         root = lam->reduce(app->arg()).back();
     }
 
+    if (warp_self_) return store_warp(root, destination);
     prepare_realizations(root);
     if (auto app = root->isa<App>()) {
         if (Axm::isa<tensor::scalar>(app))
@@ -1696,6 +1727,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         }
         // A warp's lanes share its tile like a work-item's own; only the tensor-core lowering tells them apart.
         auto level = fe::Restore(bound_level_, std::min<u64>(plan.bind, 2));
+        auto owned = fe::Restore(warp_self_, plan.bind == 5 ? warp_lane(old_world()) : warp_self_);
         body->set(true, emit(*rank, state, yield));
         return loop;
     };
@@ -2452,6 +2484,206 @@ LowerToMem::load_fragments(const Def* init, const Fragments& fragments, const De
         values.push_back(w.tuple(elements));
     }
     return {mem, w.tuple(values)};
+}
+
+// The element of @p input that the loop coordinates @p coords (old-world Nats) reach through its @p map.
+// A tensor computed in the warp-owned region is a warp value read at the same position `(lane, j, reg)`, or for a row
+// vector `(lane, reg / 2)`; any other input is read from memory.
+const Def* LowerToMem::warp_element(const btensor::MapRedPost& mr,
+                                    u64 k,
+                                    Defs coords,
+                                    const Def* lane,
+                                    const Def* j,
+                                    const Def* reg) {
+    auto& old  = old_world();
+    auto rn    = Lit::as(mr.Rn);
+    auto nis   = Lit::as(mr.nis);
+    auto input = mr_inputs_->proj(nis, k);
+    auto map   = mr.maps->proj(nis, k);
+    auto dims  = map_dims(map, rn);
+    if (!dims) input->blame("a warp-owned region reads `{}` through a map that is no projection", input).bail();
+    auto value = Axm::peel<tensor::buf>(input);
+    if (Axm::isa<tensor::map_reduce_post>(value) && j) {
+        auto term = warp_term(value);
+        if (dims->size() == 2 && (*dims)[0] == 0 && (*dims)[1] == 1)
+            return old.extract(old.extract(old.extract(term, lane), j), reg);
+        if (dims->size() == 1 && (*dims)[0] == 0)
+            return old.extract(
+                old.extract(term, lane),
+                old.call<core::idx>(old.lit_nat_0(), old.lit_nat(2),
+                                    old.call(core::nat::div, Defs{old.call<core::idx2nat>(reg), old.lit_nat(2)})));
+        input->blame("a warp-owned region reads its own `{}` across positions", input).bail();
+    }
+    if (Axm::isa<tensor::map_reduce_post>(value) && !j) {
+        auto term = warp_term(value);
+        if (dims->size() == 1 && (*dims)[0] == 0) return old.extract(old.extract(term, lane), reg);
+        input->blame("a warp-owned region reads its own `{}` across positions", input).bail();
+    }
+    auto loops = old.tuple(
+        DefVec(rn, [&](size_t d) { return old.call<core::idx>(old.lit_nat_0(), mr.Sr->proj(rn, d), coords[d]); }));
+    auto none = old.bot(old.call<mem::M>(0));
+    auto at   = btensor::op_affine_map(map, mr.Ris->proj(nis, k), mr.Rn, mr.Sr, mr.Sis->proj(nis, k), loops, none);
+    return op_get_fused(input, at->proj(2, 1));
+}
+
+// A tensor of the warp-owned region as an old-world warp value: a `tensor.warp.C` for a `16 × 8nt` tile, an `R` for a
+// row vector.
+const Def* LowerToMem::warp_term(const Def* def) {
+    for (size_t i = 0; i != 128; ++i) {
+        auto app = def->isa<App>();
+        if (!app) break;
+        auto lam = app->callee()->isa<Lam>();
+        if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
+        def = lam->reduce(app->arg()).back();
+    }
+    if (auto term = fe::lookup(warp_terms_, def)) return term;
+    auto& old = old_world();
+    auto app  = Axm::isa<tensor::map_reduce_post>(def);
+    if (!app) def->blame("a warp-owned region keeps only map_reduce results in registers, not `{}`", def).bail();
+    auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ro = Lit::isa(mr.Ro), rn = Lit::isa(mr.Rn), nis = Lit::isa(mr.nis), nps = Lit::isa(mr.nps);
+    if (!ro || !rn || !nis || nps != 0)
+        def->blame("a warp-owned region needs literal ranks and no epilogue inputs").bail();
+    auto dim = [&](const Def* shape, u64 n, u64 d) {
+        auto extent = Lit::isa(shape->proj(n, d));
+        if (!extent) def->blame("a warp-owned region needs literal extents, not `{}`", shape).bail();
+        return *extent;
+    };
+    if (dim(mr.So, *ro, 0) != 16) def->blame("a warp-owned region holds 16 rows, not `{}`", mr.So).bail();
+    auto nt = *ro == 2 ? dim(mr.So, 2, 1) / 8 : 0;
+    if (*ro == 2 && dim(mr.So, 2, 1) % 8) def->blame("a warp-owned tile's columns are a multiple of 8").bail();
+    auto inputs     = app->arg()->proj(2, 0);
+    auto scope      = fe::Restore(mr_inputs_, inputs);
+    auto input      = [&](u64 k) { return inputs->proj(*nis, k); };
+    auto map        = [&](u64 k) { return mr.maps->proj(*nis, k); };
+    auto I          = [&](u64 n) { return old.type_idx(n); };
+    auto nat        = [&](const Def* x) { return old.call<core::idx2nat>(x); };
+    auto tensor     = TensorType::isa(def->type());
+    auto T          = tensor->T;
+    auto call       = [&](const Def* f, const Def* x) { return old.app(cps::op_cps2ds_dep(f), x); };
+    auto post       = [&](const Def* x) { return call(mr.post, old.tuple({x, old.tuple()})); };
+    const Def* term = nullptr;
+    if (*rn == *ro) {
+        // Pointwise: each position combines its inputs at its own coordinates.
+        auto pos    = *ro == 2 ? old.sigma({I(32), I(nt), I(4)}) : old.sigma({I(32), I(2)});
+        auto g      = old.mut_lam(old.pi(pos, T));
+        auto lane   = g->var(*ro + 1, 0);
+        auto j      = *ro == 2 ? g->var(3, 1) : nullptr;
+        auto reg    = g->var(*ro + 1, *ro);
+        auto coords = DefVec();
+        if (*ro == 2) {
+            auto [r, c] = old.app(old.app(old.annex(tensor::warp::c_pos), old.lit_nat(nt)), {lane, j, reg})->projs<2>();
+            coords      = {nat(r), nat(c)};
+        } else {
+            coords = {nat(old.app(old.annex(tensor::warp::r_pos), {lane, reg}))};
+        }
+        auto ins = old.tuple(DefVec(*nis, [&](size_t k) { return warp_element(mr, k, coords, lane, j, reg); }));
+        g->set(true, post(call(mr.comb, old.tuple({mr.init, ins}))));
+        term = *ro == 2 ? old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), T), g)
+                        : old.app(old.app(old.annex(tensor::warp::r_gen), T), g);
+    } else if (*ro == 1 && *rn == 2) {
+        // A reduction over the columns: the warp's row reduction of the combined elements.
+        auto op = merge_of(mr.comb);
+        if (!op) def->blame("a warp-owned row reduction needs a combiner that merges partials").bail();
+        auto cols = dim(mr.Sr, 2, 1);
+        if (cols % 8) def->blame("a warp-owned row reduction runs over a multiple of 8 columns").bail();
+        nt                  = cols / 8;
+        auto g              = old.mut_lam(old.pi(old.sigma({I(32), I(nt), I(4)}), mr.To));
+        auto [lane, j, reg] = g->vars<3>();
+        auto [r, c] = old.app(old.app(old.annex(tensor::warp::c_pos), old.lit_nat(nt)), {lane, j, reg})->projs<2>();
+        auto coords = DefVec{nat(r), nat(c)};
+        auto ins    = old.tuple(DefVec(*nis, [&](size_t k) { return warp_element(mr, k, coords, lane, j, reg); }));
+        g->set(true, call(mr.comb, old.tuple({mr.init, ins})));
+        auto elems = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), mr.To), g);
+        auto rows  = old.app(
+            old.app(old.app(old.app(old.annex(tensor::warp::row_fold), old.lit_nat(nt)), mr.To), {op, mr.init}), elems);
+        auto p        = old.mut_lam(old.pi(old.sigma({I(32), I(2)}), T));
+        auto [pl, ph] = p->vars<2>();
+        p->set(true, post(old.extract(old.extract(rows, pl), ph)));
+        term = old.app(old.app(old.annex(tensor::warp::r_gen), T), p);
+    } else if (*ro == 2 && *rn == 3 && *nis == 2) {
+        // A contraction `c + a·b` over k-chunks of 8 on the tensor cores.
+        auto da = map_dims(map(0), 3), db = map_dims(map(1), 3);
+        if (!da || !db || da->size() != 2 || db->size() != 2)
+            def->blame("a warp-owned product reads projections").bail();
+        auto kk = dim(mr.Sr, 3, 2);
+        if (kk % 8) def->blame("a warp-owned product reduces a multiple of 8").bail();
+        auto nk      = kk / 8;
+        auto F       = T;
+        auto a_value = Axm::peel<tensor::buf>(input(0));
+        auto from_c  = Axm::isa<tensor::map_reduce_post>(a_value) && *da == std::vector<u64>{0, 2};
+        const Def* a;
+        if (from_c) {
+            a = old.app(old.app(old.annex(tensor::warp::a_from_c), old.lit_nat(nk)), warp_term(a_value));
+        } else {
+            auto g               = old.mut_lam(old.pi(old.sigma({I(nk), I(32), I(4)}), F));
+            auto [kc, lane, reg] = g->vars<3>();
+            auto [r, k]
+                = old.app(old.app(old.annex(tensor::warp::a_pos), old.lit_nat(nk)), {kc, lane, reg})->projs<2>();
+            auto coords = DefVec{nat(r), old.lit_nat_0(), nat(k)};
+            g->set(true, warp_element(mr, 0, coords, lane, nullptr, reg));
+            a = old.app(old.app(old.app(old.annex(tensor::warp::a_gen), old.lit_nat(nk)), F), g);
+        }
+        auto gb                  = old.mut_lam(old.pi(old.sigma({I(nk), I(nt), I(32), I(2)}), F));
+        auto [kc, jb, lane, reg] = gb->vars<4>();
+        auto pos                 = old.app(old.app(old.annex(tensor::warp::b_pos), {old.lit_nat(nk), old.lit_nat(nt)}),
+                                           old.lit_bool(from_c));
+        auto [k, n]              = old.app(pos, {kc, jb, lane, reg})->projs<2>();
+        gb->set(true, warp_element(mr, 1, DefVec{old.lit_nat_0(), nat(n), nat(k)}, lane, nullptr, reg));
+        auto b = old.app(old.app(old.app(old.annex(tensor::warp::b_gen), {old.lit_nat(nk), old.lit_nat(nt)}), F), gb);
+        const Def* c;
+        if (auto outs = tensor_init(mr)) {
+            c = warp_term(outs->outs);
+        } else {
+            auto g = old.mut_lam(old.pi(old.sigma({I(32), I(nt), I(4)}), F));
+            g->set(true, mr.init);
+            c = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), F), g);
+        }
+        term = old.app(old.app(old.annex(tensor::warp::c_mma), {old.lit_nat(nk), old.lit_nat(nt)}), {a, b, c});
+    } else {
+        def->blame("a warp-owned region has no translation for `{}`", def).bail();
+    }
+    return warp_terms_[def] = term;
+}
+
+// Each lane writes its components of the warp-owned region's root at their coordinates of @p destination.
+const Def* LowerToMem::store_warp(const Def* root, const Destination& destination) {
+    auto& w    = new_world();
+    auto& old  = old_world();
+    auto value = rewrite(warp_term(root));
+    auto lane  = rewrite(warp_self_);
+    auto rank  = Lit::as(destination.shape->arity());
+    auto mem   = destination.mem;
+    auto at    = [&](const DefVec& coords) {
+        return w.tuple(DefVec(rank, [&](size_t d) {
+            auto coord = w.call(core::nat::add, Defs{destination.origin->proj(rank, d), coords[d]});
+            return w.call<core::idx>(w.lit_nat_0(), destination.shape->proj(rank, d), coord);
+        }));
+    };
+    auto nat = [&](const Def* x) { return w.call<core::idx2nat>(x); };
+    if (rank == 2) {
+        auto cols = Lit::as(destination.extent->proj(2, 1));
+        auto nt   = cols / 8;
+        for (u64 j = 0; j != nt; ++j)
+            for (u64 reg = 0; reg != 4; ++reg) {
+                auto jj = w.lit_idx(nt, j), rr = w.lit_idx(4, reg);
+                auto [r, c] = w.app(w.app(w.annex(tensor::warp::c_pos), w.lit_nat(nt)), {lane, jj, rr})->projs<2>();
+                auto elem   = w.extract(w.extract(w.extract(value, lane), jj), rr);
+                mem = buffer::op_write(mem, destination.buffer, *Shape(at({nat(r), nat(c)})).fold(destination.shape),
+                                       elem)
+                          ->proj(2, 0);
+            }
+    } else {
+        for (u64 h = 0; h != 2; ++h) {
+            auto hh   = w.lit_idx(2, h);
+            auto row  = w.app(w.annex(tensor::warp::r_pos), {lane, hh});
+            auto elem = w.extract(w.extract(value, lane), hh);
+            mem       = buffer::op_write(mem, destination.buffer, *Shape(at({nat(row)})).fold(destination.shape), elem)
+                            ->proj(2, 0);
+        }
+    }
+    (void)old;
+    return w.tuple({mem, destination.buffer});
 }
 
 // The work-group panels a fold step stages per block: the uniform `tensor.stage`s that depend on the step's @p var.

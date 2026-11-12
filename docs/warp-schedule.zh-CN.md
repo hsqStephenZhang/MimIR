@@ -22,7 +22,7 @@ warp 级运算都写成 Mim 里的纯函数，它们就是规格：在 CPU 上�
 | `v#i`，`i` 是 lane 的其它函数 | `gpu.shfl_idx (v, i)` |
 
 warp 程序的输入由 `gpu.lanes (self, x)` 给出：每个 lane 的本地值 `x` 组成的 warp 值，`self` 是本 lane。
-读 pack 时 MimIR 的规范化会直接代入 pack 体，所以剩下的读只可能读 `gpu.lanes`、`gpu.warp_mma` 或 `tensor.warp_keep`。
+读 pack 时 MimIR 的规范化会直接代入 pack 体，所以剩下的读只可能读 `gpu.lanes`、`tensor.mma_warp` 或 `tensor.warp_keep`。
 `warp_keep` 是恒等，标记"共享算好的值"：读别的 lane 时 shuffle 该 lane 算出的结果，而不是代入定义重算；
 没有加载 `gpu` 时它在规范化时消失，所以规格在 CPU 上照常求值。
 
@@ -53,14 +53,35 @@ warp 程序的输入由 `gpu.lanes (self, x)` 给出：每个 lane 的本地值 
 
 - **M1**（完成）：语义层与引理。`quad_covers_rows`、`c_to_a_permutes` 在编译期由 `refly.check` 穷举证明；
   `c_tile (c_of t) = t`、`row_fold` 等于规格、置换后的乘积等于原乘积在 CPU 上执行比较（`lit/tensor/warp_frag.mim`）。
-- **M2**（完成）：分布降级；`lit/{gpu,nvptx}/warp_lanes.mim` 里一个 warp 用 `gpu.warp_mma` 与 `tensor.warp.row_fold` 算乘积与行最大值，
+- **M2**（完成）：分布降级；`lit/{gpu,nvptx}/warp_lanes.mim` 里一个 warp 用 `tensor.mma_warp` 与 `tensor.warp.row_fold` 算乘积与行最大值，
   降成一条 `mma_tf32` 与每个半行两次 `shfl_xor`，在 GPU 上对照参考结果。
 - **M3a**（完成）：`bench/gpu_attn/flash_warp.py` 把手写 `flash_tc` 每一步的计算改写成 warp 程序
-  （`gpu.warp_mma`、`row_fold`、`row_own` 与最后一次 `quad_merge`、`c_zip`/`c_rows`、`a_of_c` 与 `key_perm`），面板与循环仍手写。
+  （`tensor.mma_warp`、`row_fold`、`row_own` 与最后一次 `quad_merge`、`c_zip`/`c_rows`、`a_of_c` 与 `key_perm`），面板与循环仍手写。
   RTX PRO 6000 上与手写版本一致（BH × L = 32 × 2048：0.305 对 0.306 ms；128 × 2048：1.088 对 1.087 ms），结果正确：
   warp 代数的规格经分布降级就是手写的代码。
 - **M3b**：调度层在 attention 上（warp 拥有的 fold、面板由 work-group 填充），对照 `flash_warp` 与 `attn_fa`。
 - **M4**：TileFuse 自动生成。
+
+## M3b：warp 拥有的区域
+
+一个绑定到 warp 且标为"warp 拥有"的 `tiled` 区域（16 行一块），其中的张量不落到 buffer，而是 warp 值：
+`16 × 8nt` 的张量是 `C nt`，长 16 的行向量是 `R`。LowerToMem 只做选择，把区域里的运算翻译成 `tensor.warp` 的 Mim 函数，
+`tensor.distribute` 再把它们降成每个 lane 的代码：
+
+| 区域里的运算 | 翻译 |
+|---|---|
+| 逐元素 `map_reduce`，输入是同布局的 warp 值、行向量或内存 | `c_zip`、`c_rows`，内存按 `c_pos` 逐 lane 读 |
+| 对列的归约，可重组的律 | `row_fold`（或只在 lane 内的 `row_own`） |
+| `16 × 8n × 8k` 的收缩 | `warp_mma` 链；A 是 C 布局的 warp 值时用 `a_of_c`，B 按 `key_perm` 读 |
+| 写回区域的目标 | 每个 lane 按 `c_pos` 写自己的分量 |
+
+W1（完成）：`tensor.bind 5` 标出 warp 拥有的区域；LowerToMem 的 `warp_term` 把区域里的张量翻译成 `tensor.warp` 的项
+（`c_gen`/`r_gen` 给出每个位置的元素，`a_gen`/`b_gen`/`a_from_c`/`c_mma` 给出乘积），区域外的输入沿映射（`op_affine_map`）从内存读，
+`store_warp` 让每个 lane 写自己的分量。`tensor.mma_warp`（原 `gpu.warp_mma`）没有 gpu 插件时就是 `mma_ref`。
+`lit/{gpu,nvptx}/warp_owned.mim`：区域里的乘积与逐元素映射降成 32 条 `mma_tf32` 与寄存器上的运算，GPU 上结果正确。
+
+步骤：W1 上表的翻译；W2 区域里的 fold，状态在寄存器里跨步；W3 K/V 面板由 work-group 协作填充；W4 attention。
+区域可以由用户显式写出，也可以由 TileFuse 的层级生成；W1 对两者相同，先用显式标记。
 
 ## 已知问题
 

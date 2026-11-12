@@ -1,0 +1,38 @@
+// RUN: %mim -p opt %s -p gpu -o - | %FileCheck %s
+
+// A warp-owned region (`bind 5`) keeps its tensors as warp values: the product runs on the tensor cores and the
+// elementwise map reads its fragments in registers, each lane writing its components.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F    = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+fun affine2 (_: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.arith.add fast (math.arith.mul fast (x, 2.0:F), 1.0:F));
+
+lam warp_body (off ext: «2; Nat») (x: Tensor 2 (64, 32) F, w: Tensor 2 (32, 64) F): Tensor 2 ext F =
+    let xt = slice @(F, 2) (64, 32) ((off#0₂, 0), (1, 1), (ext#0₂, 32)) x;
+    let s  = map_reduce (ext, (ext#0₂, ext#1₂, 32)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (xt, w);
+    map_reduce (ext, ext) (affine2, ⊥:F) (proj_map @(2, 2) (0, 1)) (proj_map @(2, 2) (0, 1),) s;
+
+lam group_body (off ext: «2; Nat») (x: Tensor 2 (64, 32) F, w: Tensor 2 (32, 64) F): Tensor 2 ext F =
+    reshape (64, 64) ext (tiled ((64, 64), (16, 64), 1) (x, w)
+        (bind @([off ext: «2; Nat»] → [Tensor 2 (64, 32) F, Tensor 2 (32, 64) F] → Tensor 2 ext F) 5 warp_body));
+
+extern fun gemm (x: tensor.Tensor 2 (64, 32) F, w: tensor.Tensor 2 (32, 64) F): tensor.Tensor 2 (64, 64) F =
+    return (tiled ((64, 64), (64, 64), 1) (buf x, buf w)
+        (bind @([off ext: «2; Nat»] → [Tensor 2 (64, 32) F, Tensor 2 (32, 64) F] → Tensor 2 ext F) 1 group_body));
+
+// CHECK: gpu.mma_tf32
+// CHECK-NOT: tensor.mma_warp

@@ -24,7 +24,7 @@ con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
     let (m, af) = mem.load (m, at «4; F» a);
     let (m, bf) = mem.load (m, at «2; F» b);
     let (m, cf) = mem.load (m, at «4; F» c);
-    let product = gpu.warp_mma (gpu.lanes (lane, af), gpu.lanes (lane, bf), gpu.lanes (lane, cf));
+    let product = tensor.mma_warp (gpu.lanes (lane, af), gpu.lanes (lane, bf), gpu.lanes (lane, cf));
     let rows    = tensor.warp.row_fold @1 (fmax, math.neg_inf math.f32) product;
     let m       = mem.store (m, at «4; F» d, product#lane);
     let m       = mem.store (m, at «2; F» r, rows#lane);
@@ -46,4 +46,4 @@ extern fun warp_rows (m0: mem.M 0, a: mem.Ptr0 A, b: mem.Ptr0 B, c d: mem.Ptr0 A
 // CHECK: gpu.mma_tf32
 // CHECK: gpu.shfl_xor
 // CHECK-NOT: gpu.lanes
-// CHECK-NOT: gpu.warp_mma
+// CHECK-NOT: tensor.mma_warp

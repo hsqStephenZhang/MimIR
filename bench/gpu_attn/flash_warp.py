@@ -103,7 +103,7 @@ for n in range(BC // 8):
     for s in range(D // 8):
         p(f"""        let (m, kb{n}{s}0) = mem.load (m, mem.lea (mem.lea (mem.lea (ks, buf), ix {BC} ({i64(n * 8)} + g)), ix 68 ({i64(s * 8)} + t)));
         let (m, kb{n}{s}1) = mem.load (m, mem.lea (mem.lea (mem.lea (ks, buf), ix {BC} ({i64(n * 8)} + g)), ix 68 ({i64(s * 8 + 4)} + t)));
-        let s{n} = gpu.warp_mma (W «4; F32» qa{s}, W «2; F32» (kb{n}{s}0, kb{n}{s}1), s{n});""")
+        let s{n} = tensor.mma_warp (W «4; F32» qa{s}, W «2; F32» (kb{n}{s}0, kb{n}{s}1), s{n});""")
 NT = BC // 8
 p(f"""        let S    = ‹l: 32; ‹j: {NT}; ‹r: 4; ({", ".join(f"s{n}" for n in range(NT))})#j#l#r›››;
         let rows = tensor.warp.row_fold @{NT} (fmax, math.neg_inf math.f32) S;
@@ -123,7 +123,7 @@ for jj in range(NT):
     for n in range(D // 8):
         p(f"""        let (m, vb{jj}{n}0) = mem.load (m, mem.lea (mem.lea (mem.lea (vs, buf), ix {BC} ({i64(jj * 8)} + 2I64 * t)), ix 68 ({i64(n * 8)} + g)));
         let (m, vb{jj}{n}1) = mem.load (m, mem.lea (mem.lea (mem.lea (vs, buf), ix {BC} ({i64(jj * 8 + 1)} + 2I64 * t)), ix 68 ({i64(n * 8)} + g)));
-        let o{n} = gpu.warp_mma (‹l: 32; A#l#{jj}{sub(NT)}›, W «2; F32» (vb{jj}{n}0, vb{jj}{n}1), o{n});""")
+        let o{n} = tensor.mma_warp (‹l: 32; A#l#{jj}{sub(NT)}›, W «2; F32» (vb{jj}{n}0, vb{jj}{n}1), o{n});""")
 p(f"""        (m, ({", ".join(f"o{n}#self" for n in range(D // 8))}), mn#self#0₂, mn#self#1₂, ln#self#0₂, ln#self#1₂);
     let m = fill (m, 0₂, 0I64);
     affine.For block block_exit (0I64, {i64(KB)}, 1I64, (m, ‹8; ‹4; 0.0:F32››, math.neg_inf math.f32, math.neg_inf math.f32, 0.0:F32, 0.0:F32))

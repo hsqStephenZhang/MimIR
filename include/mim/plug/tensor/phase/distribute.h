@@ -6,7 +6,7 @@
 
 namespace mim::plug::tensor::phase {
 
-/// Keeps each lane's component of the warp values that `gpu.lanes`, `gpu.warp_mma` and `tensor.warp_keep` build.
+/// Keeps each lane's component of the warp values that `gpu.lanes`, `tensor.mma_warp` and `tensor.warp_keep` build.
 /// A pack is reduced as soon as it is read, so the reads left over are those of these axioms; a read of the own
 /// lane `self` becomes the local value, of another lane a shuffle of it.
 class Distribute : public RWPhase {

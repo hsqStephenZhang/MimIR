@@ -337,18 +337,11 @@ axm shfl_idx: [x: math.F32, src: I32] → math.F32;
 /// #### lanes
 ///
 /// The warp's value made of every work-item's `x`, component `self` being this one's: a warp program's input.
-/// A warp program is a function on such `«32; T»` values, `tensor.warp`'s functions among them;
+/// A warp program is a function on such `«32; T»` values, `tensor.warp`'s functions and `tensor.mma_warp` among them;
 /// `tensor.distribute` keeps each lane's component, so reading component `self` is `x` and reading another is a shuffle.
 /// It needs the whole warp converged, as any warp collective does.
 ///
 axm lanes: {T: *} → [self: Idx 32, x: T] → «32; T»;
-
-/// #### warp_mma
-///
-/// The warp's tensor-core product `tensor.mma_m16n8k8_tf32.mma_ref (a, b, c)` on warp values; `tensor.distribute` lowers
-/// it to each lane's `mma_tf32`.
-///
-axm warp_mma: [a: «32; «4; math.F32»», b: «32; «2; math.F32»», c: «32; «4; math.F32»»] → «32; «4; math.F32»»;
 
 /// #### tf32_rna
 ///
