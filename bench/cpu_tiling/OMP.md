@@ -22,8 +22,9 @@ explicit thread levels lower to serial loops.
 
 Batch and M/N share the same outer task grid; no nested team is created. Even a
 batch larger than the team may split M/N to balance a partial wave (e.g. B=8,
-T=6). Equal worst-worker work favors less input traversal, so evenly divisible
-batches retain whole matrices. Batch-prefix products contribute to the work
+T=6). Once there are at least two matrices per thread, whole matrices preserve
+packing reuse. Equal worst-worker work favors less input traversal, so evenly
+divisible batches also retain whole matrices. Batch-prefix products contribute to the work
 threshold. Unit batch/M/N axes preserve their projected identities when solving
 write preimages, so singleton batches use the same tiling and thread levels.
 Inspect emitted launch counts: work below the threshold intentionally stays serial.

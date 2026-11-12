@@ -1,0 +1,21 @@
+// REQUIRES: omp
+// RUN: %mim -p opt -p omp %s -p ll -X tensor:strict=1 -X omp:strict=1 -X omp:threads=6 -X omp:threshold=0 -X tensor:cpu-nr=16 -X ll:rt=extern -X ll:o=%t.ll
+// RUN: %FileCheck %s < %t.ll
+
+plugin tensor;
+plugin core;
+plugin math;
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+extern fun partial_wave (a: tensor.Tensor 3 (8, 24, 7) F32, b: tensor.Tensor 3 (8, 7, 32) F32): tensor.Tensor 3 (8, 24, 32) F32 =
+    return (tensor.bmm R @(8, 24, 7, 32) (a, b));
+extern fun two_waves (a: tensor.Tensor 3 (12, 24, 7) F32, b: tensor.Tensor 3 (12, 7, 32) F32): tensor.Tensor 3 (12, 24, 32) F32 =
+    return (tensor.bmm R @(12, 24, 7, 32) (a, b));
+extern fun long_batch (a: tensor.Tensor 3 (16, 24, 7) F32, b: tensor.Tensor 3 (16, 7, 32) F32): tensor.Tensor 3 (16, 24, 32) F32 =
+    return (tensor.bmm R @(16, 24, 7, 32) (a, b));
+
+// The partial wave splits M three ways; larger batches preserve whole matrices.
+// CHECK-DAG: call void @mim_par_for(i64 0, i64 24, i64 1,
+// CHECK-DAG: call void @mim_par_for(i64 0, i64 12, i64 1,
+// CHECK-DAG: call void @mim_par_for(i64 0, i64 16, i64 1,

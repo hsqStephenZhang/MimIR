@@ -301,16 +301,18 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
                     tn        = cols;
                 }
             };
-            // Batch and M/N share one distributed grid. Even a batch larger
-            // than the team can leave a partial wave (e.g. B=8, T=6); consider
-            // M/N splits there too. Equal work keeps the lower traversal cost,
-            // so an evenly divisible batch still owns whole matrices.
-            for (u64 pieces = 1; pieces <= threads; ++pieces) {
-                if (threads % pieces || (batches == 1 && pieces != threads)) continue;
-                for (u64 pm = 1; pm <= pieces / pm; ++pm) {
-                    if (pieces % pm) continue;
-                    choose(pm, pieces / pm);
-                    choose(pieces / pm, pm);
+            // Batch and M/N share one distributed grid. Below two matrices per
+            // thread, split partial waves too (e.g. B=8, T=6). Larger batches
+            // already provide enough tasks: keep whole matrices to avoid extra
+            // packing. Equal work favors the lower traversal cost.
+            if (batches / threads < 2) {
+                for (u64 pieces = 1; pieces <= threads; ++pieces) {
+                    if (threads % pieces || (batches == 1 && pieces != threads)) continue;
+                    for (u64 pm = 1; pm <= pieces / pm; ++pm) {
+                        if (pieces % pm) continue;
+                        choose(pm, pieces / pm);
+                        choose(pieces / pm, pm);
+                    }
                 }
             }
             auto sizes = DefVec(ranks.nloops(), [&](size_t d) {
