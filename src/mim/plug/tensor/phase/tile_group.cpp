@@ -1,5 +1,7 @@
 #include "mim/plug/tensor/phase/tile_group.h"
 
+#include <cmath>
+
 #include <limits>
 
 #include <mim/pattern/graph.h>
@@ -257,13 +259,23 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
             log().d("tensor.tile_group {} keeps reduction-scoped packing for runtime K", value);
         }
     }
-    if (group->second.kind == 1 && ranks.ro == 2 && driver().is_loaded("omp")) {
-        auto m         = Lit::isa(mr.So->proj(2, 0));
-        auto n         = Lit::isa(mr.So->proj(2, 1));
-        auto k         = Lit::isa(mr.Sr->proj(ranks.nloops(), ranks.nloops() - 1));
-        auto threads   = Lit::as(w.app(w.annex<omp::thread_hint>(), w.tuple()));
-        auto threshold = driver().arg_nat("omp", "threshold").value_or(1048576);
-        if (m && n && k && *m && *n && threads > 1 && static_cast<long double>(*m) * *n * *k >= threshold) {
+    if (group->second.kind == 1 && ranks.ro >= 2 && driver().is_loaded("omp")) {
+        auto m              = Lit::isa(mr.So->proj(ranks.ro, ranks.ro - 2));
+        auto n              = Lit::isa(mr.So->proj(ranks.ro, ranks.ro - 1));
+        auto k              = Lit::isa(mr.Sr->proj(ranks.nloops(), ranks.nloops() - 1));
+        auto threads        = Lit::as(w.app(w.annex<omp::thread_hint>(), w.tuple()));
+        auto threshold      = driver().arg_nat("omp", "threshold").value_or(1048576);
+        u64 batches         = 1;
+        bool static_batches = true;
+        for (u64 d = 0; d + 2 < ranks.ro; ++d) {
+            auto size = Lit::isa(mr.So->proj(ranks.ro, d));
+            if (!size || __builtin_mul_overflow(batches, *size, &batches)) {
+                static_batches = false;
+                break;
+            }
+        }
+        if (static_batches && batches && m && n && k && *m && *n && threads > 1
+            && static_cast<long double>(batches) * *m * *n * *k >= threshold) {
             auto blocks
                 = w.app(w.annex<group_blocks>(),
                         w.tuple({bytes, lanes, w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
@@ -275,9 +287,11 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
             auto best_pack = best_work;
             u64 tm = *m, tn = *n;
             auto choose = [&](u64 pm, u64 pn) {
-                auto rows = ceil(*m, pm);
-                auto cols = std::min(*n, ceil(ceil(*n, pn), nr) * nr);
-                auto work = static_cast<long double>(rows) * cols;
+                auto rows   = ceil(*m, pm);
+                auto cols   = std::min(*n, ceil(ceil(*n, pn), nr) * nr);
+                auto tasks  = static_cast<long double>(batches) * ceil(*m, rows) * ceil(*n, cols);
+                auto chunks = std::ceil(tasks / threads);
+                auto work   = chunks * rows * cols;
                 auto packing
                     = static_cast<long double>(*m) * ceil(*n, cols) + static_cast<long double>(*n) * ceil(*m, rows);
                 if (work < best_work || (work == best_work && packing < best_pack)) {
@@ -287,14 +301,24 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
                     tn        = cols;
                 }
             };
-            for (u64 pm = 1; pm <= threads / pm; ++pm) {
-                if (threads % pm) continue;
-                choose(pm, threads / pm);
-                choose(threads / pm, pm);
+            // Enough independent matrices: keep each GEMM intact. Otherwise
+            // subdivide M/N as well, without nesting parallel regions.
+            if (batches < threads) {
+                for (u64 pieces = 1; pieces <= threads; ++pieces) {
+                    if (threads % pieces || (batches == 1 && pieces != threads)) continue;
+                    for (u64 pm = 1; pm <= pieces / pm; ++pm) {
+                        if (pieces % pm) continue;
+                        choose(pm, pieces / pm);
+                        choose(pieces / pm, pm);
+                    }
+                }
             }
-            levels = w.app(w.app(w.annex<thread_par>(), {w.lit_nat(ranks.nloops()), mr.To}),
-                           {w.tuple({w.lit_nat(tm), w.lit_nat(tn), w.lit_nat_0()}), w.lit_nat_0(), levels});
-            log().d("tensor.tile_group CPU threads {} tile {}x{}", threads, tm, tn);
+            auto sizes = DefVec(ranks.nloops(), [&](size_t d) {
+                return w.lit_nat(d + 2 < ranks.ro ? 1 : d + 2 == ranks.ro ? tm : d + 1 == ranks.ro ? tn : 0);
+            });
+            levels     = w.app(w.app(w.annex<thread_par>(), {w.lit_nat(ranks.nloops()), mr.To}),
+                               {w.tuple(sizes), w.lit_nat_0(), levels});
+            log().d("tensor.tile_group CPU threads {} batches {} tile {}x{}", threads, batches, tm, tn);
         }
     }
     auto members

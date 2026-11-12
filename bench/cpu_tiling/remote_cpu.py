@@ -38,6 +38,9 @@ def main():
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--calibrate-once", action="store_true")
     parser.add_argument("--isa", choices=["native", "avx2"], default="native")
+    parser.add_argument("--mcpu", default="icelake-server")
+    parser.add_argument("--compile-cpus", help="Compilation CPU mask, before any measurements")
+    parser.add_argument("--bind-openblas-workers", action="store_true")
     args = parser.parse_args()
     cpus = {int(cpu) for cpu in args.cpus.split(",")} if args.cpus else {args.cpu or 0}
     args.cpu = min(cpus) if args.cpu is None else args.cpu
@@ -61,7 +64,7 @@ def main():
         for name, value in required_env.items():
             if os.environ.get(name) != value:
                 parser.error(f"--isa avx2 requires {name}={value} before Python starts")
-    target_flags = ["-march=icelake-server"]
+    target_flags = ["-march=" + args.mcpu]
     if args.isa == "avx2":
         target_flags.append("-mno-avx512f")
     root = args.root.resolve()
@@ -69,7 +72,7 @@ def main():
     import numpy as np
     import torch
     from common.config import load
-    from common.openblas import OpenBLAS
+    from common.openblas import OpenBLAS, OpenBLASKernel
     from mimir.benchmark import Kernel as MimKernel
     from pytorch.benchmark import PyTorch, Kernel as TorchKernel
 
@@ -84,7 +87,7 @@ def main():
     if manifest.get("threads", 1) != args.threads:
         raise RuntimeError("IR thread hint differs from requested runtime thread count")
     config = dict(
-        benchmark=dict(device="cpu", threads=args.threads, mcpu="icelake-server"),
+        benchmark=dict(device="cpu", threads=args.threads, mcpu=args.mcpu),
         artifacts={},
         openblas=dict(
             library=str(args.openblas),
@@ -101,7 +104,7 @@ def main():
 
     if args.phase == "prepare":
         # Compile on cores away from the later timing core, then finish every compilation before timing.
-        os.sched_setaffinity(0, set(range(2, 12)))
+        os.sched_setaffinity(0, {int(c) for c in args.compile_cpus.split(",")} if args.compile_cpus else set(range(2, 12)))
         if args.runtime_source:
             subprocess.run(["gcc", "-O3", "-fPIC", "-fopenmp", "-c", str(args.runtime_source),
                             "-o", str(root / "omp-runtime.o")], check=True)
@@ -168,7 +171,7 @@ def main():
             pytorch=pytorch.metadata,
             openblas=blas.metadata,
             openblas_sha256=digest(args.openblas.resolve()),
-            rng="np.random.default_rng(np.random.SeedSequence([42,M,N,K])); uniform(-1,1) cast float32",
+            rng="np.random.default_rng(np.random.SeedSequence([42,*case['shape']])); uniform(-1,1) cast float32",
             cpu=args.cpu,
             threads=args.threads,
             cpus=sorted(cpus),
@@ -227,6 +230,14 @@ def main():
         timer.argtypes = [ctypes.c_int] * 3 + [ptr] * 3 + [ctypes.c_int]
         timer.restype = ctypes.c_double
         blas.timers = {"gemm": timer}
+        if any(case["op"] == "bmm" for case in manifest["cases"]):
+            lib = ctypes.CDLL(str(blas.library_path))
+            for op, symbol in [("bmm", "measure_bmm"), ("bmm_loop", "measure_bmm_loop")]:
+                fn = getattr(lib, symbol)
+                fn.argtypes = [ctypes.c_int] * 4 + [ptr] * 3 + [ctypes.c_int]
+                fn.restype = ctypes.c_double
+                blas.timers[op] = fn
+            blas.metadata = prepared["openblas"]
         ptlib = ctypes.CDLL(str(output / "pytorch_timer.so"))
         ptlib.create_kernel.argtypes = [
             ctypes.c_int,
@@ -244,19 +255,38 @@ def main():
 
     # OpenMP workers use GOMP_CPU_AFFINITY. Keep the primary thread on the first
     # physical core after the independent pthread pool has been initialized.
+    openblas_affinity = []
+    if args.bind_openblas_workers:
+        library = blas.blas if args.phase == "prepare" else blaslib
+        for symbol in ("openblas_setaffinity", "openblas_getaffinity"):
+            getattr(library, symbol).argtypes = [ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p]
+        for index in range(args.threads):
+            cpu = args.cpu if index == args.threads - 1 else sorted(cpus - {args.cpu})[index]
+            mask = (ctypes.c_ubyte * 128)()
+            mask[cpu // 8] = 1 << (cpu % 8)
+            if library.openblas_setaffinity(index, ctypes.sizeof(mask), mask):
+                raise RuntimeError("Cannot bind OpenBLAS worker")
+            actual = (ctypes.c_ubyte * 128)()
+            if library.openblas_getaffinity(index, ctypes.sizeof(actual), actual) or bytes(actual) != bytes(mask):
+                raise RuntimeError("OpenBLAS worker affinity differs")
+            openblas_affinity.append(cpu)
     os.sched_setaffinity(0, {args.cpu})
     records = []
     for case in manifest["cases"]:
-        m, n, k = case["shape"]
+        m, n, k = case["shape"][-3:]
+        batch = case["shape"][0] if case["op"] == "bmm" else None
+        a_shape = (batch, m, k) if batch is not None else (m, k)
+        b_shape = (batch, k, n) if batch is not None else (k, n)
+        c_shape = (batch, m, n) if batch is not None else (m, n)
         stem = "_".join(map(str, case["shape"]))
         inputs = output / "inputs" / stem
         inputs.mkdir(parents=True, exist_ok=True)
         if args.phase == "prepare" and not (
             (inputs / "A.npy").is_file() and (inputs / "B.npy").is_file()
         ):
-            rng = np.random.default_rng(np.random.SeedSequence([42, m, n, k]))
-            a = rng.uniform(-1, 1, (m, k)).astype("float32")
-            b = rng.uniform(-1, 1, (k, n)).astype("float32")
+            rng = np.random.default_rng(np.random.SeedSequence([42, *case["shape"]]))
+            a = rng.uniform(-1, 1, a_shape).astype("float32")
+            b = rng.uniform(-1, 1, b_shape).astype("float32")
             np.save(inputs / "A.npy", a)
             np.save(inputs / "B.npy", b)
         else:
@@ -269,10 +299,12 @@ def main():
             directory = root / "ir" / variant / stem
             binary = directory / "kernel.so"
             kernels[variant] = MimKernel(
-                binary, a, b, (m, n), directory, 0, args.clang, [], []
+                binary, a, b, c_shape, directory, 0, args.clang, [], []
             )
             identities[variant] = dict(binary=str(binary), sha256=digest(binary))
         kernels["openblas"] = blas.prepare(case, a, b)
+        if batch is not None:
+            kernels["openblas_loop"] = OpenBLASKernel(blas.timers["bmm_loop"], case, a, b, blas.library_path)
         kernels["pytorch"] = (
             pytorch.prepare(case, a, b, inputs, {})
             if args.phase == "prepare"
@@ -352,6 +384,7 @@ def main():
             dict(
                 affinity=sorted(os.sched_getaffinity(0)),
                 cpus=sorted(cpus),
+                openblas_worker_cpus=openblas_affinity,
                 threads=args.threads,
                 warmup=5,
                 repeats=9,
@@ -364,6 +397,7 @@ def main():
         )
 
     if args.phase == "prepare":
+        metadata["openblas_worker_cpus"] = openblas_affinity
         metadata["thread_affinities_after_validation"] = {
             path.name: sorted(os.sched_getaffinity(int(path.name)))
             for path in Path("/proc/self/task").iterdir()

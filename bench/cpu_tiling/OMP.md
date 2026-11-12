@@ -12,13 +12,20 @@ boundaries respect NR, and packing volume breaks ties. The runtime partitions th
 linearized grid into contiguous chunks; the team size may differ from the hint
 without changing the result. Keep them equal for performance measurements.
 
-Only static 2D contractions receive automatic thread tiling. The default threshold
+Static contractions, including batch-prefix dimensions, receive automatic thread tiling. The default threshold
 is 1,048,576 multiply-adds (`-X omp:threshold=N`); smaller contractions remain
 serial. `-X omp:threads=1` disables automatic thread tiling. Explicit schedules use
 `tensor.thread_par (sizes, 0, inner_levels)`; reduction tile sizes must remain zero,
 output extents must be literal, and partial output tiles use capped tails (0).
 Nested thread levels and mixing thread/GPU bindings are rejected. Without `omp`,
 explicit thread levels lower to serial loops.
+
+With at least as many matrices as threads, each task owns one complete matrix.
+Smaller batches also split M/N within that same outer task grid; no nested team
+is created. Batch-prefix products contribute to the work threshold. A singleton
+batch whose write map folds to a constant can currently fail the tile-preimage
+proof and remain serial; inspect emitted launch counts rather than assuming
+that setting OMP_NUM_THREADS parallelizes every shape.
 
 CPU thread edge tiles specialize full/partial extents before the serial levels,
 so an odd thread boundary preserves static inner packing and register blocking.

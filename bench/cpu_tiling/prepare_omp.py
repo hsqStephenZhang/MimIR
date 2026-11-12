@@ -21,7 +21,11 @@ from mimir.operators import module
 build = a.build.resolve()
 source = build.parent
 root = a.root.resolve()
-cases = json.loads(a.cases.read_text())['cases']
+if a.cases.suffix == '.json':
+    cases = json.loads(a.cases.read_text())['cases']
+else:
+    from common.cases import load_cases
+    cases = load_cases(a.cases)
 variant = 'mimir_multilevel_omp_6x16'
 flags = ['-X', 'btensor:registers=128', '-X', 'tensor:strict=1', '-X', 'omp:strict=1',
          '-X', f'omp:threads={a.threads}', '-X', 'll:rt=extern']
