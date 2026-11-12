@@ -79,13 +79,21 @@ D=64，非 causal，单位 ms（括号里 TFLOP/s）：
 每步由 `group_tile_req` 组成：`S = Q·K_blkᵀ` 与 `P·V_blk` 走 warp + TF32 mma，行 max/sum、exp、O 的修正分给 work-item。
 输入以 `(H·L) × 64` 的二维矩阵给出，块都是二维 `slice`，面板才能按整个 work-group 放宽。
 
-| BH × L | 时间（BM=64，BK=32） | 手写 FA2 | `attn_tiled`（3 kernel） |
-|---|---:|---:|---:|
-| 32 × 1024 | 10.8 ms | 0.090 | 0.517 |
-| 32 × 2048 | 43.1 ms | 0.317 | 2.00 |
+| BH × L | 最初（BK=32） | 现在 BK=32 | 现在 BK=64 | 手写 FA2 | torch fp32 | `attn_tiled`（3 kernel） |
+|---|---:|---:|---:|---:|---:|---:|
+| 32 × 1024 | 10.8 ms | 0.675 | 0.509 | 0.090 | 0.328 | 0.517 |
+| 32 × 2048 | 43.1 ms | 2.65 | 1.91 | 0.317 | 1.15 | 2.00 |
 
-- 结果正确（`lit/gpu/attention_fold.mim` 与 nvptx 版本），一个 kernel，S 与 P 不落全局内存；但比手写版本慢约 120 倍。
+性能修正（ms 为 32 × 1024、BK=64 时的变化）：
+1. fold 输入里的 `slice` 被 `tensor.lower` 降成恒等 `map_reduce_post`，`is_view` 也不认 Var 的投影：每步每个线程串行拷整块 Q。改为视图后 10.8 → 1.73（BK=32）。
+2. 逐元素请求的 item 块由 `(1, n)` 改成 `(32, 1)`：同一 warp 原来访问同一列，32 路 bank 冲突。1.31 → 0.599。
+3. work-group 内 shared 里的结果块行尾填充 16 字节，逐行归约的冲突降到 4 路。0.599 → 0.509。
+   顺带修了向量填充的对齐判断：以前用逻辑行长而非存储行长，填充不是 16 字节倍数时结果错误。
+- BK=64 时逐元素请求必须是 `(32, 1)`：`(1, 16)` 会切出 256 个 item，多于 128 个线程，barrier 落进发散分支。
+- 消融（BK=64，修正 1 之后）：PV 约 0.3 ms，行统计约 0.44 ms，O 的修正约 0.5 ms；mma 的 k 块大小和 cp.async 流水线影响都在 ±10% 内。
+
+- 结果正确（`lit/gpu/attention_fold.mim` 与 nvptx 版本），一个 kernel，S 与 P 不落全局内存；现在比手写版本慢约 5.7 倍，比 torch fp32 慢 1.6 倍。
 - 为此修的问题：work-group 层级的分配（请求结果、fold 状态）进 shared；原地 work-group 级里 item/warp region 之后的 barrier；
   `root_contraction` 接受带偏移的映射和转置读的 B；`group_slice` 在切片自己的坐标系里放宽（batch 维、k 方向的起点）；
   `reshape(slice)` 作 region 输入时是视图，`get_fused` 读穿只改单位维的 reshape。
-- 已知的性能问题：每个 fold 步有十余道 barrier、多次面板填充，行运算只用一半线程；状态在 shared 里双缓冲，每步整块写回。
+- 剩余的性能问题：每个 fold 步约 40 道 barrier（mma 的每个 k 块两道）；行归约每线程一整行、只用一半线程（应改为 warp shuffle）；Q 面板每步重填；状态在 shared 里双缓冲。

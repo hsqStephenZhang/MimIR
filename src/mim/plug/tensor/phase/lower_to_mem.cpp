@@ -241,6 +241,27 @@ const Def* bounded_shape(const Def* shape, bool outer = false) {
     }));
 }
 
+// Work-items walking a work-group's tile down a column would all hit one shared-memory bank, so its rows are padded.
+// Sixteen bytes of padding keep the rows aligned for vector accesses.
+const Def* padded_rows(const Def* storage) {
+    auto& w = storage->world();
+    auto r  = Lit::as(storage->arity());
+    if (r < 2) return storage;
+    auto last = Lit::isa(storage->proj(r, r - 1));
+    if (!last || *last % 32) return storage;
+    return w.tuple(DefVec(r, [&](size_t d) { return d + 1 == r ? w.lit_nat(*last + 4) : storage->proj(r, d); }));
+}
+
+/// @p storage with the row length of @p buffer, which may be padded.
+const Def* padded_like(const Def* storage, const Def* buffer) {
+    auto& w = storage->world();
+    auto r  = Lit::as(storage->arity());
+    if (auto buf = Axm::isa<buffer::Buf>(buffer->type()); buf && r >= 2 && Lit::isa(buf->arg(3, 0)) == r)
+        if (auto row = buf->arg(3, 1)->proj(r, r - 1); Lit::isa(row) && row != storage->proj(r, r - 1))
+            return w.tuple(DefVec(r, [&](size_t d) { return d + 1 == r ? row : storage->proj(r, d); }));
+    return storage;
+}
+
 /// Copies the @p extent box of @p src, or splats it if it is no buffer, between buffers of different storage shapes.
 const Def* copy_box(const Def* mem,
                     const Def* dst,
@@ -1448,10 +1469,11 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
             target_origin = w.tuple(DefVec(rank, [&](size_t d) {
                 return w.call(core::nat::add, Defs{destination->origin->proj(rank, d), off->proj(rank, d)});
             }));
-        auto result = lower_into(substitutions.rewrite(value),
-                                 {mem, state[i + 1], destination ? destination->shape : bounded_shape(rewrite(shape)),
-                                  target_origin, rewrite(extent)});
-        mem         = result->proj(2, 0);
+        auto storage = destination ? destination->shape : bounded_shape(rewrite(shape));
+        if (!destination) storage = padded_like(storage, state[i + 1]);
+        auto result
+            = lower_into(substitutions.rewrite(value), {mem, state[i + 1], storage, target_origin, rewrite(extent)});
+        mem = result->proj(2, 0);
         outputs.push_back(result->proj(2, 1));
         if (plan.multiple) {
             auto parameter = old.mut_lam(
@@ -1514,6 +1536,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             auto rank = rewrite(plan.ranks->proj(plan.count, i)), type = rewrite(plan.types->proj(plan.count, i));
             auto shape = bounded_shape(rewrite(plan.shapes->proj(plan.count, i)), in_group);
             if (in_group) {
+                shape = padded_rows(shape);
                 // A work-group's result is shared by its work-items.
                 auto scope                = w.app(w.annex<gpu::shared_scope>(), mem);
                 std::tie(mem, buffers[i]) = buffer::op_alloc(rank, shape, type, scope)->projs<2>();
@@ -1694,9 +1717,10 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     pop();
     if (destination) return call;
     for (u64 i = 0; i != plan.count; ++i) {
-        auto shape = rewrite(plan.shapes->proj(plan.count, i));
-        if (auto storage = bounded_shape(shape, in_group); storage != shape)
-            storage_shapes_[plan.multiple ? app->proj(plan.count, i) : app] = storage;
+        auto shape   = rewrite(plan.shapes->proj(plan.count, i));
+        auto storage = bounded_shape(shape, in_group);
+        if (in_group) storage = padded_rows(storage);
+        if (storage != shape) storage_shapes_[plan.multiple ? app->proj(plan.count, i) : app] = storage;
     }
     auto out_mem = call->proj(plan.count + 1, 0);
     if (!plan.multiple) return scalar_result(app, out_mem, call->proj(2, 1));
@@ -1889,9 +1913,11 @@ const Def* LowerToMem::lower_stage(const App* app) {
         auto [pr, s_out, pT] = TensorType::decode(app->type()->as<Nom>());
         auto rk              = s_out->num_projs();
         if (inner && bound_level_ != 0) {
-            auto c = contiguous->first;
-            vec    = vector_width(type, extent->proj(r, c), start->proj(r, c), step->proj(r, c),
-                                  physical_shape->proj(ri, ri - 1), contiguous->second);
+            auto c   = contiguous->first;
+            auto row = physical_shape->proj(ri, ri - 1);
+            // A padded source's rows are as far apart as its storage's.
+            if (auto storage = fe::lookup(storage_shapes_, source)) row = storage->proj(ri, ri - 1);
+            vec = vector_width(type, extent->proj(r, c), start->proj(r, c), step->proj(r, c), row, contiguous->second);
             if (auto run = Lit::isa(s_out->proj(rk, *inner)); !run || *run % vec) vec = 1;
         }
         auto element = vec == 1 ? type : old.arr(vec, type);
