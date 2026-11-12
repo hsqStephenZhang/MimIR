@@ -1,0 +1,17 @@
+-- Testing: 10 of 827 tests, 3 workers --
+PASS: mim regression :: tensor/blis_workloads.mim (1 of 10)
+PASS: mim regression :: tensor/blis_f32_exec.mim (2 of 10)
+PASS: mim regression :: omp/layout_exec.mim (3 of 10)
+PASS: mim regression :: tensor/blis_exec.mim (4 of 10)
+PASS: mim regression :: tensor/group_fold.mim (5 of 10)
+PASS: mim regression :: tensor/group_folded_rank.mim (6 of 10)
+PASS: mim regression :: omp/runtime_exec.mim (7 of 10)
+PASS: mim regression :: omp/fallback.mim (8 of 10)
+PASS: mim regression :: tensor/blis_post_exec.mim (9 of 10)
+PASS: mim regression :: omp/tiling_exec.mim (10 of 10)
+
+Testing Time: 104.79s
+
+Total Discovered Tests: 827
+  Excluded: 817 (98.79%)
+  Passed  :  10 (1.21%)

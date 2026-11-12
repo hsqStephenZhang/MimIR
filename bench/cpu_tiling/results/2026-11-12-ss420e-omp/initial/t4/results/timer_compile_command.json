@@ -1,0 +1,20 @@
+[
+  "/usr/lib/llvm-20/bin/clang++",
+  "-O3",
+  "-shared",
+  "-fPIC",
+  "-std=c++20",
+  "-D_GLIBCXX_USE_CXX11_ABI=0",
+  "-I",
+  "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/include",
+  "-I",
+  "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/include/torch/csrc/api/include",
+  "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/harness/pytorch/native_timer.cpp",
+  "-L",
+  "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+  "-ltorch_cpu",
+  "-lc10",
+  "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+  "-o",
+  "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/results/pytorch_timer.so"
+]

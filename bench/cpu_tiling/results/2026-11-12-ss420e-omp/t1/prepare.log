@@ -1,0 +1,44 @@
+{"compiled": "ir/mimir_multilevel_omp_6x16/64_64_64"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/128_128_128"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/256_256_256"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/512_512_512"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/1000_1000_1000"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/1024_1024_1024"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/8_512_2304"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/64_512_130"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/64_1024_49"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/64_1024_147"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/64_1024_245"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/2000_2000_2000"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/2048_2048_2048"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/64_2048_2048"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/2048_128_512"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/2049_513_2047"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/49_512_4608"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/49_2048_512"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/7_1024_1024"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/97_257_383"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/256_1000_2048"}
+{"compiled": "ir/mimir_multilevel_omp_6x16/1999_2047_4095"}
+{"name": "sq64", "max_abs_error": {"mimir_multilevel_omp_6x16": 2.6084535189596636e-06, "openblas": 2.6084535189596636e-06, "pytorch": 2.6084535189596636e-06}}
+{"name": "sq128", "max_abs_error": {"mimir_multilevel_omp_6x16": 7.548916229893621e-06, "openblas": 7.548916229893621e-06, "pytorch": 7.548916229893621e-06}}
+{"name": "sq256", "max_abs_error": {"mimir_multilevel_omp_6x16": 1.609866959384476e-05, "openblas": 1.609866959384476e-05, "pytorch": 1.609866959384476e-05}}
+{"name": "sq512", "max_abs_error": {"mimir_multilevel_omp_6x16": 4.3386870316908244e-05, "openblas": 1.8865535757583984e-05, "pytorch": 1.3463768759436334e-05}}
+{"name": "sq1000", "max_abs_error": {"mimir_multilevel_omp_6x16": 7.08122794392807e-05, "openblas": 2.4246917725179173e-05, "pytorch": 2.281338950638201e-05}}
+{"name": "sq1024", "max_abs_error": {"mimir_multilevel_omp_6x16": 6.844057457655595e-05, "openblas": 2.6264683651966436e-05, "pytorch": 1.9735615676808038e-05}}
+{"name": "skinny", "max_abs_error": {"mimir_multilevel_omp_6x16": 8.343132248000984e-05, "openblas": 2.4217142467364283e-05, "pytorch": 2.0104079558436183e-05}}
+{"name": "pack", "max_abs_error": {"mimir_multilevel_omp_6x16": 8.795735986666386e-06, "openblas": 8.795735986666386e-06, "pytorch": 8.795735986666386e-06}}
+{"name": "k49", "max_abs_error": {"mimir_multilevel_omp_6x16": 2.6812540880882807e-06, "openblas": 2.6812540880882807e-06, "pytorch": 2.6812540880882807e-06}}
+{"name": "k147", "max_abs_error": {"mimir_multilevel_omp_6x16": 8.799128568881542e-06, "openblas": 8.799128568881542e-06, "pytorch": 8.799128568881542e-06}}
+{"name": "k245", "max_abs_error": {"mimir_multilevel_omp_6x16": 1.1774730960922852e-05, "openblas": 1.1774730960922852e-05, "pytorch": 1.1774730960922852e-05}}
+{"name": "sq2000", "max_abs_error": {"mimir_multilevel_omp_6x16": 0.00013473900441596243, "openblas": 3.557865796466331e-05, "pytorch": 2.5822453631363373e-05}}
+{"name": "sq2048", "max_abs_error": {"mimir_multilevel_omp_6x16": 0.00015725656743370564, "openblas": 3.561335538648791e-05, "pytorch": 2.8131504386408324e-05}}
+{"name": "wide2048", "max_abs_error": {"mimir_multilevel_omp_6x16": 0.00013006007081628468, "openblas": 2.9142693939832043e-05, "pytorch": 2.5636636383552514e-05}}
+{"name": "tall2048", "max_abs_error": {"mimir_multilevel_omp_6x16": 3.948681305843138e-05, "openblas": 2.0648578995974276e-05, "pytorch": 1.3973239710196594e-05}}
+{"name": "odd2048", "max_abs_error": {"mimir_multilevel_omp_6x16": 0.00013728743293484058, "openblas": 3.205931861316458e-05, "pytorch": 2.6182890493942068e-05}}
+{"name": "m49_k4608", "max_abs_error": {"mimir_multilevel_omp_6x16": 0.00028315070959195054, "openblas": 3.879712296850357e-05, "pytorch": 3.25623835379929e-05}}
+{"name": "m49_k512", "max_abs_error": {"mimir_multilevel_omp_6x16": 2.7990814743361625e-05, "openblas": 1.6836522807039955e-05, "pytorch": 1.6836522807039955e-05}}
+{"name": "m7_k1024", "max_abs_error": {"mimir_multilevel_omp_6x16": 4.742817839442637e-05, "openblas": 1.6107126135977978e-05, "pytorch": 1.7089691073834956e-05}}
+{"name": "m97_n257", "max_abs_error": {"mimir_multilevel_omp_6x16": 1.6969028422408883e-05, "openblas": 1.4329407338919964e-05, "pytorch": 1.4329407338919964e-05}}
+{"name": "n1000", "max_abs_error": {"mimir_multilevel_omp_6x16": 0.00013933947264632707, "openblas": 3.4375976809997155e-05, "pytorch": 2.199170847205778e-05}}
+{"name": "big_odd", "max_abs_error": {"mimir_multilevel_omp_6x16": 0.0003957659733089258, "openblas": 4.288646523065154e-05, "pytorch": 3.505303091344558e-05}}

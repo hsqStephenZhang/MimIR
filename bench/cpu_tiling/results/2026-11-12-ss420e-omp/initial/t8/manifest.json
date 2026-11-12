@@ -1,0 +1,280 @@
+{
+  "source_commit": "675a7e0e6b02537bfd99163aafd88e7dc7cb7b7f",
+  "source_dirty": false,
+  "bench_revision": "d562d65a06771a0d32fe97b25170682b13263197",
+  "cases": [
+    {
+      "op": "gemm",
+      "name": "sq64",
+      "shape": [
+        64,
+        64,
+        64
+      ],
+      "reps": 2000
+    },
+    {
+      "op": "gemm",
+      "name": "sq128",
+      "shape": [
+        128,
+        128,
+        128
+      ],
+      "reps": 500
+    },
+    {
+      "op": "gemm",
+      "name": "sq256",
+      "shape": [
+        256,
+        256,
+        256
+      ],
+      "reps": 100
+    },
+    {
+      "op": "gemm",
+      "name": "sq512",
+      "shape": [
+        512,
+        512,
+        512
+      ],
+      "reps": 20
+    },
+    {
+      "op": "gemm",
+      "name": "sq1000",
+      "shape": [
+        1000,
+        1000,
+        1000
+      ],
+      "reps": 5
+    },
+    {
+      "op": "gemm",
+      "name": "sq1024",
+      "shape": [
+        1024,
+        1024,
+        1024
+      ],
+      "reps": 5
+    },
+    {
+      "op": "gemm",
+      "name": "skinny",
+      "shape": [
+        8,
+        512,
+        2304
+      ],
+      "reps": 200
+    },
+    {
+      "op": "gemm",
+      "name": "pack",
+      "shape": [
+        64,
+        512,
+        130
+      ],
+      "reps": 200
+    },
+    {
+      "op": "gemm",
+      "name": "k49",
+      "shape": [
+        64,
+        1024,
+        49
+      ],
+      "reps": 200
+    },
+    {
+      "op": "gemm",
+      "name": "k147",
+      "shape": [
+        64,
+        1024,
+        147
+      ],
+      "reps": 100
+    },
+    {
+      "op": "gemm",
+      "name": "k245",
+      "shape": [
+        64,
+        1024,
+        245
+      ],
+      "reps": 100
+    },
+    {
+      "op": "gemm",
+      "name": "sq2000",
+      "shape": [
+        2000,
+        2000,
+        2000
+      ],
+      "reps": 1
+    },
+    {
+      "op": "gemm",
+      "name": "sq2048",
+      "shape": [
+        2048,
+        2048,
+        2048
+      ],
+      "reps": 1
+    },
+    {
+      "op": "gemm",
+      "name": "wide2048",
+      "shape": [
+        64,
+        2048,
+        2048
+      ],
+      "reps": 5
+    },
+    {
+      "op": "gemm",
+      "name": "tall2048",
+      "shape": [
+        2048,
+        128,
+        512
+      ],
+      "reps": 10
+    },
+    {
+      "op": "gemm",
+      "name": "odd2048",
+      "shape": [
+        2049,
+        513,
+        2047
+      ],
+      "reps": 2
+    },
+    {
+      "op": "gemm",
+      "name": "m49_k4608",
+      "shape": [
+        49,
+        512,
+        4608
+      ],
+      "reps": 20
+    },
+    {
+      "op": "gemm",
+      "name": "m49_k512",
+      "shape": [
+        49,
+        2048,
+        512
+      ],
+      "reps": 50
+    },
+    {
+      "op": "gemm",
+      "name": "m7_k1024",
+      "shape": [
+        7,
+        1024,
+        1024
+      ],
+      "reps": 200
+    },
+    {
+      "op": "gemm",
+      "name": "m97_n257",
+      "shape": [
+        97,
+        257,
+        383
+      ],
+      "reps": 200
+    },
+    {
+      "op": "gemm",
+      "name": "n1000",
+      "shape": [
+        256,
+        1000,
+        2048
+      ],
+      "reps": 10
+    },
+    {
+      "op": "gemm",
+      "name": "big_odd",
+      "shape": [
+        1999,
+        2047,
+        4095
+      ],
+      "reps": 1
+    }
+  ],
+  "variants": [
+    "mimir_multilevel_omp_6x16"
+  ],
+  "threads": 8,
+  "target": "icelake-server -mno-avx512f",
+  "flags": [
+    "-X",
+    "btensor:registers=128",
+    "-X",
+    "tensor:strict=1",
+    "-X",
+    "omp:strict=1",
+    "-X",
+    "omp:threads=8",
+    "-X",
+    "ll:rt=extern",
+    "-X",
+    "tensor:cpu-order=1",
+    "-X",
+    "tensor:cpu-mr=6",
+    "-X",
+    "tensor:cpu-nr=16",
+    "-X",
+    "tensor:cpu-mc=320",
+    "-X",
+    "tensor:cpu-nc=104512",
+    "-X",
+    "tensor:cpu-kc=320"
+  ],
+  "files": {
+    "ir/mimir_multilevel_omp_6x16/1999_2047_4095/kernel.ll": "56cfff8aa3de2ba204fdee05b481e8a6059b956399b6af8d82f7c830df41e5a2",
+    "ir/mimir_multilevel_omp_6x16/256_1000_2048/kernel.ll": "990b7e97f3f009342429d8ebb9631b4f2075858efdcda5a6c0e4187194bb0d9c",
+    "ir/mimir_multilevel_omp_6x16/97_257_383/kernel.ll": "a1d148153651ec55c0b428a01905060bd67008fd20978d33db171ebc9f5a4310",
+    "ir/mimir_multilevel_omp_6x16/7_1024_1024/kernel.ll": "160f48f4d48afef65d00ce7cea822cfa92ac41169cac8740e823133a7437f010",
+    "ir/mimir_multilevel_omp_6x16/49_2048_512/kernel.ll": "6db7af11e20541e3637a87178ed5b0d3d1d8fd5b64be9fccb578a61729b945eb",
+    "ir/mimir_multilevel_omp_6x16/49_512_4608/kernel.ll": "e7bdae6d95351644b3bc0cccd8e5a3b86b88c802f9d1bcb2575fcf1d1633505c",
+    "ir/mimir_multilevel_omp_6x16/2049_513_2047/kernel.ll": "dd9186a87ef36dd0e9d72e63583d81b6be243f22e3e7ffa5af99885acf645e72",
+    "ir/mimir_multilevel_omp_6x16/2048_128_512/kernel.ll": "2ae6e64a9e0f4290cfd418faa65b97c783979f9e68fede18b317ddaa98b1f002",
+    "ir/mimir_multilevel_omp_6x16/64_2048_2048/kernel.ll": "3a79415f913714b6c612fbed50a4f14631a3f5ef9befeed0bd5725226ccd3049",
+    "ir/mimir_multilevel_omp_6x16/2048_2048_2048/kernel.ll": "9d8461fe9b22c504f25fadd5cbd4793cc840f505e4daa5fa39c0291e8ca9df9b",
+    "ir/mimir_multilevel_omp_6x16/2000_2000_2000/kernel.ll": "830bd9783d66274c0532c1998aaa75bb2334b5a293d63f3ac4fae4dd3f6ecdb6",
+    "ir/mimir_multilevel_omp_6x16/64_1024_245/kernel.ll": "4875b112633534f8c44274432867e4c67003a3a1551d636dee1e53bb522d42a5",
+    "ir/mimir_multilevel_omp_6x16/64_1024_147/kernel.ll": "e651ec1e5e1eb4277651400eb416ce22a0ae90d06624a293f22d05e925945d2b",
+    "ir/mimir_multilevel_omp_6x16/64_1024_49/kernel.ll": "b74ce9c85fba767d8fbfc84f4acba3ec8b9b22b12838573ed92b6f150f18680b",
+    "ir/mimir_multilevel_omp_6x16/64_512_130/kernel.ll": "9fb196ecb01ee8321cb775e2aa8c66fc0d15ba37f250f5f5a28a8a9fed0dd131",
+    "ir/mimir_multilevel_omp_6x16/8_512_2304/kernel.ll": "cebae48e7876491b6d35e451dd5413a38f035043c8a1d0e916413c699984c529",
+    "ir/mimir_multilevel_omp_6x16/1024_1024_1024/kernel.ll": "5c9a95ddf0c8a7f353ec92231d8beb7c88ca0debbc6ca9fafe4f81ef85c2951f",
+    "ir/mimir_multilevel_omp_6x16/1000_1000_1000/kernel.ll": "c30895516c24d119480e0d2244ddde5c02d3d2960630bd413f6d1c5f939e929f",
+    "ir/mimir_multilevel_omp_6x16/512_512_512/kernel.ll": "0d0db50b8a1fce1542a7e7887db531798d0ccc2628906fb2c77811897b531805",
+    "ir/mimir_multilevel_omp_6x16/256_256_256/kernel.ll": "a061c2c1e918efd2dff335e4491b576cf392ae1705b853a9653dd4d733e99c4c",
+    "ir/mimir_multilevel_omp_6x16/128_128_128/kernel.ll": "cb081299f1445f552d9cea23d88bf466275177d9baf661a250faec89cc8d14e5",
+    "ir/mimir_multilevel_omp_6x16/64_64_64/kernel.ll": "f42fd2aee99ccf97b23fd113540433778e8dc6ef8b873383c53431ec9a4ec122"
+  }
+}

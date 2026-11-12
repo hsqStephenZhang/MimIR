@@ -1,0 +1,30 @@
+{
+  "remote_root": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static",
+  "harness_hashes": {
+    "common/config.py": "428744db4adfad8700e359a1c79404c0c0cbb9466638afc9e611012d192471b4",
+    "common/operators.py": "24a71ec92289a9fd931038a365483132e976b01bbdab6ca8d83b4278f5349cd3",
+    "common/openblas.py": "c4470d0dbd89fce7016360ae280d01d2d75d2a6b945acfa59700334d217bd8e6",
+    "mimir/operators.py": "97ec56f1d0ee11a050792281d2aa57969c1437438ccb24e45174810bca22dc66",
+    "mimir/benchmark.py": "4c34d151ad7bb8fa21bb8e016d51f0a02668023b8f31569a1d1dfca4d1c9c26c",
+    "pytorch/benchmark.py": "f662f889cd6f458407b7efbe0997bdd8164d794192a17f6f1c2e774ca1c49d85"
+  },
+  "native_timer_sha256": "49540d2459dc26b2c4820699ca8bff438381dc082f8ff988ea907125973b14e4",
+  "runtime_source_sha256": "90bf004b61cb87a9bd8bb0b4bd65617da8ffca6c8c3360a4f23150fe96159122",
+  "openblas_build": {
+    "source": "8e57c8667da06cb55a777975b6c2435c9b304079",
+    "target": "HASWELL",
+    "DYNAMIC_ARCH": 0,
+    "NO_AVX512": 1,
+    "USE_THREAD": 1,
+    "USE_OPENMP": 0,
+    "NUM_THREADS": 64,
+    "NO_AFFINITY": 1,
+    "NOFORTRAN": 1,
+    "NO_LAPACK": 1,
+    "NO_LAPACKE": 1,
+    "BUILD_SINGLE": 1,
+    "BUILD_DOUBLE": 0,
+    "BUILD_COMPLEX": 0,
+    "BUILD_COMPLEX16": 0
+  }
+}

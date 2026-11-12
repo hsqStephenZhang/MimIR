@@ -1,0 +1,50 @@
+[
+  {
+    "threads": 4,
+    "shape": "97_257_383",
+    "initial": {
+      "ir_bytes": 8431779,
+      "dynamic_allocations": 6
+    },
+    "static_edges": {
+      "ir_bytes": 3550798,
+      "dynamic_allocations": 0
+    }
+  },
+  {
+    "threads": 4,
+    "shape": "1999_2047_4095",
+    "initial": {
+      "ir_bytes": 14028897,
+      "dynamic_allocations": 12
+    },
+    "static_edges": {
+      "ir_bytes": 11605813,
+      "dynamic_allocations": 0
+    }
+  },
+  {
+    "threads": 8,
+    "shape": "97_257_383",
+    "initial": {
+      "ir_bytes": 8431779,
+      "dynamic_allocations": 6
+    },
+    "static_edges": {
+      "ir_bytes": 2461497,
+      "dynamic_allocations": 0
+    }
+  },
+  {
+    "threads": 8,
+    "shape": "1999_2047_4095",
+    "initial": {
+      "ir_bytes": 11252829,
+      "dynamic_allocations": 9
+    },
+    "static_edges": {
+      "ir_bytes": 6556595,
+      "dynamic_allocations": 0
+    }
+  }
+]

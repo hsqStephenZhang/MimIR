@@ -1,0 +1,501 @@
+Test project /workspaces/compile/MimIR/.worktrees/gpu-tiling/build
+        Start   1: Cast: node sets
+  1/248 Test   #1: Cast: node sets ....................................................................................   Passed    0.01 sec
+        Start   2: dump: types
+  2/248 Test   #2: dump: types ........................................................................................   Passed    0.00 sec
+        Start   3: dump: tuples, sigmas, arrs, packs
+  3/248 Test   #3: dump: tuples, sigmas, arrs, packs ..................................................................   Passed    0.00 sec
+        Start   4: dump: fused shapes
+  4/248 Test   #4: dump: fused shapes .................................................................................   Passed    0.00 sec
+        Start   5: dump: extract & insert
+  5/248 Test   #5: dump: extract & insert .............................................................................   Passed    0.00 sec
+        Start   6: dump: pis
+  6/248 Test   #6: dump: pis ..........................................................................................   Passed    0.00 sec
+        Start   7: dump: bounds
+  7/248 Test   #7: dump: bounds .......................................................................................   Passed    0.00 sec
+        Start   8: dump: variants
+  8/248 Test   #8: dump: variants .....................................................................................   Passed    0.00 sec
+        Start   9: dump: apps
+  9/248 Test   #9: dump: apps .........................................................................................   Passed    0.00 sec
+        Start  10: dump: precedence
+ 10/248 Test  #10: dump: precedence ...................................................................................   Passed    0.00 sec
+        Start  11: dump: scope
+ 11/248 Test  #11: dump: scope ........................................................................................   Passed    0.00 sec
+        Start  12: Program use index: nested region occurrences have complete uses and multiplied trips
+ 12/248 Test  #12: Program use index: nested region occurrences have complete uses and multiplied trips ...............   Passed    0.00 sec
+        Start  13: Program use index: opaque callbacks cannot borrow a registered region's multiplicity
+ 13/248 Test  #13: Program use index: opaque callbacks cannot borrow a registered region's multiplicity ...............   Passed    0.00 sec
+        Start  14: Program use index: unknown and overflowing region trips remain unknown
+ 14/248 Test  #14: Program use index: unknown and overflowing region trips remain unknown .............................   Passed    0.00 sec
+        Start  15: Program use index: recursive registered regions cannot prove a finite multiplicity
+ 15/248 Test  #15: Program use index: recursive registered regions cannot prove a finite multiplicity .................   Passed    0.00 sec
+        Start  16: Graph RHS binder recipes: frozen captures and fresh variables preserve the final type
+ 16/248 Test  #16: Graph RHS binder recipes: frozen captures and fresh variables preserve the final type ..............   Passed    0.00 sec
+        Start  17: Graph pattern: semantic uses retain curried argument positions
+ 17/248 Test  #17: Graph pattern: semantic uses retain curried argument positions .....................................   Passed    0.00 sec
+        Start  18: Graph pattern: wrapper schemas distinguish argument Packs from tensor values
+ 18/248 Test  #18: Graph pattern: wrapper schemas distinguish argument Packs from tensor values .......................   Passed    0.00 sec
+        Start  19: Graph pattern: projection edges identify the original producer and result path
+ 19/248 Test  #19: Graph pattern: projection edges identify the original producer and result path .....................   Passed    0.00 sec
+        Start  20: Graph pattern: partial decoders and input budgets do not certify exclusivity
+ 20/248 Test  #20: Graph pattern: partial decoders and input budgets do not certify exclusivity .......................   Passed    0.00 sec
+        Start  21: Graph pattern: open coverage, output escape and unknown consumers stay separate
+ 21/248 Test  #21: Graph pattern: open coverage, output escape and unknown consumers stay separate ....................   Passed    0.00 sec
+        Start  22: Graph pattern: independent roots join through a shared capture
+ 22/248 Test  #22: Graph pattern: independent roots join through a shared capture .....................................   Passed    0.00 sec
+        Start  23: Graph pattern: later roots backtrack into an earlier root's alternative
+ 23/248 Test  #23: Graph pattern: later roots backtrack into an earlier root's alternative ............................   Passed    0.00 sec
+        Start  24: Graph pattern: edge constraints filter consumer, argument and result positions
+ 24/248 Test  #24: Graph pattern: edge constraints filter consumer, argument and result positions .....................   Passed    0.00 sec
+        Start  25: Graph pattern: alias policy, connectivity and handle validation
+ 25/248 Test  #25: Graph pattern: alias policy, connectivity and handle validation ....................................   Passed    0.00 sec
+        Start  26: Graph pattern: result and work limits mark incomplete enumeration
+ 26/248 Test  #26: Graph pattern: result and work limits mark incomplete enumeration ..................................   Passed    0.00 sec
+        Start  27: Graph pattern: exhaustive tiny DAG joins agree with graph matching
+ 27/248 Test  #27: Graph pattern: exhaustive tiny DAG joins agree with graph matching .................................   Passed    0.00 sec
+        Start  28: Graph rewrite: three roots share one new computation
+ 28/248 Test  #28: Graph rewrite: three roots share one new computation ...............................................   Passed    0.00 sec
+        Start  29: Graph rewrite: open multi-root replacements preserve the function binder
+ 29/248 Test  #29: Graph rewrite: open multi-root replacements preserve the function binder ...........................   Passed    0.00 sec
+        Start  30: Graph rewrite: a shared Def is replaced only in the selected function
+ 30/248 Test  #30: Graph rewrite: a shared Def is replaced only in the selected function ..............................   Passed    0.00 sec
+        Start  31: Graph rewrite: cycles including imported descendants are rejected
+ 31/248 Test  #31: Graph rewrite: cycles including imported descendants are rejected ..................................   Passed    0.00 sec
+        Start  32: Graph rewrite: mismatched types and invalid result projections are atomic failures
+ 32/248 Test  #32: Graph rewrite: mismatched types and invalid result projections are atomic failures .................   Passed    0.00 sec
+        Start  33: Graph rewrite: conflicting plans and foreign snapshots cannot be combined
+ 33/248 Test  #33: Graph rewrite: conflicting plans and foreign snapshots cannot be combined ..........................   Passed    0.00 sec
+        Start  34: Graph rewrite: independent plans may share read-only inputs
+ 34/248 Test  #34: Graph rewrite: independent plans may share read-only inputs ........................................   Passed    0.00 sec
+        Start  35: Graph rewrite: unresolved purity, foreign values and exhausted recipe budgets are rejected
+ 35/248 Test  #35: Graph rewrite: unresolved purity, foreign values and exhausted recipe budgets are rejected .........   Passed    0.00 sec
+        Start  36: Graph rewrite: source mutation invalidates a built replacement before publication
+ 36/248 Test  #36: Graph rewrite: source mutation invalidates a built replacement before publication ..................   Passed    0.00 sec
+        Start  37: Graph pattern: opaque nested users cannot certify exclusive consumption
+ 37/248 Test  #37: Graph pattern: opaque nested users cannot certify exclusive consumption ............................   Passed    0.00 sec
+        Start  38: Graph rewrite: changes to other externals prevent lost updates at publication
+ 38/248 Test  #38: Graph rewrite: changes to other externals prevent lost updates at publication ......................   Passed    0.00 sec
+        Start  39: Graph rewrite: adding an external after construction invalidates publication
+ 39/248 Test  #39: Graph rewrite: adding an external after construction invalidates publication .......................   Passed    0.00 sec
+        Start  40: Graph rewrite: an intervening World rebuild invalidates all graph handles
+ 40/248 Test  #40: Graph rewrite: an intervening World rebuild invalidates all graph handles ..........................   Passed    0.00 sec
+        Start  41: Graph pattern: deferred cross-anchor predicates see complete bindings
+ 41/248 Test  #41: Graph pattern: deferred cross-anchor predicates see complete bindings ..............................   Passed    0.00 sec
+        Start  42: Graph rewrite: source purity is explicit and registries are frozen in snapshots
+ 42/248 Test  #42: Graph rewrite: source purity is explicit and registries are frozen in snapshots ....................   Passed    0.00 sec
+        Start  43: Graph rewrite: a shared recipe is evaluated once even when its call normalizes
+ 43/248 Test  #43: Graph rewrite: a shared recipe is evaluated once even when its call normalizes .....................   Passed    0.00 sec
+        Start  44: Graph rewrite: evaluation and source dependency work have explicit bounds
+ 44/248 Test  #44: Graph rewrite: evaluation and source dependency work have explicit bounds ..........................   Passed    0.00 sec
+        Start  45: Graph rewrite: continuation arguments retain their binder and share the combined result
+ 45/248 Test  #45: Graph rewrite: continuation arguments retain their binder and share the combined result ............   Passed    0.00 sec
+        Start  46: Graph rewrite: existing recursive references resolve to the rebuilt scope stub
+ 46/248 Test  #46: Graph rewrite: existing recursive references resolve to the rebuilt scope stub .....................   Passed    0.00 sec
+        Start  47: Review purity: function-valued computations cannot be erased by a pure sink
+ 47/248 Test  #47: Review purity: function-valued computations cannot be erased by a pure sink ........................   Passed    0.00 sec
+        Start  48: Review purity: function-valued binder leaves are not computations
+ 48/248 Test  #48: Review purity: function-valued binder leaves are not computations ..................................   Passed    0.00 sec
+        Start  49: Review purity: overapplication cannot invoke a function exposed by normalization
+ 49/248 Test  #49: Review purity: overapplication cannot invoke a function exposed by normalization ...................   Passed    0.00 sec
+        Start  50: Review purity: a one-group identity may return an unproved function without invoking it
+ 50/248 Test  #50: Review purity: a one-group identity may return an unproved function without invoking it ............   Passed    0.00 sec
+        Start  51: Review graph rewrite: recursive no-op comparison keeps the shared scope stub unset
+ 51/248 Test  #51: Review graph rewrite: recursive no-op comparison keeps the shared scope stub unset .................   Passed    0.00 sec
+        Start  52: Review purity: registered group count is independent of the axiom curry counter
+ 52/248 Test  #52: Review purity: registered group count is independent of the axiom curry counter ....................   Passed    0.00 sec
+        Start  53: Level: normalization
+ 53/248 Test  #53: Level: normalization ...............................................................................   Passed    0.00 sec
+        Start  54: Level: exact constraints are solved right away
+ 54/248 Test  #54: Level: exact constraints are solved right away .....................................................   Passed    0.00 sec
+        Start  55: Level: underdetermined constraints are deferred
+ 55/248 Test  #55: Level: underdetermined constraints are deferred ....................................................   Passed    0.00 sec
+        Start  56: Lexer
+ 56/248 Test  #56: Lexer ..............................................................................................   Passed    0.00 sec
+        Start  57: Lexer: malformed character recovery stops at line endings and EOF
+ 57/248 Test  #57: Lexer: malformed character recovery stops at line endings and EOF ..................................   Passed    0.00 sec
+        Start  58: Nom: each nom is a distinct type
+ 58/248 Test  #58: Nom: each nom is a distinct type ...................................................................   Passed    0.00 sec
+        Start  59: Nom: name and struc
+ 59/248 Test  #59: Nom: name and struc ................................................................................   Passed    0.00 sec
+        Start  60: Nom: rewriting keeps the key
+ 60/248 Test  #60: Nom: rewriting keeps the key .......................................................................   Passed    0.00 sec
+        Start  61: Nom: instances of a generic nom
+ 61/248 Test  #61: Nom: instances of a generic nom ....................................................................   Passed    0.00 sec
+        Start  62: NomErasure: nominals erase to what they wrap
+ 62/248 Test  #62: NomErasure: nominals erase to what they wrap .......................................................   Passed    0.00 sec
+        Start  63: Pattern: captures preserve shared DAG identity
+ 63/248 Test  #63: Pattern: captures preserve shared DAG identity .....................................................   Passed    0.00 sec
+        Start  64: Pattern: failed alternatives roll back captures and constraints
+ 64/248 Test  #64: Pattern: failed alternatives roll back captures and constraints ....................................   Passed    0.00 sec
+        Start  65: Pattern: alternatives backtrack after later operands fail
+ 65/248 Test  #65: Pattern: alternatives backtrack after later operands fail ..........................................   Passed    0.00 sec
+        Start  66: Pattern: deferred predicates see all structural captures
+ 66/248 Test  #66: Pattern: deferred predicates see all structural captures ...........................................   Passed    0.00 sec
+        Start  67: Pattern: downstream predicates can select another alternative
+ 67/248 Test  #67: Pattern: downstream predicates can select another alternative ......................................   Passed    0.00 sec
+        Start  68: Pattern: deferred type matching shares captures
+ 68/248 Test  #68: Pattern: deferred type matching shares captures ....................................................   Passed    0.00 sec
+        Start  69: Pattern: conjunction checks capture consistency
+ 69/248 Test  #69: Pattern: conjunction checks capture consistency ....................................................   Passed    0.00 sec
+        Start  70: Pattern: negation reads final captures but never exports bindings
+ 70/248 Test  #70: Pattern: negation reads final captures but never exports bindings ..................................   Passed    0.01 sec
+        Start  71: Pattern: unknown and budget exhaustion survive negation
+ 71/248 Test  #71: Pattern: unknown and budget exhaustion survive negation ............................................   Passed    0.00 sec
+        Start  72: Pattern: depth limits bound nested choices and deferred probes
+ 72/248 Test  #72: Pattern: depth limits bound nested choices and deferred probes .....................................   Passed    0.00 sec
+        Start  73: Pattern: mutable binders stay opaque and matching is read-only
+ 73/248 Test  #73: Pattern: mutable binders stay opaque and matching is read-only .....................................   Passed    0.00 sec
+        Start  74: Pattern: programs reject foreign handles and invalid constraints
+ 74/248 Test  #74: Pattern: programs reject foreign handles and invalid constraints ...................................   Passed    0.00 sec
+        Start  75: Pattern: sequence variable types are not materialized by queries
+ 75/248 Test  #75: Pattern: sequence variable types are not materialized by queries ...................................   Passed    0.00 sec
+        Start  76: Pattern graph: closed lambdas are scope boundaries too
+ 76/248 Test  #76: Pattern graph: closed lambdas are scope boundaries too .............................................   Passed    0.00 sec
+        Start  77: Pattern graph: roots and shared nodes are visited once
+ 77/248 Test  #77: Pattern graph: roots and shared nodes are visited once .............................................   Passed    0.00 sec
+        Start  78: Pattern graph: types and callees are separate from operand uses
+ 78/248 Test  #78: Pattern graph: types and callees are separate from operand uses ....................................   Passed    0.00 sec
+        Start  79: Pattern graph: repeated operands and aggregate wrappers keep raw identity
+ 79/248 Test  #79: Pattern graph: repeated operands and aggregate wrappers keep raw identity ..........................   Passed    0.00 sec
+        Start  80: Pattern: finite DAG choices agree with exhaustive capture candidates
+ 80/248 Test  #80: Pattern: finite DAG choices agree with exhaustive capture candidates ...............................   Passed    0.00 sec
+        Start  81: Pattern graph: open regions cannot prove exclusive usage
+ 81/248 Test  #81: Pattern graph: open regions cannot prove exclusive usage ...........................................   Passed    0.00 sec
+        Start  82: Pattern graph: graph constraints participate in alternative selection
+ 82/248 Test  #82: Pattern graph: graph constraints participate in alternative selection ..............................   Passed    0.00 sec
+        Start  83: Pattern graph: empty views and cross-World roots
+ 83/248 Test  #83: Pattern graph: empty views and cross-World roots ...................................................   Passed    0.00 sec
+        Start  84: Pattern Rule: existing metavariables compile to shared captures
+ 84/248 Test  #84: Pattern Rule: existing metavariables compile to shared captures ....................................   Passed    0.00 sec
+        Start  85: Pattern Rule: projections bind dependent types after structure
+ 85/248 Test  #85: Pattern Rule: projections bind dependent types after structure .....................................   Passed    0.00 sec
+        Start  86: Pattern Rule: whole telescopes and projections must agree
+ 86/248 Test  #86: Pattern Rule: whole telescopes and projections must agree ..........................................   Passed    0.00 sec
+        Start  87: Pattern Rule: only the owning Rule's variables are metavariables
+ 87/248 Test  #87: Pattern Rule: only the owning Rule's variables are metavariables ...................................   Passed    0.00 sec
+        Start  88: Pattern Rule: constant rules and guards have distinct matching semantics
+ 88/248 Test  #88: Pattern Rule: constant rules and guards have distinct matching semantics ...........................   Passed    0.00 sec
+        Start  89: Pattern Rule: budget failures never leak partial bindings
+ 89/248 Test  #89: Pattern Rule: budget failures never leak partial bindings ..........................................   Passed    0.00 sec
+        Start  90: Pattern Rule: replacements are constructed in the target World
+ 90/248 Test  #90: Pattern Rule: replacements are constructed in the target World .....................................   Passed    0.00 sec
+        Start  91: Pattern Rule: no-capture replacements and guard rejection
+ 91/248 Test  #91: Pattern Rule: no-capture replacements and guard rejection ..........................................   Passed    0.00 sec
+        Start  92: Pattern Rule: guard evaluation uses captures in the target World
+ 92/248 Test  #92: Pattern Rule: guard evaluation uses captures in the target World ...................................   Passed    0.01 sec
+        Start  93: Pattern Rule: unbound captures are rejected without Hole construction
+ 93/248 Test  #93: Pattern Rule: unbound captures are rejected without Hole construction ..............................   Passed    0.00 sec
+        Start  94: Pattern Rule: RHS type changes are rejected
+ 94/248 Test  #94: Pattern Rule: RHS type changes are rejected ........................................................   Passed    0.00 sec
+        Start  95: Pattern Rule: open replacements require an explicit binder environment
+ 95/248 Test  #95: Pattern Rule: open replacements require an explicit binder environment .............................   Passed    0.00 sec
+        Start  96: Pattern phase: rules rewrite open function bodies with the correct binder
+ 96/248 Test  #96: Pattern phase: rules rewrite open function bodies with the correct binder ..........................   Passed    0.00 sec
+        Start  97: Pattern phase: rule templates survive cleanup and fixed-point recreation
+ 97/248 Test  #97: Pattern phase: rule templates survive cleanup and fixed-point recreation ...........................   Passed    0.01 sec
+        Start  98: Pattern phase: identity rules do not request another iteration
+ 98/248 Test  #98: Pattern phase: identity rules do not request another iteration .....................................   Passed    0.00 sec
+        Start  99: Pattern Rule: rebuilt Worlds invalidate compiled Rule handles before accessing old Defs
+ 99/248 Test  #99: Pattern Rule: rebuilt Worlds invalidate compiled Rule handles before accessing old Defs ............   Passed    0.00 sec
+        Start 100: Pattern: wide operands do not consume nesting depth
+100/248 Test #100: Pattern: wide operands do not consume nesting depth ................................................   Passed    0.01 sec
+        Start 101: Pattern: deep structures still exhaust the nesting budget
+101/248 Test #101: Pattern: deep structures still exhaust the nesting budget ..........................................   Passed    0.01 sec
+        Start 102: Pattern: wide choices backtrack across siblings without recursive frames
+102/248 Test #102: Pattern: wide choices backtrack across siblings without recursive frames ...........................   Passed    0.01 sec
+        Start 103: Pattern: wide range and deferred obligations keep sibling depth constant
+103/248 Test #103: Pattern: wide range and deferred obligations keep sibling depth constant ...........................   Passed    0.00 sec
+        Start 104: Pattern: wide binder operands do not retain native frames
+104/248 Test #104: Pattern: wide binder operands do not retain native frames ..........................................   Passed    0.00 sec
+        Start 105: Pattern: graph search matches wide structures in both enumeration modes
+105/248 Test #105: Pattern: graph search matches wide structures in both enumeration modes ............................   Passed    0.01 sec
+        Start 106: DPL diamond: edges select the shared fork and both exclusive branches
+106/248 Test #106: DPL diamond: edges select the shared fork and both exclusive branches ..............................   Passed    0.00 sec
+        Start 107: DPL diamond: adding a second branch invalidates exclusive fork use
+107/248 Test #107: DPL diamond: adding a second branch invalidates exclusive fork use .................................   Passed    0.00 sec
+        Start 108: DPL identity: two slots distinguish one producer from parallel producers
+108/248 Test #108: DPL identity: two slots distinguish one producer from parallel producers ...........................   Passed    0.00 sec
+        Start 109: DPL nested diamond: enumerate both inner forks without claiming bridge exclusivity
+109/248 Test #109: DPL nested diamond: enumerate both inner forks without claiming bridge exclusivity .................   Passed    0.00 sec
+        Start 110: DPL nested diamond: the outer diamond preserves the common bridge capture
+110/248 Test #110: DPL nested diamond: the outer diamond preserves the common bridge capture ..........................   Passed    0.00 sec
+        Start 111: DPL QKV: weight-constrained products reject a fake shared-input triple
+111/248 Test #111: DPL QKV: weight-constrained products reject a fake shared-input triple .............................   Passed    0.01 sec
+        Start 112: DPL repeated pattern: whole-expression captures survive success failure success
+112/248 Test #112: DPL repeated pattern: whole-expression captures survive success failure success ....................   Passed    0.00 sec
+        Start 113: DPL commutativity: indexed joins retain captures on different raw operand paths
+113/248 Test #113: DPL commutativity: indexed joins retain captures on different raw operand paths ....................   Passed    0.00 sec
+        Start 114: DPL alternatives: a whole-root optional capture cannot prune the capture-free branch
+114/248 Test #114: DPL alternatives: a whole-root optional capture cannot prune the capture-free branch ...............   Passed    0.00 sec
+        Start 115: DPL type captures: a prebound type anchor joins values through type edges only
+115/248 Test #115: DPL type captures: a prebound type anchor joins values through type edges only .....................   Passed    0.00 sec
+        Start 116: DPL alternatives: a capture shared by raw and type branches has no guaranteed raw path
+116/248 Test #116: DPL alternatives: a capture shared by raw and type branches has no guaranteed raw path .............   Passed    0.00 sec
+        Start 117: DPL ranges: a zero-length tail still joins a capture bound by another root
+117/248 Test #117: DPL ranges: a zero-length tail still joins a capture bound by another root .........................   Passed    0.00 sec
+        Start 118: DPL ranges: prefix alternatives roll back after repeated tail identity fails
+118/248 Test #118: DPL ranges: prefix alternatives roll back after repeated tail identity fails .......................   Passed    0.00 sec
+        Start 119: DPL projections: nested result paths filter repeated uses of one producer
+119/248 Test #119: DPL projections: nested result paths filter repeated uses of one producer ..........................   Passed    0.01 sec
+        Start 120: DPL wrapper paths: repeated Pack slots count as one exclusive consumer
+120/248 Test #120: DPL wrapper paths: repeated Pack slots count as one exclusive consumer .............................   Passed    0.01 sec
+        Start 121: DPL checked rewrite: two QKV groups merge without sharing their new computations
+121/248 Test #121: DPL checked rewrite: two QKV groups merge without sharing their new computations ...................   Passed    0.01 sec
+        Start 122: DPL graph Rule fallback: identity and false guards do not hide the first productive Rule
+122/248 Test #122: DPL graph Rule fallback: identity and false guards do not hide the first productive Rule ...........   Passed    0.00 sec
+        Start 123: DPL deferred alternatives: successful tuples roll back unknown branch-local captures
+123/248 Test #123: DPL deferred alternatives: successful tuples roll back unknown branch-local captures ...............   Passed    0.00 sec
+        Start 124: DPL extended unordered: all six orders enforce the shared chain input
+124/248 Test #124: DPL extended unordered: all six orders enforce the shared chain input ..............................   Passed    0.00 sec
+        Start 125: DPL extended unordered graph: independently enumerated tuples join both input families
+125/248 Test #125: DPL extended unordered graph: independently enumerated tuples join both input families .............   Passed    0.00 sec
+        Start 126: DPL extended callee identity: same signature does not authorize another external operation
+126/248 Test #126: DPL extended callee identity: same signature does not authorize another external operation .........   Passed    0.00 sec
+        Start 127: DPL extended static shape: equal declared shapes do not require equal values
+127/248 Test #127: DPL extended static shape: equal declared shapes do not require equal values .......................   Passed    0.00 sec
+        Start 128: DPL extended negated shape: declared dimensions determine the result independently of dtype
+128/248 Test #128: DPL extended negated shape: declared dimensions determine the result independently of dtype ........   Passed    0.00 sec
+        Start 129: DPL extended symbolic shape: shared symbols match and distinct symbols reject
+129/248 Test #129: DPL extended symbolic shape: shared symbols match and distinct symbols reject ......................   Passed    0.00 sec
+        Start 130: DPL extended shape restriction: unspecified element type accepts two declared dtypes
+130/248 Test #130: DPL extended shape restriction: unspecified element type accepts two declared dtypes ...............   Passed    0.00 sec
+        Start 131: DPL extended shape graph: dimension captures select only the nonbroadcast pair
+131/248 Test #131: DPL extended shape graph: dimension captures select only the nonbroadcast pair .....................   Passed    0.00 sec
+        Start 132: DPL extended shape values: static Pack and symbolic Tuple dimensions match directly
+132/248 Test #132: DPL extended shape values: static Pack and symbolic Tuple dimensions match directly ................   Passed    0.00 sec
+        Start 133: DPL extended two CBR: both complete chains join the same input and ordered output
+133/248 Test #133: DPL extended two CBR: both complete chains join the same input and ordered output ..................   Passed    0.00 sec
+        Start 134: DPL extended two CBR counter: different inputs and reversed concat slots reject
+134/248 Test #134: DPL extended two CBR counter: different inputs and reversed concat slots reject ....................   Passed    0.00 sec
+        Start 135: DPL extended nested programs: failing shortcut leaves full CBR and suffix matches unchanged
+135/248 Test #135: DPL extended nested programs: failing shortcut leaves full CBR and suffix matches unchanged ........   Passed    0.00 sec
+        Start 136: DPL extended two matmul: typed chain accepts two stages but not a third or wrong shape
+136/248 Test #136: DPL extended two matmul: typed chain accepts two stages but not a third or wrong shape .............   Passed    0.00 sec
+        Start 137: DPL extended self attention: three shared chains connect scale softmax and final product
+137/248 Test #137: DPL extended self attention: three shared chains connect scale softmax and final product ...........   Passed    0.00 sec
+        Start 138: DPL extended incremental constraints: independently matched prefix selects the suffix witness
+138/248 Test #138: DPL extended incremental constraints: independently matched prefix selects the suffix witness ......   Passed    0.00 sec
+        Start 139: DPL extended incremental counter: suffix success cannot erase the absent prefix constraint
+139/248 Test #139: DPL extended incremental counter: suffix success cannot erase the absent prefix constraint .........   Passed    0.00 sec
+        Start 140: DPL extended emission order: nested weight dependencies feed exactly one new recipe chain
+140/248 Test #140: DPL extended emission order: nested weight dependencies feed exactly one new recipe chain ..........   Passed    0.00 sec
+        Start 141: DPL extended chained replacement: three replaced keys resolve to the terminal recipe
+141/248 Test #141: DPL extended chained replacement: three replaced keys resolve to the terminal recipe ...............   Passed    0.00 sec
+        Start 142: DPL extended removed intermediates: tuple replacement exposes a second checked rewrite
+142/248 Test #142: DPL extended removed intermediates: tuple replacement exposes a second checked rewrite .............   Passed    0.00 sec
+        Start 143: DPL extended attention rewrite: exact leaf captures survive wrapper removal and operand routing
+143/248 Test #143: DPL extended attention rewrite: exact leaf captures survive wrapper removal and operand routing ....   Passed    0.00 sec
+        Start 144: DPL extended single Rule: nested double-add binds one leaf and emits the factor-four RHS
+144/248 Test #144: DPL extended single Rule: nested double-add binds one leaf and emits the factor-four RHS ...........   Passed    0.00 sec
+        Start 145: DPL extended multi-root Rule: unchanged slot and projected weight capture remain independent
+145/248 Test #145: DPL extended multi-root Rule: unchanged slot and projected weight capture remain independent .......   Passed    0.00 sec
+        Start 146: DPL extended aggregate Rule RHS: two transposed matmuls share one typed result operation
+146/248 Test #146: DPL extended aggregate Rule RHS: two transposed matmuls share one typed result operation ...........   Passed    0.00 sec
+        Start 147: P5 range: prefix, bounds and repeated-capture identity
+147/248 Test #147: P5 range: prefix, bounds and repeated-capture identity .............................................   Passed    0.00 sec
+        Start 148: P5 join: indexed and exhaustive enumeration agree on shared-input triples
+148/248 Test #148: P5 join: indexed and exhaustive enumeration agree on shared-input triples ..........................   Passed    0.00 sec
+        Start 149: P5 join: optional OR captures and type-only captures never imply raw ancestry
+149/248 Test #149: P5 join: optional OR captures and type-only captures never imply raw ancestry ......................   Passed    0.00 sec
+        Start 150: P5 search: rejected matches do not consume the accepted result limit
+150/248 Test #150: P5 search: rejected matches do not consume the accepted result limit ...............................   Passed    0.00 sec
+        Start 151: P5 search: rejected orientation preserves alternative bindings and Unknown
+151/248 Test #151: P5 search: rejected orientation preserves alternative bindings and Unknown .........................   Passed    0.00 sec
+        Start 152: Rule types: imported dependent Pi binders match without inference
+152/248 Test #152: Rule types: imported dependent Pi binders match without inference ..................................   Passed    0.00 sec
+        Start 153: Graph Rule: type-only dimensions and element type construct a shared RHS
+153/248 Test #153: Graph Rule: type-only dimensions and element type construct a shared RHS ...........................   Passed    0.00 sec
+        Start 154: P5 graph Rule: tuple templates match independent roots and share RHS computation
+154/248 Test #154: P5 graph Rule: tuple templates match independent roots and share RHS computation ...................   Passed    0.00 sec
+        Start 155: P5 graph Rule: rejected guards and identity templates do not publish
+155/248 Test #155: P5 graph Rule: rejected guards and identity templates do not publish ...............................   Passed    0.00 sec
+        Start 156: P5 witnesses: one frozen evaluation feeds the guard and both RHS frontends
+156/248 Test #156: P5 witnesses: one frozen evaluation feeds the guard and both RHS frontends .........................   Passed    0.00 sec
+        Start 157: P5 witnesses: Unknown, disproved and invalid results never fire a Rule
+157/248 Test #157: P5 witnesses: Unknown, disproved and invalid results never fire a Rule .............................   Passed    0.00 sec
+        Start 158: P5 graph Rule: root limits and unsupported RHSs are explicit failures
+158/248 Test #158: P5 graph Rule: root limits and unsupported RHSs are explicit failures ..............................   Passed    0.00 sec
+        Start 159: P5 graph Rule: captured boolean guards are evaluated in the isolated World
+159/248 Test #159: P5 graph Rule: captured boolean guards are evaluated in the isolated World .........................   Passed    0.00 sec
+        Start 160: Review lifetime: single-root results and graph collections reject rebuilt storage
+160/248 Test #160: Review lifetime: single-root results and graph collections reject rebuilt storage ..................   Passed    0.00 sec
+        Start 161: Review reads: native conditions nested in NOT participate in conflicts
+161/248 Test #161: Review reads: native conditions nested in NOT participate in conflicts .............................   Passed    0.00 sec
+        Start 162: Review budget: zero-output nested wrapper expansion has bounded work
+162/248 Test #162: Review budget: zero-output nested wrapper expansion has bounded work ...............................   Passed    0.00 sec
+        Start 163: Review budget: unrelated deep external imports obey work limits without a depth cliff
+163/248 Test #163: Review budget: unrelated deep external imports obey work limits without a depth cliff ..............   Passed    0.00 sec
+        Start 164: Review purity: a pure parent cannot erase an unproved computation
+164/248 Test #164: Review purity: a pure parent cannot erase an unproved computation ..................................   Passed    0.00 sec
+        Start 165: Graph purity: local lambda parameters are parametric but free calls remain protected
+165/248 Test #165: Graph purity: local lambda parameters are parametric but free calls remain protected ...............   Passed    0.00 sec
+        Start 166: Review dependencies: simultaneous replacement cuts old operand dependencies
+166/248 Test #166: Review dependencies: simultaneous replacement cuts old operand dependencies ........................   Passed    0.00 sec
+        Start 167: Review OR: successful anchor tuples dominate unknown alternatives
+167/248 Test #167: Review OR: successful anchor tuples dominate unknown alternatives ..................................   Passed    0.00 sec
+        Start 168: Review join: skipped mutable operands preserve indexed and exhaustive uncertainty
+168/248 Test #168: Review join: skipped mutable operands preserve indexed and exhaustive uncertainty ..................   Passed    0.00 sec
+        Start 169: Review opacity: mutable arity never proves structural mismatch
+169/248 Test #169: Review opacity: mutable arity never proves structural mismatch .....................................   Passed    0.00 sec
+        Start 170: Graph purity: captured functions are callable when their evaluated calls are pure
+170/248 Test #170: Graph purity: captured functions are callable when their evaluated calls are pure ..................   Passed    0.00 sec
+        Start 171: PDLL adapted named operation: operand and heterogeneous result types are conjunctive
+171/248 Test #171: PDLL adapted named operation: operand and heterogeneous result types are conjunctive ...............   Passed    0.00 sec
+        Start 172: PDLL adapted composed native constraints: reuse preserves false and unknown distinctions
+172/248 Test #172: PDLL adapted composed native constraints: reuse preserves false and unknown distinctions ...........   Passed    0.00 sec
+        Start 173: PDLL adapted native negation: typed probes cannot export bindings or manufacture proof
+173/248 Test #173: PDLL adapted native negation: typed probes cannot export bindings or manufacture proof .............   Passed    0.00 sec
+        Start 174: PDLL partial typed operand range: bounds apply to physical fields and share only their type
+174/248 Test #174: PDLL partial typed operand range: bounds apply to physical fields and share only their type ........   Passed    0.00 sec
+        Start 175: PDLL adapted graph constraints: mixed result roots join before read-only native checks
+175/248 Test #175: PDLL adapted graph constraints: mixed result roots join before read-only native checks .............   Passed    0.00 sec
+        Start 176: PDLL adapted result identity: Nat and Bool projections must belong to the same producer
+176/248 Test #176: PDLL adapted result identity: Nat and Bool projections must belong to the same producer ............   Passed    0.00 sec
+        Start 177: PDLL adapted multi-root replacement: heterogeneous ordinals survive reversed registration
+177/248 Test #177: PDLL adapted multi-root replacement: heterogeneous ordinals survive reversed registration ..........   Passed    0.00 sec
+        Start 178: PDLL adapted replace with existing operand: mixed tuple projections normalize without new calls
+178/248 Test #178: PDLL adapted replace with existing operand: mixed tuple projections normalize without new calls ....   Passed    0.00 sec
+        Start 179: PDLL adapted tuple member access: reversed mixed fields route existing values by type
+179/248 Test #179: PDLL adapted tuple member access: reversed mixed fields route existing values by type ..............   Passed    0.00 sec
+        Start 180: PDLL adapted dependent creation: both typed consumers reuse one new mixed producer
+180/248 Test #180: PDLL adapted dependent creation: both typed consumers reuse one new mixed producer .................   Passed    0.00 sec
+        Start 181: PDLL adapted invalid member: failure in a dependent Bool recipe leaves the scoped source atomic
+181/248 Test #181: PDLL adapted invalid member: failure in a dependent Bool recipe leaves the scoped source atomic ....   Passed    0.00 sec
+        Start 182: PDLL adapted incompatible member: one wrong heterogeneous ordinal rejects the entire scoped plan
+182/248 Test #182: PDLL adapted incompatible member: one wrong heterogeneous ordinal rejects the entire scoped plan ...   Passed    0.00 sec
+        Start 183: PDLL adapted graph Rule: aggregate heterogeneous RHS maps each independent root to its ordinal
+183/248 Test #183: PDLL adapted graph Rule: aggregate heterogeneous RHS maps each independent root to its ordinal .....   Passed    0.00 sec
+        Start 184: PDLL adapted pass-through Rule: captured Nat and Bool values survive only a proven guard
+184/248 Test #184: PDLL adapted pass-through Rule: captured Nat and Bool values survive only a proven guard ...........   Passed    0.00 sec
+        Start 185: PDLL adapted missing binding: an absent Bool in the guard or mixed RHS rejects before creation
+185/248 Test #185: PDLL adapted missing binding: an absent Bool in the guard or mixed RHS rejects before creation .....   Passed    0.00 sec
+        Start 186: PDLL adapted phase: mixed graph Rule publishes one producer and preserves a mismatched function
+186/248 Test #186: PDLL adapted phase: mixed graph Rule publishes one producer and preserves a mismatched function ....   Passed    0.00 sec
+        Start 187: Review graph Rule: an instantiated add-zero recipe is a canonical scoped no-op
+187/248 Test #187: Review graph Rule: an instantiated add-zero recipe is a canonical scoped no-op .....................   Passed    0.00 sec
+        Start 188: P5 graph phase: a normalized no-op Rule does not hide a productive Rule
+188/248 Test #188: P5 graph phase: a normalized no-op Rule does not hide a productive Rule ............................   Passed    0.00 sec
+        Start 189: P5 graph phase: deep DAGs rebuild and exhausted resources skip without publication
+189/248 Test #189: P5 graph phase: deep DAGs rebuild and exhausted resources skip without publication .................   Passed    0.02 sec
+        Start 190: P5 graph phase: search continues past no-op, Unknown and rejected guard candidates
+190/248 Test #190: P5 graph phase: search continues past no-op, Unknown and rejected guard candidates .................   Passed    0.00 sec
+        Start 191: Portmatching: overlapping four-vertex port patterns retain exact mappings
+191/248 Test #191: Portmatching: overlapping four-vertex port patterns retain exact mappings ..........................   Passed    0.01 sec
+        Start 192: Portmatching: both endpoint port offsets and shared vertex identity matter
+192/248 Test #192: Portmatching: both endpoint port offsets and shared vertex identity matter .........................   Passed    0.00 sec
+        Start 193: Portmatching: vertex injectivity and unconstrained boundary ports
+193/248 Test #193: Portmatching: vertex injectivity and unconstrained boundary ports ..................................   Passed    0.00 sec
+        Start 194: Portmatching: factored vertex constraints match long chains within the default depth budget
+194/248 Test #194: Portmatching: factored vertex constraints match long chains within the default depth budget ........   Passed    0.00 sec
+        Start 195: GHL: positive-edge matching permits extra internal links unlike induced isomorphism
+195/248 Test #195: GHL: positive-edge matching permits extra internal links unlike induced isomorphism ................   Passed    0.00 sec
+        Start 196: GHL: vertex predicate and validation filter before selecting the first match
+196/248 Test #196: GHL: vertex predicate and validation filter before selecting the first match .......................   Passed    0.00 sec
+        Start 197: restricted dependent types
+197/248 Test #197: restricted dependent types .........................................................................   Passed    0.01 sec
+        Start 198: restricted dependent types: ll
+198/248 Test #198: restricted dependent types: ll .....................................................................   Passed    0.01 sec
+        Start 199: Tensor: nominal indices survive normalization and rewriting
+199/248 Test #199: Tensor: nominal indices survive normalization and rewriting ........................................   Passed    0.24 sec
+        Start 200: LLVM: canonical vector pointer and erased memory pair
+200/248 Test #200: LLVM: canonical vector pointer and erased memory pair ..............................................   Passed    0.00 sec
+        Start 201: World: one-tuples fold away
+201/248 Test #201: World: one-tuples fold away ........................................................................   Passed    0.00 sec
+        Start 202: World: dependent extract
+202/248 Test #202: World: dependent extract ...........................................................................   Passed    0.00 sec
+        Start 203: World: dependent projection with an immutable op
+203/248 Test #203: World: dependent projection with an immutable op ...................................................   Passed    0.00 sec
+        Start 204: World: dependent projection with a mutable op
+204/248 Test #204: World: dependent projection with a mutable op ......................................................   Passed    0.00 sec
+        Start 205: Annex
+205/248 Test #205: Annex ..............................................................................................   Passed    0.00 sec
+        Start 206: core.trait.size
+206/248 Test #206: core.trait.size ....................................................................................   Passed    0.00 sec
+        Start 207: core.nat.sub of a sum
+207/248 Test #207: core.nat.sub of a sum ..............................................................................   Passed    0.00 sec
+        Start 208: Axm: curry and trip
+208/248 Test #208: Axm: curry and trip ................................................................................   Passed    0.00 sec
+        Start 209: Type: level
+209/248 Test #209: Type: level ........................................................................................   Passed    0.00 sec
+        Start 210: Check: alpha
+210/248 Test #210: Check: alpha .......................................................................................   Passed    0.00 sec
+        Start 211: Lam: eta_reduce fast-forwards to the end of the η-chain
+211/248 Test #211: Lam: eta_reduce fast-forwards to the end of the η-chain ...........................................   Passed    0.00 sec
+        Start 212: free vars
+212/248 Test #212: free vars ..........................................................................................   Passed    0.00 sec
+        Start 213: free vars: fixed point
+213/248 Test #213: free vars: fixed point .............................................................................   Passed    0.00 sec
+        Start 214: free vars: SSA without dominance, Table 1
+214/248 Test #214: free vars: SSA without dominance, Table 1 ..........................................................   Passed    0.00 sec
+        Start 215: Def::nests
+215/248 Test #215: Def::nests .........................................................................................   Passed    0.00 sec
+        Start 216: Hole
+216/248 Test #216: Hole ...............................................................................................   Passed    0.00 sec
+        Start 217: Phase: fixed-point iteration cap
+217/248 Test #217: Phase: fixed-point iteration cap ...................................................................   Passed    0.00 sec
+        Start 218: Analysis: sparse and dense reach the same fixed point
+218/248 Test #218: Analysis: sparse and dense reach the same fixed point ..............................................   Passed    0.00 sec
+        Start 219: Variant: cases are positional and free
+219/248 Test #219: Variant: cases are positional and free .............................................................   Passed    0.00 sec
+        Start 220: Variant: Inj carries its case
+220/248 Test #220: Variant: Inj carries its case ......................................................................   Passed    0.00 sec
+        Start 221: Variant: Match dispatches positionally
+221/248 Test #221: Variant: Match dispatches positionally .............................................................   Passed    0.00 sec
+        Start 222: Variant: recursion
+222/248 Test #222: Variant: recursion .................................................................................   Passed    0.00 sec
+        Start 223: Variant: rewriting keeps the case
+223/248 Test #223: Variant: rewriting keeps the case ..................................................................   Passed    0.00 sec
+        Start 224: NFA
+224/248 Test #224: NFA ................................................................................................   Passed    0.00 sec
+        Start 225: NFA for (a|b)+a
+225/248 Test #225: NFA for (a|b)+a ....................................................................................   Passed    0.00 sec
+        Start 226: regex2nfa
+226/248 Test #226: regex2nfa ..........................................................................................   Passed    0.02 sec
+        Start 227: DFA
+227/248 Test #227: DFA ................................................................................................   Passed    0.00 sec
+        Start 228: DFA minimization
+228/248 Test #228: DFA minimization ...................................................................................   Passed    0.00 sec
+        Start 229: Tensor witnesses: transpose box follows source-axis permutation in three dimensions
+229/248 Test #229: Tensor witnesses: transpose box follows source-axis permutation in three dimensions ................   Passed    0.26 sec
+        Start 230: Tensor witnesses: reverse geometry is frozen and preserves shared-grid slot order
+230/248 Test #230: Tensor witnesses: reverse geometry is frozen and preserves shared-grid slot order ..................   Passed    0.29 sec
+        Start 231: Tensor grouping: requests preserve provenance, identity, and metadata boundaries
+231/248 Test #231: Tensor grouping: requests preserve provenance, identity, and metadata boundaries ...................   Passed    0.30 sec
+        Start 232: Tensor pattern: product schema excludes ring and shape metadata
+232/248 Test #232: Tensor pattern: product schema excludes ring and shape metadata ....................................   Passed    0.46 sec
+        Start 233: Tensor pattern: map-reduce schemas handle singleton and three-input packs
+233/248 Test #233: Tensor pattern: map-reduce schemas handle singleton and three-input packs ..........................   Passed    0.45 sec
+        Start 234: Tensor pattern: tensor accumulators are declared data inputs
+234/248 Test #234: Tensor pattern: tensor accumulators are declared data inputs .......................................   Passed    0.28 sec
+        Start 235: Tensor halo: image caps survive runtime clipping and recursive producer tiling
+235/248 Test #235: Tensor halo: image caps survive runtime clipping and recursive producer tiling .....................   Passed    0.27 sec
+        Start 236: Tensor graph rewrite: three real products share a concat and a single product
+236/248 Test #236: Tensor graph rewrite: three real products share a concat and a single product ......................   Passed    0.28 sec
+        Start 237: Tensor graph rewrite: mismatched shared input and unproved rings stay unchanged
+237/248 Test #237: Tensor graph rewrite: mismatched shared input and unproved rings stay unchanged ....................   Passed    0.90 sec
+        Start 238: Tensor graph rewrite: symbolic width and overflowing total width are rejected
+238/248 Test #238: Tensor graph rewrite: symbolic width and overflowing total width are rejected ......................   Passed    1.40 sec
+        Start 239: Tensor graph rewrite: singleton axes and symbolic rows preserve declared shapes
+239/248 Test #239: Tensor graph rewrite: singleton axes and symbolic rows preserve declared shapes ....................   Passed    0.99 sec
+        Start 240: Tensor graph rewrite: conditional purity is checked for newly constructed calls
+240/248 Test #240: Tensor graph rewrite: conditional purity is checked for newly constructed calls ....................   Passed    0.50 sec
+        Start 241: Tensor pattern: broadcast exposes only its tensor operand
+241/248 Test #241: Tensor pattern: broadcast exposes only its tensor operand ..........................................   Passed    0.50 sec
+        Start 242: Tensor pattern: opaque input wrappers remain explicitly incomplete
+242/248 Test #242: Tensor pattern: opaque input wrappers remain explicitly incomplete .................................   Passed    0.93 sec
+        Start 243: Tensor pattern: combiner and multiple epilogue slots are distinct data uses
+243/248 Test #243: Tensor pattern: combiner and multiple epilogue slots are distinct data uses ........................   Passed    0.43 sec
+        Start 244: Tensor graph rewrite: wrapping integer rings are accepted and checked by mode
+244/248 Test #244: Tensor graph rewrite: wrapping integer rings are accepted and checked by mode ......................   Passed    0.86 sec
+        Start 245: Tensor graph rewrite: fold-equivalent arrays have distinct nominal tensor shapes
+245/248 Test #245: Tensor graph rewrite: fold-equivalent arrays have distinct nominal tensor shapes ...................   Passed    0.41 sec
+        Start 246: Tensor graph rewrite: a product used in another function retains its implementation
+246/248 Test #246: Tensor graph rewrite: a product used in another function retains its implementation ................   Passed    0.41 sec
+        Start 247: Tensor fusion: repeating a reduction in two slots never duplicates the reduction
+247/248 Test #247: Tensor fusion: repeating a reduction in two slots never duplicates the reduction ...................   Passed    0.41 sec
+        Start 248: Tensor graph rewrite: selecting one triple does not require complete combinatorial enumeration
+248/248 Test #248: Tensor graph rewrite: selecting one triple does not require complete combinatorial enumeration .....   Passed    0.24 sec
+
+100% tests passed, 0 tests failed out of 248
+
+Total Test time (real) =  11.49 sec

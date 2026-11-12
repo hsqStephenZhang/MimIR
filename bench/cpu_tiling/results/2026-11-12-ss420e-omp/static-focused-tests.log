@@ -1,0 +1,12 @@
+-- Testing: 5 of 827 tests, 4 workers --
+PASS: mim regression :: omp/runtime_exec.mim (1 of 5)
+PASS: mim regression :: omp/fallback.mim (2 of 5)
+PASS: mim regression :: omp/layout_exec.mim (3 of 5)
+PASS: mim regression :: tensor/cpu_layout_exec.mim (4 of 5)
+PASS: mim regression :: omp/tiling_exec.mim (5 of 5)
+
+Testing Time: 28.84s
+
+Total Discovered Tests: 827
+  Excluded: 822 (99.40%)
+  Passed  :   5 (0.60%)

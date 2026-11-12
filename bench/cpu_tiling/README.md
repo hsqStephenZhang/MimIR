@@ -1,5 +1,8 @@
 # CPU multi-level tiling 与 OpenBLAS 排查
 
+新增多核结果：[ss420e 4/8 核实验](results/2026-11-12-ss420e-omp/README.md)，
+接入机制与复现方式见 [CPU thread tiling](OMP.md)。
+
 本目录保存 2026-11-11 在 i5-14600KF 上的 FP32 单线程 GEMM 排查。矩阵形状按
 `M × K × N` 表述；JSON 的 `shape` 遵循 gemm-bench 的 `[M, N, K]`。
 

@@ -1,0 +1,798 @@
+{
+  "4": [
+    {
+      "name": "sq64",
+      "shape_M_N_K": [
+        64,
+        64,
+        64
+      ],
+      "parallel": false,
+      "thread_tile_M_N": [
+        64,
+        64
+      ],
+      "grid_M_N": [
+        1,
+        1
+      ],
+      "packing_proxy_elements": 8192
+    },
+    {
+      "name": "sq128",
+      "shape_M_N_K": [
+        128,
+        128,
+        128
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        64
+      ],
+      "grid_M_N": [
+        2,
+        2
+      ],
+      "packing_proxy_elements": 65536
+    },
+    {
+      "name": "sq256",
+      "shape_M_N_K": [
+        256,
+        256,
+        256
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        128,
+        128
+      ],
+      "grid_M_N": [
+        2,
+        2
+      ],
+      "packing_proxy_elements": 262144
+    },
+    {
+      "name": "sq512",
+      "shape_M_N_K": [
+        512,
+        512,
+        512
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        256,
+        256
+      ],
+      "grid_M_N": [
+        2,
+        2
+      ],
+      "packing_proxy_elements": 1048576
+    },
+    {
+      "name": "sq1000",
+      "shape_M_N_K": [
+        1000,
+        1000,
+        1000
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        250,
+        1000
+      ],
+      "grid_M_N": [
+        4,
+        1
+      ],
+      "packing_proxy_elements": 5000000
+    },
+    {
+      "name": "sq1024",
+      "shape_M_N_K": [
+        1024,
+        1024,
+        1024
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        512,
+        512
+      ],
+      "grid_M_N": [
+        2,
+        2
+      ],
+      "packing_proxy_elements": 4194304
+    },
+    {
+      "name": "skinny",
+      "shape_M_N_K": [
+        8,
+        512,
+        2304
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        8,
+        128
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 1253376
+    },
+    {
+      "name": "pack",
+      "shape_M_N_K": [
+        64,
+        512,
+        130
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        128
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 99840
+    },
+    {
+      "name": "k49",
+      "shape_M_N_K": [
+        64,
+        1024,
+        49
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        256
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 62720
+    },
+    {
+      "name": "k147",
+      "shape_M_N_K": [
+        64,
+        1024,
+        147
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        256
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 188160
+    },
+    {
+      "name": "k245",
+      "shape_M_N_K": [
+        64,
+        1024,
+        245
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        256
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 313600
+    },
+    {
+      "name": "sq2000",
+      "shape_M_N_K": [
+        2000,
+        2000,
+        2000
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        500,
+        2000
+      ],
+      "grid_M_N": [
+        4,
+        1
+      ],
+      "packing_proxy_elements": 20000000
+    },
+    {
+      "name": "sq2048",
+      "shape_M_N_K": [
+        2048,
+        2048,
+        2048
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        1024,
+        1024
+      ],
+      "grid_M_N": [
+        2,
+        2
+      ],
+      "packing_proxy_elements": 16777216
+    },
+    {
+      "name": "wide2048",
+      "shape_M_N_K": [
+        64,
+        2048,
+        2048
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        512
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 4718592
+    },
+    {
+      "name": "tall2048",
+      "shape_M_N_K": [
+        2048,
+        128,
+        512
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        512,
+        128
+      ],
+      "grid_M_N": [
+        4,
+        1
+      ],
+      "packing_proxy_elements": 1310720
+    },
+    {
+      "name": "odd2048",
+      "shape_M_N_K": [
+        2049,
+        513,
+        2047
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        513,
+        513
+      ],
+      "grid_M_N": [
+        4,
+        1
+      ],
+      "packing_proxy_elements": 8394747
+    },
+    {
+      "name": "m49_k4608",
+      "shape_M_N_K": [
+        49,
+        512,
+        4608
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        49,
+        128
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 3262464
+    },
+    {
+      "name": "m49_k512",
+      "shape_M_N_K": [
+        49,
+        2048,
+        512
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        49,
+        512
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 1148928
+    },
+    {
+      "name": "m7_k1024",
+      "shape_M_N_K": [
+        7,
+        1024,
+        1024
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        7,
+        256
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 1077248
+    },
+    {
+      "name": "m97_n257",
+      "shape_M_N_K": [
+        97,
+        257,
+        383
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        25,
+        257
+      ],
+      "grid_M_N": [
+        4,
+        1
+      ],
+      "packing_proxy_elements": 430875
+    },
+    {
+      "name": "n1000",
+      "shape_M_N_K": [
+        256,
+        1000,
+        2048
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        1000
+      ],
+      "grid_M_N": [
+        4,
+        1
+      ],
+      "packing_proxy_elements": 8716288
+    },
+    {
+      "name": "big_odd",
+      "shape_M_N_K": [
+        1999,
+        2047,
+        4095
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        1999,
+        512
+      ],
+      "grid_M_N": [
+        1,
+        4
+      ],
+      "packing_proxy_elements": 41126085
+    }
+  ],
+  "8": [
+    {
+      "name": "sq64",
+      "shape_M_N_K": [
+        64,
+        64,
+        64
+      ],
+      "parallel": false,
+      "thread_tile_M_N": [
+        64,
+        64
+      ],
+      "grid_M_N": [
+        1,
+        1
+      ],
+      "packing_proxy_elements": 8192
+    },
+    {
+      "name": "sq128",
+      "shape_M_N_K": [
+        128,
+        128,
+        128
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        32
+      ],
+      "grid_M_N": [
+        2,
+        4
+      ],
+      "packing_proxy_elements": 98304
+    },
+    {
+      "name": "sq256",
+      "shape_M_N_K": [
+        256,
+        256,
+        256
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        128,
+        64
+      ],
+      "grid_M_N": [
+        2,
+        4
+      ],
+      "packing_proxy_elements": 393216
+    },
+    {
+      "name": "sq512",
+      "shape_M_N_K": [
+        512,
+        512,
+        512
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        256,
+        128
+      ],
+      "grid_M_N": [
+        2,
+        4
+      ],
+      "packing_proxy_elements": 1572864
+    },
+    {
+      "name": "sq1000",
+      "shape_M_N_K": [
+        1000,
+        1000,
+        1000
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        125,
+        1000
+      ],
+      "grid_M_N": [
+        8,
+        1
+      ],
+      "packing_proxy_elements": 9000000
+    },
+    {
+      "name": "sq1024",
+      "shape_M_N_K": [
+        1024,
+        1024,
+        1024
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        512,
+        256
+      ],
+      "grid_M_N": [
+        2,
+        4
+      ],
+      "packing_proxy_elements": 6291456
+    },
+    {
+      "name": "skinny",
+      "shape_M_N_K": [
+        8,
+        512,
+        2304
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        8,
+        64
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 1327104
+    },
+    {
+      "name": "pack",
+      "shape_M_N_K": [
+        64,
+        512,
+        130
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        64
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 133120
+    },
+    {
+      "name": "k49",
+      "shape_M_N_K": [
+        64,
+        1024,
+        49
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        128
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 75264
+    },
+    {
+      "name": "k147",
+      "shape_M_N_K": [
+        64,
+        1024,
+        147
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        128
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 225792
+    },
+    {
+      "name": "k245",
+      "shape_M_N_K": [
+        64,
+        1024,
+        245
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        128
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 376320
+    },
+    {
+      "name": "sq2000",
+      "shape_M_N_K": [
+        2000,
+        2000,
+        2000
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        250,
+        2000
+      ],
+      "grid_M_N": [
+        8,
+        1
+      ],
+      "packing_proxy_elements": 36000000
+    },
+    {
+      "name": "sq2048",
+      "shape_M_N_K": [
+        2048,
+        2048,
+        2048
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        1024,
+        512
+      ],
+      "grid_M_N": [
+        2,
+        4
+      ],
+      "packing_proxy_elements": 25165824
+    },
+    {
+      "name": "wide2048",
+      "shape_M_N_K": [
+        64,
+        2048,
+        2048
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        64,
+        256
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 5242880
+    },
+    {
+      "name": "tall2048",
+      "shape_M_N_K": [
+        2048,
+        128,
+        512
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        256,
+        128
+      ],
+      "grid_M_N": [
+        8,
+        1
+      ],
+      "packing_proxy_elements": 1572864
+    },
+    {
+      "name": "odd2048",
+      "shape_M_N_K": [
+        2049,
+        513,
+        2047
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        257,
+        513
+      ],
+      "grid_M_N": [
+        8,
+        1
+      ],
+      "packing_proxy_elements": 12595191
+    },
+    {
+      "name": "m49_k4608",
+      "shape_M_N_K": [
+        49,
+        512,
+        4608
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        49,
+        64
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 4165632
+    },
+    {
+      "name": "m49_k512",
+      "shape_M_N_K": [
+        49,
+        2048,
+        512
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        49,
+        256
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 1249280
+    },
+    {
+      "name": "m7_k1024",
+      "shape_M_N_K": [
+        7,
+        1024,
+        1024
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        7,
+        128
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 1105920
+    },
+    {
+      "name": "m97_n257",
+      "shape_M_N_K": [
+        97,
+        257,
+        383
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        13,
+        257
+      ],
+      "grid_M_N": [
+        8,
+        1
+      ],
+      "packing_proxy_elements": 824599
+    },
+    {
+      "name": "n1000",
+      "shape_M_N_K": [
+        256,
+        1000,
+        2048
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        32,
+        1000
+      ],
+      "grid_M_N": [
+        8,
+        1
+      ],
+      "packing_proxy_elements": 16908288
+    },
+    {
+      "name": "big_odd",
+      "shape_M_N_K": [
+        1999,
+        2047,
+        4095
+      ],
+      "parallel": true,
+      "thread_tile_M_N": [
+        1999,
+        256
+      ],
+      "grid_M_N": [
+        1,
+        8
+      ],
+      "packing_proxy_elements": 73869705
+    }
+  ]
+}

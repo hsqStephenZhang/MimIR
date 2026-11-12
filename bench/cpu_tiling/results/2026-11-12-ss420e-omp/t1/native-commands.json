@@ -1,0 +1,442 @@
+[
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1000_1000_1000/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1000_1000_1000/kernel.so"
+    ],
+    "seconds": 2.7184383179992437
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1024_1024_1024/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1024_1024_1024/kernel.so"
+    ],
+    "seconds": 2.5679141338914633
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/128_128_128/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/128_128_128/kernel.so"
+    ],
+    "seconds": 1.5675033554434776
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1999_2047_4095/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1999_2047_4095/kernel.so"
+    ],
+    "seconds": 2.7682232186198235
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2000_2000_2000/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2000_2000_2000/kernel.so"
+    ],
+    "seconds": 2.4177784398198128
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2048_128_512/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2048_128_512/kernel.so"
+    ],
+    "seconds": 1.8161754216998816
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2048_2048_2048/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2048_2048_2048/kernel.so"
+    ],
+    "seconds": 2.4673059415072203
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2049_513_2047/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2049_513_2047/kernel.so"
+    ],
+    "seconds": 2.4172467160969973
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/256_1000_2048/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/256_1000_2048/kernel.so"
+    ],
+    "seconds": 2.5678973644971848
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/256_256_256/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/256_256_256/kernel.so"
+    ],
+    "seconds": 1.567073693498969
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/49_2048_512/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/49_2048_512/kernel.so"
+    ],
+    "seconds": 2.066979670897126
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/49_512_4608/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/49_512_4608/kernel.so"
+    ],
+    "seconds": 2.4677074514329433
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/512_512_512/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/512_512_512/kernel.so"
+    ],
+    "seconds": 2.1679044514894485
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_147/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_147/kernel.so"
+    ],
+    "seconds": 1.6165191885083914
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_245/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_245/kernel.so"
+    ],
+    "seconds": 1.616607716307044
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_49/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_49/kernel.so"
+    ],
+    "seconds": 1.6164942998439074
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_2048_2048/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_2048_2048/kernel.so"
+    ],
+    "seconds": 2.667517103254795
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_512_130/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_512_130/kernel.so"
+    ],
+    "seconds": 1.6161642726510763
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_64_64/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_64_64/kernel.so"
+    ],
+    "seconds": 1.5677849184721708
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/7_1024_1024/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/7_1024_1024/kernel.so"
+    ],
+    "seconds": 2.2176744416356087
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/8_512_2304/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/8_512_2304/kernel.so"
+    ],
+    "seconds": 2.4176487009972334
+  },
+  {
+    "command": [
+      "/usr/lib/llvm-20/bin/clang++",
+      "-O3",
+      "-march=icelake-server",
+      "-mno-avx512f",
+      "-shared",
+      "-fPIC",
+      "-std=c++20",
+      "-Wno-override-module",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/97_257_383/kernel.ll",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/mimir/native_timer.cpp",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/omp-runtime.o",
+      "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+      "-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib",
+      "-o",
+      "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/97_257_383/kernel.so"
+    ],
+    "seconds": 1.6663180626928806
+  }
+]

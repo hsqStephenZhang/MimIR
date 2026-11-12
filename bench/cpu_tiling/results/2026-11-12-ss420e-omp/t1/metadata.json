@@ -1,0 +1,367 @@
+{
+  "manifest": {
+    "source_commit": "3b066da3d404f6d12c0d659897985dedb4d66309",
+    "source_dirty": true,
+    "bench_revision": "d562d65a06771a0d32fe97b25170682b13263197",
+    "cases": [
+      {
+        "op": "gemm",
+        "name": "sq64",
+        "shape": [
+          64,
+          64,
+          64
+        ],
+        "reps": 2000
+      },
+      {
+        "op": "gemm",
+        "name": "sq128",
+        "shape": [
+          128,
+          128,
+          128
+        ],
+        "reps": 500
+      },
+      {
+        "op": "gemm",
+        "name": "sq256",
+        "shape": [
+          256,
+          256,
+          256
+        ],
+        "reps": 100
+      },
+      {
+        "op": "gemm",
+        "name": "sq512",
+        "shape": [
+          512,
+          512,
+          512
+        ],
+        "reps": 20
+      },
+      {
+        "op": "gemm",
+        "name": "sq1000",
+        "shape": [
+          1000,
+          1000,
+          1000
+        ],
+        "reps": 5
+      },
+      {
+        "op": "gemm",
+        "name": "sq1024",
+        "shape": [
+          1024,
+          1024,
+          1024
+        ],
+        "reps": 5
+      },
+      {
+        "op": "gemm",
+        "name": "skinny",
+        "shape": [
+          8,
+          512,
+          2304
+        ],
+        "reps": 200
+      },
+      {
+        "op": "gemm",
+        "name": "pack",
+        "shape": [
+          64,
+          512,
+          130
+        ],
+        "reps": 200
+      },
+      {
+        "op": "gemm",
+        "name": "k49",
+        "shape": [
+          64,
+          1024,
+          49
+        ],
+        "reps": 200
+      },
+      {
+        "op": "gemm",
+        "name": "k147",
+        "shape": [
+          64,
+          1024,
+          147
+        ],
+        "reps": 100
+      },
+      {
+        "op": "gemm",
+        "name": "k245",
+        "shape": [
+          64,
+          1024,
+          245
+        ],
+        "reps": 100
+      },
+      {
+        "op": "gemm",
+        "name": "sq2000",
+        "shape": [
+          2000,
+          2000,
+          2000
+        ],
+        "reps": 1
+      },
+      {
+        "op": "gemm",
+        "name": "sq2048",
+        "shape": [
+          2048,
+          2048,
+          2048
+        ],
+        "reps": 1
+      },
+      {
+        "op": "gemm",
+        "name": "wide2048",
+        "shape": [
+          64,
+          2048,
+          2048
+        ],
+        "reps": 5
+      },
+      {
+        "op": "gemm",
+        "name": "tall2048",
+        "shape": [
+          2048,
+          128,
+          512
+        ],
+        "reps": 10
+      },
+      {
+        "op": "gemm",
+        "name": "odd2048",
+        "shape": [
+          2049,
+          513,
+          2047
+        ],
+        "reps": 2
+      },
+      {
+        "op": "gemm",
+        "name": "m49_k4608",
+        "shape": [
+          49,
+          512,
+          4608
+        ],
+        "reps": 20
+      },
+      {
+        "op": "gemm",
+        "name": "m49_k512",
+        "shape": [
+          49,
+          2048,
+          512
+        ],
+        "reps": 50
+      },
+      {
+        "op": "gemm",
+        "name": "m7_k1024",
+        "shape": [
+          7,
+          1024,
+          1024
+        ],
+        "reps": 200
+      },
+      {
+        "op": "gemm",
+        "name": "m97_n257",
+        "shape": [
+          97,
+          257,
+          383
+        ],
+        "reps": 200
+      },
+      {
+        "op": "gemm",
+        "name": "n1000",
+        "shape": [
+          256,
+          1000,
+          2048
+        ],
+        "reps": 10
+      },
+      {
+        "op": "gemm",
+        "name": "big_odd",
+        "shape": [
+          1999,
+          2047,
+          4095
+        ],
+        "reps": 1
+      }
+    ],
+    "variants": [
+      "mimir_multilevel_omp_6x16"
+    ],
+    "threads": 1,
+    "target": "icelake-server -mno-avx512f",
+    "flags": [
+      "-X",
+      "btensor:registers=128",
+      "-X",
+      "tensor:strict=1",
+      "-X",
+      "omp:strict=1",
+      "-X",
+      "omp:threads=1",
+      "-X",
+      "ll:rt=extern",
+      "-X",
+      "tensor:cpu-order=1",
+      "-X",
+      "tensor:cpu-mr=6",
+      "-X",
+      "tensor:cpu-nr=16",
+      "-X",
+      "tensor:cpu-mc=320",
+      "-X",
+      "tensor:cpu-nc=104512",
+      "-X",
+      "tensor:cpu-kc=320"
+    ],
+    "files": {
+      "ir/mimir_multilevel_omp_6x16/1999_2047_4095/kernel.ll": "55db5e7b6a6c9c225c81ba3f727a1d0a126981e15dcca2b78d8f218201535630",
+      "ir/mimir_multilevel_omp_6x16/256_1000_2048/kernel.ll": "aed9738cf8c7a986bf174cadd7b71e5a395a53674b7bbd6000f23d4614635f52",
+      "ir/mimir_multilevel_omp_6x16/97_257_383/kernel.ll": "26019c89da915d14e018c7009b7543e2aad52567366953dc814d90a78541543b",
+      "ir/mimir_multilevel_omp_6x16/7_1024_1024/kernel.ll": "e2708371edbbc680fe3a960b3ac1da7ca04f1c1d7ded5abee26a4a42a9af6e18",
+      "ir/mimir_multilevel_omp_6x16/49_2048_512/kernel.ll": "642943ea72c6a1fd41593e110985d07e37bb896ae90d659585134dabb4abb45e",
+      "ir/mimir_multilevel_omp_6x16/49_512_4608/kernel.ll": "54ec8e705aacf9811bcf09d25f28988856c3a0fb89b21e96570ff7df02a5c230",
+      "ir/mimir_multilevel_omp_6x16/2049_513_2047/kernel.ll": "2908cdc7a7bf891bcd206d8b0000d52f180f424d34d18ccddfa79ff260560ba0",
+      "ir/mimir_multilevel_omp_6x16/2048_128_512/kernel.ll": "885dac236f1cd6cf5284962baf5fee6d3eebc78647ecb670441fced56bf795c6",
+      "ir/mimir_multilevel_omp_6x16/64_2048_2048/kernel.ll": "e5e9097bd2b3ec2b3a305fad48fab2d15abb643485b61cb2538353e396b225a8",
+      "ir/mimir_multilevel_omp_6x16/2048_2048_2048/kernel.ll": "fefaf5143e042a6b9437ec5497ef650642ae2a630b85dd5f6962a0c3f9135588",
+      "ir/mimir_multilevel_omp_6x16/2000_2000_2000/kernel.ll": "108887a00b54f0b364ea37da9acd775c32cc34f8a6b955782e4f50d6818acc52",
+      "ir/mimir_multilevel_omp_6x16/64_1024_245/kernel.ll": "cc78d45f2de483197ad97ce2d143b8792f2f365c1f8b8a062d4542749562a2fc",
+      "ir/mimir_multilevel_omp_6x16/64_1024_147/kernel.ll": "0b0f57a7c29c4f8ea82df650b5c15a1396e85c613cf48b346daf57ae2c7dea2a",
+      "ir/mimir_multilevel_omp_6x16/64_1024_49/kernel.ll": "2b9056810ca6a2da410c0156b59f8d35cd1b769a458790b8a5c8327f57c6e46f",
+      "ir/mimir_multilevel_omp_6x16/64_512_130/kernel.ll": "b2f3b5dd0985d00f8d559fb531080f42341ecaeafa3e1ee7830aebe165c9cf30",
+      "ir/mimir_multilevel_omp_6x16/8_512_2304/kernel.ll": "30273ae605aa60ac7f9f6642be2ff9e0b4846a8236dff4ad0f86fe91b78b8e8b",
+      "ir/mimir_multilevel_omp_6x16/1024_1024_1024/kernel.ll": "0a57506825ef6e26a3e6fc631862af79db59e4a305652fcfcbcc52e361dfe364",
+      "ir/mimir_multilevel_omp_6x16/1000_1000_1000/kernel.ll": "41aa772ff0b87b3d986794a6975cadd74cb9980a64fa8ed1bb74fb4b7f97b6a5",
+      "ir/mimir_multilevel_omp_6x16/64_64_64/kernel.ll": "f42fd2aee99ccf97b23fd113540433778e8dc6ef8b873383c53431ec9a4ec122",
+      "ir/mimir_multilevel_omp_6x16/512_512_512/kernel.ll": "fd3f116f87284ae6ba832926511069b098b3325da2f84dfdefd4eefaebabe47d",
+      "ir/mimir_multilevel_omp_6x16/256_256_256/kernel.ll": "3cc25e0b898a50f2635da0cb37bcc312892bc9302eead7a54271fcb6e5f6f3cf",
+      "ir/mimir_multilevel_omp_6x16/128_128_128/kernel.ll": "ff4dae5968fa99fbd3a0b0c894aae6591fdf39abb860087967fce85a2b4f2a48"
+    }
+  },
+  "clang": "Ubuntu clang version 20.1.8 (++20250708083436+6fb913d3e2ec-1~exp1~20250708203453.133)\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/lib/llvm-20/bin\n",
+  "lscpu": "Architecture:                       x86_64\nCPU op-mode(s):                     32-bit, 64-bit\nByte Order:                         Little Endian\nAddress sizes:                      46 bits physical, 57 bits virtual\nCPU(s):                             48\nOn-line CPU(s) list:                0-47\nThread(s) per core:                 2\nCore(s) per socket:                 12\nSocket(s):                          2\nNUMA node(s):                       2\nVendor ID:                          GenuineIntel\nCPU family:                         6\nModel:                              106\nModel name:                         Intel(R) Xeon(R) Silver 4310 CPU @ 2.10GHz\nStepping:                           6\nFrequency boost:                    enabled\nCPU MHz:                            1586.911\nCPU max MHz:                        3300.0000\nCPU min MHz:                        800.0000\nBogoMIPS:                           4200.00\nVirtualization:                     VT-x\nL1d cache:                          1.1 MiB\nL1i cache:                          768 KiB\nL2 cache:                           30 MiB\nL3 cache:                           36 MiB\nNUMA node0 CPU(s):                  0-11,24-35\nNUMA node1 CPU(s):                  12-23,36-47\nVulnerability Gather data sampling: Mitigation; Microcode\nVulnerability Itlb multihit:        Not affected\nVulnerability L1tf:                 Not affected\nVulnerability Mds:                  Not affected\nVulnerability Meltdown:             Not affected\nVulnerability Mmio stale data:      Mitigation; Clear CPU buffers; SMT vulnerable\nVulnerability Retbleed:             Not affected\nVulnerability Spec store bypass:    Mitigation; Speculative Store Bypass disabled via prctl and seccomp\nVulnerability Spectre v1:           Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:           Mitigation; Enhanced / Automatic IBRS; IBPB conditional; RSB filling; PBRSB-eIBRS SW sequence; BHI SW loop, KVM SW loop\nVulnerability Srbds:                Not affected\nVulnerability Tsx async abort:      Not affected\nFlags:                              fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid dca sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb cat_l3 invpcid_single ssbd mba ibrs ibpb stibp ibrs_enhanced tpr_shadow vnmi flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb intel_pt avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local wbnoinvd dtherm ida arat pln pts avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg tme avx512_vpopcntdq rdpid md_clear pconfig flush_l1d arch_capabilities\n",
+  "python": "3.12.4 | packaged by Anaconda, Inc. | (main, Jun 18 2024, 15:12:24) [GCC 11.2.0]",
+  "pytorch": {
+    "pytorch": "2.2.1+cu121",
+    "torch_build": "PyTorch built with:\n  - GCC 9.3\n  - C++ Version: 201703\n  - Intel(R) oneAPI Math Kernel Library Version 2022.2-Product Build 20220804 for Intel(R) 64 architecture applications\n  - Intel(R) MKL-DNN v3.3.2 (Git Hash 2dc95a2ad0841e29db8b22fbccaf3e5da7992b01)\n  - OpenMP 201511 (a.k.a. OpenMP 4.5)\n  - LAPACK is enabled (usually provided by MKL)\n  - NNPACK is enabled\n  - CPU capability usage: AVX2\n  - CUDA Runtime 12.1\n  - NVCC architecture flags: -gencode;arch=compute_50,code=sm_50;-gencode;arch=compute_60,code=sm_60;-gencode;arch=compute_70,code=sm_70;-gencode;arch=compute_75,code=sm_75;-gencode;arch=compute_80,code=sm_80;-gencode;arch=compute_86,code=sm_86;-gencode;arch=compute_90,code=sm_90\n  - CuDNN 8.9.7  (built against CUDA 12.2)\n    - Built with CuDNN 8.9.2\n  - Magma 2.6.1\n  - Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release, CUDA_VERSION=12.1, CUDNN_VERSION=8.9.2, CXX_COMPILER=/opt/rh/devtoolset-9/root/usr/bin/c++, CXX_FLAGS= -D_GLIBCXX_USE_CXX11_ABI=0 -fabi-version=11 -fvisibility-inlines-hidden -DUSE_PTHREADPOOL -DNDEBUG -DUSE_KINETO -DLIBKINETO_NOROCTRACER -DUSE_FBGEMM -DUSE_QNNPACK -DUSE_PYTORCH_QNNPACK -DUSE_XNNPACK -DSYMBOLICATE_MOBILE_DEBUG_HANDLE -O2 -fPIC -Wall -Wextra -Werror=return-type -Werror=non-virtual-dtor -Werror=bool-operation -Wnarrowing -Wno-missing-field-initializers -Wno-type-limits -Wno-array-bounds -Wno-unknown-pragmas -Wno-unused-parameter -Wno-unused-function -Wno-unused-result -Wno-strict-overflow -Wno-strict-aliasing -Wno-stringop-overflow -Wsuggest-override -Wno-psabi -Wno-error=pedantic -Wno-error=old-style-cast -Wno-missing-braces -fdiagnostics-color=always -faligned-new -Wno-unused-but-set-variable -Wno-maybe-uninitialized -fno-math-errno -fno-trapping-math -Werror=format -Wno-stringop-overflow, LAPACK_INFO=mkl, PERF_WITH_AVX=1, PERF_WITH_AVX2=1, PERF_WITH_AVX512=1, TORCH_VERSION=2.2.1, USE_CUDA=ON, USE_CUDNN=ON, USE_EXCEPTION_PTR=1, USE_GFLAGS=OFF, USE_GLOG=OFF, USE_MKL=ON, USE_MKLDNN=ON, USE_MPI=OFF, USE_NCCL=1, USE_NNPACK=ON, USE_OPENMP=ON, USE_ROCM=OFF, USE_ROCM_KERNEL_ASSERT=OFF, \n",
+    "pytorch_threads": 1,
+    "pytorch_interop_threads": 1,
+    "pytorch_cpu_capability": "AVX2",
+    "variant": "eager-native",
+    "mode": "eager",
+    "pytorch_blas": "bundled"
+  },
+  "openblas": {
+    "openblas": "OpenBLAS 0.3.33.dev NO_LAPACK NO_LAPACKE NO_AFFINITY HASWELL MAX_THREADS=64",
+    "openblas_library": "/home/sunqi/zc/mimir-bench/OpenBLAS-8e57c86-haswell-pthread/libopenblas.so",
+    "openblas_omp_runtime": null,
+    "openblas_core": "HASWELL",
+    "openblas_threads": 1
+  },
+  "openblas_sha256": "86be1d677b1018d15ace3edf83659cd50a630b8320222794b6839228386018d7",
+  "rng": "np.random.default_rng(np.random.SeedSequence([42,M,N,K])); uniform(-1,1) cast float32",
+  "cpu": 12,
+  "threads": 1,
+  "cpus": [
+    12
+  ],
+  "omp_runtime": "/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1",
+  "runtime_source_sha256": "90bf004b61cb87a9bd8bb0b4bd65617da8ffca6c8c3360a4f23150fe96159122",
+  "thread_environment": {
+    "MKL_ENABLE_INSTRUCTIONS": "AVX2",
+    "MKL_DYNAMIC": "FALSE",
+    "GOMP_CPU_AFFINITY": "12",
+    "OPENBLAS_NUM_THREADS": "1",
+    "OMP_WAIT_POLICY": "PASSIVE",
+    "OMP_PROC_BIND": "TRUE",
+    "OPENBLAS_THREAD_TIMEOUT": "4",
+    "OMP_DYNAMIC": "FALSE",
+    "OPENBLAS_CORETYPE": "Haswell",
+    "GOMP_SPINCOUNT": "0",
+    "MKL_VERBOSE": "0",
+    "OMP_MAX_ACTIVE_LEVELS": "1",
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+  },
+  "isa": "avx2",
+  "target_flags": [
+    "-march=icelake-server",
+    "-mno-avx512f"
+  ],
+  "isa_environment": {
+    "ATEN_CPU_CAPABILITY": "avx2",
+    "MKL_ENABLE_INSTRUCTIONS": "AVX2",
+    "OPENBLAS_CORETYPE": "Haswell",
+    "NPY_DISABLE_CPU_FEATURES": "AVX512F,AVX512CD,AVX512_SKX,AVX512_CLX,AVX512_CNL,AVX512_ICL",
+    "DNNL_MAX_CPU_ISA": "AVX2",
+    "ONEDNN_MAX_CPU_ISA": "AVX2"
+  },
+  "openblas_blocks_before_gemm": {
+    "p": 320,
+    "q": 320,
+    "r": 104512
+  },
+  "thread_affinities_after_validation": {
+    "3415729": [
+      12
+    ],
+    "3415916": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ]
+  },
+  "openblas_blocks_after_gemm": {
+    "p": 320,
+    "q": 320,
+    "r": 104512
+  }
+}

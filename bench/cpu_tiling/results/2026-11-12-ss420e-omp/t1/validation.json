@@ -1,0 +1,482 @@
+{
+  "affinity": [
+    12
+  ],
+  "cpus": [
+    12
+  ],
+  "threads": 1,
+  "warmup": 5,
+  "repeats": 9,
+  "min_repeat_ms": 100,
+  "isa": "avx2",
+  "target_flags": [
+    "-march=icelake-server",
+    "-mno-avx512f"
+  ],
+  "calibrate_once": true,
+  "rows": [
+    {
+      "op": "gemm",
+      "name": "sq64",
+      "shape": [
+        64,
+        64,
+        64
+      ],
+      "reps": 2000,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 2.6084535189596636e-06,
+        "openblas": 2.6084535189596636e-06,
+        "pytorch": 2.6084535189596636e-06
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_64_64/kernel.so",
+          "sha256": "08c168b8a261606a23d653690462d5472dba740eb8d3750b22f3b4eb35bc09e9"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "sq128",
+      "shape": [
+        128,
+        128,
+        128
+      ],
+      "reps": 500,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 7.548916229893621e-06,
+        "openblas": 7.548916229893621e-06,
+        "pytorch": 7.548916229893621e-06
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/128_128_128/kernel.so",
+          "sha256": "9bc4b26b36170cd11c626440da51857dfff4ce0240272136fb90097ea18bd4b8"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "sq256",
+      "shape": [
+        256,
+        256,
+        256
+      ],
+      "reps": 100,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 1.609866959384476e-05,
+        "openblas": 1.609866959384476e-05,
+        "pytorch": 1.609866959384476e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/256_256_256/kernel.so",
+          "sha256": "6bafbac8c6c321b50a63463f9c42b1226771d0e13fe041e8082e212d3478723a"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "sq512",
+      "shape": [
+        512,
+        512,
+        512
+      ],
+      "reps": 20,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 4.3386870316908244e-05,
+        "openblas": 1.8865535757583984e-05,
+        "pytorch": 1.3463768759436334e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/512_512_512/kernel.so",
+          "sha256": "abc4ef99c02c5e0e3073d54d188a3650c69c305ea5e4fa72f9669c6258d49d6b"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "sq1000",
+      "shape": [
+        1000,
+        1000,
+        1000
+      ],
+      "reps": 5,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 7.08122794392807e-05,
+        "openblas": 2.4246917725179173e-05,
+        "pytorch": 2.281338950638201e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1000_1000_1000/kernel.so",
+          "sha256": "4cf2a2ddeb32cf631e59e764ad8e7f01f324a07f5fdbcfbfdaa6b64e3e84b6de"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "sq1024",
+      "shape": [
+        1024,
+        1024,
+        1024
+      ],
+      "reps": 5,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 6.844057457655595e-05,
+        "openblas": 2.6264683651966436e-05,
+        "pytorch": 1.9735615676808038e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1024_1024_1024/kernel.so",
+          "sha256": "6695fc9d805a666c00567adf09c14442d0af011c45b148aa6c4f122b8e77c689"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "skinny",
+      "shape": [
+        8,
+        512,
+        2304
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 8.343132248000984e-05,
+        "openblas": 2.4217142467364283e-05,
+        "pytorch": 2.0104079558436183e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/8_512_2304/kernel.so",
+          "sha256": "f6f6cee009abed1ff993e168babad9688653ed24c1e187531bb97ca7abc5acca"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "pack",
+      "shape": [
+        64,
+        512,
+        130
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 8.795735986666386e-06,
+        "openblas": 8.795735986666386e-06,
+        "pytorch": 8.795735986666386e-06
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_512_130/kernel.so",
+          "sha256": "9503711e824eb97a096d13917765a92b3bd52ce2b6cba2c59b2b31204c907608"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "k49",
+      "shape": [
+        64,
+        1024,
+        49
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 2.6812540880882807e-06,
+        "openblas": 2.6812540880882807e-06,
+        "pytorch": 2.6812540880882807e-06
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_49/kernel.so",
+          "sha256": "4848ce4cb51763880f18169c1408b8c8283b33b2c2f72e873755ead7e8a36225"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "k147",
+      "shape": [
+        64,
+        1024,
+        147
+      ],
+      "reps": 100,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 8.799128568881542e-06,
+        "openblas": 8.799128568881542e-06,
+        "pytorch": 8.799128568881542e-06
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_147/kernel.so",
+          "sha256": "79a4266f99206b0c9bf6caed26bd221692899664c4e119b5578429adf24f1d3a"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "k245",
+      "shape": [
+        64,
+        1024,
+        245
+      ],
+      "reps": 100,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 1.1774730960922852e-05,
+        "openblas": 1.1774730960922852e-05,
+        "pytorch": 1.1774730960922852e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_1024_245/kernel.so",
+          "sha256": "340772c9be15245405ff48af06287ab19b58cca153f44bf415deadbc575920d1"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "sq2000",
+      "shape": [
+        2000,
+        2000,
+        2000
+      ],
+      "reps": 1,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 0.00013473900441596243,
+        "openblas": 3.557865796466331e-05,
+        "pytorch": 2.5822453631363373e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2000_2000_2000/kernel.so",
+          "sha256": "b6436a7417c39fbd4623efdb4b0cc74b97c10d331db4efedfea45d9fe2670b1b"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "sq2048",
+      "shape": [
+        2048,
+        2048,
+        2048
+      ],
+      "reps": 1,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 0.00015725656743370564,
+        "openblas": 3.561335538648791e-05,
+        "pytorch": 2.8131504386408324e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2048_2048_2048/kernel.so",
+          "sha256": "2b1a5f21a529e4958a6e94ff369f6fcce4078241ae44544b118aa5bf92fe1c5e"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "wide2048",
+      "shape": [
+        64,
+        2048,
+        2048
+      ],
+      "reps": 5,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 0.00013006007081628468,
+        "openblas": 2.9142693939832043e-05,
+        "pytorch": 2.5636636383552514e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/64_2048_2048/kernel.so",
+          "sha256": "ae56414576b6eaff7cc198cbb8fa273825dbba63de6d4d69b5201f864b113d9e"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "tall2048",
+      "shape": [
+        2048,
+        128,
+        512
+      ],
+      "reps": 10,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 3.948681305843138e-05,
+        "openblas": 2.0648578995974276e-05,
+        "pytorch": 1.3973239710196594e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2048_128_512/kernel.so",
+          "sha256": "2900a2594e26742afaab964f8d5343a8b9b16948a8b336e1d053826fcaae70d1"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "odd2048",
+      "shape": [
+        2049,
+        513,
+        2047
+      ],
+      "reps": 2,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 0.00013728743293484058,
+        "openblas": 3.205931861316458e-05,
+        "pytorch": 2.6182890493942068e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/2049_513_2047/kernel.so",
+          "sha256": "4685b95a57826f7e19f723b7de90fc4d946917cb5bdcb0b1d896b5718a8d22cf"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "m49_k4608",
+      "shape": [
+        49,
+        512,
+        4608
+      ],
+      "reps": 20,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 0.00028315070959195054,
+        "openblas": 3.879712296850357e-05,
+        "pytorch": 3.25623835379929e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/49_512_4608/kernel.so",
+          "sha256": "6208b06ab78f5c0a5ba807528389c838af584607f19d74cc6dfb425b5f74fafa"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "m49_k512",
+      "shape": [
+        49,
+        2048,
+        512
+      ],
+      "reps": 50,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 2.7990814743361625e-05,
+        "openblas": 1.6836522807039955e-05,
+        "pytorch": 1.6836522807039955e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/49_2048_512/kernel.so",
+          "sha256": "4fde728132c5a5ce55634261bbae48d8a49edb3ba4448a7d8e761238be7846b2"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "m7_k1024",
+      "shape": [
+        7,
+        1024,
+        1024
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 4.742817839442637e-05,
+        "openblas": 1.6107126135977978e-05,
+        "pytorch": 1.7089691073834956e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/7_1024_1024/kernel.so",
+          "sha256": "9a302f8129e9ee0bc9f75ca3bf7ae4b46869966c37ae41bf504c3952c53c7ec5"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "m97_n257",
+      "shape": [
+        97,
+        257,
+        383
+      ],
+      "reps": 200,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 1.6969028422408883e-05,
+        "openblas": 1.4329407338919964e-05,
+        "pytorch": 1.4329407338919964e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/97_257_383/kernel.so",
+          "sha256": "4452d7ffe078f4f0f35ec1ad526dd2aff1f13dd3c68071eed1e9ad2dcb26b49b"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "n1000",
+      "shape": [
+        256,
+        1000,
+        2048
+      ],
+      "reps": 10,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 0.00013933947264632707,
+        "openblas": 3.4375976809997155e-05,
+        "pytorch": 2.199170847205778e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/256_1000_2048/kernel.so",
+          "sha256": "1b75571b8cd2f27e37f148b7780815865e6527535c21a634c61cf33f49df0ae1"
+        }
+      }
+    },
+    {
+      "op": "gemm",
+      "name": "big_odd",
+      "shape": [
+        1999,
+        2047,
+        4095
+      ],
+      "reps": 1,
+      "max_abs_error": {
+        "mimir_multilevel_omp_6x16": 0.0003957659733089258,
+        "openblas": 4.288646523065154e-05,
+        "pytorch": 3.505303091344558e-05
+      },
+      "identities": {
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t1/ir/mimir_multilevel_omp_6x16/1999_2047_4095/kernel.so",
+          "sha256": "9d2f5863ca68e2e7accdf6a5b37da7c0850622ac098819c1cb18cb45b6dd838e"
+        }
+      }
+    }
+  ]
+}

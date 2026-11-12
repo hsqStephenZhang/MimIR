@@ -20,6 +20,9 @@ output extents must be literal, and partial output tiles use capped tails (0).
 Nested thread levels and mixing thread/GPU bindings are rejected. Without `omp`,
 explicit thread levels lower to serial loops.
 
+CPU thread edge tiles specialize full/partial extents before the serial levels,
+so an odd thread boundary preserves static inner packing and register blocking.
+
 The output is allocated before the parallel region. Each tile owns its temporary
 panels and fold buffers; scratch allocation is never hoisted across the thread
 boundary. The memory token is private to the outlined chunk; only pointers and

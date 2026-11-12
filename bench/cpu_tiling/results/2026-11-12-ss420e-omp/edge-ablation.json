@@ -1,0 +1,30 @@
+[
+  {
+    "threads": 4,
+    "name": "big_odd",
+    "initial_ms": 3012.051672,
+    "static_edge_ms": 106.614454,
+    "speedup": 28.251813511139872
+  },
+  {
+    "threads": 4,
+    "name": "m97_n257",
+    "initial_ms": 0.2873938571428571,
+    "static_edge_ms": 0.10865771708683473,
+    "speedup": 2.6449465794793374
+  },
+  {
+    "threads": 8,
+    "name": "big_odd",
+    "initial_ms": 1873.6173000000001,
+    "static_edge_ms": 67.0496225,
+    "speedup": 27.943741219422975
+  },
+  {
+    "threads": 8,
+    "name": "m97_n257",
+    "initial_ms": 0.20814298245614035,
+    "static_edge_ms": 0.09303242899190581,
+    "speedup": 2.237316435909135
+  }
+]

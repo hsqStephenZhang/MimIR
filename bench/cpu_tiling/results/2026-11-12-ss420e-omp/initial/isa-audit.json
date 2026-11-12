@@ -1,0 +1,552 @@
+{
+  "checked_binaries": 67,
+  "all_evex_zero": true,
+  "records": [
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/1000_1000_1000/kernel.so",
+      "sha256": "4cf2a2ddeb32cf631e59e764ad8e7f01f324a07f5fdbcfbfdaa6b64e3e84b6de",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 632
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/1024_1024_1024/kernel.so",
+      "sha256": "6695fc9d805a666c00567adf09c14442d0af011c45b148aa6c4f122b8e77c689",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/128_128_128/kernel.so",
+      "sha256": "9bc4b26b36170cd11c626440da51857dfff4ce0240272136fb90097ea18bd4b8",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/1999_2047_4095/kernel.so",
+      "sha256": "9d2f5863ca68e2e7accdf6a5b37da7c0850622ac098819c1cb18cb45b6dd838e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 324,
+        "xmm": 176
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/2000_2000_2000/kernel.so",
+      "sha256": "b6436a7417c39fbd4623efdb4b0cc74b97c10d331db4efedfea45d9fe2670b1b",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/2048_128_512/kernel.so",
+      "sha256": "2900a2594e26742afaab964f8d5343a8b9b16948a8b336e1d053826fcaae70d1",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 128
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/2048_2048_2048/kernel.so",
+      "sha256": "2b1a5f21a529e4958a6e94ff369f6fcce4078241ae44544b118aa5bf92fe1c5e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/2049_513_2047/kernel.so",
+      "sha256": "4685b95a57826f7e19f723b7de90fc4d946917cb5bdcb0b1d896b5718a8d22cf",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 336,
+        "xmm": 52
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/256_1000_2048/kernel.so",
+      "sha256": "1b75571b8cd2f27e37f148b7780815865e6527535c21a634c61cf33f49df0ae1",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 632
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/256_256_256/kernel.so",
+      "sha256": "6bafbac8c6c321b50a63463f9c42b1226771d0e13fe041e8082e212d3478723a",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/49_2048_512/kernel.so",
+      "sha256": "4fde728132c5a5ce55634261bbae48d8a49edb3ba4448a7d8e761238be7846b2",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 224
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/49_512_4608/kernel.so",
+      "sha256": "6208b06ab78f5c0a5ba807528389c838af584607f19d74cc6dfb425b5f74fafa",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 336
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/512_512_512/kernel.so",
+      "sha256": "abc4ef99c02c5e0e3073d54d188a3650c69c305ea5e4fa72f9669c6258d49d6b",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 256
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/64_1024_147/kernel.so",
+      "sha256": "79a4266f99206b0c9bf6caed26bd221692899664c4e119b5578429adf24f1d3a",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/64_1024_245/kernel.so",
+      "sha256": "340772c9be15245405ff48af06287ab19b58cca153f44bf415deadbc575920d1",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/64_1024_49/kernel.so",
+      "sha256": "4848ce4cb51763880f18169c1408b8c8283b33b2c2f72e873755ead7e8a36225",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/64_2048_2048/kernel.so",
+      "sha256": "ae56414576b6eaff7cc198cbb8fa273825dbba63de6d4d69b5201f864b113d9e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/64_512_130/kernel.so",
+      "sha256": "9503711e824eb97a096d13917765a92b3bd52ce2b6cba2c59b2b31204c907608",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 40
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/64_64_64/kernel.so",
+      "sha256": "08c168b8a261606a23d653690462d5472dba740eb8d3750b22f3b4eb35bc09e9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/7_1024_1024/kernel.so",
+      "sha256": "9a302f8129e9ee0bc9f75ca3bf7ae4b46869966c37ae41bf504c3952c53c7ec5",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 360
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/8_512_2304/kernel.so",
+      "sha256": "f6f6cee009abed1ff993e168babad9688653ed24c1e187531bb97ca7abc5acca",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t1/ir/mimir_multilevel_omp_6x16/97_257_383/kernel.so",
+      "sha256": "4452d7ffe078f4f0f35ec1ad526dd2aff1f13dd3c68071eed1e9ad2dcb26b49b",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 74,
+        "xmm": 25
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/1000_1000_1000/kernel.so",
+      "sha256": "7cd1318c0febd8f8d1bd1c479d85cd20a853472ca8426658e3e9e2ad1ada324e",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 632
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/1024_1024_1024/kernel.so",
+      "sha256": "52fdef02a0ac34d3ad73f13ac00af71f86008a02aef9d875dea68f2bca0bb567",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/128_128_128/kernel.so",
+      "sha256": "90d755ec725c00875e33338f098cbba15295b0f2c2b6bb8d433498e6a4ed3a43",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/1999_2047_4095/kernel.so",
+      "sha256": "f2fed29b707d01075c77e411587866a6e68b284ee764a1600368f6d6aadb2479",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "xmm": 3770,
+        "ymm": 158
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/2000_2000_2000/kernel.so",
+      "sha256": "1961b8b6d68e387a014d0babb637a9f34b57f457a5c6616a9b07e0b0f546f270",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 384
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/2048_128_512/kernel.so",
+      "sha256": "e88d8f33b4fdc82f4b3fb5ae6c3f6cf8c81e173455a5253f4de573f3b3350ceb",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 128
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/2048_2048_2048/kernel.so",
+      "sha256": "69502e752447220366b15b48412c44119a6c48511035b073b2f0d5510a8f641b",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/2049_513_2047/kernel.so",
+      "sha256": "8f3681ae8462e696c7106225bc91eac20cc71f728b9c682a46fcb9e738ea47c9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "xmm": 616,
+        "ymm": 604
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/256_1000_2048/kernel.so",
+      "sha256": "0624c4673fa0faee36869ea5ade37c6290b810d5a6d944681f9aab621887d305",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 632
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/256_256_256/kernel.so",
+      "sha256": "b29ce25ae9af9504746e5b322c99714426ec2d950e4b996d6996b85b55c019dc",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/49_2048_512/kernel.so",
+      "sha256": "9dbe01a83445b8d02b1a6e6ac9739da880b13b359344a684f24bfcd35b22d273",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 224
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/49_512_4608/kernel.so",
+      "sha256": "0d8b1465a0832f4f50e867dfc43a7a65728928b7ba61b4f7450ba1ee81f772a3",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 168
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/512_512_512/kernel.so",
+      "sha256": "9deadc6ffda42e4a9fdd887e97fb170113a4ab89e86e64c0402f643735fa89a9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 160
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/64_1024_147/kernel.so",
+      "sha256": "a3d96403724ac8869aff9a713b0e29cb59b72e1f55d8e91bf285493789873a49",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 20
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/64_1024_245/kernel.so",
+      "sha256": "bc2345c0d00da6ebb96985cbeb82d78bd5a7e64ad3336f8b1a70496c486dce0f",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 20
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/64_1024_49/kernel.so",
+      "sha256": "290c7b65e337a2ad31251334e48a7a350b8b60c47a96458c4c6647c235830dd9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 20
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/64_2048_2048/kernel.so",
+      "sha256": "de61d31f922ddd98661a23f03d9f12e80542ce0f2db889962d45847fb2830418",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/64_512_130/kernel.so",
+      "sha256": "14a6ed1bb64f129feab6f807c8f6b74eea43df11c5502717031ee1e3c2accdcc",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 20
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/64_64_64/kernel.so",
+      "sha256": "08c168b8a261606a23d653690462d5472dba740eb8d3750b22f3b4eb35bc09e9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/7_1024_1024/kernel.so",
+      "sha256": "5db0de07d950ff4dcd96e9be60fc2f9eae9aa783fcaa9f72945f934c331f453b",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 168
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/8_512_2304/kernel.so",
+      "sha256": "228d25532d13aae723eb71b375bf86a12920d4ed65fd0fd6a14587df958c3b92",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 192
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t4/ir/mimir_multilevel_omp_6x16/97_257_383/kernel.so",
+      "sha256": "c1dc227b37f0d317548f95573cfbce1cc902c011a88f8f3d39b06cee83a38f80",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "xmm": 320,
+        "ymm": 189
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/1000_1000_1000/kernel.so",
+      "sha256": "876bc1ee05868941cb3b47accc083d8b9340db270ef7ab42ead213d53c65d071",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 660
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/1024_1024_1024/kernel.so",
+      "sha256": "3dda7194b712373870d93e151533f096f8609d0d26a8266e60a76e867c1ec339",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 192
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/128_128_128/kernel.so",
+      "sha256": "9c93d74978743fed8219f3ab9c8b19738fd6cbc2fd43b5285710da2b578eb88c",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/1999_2047_4095/kernel.so",
+      "sha256": "0cf9a6bd8ff20c9eaa149844afaca29515df95f31de7171e953a65adf46e38ca",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "xmm": 3119,
+        "ymm": 2
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/2000_2000_2000/kernel.so",
+      "sha256": "dd424be75c405cae65080dfcd4e5f1bbd611fe3c745224073318e1257028582a",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/2048_128_512/kernel.so",
+      "sha256": "ccfd40c9019e168b6152387072e85b1b541b45a3b41233061c8013cca1dd46d0",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 160
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/2048_2048_2048/kernel.so",
+      "sha256": "5305cdecb0b562130aea888badfe57963750baf04e7c5d348c4408aee6a0a9d9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 480
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/2049_513_2047/kernel.so",
+      "sha256": "0a055cfdb9656e7571e4e4a73cf848adf297455cb94cf30bdb5e6f1c3df74c40",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "xmm": 781,
+        "ymm": 670
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/256_1000_2048/kernel.so",
+      "sha256": "e7fa50482aac46038aceaa139304630fc6fa2e812eaf930a39060e69e4d61383",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 528
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/256_256_256/kernel.so",
+      "sha256": "a021b1880e2fc886ed6f488d086301731c4775808654272ed84377225fdc7cd9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 64
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/49_2048_512/kernel.so",
+      "sha256": "f440911f423c213cf82ade572393ecf7ebb3d79da506fe9943777b1a98916621",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 112
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/49_512_4608/kernel.so",
+      "sha256": "65a753c43c1be6cf69bd480d2409c6b8eb9efe6046d4dfd3e95af118edf14b2d",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 192
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/512_512_512/kernel.so",
+      "sha256": "c9c18d269a35e8b99bc3699df7aa9b895ba09ecc5bf53170667134921c3f2fa1",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 160
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/64_1024_147/kernel.so",
+      "sha256": "9f020a4d29b51a6161b64f9580ff6e19fd635a99df8dc6f2a6c24978783f908c",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 20
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/64_1024_245/kernel.so",
+      "sha256": "3895817b737a61affa392fab5ddc1413415c4175dbc1cd1122fa32615c2e1613",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 20
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/64_1024_49/kernel.so",
+      "sha256": "123b009d83e3fdef96a5bb0a9955ec7b9616bc73fef2ab8bcdfc32db9785257f",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 20
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/64_2048_2048/kernel.so",
+      "sha256": "aee26408e300903b1012b533540401c1df16315a45a8476b8249db8bf76b26f9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 240
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/64_512_130/kernel.so",
+      "sha256": "16dc168bb231984330b37dbb1746a6948867358bb5d2c1931760a1229aced101",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 44
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/64_64_64/kernel.so",
+      "sha256": "08c168b8a261606a23d653690462d5472dba740eb8d3750b22f3b4eb35bc09e9",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 80
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/7_1024_1024/kernel.so",
+      "sha256": "8111d79828b805995ea0801e0c0827b9a66629127b5ff2fa1360c11115bbd86f",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 168
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/8_512_2304/kernel.so",
+      "sha256": "e14bd5cd4a727ff1aa1e34bb29979e76b56feae2d6f147b899a57875743c0a9f",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 192
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/cpu-omp-20261112/t8/ir/mimir_multilevel_omp_6x16/97_257_383/kernel.so",
+      "sha256": "c2e1f9c58441c79eb786c7c5feab06ee43150bd6f010a2b83beb8ce65e734cf0",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "xmm": 320,
+        "ymm": 189
+      }
+    },
+    {
+      "binary": "/home/sunqi/zc/mimir-bench/OpenBLAS-8e57c86-haswell-pthread/libopenblas.so",
+      "sha256": "86be1d677b1018d15ace3edf83659cd50a630b8320222794b6839228386018d7",
+      "evex_instructions": 0,
+      "static_fma_instructions": {
+        "ymm": 5728,
+        "xmm": 4142
+      }
+    }
+  ]
+}

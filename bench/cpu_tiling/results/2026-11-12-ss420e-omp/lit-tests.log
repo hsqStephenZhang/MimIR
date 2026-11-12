@@ -1,0 +1,9 @@
+-- Testing: 827 tests, 6 workers --
+FAIL: mim regression :: tensor/group_rules_exec.mim (1 of 827)
+********************
+Failed Tests (1):
+  mim regression :: tensor/group_rules_exec.mim
+
+
+Total Discovered Tests: 827
+  Failed: 1 (0.12%)

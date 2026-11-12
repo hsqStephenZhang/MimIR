@@ -1,0 +1,17 @@
+{
+  "bench/cpu_tiling/remote_cpu.py": "d8e95b6c0e990ff506ae9867fed9ba1934420adbc0c38589e7faa71d9a729674",
+  "bench/cpu_tiling/prepare_omp.py": "6b24a87e0b9786ff2eb01a571cd8f352dc2bfa585571e44e2b8022a8c5d4b92b",
+  "src/mim/plug/omp/rt/mim_omp_rt.c": "90bf004b61cb87a9bd8bb0b4bd65617da8ffca6c8c3360a4f23150fe96159122",
+  "build/bin/mim": "04eaa5126bba0c075fb9986c042e7413426bffe5b3b14d99b54c5b611dc26cfe",
+  "build/lib/mim/libmim_tensor.so": "714f992b43bcaa1c5bdd2d6c0175f997ddda39dfada86d6ae7ebe96b6f7f23c1",
+  "build/lib/mim/libmim_omp.so": "cb7baa354ec65a56bc2eb0d8f1c363dd2c3d1992f3ab7c27324d4bd69cecd1da",
+  "compiler_source_commit": "3b066da3d404f6d12c0d659897985dedb4d66309",
+  "compiler_source_diff": "",
+  "manifest_dirty_note": "t1/t8 source_dirty records a temporary documentation-only edit to bench/cpu_tiling/OMP.md during lowering, subsequently restored. Compiler sources match the recorded commit.",
+  "single_core_ir_unchanged_from_initial": true,
+  "build/lib/mim/libmim_ll.so": "8c3554fb7960f6f8b868bb7129aae9e39103ceb16dfa9640fef2b5b476081dad",
+  "build/lib/mim/opt.mim": "e2709195efe80d93532f3996f6e450a7c966695a59ef7a79c583358f33fdac52",
+  "build/lib/mim/tensor.mim": "466cdb54e3f010a0d240eda544ff5a89cf408b2d6e157624232c422a0833783c",
+  "build/lib/mim/omp.mim": "4e1d20aef10cf6d25dd526e1499f5a94782bee1a510db0961f410bd840a7013b",
+  "build/lib/mim/rt/omp_rt.ll": "6421564390d7ed77b40b1b63ccd96a60852111437ca3bba556c0740eddb2bd89"
+}

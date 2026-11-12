@@ -1,0 +1,19 @@
+prepared 1
+prepared 4
+prepared 8
+before np [12, 13, 14, 15]
+after np [12, 13, 14, 15]
+after torch [12]
+after ref [12]
+{'expected': 4, 'team': 4, 'workers': 15, 'cpus': 61440, 'launches': 20}
+{'threads': 4, 'worker_ids': [0, 1, 2, 3], 'cpus': [12, 13, 14, 15], 'team': 4, 'launches': 20, 'validated_calls': 20, 'compile': ['/usr/lib/llvm-20/bin/clang++', '-O3', '-march=icelake-server', '-mno-avx512f', '-shared', '-fPIC', '-std=c++20', '-Wno-override-module', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t4/ir/mimir_multilevel_omp_6x16/256_256_256/kernel.ll', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t4/mimir/native_timer.cpp', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/audit_omp.cpp', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/audit-runtime.o', '/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1', '-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib', '-o', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t4/ir/mimir_multilevel_omp_6x16/256_256_256/audit.so']}
+before np [12, 13, 14, 15, 16, 17, 18, 19]
+after np [12, 13, 14, 15, 16, 17, 18, 19]
+after torch [12]
+after ref [12]
+{'expected': 8, 'team': 8, 'workers': 255, 'cpus': 1044480, 'launches': 20}
+{'threads': 8, 'worker_ids': [0, 1, 2, 3, 4, 5, 6, 7], 'cpus': [12, 13, 14, 15, 16, 17, 18, 19], 'team': 8, 'launches': 20, 'validated_calls': 20, 'compile': ['/usr/lib/llvm-20/bin/clang++', '-O3', '-march=icelake-server', '-mno-avx512f', '-shared', '-fPIC', '-std=c++20', '-Wno-override-module', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t8/ir/mimir_multilevel_omp_6x16/256_256_256/kernel.ll', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t8/mimir/native_timer.cpp', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/audit_omp.cpp', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/audit-runtime.o', '/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib/libgomp-a34b3233.so.1', '-Wl,-rpath,/home/sunqi/anaconda3/lib/python3.12/site-packages/torch/lib', '-o', '/home/sunqi/zc/mimir-bench/cpu-omp-20261112/static/t8/ir/mimir_multilevel_omp_6x16/256_256_256/audit.so']}
+AVX2 audit passed 67
+measured 1
+measured 4
+measured 8
