@@ -826,6 +826,56 @@ std::optional<std::pair<const Def*, const Def*>> group_slice(const Def* input,
     return std::pair{w.app(wide, slice->arg()), item.var->proj(2, 0)->proj(ro, loop)};
 }
 
+/// A fused pointwise producer widened like group_slice: each input slice spans the work-group's tile along the dims
+/// its map reads from @p axis and the reduction block along those it reads from the block's loop.
+std::optional<std::pair<const Def*, const Def*>> group_pointwise(const Def* input,
+                                                                 const Def* map,
+                                                                 u64 axis,
+                                                                 u64 loop,
+                                                                 u64 rank,
+                                                                 const LevelScope& group,
+                                                                 const LevelScope& item,
+                                                                 const Block& block) {
+    auto app  = isa_pointwise(input);
+    auto kdim = dim_of_loop(map, rank, block.loop);
+    if (!app || !kdim || rank != 2 || *kdim == axis) return {};
+    auto& w  = input->world();
+    auto mr  = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto nis = Lit::as(mr.nis);
+    auto ro  = group.tiles.size();
+    auto off = group.var->proj(2, 0)->proj(ro, loop), ext = group.var->proj(2, 1)->proj(ro, loop);
+    auto wide = w.tuple(DefVec(rank, [&](size_t d) { return d == axis ? ext : block.k; }));
+    auto is = DefVec(nis), shapes = DefVec(nis);
+    for (size_t i = 0; i != nis; ++i) {
+        auto slice = Axm::isa<tensor::slice>(app->arg(2, 0)->proj(nis, i));
+        if (!slice) return {};
+        auto [meta, shape, box]    = slice->callee()->as<App>()->uncurry_args<3>();
+        auto [start, step, extent] = box->projs<3>();
+        auto ri                    = Lit::as(meta->proj(2, 1));
+        auto map_i                 = mr.maps->proj(nis, i);
+        auto first = DefVec(start->projs(ri)), size = DefVec(extent->projs(ri));
+        for (u64 e = 0; e != ri; ++e)
+            if (dim_of_loop(map_i, ri, axis) == e)
+                first[e] = off, size[e] = ext;
+            else if (dim_of_loop(map_i, ri, *kdim) == e)
+                first[e] = block.k0, size[e] = block.k;
+        auto widened
+            = w.app(w.app(w.app(w.annex<tensor::slice>(), meta), shape), {w.tuple(first), step, w.tuple(size)});
+        is[i]     = w.app(widened, slice->arg());
+        shapes[i] = w.tuple(size);
+    }
+    auto sched = mr.sched;
+    if (auto clipped = Axm::isa<btensor::clip_sched>(sched)) sched = clipped->arg(4, 3);
+    auto args          = app->uncurry_args<9>();
+    args[2]            = w.tuple({wide, wide, sched});
+    args[3]            = w.tuple({mr.Tis, mr.Ris, w.tuple(shapes), mr.Tps, mr.Rps, mr.Sps});
+    args[8]            = w.tuple({w.tuple(is), app->arg(2, 1)});
+    const Def* rebuilt = w.annex<tensor::map_reduce_post>();
+    for (auto arg : args)
+        rebuilt = w.app(rebuilt, arg);
+    return std::pair{rebuilt, item.var->proj(2, 0)->proj(ro, loop)};
+}
+
 const App* promote_input(const App* app,
                          u64 slot,
                          u64 axis,
@@ -843,9 +893,13 @@ const App* promote_input(const App* app,
     auto input       = is->proj(nis, slot);
     auto rank        = Lit::as(TensorType::isa(input->type())->r);
     const Def* inner = nullptr;
-    if (group)
-        if (auto widened = group_slice(input, mr.maps->proj(nis, slot), axis, loop, rank, *group, *item, *block))
+    if (group) {
+        auto map = mr.maps->proj(nis, slot);
+        if (auto widened = group_slice(input, map, axis, loop, rank, *group, *item, *block))
             std::tie(input, inner) = *widened;
+        else if (auto widened = group_pointwise(input, map, axis, loop, rank, *group, *item, *block))
+            std::tie(input, inner) = *widened;
+    }
     auto type   = *TensorType::isa(input->type());
     auto other  = 2 * rank - 3 - axis;
     auto source = [&](size_t i) {
@@ -963,6 +1017,8 @@ private:
     std::optional<u64> next_items_;
     /// Reductions split over the work-items, by producer; later reads view them instead of recomputing them.
     DefMap<std::pair<const Def*, Origin>> resident_;
+    /// Pointwise producers a deeper reduction level stages; the query marks them with role 1.
+    DefSet staged_pointwise_;
     DefMap<Origin> origins_;
     /// Tiles that enclosing levels hand back, by their original producer, and the inner results that replace them.
     DefMap<const Def*> escaping_;
@@ -1074,9 +1130,9 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
         }
         auto escaping    = escaping_.find(origin.producer);
         auto outside_use = (outermost(own) && outside_.contains(next->producer)) || escaping != escaping_.end();
-        auto query
-            = w.tuple({w.lit_nat(depth), w.lit_nat(kind), w.lit_nat_0(), w.lit_bool(reduces), w.lit_bool(outside_use),
-                       w.lit_bool(in_group(next->producer)), w.lit_nat(std::numeric_limits<nat_t>::max())});
+        auto query = w.tuple({w.lit_nat(depth), w.lit_nat(kind), w.lit_nat(staged_pointwise_.contains(origin.producer)),
+                              w.lit_bool(reduces), w.lit_bool(outside_use), w.lit_bool(in_group(next->producer)),
+                              w.lit_nat(std::numeric_limits<nat_t>::max())});
         auto decision = w.app(control_, query);
         auto fuse = Lit::isa(decision->proj(2, 0)), yield = Lit::isa(decision->proj(2, 1));
         if (!fuse || !yield) {
@@ -1231,6 +1287,16 @@ const Def* Levels::parallel(const Def* anchor,
                        read.off, read.ext);
             }
         root_tile = staging.rewrite(root_tile);
+    }
+    auto staged_below = u64(0);
+    for (auto& level : rest)
+        if (level.kind == 1) staged_below |= level.promote;
+    auto staged_pointwise = fe::Restore(staged_pointwise_, staged_pointwise_);
+    if (auto root = graph::map_reduce(anchor)) {
+        auto nis = Lit::as(btensor::MapRedPost::of(root->callee()->as<App>()).nis);
+        for (u64 slot = 0; slot != nis; ++slot)
+            if (auto input = root->arg(2, 0)->proj(nis, slot); staged_below >> slot & 1 && isa_pointwise(input))
+                staged_pointwise_.insert(input);
     }
     auto fused = fuse(root_tile, var, depth, 0);
 

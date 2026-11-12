@@ -1,0 +1,30 @@
+// 1024³ dequant GEMM: C = A · W', W' = dequant(W) a separate pointwise op of the I8 W and a per-column F32 scale `s[0, n]`,
+// on the gemm_tiled_g3 schedule; tile-and-fuse fills W's panels with W'.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+fun dequant (_: F32, ws: [I8, F32])@tt: F32 =
+    let (w, s) = ws;
+    return (math.arith.mul fast (math.conv.s2f math.f32 w, s));
+
+lam column (o: «2; affine.Index»): «2; affine.Index» = (affine.lit 0, o#1_2);
+
+let levels = serial_group ((64, 64, 0), 1, 0, group_item ((4, 4, 0), 1, item_red ((0, 0, 16), 1, 3, item_vec ((1, 0, 0), item_done ()))));
+
+extern fun gemm1024 (a: tensor.Tensor 2 (1024, 1024) F32, w: tensor.Tensor 2 (1024, 1024) I8, s: tensor.Tensor 2 (1, 1024) F32): tensor.Tensor 2 (1024, 1024) F32 =
+    let wd = map_reduce ((1024, 1024), (1024, 1024)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), column) (buf w, buf s);
+    let root = map_reduce ((1024, 1024), (1024, 1024, 1024)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, wd);
+    return (tile_req (root, wd, levels, default_control));

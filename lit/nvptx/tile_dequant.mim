@@ -1,0 +1,13 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_dequant_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// The B panels' fill converts the I8 weights and scales them, with no device allocation, before the tensor cores read
+// them.
+
+// CHECK-NOT: @malloc
+// CHECK: sitofp i8
+// CHECK: call { float, float, float, float } @llvm.nvvm.mma.m16n8k8.row.col.tf32

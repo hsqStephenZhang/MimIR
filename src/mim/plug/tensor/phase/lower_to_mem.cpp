@@ -679,7 +679,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     // its dynamic branch.
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
     if (Axm::isa<tensor::from_array>(app)) return lower_from_array(app);
-    if (Axm::isa<tensor::get>(app)) return lower_get(app);
+    if (Axm::isa<tensor::get>(app) || Axm::isa<tensor::get_fused>(app)) return lower_get(app);
     if (Axm::isa<tensor::as_vectors>(app)) return lower_as_vectors(app);
     if (Axm::isa<tensor::set>(app)) return lower_set(app);
     if (Axm::isa<tensor::scalar>(app)) {
@@ -752,6 +752,20 @@ const Def* LowerToMem::lower_from_array(const App* app) {
     return buffer::op_init(br, bs, bT, fresh_mem(), rewrite(app->arg()))->proj(2, 1);
 }
 
+// The logical @p shape with each extent the buffer stores, all but literal unit dims, replaced by its storage bound.
+const Def* buffer_bounds(const Def* buffer, const Def* shape, u64 rank) {
+    auto buf = Axm::isa<buffer::Buf>(buffer->type());
+    if (!buf) return shape;
+    auto stored = Lit::isa(buf->arg(3, 0));
+    auto dims   = DefVec(shape->projs(rank));
+    auto kept   = u64(std::ranges::count_if(dims, [](const Def* d) { return Lit::isa(d) != 1; }));
+    if (!stored || (*stored != rank && kept != *stored)) return shape;
+    auto bounds = buf->arg(3, 1);
+    for (size_t d = 0, b = 0; d != rank; ++d)
+        if (*stored == rank || Lit::isa(dims[d]) != 1) dims[d] = bounds->proj(*stored, b++);
+    return shape->world().tuple(dims);
+}
+
 // The buffer holding @p old and @p index retyped to its storage shape.
 // A `tensor.as_vectors` view is accessed through the buffer of the tensor it views: the run's first element goes
 // through that buffer's layout and the physical run is read from the vectorized buffer.
@@ -765,7 +779,7 @@ std::pair<const Def*, const Def*> LowerToMem::storage_access(const Def* old, con
     auto [r, s, T] = TensorType::decode(old->type()->as<Nom>());
     auto source    = rewrite(old);
     auto shape     = fe::lookup(storage_shapes_, old);
-    if (!shape) shape = rewrite(s);
+    if (!shape) shape = buffer_bounds(source, rewrite(s), Lit::as(r));
     auto rank        = Lit::as(r);
     auto coordinates = rewrite(index);
     auto nats        = DefVec(rank, [&](size_t d) { return w.call<core::idx2nat>(coordinates->proj(rank, d)); });

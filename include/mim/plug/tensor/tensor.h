@@ -52,10 +52,19 @@ inline const Def* op_from_array(const Def* type, const Def* array) {
     return w.app(w.app(w.annex<from_array>(), {r, s, T}), array);
 }
 
+/// A `map_reduce_post` with an identity output map, no reduction loops and no epilogue inputs, read element by element.
+const App* isa_pointwise(const Def*);
+
 inline const Def* op_get(const Def* tensor, const Def* index) {
     auto [r, s, T] = *TensorType::isa(tensor->type());
     auto& w        = tensor->world();
     return w.app(w.app(w.annex<get>(), {r, s, T}), {tensor, index});
+}
+
+inline const Def* op_get_fused(const Def* tensor, const Def* index) {
+    auto [r, s, T] = *TensorType::isa(tensor->type());
+    auto& w        = tensor->world();
+    return w.app(w.app(w.annex<get_fused>(), {r, s, T}), {tensor, index});
 }
 
 inline const Def* op_set(const Def* tensor, const Def* index, const Def* value) {

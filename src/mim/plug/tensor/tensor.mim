@@ -277,6 +277,11 @@ axm from_array: {r: Nat, s: «r; Nat», T: *} → [a: «s; T»] → Tensor r s T
 /// These boundary operations remain axioms when they cannot fold, so early inlining cannot expose the private array representation.
 axm get: {r: Nat, s: «r; Nat», T: *}
        → [t: Tensor r s T, i: «j: r; Idx (s#j)»] → T, normalize_get;
+/// `get_fused` is the read of a `tensor.stage` fill: it evaluates a pointwise `map_reduce_post` at the coordinate,
+/// reading its inputs where their maps send it, and reads through a `slice`, so a staged producer is computed in the
+/// fill instead of realized.
+axm get_fused: {r: Nat, s: «r; Nat», T: *}
+             → [t: Tensor r s T, i: «j: r; Idx (s#j)»] → T, normalize_get_fused;
 axm set: {r: Nat, s: «r; Nat», T: *}
        → [t: Tensor r s T, i: «j: r; Idx (s#j)», v: T] → Tensor r s T, normalize_set;
 axm scalar: {T: *} → T → Tensor 0 () T, normalize_scalar;
@@ -2076,10 +2081,12 @@ axm merge_with: {T Acc: *} → [merge: [Acc, Acc] → Acc] → T → T;
 ///
 /// Fuses exactly the group's members; parallel levels yield members that have users outside the group,
 /// reduction levels fuse only members without such users and never yield.
+/// A pointwise member that a deeper reduction level stages (`role` 1) is left to that level, so its panels compute
+/// it per block instead of a parallel level realizing it over the whole reduction.
 ///
 anx lam default_control (q: FuseQuery): FuseDecision =
-    let parallel = core.ncmp.e (q#kind, 0);
-    let inside   = core.bit2.xor 0 (q#outside_use, tt);
+    let parallel = core.bit2.and 0 (core.ncmp.e (q#kind, 0), core.ncmp.e (q#role, 0));
+    let inside   = core.bit2.and 0 (core.bit2.xor 0 (q#outside_use, tt), core.ncmp.ne (q#kind, 0));
     (core.bit2.and 0 (q#in_group, core.bit2.or 0 (parallel, inside)),
      core.bit2.and 0 (core.bit2.and 0 (q#in_group, parallel), q#outside_use));
 
@@ -2683,7 +2690,7 @@ priv anx lam stage_box_impl {T: *, r k: Nat} (s_source s: «r; Nat»)
     (start step: «r; Nat») (scope: Nat) (input: Tensor r s_source T): Tensor (r + k) (stage_shape s (inner_dims_pos, inner_tiles, outer_perm)) T =
     stage_read_impl @(T, T, r, k, r) (s_source, s, s_source) (affine.id @r)
         (inner_dims_pos, inner_tiles, outer_perm, pad) (start, step)
-        (stage_shape s (inner_dims_pos, inner_tiles, outer_perm), ‹r + k; 1›, get @(r, s_source, T)) scope input;
+        (stage_shape s (inner_dims_pos, inner_tiles, outer_perm), ‹r + k; 1›, get_fused @(r, s_source, T)) scope input;
 
 priv anx lam stage_impl {T: *, r k: Nat} (s: «r; Nat»)
     (inner_dims_pos inner_tiles: «k; Nat», outer_perm: «r; Idx r», pad: T)

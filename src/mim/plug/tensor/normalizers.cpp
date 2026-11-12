@@ -11,7 +11,10 @@
 #include <mim/world.h>
 
 #include <mim/plug/affine/affine.h>
+#include <mim/plug/btensor/btensor.h>
+#include <mim/plug/cps/cps.h>
 #include <mim/plug/math/math.h>
+#include <mim/plug/mem/mem.h>
 
 #include "mim/plug/tensor/tensor.h"
 
@@ -826,6 +829,55 @@ const Def* normalize_stage(const Def*, const Def* c, const Def*) {
     return nullptr;
 }
 
+// A pointwise map_reduce_post read at one coordinate is evaluated there: each input is read where its map sends it.
+const Def* read_pointwise(const Def* tensor, const Def* index) {
+    auto app = isa_pointwise(Axm::peel<tensor::buf>(tensor));
+    if (!app) return nullptr;
+    auto mr     = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks  = mr.ranks();
+    auto& w     = app->world();
+    auto rn     = ranks->ro;
+    auto loops  = w.tuple(DefVec(rn, [&](size_t d) {
+        return w.call<core::idx>(w.lit_nat_0(), mr.Sr->proj(rn, d), w.call<core::idx2nat>(index->proj(rn, d)));
+    }));
+    auto inputs = app->arg()->proj(2, 0);
+    auto none   = w.bot(w.call<mem::M>(0));
+    auto values = DefVec(ranks->nis, [&](size_t i) {
+        auto coords = btensor::op_affine_map(mr.maps->proj(ranks->nis, i), mr.Ris->proj(ranks->nis, i), mr.Rn, mr.Sr,
+                                             mr.Sis->proj(ranks->nis, i), loops, none);
+        return op_get_fused(inputs->proj(ranks->nis, i), coords->proj(2, 1));
+    });
+    auto call   = [&](const Def* f, const Def* x) { return w.app(cps::op_cps2ds_dep(f), x); };
+    return call(mr.post, w.tuple({call(mr.comb, w.tuple({mr.init, w.tuple(values)})), w.tuple()}));
+}
+
+// A fused read evaluates a pointwise producer and reads through a slice; it stays while its tensor is unknown and
+// otherwise becomes a plain `get`.
+const Def* normalize_get_fused(const Def*, const Def*, const Def* arg) {
+    auto [tensor, index] = arg->projs<2>();
+    if (auto value = read_pointwise(tensor, index)) return value;
+    auto source = Axm::peel<tensor::buf>(tensor);
+    if (auto slice = Axm::isa<tensor::slice>(source)) {
+        auto [meta, s_in, box]     = slice->callee()->as<App>()->uncurry_args<3>();
+        auto [start, step, extent] = box->projs<3>();
+        if (auto rank = Lit::isa<u64>(meta->proj(2, 1))) {
+            auto& w = arg->world();
+            auto at = w.tuple(DefVec(*rank, [&](size_t d) {
+                auto offset
+                    = w.call(core::nat::mul, Defs{step->proj(*rank, d), w.call<core::idx2nat>(index->proj(*rank, d))});
+                auto x = w.call(core::nat::add, Defs{start->proj(*rank, d), offset});
+                return w.call<core::idx>(w.lit_nat_0(), s_in->proj(*rank, d), x);
+            }));
+            return op_get_fused(slice->arg(), at);
+        }
+    }
+    auto unknown = source;
+    while (auto extract = unknown->isa<Extract>())
+        unknown = extract->tuple();
+    if (unknown->isa<Var>() || unknown->isa_mut()) return nullptr;
+    return op_get(tensor, index);
+}
+
 const Def* normalize_get(const Def*, const Def* callee, const Def* arg) {
     auto [tensor, index] = arg->projs<2>();
     if (auto array = Axm::isa<tensor::from_array>(tensor)) return arg->world().extract(array->arg(), index);
@@ -1053,5 +1105,19 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
 }
 
 MIM_tensor_NORMALIZER_IMPL
+
+    const App*
+    isa_pointwise(const Def* def) {
+    auto app = Axm::isa<tensor::map_reduce_post>(def);
+    if (!app) return nullptr;
+    auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks = mr.ranks();
+    if (!ranks || ranks->rr != 0 || ranks->nps != 0 || mr.init_type != mr.To) return nullptr;
+    auto& w   = app->world();
+    auto loop = w.mut_lam(mr.map_out->type()->as<Pi>());
+    auto out  = w.app(mr.map_out, loop->var());
+    if (auto lam = mr.map_out->isa_mut<Lam>(); lam && lam->is_set()) out = lam->reduce_body(loop->var());
+    return out == loop->var() ? app : nullptr;
+}
 
 } // namespace mim::plug::tensor
