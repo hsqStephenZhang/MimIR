@@ -1,0 +1,15 @@
+
+=================================================================
+==3046172==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 10485760 byte(s) in 20 object(s) allocated from:
+    #0 0x56083d5d34a5 in malloc (/tmp/mimir-attention-local/probe/leak-default+0x1364a5) (BuildId: 5c482a7967f009e12d37ec19060d0105db2d5302)
+    #1 0x56083d626757 in mim_attention (/tmp/mimir-attention-local/probe/leak-default+0x189757) (BuildId: 5c482a7967f009e12d37ec19060d0105db2d5302)
+    #2 0x56083d628ac2 in main (/tmp/mimir-attention-local/probe/leak-default+0x18bac2) (BuildId: 5c482a7967f009e12d37ec19060d0105db2d5302)
+
+Direct leak of 10485760 byte(s) in 20 object(s) allocated from:
+    #0 0x56083d5d34a5 in malloc (/tmp/mimir-attention-local/probe/leak-default+0x1364a5) (BuildId: 5c482a7967f009e12d37ec19060d0105db2d5302)
+    #1 0x56083d626edb in mim_attention (/tmp/mimir-attention-local/probe/leak-default+0x189edb) (BuildId: 5c482a7967f009e12d37ec19060d0105db2d5302)
+    #2 0x56083d628ac2 in main (/tmp/mimir-attention-local/probe/leak-default+0x18bac2) (BuildId: 5c482a7967f009e12d37ec19060d0105db2d5302)
+
+SUMMARY: AddressSanitizer: 20971520 byte(s) leaked in 40 allocation(s).

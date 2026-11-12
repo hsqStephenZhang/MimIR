@@ -1,0 +1,69 @@
+{
+  "compiler_commit": "e395e40c75",
+  "benchmark_commit": "b72b0cb28fe1657284d02295738ce2f8f2a254bd",
+  "benchmark_sha256": {
+    "bench/cpu_tiling/attention_native.cpp": "551c592525cc9d01404935af9a73146fe206b5d04eacefc033590dd99001588b",
+    "bench/cpu_tiling/attention_sample.cpp": "74c97be5a358f040a1379845e4e8c9d92146aea0578f7cf78cef0fa75686b2fc",
+    "bench/cpu_tiling/attention-cases.json": "22b4eeff2074a3ada3e7656a1cbd603462f577fea9dddb801fdde84198e1883d",
+    "bench/cpu_tiling/attention_audit.py": "a65aa897e08ff50f2b32026a2c5c63fcdd8ac5fe5e609acafc2b7a4dd2746274",
+    "bench/cpu_tiling/attention_cpu.py": "5a6c250d51bad66aed980e11d65705599e5baee782f8c289a3c8da54820eeef6",
+    "bench/cpu_tiling/attention_torch.cpp": "32c25408f6d1b81ac4985df65b68e0509c8b59b300e7b2dd33a17a00b8a02903"
+  },
+  "sample_binary_sha256": "eced50f1ae5658ff0cdd980d29d9c446b81d757a04d3e25c6e18c12138fbbd27",
+  "thread_masks": {
+    "1": [
+      0
+    ],
+    "4": [
+      0,
+      2,
+      4,
+      6
+    ],
+    "6": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10
+    ],
+    "8": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      13
+    ]
+  },
+  "cgroup": {
+    "/sys/fs/cgroup/user.slice": {
+      "cpu.max": "max 100000\n",
+      "cpu.stat": "usage_usec 333530288535\nuser_usec 309318266457\nsystem_usec 24212022077\nnice_usec 8798381041\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n"
+    },
+    "/sys/fs/cgroup/user.slice/user-0.slice": {
+      "cpu.max": "max 100000\n",
+      "cpu.stat": "usage_usec 333323898038\nuser_usec 309177267257\nsystem_usec 24146630781\nnice_usec 8798381041\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n"
+    },
+    "/sys/fs/cgroup/user.slice/user-0.slice/session-26.scope": {
+      "cpu.max": "max 100000\n",
+      "cpu.stat": "usage_usec 144978860956\nuser_usec 137447688511\nsystem_usec 7531172444\nnice_usec 113045\ncore_sched.force_idle_usec 0\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0\n"
+    }
+  },
+  "input_qkv_sha256": {
+    "h32_s128_d64": "51783df55fc530a0d55eb1ad0d0e0522929300ecf5749b6155b2f5a33f87c30e",
+    "h8_s256_causal": "6cee4abb8695a8f95bedad4ae2641bf6143f20241d4a98c0b7b4f1122b58429d",
+    "h8_s128_causal": "f2a7959a49a24a3049ed44df0d5b0185e5bb7b7629ced680ff8060d529e4e0c0",
+    "h1_odd": "63390eddec331eafe0f3cfab2d637b3cfbe1d72faac3309de8d751bc269b7b7a",
+    "h8_decode_512": "c5f2f13f755f726ad90336dbb9e5c927868f6f092be33fa1f31425014f2721ca",
+    "h4_cross_128_512": "2b5eb3e75114bb12775dc899506df784f554bad3da97a8ad66226d580d7f9f47",
+    "h8_s128_d128": "a7635a988aab78d0d3bd799acbbd1aaf4686e8eb49ebc8bc564e6cb8a9cfafb6",
+    "h8_s512_d64": "4cbfdf59f77806560c276c90ba2459dd8a4374cba55dab40f2b5cc4b5186ab62",
+    "h8_s256_d64": "707ade4762bb605c822859e129c0537c1c54ca6e54d19fc96e8dabd0816d8058",
+    "h8_s128_d64": "f6ce8efbee384198f2b4c0ad2db819b13ec86513baaee2b1f812cdee357c73ed",
+    "h1_s128_d64": "30f1afb75703d905211003d90638b37dcfb668d709e40117e6856200b875109b"
+  }
+}

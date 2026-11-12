@@ -1,0 +1,255 @@
+[
+  {
+    "case": {
+      "name": "h1_s128_d64",
+      "shape": [
+        1,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 1.0166548800039088e-07,
+      "mimir_online": 4.132797126743526e-08,
+      "torch_sdpa": 7.12294017379822e-08,
+      "torch_explicit": 7.599595275298299e-08
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 1.3537321078005427e-07,
+      "mimir_online": 5.422434515289787e-08,
+      "torch_sdpa": 9.740719153494837e-08,
+      "torch_explicit": 9.479934878764418e-08
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h8_s256_d64",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 1.5122702604064564e-07,
+      "mimir_online": 5.096496691336938e-08,
+      "torch_sdpa": 1.24846843391202e-07,
+      "torch_explicit": 1.1120189724600493e-07
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h8_s512_d64",
+      "shape": [
+        8,
+        512,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 1.5128776520434428e-07,
+      "mimir_online": 5.893346505247976e-08,
+      "torch_sdpa": 7.81212025728617e-08,
+      "torch_explicit": 6.437424131949809e-08
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h8_s128_d128",
+      "shape": [
+        8,
+        128,
+        128,
+        128,
+        128
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 1.3519040067966337e-07,
+      "mimir_online": 6.532162105665762e-08,
+      "torch_sdpa": 1.0236471353897159e-07,
+      "torch_explicit": 1.1189864215777057e-07
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h4_cross_128_512",
+      "shape": [
+        4,
+        128,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 1.6695344254302746e-07,
+      "mimir_online": 4.4015025013610654e-08,
+      "torch_sdpa": 6.887112519171623e-08,
+      "torch_explicit": 5.825279282556384e-08
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h8_decode_512",
+      "shape": [
+        8,
+        1,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 6.447177221258205e-08,
+      "mimir_online": 2.509060942346153e-08,
+      "torch_sdpa": 4.7560933760792956e-08,
+      "torch_explicit": 6.034030783363953e-08
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h1_odd",
+      "shape": [
+        1,
+        97,
+        129,
+        32,
+        48
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 1.0215488999154587e-07,
+      "mimir_online": 2.7217124692890948e-08,
+      "torch_sdpa": 6.378691641550915e-08,
+      "torch_explicit": 7.412953156871183e-08
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_attention_math"
+    ]
+  },
+  {
+    "case": {
+      "name": "h8_s128_causal",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "max_abs_error": {
+      "mimir_default": 1.3536011922443691e-07,
+      "mimir_online": 1.4436057216293818e-07,
+      "torch_sdpa": 1.0660660421102364e-07,
+      "torch_explicit": 1.158764479924912e-07
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h8_s256_causal",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "max_abs_error": {
+      "mimir_default": 1.4418507776614575e-07,
+      "mimir_online": 1.0568630054441641e-07,
+      "torch_sdpa": 1.3177878060294246e-07,
+      "torch_explicit": 1.1438275537845044e-07
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  },
+  {
+    "case": {
+      "name": "h32_s128_d64",
+      "shape": [
+        32,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "max_abs_error": {
+      "mimir_default": 1.2713423136467839e-07,
+      "mimir_online": 5.204394226687725e-08,
+      "torch_sdpa": 1.0207895627389885e-07,
+      "torch_explicit": 1.1805821154009521e-07
+    },
+    "torch_dispatch": [
+      "aten::scaled_dot_product_attention",
+      "aten::_scaled_dot_product_flash_attention_for_cpu"
+    ]
+  }
+]

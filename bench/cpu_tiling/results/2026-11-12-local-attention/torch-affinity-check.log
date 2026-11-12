@@ -1,0 +1,5 @@
+tid 3 cpus 0
+tid 7 cpus 2
+tid 8 cpus 4
+tid 9 cpus 6
+{"seconds":0.0005710402547770701,"iterations":157,"total_ms":89.65332000000001,"maxrss_kib":114656,"live_growth_bytes":0,"leak_limited":false}

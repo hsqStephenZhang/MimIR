@@ -1,0 +1,62 @@
+[
+  {
+    "threads": 6,
+    "name": "h1_s128_d64",
+    "backend": "torch_sdpa"
+  },
+  {
+    "threads": 6,
+    "name": "h1_s128_d64",
+    "backend": "torch_explicit"
+  },
+  {
+    "threads": 6,
+    "name": "h4_cross_128_512",
+    "backend": "torch_sdpa"
+  },
+  {
+    "threads": 6,
+    "name": "h8_decode_512",
+    "backend": "torch_explicit"
+  },
+  {
+    "threads": 6,
+    "name": "h1_odd",
+    "backend": "torch_explicit"
+  },
+  {
+    "threads": 8,
+    "name": "h8_s128_d64",
+    "backend": "mimir_default"
+  },
+  {
+    "threads": 8,
+    "name": "h4_cross_128_512",
+    "backend": "torch_sdpa"
+  },
+  {
+    "threads": 8,
+    "name": "h8_decode_512",
+    "backend": "torch_explicit"
+  },
+  {
+    "threads": 8,
+    "name": "h1_odd",
+    "backend": "torch_sdpa"
+  },
+  {
+    "threads": 8,
+    "name": "h1_odd",
+    "backend": "torch_explicit"
+  },
+  {
+    "threads": 8,
+    "name": "h8_s128_causal",
+    "backend": "mimir_default"
+  },
+  {
+    "threads": 8,
+    "name": "h32_s128_d64",
+    "backend": "mimir_default"
+  }
+]

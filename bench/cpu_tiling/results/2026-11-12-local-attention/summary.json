@@ -1,0 +1,42 @@
+{
+  "1": {
+    "default_vs_sdpa": 0.5854585726613392,
+    "default_vs_explicit": 0.7019088237535058,
+    "online_slowdown": 7.310452046934524,
+    "mimir_default_speedup": 1.0,
+    "mimir_online_speedup": 1.0,
+    "torch_sdpa_speedup": 1.0,
+    "torch_explicit_speedup": 1.0,
+    "leaking_default_cases": 0
+  },
+  "4": {
+    "default_vs_sdpa": 0.24543898859547653,
+    "default_vs_explicit": 0.44179921651963616,
+    "online_slowdown": 8.644300970946363,
+    "mimir_default_speedup": 1.1788547739298605,
+    "mimir_online_speedup": 0.9969529432257384,
+    "torch_sdpa_speedup": 2.811984506901206,
+    "torch_explicit_speedup": 1.8729063719571728,
+    "leaking_default_cases": 9
+  },
+  "6": {
+    "default_vs_sdpa": 0.2083303857633033,
+    "default_vs_explicit": 0.39555719268339995,
+    "online_slowdown": 9.131104552771493,
+    "mimir_default_speedup": 1.239150335553426,
+    "mimir_online_speedup": 0.9920759372157898,
+    "torch_sdpa_speedup": 3.4823109653825512,
+    "torch_explicit_speedup": 2.1988490427431637,
+    "leaking_default_cases": 9
+  },
+  "8": {
+    "default_vs_sdpa": 0.31351800665237956,
+    "default_vs_explicit": 0.4955212176141364,
+    "online_slowdown": 8.551612650015452,
+    "mimir_default_speedup": 1.159543983395154,
+    "mimir_online_speedup": 0.9912505434757263,
+    "torch_sdpa_speedup": 2.165314116102038,
+    "torch_explicit_speedup": 1.6425011170947041,
+    "leaking_default_cases": 9
+  }
+}

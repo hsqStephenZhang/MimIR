@@ -1,0 +1,18 @@
+{
+  "shape": [
+    8,
+    128,
+    128,
+    64,
+    64
+  ],
+  "calls": 20,
+  "default_t1": "passed",
+  "online_t4": "passed",
+  "default_t4": {
+    "status": "failed",
+    "leaked_bytes": 20971520,
+    "allocations": 40,
+    "bytes_per_call": 1048576
+  }
+}

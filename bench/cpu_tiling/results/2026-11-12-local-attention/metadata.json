@@ -1,0 +1,190 @@
+{
+  "source_commit": "e395e40c754a3f2f7624801c6cbe4a754be7e1c1",
+  "source_dirty": [],
+  "source_sha256": {
+    "attention_cpu.py": "c0e9ef74f11ee672f69419c320b53c71374ace6841835fed18bbf858a085f0cd",
+    "attention_native.cpp": "551c592525cc9d01404935af9a73146fe206b5d04eacefc033590dd99001588b",
+    "attention_torch.cpp": "32c25408f6d1b81ac4985df65b68e0509c8b59b300e7b2dd33a17a00b8a02903",
+    "attention_sample.cpp": "c5da70665530157e07dc0c65927d5964ee3507db100fa939a74750910858fc34"
+  },
+  "compiler_sha256": "04eaa5126bba0c075fb9986c042e7413426bffe5b3b14d99b54c5b611dc26cfe",
+  "plugin_sha256": {
+    "libmim_affine.so": "3336b73edb62bc1552d858a9ca5a399590b080d2998e108d2e973f3b494e48bb",
+    "libmim_autodiff.so": "a8b3028d2919b55ec6cfce8db3c6865365587c5d270357c99dc6b9bdfb8ab596",
+    "libmim_btensor.so": "6087d8f6da4f726d0c398047d2d3648a3d23ff7ede7610a1ecaf89392686a616",
+    "libmim_buffer.so": "755e490087b5d4fbb20c9a2814ddd4256e3ed0e13f77a091c101a1621a880cc5",
+    "libmim_clos.so": "ea63967bc3a8640ef2da7656ad45ff747c4f65771ead185b020fca4fde6278b7",
+    "libmim_compile.so": "dd06a9f959ec059e33a8cfb60aee18d6b0ca345694a29efd05ffef51dd9c289b",
+    "libmim_core.so": "eb1e6430ccaf675f2d1c9f3a2e81df9e9c710349494c2ab1746676885f07c1ff",
+    "libmim_cps.so": "8b44cf8801da91ee0bfbfd72d64d972773e1e822de915f9489afec9fa9ab0ad5",
+    "libmim_demo.so": "54c60ece3aca75c6e34c3d283a3d53f7ffe8b95435f877fa399aeccb0ac67c70",
+    "libmim_gpu.so": "dae2511b14c500936741b1a6458caf4d9cb1395422a78f59357ae9cbff32c1f3",
+    "libmim_ll.so": "70779ad05edd01d83674c834c8dd36950f95931e8d5aaa3a9157d5d9941e04a7",
+    "libmim_math.so": "6506d4ba69f5d3ee68bc18498c298240aa0d46999f6a84436ef3d8eba854d50a",
+    "libmim_mem.so": "e8df006d122deb7b8f7e91ab8f52aa815846a0f4d30610b9edb4ad7234e70962",
+    "libmim_nvptx.so": "fc945122e7eecf470d375df9e14783642729acb0c2c38063c50eecdf71ff34d7",
+    "libmim_omp.so": "926592565c34c903b73dcfcd00bf74c14707ad38b72e5a089e32cfb70499e8a6",
+    "libmim_opt.so": "406bc561de83b9267a71c0eef7a032045199784f6a0c51b5770ca16e37ce0b54",
+    "libmim_option.so": "d0dd4d6d0ed4214fbd1c2704fb9a2a37b87c0064a7d64bc27feed88c8042cfa8",
+    "libmim_ord.so": "03d77f7a9da0d99f7e7a136a0b91abbfb89ab259b23b020c8f5598d3ec757c35",
+    "libmim_refly.so": "ed5c2c6a42f058b1c1cc1a20620463151a194e4b3f686033cc6133c71e2ec484",
+    "libmim_regex.so": "9afd1e288dd3b994e3afa03afbeb935164f681549f2a1af3070c87dad51e8965",
+    "libmim_tensor.so": "1ad070ac51c5064277762cb7799634e031ca60dba8ec631a516f8d2d136cab8a",
+    "libmim_tuple.so": "631dc8bd08dadb8edb634999dcff3f269e613657134bb0d401e8a63467553aef",
+    "libmim_vec.so": "12ea975a390b0936fc5377b601eb1994f52e15aaf59d7129deeb92e64fc62422"
+  },
+  "torch": "2.12.0+cpu",
+  "torch_config": "PyTorch built with:\n  - GCC 13.3\n  - C++ Version: 202002\n  - Intel(R) oneAPI Math Kernel Library Version 2024.2-Product Build 20240605 for Intel(R) 64 architecture applications\n  - Intel(R) MKL-DNN v3.11.2 (Git Hash 03c022d3ffdcee958cfacbe720048e725fdf644c)\n  - OpenMP 201511 (a.k.a. OpenMP 4.5)\n  - LAPACK is enabled (usually provided by MKL)\n  - NNPACK is enabled\n  - CPU capability usage: AVX2\n  - Build settings: BLAS_INFO=mkl, BUILD_TYPE=Release, COMMIT_SHA=7661cd9c6b841b62b7f411aa52ec51f05457263b, CUDA_FLAGS= -DLIBCUDACXX_ENABLE_SIMPLIFIED_COMPLEX_OPERATIONS -Xfatbin -compress-all  -Wno-deprecated-gpu-targets --expt-extended-lambda -DCUB_WRAPPED_NAMESPACE=at_cuda_detail -DDISABLE_CUSPARSE_DEPRECATED -DCUDA_HAS_FP16=1 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -DC10_NODEPRECATED, CXX_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/c++, CXX_FLAGS= -fvisibility-inlines-hidden -DUSE_PTHREADPOOL -DNDEBUG -DUSE_KINETO -DLIBKINETO_NOCUPTI -DLIBKINETO_NOROCTRACER -DLIBKINETO_NOXPUPTI=ON -DUSE_FBGEMM -DUSE_PYTORCH_QNNPACK -DUSE_XNNPACK -DSYMBOLICATE_MOBILE_DEBUG_HANDLE -O2 -fPIC -DC10_NODEPRECATED -Wall -Wextra -Werror=return-type -Werror=non-virtual-dtor -Werror=range-loop-construct -Werror=bool-operation -Wnarrowing -Wno-missing-field-initializers -Wno-unknown-pragmas -Wno-unused-parameter -Wno-strict-overflow -Wno-strict-aliasing -Wno-stringop-overflow -Wsuggest-override -Wno-psabi -Wno-error=old-style-cast -faligned-new -Wno-maybe-uninitialized -fno-math-errno -fno-trapping-math -Werror=format -Wno-dangling-reference -Wno-error=dangling-reference -Wno-stringop-overflow, LAPACK_INFO=mkl, PERF_WITH_AVX=1, PERF_WITH_AVX2=1, TORCH_VERSION=2.12.0, USE_CUDA=0, USE_CUDNN=OFF, USE_CUSPARSELT=OFF, USE_GFLAGS=OFF, USE_GLOG=OFF, USE_GLOO=ON, USE_MKL=ON, USE_MKLDNN=ON, USE_MPI=OFF, USE_NCCL=OFF, USE_NNPACK=ON, USE_OPENMP=ON, USE_ROCM=OFF, USE_ROCM_KERNEL_ASSERT=OFF, USE_XCCL=OFF, USE_XPU=OFF, \n",
+  "clang": "clang version 22.1.3\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin\n",
+  "lscpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           39 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  20\nOn-line CPU(s) list:                     0-19\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Core(TM) i5-14600KF\nCPU family:                              6\nModel:                                   183\nThread(s) per core:                      2\nCore(s) per socket:                      14\nSocket(s):                               1\nStepping:                                1\nMicrocode version:                       0x12b\nCPU(s) scaling MHz:                      52%\nCPU max MHz:                             5300.0000\nCPU min MHz:                             800.0000\nBogoMIPS:                                6991.00\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               544 KiB (14 instances)\nL1i cache:                               704 KiB (14 instances)\nL2 cache:                                20 MiB (8 instances)\nL3 cache:                                24 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-19\nVulnerability Gather data sampling:      Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Reg file data sampling:    Mitigation; Clear Register File\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace\n",
+  "torch_compile": {
+    "command": [
+      "clang++",
+      "-O3",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-std=c++20",
+      "-shared",
+      "-fPIC",
+      "-D_GLIBCXX_USE_CXX11_ABI=1",
+      "-I",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/include",
+      "-I",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/include/torch/csrc/api/include",
+      "/workspaces/compile/MimIR/.worktrees/gpu-tiling/bench/cpu_tiling/attention_torch.cpp",
+      "-L",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-ltorch_cpu",
+      "-lc10",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-local/torch_attention.so"
+    ],
+    "seconds": 4.072501379996538
+  },
+  "torch_timer_sha256": "c2cb62f5999090447ef0cba8f4e18eabecc5fca13c6bf9b5dae82faef65d50c2",
+  "omp_runtime": "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+  "cases": [
+    {
+      "name": "h1_s128_d64",
+      "shape": [
+        1,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    {
+      "name": "h8_s256_d64",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    {
+      "name": "h8_s512_d64",
+      "shape": [
+        8,
+        512,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    {
+      "name": "h8_s128_d128",
+      "shape": [
+        8,
+        128,
+        128,
+        128,
+        128
+      ],
+      "causal": false
+    },
+    {
+      "name": "h4_cross_128_512",
+      "shape": [
+        4,
+        128,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    {
+      "name": "h8_decode_512",
+      "shape": [
+        8,
+        1,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    {
+      "name": "h1_odd",
+      "shape": [
+        1,
+        97,
+        129,
+        32,
+        48
+      ],
+      "causal": false
+    },
+    {
+      "name": "h8_s128_causal",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    {
+      "name": "h8_s256_causal",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    {
+      "name": "h32_s128_d64",
+      "shape": [
+        32,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    }
+  ]
+}
