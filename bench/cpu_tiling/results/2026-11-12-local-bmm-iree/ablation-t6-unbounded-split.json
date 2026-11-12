@@ -1,0 +1,3318 @@
+{
+  "affinity": [
+    0
+  ],
+  "cpus": [
+    0,
+    2,
+    4,
+    6,
+    8,
+    10
+  ],
+  "openblas_worker_cpus": [
+    2,
+    4,
+    6,
+    8,
+    10,
+    0
+  ],
+  "threads": 6,
+  "warmup": 5,
+  "repeats": 9,
+  "min_repeat_ms": 100,
+  "isa": "avx2",
+  "target_flags": [
+    "-march=haswell",
+    "-mno-avx512f"
+  ],
+  "calibrate_once": true,
+  "rows": [
+    {
+      "op": "bmm",
+      "name": "b1_sq128",
+      "shape": [
+        1,
+        128,
+        128,
+        128
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ],
+      "max_abs_error": {
+        "mimir_before": 6.954570704209573e-06,
+        "mimir_multilevel_omp_6x16": 6.954570704209573e-06,
+        "openblas": 6.235437288282242e-06,
+        "openblas_loop": 6.954570704209573e-06,
+        "pytorch": 6.954570704209573e-06
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/1_128_128_128/kernel.so",
+          "sha256": "195ab2668720db29a6c74395da077e4c26be7b86aa7e4c1cc7dfb8935647d6ed"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/1_128_128_128/kernel.so",
+          "sha256": "16b2e986e124e236ba789bb3699519849051f16458cd5c3e282f93658ed21590"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.5892714068627452,
+        "mimir_multilevel_omp_6x16": 0.010327370164233577,
+        "openblas": 0.029211076111928816,
+        "openblas_loop": 0.011567113409911815,
+        "pytorch": 0.008876026961146402
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.5898348970588235,
+          0.5897612450980393,
+          0.5891959019607843,
+          0.5876916911764706,
+          0.5884454019607843,
+          0.5893695441176471,
+          0.5892714068627452,
+          0.5887015784313725,
+          0.5893668235294118
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.010315748175182481,
+          0.010312735675182483,
+          0.010327370164233577,
+          0.010328471350364963,
+          0.010358522810218977,
+          0.010376287773722627,
+          0.010307366332116787,
+          0.010339623905109488,
+          0.010312351186131385
+        ],
+        "openblas": [
+          0.02920606978455529,
+          0.029211076111928816,
+          0.029241236395032403,
+          0.029189661190189623,
+          0.029206086651814154,
+          0.02919756056481499,
+          0.02924523668412168,
+          0.029224433856465268,
+          0.029263711830054846
+        ],
+        "openblas_loop": [
+          0.011183367533855572,
+          0.011396863406307627,
+          0.012113224802432425,
+          0.011713472511167746,
+          0.011636788671568006,
+          0.011567113409911815,
+          0.011253374646084327,
+          0.011659217416365044,
+          0.01137126242551414
+        ],
+        "pytorch": [
+          0.008901444304919485,
+          0.008914087383660806,
+          0.008977985152902941,
+          0.00881304550155119,
+          0.008876026961146402,
+          0.008833121731422663,
+          0.008909200546609543,
+          0.008818818806322943,
+          0.008868734598906781
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          204,
+          204,
+          204,
+          204,
+          204,
+          204,
+          204,
+          204,
+          204
+        ],
+        "mimir_multilevel_omp_6x16": [
+          10960,
+          10960,
+          10960,
+          10960,
+          10960,
+          10960,
+          10960,
+          10960,
+          10960
+        ],
+        "openblas": [
+          3727,
+          3727,
+          3727,
+          3727,
+          3727,
+          3727,
+          3727,
+          3727,
+          3727
+        ],
+        "openblas_loop": [
+          10353,
+          10353,
+          10353,
+          10353,
+          10353,
+          10353,
+          10353,
+          10353,
+          10353
+        ],
+        "pytorch": [
+          13538,
+          13538,
+          13538,
+          13538,
+          13538,
+          13538,
+          13538,
+          13538,
+          13538
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b1_sq512",
+      "shape": [
+        1,
+        512,
+        512,
+        512
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ],
+      "max_abs_error": {
+        "mimir_before": 3.439126105320156e-05,
+        "mimir_multilevel_omp_6x16": 3.439126105320156e-05,
+        "openblas": 2.0153846548964793e-05,
+        "openblas_loop": 2.0153846548964793e-05,
+        "pytorch": 1.3903994615205306e-05
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/1_512_512_512/kernel.so",
+          "sha256": "6978530cb198fa86bcbd560bf58570e0d9bcbbbc4cd35e6fe0fe598bf1fb2948"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/1_512_512_512/kernel.so",
+          "sha256": "6c162c96c2f554cc366e94b169d09642051b5c30f37b19575bf2b1f82c039445"
+        }
+      },
+      "ms": {
+        "mimir_before": 60.801225,
+        "mimir_multilevel_omp_6x16": 0.30926262390670556,
+        "openblas": 1.6813145750867469,
+        "openblas_loop": 0.31887183835109073,
+        "pytorch": 0.30128840425531916
+      },
+      "batches_ms": {
+        "mimir_before": [
+          60.724694,
+          60.882951999999996,
+          60.9479275,
+          60.9680145,
+          60.7658755,
+          60.801225,
+          60.6334325,
+          60.857021499999995,
+          60.712923
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.30732097959183674,
+          0.30926262390670556,
+          0.3075954023323615,
+          0.3083738046647231,
+          0.3108433236151603,
+          0.309317472303207,
+          0.30809622740524784,
+          0.3111422419825073,
+          0.3099818221574344
+        ],
+        "openblas": [
+          1.680358499288559,
+          1.681453428630318,
+          1.6819001574601447,
+          1.6800615271287305,
+          1.6813145750867469,
+          1.6799122826861483,
+          1.7166665422597103,
+          1.6803303001714605,
+          1.6822236856179578
+        ],
+        "openblas_loop": [
+          0.3177538986007373,
+          0.3200621443490187,
+          0.3188209868967533,
+          0.3207810620466868,
+          0.3187089761098226,
+          0.3202594841519991,
+          0.31887183835109073,
+          0.3192869114379088,
+          0.31742947176098824
+        ],
+        "pytorch": [
+          0.30209143882978723,
+          0.3025497420212766,
+          0.33776718351063834,
+          0.2997600505319149,
+          0.30128840425531916,
+          0.30006697606382976,
+          0.3018737207446809,
+          0.2998755,
+          0.2997875930851064
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2,
+          2
+        ],
+        "mimir_multilevel_omp_6x16": [
+          343,
+          343,
+          343,
+          343,
+          343,
+          343,
+          343,
+          343,
+          343
+        ],
+        "openblas": [
+          70,
+          70,
+          70,
+          70,
+          70,
+          70,
+          70,
+          70,
+          70
+        ],
+        "openblas_loop": [
+          375,
+          375,
+          375,
+          375,
+          375,
+          375,
+          375,
+          375,
+          375
+        ],
+        "pytorch": [
+          376,
+          376,
+          376,
+          376,
+          376,
+          376,
+          376,
+          376,
+          376
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b2_sq256",
+      "shape": [
+        2,
+        256,
+        256,
+        256
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ],
+      "max_abs_error": {
+        "mimir_before": 1.4788047018043926e-05,
+        "mimir_multilevel_omp_6x16": 1.4788047018043926e-05,
+        "openblas": 1.4788047018043926e-05,
+        "openblas_loop": 1.4788047018043926e-05,
+        "pytorch": 1.4788047018043926e-05
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/2_256_256_256/kernel.so",
+          "sha256": "fc68859ada55d3c68decc618ebf1323bacd7ce21f900c38af455492be659ea2a"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/2_256_256_256/kernel.so",
+          "sha256": "fc68859ada55d3c68decc618ebf1323bacd7ce21f900c38af455492be659ea2a"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.08533379714285715,
+        "mimir_multilevel_omp_6x16": 0.08550152112676057,
+        "openblas": 0.21722183893781064,
+        "openblas_loop": 0.096100735520299,
+        "pytorch": 0.08825573804267844
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.08533605785714286,
+          0.08606725142857141,
+          0.08595945571428572,
+          0.08495306928571428,
+          0.08619291714285715,
+          0.08533379714285715,
+          0.08481288857142857,
+          0.08495947214285714,
+          0.08493754285714285
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.09505788658265382,
+          0.08487077316530764,
+          0.08493023795404002,
+          0.08526837361008154,
+          0.08550152112676057,
+          0.08566464566345441,
+          0.08673456486286138,
+          0.08499788584136397,
+          0.08560936619718311
+        ],
+        "openblas": [
+          0.2173705205459856,
+          0.21710960975701896,
+          0.21725345291351236,
+          0.21722183893781064,
+          0.21724194415252315,
+          0.21719945063583612,
+          0.21712384706224538,
+          0.21721467699024302,
+          0.2172738121252907
+        ],
+        "openblas_loop": [
+          0.09581826786995898,
+          0.09606023316051582,
+          0.09332946124923654,
+          0.0969420332600239,
+          0.10311089020559992,
+          0.096100735520299,
+          0.09337894303549359,
+          0.09664295174928932,
+          0.1103436170465352
+        ],
+        "pytorch": [
+          0.08927337380426785,
+          0.08817985283296542,
+          0.08811447240618102,
+          0.08821706328182488,
+          0.08927713245033111,
+          0.08825573804267844,
+          0.0884438910963944,
+          0.08818935688005887,
+          0.09522561883738044
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          1400,
+          1400,
+          1400,
+          1400,
+          1400,
+          1400,
+          1400,
+          1400,
+          1400
+        ],
+        "mimir_multilevel_omp_6x16": [
+          1349,
+          1349,
+          1349,
+          1349,
+          1349,
+          1349,
+          1349,
+          1349,
+          1349
+        ],
+        "openblas": [
+          484,
+          484,
+          484,
+          484,
+          484,
+          484,
+          484,
+          484,
+          484
+        ],
+        "openblas_loop": [
+          1236,
+          1236,
+          1236,
+          1236,
+          1236,
+          1236,
+          1236,
+          1236,
+          1236
+        ],
+        "pytorch": [
+          1359,
+          1359,
+          1359,
+          1359,
+          1359,
+          1359,
+          1359,
+          1359,
+          1359
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b3_sq128",
+      "shape": [
+        3,
+        128,
+        128,
+        128
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ],
+      "max_abs_error": {
+        "mimir_before": 6.136906883114079e-06,
+        "mimir_multilevel_omp_6x16": 6.136906883114079e-06,
+        "openblas": 6.136906883114079e-06,
+        "openblas_loop": 6.136906883114079e-06,
+        "pytorch": 6.136906883114079e-06
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/3_128_128_128/kernel.so",
+          "sha256": "a93bde833ffffc987a43b15d4dca1980bd4a42939d10e5f56f8b999f3054c3bb"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/3_128_128_128/kernel.so",
+          "sha256": "a93bde833ffffc987a43b15d4dca1980bd4a42939d10e5f56f8b999f3054c3bb"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.02068126860222531,
+        "mimir_multilevel_omp_6x16": 0.020615174205801105,
+        "openblas": 0.03129679219970351,
+        "openblas_loop": 0.03428666407925952,
+        "pytorch": 0.017136113986243037
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.02068126860222531,
+          0.02075274304589708,
+          0.02076635535465925,
+          0.020583124826147426,
+          0.02078825504172462,
+          0.020802950625869263,
+          0.020526624478442283,
+          0.020663688803894298,
+          0.020583970445062588
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.020539134150552484,
+          0.02370817403314917,
+          0.02055949516574586,
+          0.020569111878453037,
+          0.020740570096685083,
+          0.020905857044198894,
+          0.020532947513812155,
+          0.020615174205801105,
+          0.02068082234116022
+        ],
+        "openblas": [
+          0.03130209718766527,
+          0.03128530502492926,
+          0.03129679219970351,
+          0.031287129943747036,
+          0.03129562564235627,
+          0.03131308874200664,
+          0.03122599651952695,
+          0.03130686069181081,
+          0.03129730656001345
+        ],
+        "openblas_loop": [
+          0.03283663485368594,
+          0.03275755917433246,
+          0.03504503494301791,
+          0.035959892723480956,
+          0.033419852052949395,
+          0.03581981814744257,
+          0.03428666407925952,
+          0.03533885382874231,
+          0.03423731272505259
+        ],
+        "pytorch": [
+          0.017136113986243037,
+          0.017125661480510975,
+          0.017071518670160497,
+          0.017054721585325908,
+          0.01708457975761546,
+          0.023931930723878152,
+          0.017263836881755652,
+          0.01735115034392401,
+          0.01718689731411726
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          5752,
+          5752,
+          5752,
+          5752,
+          5752,
+          5752,
+          5752,
+          5752,
+          5752
+        ],
+        "mimir_multilevel_omp_6x16": [
+          5792,
+          5792,
+          5792,
+          5792,
+          5792,
+          5792,
+          5792,
+          5792,
+          5792
+        ],
+        "openblas": [
+          3777,
+          3777,
+          3777,
+          3777,
+          3777,
+          3777,
+          3777,
+          3777,
+          3777
+        ],
+        "openblas_loop": [
+          3409,
+          3409,
+          3409,
+          3409,
+          3409,
+          3409,
+          3409,
+          3409,
+          3409
+        ],
+        "pytorch": [
+          6106,
+          6106,
+          6106,
+          6106,
+          6106,
+          6106,
+          6106,
+          6106,
+          6106
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b8_sq64",
+      "shape": [
+        8,
+        64,
+        64,
+        64
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ],
+      "max_abs_error": {
+        "mimir_before": 3.284525684321693e-06,
+        "mimir_multilevel_omp_6x16": 3.284525684321693e-06,
+        "openblas": 3.669949860451993e-06,
+        "openblas_loop": 3.284525684321693e-06,
+        "pytorch": 3.284525684321693e-06
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/8_64_64_64/kernel.so",
+          "sha256": "e7e3595e9378259b168c683bf6f271308fb67e63d5bc6b1d80d6ba8720c074d5"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/8_64_64_64/kernel.so",
+          "sha256": "9a49935260768dd47c86bfb9923ba33207d4627853f83fd74f6f65714c1d90f3"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.011894389396709323,
+        "mimir_multilevel_omp_6x16": 0.011101141791715338,
+        "openblas": 0.12013581553418078,
+        "openblas_loop": 0.03250525073654073,
+        "pytorch": 0.01080949556509299
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.011872081251269552,
+          0.011925587243550681,
+          0.011799659455616495,
+          0.011891597806215721,
+          0.012045261324395694,
+          0.011889786918545602,
+          0.012077934491163924,
+          0.011894389396709323,
+          0.012019549258582165
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.011128623326444424,
+          0.011159625482972413,
+          0.01117155018420343,
+          0.010910324916883818,
+          0.011088023991373888,
+          0.011101141791715338,
+          0.011081394734477492,
+          0.011086495102884357,
+          0.011118471291221135
+        ],
+        "openblas": [
+          0.12013581553418078,
+          0.1227742766509792,
+          0.12009860742426588,
+          0.15073982888612455,
+          0.12009308714501724,
+          0.1197045109979435,
+          0.12087618198641435,
+          0.12027942864802892,
+          0.11988154020839797
+        ],
+        "openblas_loop": [
+          0.032515555627277704,
+          0.03251068383107138,
+          0.032494665639405666,
+          0.032515427352204265,
+          0.032487192035077606,
+          0.03250525073654073,
+          0.03248856751325661,
+          0.03251932759755852,
+          0.03247644602483267
+        ],
+        "pytorch": [
+          0.010709189222699093,
+          0.010800978445398188,
+          0.01064218159275155,
+          0.01137736118264187,
+          0.010742192083929424,
+          0.01080949556509299,
+          0.01089755498330949,
+          0.016960704625655697,
+          0.010846453314258465
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          9846,
+          9846,
+          9846,
+          9846,
+          9846,
+          9846,
+          9846,
+          9846,
+          9846
+        ],
+        "mimir_multilevel_omp_6x16": [
+          11129,
+          11129,
+          11129,
+          11129,
+          11129,
+          11129,
+          11129,
+          11129,
+          11129
+        ],
+        "openblas": [
+          998,
+          998,
+          998,
+          998,
+          998,
+          998,
+          998,
+          998,
+          998
+        ],
+        "openblas_loop": [
+          3681,
+          3681,
+          3681,
+          3681,
+          3681,
+          3681,
+          3681,
+          3681,
+          3681
+        ],
+        "pytorch": [
+          10485,
+          10485,
+          10485,
+          10485,
+          10485,
+          10485,
+          10485,
+          10485,
+          10485
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b8_sq256",
+      "shape": [
+        8,
+        256,
+        256,
+        256
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ],
+      "max_abs_error": {
+        "mimir_before": 1.9163437702474084e-05,
+        "mimir_multilevel_omp_6x16": 1.9163437702474084e-05,
+        "openblas": 1.9163437702474084e-05,
+        "openblas_loop": 1.9163437702474084e-05,
+        "pytorch": 1.9163437702474084e-05
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/8_256_256_256/kernel.so",
+          "sha256": "3a7a9d5f79b941abee96b2fae2f05a614c606023f1fe7a9b4eb4387ed49c9522"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/8_256_256_256/kernel.so",
+          "sha256": "6c78ea687889b7801d17451607f73d59f89cff2c719055da0ae25af3ab27e07d"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.44625494594594595,
+        "mimir_multilevel_omp_6x16": 0.3280295384615385,
+        "openblas": 0.4376901760845194,
+        "openblas_loop": 0.39558356931795263,
+        "pytorch": 0.43296604166666663
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.44753624324324326,
+          0.44625494594594595,
+          0.44404314285714286,
+          0.44510712741312747,
+          0.48496595752895755,
+          0.44439023938223937,
+          0.44427155598455603,
+          0.4476146177606178,
+          0.5094495637065637
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.3288475769230769,
+          0.32816779945054947,
+          0.3278584395604396,
+          0.32868435164835164,
+          0.32786328571428575,
+          0.32777306318681315,
+          0.3280295384615385,
+          0.3278918818681319,
+          0.3280801730769231
+        ],
+        "openblas": [
+          0.4376901760845194,
+          0.4373319402691864,
+          0.4376163650747566,
+          0.4376462376159098,
+          0.43828524870886687,
+          0.43876556354382684,
+          0.4374582102403991,
+          0.4378856651278005,
+          0.5224787571009188
+        ],
+        "openblas_loop": [
+          0.3967442882842281,
+          0.39558356931795263,
+          0.3949276740766234,
+          0.3950785531843495,
+          0.3947961425486331,
+          0.3953761851233948,
+          0.3961128192410494,
+          0.3956117951828573,
+          0.3959359504127254
+        ],
+        "pytorch": [
+          0.5238588674242425,
+          0.43099801893939393,
+          0.4398909659090909,
+          0.43297688636363635,
+          0.43063547348484843,
+          0.431144696969697,
+          0.43166974999999996,
+          0.4514374962121212,
+          0.43296604166666663
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          259,
+          259,
+          259,
+          259,
+          259,
+          259,
+          259,
+          259,
+          259
+        ],
+        "mimir_multilevel_omp_6x16": [
+          364,
+          364,
+          364,
+          364,
+          364,
+          364,
+          364,
+          364,
+          364
+        ],
+        "openblas": [
+          252,
+          252,
+          252,
+          252,
+          252,
+          252,
+          252,
+          252,
+          252
+        ],
+        "openblas_loop": [
+          288,
+          288,
+          288,
+          288,
+          288,
+          288,
+          288,
+          288,
+          288
+        ],
+        "pytorch": [
+          264,
+          264,
+          264,
+          264,
+          264,
+          264,
+          264,
+          264,
+          264
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b8_sq512",
+      "shape": [
+        8,
+        512,
+        512,
+        512
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ],
+      "max_abs_error": {
+        "mimir_before": 3.3831131041495155e-05,
+        "mimir_multilevel_omp_6x16": 3.3831131041495155e-05,
+        "openblas": 2.1419460932037282e-05,
+        "openblas_loop": 2.1419460932037282e-05,
+        "pytorch": 1.7114944249385644e-05
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/8_512_512_512/kernel.so",
+          "sha256": "acc00c315072fdd9b94defe1d62a715da3eef01715f51a196519823a3f5f92b5"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/8_512_512_512/kernel.so",
+          "sha256": "11c16783a65b1905339f20c8a37cf8705da5b791a69a64403f9fa51d502dd235"
+        }
+      },
+      "ms": {
+        "mimir_before": 5.532309285714287,
+        "mimir_multilevel_omp_6x16": 2.6717349777777777,
+        "openblas": 3.7478636018931866,
+        "openblas_loop": 2.6533838477917016,
+        "pytorch": 3.5355968124999997
+      },
+      "batches_ms": {
+        "mimir_before": [
+          5.502562333333333,
+          5.598728476190477,
+          5.480752380952381,
+          5.534885714285714,
+          5.608975,
+          5.532309285714287,
+          5.44431561904762,
+          5.533312904761905,
+          5.458017571428571
+        ],
+        "mimir_multilevel_omp_6x16": [
+          2.615059844444444,
+          2.6230206444444444,
+          2.5983045555555555,
+          2.673429022222222,
+          2.6943643333333336,
+          2.6854498444444443,
+          2.6278886000000004,
+          2.691922133333333,
+          2.6717349777777777
+        ],
+        "openblas": [
+          3.7397638894617558,
+          3.6691575311124325,
+          3.7634158662209907,
+          3.749377140775323,
+          3.7055791976551213,
+          3.7832100099573536,
+          3.7375616064916057,
+          3.7478636018931866,
+          3.7872834286342063
+        ],
+        "openblas_loop": [
+          2.6493922574445605,
+          2.663072047289461,
+          2.6533838477917016,
+          2.6528179994784296,
+          2.6543892454355955,
+          3.293237427715212,
+          2.623610000591725,
+          2.6491765747778118,
+          2.6657544542104006
+        ],
+        "pytorch": [
+          3.5950137812499996,
+          3.7326079375,
+          3.57240371875,
+          3.4635456249999996,
+          3.60762496875,
+          3.4538966875000003,
+          3.5355968124999997,
+          3.5240105625,
+          3.433214
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          21,
+          21,
+          21,
+          21,
+          21,
+          21,
+          21,
+          21,
+          21
+        ],
+        "mimir_multilevel_omp_6x16": [
+          45,
+          45,
+          45,
+          45,
+          45,
+          45,
+          45,
+          45,
+          45
+        ],
+        "openblas": [
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30,
+          30
+        ],
+        "openblas_loop": [
+          40,
+          40,
+          40,
+          40,
+          40,
+          40,
+          40,
+          40,
+          40
+        ],
+        "pytorch": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b32_sq32",
+      "shape": [
+        32,
+        32,
+        32,
+        32
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ],
+      "max_abs_error": {
+        "mimir_before": 1.695618999875137e-06,
+        "mimir_multilevel_omp_6x16": 1.695618999875137e-06,
+        "openblas": 1.6817939734181664e-06,
+        "openblas_loop": 1.695618999875137e-06,
+        "pytorch": 1.695618999875137e-06
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/32_32_32_32/kernel.so",
+          "sha256": "76599420aced5d0b342c2925f992dbcb02dda0ef75a07f159a01a2fccf2d5858"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/32_32_32_32/kernel.so",
+          "sha256": "43e7c3f71dc99d37e26ed08f636165435d9b84dc9fe15ec42ffd729ad3ff273b"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.007236085855076126,
+        "mimir_multilevel_omp_6x16": 0.007967453255266339,
+        "openblas": 0.06065750838805151,
+        "openblas_loop": 0.02091128569926957,
+        "pytorch": 0.006971789044144924
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.007244974982626825,
+          0.007178877187440773,
+          0.007245111946427444,
+          0.007219853180870554,
+          0.007197192873839155,
+          0.007236085855076126,
+          0.007183542548486955,
+          0.008231053762082254,
+          0.007297307852675469
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.008077878062750588,
+          0.00801802284732387,
+          0.00799635957487431,
+          0.00792062788773627,
+          0.007940467065487176,
+          0.007982873225991217,
+          0.007864811939158658,
+          0.007967453255266339,
+          0.007964509578056386
+        ],
+        "openblas": [
+          0.060566810894965996,
+          0.06069775612743565,
+          0.06065657018136072,
+          0.06990603008037069,
+          0.0605955936305752,
+          0.06087429928686765,
+          0.06065750838805151,
+          0.06090342573656326,
+          0.060571449805826044
+        ],
+        "openblas_loop": [
+          0.020909054783885675,
+          0.02091133835646583,
+          0.02088971127013457,
+          0.021135531569237153,
+          0.02088211905983736,
+          0.02091128569926957,
+          0.02094107869522595,
+          0.02089699463524619,
+          0.020913511002287718
+        ],
+        "pytorch": [
+          0.006971789044144924,
+          0.006943718004204279,
+          0.006937765302337084,
+          0.007047266229751452,
+          0.006960686286632867,
+          0.006985489303820948,
+          0.006942495362928156,
+          0.007150526833189069,
+          0.007028184122666007
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          15829,
+          15829,
+          15829,
+          15829,
+          15829,
+          15829,
+          15829,
+          15829,
+          15829
+        ],
+        "mimir_multilevel_omp_6x16": [
+          15713,
+          15713,
+          15713,
+          15713,
+          15713,
+          15713,
+          15713,
+          15713,
+          15713
+        ],
+        "openblas": [
+          1894,
+          1894,
+          1894,
+          1894,
+          1894,
+          1894,
+          1894,
+          1894,
+          1894
+        ],
+        "openblas_loop": [
+          5642,
+          5642,
+          5642,
+          5642,
+          5642,
+          5642,
+          5642,
+          5642,
+          5642
+        ],
+        "pytorch": [
+          16174,
+          16174,
+          16174,
+          16174,
+          16174,
+          16174,
+          16174,
+          16174,
+          16174
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b32_sq128",
+      "shape": [
+        32,
+        128,
+        128,
+        128
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ],
+      "max_abs_error": {
+        "mimir_before": 8.463527016999706e-06,
+        "mimir_multilevel_omp_6x16": 8.463527016999706e-06,
+        "openblas": 8.463527016999706e-06,
+        "openblas_loop": 8.463527016999706e-06,
+        "pytorch": 8.463527016999706e-06
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/32_128_128_128/kernel.so",
+          "sha256": "1d1f49efdf970dcb755239715c1ab81bef31608de56b98d601cf43269ed91508"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/32_128_128_128/kernel.so",
+          "sha256": "0255b6cd2d31e4369373a643f89717ce4f95bbdb0106b446800cd49bab87ea20"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.18920954545454546,
+        "mimir_multilevel_omp_6x16": 0.1955033279742765,
+        "openblas": 0.1947038934195835,
+        "openblas_loop": 0.3594613213080555,
+        "pytorch": 0.1744208788819876
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.20095370292207793,
+          0.1891940405844156,
+          0.18911606818181817,
+          0.18920954545454546,
+          0.1894960064935065,
+          0.18906754545454546,
+          0.18951202110389612,
+          0.18920536201298702,
+          0.1896904464285714
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.19763678778135046,
+          0.1929135192926045,
+          0.19506522668810292,
+          0.19331347106109323,
+          0.21342727170418005,
+          0.1955033279742765,
+          0.19767578938906752,
+          0.193486847266881,
+          0.2337346639871383
+        ],
+        "openblas": [
+          0.19513419788533043,
+          0.1946847075221313,
+          0.1948725427264403,
+          0.194529980753798,
+          0.19466564639906958,
+          0.22321817222101883,
+          0.1947038934195835,
+          0.1945885496895806,
+          0.19475478506051722
+        ],
+        "openblas_loop": [
+          0.3644045407742539,
+          0.3997025385660468,
+          0.3587864310518138,
+          0.359163133733136,
+          0.3594613213080555,
+          0.3655088413795081,
+          0.36289606779675365,
+          0.3593915845656727,
+          0.3586631836283133
+        ],
+        "pytorch": [
+          0.1743614798136646,
+          0.17516200310559005,
+          0.17426475776397518,
+          0.17420736956521737,
+          0.1747115155279503,
+          0.1744208788819876,
+          0.1743398198757764,
+          0.1764227189440994,
+          0.17515025621118013
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          616,
+          616,
+          616,
+          616,
+          616,
+          616,
+          616,
+          616,
+          616
+        ],
+        "mimir_multilevel_omp_6x16": [
+          622,
+          622,
+          622,
+          622,
+          622,
+          622,
+          622,
+          622,
+          622
+        ],
+        "openblas": [
+          571,
+          571,
+          571,
+          571,
+          571,
+          571,
+          571,
+          571,
+          571
+        ],
+        "openblas_loop": [
+          323,
+          323,
+          323,
+          323,
+          323,
+          323,
+          323,
+          323,
+          323
+        ],
+        "pytorch": [
+          644,
+          644,
+          644,
+          644,
+          644,
+          644,
+          644,
+          644,
+          644
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b64_sq16",
+      "shape": [
+        64,
+        16,
+        16,
+        16
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ],
+      "max_abs_error": {
+        "mimir_before": 8.948161083210948e-07,
+        "mimir_multilevel_omp_6x16": 8.948161083210948e-07,
+        "openblas": 7.001195334588317e-07,
+        "openblas_loop": 6.479806060610827e-07,
+        "pytorch": 8.948161083210948e-07
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/64_16_16_16/kernel.so",
+          "sha256": "e47a9d52538d4cfdd7eb6499330a3618302c72be8f0b2d98f7346a06809bc142"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/64_16_16_16/kernel.so",
+          "sha256": "e47a9d52538d4cfdd7eb6499330a3618302c72be8f0b2d98f7346a06809bc142"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.008681178851963747,
+        "mimir_multilevel_omp_6x16": 0.008677403098349112,
+        "openblas": 0.0420029015017256,
+        "openblas_loop": 0.00918989320981199,
+        "pytorch": 0.005203878909073387
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.00867828836858006,
+          0.008684382477341391,
+          0.008726430513595167,
+          0.008678101359516617,
+          0.008691076208459214,
+          0.008691236178247734,
+          0.008681178851963747,
+          0.008678353776435044,
+          0.008669548942598188
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.00867325631797199,
+          0.008688608794304043,
+          0.008677403098349112,
+          0.008670980126750646,
+          0.008682871449808309,
+          0.008690114623268914,
+          0.00867224747672326,
+          0.008683115327439168,
+          0.008664171739300524
+        ],
+        "openblas": [
+          0.0420029015017256,
+          0.04176892955386844,
+          0.04455128784880771,
+          0.04184415522665362,
+          0.04204226060889365,
+          0.04182686007834219,
+          0.04598137673948417,
+          0.042025032287808815,
+          0.04187705338583041
+        ],
+        "openblas_loop": [
+          0.009290650724108151,
+          0.00918989320981199,
+          0.00915181801488811,
+          0.009247650582367197,
+          0.00927378825409342,
+          0.009135339655079795,
+          0.009147353687889695,
+          0.009151133049714578,
+          0.009280730036893118
+        ],
+        "pytorch": [
+          0.005202936828410351,
+          0.005194618705729292,
+          0.0052226743603334454,
+          0.0052391611815159255,
+          0.005230399074832554,
+          0.005203878909073387,
+          0.005176308485520166,
+          0.005167173661639281,
+          0.005212034404664385
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          13240,
+          13240,
+          13240,
+          13240,
+          13240,
+          13240,
+          13240,
+          13240,
+          13240
+        ],
+        "mimir_multilevel_omp_6x16": [
+          12781,
+          12781,
+          12781,
+          12781,
+          12781,
+          12781,
+          12781,
+          12781,
+          12781
+        ],
+        "openblas": [
+          2843,
+          2843,
+          2843,
+          2843,
+          2843,
+          2843,
+          2843,
+          2843,
+          2843
+        ],
+        "openblas_loop": [
+          13116,
+          13116,
+          13116,
+          13116,
+          13116,
+          13116,
+          13116,
+          13116,
+          13116
+        ],
+        "pytorch": [
+          20753,
+          20753,
+          20753,
+          20753,
+          20753,
+          20753,
+          20753,
+          20753,
+          20753
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b64_sq64",
+      "shape": [
+        64,
+        64,
+        64,
+        64
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ],
+      "max_abs_error": {
+        "mimir_before": 3.908169411204199e-06,
+        "mimir_multilevel_omp_6x16": 3.908169411204199e-06,
+        "openblas": 3.457659644823252e-06,
+        "openblas_loop": 3.908169411204199e-06,
+        "pytorch": 3.908169411204199e-06
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/64_64_64_64/kernel.so",
+          "sha256": "79f3005ed6f95c6b7aef6fb21b069b67b4059960aec57a7200f163dda13e6b93"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/64_64_64_64/kernel.so",
+          "sha256": "af3598de5e57ef346e57bf7f6bec180281c6f13187711174188de21ce0de3fd4"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.051412057915057915,
+        "mimir_multilevel_omp_6x16": 0.0543737723880597,
+        "openblas": 0.6832035816153564,
+        "openblas_loop": 0.2693014701735006,
+        "pytorch": 0.040642829259896734
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.05096824882024882,
+          0.051240803088803084,
+          0.05109089489489489,
+          0.05184729472329472,
+          0.051412057915057915,
+          0.05146323723723724,
+          0.05162611625911626,
+          0.05137791548691548,
+          0.051564126984126976
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.06304624813432835,
+          0.05391576305970149,
+          0.05450311986940298,
+          0.05383941231343284,
+          0.0543247411380597,
+          0.0543737723880597,
+          0.054562537313432836,
+          0.05427896175373134,
+          0.05443381902985075
+        ],
+        "openblas": [
+          0.677750656370726,
+          0.6776216839792701,
+          0.6733077636125397,
+          0.673950976023903,
+          0.6864789483995087,
+          0.6860089988189901,
+          0.6832035816153564,
+          0.6847799897699033,
+          0.6838774355917664
+        ],
+        "openblas_loop": [
+          0.2694282634072628,
+          0.2688739786640272,
+          0.2692202439527238,
+          0.2694467853905904,
+          0.2757496542801863,
+          0.268861584738786,
+          0.2693014701735006,
+          0.2692875270076043,
+          0.2693413270010584
+        ],
+        "pytorch": [
+          0.04038768674698796,
+          0.0403154843373494,
+          0.04025332254733218,
+          0.04074827125645439,
+          0.041028940447504304,
+          0.04083442616179002,
+          0.040642829259896734,
+          0.040508856798623066,
+          0.0503849882960413
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          2331,
+          2331,
+          2331,
+          2331,
+          2331,
+          2331,
+          2331,
+          2331,
+          2331
+        ],
+        "mimir_multilevel_omp_6x16": [
+          2144,
+          2144,
+          2144,
+          2144,
+          2144,
+          2144,
+          2144,
+          2144,
+          2144
+        ],
+        "openblas": [
+          177,
+          177,
+          177,
+          177,
+          177,
+          177,
+          177,
+          177,
+          177
+        ],
+        "openblas_loop": [
+          419,
+          419,
+          419,
+          419,
+          419,
+          419,
+          419,
+          419,
+          419
+        ],
+        "pytorch": [
+          2905,
+          2905,
+          2905,
+          2905,
+          2905,
+          2905,
+          2905,
+          2905,
+          2905
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b256_sq16",
+      "shape": [
+        256,
+        16,
+        16,
+        16
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ],
+      "max_abs_error": {
+        "mimir_before": 9.02258074475526e-07,
+        "mimir_multilevel_omp_6x16": 9.02258074475526e-07,
+        "openblas": 1.268987001701305e-06,
+        "openblas_loop": 9.02258074475526e-07,
+        "pytorch": 9.02258074475526e-07
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/256_16_16_16/kernel.so",
+          "sha256": "f69865202958810f9d6255e0b367731c7d6803119c0160b84f74267130aca641"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/256_16_16_16/kernel.so",
+          "sha256": "f69865202958810f9d6255e0b367731c7d6803119c0160b84f74267130aca641"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.009391708262019606,
+        "mimir_multilevel_omp_6x16": 0.00933561937075879,
+        "openblas": 0.17051373936641526,
+        "openblas_loop": 0.035367260113589656,
+        "pytorch": 0.008992408099222953
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.009367518204449976,
+          0.00995385654271044,
+          0.00934658199782169,
+          0.009391708262019606,
+          0.009424170297183756,
+          0.00940145371090711,
+          0.009261273689124008,
+          0.00933679928426949,
+          0.009546592189201805
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.009464778223318938,
+          0.009326839528069094,
+          0.00944068337446021,
+          0.00933561937075879,
+          0.009618304441702653,
+          0.009928112816162864,
+          0.00917066787476866,
+          0.0093299013726095,
+          0.009313716918568785
+        ],
+        "openblas": [
+          0.1754906031177686,
+          0.1717292761061885,
+          0.16978849659548448,
+          0.1701180700394178,
+          0.17243547880098778,
+          0.170983580263988,
+          0.16971748858626215,
+          0.1704701693477723,
+          0.17051373936641526
+        ],
+        "openblas_loop": [
+          0.035367260113589656,
+          0.035303612467488345,
+          0.03516359109129215,
+          0.03540017703205774,
+          0.03562600803083622,
+          0.0356016829243121,
+          0.03508359417741616,
+          0.03527872084344344,
+          0.03547550899783474
+        ],
+        "pytorch": [
+          0.008990151748356247,
+          0.01043230656007173,
+          0.00901888919605499,
+          0.009045259488942019,
+          0.008951769500896592,
+          0.00900202577704722,
+          0.008902751942618052,
+          0.008893195382546322,
+          0.008992408099222953
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          12854,
+          12854,
+          12854,
+          12854,
+          12854,
+          12854,
+          12854,
+          12854,
+          12854
+        ],
+        "mimir_multilevel_omp_6x16": [
+          12968,
+          12968,
+          12968,
+          12968,
+          12968,
+          12968,
+          12968,
+          12968,
+          12968
+        ],
+        "openblas": [
+          698,
+          698,
+          698,
+          698,
+          698,
+          698,
+          698,
+          698,
+          698
+        ],
+        "openblas_loop": [
+          3352,
+          3352,
+          3352,
+          3352,
+          3352,
+          3352,
+          3352,
+          3352,
+          3352
+        ],
+        "pytorch": [
+          13384,
+          13384,
+          13384,
+          13384,
+          13384,
+          13384,
+          13384,
+          13384,
+          13384
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b16_odd",
+      "shape": [
+        16,
+        97,
+        257,
+        383
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "irregular",
+        "medium"
+      ],
+      "max_abs_error": {
+        "mimir_before": 2.5988818860511742e-05,
+        "mimir_multilevel_omp_6x16": 2.5988818860511742e-05,
+        "openblas": 1.9262911401085603e-05,
+        "openblas_loop": 1.9262911401085603e-05,
+        "pytorch": 1.9262911401085603e-05
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/16_97_257_383/kernel.so",
+          "sha256": "a138d2fd3edc2b5e9547d8025710fcb208c25a5bb7d64de557683b00bf903e8c"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/16_97_257_383/kernel.so",
+          "sha256": "307608fbd159fd874a88aaeb6362c364a6bda189f388c96751f357bc0da9c555"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.4374772319391635,
+        "mimir_multilevel_omp_6x16": 0.4762048983739837,
+        "openblas": 0.4116336434372585,
+        "openblas_loop": 0.5577307250072707,
+        "pytorch": 0.4090144528985507
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.43775389733840303,
+          0.4374998403041825,
+          0.43722258935361213,
+          0.4364271596958175,
+          0.4374772319391635,
+          0.43600776806083646,
+          0.4496569771863118,
+          0.4391451977186312,
+          0.4361509125475285
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.4766921585365854,
+          0.4752967682926829,
+          0.4750206951219512,
+          0.5019860853658537,
+          0.4752873536585366,
+          0.47545850406504064,
+          0.4762048983739837,
+          0.4905633414634147,
+          0.48539577642276427
+        ],
+        "openblas": [
+          0.41150457878345553,
+          0.41093216379628567,
+          0.4112040590032609,
+          0.41172032441644774,
+          0.4107318019807121,
+          0.41171371168626925,
+          0.41261483595645343,
+          0.4122893319186503,
+          0.4116336434372585
+        ],
+        "openblas_loop": [
+          0.5567765178446153,
+          0.5575023934393379,
+          0.5578681622719883,
+          0.5587345355222771,
+          0.5570998304148219,
+          0.5577307250072707,
+          0.5568291700042006,
+          0.5587873730196882,
+          0.5585954672846924
+        ],
+        "pytorch": [
+          0.408911134057971,
+          0.4090144528985507,
+          0.44080971739130437,
+          0.4087032101449275,
+          0.40952952898550726,
+          0.40890307971014495,
+          0.41614682971014494,
+          0.4116756268115942,
+          0.4088734420289855
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          263,
+          263,
+          263,
+          263,
+          263,
+          263,
+          263,
+          263,
+          263
+        ],
+        "mimir_multilevel_omp_6x16": [
+          246,
+          246,
+          246,
+          246,
+          246,
+          246,
+          246,
+          246,
+          246
+        ],
+        "openblas": [
+          274,
+          274,
+          274,
+          274,
+          274,
+          274,
+          274,
+          274,
+          274
+        ],
+        "openblas_loop": [
+          201,
+          201,
+          201,
+          201,
+          201,
+          201,
+          201,
+          201,
+          201
+        ],
+        "pytorch": [
+          276,
+          276,
+          276,
+          276,
+          276,
+          276,
+          276,
+          276,
+          276
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b16_skinny",
+      "shape": [
+        16,
+        8,
+        512,
+        2304
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "irregular",
+        "large"
+      ],
+      "max_abs_error": {
+        "mimir_before": 0.0001293194974394396,
+        "mimir_multilevel_omp_6x16": 0.0001293194974394396,
+        "openblas": 3.0077276868212266e-05,
+        "openblas_loop": 1.9204108447468116e-05,
+        "pytorch": 2.651279726961775e-05
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/16_8_512_2304/kernel.so",
+          "sha256": "7271ddf59e50dfbda1221fe7a5044f2b11eb8bcba1b7dff787b5c9f40a3422ad"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/16_8_512_2304/kernel.so",
+          "sha256": "9b0305575370c142c3f7d5062eb6c97625d9ad6648bce79d4512fa14775a7697"
+        }
+      },
+      "ms": {
+        "mimir_before": 3.9629529677419355,
+        "mimir_multilevel_omp_6x16": 4.265278333333333,
+        "openblas": 3.657406472484581,
+        "openblas_loop": 4.002266194157559,
+        "pytorch": 3.6809214375
+      },
+      "batches_ms": {
+        "mimir_before": [
+          3.9991217096774188,
+          3.9629529677419355,
+          3.9289693225806452,
+          3.9266951935483876,
+          3.92741535483871,
+          3.9706007096774196,
+          3.817195806451613,
+          3.984809,
+          4.123374064516129
+        ],
+        "mimir_multilevel_omp_6x16": [
+          4.4362756296296295,
+          4.337371222222223,
+          4.224491037037037,
+          4.256075555555555,
+          4.340863259259259,
+          4.255254296296297,
+          4.265278333333333,
+          4.289659962962963,
+          4.259865185185185
+        ],
+        "openblas": [
+          3.9977295382414013,
+          3.476751415291801,
+          3.621817653765902,
+          3.6352997849462554,
+          3.820556667051278,
+          3.6678723990917206,
+          3.52418384863995,
+          3.657406472484581,
+          3.7941458431305364
+        ],
+        "openblas_loop": [
+          4.001213044955812,
+          4.003225344008413,
+          3.989929140641771,
+          4.002266194157559,
+          4.129255206548962,
+          4.001392549353427,
+          3.989411967581716,
+          4.011057445715214,
+          4.157255483983919
+        ],
+        "pytorch": [
+          3.7125784375,
+          3.660851625,
+          3.6372046874999997,
+          3.7777165000000004,
+          3.6809214375,
+          3.56471153125,
+          3.582336625,
+          3.85151403125,
+          3.7016559062499996
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31
+        ],
+        "mimir_multilevel_omp_6x16": [
+          27,
+          27,
+          27,
+          27,
+          27,
+          27,
+          27,
+          27,
+          27
+        ],
+        "openblas": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "openblas_loop": [
+          29,
+          29,
+          29,
+          29,
+          29,
+          29,
+          29,
+          29,
+          29
+        ],
+        "pytorch": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b16_m49",
+      "shape": [
+        16,
+        49,
+        512,
+        512
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "irregular",
+        "medium"
+      ],
+      "max_abs_error": {
+        "mimir_before": 3.354215794715287e-05,
+        "mimir_multilevel_omp_6x16": 3.354215794715287e-05,
+        "openblas": 1.582894977758542e-05,
+        "openblas_loop": 1.4954817094903206e-05,
+        "pytorch": 1.582894977758542e-05
+      },
+      "identities": {
+        "mimir_before": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_before/16_49_512_512/kernel.so",
+          "sha256": "f5961dc35ffd1eb25f07984fce7f494a581d4195baa4bced31d925f6421ea766"
+        },
+        "mimir_multilevel_omp_6x16": {
+          "binary": "/tmp/mimir-bmm-iree-20261112/t6/ir/mimir_multilevel_omp_6x16/16_49_512_512/kernel.so",
+          "sha256": "07ac1d03001209a5c2cf681b1d7663fc2edc599e0484b03408fa72b5dd2e30b1"
+        }
+      },
+      "ms": {
+        "mimir_before": 0.6264520340909091,
+        "mimir_multilevel_omp_6x16": 0.5631607736842105,
+        "openblas": 0.6079459614926875,
+        "openblas_loop": 0.7917624770676437,
+        "pytorch": 0.5029594054054054
+      },
+      "batches_ms": {
+        "mimir_before": [
+          0.6264520340909091,
+          0.624724625,
+          0.627827125,
+          0.6285820170454545,
+          0.6254698522727272,
+          0.6255529375,
+          0.626033625,
+          0.6277288977272728,
+          0.6271580340909091
+        ],
+        "mimir_multilevel_omp_6x16": [
+          0.5666231210526316,
+          0.5643103526315789,
+          0.5708606421052632,
+          0.5631489578947368,
+          0.5616707684210526,
+          0.5631019631578947,
+          0.5631607736842105,
+          0.5637760789473684,
+          0.562801447368421
+        ],
+        "openblas": [
+          0.6073393297053915,
+          0.6054711902732623,
+          0.6072093009449251,
+          0.60839214044826,
+          0.6057112191559216,
+          0.6086786496114797,
+          0.6079459614926875,
+          0.6106928558031607,
+          0.6096614628780488
+        ],
+        "openblas_loop": [
+          0.7883645275173938,
+          0.7877521223248276,
+          0.8060772207961099,
+          0.7905155956132771,
+          0.7895585723629553,
+          0.7951364514405188,
+          0.8332306704139465,
+          0.7929720482087298,
+          0.7917624770676437
+        ],
+        "pytorch": [
+          0.5029594054054054,
+          0.5023472207207207,
+          0.5029968423423423,
+          0.5026020855855856,
+          0.5044282297297297,
+          0.502283554054054,
+          0.5032310315315316,
+          0.5052672702702703,
+          0.5024611666666666
+        ]
+      },
+      "counts": {
+        "mimir_before": [
+          176,
+          176,
+          176,
+          176,
+          176,
+          176,
+          176,
+          176,
+          176
+        ],
+        "mimir_multilevel_omp_6x16": [
+          190,
+          190,
+          190,
+          190,
+          190,
+          190,
+          190,
+          190,
+          190
+        ],
+        "openblas": [
+          179,
+          179,
+          179,
+          179,
+          179,
+          179,
+          179,
+          179,
+          179
+        ],
+        "openblas_loop": [
+          146,
+          146,
+          146,
+          146,
+          146,
+          146,
+          146,
+          146,
+          146
+        ],
+        "pytorch": [
+          222,
+          222,
+          222,
+          222,
+          222,
+          222,
+          222,
+          222,
+          222
+        ]
+      },
+      "orders": [
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "pytorch",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas_loop",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "mimir_before",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop",
+          "pytorch",
+          "mimir_before"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "openblas",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16"
+        ],
+        [
+          "openblas",
+          "mimir_multilevel_omp_6x16",
+          "mimir_before",
+          "openblas_loop",
+          "pytorch"
+        ],
+        [
+          "mimir_multilevel_omp_6x16",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "pytorch"
+        ],
+        [
+          "pytorch",
+          "mimir_before",
+          "mimir_multilevel_omp_6x16",
+          "openblas",
+          "openblas_loop"
+        ],
+        [
+          "pytorch",
+          "openblas_loop",
+          "mimir_before",
+          "openblas",
+          "mimir_multilevel_omp_6x16"
+        ]
+      ]
+    }
+  ]
+}

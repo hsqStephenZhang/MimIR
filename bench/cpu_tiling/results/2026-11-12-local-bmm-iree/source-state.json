@@ -1,0 +1,45 @@
+{
+  "source_commit": "a4ea98d9d58aa71280d70930b2f69f69ac9f692c",
+  "source_dirty": [],
+  "sha256": {
+    "src/mim/plug/affine/normalizers.cpp": "13d488db9a90e8e6d8e3dd2845ebabf96fd4e179759aa401d9cf85361cc98e87",
+    "src/mim/plug/tensor/phase/tile_group.cpp": "c9be7b7506aaf75706fe546a031a6d6eed8a468f732b52aef77e8b84d9e8c3ac",
+    "src/mim/plug/omp/rt/mim_omp_rt.c": "90bf004b61cb87a9bd8bb0b4bd65617da8ffca6c8c3360a4f23150fe96159122",
+    "build/bin/mim": "04eaa5126bba0c075fb9986c042e7413426bffe5b3b14d99b54c5b611dc26cfe",
+    "build/lib/mim/libmim_affine.so": "3336b73edb62bc1552d858a9ca5a399590b080d2998e108d2e973f3b494e48bb",
+    "build/lib/mim/libmim_autodiff.so": "a8b3028d2919b55ec6cfce8db3c6865365587c5d270357c99dc6b9bdfb8ab596",
+    "build/lib/mim/libmim_btensor.so": "6087d8f6da4f726d0c398047d2d3648a3d23ff7ede7610a1ecaf89392686a616",
+    "build/lib/mim/libmim_buffer.so": "755e490087b5d4fbb20c9a2814ddd4256e3ed0e13f77a091c101a1621a880cc5",
+    "build/lib/mim/libmim_clos.so": "ea63967bc3a8640ef2da7656ad45ff747c4f65771ead185b020fca4fde6278b7",
+    "build/lib/mim/libmim_compile.so": "dd06a9f959ec059e33a8cfb60aee18d6b0ca345694a29efd05ffef51dd9c289b",
+    "build/lib/mim/libmim_core.so": "eb1e6430ccaf675f2d1c9f3a2e81df9e9c710349494c2ab1746676885f07c1ff",
+    "build/lib/mim/libmim_cps.so": "8b44cf8801da91ee0bfbfd72d64d972773e1e822de915f9489afec9fa9ab0ad5",
+    "build/lib/mim/libmim_demo.so": "54c60ece3aca75c6e34c3d283a3d53f7ffe8b95435f877fa399aeccb0ac67c70",
+    "build/lib/mim/libmim_gpu.so": "dae2511b14c500936741b1a6458caf4d9cb1395422a78f59357ae9cbff32c1f3",
+    "build/lib/mim/libmim_ll.so": "70779ad05edd01d83674c834c8dd36950f95931e8d5aaa3a9157d5d9941e04a7",
+    "build/lib/mim/libmim_math.so": "6506d4ba69f5d3ee68bc18498c298240aa0d46999f6a84436ef3d8eba854d50a",
+    "build/lib/mim/libmim_mem.so": "e8df006d122deb7b8f7e91ab8f52aa815846a0f4d30610b9edb4ad7234e70962",
+    "build/lib/mim/libmim_nvptx.so": "fc945122e7eecf470d375df9e14783642729acb0c2c38063c50eecdf71ff34d7",
+    "build/lib/mim/libmim_omp.so": "926592565c34c903b73dcfcd00bf74c14707ad38b72e5a089e32cfb70499e8a6",
+    "build/lib/mim/libmim_opt.so": "406bc561de83b9267a71c0eef7a032045199784f6a0c51b5770ca16e37ce0b54",
+    "build/lib/mim/libmim_option.so": "d0dd4d6d0ed4214fbd1c2704fb9a2a37b87c0064a7d64bc27feed88c8042cfa8",
+    "build/lib/mim/libmim_ord.so": "03d77f7a9da0d99f7e7a136a0b91abbfb89ab259b23b020c8f5598d3ec757c35",
+    "build/lib/mim/libmim_refly.so": "ed5c2c6a42f058b1c1cc1a20620463151a194e4b3f686033cc6133c71e2ec484",
+    "build/lib/mim/libmim_regex.so": "9afd1e288dd3b994e3afa03afbeb935164f681549f2a1af3070c87dad51e8965",
+    "build/lib/mim/libmim_tensor.so": "1ad070ac51c5064277762cb7799634e031ca60dba8ec631a516f8d2d136cab8a",
+    "build/lib/mim/libmim_tuple.so": "631dc8bd08dadb8edb634999dcff3f269e613657134bb0d401e8a63467553aef",
+    "build/lib/mim/libmim_vec.so": "12ea975a390b0936fc5377b601eb1994f52e15aaf59d7129deeb92e64fc62422"
+  },
+  "iree_commit": "7a8b0039c12d9df0e47cd5d6a9784b28655c2625",
+  "iree_dirty": [
+    "third_party/llvm-project",
+    "third_party/stablehlo",
+    "third_party/torch-mlir"
+  ],
+  "iree_reference_sha256": {
+    "compiler/src/iree/compiler/Codegen/LLVMCPU/KernelDispatch.cpp": "e8f092627f91bf84657398c2fe6ad419b24d081cf72066190f4571a7f12ac440",
+    "compiler/src/iree/compiler/GlobalOptimization/Passes.cpp": "07d2e25d6c0424c7ece0c2553f47fdab685fe5a6cdd2d5f5408e9df61c23b29a",
+    "compiler/src/iree/compiler/DispatchCreation/FoldUnitExtentDims.cpp": "caf75e5733c8a6501a5162b6e7a41c400b0fa75d7af2bce566a710485d76a890",
+    "compiler/src/iree/compiler/GlobalOptimization/ConvertBatchMatmulToMatmul.cpp": "e50069f4e4ead1b494befbabbae97b9f67cb28774fbceea400ae14dcd5027816"
+  }
+}

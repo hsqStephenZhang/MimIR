@@ -1,0 +1,10 @@
+-- Testing: 3 of 828 tests, 3 workers --
+PASS: mim regression :: affine/box_singleton.mim (1 of 3)
+PASS: mim regression :: tensor/blis_batch.mim (2 of 3)
+PASS: mim regression :: omp/batch_exec.mim (3 of 3)
+
+Testing Time: 3.66s
+
+Total Discovered Tests: 828
+  Excluded: 825 (99.64%)
+  Passed  :   3 (0.36%)

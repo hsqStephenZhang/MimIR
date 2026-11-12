@@ -1,0 +1,8 @@
+-- Testing: 1 of 829 tests, 1 workers --
+PASS: mim regression :: omp/batch_grid.mim (1 of 1)
+
+Testing Time: 0.98s
+
+Total Discovered Tests: 829
+  Excluded: 828 (99.88%)
+  Passed  :   1 (0.12%)

@@ -1,0 +1,1082 @@
+[
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "16_49_512_512",
+    "packed_fma": 224,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "16_8_512_2304",
+    "packed_fma": 384,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "16_97_257_383",
+    "packed_fma": 81,
+    "scalar_fma": 21,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "256_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "64_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "64_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "32_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "32_32_32_32",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "8_512_512_512",
+    "packed_fma": 256,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "8_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "8_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "3_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "2_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "1_512_512_512",
+    "packed_fma": 0,
+    "scalar_fma": 4096,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_before",
+    "shape": "1_128_128_128",
+    "packed_fma": 0,
+    "scalar_fma": 512,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_49_512_512",
+    "packed_fma": 224,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_8_512_2304",
+    "packed_fma": 384,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_97_257_383",
+    "packed_fma": 81,
+    "scalar_fma": 21,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "256_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "64_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "64_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "32_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "32_32_32_32",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_512_512_512",
+    "packed_fma": 256,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "3_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "2_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "1_512_512_512",
+    "packed_fma": 256,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "1_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "16_49_512_512",
+    "packed_fma": 224,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "16_8_512_2304",
+    "packed_fma": 384,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "16_97_257_383",
+    "packed_fma": 81,
+    "scalar_fma": 21,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "256_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "64_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "64_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "32_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "32_32_32_32",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "8_512_512_512",
+    "packed_fma": 256,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "8_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "8_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "3_128_128_128",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "2_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "1_512_512_512",
+    "packed_fma": 0,
+    "scalar_fma": 4096,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_before",
+    "shape": "1_128_128_128",
+    "packed_fma": 0,
+    "scalar_fma": 512,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_49_512_512",
+    "packed_fma": 224,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_8_512_2304",
+    "packed_fma": 384,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_97_257_383",
+    "packed_fma": 81,
+    "scalar_fma": 21,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "256_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "64_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "64_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "32_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "32_32_32_32",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_512_512_512",
+    "packed_fma": 256,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "3_128_128_128",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "2_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "1_128_128_128",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "1_512_512_512",
+    "packed_fma": 160,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "16_49_512_512",
+    "packed_fma": 224,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "16_8_512_2304",
+    "packed_fma": 384,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "16_97_257_383",
+    "packed_fma": 81,
+    "scalar_fma": 21,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "256_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "64_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "64_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "32_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "32_32_32_32",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "8_512_512_512",
+    "packed_fma": 256,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "8_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "8_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "3_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "2_256_256_256",
+    "packed_fma": 112,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "1_512_512_512",
+    "packed_fma": 0,
+    "scalar_fma": 4096,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_before",
+    "shape": "1_128_128_128",
+    "packed_fma": 0,
+    "scalar_fma": 512,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_49_512_512",
+    "packed_fma": 224,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_8_512_2304",
+    "packed_fma": 384,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_97_257_383",
+    "packed_fma": 81,
+    "scalar_fma": 21,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "256_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "64_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "64_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "32_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "32_32_32_32",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_512_512_512",
+    "packed_fma": 544,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_256_256_256",
+    "packed_fma": 112,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_64_64_64",
+    "packed_fma": 144,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "3_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "2_256_256_256",
+    "packed_fma": 112,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "1_128_128_128",
+    "packed_fma": 128,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "1_512_512_512",
+    "packed_fma": 272,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "16_49_512_512",
+    "packed_fma": 224,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "16_8_512_2304",
+    "packed_fma": 384,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "16_97_257_383",
+    "packed_fma": 81,
+    "scalar_fma": 21,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "256_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "64_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "64_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "32_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "32_32_32_32",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "8_512_512_512",
+    "packed_fma": 256,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "8_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "8_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "3_128_128_128",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "2_256_256_256",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "1_512_512_512",
+    "packed_fma": 0,
+    "scalar_fma": 4096,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_before",
+    "shape": "1_128_128_128",
+    "packed_fma": 0,
+    "scalar_fma": 512,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_49_512_512",
+    "packed_fma": 224,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_8_512_2304",
+    "packed_fma": 384,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "16_97_257_383",
+    "packed_fma": 81,
+    "scalar_fma": 21,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "256_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "64_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "64_16_16_16",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "32_128_128_128",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "32_32_32_32",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_512_512_512",
+    "packed_fma": 256,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_256_256_256",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "8_64_64_64",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "3_128_128_128",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "2_256_256_256",
+    "packed_fma": 64,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "1_128_128_128",
+    "packed_fma": 80,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_multilevel_omp_6x16",
+    "shape": "1_512_512_512",
+    "packed_fma": 160,
+    "scalar_fma": 0,
+    "zmm": 0,
+    "evex": 0
+  }
+]

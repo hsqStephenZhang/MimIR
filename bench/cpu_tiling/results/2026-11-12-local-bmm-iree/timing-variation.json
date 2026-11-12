@@ -1,0 +1,86 @@
+[
+  {
+    "threads": 6,
+    "name": "b1_sq128",
+    "backend": "pytorch",
+    "max_min": 1.331180598571404
+  },
+  {
+    "threads": 6,
+    "name": "b8_sq64",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.327533925874779
+  },
+  {
+    "threads": 6,
+    "name": "b8_sq256",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.3327109908865904
+  },
+  {
+    "threads": 6,
+    "name": "b8_sq512",
+    "backend": "mimir_before",
+    "max_min": 1.3110900389782039
+  },
+  {
+    "threads": 6,
+    "name": "b32_sq32",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.3471488182993794
+  },
+  {
+    "threads": 6,
+    "name": "b32_sq128",
+    "backend": "mimir_before",
+    "max_min": 1.4420061266145225
+  },
+  {
+    "threads": 6,
+    "name": "b32_sq128",
+    "backend": "pytorch",
+    "max_min": 1.3942789696162978
+  },
+  {
+    "threads": 6,
+    "name": "b64_sq64",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.3756774761081623
+  },
+  {
+    "threads": 6,
+    "name": "b256_sq16",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.4793392954458175
+  },
+  {
+    "threads": 6,
+    "name": "b16_odd",
+    "backend": "openblas",
+    "max_min": 1.3597683291671347
+  },
+  {
+    "threads": 6,
+    "name": "b16_odd",
+    "backend": "openblas_loop",
+    "max_min": 1.3090243965900532
+  },
+  {
+    "threads": 6,
+    "name": "b16_skinny",
+    "backend": "mimir_before",
+    "max_min": 1.5590709624703185
+  },
+  {
+    "threads": 6,
+    "name": "b16_skinny",
+    "backend": "openblas",
+    "max_min": 1.3208316214794593
+  },
+  {
+    "threads": 6,
+    "name": "b16_m49",
+    "backend": "openblas",
+    "max_min": 1.3958324576914916
+  }
+]
