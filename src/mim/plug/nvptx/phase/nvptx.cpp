@@ -729,6 +729,12 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
                               f, i);
         }
         return value;
+    } else if (auto shfl = Axm::isa<gpu::shfl_xor>(def)) {
+        auto [x, mask] = shfl->args<2>();
+        auto v_x = emit(x), v_mask = emit(mask);
+        declare("float @llvm.nvvm.shfl.sync.bfly.f32(i32, float, i32, i32)");
+        return bb.assign(name, "call float @llvm.nvvm.shfl.sync.bfly.f32(i32 -1, float {}, i32 {}, i32 31)", v_x,
+                         v_mask);
     } else if (auto tf32 = Axm::isa<gpu::tf32_rna>(def)) {
         auto arg = emit(tf32->arg());
         declare("i32 @llvm.nvvm.f2tf32.rna(float)");

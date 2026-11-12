@@ -24,3 +24,24 @@ BH=32，D=64，非 causal，单位 ms：
 - 测量过程中修了两个 TileFuse 的 bug（`lit/gpu/tile_attention.mim`）：
   batched GEMM 的面板放宽把 batch 维设成了"从 0 取满"，head ≥ 1 读到 head 0 的数据；
   softmax 的行统计成员比 work-group 少一维，选面板布局时按 work-group 的维数投影而崩溃。
+
+## 手写 FA2 结构的单 kernel（P1 的上界，2026-11-12）
+
+`flash_tc.py BH L [BC]` 生成，`kflash.sh BH L`（`BC=` 选每块的 key 数）编译、抽样对照并用 nsys 计时，驱动 `flash_driver.cpp`。
+D=64，TF32 `mma.m16n8k8`，一个 work-group 64 行 Q、4 个 warp 各 16 行；K/V 块经 `cp.async` 双缓冲进 shared；
+S、P、O 和行统计都在寄存器里；行 max 用 quad 内两次 `gpu.shfl_xor`，行和只在最后归约一次。
+P 不经 shared 直接作 PV 的 A 操作数：每 8 个 key 内把 2t、2t+1 置换到 t、t+4，V 按同样顺序读。
+
+| BH × L | BC=64 | BC=32 | TFLOP/s（BC=32） | PyTorch fp32 efficient | PyTorch fp16 flash |
+|---|---:|---:|---:|---:|---:|
+| 32 × 1024 | 0.287 | **0.216** | 39.8 | 0.750 | 0.139 |
+| 32 × 2048 | 0.964 | **0.735** | 46.8 | 1.96 | 0.241 |
+| 32 × 4096 | 4.09 | **2.52** | 54.6 | 7.4（L=4096，BH=32 未测，按 BH=128 折算） | — |
+| 128 × 1024 | 1.04 | **0.717** | 48.0 | 1.95 | 0.247 |
+| 128 × 2048 | 3.81 | **2.92** | 47.1 | 7.54 | 0.904 |
+| 128 × 4096 | — | **10.6** | 52.0 | 29.6 | 3.83 |
+
+- 结果全部正确（每个形状 3 个 head × 4 行 × 64 列与双精度参考比较，容限 2e-3）。
+- 比 PyTorch 的 FP32 路径快 2.4–3.5 倍，比 fp16 flash 慢约 3 倍（精度和带宽不同，P2 的目标）。
+- 0 字节寄存器溢出，126 个寄存器；BC=64 时 shared 68 KB，每个 SM 只能驻留 2 个 work-group，BC=32 时 34 KB、4 个，快约 30%。
+- 新原语 `gpu.shfl_xor`（`llvm.nvvm.shfl.sync.bfly.f32`），测试 `lit/nvptx/shfl_xor.mim`。

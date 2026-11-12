@@ -1,0 +1,39 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim %s -p nvptx -X nvptx:no-embed -X nvptx:sm=80
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %mim %s -p nvptx
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/shfl_xor_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// Each lane of a warp sums the lane numbers of its quad with two butterfly shuffles.
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let V    = «32; F32»;
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            _: Idx 1, item_id: Idx 32, (), (out: gpu.GlobalPtr V),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let m    = gpu.generic_mem m1;
+    let lane = core.conv.u 0 item_id;
+    let x    = math.conv.u2f math.f32 lane;
+    let x    = math.arith.add fast (x, gpu.shfl_xor (x, 1I32));
+    let x    = math.arith.add fast (x, gpu.shfl_xor (x, 2I32));
+    let m    = mem.store (m, mem.lea (core.bitcast (mem.Ptr0 V) out, item_id), x);
+    return (gpu.global_mem m, m3, m4, m5);
+
+extern fun quads (m0: mem.M 0, out: mem.Ptr0 V): [mem.M 0, I32] =
+    let (m0, m1, m4) = gpu.init m0;
+    let (m1, dout)   = mem.alloc (V, 1) m1;
+    ret (m0, m1, m4) = gpu.launch (1, 32, gpu.default_stream, ff, ()) kernel dout $ (m0, m1, m4);
+    let (m0, m1)     = gpu.copy_to_host.block (m0, m1, dout, out);
+    let m1           = mem.free (m1, dout);
+    let m0           = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);
+
+// CHECK-COUNT-2: call float @llvm.nvvm.shfl.sync.bfly.f32(i32 -1, float

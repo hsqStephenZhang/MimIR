@@ -314,6 +314,12 @@ axm global_mem: mem.M 0 → GlobalM;
 ///
 axm mma_tf32: [«4; math.F32», «2; math.F32», «4; math.F32»] → «4; math.F32»;
 
+/// #### shfl_xor
+///
+/// The `x` of the work-item whose lane is this one's exclusive-or `mask`, across the full warp (`shfl.sync.bfly`).
+///
+axm shfl_xor: [x: math.F32, mask: I32] → math.F32;
+
 /// #### tf32_rna
 ///
 /// Rounds the significand of an F32 to the 10 bits of TF32, to nearest with ties away from zero (`cvt.rna.tf32.f32`).
