@@ -1,0 +1,36 @@
+// RUN: %mim -p omp %s -X tensor:attention-cpu=1 -X tensor:attention-cpu-rows=2 -X omp:threads=4 -o - | %FileCheck %s
+
+plugin tensor;
+plugin math;
+plugin compile;
+
+let F = math.F32;
+let R: tensor.Ring = (F, 0:F, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+// A dynamic nonempty-key precondition cannot be assumed by the rule.
+// CHECK-LABEL: extern fun dynamic
+// CHECK-NOT: tensor.sdpa_cpu
+// CHECK: tensor.sdpa
+extern fun dynamic (s: Nat, q: tensor.Tensor 3 (2,5,3) F, k: tensor.Tensor 3 (2,s,3) F,
+                    v: tensor.Tensor 3 (2,s,4) F): tensor.Tensor 3 (2,5,4) F =
+    return (tensor.sdpa math.mode.contract @(2,5,s,3,4) (0.5:F, q,k,v));
+
+// CHECK-LABEL: extern fun masked
+// CHECK: tensor.sdpa_cpu (16, tt, 2, 4)
+extern fun masked (q: tensor.Tensor 3 (2,5,3) F, k: tensor.Tensor 3 (2,7,3) F,
+                   v: tensor.Tensor 3 (2,7,4) F, mask: tensor.Tensor 3 (2,5,7) F): tensor.Tensor 3 (2,5,4) F =
+    return (tensor.sdpa_masked math.mode.contract @(2,5,7,3,4) (0.5:F,q,k,v,mask));
+
+// Recognize the decomposed graph, then apply the CPU rule to the resulting SDPA.
+// CHECK-LABEL: extern fun matched
+// CHECK: tensor.sdpa_cpu (16, ff, 2, 4)
+extern fun matched (q: tensor.Tensor 3 (2,5,3) F, k: tensor.Tensor 3 (2,7,3) F,
+                    v: tensor.Tensor 3 (2,7,4) F): tensor.Tensor 3 (2,5,4) F =
+    let scores = tensor.dot_product R @(3,3) @(1,1) (2₃,2₃,0₃,0₃) @((2,5,3),(2,7,3)) (tensor.buf q,tensor.buf k);
+    let scores = tensor.unary (λ x: F: F = math.arith.mul math.mode.contract (x,0.5:F)) scores;
+    let p = tensor.softmax math.mode.contract @math.f32 @3 2₃ @(2,5,7) scores;
+    return (tensor.dot_product R @(3,3) @(1,1) (2₃,1₃,0₃,0₃) @((2,5,7),(2,7,4)) (p,tensor.buf v));
+
+extern lam _compile (): compile.Phase = compile.phases ff (
+    compile.beta_red, tensor.raise_attention, tensor.group_attention, compile.cleanup
+);

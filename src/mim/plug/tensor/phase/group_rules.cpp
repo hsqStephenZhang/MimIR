@@ -7,6 +7,9 @@
 #include <mim/phase/graph_rule_rewrite.h>
 #include <mim/phase/rule_rewrite.h>
 
+#include <mim/plug/math/math.h>
+#include <mim/plug/omp/omp.h>
+
 #include "mim/plug/tensor/phase/fuse.h"
 #include "mim/plug/tensor/phase/group.h"
 #include "mim/plug/tensor/phase/tile_fuse.h"
@@ -121,9 +124,8 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     }
     auto a_read   = w.app(maps[0], fn->var());
     auto direct_a = batch == 0 && ranks->rr == 1 && (*nr)[0] == 2 && a_read == w.tuple({vars[0], vars[2]});
-    auto in_place = [&](size_t i) {
-        return (*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var();
-    };
+    auto in_place
+        = [&](size_t i) { return (*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var(); };
     if (batch == 0) {
         // A copied by blis_operand is already row-major (M, K) and needs no second pack.
         auto pack_a  = !direct_a && in_place(0);
@@ -146,9 +148,9 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
                          {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps, w.lit_nat(batch), mr.Ris});
     builder      = w.app(builder, {mr.Sis, w.tuple(DefVec(batch, [&](size_t d) { return w.lit_nat((*shape)[d]); }))});
     // group_blis_batch_impl copies each batch's A into a row-major (M, K) operand, which needs no second pack.
-    builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
-                                   w.lit_nat(nc), w.lit_nat(kc), w.lit_ff()});
-    builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps, w.tuple(reads)});
+    builder = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
+                              w.lit_nat(nc), w.lit_nat(kc), w.lit_ff()});
+    builder = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps, w.tuple(reads)});
     return {w.app(builder, app->arg()), {}};
 }
 
@@ -492,7 +494,7 @@ void AttentionRaise::start() {
 
 void GroupDefault::start() {
     auto automatic = !driver().is_loaded("gpu") && driver().arg_nat("tensor", "group").value_or(1);
-    auto mode = driver().arg_nat("tensor", "tile-fuse").value_or(automatic ? 2 : 0);
+    auto mode      = driver().arg_nat("tensor", "tile-fuse").value_or(automatic ? 2 : 0);
     if (mode) {
         // Explicit group_req schedules retain their rules; automatic CPU schedules use the level chain.
         if (mode == 2) {
@@ -533,10 +535,31 @@ void GroupDefault::start() {
 
 void AttentionSchedule::start() {
     if (driver().is_loaded("gpu") || !driver().arg_nat("tensor", "group").value_or(1)
-        || !driver().arg_nat("tensor", "attention").value_or(1)
-        || !driver().arg_nat("tensor", "attention-online").value_or(0))
+        || !driver().arg_nat("tensor", "attention").value_or(1))
         return;
-    auto& w     = world();
+    auto online = driver().arg_nat("tensor", "attention-online").value_or(0);
+    if (!online && !driver().arg_nat("tensor", "attention-cpu").value_or(0)) return;
+    auto& w = world();
+    if (!online) {
+        auto lanes = w.app(w.annex<vec_width>(), w.lit_nat(4));
+        auto args  = DefVec{w.lit_nat(2), w.lit_nat(4), lanes,
+                            w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
+                            w.lit_nat(driver().arg_nat("tensor", "group-cache").value_or(262144))};
+        for (auto name : {"cpu-mr", "cpu-nr", "cpu-mc", "cpu-nc", "cpu-kc", "cpu-order"})
+            args.push_back(w.lit_nat(driver().arg_nat("tensor", name).value_or(0)));
+        auto levels
+            = w.app(w.app(w.annex<cpu_default_levels>(), w.call<math::F>(w.tuple({w.lit_nat(23), w.lit_nat(8)}))),
+                    w.tuple(args));
+        auto threads = driver().is_loaded("omp") ? Lit::as(w.app(w.annex<omp::thread_hint>(), w.tuple())) : 1;
+        auto bm      = driver().arg_nat("tensor", "attention-cpu-rows").value_or(32);
+        if (!bm) world().lit_nat(bm)->blame("attention-cpu-rows must be positive").bail();
+        auto params = w.tuple({w.lit_nat(16), w.lit_nat(bm), w.lit_nat(threads > 1 ? 4 : 0), levels});
+        auto rules  = std::vector{w.app(w.annex<attention_cpu_schedule_rule>(), params)->as<Rule>(),
+                                  w.app(w.annex<attention_masked_cpu_schedule_rule>(), params)->as<Rule>()};
+        RuleRewrite rewrite(w, std::move(rules));
+        rewrite.run();
+        return;
+    }
     auto params = w.tuple({w.lit_nat(16), w.app(w.annex<vec_width>(), w.lit_nat(8)),
                            w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32))});
     auto rules  = std::vector{w.app(w.annex<attention_schedule_rule>(), params)->as<Rule>(),

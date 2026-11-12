@@ -15,7 +15,7 @@ import time
 SOURCE = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 MASKS = {1: [0], 4: [0, 2, 4, 6], 6: [0, 2, 4, 6, 8, 10], 8: [0, 2, 4, 6, 8, 10, 12, 13]}
-VARIANTS = {"mimir_default": 0, "mimir_online": 1}
+VARIANTS = {"mimir_default": 0, "mimir_online": 1, "mimir_joint": 0}
 
 
 def digest(path):
@@ -121,6 +121,7 @@ def prepare(args, cases):
         command = [str(SOURCE / "build/bin/mim"), "-p", "opt", "-p", "omp", str(path / "kernel.mim"), "-p", "ll",
                    "-X", "tensor:strict=1", "-X", "omp:strict=1", "-X", f"omp:threads={args.threads}",
                    "-X", f"tensor:attention-online={VARIANTS[variant]}", "-X", "btensor:registers=128",
+                   "-X", f"tensor:attention-cpu={int(variant == 'mimir_joint')}",
                    "-X", "ll:rt=extern", "-X", "ll:o=" + str(path / "kernel.ll")]
         for key, value in flags.items():
             command.extend(["-X", f"tensor:cpu-{key}={value}"])
@@ -260,7 +261,11 @@ def main():
     parser.add_argument("--root", type=Path, default=Path("/tmp/mimir-attention-local"))
     parser.add_argument("--threads", type=int, choices=MASKS, default=1)
     parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument("--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS))
     args = parser.parse_args()
+    for name in list(VARIANTS):
+        if name not in args.variants:
+            del VARIANTS[name]
     args.root = args.root.resolve()
     cases = json.loads((HERE / "attention-cases.json").read_text())
     globals()[args.phase](args, cases)

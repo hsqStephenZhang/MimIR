@@ -2553,6 +2553,82 @@ pub anx lam attention_masked_schedule_rule (mode lanes registers: Nat): Rule [
             @(H, M, S, K, N) (scale, q, k, v, mask);
     schedule;
 
+/// CPU attention keeps each query-row block in one task. Both contractions retain ordinary two-input
+/// GEMM schedules; normalization is applied to the output, rather than materializing probabilities.
+axm sdpa_cpu: [mode: Nat, masked: Bool, bm binding: Nat] → {H M S K N: Nat}
+    → [levels: TileLevels (3, math.F32)]
+    → [scale: math.F32, q: Tensor 3 (H, M, K) math.F32, k: Tensor 3 (H, S, K) math.F32,
+       v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32] → Tensor 3 (H, M, N) math.F32;
+
+pub anx lam attention_cpu_schedule_rule (mode bm binding: Nat, levels: TileLevels (3, math.F32)): Rule [
+    H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
+    k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32] =
+    rule schedule (H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
+                   k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32):
+        sdpa mode @(H, M, S, K, N) (scale, q, k, v)
+        when core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), 0 < bm) =>
+        sdpa_cpu (mode, ff, bm, binding) @(H, M, S, K, N) levels
+            (scale, q, k, v, splat ((H, M, S), 0:math.F32));
+    schedule;
+
+pub anx lam attention_masked_cpu_schedule_rule (mode bm binding: Nat, levels: TileLevels (3, math.F32)): Rule [
+    H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
+    k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32] =
+    rule schedule (H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
+                   k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32):
+        sdpa_masked mode @(H, M, S, K, N) (scale, q, k, v, mask)
+        when core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), 0 < bm) =>
+        sdpa_cpu (mode, tt, bm, binding) @(H, M, S, K, N) levels (scale, q, k, v, mask);
+    schedule;
+
+priv anx lam attention_cpu_product (mode: Nat, levels: TileLevels (3, math.F32)) {M K N: Nat}
+    (a: Tensor 2 (M, K) math.F32, b: Tensor 2 (K, N) math.F32): Tensor 2 (M, N) math.F32 =
+    let F = math.F32;
+    fun mac (acc: F, (x y: F))@tt: F = return (math.arith.add mode (acc, math.arith.mul mode (x,y)));
+    let root = map_reduce ((M,N), (M,N,K)) @((F,F), (2,2), ((M,K),(K,N))) (mac, 0:F)
+        (proj_map @(3,2) (0,1)) (proj_map @(3,2) (0,2), proj_map @(3,2) (2,1)) (a,b);
+    tile_req (root, (), levels, default_control);
+
+priv anx lam sdpa_cpu_inputs (mode: Nat, masked: Bool, bm binding: Nat) {H M S K N: Nat}
+    (levels: TileLevels (3, math.F32)) {Mask: *}
+    (scale: math.F32, q: Tensor 3 (H, M, K) math.F32, k: Tensor 3 (H, S, K) math.F32,
+     v: Tensor 3 (H, S, N) math.F32, mask: Mask, get_mask: Mask → Tensor 3 (H, M, S) math.F32): Tensor 3 (H, M, N) math.F32 =
+    let F = math.F32;
+    let R: Ring = (F, 0:F, math.arith.add mode, math.arith.mul mode);
+    lam body (off ext: «3; Nat»)
+            (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F, mask: Mask): Tensor 3 ext F =
+            let rows = ext#1₃;
+            let qt = reshape (1, rows, K) (rows, K)
+                (slice @(F, 3) (H, M, K) ((off#0₃, off#1₃, 0), (1, 1, 1), (1, rows, K)) q);
+            let kt = reshape (1, S, K) (S, K)
+                (slice @(F, 3) (H, S, K) ((off#0₃, 0, 0), (1, 1, 1), (1, S, K)) k);
+            let vt = reshape (1, S, N) (S, N)
+                (slice @(F, 3) (H, S, N) ((off#0₃, 0, 0), (1, 1, 1), (1, S, N)) v);
+            let scores = attention_cpu_product (mode, levels) (qt, transpose_2d kt);
+            let scores = unary (λ x: F: F = math.arith.mul mode (x, scale)) scores;
+            let scores = (λ (): Tensor 2 (rows, S) F = scores,
+                λ (): Tensor 2 (rows, S) F =
+                    let bias = reshape (1, rows, S) (rows, S)
+                        (slice @(F, 3) (H, M, S) ((off#0₃, off#1₃, 0), (1, 1, 1), (1, rows, S)) (get_mask mask));
+                    binary (math.arith.add mode) (scores, bias))#masked ();
+            let maximum = reduce (math.extrema.fmax mode, math.neg_inf math.f32) @2 1₂ scores;
+            let e = binary_ax (λ (x y: F): F = math.exp.exp mode (math.arith.sub mode (x, y))) @2 1₂ (scores, maximum);
+            let sums = reduce (math.arith.add mode, 0:F) @2 1₂ e;
+            let ev = attention_cpu_product (mode, levels) (e, vt);
+            reshape (rows, N) ext (binary_ax (math.arith.div mode) @2 1₂ (ev, sums));
+    tiled ((H, M, N), (1, bm, N), (1,0)#(binding == 4)) (q, k, v, mask) ((body, bind 4 body)#(binding == 4));
+
+priv anx lam sdpa_cpu_impl (mode: Nat, masked: Bool, bm binding: Nat) {H M S K N: Nat}
+    (levels: TileLevels (3, math.F32))
+    (scale: math.F32, q: Tensor 3 (H, M, K) math.F32, k: Tensor 3 (H, S, K) math.F32,
+     v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32): Tensor 3 (H, M, N) math.F32 =
+    (λ (): Tensor 3 (H, M, N) math.F32 =
+        sdpa_cpu_inputs (mode, ff, bm, binding) @(H, M, S, K, N) levels @[]
+            (scale, q, k, v, (), λ (_: []): Tensor 3 (H, M, S) math.F32 = splat ((H, M, S), 0:math.F32)),
+     λ (): Tensor 3 (H, M, N) math.F32 =
+        sdpa_cpu_inputs (mode, tt, bm, binding) @(H, M, S, K, N) levels @(Tensor 3 (H, M, S) math.F32)
+            (scale, q, k, v, mask, λ (x: Tensor 3 (H, M, S) math.F32): Tensor 3 (H, M, S) math.F32 = x))#masked ();
+
 priv anx lam sdpa_online_inputs (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N: Nat} {Mask: *}
     (scale: math.F32, q: Tensor 3 (H, M, K) (math.F32), k: Tensor 3 (H, S, K) (math.F32),
      v: Tensor 3 (H, S, N) (math.F32), mask: Mask, get_mask: Mask → Tensor 3 (H, M, S) (math.F32)): Tensor 3 (H, M, N) (math.F32) =

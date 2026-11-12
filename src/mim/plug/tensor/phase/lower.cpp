@@ -42,6 +42,7 @@ const Def* Lower::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::sdpa>(app)) return lower_via_impl(app, impl<tensor::attention_impl>());
     if (Axm::isa<tensor::sdpa_masked>(app)) return lower_via_impl(app, impl<tensor::attention_masked_impl>());
     if (Axm::isa<tensor::sdpa_online>(app)) return lower_via_impl(app, impl<tensor::sdpa_online_impl>());
+    if (Axm::isa<tensor::sdpa_cpu>(app)) return lower_via_impl(app, impl<tensor::sdpa_cpu_impl>());
     auto& w = new_world();
 
     if (Axm::isa<tensor::reverse_at>(app)) {
