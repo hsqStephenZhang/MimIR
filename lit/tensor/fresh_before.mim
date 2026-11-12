@@ -13,9 +13,16 @@ extern fun folded (x: tensor.Tensor 1 3 I64): tensor.Tensor 1 3 I64 =
 extern lam _compile (): compile.Phase =
     compile.phases ff (tensor.lower_tensor, tensor.fuse_tensor, tensor.lower_to_mem, mem.add_mem, compile.cleanup);
 
-// CHECK-LABEL: extern con folded
-// CHECK: fun run
+// The reference fold keeps fresh memory inside its step and owns both state buffers.
+// CHECK-LABEL: con productFoldStep
 // CHECK: con fresh_mem
-// CHECK: con next
-// CHECK-NEXT: mem.fresh
+// CHECK: buffer.lit
+// CHECK: btensor.map_reduce_post
+// CHECK: mem.fresh
+// CHECK-LABEL: extern con folded
+// CHECK: let [[A:[[:alnum:]_]+]] = buffer.alloc
+// CHECK: let [[B:[[:alnum:]_]+]] = buffer.alloc
+// CHECK: fun productFoldResult
+// CHECK: buffer.free (1, 3, I64) ({{.*}}, [[A]]#tt)
+// CHECK: buffer.free (1, 3, I64) ({{.*}}, [[B]]#tt)
 // CHECK: cps.cps2ds_dep

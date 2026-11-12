@@ -2194,6 +2194,10 @@ DefVec LowerToMem::staged_panels(const Def* root, const Def* var) const {
 }
 
 const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destination) {
+    // The reference step still uses its Mim region/indexing implementations.
+    // Use out-of-place owned buffers, rather than the optimized in-place fold.
+    if (driver().arg_nat("tensor", "reference-tiles").value_or(0))
+        return destination ? nullptr : lower_product_fold(app);
     if (app->type()->isa_imm<Sigma>()) return destination ? nullptr : lower_product_fold(app);
     auto scope                                          = fe::Restore(uniform_, uniform(app));
     auto& w                                             = new_world();

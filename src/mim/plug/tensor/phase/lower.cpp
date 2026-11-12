@@ -80,9 +80,9 @@ const Def* Lower::rewrite_imm_App(const App* app) {
         if (driver().arg_nat("tensor", "reference-tiles").value_or(0))
             return lower_via_impl(app, impl<tensor::tiled_n_impl>());
     }
-    if (Axm::isa<tensor::tile_fold>(app)
-        && (driver().arg_nat("tensor", "reference-tiles").value_or(0)
-            || (!TensorType::isa(app->type()) && !app->type()->isa_imm<Sigma>())))
+    // Keep tensor-valued loop state until bufferization can assign ownership.
+    // Expanding it into arbitrary continuations loses that information at joins.
+    if (Axm::isa<tensor::tile_fold>(app) && !TensorType::isa(app->type()) && !app->type()->isa_imm<Sigma>())
         return lower_via_impl(app, impl<tensor::tile_fold_impl>());
     if (Axm::isa<tensor::stage>(app) && driver().arg_nat("tensor", "reference-tiles").value_or(0))
         return lower_via_impl(app, impl<tensor::stage_impl>());

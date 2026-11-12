@@ -2,9 +2,14 @@
 // RUN: sed 's/@malloc/@counted_malloc/g; s/@free/@counted_free/g' %{s:stem}.ll > %t.ll
 // RUN: clang++ -O2 -std=c++23 %S/product_fold_aux.cpp %t.ll -o %t -Wno-override-module
 // RUN: %t
+// RUN: %mim -p opt %s -p ll -X tensor:reference-tiles=1 -X ll:o=%t.ref.ll
+// RUN: sed 's/@malloc/@counted_malloc/g; s/@free/@counted_free/g' %t.ref.ll > %t.ref.counted.ll
+// RUN: clang++ -O2 -std=c++23 -fsanitize=address %S/product_fold_aux.cpp %t.ref.counted.ll -o %t.ref -Wno-override-module
+// RUN: %t.ref
 
 plugin tensor;
 plugin math;
+plugin core;
 
 let F = math.F32;
 let add = math.arith.add math.mode.contract;
@@ -29,3 +34,16 @@ extern fun fold (n: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tenso
 extern fun consume (n: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] = return (doubled (n, a, b));
 extern fun even (_: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] = return (doubled (2, a, b));
 extern fun odd (_: Nat, a: tensor.Tensor 1 4 F, b: tensor.Tensor 1 3 F): [tensor.Tensor 1 4 F, tensor.Tensor 1 3 F] = return (doubled (5, a, b));
+
+// A non-pointwise update must read the entire old state before replacing it.
+extern fun rotate (n: Nat, a: tensor.Tensor 1 4 F): tensor.Tensor 1 4 F =
+    return (tensor.tile_fold (n, 1) (tensor.buf a) ()
+        (λ (acc: tensor.Tensor 1 4 F, _: Nat) (): tensor.Tensor 1 4 F =
+            tensor.generate 4 (λ i: I64: F =
+                tensor.get (acc, core.conv.u @0 @4 (core.wrap.add 0 (i, 1I64))))));
+extern fun identity (n: Nat, a: tensor.Tensor 1 4 F): tensor.Tensor 1 4 F =
+    return (tensor.tile_fold (n, 1) (tensor.buf a) ()
+        (λ (acc: tensor.Tensor 1 4 F, _: Nat) (): tensor.Tensor 1 4 F = acc));
+extern fun borrowed (n: Nat, a: tensor.Tensor 1 4 F): tensor.Tensor 1 4 F =
+    return (tensor.tile_fold (n, 1) (tensor.buf a) (tensor.buf a)
+        (λ (_: tensor.Tensor 1 4 F, _: Nat) (source: tensor.Tensor 1 4 F): tensor.Tensor 1 4 F = source));

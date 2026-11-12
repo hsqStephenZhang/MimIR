@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -34,10 +35,16 @@ extern "C" Result fold(uint64_t, float*, float*);
 extern "C" Result consume(uint64_t, float*, float*);
 extern "C" Result even(uint64_t, float*, float*);
 extern "C" Result odd(uint64_t, float*, float*);
+extern "C" float* rotate(uint64_t, float*);
+extern "C" float* identity(uint64_t, float*);
+extern "C" float* borrowed(uint64_t, float*);
 
 int check(Result (*fn)(uint64_t, float*, float*), uint64_t n, uint64_t steps, float scale) {
     float a[] = {1, 2, 3, 4}, b[] = {-2, 3, 1};
     auto out = fn(n, a, b);
+    for (int i = 0; i != 4; ++i)
+        assert(a[i] == i + 1);
+    assert(b[0] == -2 && b[1] == 3 && b[2] == 1);
     for (uint64_t i = 0; i != steps; ++i) {
         float sum_a = 0, sum_b = 0;
         for (float x : a)
@@ -65,4 +72,17 @@ int check(Result (*fn)(uint64_t, float*, float*), uint64_t n, uint64_t steps, fl
 int main() {
     for (uint64_t n : {0, 1, 2, 5})
         if (check(fold, n, n, 1) || check(consume, n, n, 2) || check(even, n, 2, 2) || check(odd, n, 5, 2)) return 1;
+    for (int repeat = 0; repeat != 40; ++repeat)
+        for (uint64_t n : {0, 1, 2, 5, 17})
+            for (auto fn : {rotate, identity, borrowed}) {
+                float input[] = {1, 2, 3, 4};
+                auto result   = fn(n, input);
+                assert(result != input);
+                for (int i = 0; i != 4; ++i) {
+                    assert(input[i] == i + 1);
+                    assert(result[i] == (i + (fn == rotate ? n % 4 : 0)) % 4 + 1);
+                }
+                counted_free(result);
+                assert(live == 0);
+            }
 }
