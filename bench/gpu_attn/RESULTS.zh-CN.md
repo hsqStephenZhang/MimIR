@@ -53,3 +53,22 @@ P 不经 shared 直接作 PV 的 A 操作数：每 8 个 key 内把 2t、2t+1 �
   region 内的分配只有 TileFuse 对 `tile_req` 的根做，它不认状态是向量的 product fold。
 - `attn_elem.mim`：把输出写成对 key 归约的单个 `map_reduce_post`，每个输出元素一份 `(m, l, acc)`，`S = QKᵀ` 作为成员在归约级按块计算，能套用现有 TileFuse；
   代价是 `(m, l)` 与 exp 在 D=64 列上各算一遍。目前在 LowerToMem 里失败：融合的 S tile 存储形状是上界 `(4, 64)`，下游期望运行时长度。
+
+## H200 上重测（2026-11-12，新容器）
+
+机器：H200 NVL（sm_90），驱动 580，PyTorch 2.12.0+cu130；MimIR 用 `build-h200`（clang 20 + gcc15 libstdc++），nvptx 走 LLVM 23。
+PyTorch 完整输出在 `torch_attn_h200.out`。我们的 kernel 仍是 sm_80 的 `mma.sync` TF32，没有用 Hopper 专属指令。
+
+D=64，非 causal，单位 ms（括号里 TFLOP/s）：
+
+| BH × L | 手写 FA2 TF32（BC=32） | `attn_tiled` | `tensor.sdpa` | PyTorch fp32 efficient | PyTorch tf32 math | PyTorch fp16 flash |
+|---|---:|---:|---:|---:|---:|---:|
+| 32 × 1024 | 0.090（95） | 0.517 | 7.39 | 0.328 | 0.381 | 0.0425（202） |
+| 32 × 2048 | 0.317（108） | 2.00 | 27.1 | 1.150 | 1.329 | 0.142（242） |
+| 32 × 4096 | 1.20（115） | — | — | 9.55 | 10.8 | 0.521（264） |
+| 128 × 2048 | 1.21（114） | — | — | 4.39 | 5.09 | 0.532（258） |
+| 128 × 4096 | 4.61（119） | — | — | 17.1 | 22.4 | 2.02（272） |
+
+- 手写 FA2 比 PyTorch 的 FP32 路径快 3.6–8 倍；比 fp16 flash（FA2 后端，未用 FA3）慢约 2.2 倍。BC=64 在 H200 上同样慢 20–30%。
+- H200 上 PyTorch 的 fp32 efficient 在 L=4096 时反而变慢（14 TFLOP/s），L≤2048 时约 26–31。
+- Hopper 的 TF32 峰值要靠 WGMMA 才能接近，`mma.sync` 远达不到；P6（WGMMA、TMA、warp 特化）现在可以实测。
