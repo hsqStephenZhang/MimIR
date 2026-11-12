@@ -1,0 +1,25 @@
+NVIDIA RTX PRO 6000 Blackwell Server Edition 2.12.0+cu130
+BH=  32 L= 1024 D=  64 causal=0 fp16 flash         0.0490 ms    175.4 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=0 bf16 flash         0.0490 ms    175.2 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=0 fp32 efficient     0.2271 ms     37.8 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=0 tf32 efficient     0.2271 ms     37.8 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=0 fp32 math          0.8173 ms     10.5 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=0 tf32 math          0.6622 ms     13.0 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=1 fp16 flash         0.0509 ms     84.3 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=1 bf16 flash         0.0501 ms     85.7 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=1 fp32 efficient     0.1690 ms     25.4 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=1 tf32 efficient     0.1689 ms     25.4 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=1 fp32 math          0.9889 ms      4.3 TFLOP/s
+BH=  32 L= 1024 D=  64 causal=1 tf32 math          0.8378 ms      5.1 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=0 fp16 flash         0.1279 ms    268.6 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=0 bf16 flash         0.1266 ms    271.4 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=0 fp32 efficient     0.7820 ms     43.9 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=0 tf32 efficient     0.7822 ms     43.9 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=0 fp32 math          3.1163 ms     11.0 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=0 tf32 math          2.9177 ms     11.8 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=1 fp16 flash         0.1039 ms    165.3 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=1 bf16 flash         0.1030 ms    166.8 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=1 fp32 efficient     0.5004 ms     34.3 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=1 tf32 efficient     0.4999 ms     34.4 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=1 fp32 math          3.8843 ms      4.4 TFLOP/s
+BH=  32 L= 2048 D=  64 causal=1 tf32 math          3.6933 ms      4.7 TFLOP/s
