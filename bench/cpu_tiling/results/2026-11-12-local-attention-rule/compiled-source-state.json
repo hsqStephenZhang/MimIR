@@ -1,0 +1,11 @@
+{
+  "base_commit": "93fa2488277d022cfeb63416c97a22a698082467",
+  "sha256": {
+    "src/mim/plug/tensor/tensor.mim": "e947ba617985d6eb72babf41b26d141366304915352da243d2912c337bfeae8f",
+    "src/mim/plug/tensor/tensor.cpp": "7d17ca0ef810892dcfe400c17bdc12f6627b6b125539dc04969fa0ff41fb937d",
+    "src/mim/plug/tensor/phase/group_rules.cpp": "e7ad7493194cf2152d43005b60a1dd657ace05ea2f044930b5c5e7d9d85926a3",
+    "src/mim/plug/tensor/phase/lower.cpp": "244ac96a6b835803d785196fad10c7ce4cfae50fe4b93f5d6014d38e4b7b0f25",
+    "bench/cpu_tiling/attention_cpu.py": "49bf3d3fdbefa8d875192b2c2956ad45d8540fd1f73ee0318d7d2b9a739cb77d",
+    "bench/cpu_tiling/attention_audit.py": "8d8e4c2fce6a3dbd45abf3882a576b3c35f82eb73d5a7f3255d0f69145d890f9"
+  }
+}

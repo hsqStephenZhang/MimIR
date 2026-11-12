@@ -1,0 +1,50 @@
+{
+  "1": {
+    "default_vs_sdpa": 0.5802755539676481,
+    "default_vs_explicit": 0.6993390341167428,
+    "joint_vs_default": 0.9477917745010205,
+    "joint_vs_sdpa": 0.5499803969945599,
+    "mimir_default_speedup": 1.0,
+    "mimir_joint_speedup": 1.0,
+    "torch_sdpa_speedup": 1.0,
+    "torch_explicit_speedup": 1.0,
+    "max_default_growth_bytes_per_call": 0.0,
+    "max_joint_growth_bytes_per_call": 0.0
+  },
+  "4": {
+    "default_vs_sdpa": 0.26771854125835715,
+    "default_vs_explicit": 0.5081252742857434,
+    "joint_vs_default": 2.540227111645036,
+    "joint_vs_sdpa": 0.680065896794539,
+    "mimir_default_speedup": 1.321333940102504,
+    "mimir_joint_speedup": 3.5413773240986535,
+    "torch_sdpa_speedup": 2.863969676755816,
+    "torch_explicit_speedup": 1.8185680740165493,
+    "max_default_growth_bytes_per_call": 0.0,
+    "max_joint_growth_bytes_per_call": 0.0
+  },
+  "6": {
+    "default_vs_sdpa": 0.22924742051013222,
+    "default_vs_explicit": 0.4628929885767582,
+    "joint_vs_default": 2.9695994751264356,
+    "joint_vs_sdpa": 0.6807730196209778,
+    "mimir_default_speedup": 1.399113194764581,
+    "mimir_joint_speedup": 4.383669409879327,
+    "torch_sdpa_speedup": 3.541462679705835,
+    "torch_explicit_speedup": 2.113781142494887,
+    "max_default_growth_bytes_per_call": 0.0,
+    "max_joint_growth_bytes_per_call": 0.0
+  },
+  "8": {
+    "default_vs_sdpa": 0.32608521173210114,
+    "default_vs_explicit": 0.5468046983724992,
+    "joint_vs_default": 2.224262930845116,
+    "joint_vs_sdpa": 0.7252992487524936,
+    "mimir_default_speedup": 1.2185553672665976,
+    "mimir_joint_speedup": 2.8596867007211317,
+    "torch_sdpa_speedup": 2.1684451344018627,
+    "torch_explicit_speedup": 1.5584784404713785,
+    "max_default_growth_bytes_per_call": 0.0,
+    "max_joint_growth_bytes_per_call": 0.0
+  }
+}

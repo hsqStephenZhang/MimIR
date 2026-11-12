@@ -1,0 +1,58 @@
+LSan passed 1 h1_s128_d64 mimir_joint
+LSan passed 1 h8_s128_d64 mimir_joint
+LSan passed 1 h8_s256_d64 mimir_joint
+LSan passed 1 h8_s512_d64 mimir_joint
+LSan passed 1 h8_s128_d128 mimir_joint
+LSan passed 1 h4_cross_128_512 mimir_joint
+LSan passed 1 h8_decode_512 mimir_joint
+LSan passed 1 h1_odd mimir_joint
+LSan passed 1 h8_s128_causal mimir_joint
+LSan passed 1 h8_s256_causal mimir_joint
+LSan passed 1 h32_s128_d64 mimir_joint
+LSan passed 4 h1_s128_d64 mimir_joint
+LSan passed 4 h8_s128_d64 mimir_joint
+LSan passed 4 h8_s256_d64 mimir_joint
+LSan passed 4 h8_s512_d64 mimir_joint
+LSan passed 4 h8_s128_d128 mimir_joint
+LSan passed 4 h4_cross_128_512 mimir_joint
+LSan passed 4 h8_decode_512 mimir_joint
+LSan passed 4 h1_odd mimir_joint
+LSan passed 4 h8_s128_causal mimir_joint
+LSan passed 4 h8_s256_causal mimir_joint
+LSan passed 4 h32_s128_d64 mimir_joint
+LSan passed 6 h1_s128_d64 mimir_joint
+LSan passed 6 h8_s128_d64 mimir_joint
+LSan passed 6 h8_s256_d64 mimir_joint
+LSan passed 6 h8_s512_d64 mimir_joint
+LSan passed 6 h8_s128_d128 mimir_joint
+LSan passed 6 h4_cross_128_512 mimir_joint
+LSan passed 6 h8_decode_512 mimir_joint
+LSan passed 6 h1_odd mimir_joint
+LSan passed 6 h8_s128_causal mimir_joint
+LSan passed 6 h8_s256_causal mimir_joint
+LSan passed 6 h32_s128_d64 mimir_joint
+LSan passed 8 h1_s128_d64 mimir_joint
+LSan passed 8 h8_s128_d64 mimir_joint
+LSan passed 8 h8_s256_d64 mimir_joint
+LSan passed 8 h8_s512_d64 mimir_joint
+LSan passed 8 h8_s128_d128 mimir_joint
+LSan passed 8 h4_cross_128_512 mimir_joint
+LSan passed 8 h8_decode_512 mimir_joint
+LSan passed 8 h1_odd mimir_joint
+LSan passed 8 h8_s128_causal mimir_joint
+LSan passed 8 h8_s256_causal mimir_joint
+LSan passed 8 h32_s128_d64 mimir_joint
+1000 calls, zero live growth 1 h8_s128_d64
+1000 calls, zero live growth 4 h8_s128_d64
+1000 calls, zero live growth 4 h8_s512_d64
+1000 calls, zero live growth 4 h8_s256_causal
+1000 calls, zero live growth 6 h8_s128_d64
+1000 calls, zero live growth 8 h8_s128_d64
+timing 1
+timing finished 1
+timing 4
+timing finished 4
+timing 6
+timing finished 6
+timing 8
+timing finished 8

@@ -6,6 +6,9 @@
 CPU attention：[修复 OpenMP 缓冲区泄露后的本机 1/4/6/8 线程重测](results/2026-11-12-local-attention-fixed/README.md)，
 含 Torch SDPA/显式组合对照、LSan 与持续内存检查。
 
+新增：[Rule 识别后的 CPU attention 联合调度](results/2026-11-12-local-attention-rule/README.md)，
+比较按 query 行块并行、归一化后移与原分解路径。
+
 本目录保存 2026-11-11 在 i5-14600KF 上的 FP32 单线程 GEMM 排查。矩阵形状按
 `M × K × N` 表述；JSON 的 `shape` 遵循 gemm-bench 的 `[M, N, K]`。
 

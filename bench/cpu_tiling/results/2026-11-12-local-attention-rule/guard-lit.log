@@ -1,0 +1,21 @@
+-- Testing: 14 of 833 tests, 6 workers --
+PASS: mim regression :: tensor/sdpa_exec.mim (1 of 14)
+PASS: mim regression :: tensor/online_auto.mim (2 of 14)
+PASS: mim regression :: tensor/online_select.mim (3 of 14)
+PASS: mim regression :: tensor/online_early.mim (4 of 14)
+PASS: mim regression :: tensor/attention_raise.mim (5 of 14)
+PASS: mim regression :: tensor/online_single.mim (6 of 14)
+PASS: mim regression :: omp/attention_rule_exec.mim (7 of 14)
+PASS: mim regression :: tensor/online_rule.mim (8 of 14)
+PASS: mim regression :: tensor/attention_views.mim (9 of 14)
+PASS: mim regression :: tensor/cpu_attention_schedule.mim (10 of 14)
+PASS: mim regression :: tensor/online_schedule.mim (11 of 14)
+PASS: mim regression :: tensor/online_exec.mim (12 of 14)
+PASS: mim regression :: omp/attention_lifetime.mim (13 of 14)
+PASS: mim regression :: tensor/online_view_inputs.mim (14 of 14)
+
+Testing Time: 16.35s
+
+Total Discovered Tests: 833
+  Excluded: 819 (98.32%)
+  Passed  :  14 (1.68%)

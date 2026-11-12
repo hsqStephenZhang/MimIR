@@ -1,0 +1,1850 @@
+[
+  {
+    "threads": 1,
+    "case": {
+      "name": "h1_s128_d64",
+      "shape": [
+        1,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h1_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h1_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h1_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h1_s128_d64",
+      "1",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h1_s128_d64.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h8_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_d64",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_d64.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h8_s256_d64",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s256_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h8_s256_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s256_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s256_d64",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s256_d64.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h8_s512_d64",
+      "shape": [
+        8,
+        512,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s512_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h8_s512_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s512_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s512_d64",
+      "8",
+      "512",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s512_d64.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h8_s128_d128",
+      "shape": [
+        8,
+        128,
+        128,
+        128,
+        128
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_d128",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h8_s128_d128/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_d128"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_d128",
+      "8",
+      "128",
+      "128",
+      "128",
+      "128",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_d128.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h4_cross_128_512",
+      "shape": [
+        4,
+        128,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h4_cross_128_512",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h4_cross_128_512/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h4_cross_128_512"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h4_cross_128_512",
+      "4",
+      "128",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h4_cross_128_512.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h8_decode_512",
+      "shape": [
+        8,
+        1,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_decode_512",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h8_decode_512/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_decode_512"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_decode_512",
+      "8",
+      "1",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_decode_512.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h1_odd",
+      "shape": [
+        1,
+        97,
+        129,
+        32,
+        48
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h1_odd",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h1_odd/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h1_odd"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h1_odd",
+      "1",
+      "97",
+      "129",
+      "32",
+      "48",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h1_odd.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h8_s128_causal",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_causal",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h8_s128_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_causal"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_causal",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s128_causal.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h8_s256_causal",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s256_causal",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h8_s256_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s256_causal"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s256_causal",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h8_s256_causal.lsan.log"
+  },
+  {
+    "threads": 1,
+    "case": {
+      "name": "h32_s128_d64",
+      "shape": [
+        32,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h32_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t1/mimir_joint/h32_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h32_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h32_s128_d64",
+      "32",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t1-mimir_joint-h32_s128_d64.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h1_s128_d64",
+      "shape": [
+        1,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h1_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h1_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h1_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h1_s128_d64",
+      "1",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h1_s128_d64.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h8_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_d64",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_d64.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s256_d64",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s256_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h8_s256_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s256_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s256_d64",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s256_d64.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s512_d64",
+      "shape": [
+        8,
+        512,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s512_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h8_s512_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s512_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s512_d64",
+      "8",
+      "512",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s512_d64.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s128_d128",
+      "shape": [
+        8,
+        128,
+        128,
+        128,
+        128
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_d128",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h8_s128_d128/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_d128"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_d128",
+      "8",
+      "128",
+      "128",
+      "128",
+      "128",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_d128.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h4_cross_128_512",
+      "shape": [
+        4,
+        128,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h4_cross_128_512",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h4_cross_128_512/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h4_cross_128_512"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h4_cross_128_512",
+      "4",
+      "128",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h4_cross_128_512.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_decode_512",
+      "shape": [
+        8,
+        1,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_decode_512",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h8_decode_512/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_decode_512"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_decode_512",
+      "8",
+      "1",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_decode_512.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h1_odd",
+      "shape": [
+        1,
+        97,
+        129,
+        32,
+        48
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h1_odd",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h1_odd/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h1_odd"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h1_odd",
+      "1",
+      "97",
+      "129",
+      "32",
+      "48",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h1_odd.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s128_causal",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_causal",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h8_s128_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_causal"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_causal",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s128_causal.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s256_causal",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s256_causal",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h8_s256_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s256_causal"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s256_causal",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h8_s256_causal.lsan.log"
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h32_s128_d64",
+      "shape": [
+        32,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h32_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t4/mimir_joint/h32_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h32_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h32_s128_d64",
+      "32",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t4-mimir_joint-h32_s128_d64.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h1_s128_d64",
+      "shape": [
+        1,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h1_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h1_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h1_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h1_s128_d64",
+      "1",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h1_s128_d64.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h8_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_d64",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_d64.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h8_s256_d64",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s256_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h8_s256_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s256_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s256_d64",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s256_d64.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h8_s512_d64",
+      "shape": [
+        8,
+        512,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s512_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h8_s512_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s512_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s512_d64",
+      "8",
+      "512",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s512_d64.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h8_s128_d128",
+      "shape": [
+        8,
+        128,
+        128,
+        128,
+        128
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_d128",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h8_s128_d128/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_d128"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_d128",
+      "8",
+      "128",
+      "128",
+      "128",
+      "128",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_d128.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h4_cross_128_512",
+      "shape": [
+        4,
+        128,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h4_cross_128_512",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h4_cross_128_512/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h4_cross_128_512"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h4_cross_128_512",
+      "4",
+      "128",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h4_cross_128_512.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h8_decode_512",
+      "shape": [
+        8,
+        1,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_decode_512",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h8_decode_512/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_decode_512"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_decode_512",
+      "8",
+      "1",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_decode_512.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h1_odd",
+      "shape": [
+        1,
+        97,
+        129,
+        32,
+        48
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h1_odd",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h1_odd/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h1_odd"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h1_odd",
+      "1",
+      "97",
+      "129",
+      "32",
+      "48",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h1_odd.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h8_s128_causal",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_causal",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h8_s128_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_causal"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_causal",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s128_causal.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h8_s256_causal",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s256_causal",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h8_s256_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s256_causal"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s256_causal",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h8_s256_causal.lsan.log"
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h32_s128_d64",
+      "shape": [
+        32,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h32_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t6/mimir_joint/h32_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h32_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h32_s128_d64",
+      "32",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t6-mimir_joint-h32_s128_d64.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h1_s128_d64",
+      "shape": [
+        1,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h1_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h1_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h1_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h1_s128_d64",
+      "1",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h1_s128_d64.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h8_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_d64",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_d64.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h8_s256_d64",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s256_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h8_s256_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s256_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s256_d64",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s256_d64.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h8_s512_d64",
+      "shape": [
+        8,
+        512,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s512_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h8_s512_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s512_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s512_d64",
+      "8",
+      "512",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s512_d64.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h8_s128_d128",
+      "shape": [
+        8,
+        128,
+        128,
+        128,
+        128
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_d128",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h8_s128_d128/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_d128"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_d128",
+      "8",
+      "128",
+      "128",
+      "128",
+      "128",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_d128.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h4_cross_128_512",
+      "shape": [
+        4,
+        128,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h4_cross_128_512",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h4_cross_128_512/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h4_cross_128_512"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h4_cross_128_512",
+      "4",
+      "128",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h4_cross_128_512.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h8_decode_512",
+      "shape": [
+        8,
+        1,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_decode_512",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h8_decode_512/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_decode_512"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_decode_512",
+      "8",
+      "1",
+      "512",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_decode_512.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h1_odd",
+      "shape": [
+        1,
+        97,
+        129,
+        32,
+        48
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h1_odd",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h1_odd/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h1_odd"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h1_odd",
+      "1",
+      "97",
+      "129",
+      "32",
+      "48",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h1_odd.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h8_s128_causal",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_causal",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h8_s128_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_causal"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_causal",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s128_causal.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h8_s256_causal",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s256_causal",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h8_s256_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s256_causal"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s256_causal",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h8_s256_causal.lsan.log"
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h32_s128_d64",
+      "shape": [
+        32,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "variant": "mimir_joint",
+    "binary": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h32_s128_d64",
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-fsanitize=address",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-rule-bench/t8/mimir_joint/h32_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-rule-bench/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h32_s128_d64"
+    ],
+    "command": [
+      "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h32_s128_d64",
+      "32",
+      "128",
+      "128",
+      "64",
+      "64",
+      "20"
+    ],
+    "exit_code": 0,
+    "log": "/tmp/mimir-attention-rule-bench/probe/t8-mimir_joint-h32_s128_d64.lsan.log"
+  }
+]

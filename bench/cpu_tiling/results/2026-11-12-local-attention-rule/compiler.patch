@@ -1,0 +1,280 @@
+diff --git a/bench/cpu_tiling/attention_audit.py b/bench/cpu_tiling/attention_audit.py
+index 96eee84d01..3c438b6f4b 100644
+--- a/bench/cpu_tiling/attention_audit.py
++++ b/bench/cpu_tiling/attention_audit.py
+@@ -14,12 +14,14 @@ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("threads", type=int, nargs="?", choices=[4, 6, 8])
+     parser.add_argument("--root", type=Path, default=Path("/tmp/mimir-attention-local"))
++    parser.add_argument("--variants", nargs="+", choices=["mimir_default", "mimir_online", "mimir_joint"],
++                        default=["mimir_default", "mimir_online"])
+     args = parser.parse_args()
+     root = args.root.resolve()
+     if args.threads is None:
+         runtime = Path(json.loads((root / "metadata.json").read_text())["omp_runtime"])
+         for threads in [4, 6, 8]:
+-            for variant in ["mimir_default", "mimir_online"]:
++            for variant in args.variants:
+                 path = root / f"t{threads}" / variant / "h8_s128_d64"
+                 command = ["clang++", "-O3", "-march=haswell", "-mno-avx512f", "-shared", "-fPIC",
+                            "-std=c++20", "-Wno-override-module", str(path / "kernel.ll"),
+@@ -27,7 +29,8 @@ def main():
+                            str(root / "omp-audit.o"), str(runtime), "-Wl,-rpath," + str(runtime.parent),
+                            "-o", str(path / "audit.so")]
+                 subprocess.run(command, check=True)
+-            subprocess.run([sys.executable, __file__, str(threads), "--root", str(root)],
++            subprocess.run([sys.executable, __file__, str(threads), "--root", str(root),
++                            "--variants", *args.variants],
+                            env=environment(threads), check=True)
+         return
+     threads = args.threads
+@@ -39,7 +42,7 @@ def main():
+     out = np.empty_like(q)
+     os.sched_setaffinity(0, {0})
+     records = []
+-    for variant in ["mimir_default", "mimir_online"]:
++    for variant in args.variants:
+         lib = ctypes.CDLL(str(root / f"t{threads}" / variant / "h8_s128_d64/audit.so"))
+         lib.run_attention.argtypes = [ptr] * 4 + [ctypes.c_size_t]
+         assert lib.run_attention(q, k, v, out, out.size) == 0
+@@ -49,8 +52,10 @@ def main():
+         record = dict(variant=variant, launches=lib.audit_launches(), team=lib.audit_team(),
+                       workers=[i for i in range(64) if workers >> i & 1],
+                       cpus=[i for i in range(64) if cpus >> i & 1])
+-        if variant == "mimir_default":
+-            assert record["launches"] == 2 and record["team"] == threads
++        expected = json.loads((root / f"t{threads}" / variant / "h8_s128_d64/record.json").read_text())["launches"]
++        assert record["launches"] == expected
++        if expected:
++            assert record["team"] == threads
+             assert record["workers"] == list(range(threads)) and record["cpus"] == MASKS[threads]
+         else:
+             assert record["launches"] == 0 and record["team"] == 0
+diff --git a/bench/cpu_tiling/attention_cpu.py b/bench/cpu_tiling/attention_cpu.py
+index bf89a26a62..876d4f5ef4 100644
+--- a/bench/cpu_tiling/attention_cpu.py
++++ b/bench/cpu_tiling/attention_cpu.py
+@@ -15,7 +15,7 @@ import time
+ SOURCE = Path(__file__).resolve().parents[2]
+ HERE = Path(__file__).resolve().parent
+ MASKS = {1: [0], 4: [0, 2, 4, 6], 6: [0, 2, 4, 6, 8, 10], 8: [0, 2, 4, 6, 8, 10, 12, 13]}
+-VARIANTS = {"mimir_default": 0, "mimir_online": 1}
++VARIANTS = {"mimir_default": 0, "mimir_online": 1, "mimir_joint": 0}
+ 
+ 
+ def digest(path):
+@@ -121,6 +121,7 @@ def prepare(args, cases):
+         command = [str(SOURCE / "build/bin/mim"), "-p", "opt", "-p", "omp", str(path / "kernel.mim"), "-p", "ll",
+                    "-X", "tensor:strict=1", "-X", "omp:strict=1", "-X", f"omp:threads={args.threads}",
+                    "-X", f"tensor:attention-online={VARIANTS[variant]}", "-X", "btensor:registers=128",
++                   "-X", f"tensor:attention-cpu={int(variant == 'mimir_joint')}",
+                    "-X", "ll:rt=extern", "-X", "ll:o=" + str(path / "kernel.ll")]
+         for key, value in flags.items():
+             command.extend(["-X", f"tensor:cpu-{key}={value}"])
+@@ -260,7 +261,11 @@ def main():
+     parser.add_argument("--root", type=Path, default=Path("/tmp/mimir-attention-local"))
+     parser.add_argument("--threads", type=int, choices=MASKS, default=1)
+     parser.add_argument("--jobs", type=int, default=2)
++    parser.add_argument("--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS))
+     args = parser.parse_args()
++    for name in list(VARIANTS):
++        if name not in args.variants:
++            del VARIANTS[name]
+     args.root = args.root.resolve()
+     cases = json.loads((HERE / "attention-cases.json").read_text())
+     globals()[args.phase](args, cases)
+diff --git a/src/mim/plug/tensor/phase/group_rules.cpp b/src/mim/plug/tensor/phase/group_rules.cpp
+index a5e403f0e8..bb8fd33a89 100644
+--- a/src/mim/plug/tensor/phase/group_rules.cpp
++++ b/src/mim/plug/tensor/phase/group_rules.cpp
+@@ -7,6 +7,9 @@
+ #include <mim/phase/graph_rule_rewrite.h>
+ #include <mim/phase/rule_rewrite.h>
+ 
++#include <mim/plug/math/math.h>
++#include <mim/plug/omp/omp.h>
++
+ #include "mim/plug/tensor/phase/fuse.h"
+ #include "mim/plug/tensor/phase/group.h"
+ #include "mim/plug/tensor/phase/tile_fuse.h"
+@@ -121,9 +124,8 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
+     }
+     auto a_read   = w.app(maps[0], fn->var());
+     auto direct_a = batch == 0 && ranks->rr == 1 && (*nr)[0] == 2 && a_read == w.tuple({vars[0], vars[2]});
+-    auto in_place = [&](size_t i) {
+-        return (*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var();
+-    };
++    auto in_place
++        = [&](size_t i) { return (*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var(); };
+     if (batch == 0) {
+         // A copied by blis_operand is already row-major (M, K) and needs no second pack.
+         auto pack_a  = !direct_a && in_place(0);
+@@ -146,9 +148,9 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
+                          {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps, w.lit_nat(batch), mr.Ris});
+     builder      = w.app(builder, {mr.Sis, w.tuple(DefVec(batch, [&](size_t d) { return w.lit_nat((*shape)[d]); }))});
+     // group_blis_batch_impl copies each batch's A into a row-major (M, K) operand, which needs no second pack.
+-    builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
+-                                   w.lit_nat(nc), w.lit_nat(kc), w.lit_ff()});
+-    builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps, w.tuple(reads)});
++    builder = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
++                              w.lit_nat(nc), w.lit_nat(kc), w.lit_ff()});
++    builder = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps, w.tuple(reads)});
+     return {w.app(builder, app->arg()), {}};
+ }
+ 
+@@ -492,7 +494,7 @@ void AttentionRaise::start() {
+ 
+ void GroupDefault::start() {
+     auto automatic = !driver().is_loaded("gpu") && driver().arg_nat("tensor", "group").value_or(1);
+-    auto mode = driver().arg_nat("tensor", "tile-fuse").value_or(automatic ? 2 : 0);
++    auto mode      = driver().arg_nat("tensor", "tile-fuse").value_or(automatic ? 2 : 0);
+     if (mode) {
+         // Explicit group_req schedules retain their rules; automatic CPU schedules use the level chain.
+         if (mode == 2) {
+@@ -533,10 +535,31 @@ void GroupDefault::start() {
+ 
+ void AttentionSchedule::start() {
+     if (driver().is_loaded("gpu") || !driver().arg_nat("tensor", "group").value_or(1)
+-        || !driver().arg_nat("tensor", "attention").value_or(1)
+-        || !driver().arg_nat("tensor", "attention-online").value_or(0))
++        || !driver().arg_nat("tensor", "attention").value_or(1))
+         return;
+-    auto& w     = world();
++    auto online = driver().arg_nat("tensor", "attention-online").value_or(0);
++    if (!online && !driver().arg_nat("tensor", "attention-cpu").value_or(0)) return;
++    auto& w = world();
++    if (!online) {
++        auto lanes = w.app(w.annex<vec_width>(), w.lit_nat(4));
++        auto args  = DefVec{w.lit_nat(2), w.lit_nat(4), lanes,
++                            w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
++                            w.lit_nat(driver().arg_nat("tensor", "group-cache").value_or(262144))};
++        for (auto name : {"cpu-mr", "cpu-nr", "cpu-mc", "cpu-nc", "cpu-kc", "cpu-order"})
++            args.push_back(w.lit_nat(driver().arg_nat("tensor", name).value_or(0)));
++        auto levels
++            = w.app(w.app(w.annex<cpu_default_levels>(), w.call<math::F>(w.tuple({w.lit_nat(23), w.lit_nat(8)}))),
++                    w.tuple(args));
++        auto threads = driver().is_loaded("omp") ? Lit::as(w.app(w.annex<omp::thread_hint>(), w.tuple())) : 1;
++        auto bm      = driver().arg_nat("tensor", "attention-cpu-rows").value_or(32);
++        if (!bm) world().lit_nat(bm)->blame("attention-cpu-rows must be positive").bail();
++        auto params = w.tuple({w.lit_nat(16), w.lit_nat(bm), w.lit_nat(threads > 1 ? 4 : 0), levels});
++        auto rules  = std::vector{w.app(w.annex<attention_cpu_schedule_rule>(), params)->as<Rule>(),
++                                  w.app(w.annex<attention_masked_cpu_schedule_rule>(), params)->as<Rule>()};
++        RuleRewrite rewrite(w, std::move(rules));
++        rewrite.run();
++        return;
++    }
+     auto params = w.tuple({w.lit_nat(16), w.app(w.annex<vec_width>(), w.lit_nat(8)),
+                            w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32))});
+     auto rules  = std::vector{w.app(w.annex<attention_schedule_rule>(), params)->as<Rule>(),
+diff --git a/src/mim/plug/tensor/phase/lower.cpp b/src/mim/plug/tensor/phase/lower.cpp
+index 8ab58437e7..ada1c4f1cf 100644
+--- a/src/mim/plug/tensor/phase/lower.cpp
++++ b/src/mim/plug/tensor/phase/lower.cpp
+@@ -42,6 +42,7 @@ const Def* Lower::rewrite_imm_App(const App* app) {
+     if (Axm::isa<tensor::sdpa>(app)) return lower_via_impl(app, impl<tensor::attention_impl>());
+     if (Axm::isa<tensor::sdpa_masked>(app)) return lower_via_impl(app, impl<tensor::attention_masked_impl>());
+     if (Axm::isa<tensor::sdpa_online>(app)) return lower_via_impl(app, impl<tensor::sdpa_online_impl>());
++    if (Axm::isa<tensor::sdpa_cpu>(app)) return lower_via_impl(app, impl<tensor::sdpa_cpu_impl>());
+     auto& w = new_world();
+ 
+     if (Axm::isa<tensor::reverse_at>(app)) {
+diff --git a/src/mim/plug/tensor/tensor.cpp b/src/mim/plug/tensor/tensor.cpp
+index 5622e58660..8737c0c351 100644
+--- a/src/mim/plug/tensor/tensor.cpp
++++ b/src/mim/plug/tensor/tensor.cpp
+@@ -154,6 +154,8 @@ static constexpr PluginArg known_args[] = {
+     {"prepack=<n>", "Prepack explicitly frozen weight inputs after BLIS grouping (default 1)."},
+     {"prepack-budget=<bytes>", "Maximum size of each persistent packed copy (default 67108864)."},
+     {"attention=<n>", "Enable attention raising before tensor lowering (default 1; grouping must also be enabled)."},
++    {"attention-cpu=<n>", "Use joint CPU query-row tasks and output normalization (default 0)."},
++    {"attention-cpu-rows=<n>", "Query rows per joint CPU attention task (default 32)."},
+     {"group=<n>", "Enable automatic grouping and in-group rules in the default pipeline (default 1; disabled for GPU)."},
+     {"group-cache=<bytes>", "Scratch working-set budget for tensor.group and BLIS block selection (default 262144)."},
+     {"group-registers=<n>", "Register count passed to the shared BLIS selector (default 32, at least 16)."},
+diff --git a/src/mim/plug/tensor/tensor.mim b/src/mim/plug/tensor/tensor.mim
+index 9ad48843ee..2f5af605c6 100644
+--- a/src/mim/plug/tensor/tensor.mim
++++ b/src/mim/plug/tensor/tensor.mim
+@@ -2553,6 +2553,82 @@ pub anx lam attention_masked_schedule_rule (mode lanes registers: Nat): Rule [
+             @(H, M, S, K, N) (scale, q, k, v, mask);
+     schedule;
+ 
++/// CPU attention keeps each query-row block in one task. Both contractions retain ordinary two-input
++/// GEMM schedules; normalization is applied to the output, rather than materializing probabilities.
++axm sdpa_cpu: [mode: Nat, masked: Bool, bm binding: Nat] → {H M S K N: Nat}
++    → [levels: TileLevels (3, math.F32)]
++    → [scale: math.F32, q: Tensor 3 (H, M, K) math.F32, k: Tensor 3 (H, S, K) math.F32,
++       v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32] → Tensor 3 (H, M, N) math.F32;
++
++pub anx lam attention_cpu_schedule_rule (mode bm binding: Nat, levels: TileLevels (3, math.F32)): Rule [
++    H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
++    k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32] =
++    rule schedule (H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
++                   k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32):
++        sdpa mode @(H, M, S, K, N) (scale, q, k, v)
++        when core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), 0 < bm) =>
++        sdpa_cpu (mode, ff, bm, binding) @(H, M, S, K, N) levels
++            (scale, q, k, v, splat ((H, M, S), 0:math.F32));
++    schedule;
++
++pub anx lam attention_masked_cpu_schedule_rule (mode bm binding: Nat, levels: TileLevels (3, math.F32)): Rule [
++    H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
++    k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32] =
++    rule schedule (H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
++                   k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32):
++        sdpa_masked mode @(H, M, S, K, N) (scale, q, k, v, mask)
++        when core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), 0 < bm) =>
++        sdpa_cpu (mode, tt, bm, binding) @(H, M, S, K, N) levels (scale, q, k, v, mask);
++    schedule;
++
++priv anx lam attention_cpu_product (mode: Nat, levels: TileLevels (3, math.F32)) {M K N: Nat}
++    (a: Tensor 2 (M, K) math.F32, b: Tensor 2 (K, N) math.F32): Tensor 2 (M, N) math.F32 =
++    let F = math.F32;
++    fun mac (acc: F, (x y: F))@tt: F = return (math.arith.add mode (acc, math.arith.mul mode (x,y)));
++    let root = map_reduce ((M,N), (M,N,K)) @((F,F), (2,2), ((M,K),(K,N))) (mac, 0:F)
++        (proj_map @(3,2) (0,1)) (proj_map @(3,2) (0,2), proj_map @(3,2) (2,1)) (a,b);
++    tile_req (root, (), levels, default_control);
++
++priv anx lam sdpa_cpu_inputs (mode: Nat, masked: Bool, bm binding: Nat) {H M S K N: Nat}
++    (levels: TileLevels (3, math.F32)) {Mask: *}
++    (scale: math.F32, q: Tensor 3 (H, M, K) math.F32, k: Tensor 3 (H, S, K) math.F32,
++     v: Tensor 3 (H, S, N) math.F32, mask: Mask, get_mask: Mask → Tensor 3 (H, M, S) math.F32): Tensor 3 (H, M, N) math.F32 =
++    let F = math.F32;
++    let R: Ring = (F, 0:F, math.arith.add mode, math.arith.mul mode);
++    lam body (off ext: «3; Nat»)
++            (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F, mask: Mask): Tensor 3 ext F =
++            let rows = ext#1₃;
++            let qt = reshape (1, rows, K) (rows, K)
++                (slice @(F, 3) (H, M, K) ((off#0₃, off#1₃, 0), (1, 1, 1), (1, rows, K)) q);
++            let kt = reshape (1, S, K) (S, K)
++                (slice @(F, 3) (H, S, K) ((off#0₃, 0, 0), (1, 1, 1), (1, S, K)) k);
++            let vt = reshape (1, S, N) (S, N)
++                (slice @(F, 3) (H, S, N) ((off#0₃, 0, 0), (1, 1, 1), (1, S, N)) v);
++            let scores = attention_cpu_product (mode, levels) (qt, transpose_2d kt);
++            let scores = unary (λ x: F: F = math.arith.mul mode (x, scale)) scores;
++            let scores = (λ (): Tensor 2 (rows, S) F = scores,
++                λ (): Tensor 2 (rows, S) F =
++                    let bias = reshape (1, rows, S) (rows, S)
++                        (slice @(F, 3) (H, M, S) ((off#0₃, off#1₃, 0), (1, 1, 1), (1, rows, S)) (get_mask mask));
++                    binary (math.arith.add mode) (scores, bias))#masked ();
++            let maximum = reduce (math.extrema.fmax mode, math.neg_inf math.f32) @2 1₂ scores;
++            let e = binary_ax (λ (x y: F): F = math.exp.exp mode (math.arith.sub mode (x, y))) @2 1₂ (scores, maximum);
++            let sums = reduce (math.arith.add mode, 0:F) @2 1₂ e;
++            let ev = attention_cpu_product (mode, levels) (e, vt);
++            reshape (rows, N) ext (binary_ax (math.arith.div mode) @2 1₂ (ev, sums));
++    tiled ((H, M, N), (1, bm, N), (1,0)#(binding == 4)) (q, k, v, mask) ((body, bind 4 body)#(binding == 4));
++
++priv anx lam sdpa_cpu_impl (mode: Nat, masked: Bool, bm binding: Nat) {H M S K N: Nat}
++    (levels: TileLevels (3, math.F32))
++    (scale: math.F32, q: Tensor 3 (H, M, K) math.F32, k: Tensor 3 (H, S, K) math.F32,
++     v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32): Tensor 3 (H, M, N) math.F32 =
++    (λ (): Tensor 3 (H, M, N) math.F32 =
++        sdpa_cpu_inputs (mode, ff, bm, binding) @(H, M, S, K, N) levels @[]
++            (scale, q, k, v, (), λ (_: []): Tensor 3 (H, M, S) math.F32 = splat ((H, M, S), 0:math.F32)),
++     λ (): Tensor 3 (H, M, N) math.F32 =
++        sdpa_cpu_inputs (mode, tt, bm, binding) @(H, M, S, K, N) levels @(Tensor 3 (H, M, S) math.F32)
++            (scale, q, k, v, mask, λ (x: Tensor 3 (H, M, S) math.F32): Tensor 3 (H, M, S) math.F32 = x))#masked ();
++
+ priv anx lam sdpa_online_inputs (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N: Nat} {Mask: *}
+     (scale: math.F32, q: Tensor 3 (H, M, K) (math.F32), k: Tensor 3 (H, S, K) (math.F32),
+      v: Tensor 3 (H, S, N) (math.F32), mask: Mask, get_mask: Mask → Tensor 3 (H, M, S) (math.F32)): Tensor 3 (H, M, N) (math.F32) =

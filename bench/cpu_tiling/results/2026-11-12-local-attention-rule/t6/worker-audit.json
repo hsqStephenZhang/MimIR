@@ -1,0 +1,44 @@
+[
+  {
+    "variant": "mimir_default",
+    "launches": 2,
+    "team": 6,
+    "workers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "cpus": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10
+    ]
+  },
+  {
+    "variant": "mimir_joint",
+    "launches": 1,
+    "team": 6,
+    "workers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "cpus": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10
+    ]
+  }
+]

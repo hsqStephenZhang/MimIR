@@ -1,0 +1,55 @@
+{
+  "source_commit": "95153efe99283341ba3ee22bc8accdbf8f728e00",
+  "source_sha256": {
+    "bench/cpu_tiling/attention_native.cpp": "551c592525cc9d01404935af9a73146fe206b5d04eacefc033590dd99001588b",
+    "bench/cpu_tiling/attention_sample.cpp": "de18f44e43c757b20af5ba4cc264c19e7e4d46abf11c5217c45602e5a7614e24",
+    "bench/cpu_tiling/attention-cases.json": "22b4eeff2074a3ada3e7656a1cbd603462f577fea9dddb801fdde84198e1883d",
+    "bench/cpu_tiling/attention_audit.py": "8d8e4c2fce6a3dbd45abf3882a576b3c35f82eb73d5a7f3255d0f69145d890f9",
+    "bench/cpu_tiling/attention_cpu.py": "49bf3d3fdbefa8d875192b2c2956ad45d8540fd1f73ee0318d7d2b9a739cb77d",
+    "bench/cpu_tiling/attention_torch.cpp": "32c25408f6d1b81ac4985df65b68e0509c8b59b300e7b2dd33a17a00b8a02903",
+    "include/mim/driver.h": "c25112b5ec7344f936309684af0251161da08edbb28ba3d4c20aad822fafe68d",
+    "src/mim/driver.cpp": "def59b5873e135612140386edb3edd839d526bb87f0bc1aa30aea39ea78359fc",
+    "include/mim/plug/mem/mem.h": "dd8f186d8886a5e01e398fffff1625e2155704a1650ca60342e3f1f6e121d5d6",
+    "include/mim/plug/mem/escape_analysis.h": "da47af176fccaa28687d9c1e088630e96449a30bb880883ba0f300facab89b42",
+    "src/mim/plug/mem/escape_analysis.cpp": "36bee6bf5d6601679725cada7a8e46cfc934e9a683e8cc25dfb60aabba21fbf8",
+    "src/mim/plug/omp/omp.cpp": "005ded016ae6e3e682b5dc7b980115a01c5fe10d3266543eb16cf491c6526359",
+    "src/mim/plug/tensor/tensor.mim": "e947ba617985d6eb72babf41b26d141366304915352da243d2912c337bfeae8f",
+    "src/mim/plug/tensor/tensor.cpp": "7d17ca0ef810892dcfe400c17bdc12f6627b6b125539dc04969fa0ff41fb937d",
+    "src/mim/plug/tensor/phase/group_rules.cpp": "e7ad7493194cf2152d43005b60a1dd657ace05ea2f044930b5c5e7d9d85926a3",
+    "src/mim/plug/tensor/phase/lower.cpp": "244ac96a6b835803d785196fad10c7ce4cfae50fe4b93f5d6014d38e4b7b0f25"
+  },
+  "sample_binary_sha256": "1e68a4f659114896536931e2c2649414282d4cc382e8ad7a46c6bc3f91eb3f27",
+  "thread_masks": {
+    "1": [
+      0
+    ],
+    "4": [
+      0,
+      2,
+      4,
+      6
+    ],
+    "6": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10
+    ],
+    "8": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      13
+    ]
+  },
+  "note": "CPU attention rule benchmark; metadata records compiler/plugin hashes and the base commit plus modified paths. Explicit attention-cpu=0/1 distinguishes baseline and joint schedules.",
+  "benchmark_source_commit": "95153efe99",
+  "final_guard_commit": "06305c9f61b92b0670792fef8a7a0c1d33dacf9e",
+  "guard_note": "Final guard restricts eligibility to static shapes. No native plugin ABI changes (bootstrap header compared identical). The representative static entry and outlined kernel have identical normalized instructions; raw .text differs in symbol-dependent addresses. Benchmarked kernel hashes are retained."
+}
