@@ -1535,7 +1535,9 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         for (u64 i = 0; i != plan.count; ++i) {
             auto rank = rewrite(plan.ranks->proj(plan.count, i)), type = rewrite(plan.types->proj(plan.count, i));
             auto shape = bounded_shape(rewrite(plan.shapes->proj(plan.count, i)), in_group);
-            if (in_group) {
+            if (auto reused = in_group && plan.count == 1 ? reusable_input(app, inputs) : nullptr) {
+                buffers[i] = reused;
+            } else if (in_group) {
                 shape = padded_rows(shape);
                 // A work-group's result is shared by its work-items.
                 auto scope                = w.app(w.annex<gpu::shared_scope>(), mem);
@@ -1723,6 +1725,9 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         if (storage != shape) storage_shapes_[plan.multiple ? app->proj(plan.count, i) : app] = storage;
     }
     auto out_mem = call->proj(plan.count + 1, 0);
+    if (in_group)
+        for (u64 i = 0; i != plan.count; ++i)
+            group_buffers_.insert(call->proj(plan.count + 1, i + 1));
     if (!plan.multiple) return scalar_result(app, out_mem, call->proj(2, 1));
     return w.tuple(DefVec(plan.count, [&](size_t i) -> const Def* {
         auto out   = call->proj(plan.count + 1, i + 1);
@@ -2035,13 +2040,15 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
 }
 
 namespace {
-bool mentions(const Def* def, const Def* target) {
+/// Whether @p def reads @p target, optionally only before reaching the results of other requests.
+bool mentions(const Def* def, const Def* target, bool through_requests = true) {
     auto pending = DefVec{def};
     auto seen    = DefSet();
     for (size_t i = 0; i != pending.size(); ++i) {
         auto term = pending[i];
         if (term == target) return true;
         if (!seen.insert(term).second || term->isa<Var>() || term->isa<Axm>()) continue;
+        if (!through_requests && Axm::isa<tensor::tiled>(term)) continue;
         for (auto op : term->ops())
             if (op) pending.push_back(op);
     }
@@ -2109,7 +2116,44 @@ bool LowerToMem::pointwise_step(const Def* root, const Def* accumulator, const D
             if (!(Linear::of(read->proj(*rank, d)) == written)) return false;
         }
     }
-    return std::ranges::none_of(others, [&](const Def* term) { return mentions(term, accumulator); });
+    // Another request's result is complete before this one runs, so reading it reads no accumulator element.
+    return std::ranges::none_of(others, [&](const Def* term) { return mentions(term, accumulator, false); });
+}
+
+/// The buffer of a work-group request among @p inputs that @p request may overwrite: it reads the input pointwise, and
+/// every other reader in the fold step runs before it.
+const Def* LowerToMem::reusable_input(const App* request, const Def* inputs) {
+    if (!step_root_) return nullptr;
+    auto& old = old_world();
+    auto n    = input_count(inputs);
+    for (size_t k = 0; k != n; ++k) {
+        auto input = Axm::peel<tensor::buf>(n == 1 ? inputs : inputs->proj(n, k));
+        if (!Axm::isa<tensor::tiled>(input) || !Check::test_alpha(input->type(), request->type())) continue;
+        auto buffer = rewrite(input);
+        if (!group_buffers_.contains(buffer)) continue;
+        auto rank = Lit::isa(TensorType::isa(input->type())->r);
+        if (!rank || !pointwise_step(request, input, old.tuple(DefVec(*rank, [&](size_t) { return old.lit_nat(0); }))))
+            continue;
+        auto before  = DefSet();
+        auto pending = DefVec(request->ops().begin(), request->ops().end());
+        for (size_t i = 0; i != pending.size(); ++i)
+            if (before.insert(pending[i]).second && !pending[i]->isa<Var>())
+                for (auto op : pending[i]->ops())
+                    if (op) pending.push_back(op);
+        auto later = true;
+        auto seen  = DefSet();
+        pending    = DefVec{step_root_};
+        for (size_t i = 0; later && i != pending.size(); ++i) {
+            auto def = pending[i];
+            if (def == input) later = false;
+            if (def == request || !seen.insert(def).second || def->isa<Var>() || def->isa<Axm>()) continue;
+            if (Axm::isa<tensor::tiled>(def) && before.contains(def)) continue;
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+        }
+        if (later) return buffer;
+    }
+    return nullptr;
 }
 
 // Clipped tiles keep their cap as storage, so region parameters must index them by it.
@@ -3024,6 +3068,7 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
             if (storages[i]) group_buffers_.insert({source->proj(n, i), destination->proj(n, i)});
     {
         auto pending      = fe::Restore(pending_, {});
+        auto step         = fe::Restore(step_root_, group ? root : nullptr);
         auto nested_batch = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
         auto memo         = fe::Restore(fresh_memo_, {});
         auto cache        = fe::Restore(realizations_, realizations_);

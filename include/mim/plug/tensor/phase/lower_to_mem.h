@@ -98,6 +98,7 @@ private:
     std::pair<DefVec, DefVec> capture_producers(const Def*);
     bool linear_step(const Def*, const Def*, const Def*);
     bool pointwise_step(const Def*, const Def*, const Def*);
+    const Def* reusable_input(const App*, const Def*);
     const Def* lower_into(const Def*, const Destination&);
     const Def* lower_tile_body(const GridTilePlan&, const Def*, Defs, const Def*, Defs, Scratch*, const Destination*);
     bool is_view(const Def* input);
@@ -190,7 +191,8 @@ private:
     /// A work-group's buffers in shared memory that its work-items write and then read each other's parts of.
     DefSet group_buffers_;
     /// Inside a work-group level that runs in place, whose work-items read each other's results.
-    bool composed_ = false;
+    bool composed_        = false;
+    const Def* step_root_ = nullptr;
     /// The warp accumulators in fragment form, by value.
     DefMap<Fragments> fragments_;
     /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.

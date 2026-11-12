@@ -81,8 +81,11 @@ D=64，非 causal，单位 ms（括号里 TFLOP/s）：
 
 | BH × L | 最初（BK=32） | 现在 BK=32 | 现在 BK=64 | 手写 FA2 | torch fp32 | `attn_tiled`（3 kernel） |
 |---|---:|---:|---:|---:|---:|---:|
-| 32 × 1024 | 10.8 ms | 0.675 | 0.373 | 0.090 | 0.328 | 0.517 |
-| 32 × 2048 | 43.1 ms | 2.65 | 1.61 | 0.317 | 1.15 | 2.00 |
+| 32 × 1024 | 10.8 ms | 0.675 | 0.407 | 0.090 | 0.328 | 0.517 |
+| 32 × 2048 | 43.1 ms | 2.65 | 1.36 | 0.317 | 1.15 | 2.00 |
+| 32 × 4096 | — | — | 5.18 | 1.20 | 9.55 | — |
+| 128 × 1024 | — | — | 1.36 | — | — | — |
+| 128 × 2048 | — | — | 4.97 | 1.21 | 4.39 | — |
 
 性能修正（ms 为 32 × 1024、BK=64 时的变化）：
 1. fold 输入里的 `slice` 被 `tensor.lower` 降成恒等 `map_reduce_post`，`is_view` 也不认 Var 的投影：每步每个线程串行拷整块 Q。改为视图后 10.8 → 1.73（BK=32）。
@@ -93,11 +96,14 @@ D=64，非 causal，单位 ms（括号里 TFLOP/s）：
    shared 从 115.7 KB 降到 98 KB，每个 SM 从 1 个块变成 2 个。0.509 → 0.401。
 5. product fold 中只被自己的更新逐元素读的状态（l、O）原地更新，不再双缓冲（`pointwise_step`）；m 仍被 c 读，保留双缓冲。
    shared 降到 81.7 KB。0.401 → 0.373。
+6. 逐元素读一个 work-group 请求结果、且该结果的其余读者都先于它运行的请求，直接写进那块缓冲（`reusable_input`）：P 复用 S。
+   shared 降到 64 KB，每 SM 3 个块。32 × 2048：1.61 → 1.36；32 × 1024 因 512 个块按 3 个/SM 只有 1.3 波，0.373 → 0.407。
+- 占用率的影响：把同一 kernel 启动时的 shared 人为调到 120 KB（每 SM 1 个块），32 × 1024 从 0.371 变成 0.675 ms。
 - BK=64 时逐元素请求必须是 `(32, 1)`：`(1, 16)` 会切出 256 个 item，多于 128 个线程，barrier 落进发散分支。
 - 消融（BK=64，修正 1 之后）：PV 约 0.3 ms，行统计约 0.44 ms，O 的修正约 0.5 ms；mma 的 k 块大小和 cp.async 流水线影响都在 ±10% 内。
 
-- 结果正确（`lit/gpu/attention_fold.mim` 与 nvptx 版本），一个 kernel，S 与 P 不落全局内存；现在比手写版本慢约 4.1 倍，比 torch fp32 慢 1.1 倍。
+- 结果正确（`lit/gpu/attention_fold.mim` 与 nvptx 版本），一个 kernel，S 与 P 不落全局内存；现在比手写版本慢 4–4.5 倍；与 torch fp32 相当（L=4096 时快 1.8 倍）。
 - 为此修的问题：work-group 层级的分配（请求结果、fold 状态）进 shared；原地 work-group 级里 item/warp region 之后的 barrier；
   `root_contraction` 接受带偏移的映射和转置读的 B；`group_slice` 在切片自己的坐标系里放宽（batch 维、k 方向的起点）；
   `reshape(slice)` 作 region 输入时是视图，`get_fused` 读穿只改单位维的 reshape。
-- 剩余的性能问题：每个 fold 步约 40 道 barrier（mma 的每个 k 块两道）；行归约每线程一整行、只用一半线程（应改为 warp shuffle）；Q 面板每步重填；S、P、PV 结果各占 17 KB shared，降到 75 KB 以下才能每 SM 3 个块（PV 直接累加进 O 需要 mma 支持张量种子）。
+- 剩余的性能问题：每个 fold 步约 40 道 barrier（mma 的每个 k 块两道）；行归约每线程一整行、只用一半线程（应改为 warp shuffle）；Q 面板每步重填；PV 结果仍单独占 17 KB shared（直接累加进 O 需要 mma 支持张量种子）。
