@@ -15,4 +15,25 @@ extern lam nonunit (): [«3; Nat», «3; Nat», «3; Nat», Bool] =
 // CHECK: ((0, 0, 1), (4, 1, 2), (4, 1, 2), tt)
 // CHECK-LABEL: extern lam nonunit
 // CHECK: ff
+
+lam projected (b m k: affine.Index): «2; affine.Index» = (b, m);
+lam constant (b m k: affine.Index): «2; affine.Index» = (affine.lit 0, m);
+// A unit domain axis is still a projection, not a constant output coordinate.
+// Its inverse is exact for symbolic, empty and full requested boxes.
+extern lam projected_unit (extent: Nat): [«3; Nat», «3; Nat», «3; Nat», Bool] =
+    affine.preimage @(3, 2) projected ((0, 0), (extent, 4), (1, 4, 5));
+extern lam projected_empty (): [«3; Nat», «3; Nat», «3; Nat», Bool] =
+    affine.preimage @(3, 2) projected ((0, 0), (0, 4), (1, 4, 5));
+extern lam constant_unit (extent: Nat): [«3; Nat», «3; Nat», «3; Nat», Bool] =
+    affine.preimage @(3, 2) constant ((0, 0), (extent, 4), (1, 4, 5));
+
+// UNIT-LABEL: extern lam projected_unit
+// UNIT: tt)
+// EMPTY-LABEL: extern lam projected_empty
+// EMPTY: ({{.*}}, (0, 4, 5), (0, 4, 5), tt)
+// CONST-LABEL: extern lam constant_unit
+// CONST: ff)
+// RUN: %mim %s -o - | %FileCheck %s --check-prefix=UNIT
+// RUN: %mim %s -o - | %FileCheck %s --check-prefix=EMPTY
+// RUN: %mim %s -o - | %FileCheck %s --check-prefix=CONST
 extern lam _compile (): compile.Phase = compile.cleanup;

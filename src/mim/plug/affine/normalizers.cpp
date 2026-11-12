@@ -653,7 +653,19 @@ const Def* normalize_preimage(const Def*, const Def* c, const Def* arg) {
                 continue;
             }
         }
-        auto itv = region.eval(body->proj(*lm, j));
+        auto coordinate = body->proj(*lm, j);
+        auto itv        = region.eval(coordinate);
+        // Forward ranges fold a unit domain axis to zero. Its inverse must still
+        // restrict that axis to the requested box, even when the box is symbolic.
+        // Keep a direct projection's identity instead of testing zero against an
+        // unknown box and losing exactness. Actual constant maps stay constants.
+        auto projected = std::optional<u64>();
+        if (coordinate == var && *ln == 1)
+            projected = 0;
+        else if (auto ex = coordinate->isa<Extract>(); ex && ex->tuple() == var)
+            projected = Lit::isa(ex->index());
+        if (itv && itv->lin && projected && *projected < *ln && Lit::isa(S->proj(*ln, *projected)) == 1)
+            itv->lin->c[*projected] = 1;
         if (itv && itv->lin && split(*itv->lin, j)) continue;
         // A constant coordinate restricts no dim where it lies in the box.
         if (itv && itv->lin && itv->lin->constant() && !itv->lin->sym) {

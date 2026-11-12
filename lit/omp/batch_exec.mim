@@ -4,6 +4,6 @@
 // RUN: clang++ -O3 -fopenmp -fsanitize=address %S/../tensor/blis_batch_aux.cpp %t.ll %libdir/mim/rt/omp_rt.ll -o %t -Wno-override-module
 // RUN: env OMP_NUM_THREADS=4 LSAN_OPTIONS=suppressions=%S/libomp.supp %t
 // RUN: env OMP_NUM_THREADS=8 LSAN_OPTIONS=suppressions=%S/libomp.supp %t
-// The singleton-batch fixture still skips its non-invertible constant write map.
-// CHECK-COUNT-4: call void @mim_par_for
+// Singleton batch, M/N and batch-prefix axes keep their exact write preimages.
+// CHECK-COUNT-10: call void @mim_par_for
 // CHECK-NOT: call void @mim_par_for

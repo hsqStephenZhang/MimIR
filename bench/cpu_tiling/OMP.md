@@ -20,12 +20,13 @@ output extents must be literal, and partial output tiles use capped tails (0).
 Nested thread levels and mixing thread/GPU bindings are rejected. Without `omp`,
 explicit thread levels lower to serial loops.
 
-With at least as many matrices as threads, each task owns one complete matrix.
-Smaller batches also split M/N within that same outer task grid; no nested team
-is created. Batch-prefix products contribute to the work threshold. A singleton
-batch whose write map folds to a constant can currently fail the tile-preimage
-proof and remain serial; inspect emitted launch counts rather than assuming
-that setting OMP_NUM_THREADS parallelizes every shape.
+Batch and M/N share the same outer task grid; no nested team is created. Even a
+batch larger than the team may split M/N to balance a partial wave (e.g. B=8,
+T=6). Equal worst-worker work favors less input traversal, so evenly divisible
+batches retain whole matrices. Batch-prefix products contribute to the work
+threshold. Unit batch/M/N axes preserve their projected identities when solving
+write preimages, so singleton batches use the same tiling and thread levels.
+Inspect emitted launch counts: work below the threshold intentionally stays serial.
 
 CPU thread edge tiles specialize full/partial extents before the serial levels,
 so an odd thread boundary preserves static inner packing and register blocking.
