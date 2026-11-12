@@ -315,14 +315,16 @@ FP32 SIMT kernel 在 3、4 级下仍然正确，速度与 2 级相当。
 |---|---:|---:|---:|
 | dequant 写进 combiner，SIMT（`gemm_dq_g3`） | 0.445 | 1.56 | 11.6 |
 | W' 作为融合成员，TF32 tensor core（`gemm_dqf_tc`），无流水 | 0.160 | 0.561 | 2.30 |
-| 同上，`pipeline=2` | 0.123 | — | 2.15 |
-| 同上，`pipeline=4` | **0.075** | — | 2.16 |
-| 对照：纯 TF32 SGEMM（`gemm_tiled_tc`），`pipeline=4` | 0.093 | — | 1.95 |
+| 同上，`pipeline=2`（三次） | 0.120–0.136 | — | 2.16–2.17 |
+| 同上，`pipeline=4`（三次） | 0.121–0.134 | — | 2.18 |
+| 对照：纯 TF32 SGEMM（`gemm_tiled_tc`），`pipeline=2`（三次） | 0.090–0.104 | — | 1.99 |
 | PyTorch FP32：先 dequant 再 mm | 0.288 | 1.085 | 8.10 |
 | PyTorch TF32：先 dequant 再 mm | 0.093 | 0.258 | 1.59 |
 | PyTorch TF32：对预先 dequant 的 W 做 mm | 0.064 | 0.214 | 1.42 |
 
 - combiner 写法让每次乘加都重做一次 dequant，并且破坏了矩阵乘的形状，不能用 tensor core。
-- 融合成员写法：W' 的面板在填充时从 I8 的 W 和 s 直接计算（`tensor.get_fused`），矩阵乘仍是纯的 `x·y`，可以走 MMA。W 只以 I8 读一次，所以 1024 规模下比同调度的 SGEMM 还快。
-- 4096 规模下与 PyTorch TF32 的差距（1.36×）主要来自 tensor core 主干本身（纯 SGEMM 也慢约 1.35×）。
+- 融合成员写法：W' 的面板在填充时从 I8 的 W 和 s 直接计算（`tensor.get_fused`），矩阵乘仍是纯的 `x·y`，可以走 MMA，只比同调度的纯 SGEMM 慢 9–30%。
+- 与 PyTorch TF32 的差距（4096 下 1.37×）主要来自 tensor core 主干本身（纯 SGEMM 也慢约 1.25×）。
+- 初版记录的 1024 / `pipeline=4` 为 0.075 ms，是一次异常测量；重测已推送的提交也在 0.115–0.128 ms，已更正。
 - `gemm_dqf_g3`（SIMT 版的融合写法）结果正确，但很慢（约 16 ms）。原因是 group 级把 s 的列切片复制进 scratch 槽位后，item 累加器的分配落进了 `mslot` 的回调，逃逸分析判它逃逸，累加器因此留在设备堆上。
+- 已知问题：W' 若由两层逐元素算子合成（`fuse_tensor` 合并后有两个只按列读的输入，如 s 和 t），放宽后 work-group 级会各复制一份列切片，其中一份留在设备堆上，`mem.free_locals` 为它插入 `free` 时用错了地址空间，编译失败。改动之前这类程序能编译。

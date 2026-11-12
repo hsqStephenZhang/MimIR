@@ -826,8 +826,9 @@ std::optional<std::pair<const Def*, const Def*>> group_slice(const Def* input,
     return std::pair{w.app(wide, slice->arg()), item.var->proj(2, 0)->proj(ro, loop)};
 }
 
-/// A fused pointwise producer widened like group_slice: each input slice spans the work-group's tile along the dims
-/// its map reads from @p axis and the reduction block along those it reads from the block's loop.
+/// A fused pointwise producer widened like group_slice: each input slice the map reads from @p axis starts the
+/// work-item's offset earlier and spans the work-group's tile, in whatever frame the slice has, and spans the reduction
+/// block along the dim it reads from the block's loop.
 std::optional<std::pair<const Def*, const Def*>> group_pointwise(const Def* input,
                                                                  const Def* map,
                                                                  u64 axis,
@@ -839,12 +840,29 @@ std::optional<std::pair<const Def*, const Def*>> group_pointwise(const Def* inpu
     auto app  = isa_pointwise(input);
     auto kdim = dim_of_loop(map, rank, block.loop);
     if (!app || !kdim || rank != 2 || *kdim == axis) return {};
-    auto& w  = input->world();
-    auto mr  = btensor::MapRedPost::of(app->callee()->as<App>());
-    auto nis = Lit::as(mr.nis);
-    auto ro  = group.tiles.size();
-    auto off = group.var->proj(2, 0)->proj(ro, loop), ext = group.var->proj(2, 1)->proj(ro, loop);
-    auto wide = w.tuple(DefVec(rank, [&](size_t d) { return d == axis ? ext : block.k; }));
+    // Each input dim must be constant or read one loop as is, so the widened box is the image of the wide tile.
+    auto plain = [](const Def* map_i, u64 ri) {
+        auto& w   = map_i->world();
+        auto pi   = map_i->type()->as<Pi>();
+        auto rn   = Lit::as(pi->dom()->arity());
+        auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
+        auto read = w.app(map_i, var);
+        for (u64 e = 0; e != ri; ++e) {
+            auto form = Linear::of(read->proj(ri, e));
+            if (form.atoms.empty()) continue;
+            if (form.atoms.size() != 1 || form.constant != 0 || form.atoms.begin()->second != 1) return false;
+            auto atom = form.atoms.begin()->first;
+            if (std::ranges::none_of(var->projs(rn), [atom](const Def* l) { return l == atom; })) return false;
+        }
+        return true;
+    };
+    auto& w    = input->world();
+    auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto nis   = Lit::as(mr.nis);
+    auto ro    = group.tiles.size();
+    auto ext   = group.var->proj(2, 1)->proj(ro, loop);
+    auto inner = item.var->proj(2, 0)->proj(ro, loop);
+    auto wide  = w.tuple(DefVec(rank, [&](size_t d) { return d == axis ? ext : block.k; }));
     auto is = DefVec(nis), shapes = DefVec(nis);
     for (size_t i = 0; i != nis; ++i) {
         auto slice = Axm::isa<tensor::slice>(app->arg(2, 0)->proj(nis, i));
@@ -853,10 +871,11 @@ std::optional<std::pair<const Def*, const Def*>> group_pointwise(const Def* inpu
         auto [start, step, extent] = box->projs<3>();
         auto ri                    = Lit::as(meta->proj(2, 1));
         auto map_i                 = mr.maps->proj(nis, i);
+        if (!plain(map_i, ri)) return {};
         auto first = DefVec(start->projs(ri)), size = DefVec(extent->projs(ri));
         for (u64 e = 0; e != ri; ++e)
             if (dim_of_loop(map_i, ri, axis) == e)
-                first[e] = off, size[e] = ext;
+                first[e] = w.call(core::nat::sub, Defs{first[e], inner}), size[e] = ext;
             else if (dim_of_loop(map_i, ri, *kdim) == e)
                 first[e] = block.k0, size[e] = block.k;
         auto widened
@@ -873,7 +892,7 @@ std::optional<std::pair<const Def*, const Def*>> group_pointwise(const Def* inpu
     const Def* rebuilt = w.annex<tensor::map_reduce_post>();
     for (auto arg : args)
         rebuilt = w.app(rebuilt, arg);
-    return std::pair{rebuilt, item.var->proj(2, 0)->proj(ro, loop)};
+    return std::pair{rebuilt, inner};
 }
 
 const App* promote_input(const App* app,
@@ -1017,7 +1036,7 @@ private:
     std::optional<u64> next_items_;
     /// Reductions split over the work-items, by producer; later reads view them instead of recomputing them.
     DefMap<std::pair<const Def*, Origin>> resident_;
-    /// Pointwise producers a deeper reduction level stages; the query marks them with role 1.
+    /// Pointwise producers a deeper reduction level stages and this level does not; the query marks them with role 1.
     DefSet staged_pointwise_;
     DefMap<Origin> origins_;
     /// Tiles that enclosing levels hand back, by their original producer, and the inner results that replace them.
@@ -1295,7 +1314,8 @@ const Def* Levels::parallel(const Def* anchor,
     if (auto root = graph::map_reduce(anchor)) {
         auto nis = Lit::as(btensor::MapRedPost::of(root->callee()->as<App>()).nis);
         for (u64 slot = 0; slot != nis; ++slot)
-            if (auto input = root->arg(2, 0)->proj(nis, slot); staged_below >> slot & 1 && isa_pointwise(input))
+            if (auto input = root->arg(2, 0)->proj(nis, slot);
+                staged_below >> slot & 1 && !(promote >> slot & 1) && isa_pointwise(input))
                 staged_pointwise_.insert(input);
     }
     auto fused = fuse(root_tile, var, depth, 0);

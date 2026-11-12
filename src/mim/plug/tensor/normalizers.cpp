@@ -829,6 +829,25 @@ const Def* normalize_stage(const Def*, const Def* c, const Def*) {
     return nullptr;
 }
 
+// @p tensor read at @p index through any slices, as its base tensor and the index there.
+std::pair<const Def*, const Def*> through_slices(const Def* tensor, const Def* index) {
+    while (auto slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(tensor))) {
+        auto [meta, s_in, box]     = slice->callee()->as<App>()->uncurry_args<3>();
+        auto [start, step, extent] = box->projs<3>();
+        auto rank                  = Lit::isa<u64>(meta->proj(2, 1));
+        if (!rank) break;
+        auto& w = tensor->world();
+        index   = w.tuple(DefVec(*rank, [&](size_t d) {
+            auto offset
+                = w.call(core::nat::mul, Defs{step->proj(*rank, d), w.call<core::idx2nat>(index->proj(*rank, d))});
+            auto x = w.call(core::nat::add, Defs{start->proj(*rank, d), offset});
+            return w.call<core::idx>(w.lit_nat_0(), s_in->proj(*rank, d), x);
+        }));
+        tensor  = slice->arg();
+    }
+    return {tensor, index};
+}
+
 // A pointwise map_reduce_post read at one coordinate is evaluated there: each input is read where its map sends it.
 const Def* read_pointwise(const Def* tensor, const Def* index) {
     auto app = isa_pointwise(Axm::peel<tensor::buf>(tensor));
@@ -845,33 +864,19 @@ const Def* read_pointwise(const Def* tensor, const Def* index) {
     auto values = DefVec(ranks->nis, [&](size_t i) {
         auto coords = btensor::op_affine_map(mr.maps->proj(ranks->nis, i), mr.Ris->proj(ranks->nis, i), mr.Rn, mr.Sr,
                                              mr.Sis->proj(ranks->nis, i), loops, none);
-        return op_get_fused(inputs->proj(ranks->nis, i), coords->proj(2, 1));
+        auto [source, at] = through_slices(inputs->proj(ranks->nis, i), coords->proj(2, 1));
+        return op_get(source, at);
     });
     auto call   = [&](const Def* f, const Def* x) { return w.app(cps::op_cps2ds_dep(f), x); };
     return call(mr.post, w.tuple({call(mr.comb, w.tuple({mr.init, w.tuple(values)})), w.tuple()}));
 }
 
-// A fused read evaluates a pointwise producer and reads through a slice; it stays while its tensor is unknown and
-// otherwise becomes a plain `get`.
+// A fused read evaluates the staged pointwise producer, but not the producers of its inputs, which the region does not
+// own, and reads through slices; it stays while its tensor is unknown and otherwise becomes a plain `get`.
 const Def* normalize_get_fused(const Def*, const Def*, const Def* arg) {
-    auto [tensor, index] = arg->projs<2>();
+    auto [tensor, index] = through_slices(arg->proj(2, 0), arg->proj(2, 1));
     if (auto value = read_pointwise(tensor, index)) return value;
-    auto source = Axm::peel<tensor::buf>(tensor);
-    if (auto slice = Axm::isa<tensor::slice>(source)) {
-        auto [meta, s_in, box]     = slice->callee()->as<App>()->uncurry_args<3>();
-        auto [start, step, extent] = box->projs<3>();
-        if (auto rank = Lit::isa<u64>(meta->proj(2, 1))) {
-            auto& w = arg->world();
-            auto at = w.tuple(DefVec(*rank, [&](size_t d) {
-                auto offset
-                    = w.call(core::nat::mul, Defs{step->proj(*rank, d), w.call<core::idx2nat>(index->proj(*rank, d))});
-                auto x = w.call(core::nat::add, Defs{start->proj(*rank, d), offset});
-                return w.call<core::idx>(w.lit_nat_0(), s_in->proj(*rank, d), x);
-            }));
-            return op_get_fused(slice->arg(), at);
-        }
-    }
-    auto unknown = source;
+    auto unknown = Axm::peel<tensor::buf>(tensor);
     while (auto extract = unknown->isa<Extract>())
         unknown = extract->tuple();
     if (unknown->isa<Var>() || unknown->isa_mut()) return nullptr;
