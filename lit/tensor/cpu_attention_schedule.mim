@@ -15,6 +15,14 @@ extern fun dynamic (s: Nat, q: tensor.Tensor 3 (2,5,3) F, k: tensor.Tensor 3 (2,
                     v: tensor.Tensor 3 (2,s,4) F): tensor.Tensor 3 (2,5,4) F =
     return (tensor.sdpa math.mode.contract @(2,5,s,3,4) (0.5:F, q,k,v));
 
+// CPU thread grids also require a static query extent; keep the existing schedule otherwise.
+// CHECK-LABEL: extern fun dynamic_query
+// CHECK-NOT: tensor.sdpa_cpu
+// CHECK: tensor.sdpa
+extern fun dynamic_query (m: Nat, q: tensor.Tensor 3 (2,m,3) F, k: tensor.Tensor 3 (2,7,3) F,
+                          v: tensor.Tensor 3 (2,7,4) F): tensor.Tensor 3 (2,m,4) F =
+    return (tensor.sdpa math.mode.contract @(2,m,7,3,4) (0.5:F,q,k,v));
+
 // CHECK-LABEL: extern fun masked
 // CHECK: tensor.sdpa_cpu (16, tt, 2, 4)
 extern fun masked (q: tensor.Tensor 3 (2,5,3) F, k: tensor.Tensor 3 (2,7,3) F,

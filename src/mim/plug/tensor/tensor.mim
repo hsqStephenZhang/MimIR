@@ -2566,7 +2566,7 @@ pub anx lam attention_cpu_schedule_rule (mode bm binding: Nat, levels: TileLevel
     rule schedule (H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
                    k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32):
         sdpa mode @(H, M, S, K, N) (scale, q, k, v)
-        when core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), 0 < bm) =>
+        when if_static (H*M*S*K*N, core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), 0 < bm), ff) =>
         sdpa_cpu (mode, ff, bm, binding) @(H, M, S, K, N) levels
             (scale, q, k, v, splat ((H, M, S), 0:math.F32));
     schedule;
@@ -2577,7 +2577,7 @@ pub anx lam attention_masked_cpu_schedule_rule (mode bm binding: Nat, levels: Ti
     rule schedule (H M S K N: Nat, scale: math.F32, q: Tensor 3 (H, M, K) math.F32,
                    k: Tensor 3 (H, S, K) math.F32, v: Tensor 3 (H, S, N) math.F32, mask: Tensor 3 (H, M, S) math.F32):
         sdpa_masked mode @(H, M, S, K, N) (scale, q, k, v, mask)
-        when core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), 0 < bm) =>
+        when if_static (H*M*S*K*N, core.bit2.and 0 (core.bit2.and 0 (0 < S, 0 < N), 0 < bm), ff) =>
         sdpa_cpu (mode, tt, bm, binding) @(H, M, S, K, N) levels (scale, q, k, v, mask);
     schedule;
 
