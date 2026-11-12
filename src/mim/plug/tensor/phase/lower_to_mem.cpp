@@ -19,6 +19,7 @@
 #include <mim/plug/cps/cps.h>
 #include <mim/plug/math/math.h>
 #include <mim/plug/mem/mem.h>
+#include <mim/plug/omp/omp.h>
 
 #include "mim/plug/gpu/gpu.h"
 #include "mim/plug/tensor/phase/constraints.h"
@@ -584,10 +585,11 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     return seal(lam, new_lam);
 }
 
-// Escape analysis loses runtime-shaped buffers at control joins, so a tile body frees its own.
+// Escape analysis loses runtime shapes at joins. Thread tiles also own literal
+// fold results whose aliases can escape the outlined kernel's control joins.
 void LowerToMem::transient(const Def* rank, const Def* shape, const Def* type, const Def* buffer) {
     auto r = Lit::isa(rank);
-    if (!transients_ || (r && lit_projs(shape, *r))) return;
+    if (!transients_ || (!thread_tile_ && r && lit_projs(shape, *r))) return;
     transients_->push_back({rank, shape, type, buffer});
 }
 
@@ -1348,9 +1350,10 @@ const Def* LowerToMem::lower_tile_body(const GridTilePlan& plan,
     auto storage        = fe::Restore(storage_shapes_, storage_shapes_);
     auto cache          = fe::Restore(realizations_, realizations_);
     auto scratch        = fe::Restore(scratch_, sequential_tile(root) ? pool : nullptr);
-    auto item           = fe::Restore(item_origin_, plan.bind >= 2 ? origin->as<Var>() : item_origin_);
-    auto transients     = std::vector<std::array<const Def*, 4>>();
-    auto owner          = fe::Restore(transients_, &transients);
+    auto thread_owner   = fe::Restore(thread_tile_, thread_tile_ || plan.bind == 4);
+    auto item       = fe::Restore(item_origin_, (plan.bind == 2 || plan.bind == 3) ? origin->as<Var>() : item_origin_);
+    auto transients = std::vector<std::array<const Def*, 4>>();
+    auto owner      = fe::Restore(transients_, &transients);
     push();
     bind_old(parameter->has_var());
     map(origin, off);
@@ -1480,7 +1483,8 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         = [&](size_t d, const Def* acc, const Def* exit) -> const Def* {
         if (d == *rank) {
             auto off    = w.tuple(offsets);
-            auto result = lower_tile_body(plan, off, extents, reads, acc->projs(plan.count + 1), &scratch, destination);
+            auto result = lower_tile_body(plan, off, extents, reads, acc->projs(plan.count + 1),
+                                          plan.bind == 4 ? nullptr : &scratch, destination);
             return w.app(exit, result);
         }
         if (sizes[d] == 0) return w.app(exit, acc);
@@ -1559,13 +1563,29 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             counts[d] = (*sizes[d] + steps[d] - 1) / steps[d];
             total *= counts[d];
         }
-        auto body    = w.mut_con({w.type_i64(), acc->type(), w.cn(acc->type())})
-                           ->set(plan.bind == 1   ? "tileGroups"
-                                 : plan.bind == 2 ? "tileItems"
-                                                  : "tileWarps");
-        auto tag     = plan.bind == 1 ? gpu::bind::group : plan.bind == 2 ? gpu::bind::item : gpu::bind::warp;
-        auto wrapped = w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body);
-        auto loop    = w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(total), w.lit_i64(1), acc});
+        auto body = w.mut_con({w.type_i64(), acc->type(), w.cn(acc->type())})
+                        ->set(plan.bind == 1   ? "tileGroups"
+                              : plan.bind == 2 ? "tileItems"
+                              : plan.bind == 3 ? "tileWarps"
+                                               : "tileThreads");
+        const Def* loop;
+        if (plan.bind == 4) {
+            auto mem_type = acc->proj(plan.count + 1, 0)->type();
+            auto chunk    = w.mut_con({mem_type, w.type_i64(), w.type_i64(), w.cn(mem_type)})->set("tileThreadChunk");
+            auto [memory, lo, hi, ret] = chunk->vars<4>();
+            auto fields                = acc->projs(plan.count + 1);
+            fields[0]                  = memory;
+            auto done                  = w.mut_con(acc->type())->set("tileThreadDone");
+            done->app(true, ret, done->var()->proj(plan.count + 1, 0));
+            chunk->set(true, w.call<affine::For>(body, done, Defs{lo, hi, w.lit_i64(1), w.tuple(fields)}));
+            auto parallel = w.app(w.app(w.annex<omp::par_for>(), {w.lit_nat_0(), w.lit_nat_0()}), chunk);
+            fields[0] = w.app(parallel, {acc->proj(plan.count + 1, 0), w.lit_i64(0), w.lit_i64(total), w.lit_i64(1)});
+            loop      = w.app(exit, w.tuple(fields));
+        } else {
+            auto tag     = plan.bind == 1 ? gpu::bind::group : plan.bind == 2 ? gpu::bind::item : gpu::bind::warp;
+            auto wrapped = w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body);
+            loop         = w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(total), w.lit_i64(1), acc});
+        }
         auto [index, state, yield] = body->vars<3>();
         auto linear                = w.call<core::bitcast>(w.type_nat(), index);
         auto stride                = total;
@@ -1586,12 +1606,12 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             extents[d]    = *sizes[d] % steps[d] ? nullptr : old.lit_nat(steps[d]);
         }
         // A warp's lanes share its tile like a work-item's own; only the tensor-core lowering tells them apart.
-        auto level = fe::Restore(bound_level_, std::min<u64>(plan.bind, 2));
+        auto level = fe::Restore(bound_level_, plan.bind == 4 ? bound_level_ : std::min<u64>(plan.bind, 2));
         body->set(true, emit(*rank, state, yield));
         return loop;
     };
     auto done  = w.mut_con(call->type())->set("tileScratchDone");
-    auto bound = plan.bind && driver().is_loaded("gpu");
+    auto bound = plan.bind == 4 ? driver().is_loaded("omp") : plan.bind && driver().is_loaded("gpu");
     run->set(true, bound ? emit_bound(runtime->proj(2, 0), done) : emit(0, runtime->proj(2, 0), done));
     auto done_mem = done->var()->proj(plan.count + 1, 0);
     for (auto [binding, invoke] : scratch.bindings | std::views::reverse) {
@@ -1888,12 +1908,12 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
         auto param = w.mut_lam(w.pi(w.arr(rank, w.type_nat()), w.type_nat()));
         // A tile that covers an axis has only the zero origin on that axis. Treating its offset as
         // arbitrary loses the in-place proof when an MC level leaves N whole.
-        auto off   = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
+        auto off  = w.tuple(DefVec(rank, [&](size_t d) -> const Def* {
             return nat_bounded_by(shapes->proj(3, 0)->proj(rank, d), shapes->proj(3, 1)->proj(rank, d))
                      ? w.lit_nat_0()
                      : param->var()->proj(rank, d);
         }));
-        auto next  = w.tuple(DefVec(
+        auto next = w.tuple(DefVec(
             rank, [&](size_t d) { return w.call(core::nat::add, Defs{origin->proj(rank, d), off->proj(rank, d)}); }));
         return linear_step(w.app(lam->reduce(w.tuple({off, shapes->proj(3, 1)})).back(), ins), accumulator, next);
     }

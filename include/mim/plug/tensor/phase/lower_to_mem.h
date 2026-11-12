@@ -153,6 +153,7 @@ private:
     DefMap<u64> multiples_;
     /// Runtime-shaped buffers the current tile body allocates, as `(rank, shape, type, buffer)`, freed at its end.
     std::vector<std::array<const Def*, 4>>* transients_ = nullptr;
+    bool thread_tile_                                   = false;
     void transient(const Def* rank, const Def* shape, const Def* type, const Def* buffer);
     /// Facts of the tiles being lowered, in the new world: `(end, extent)` and `(last, extent - 1)` pairs bound clamps,
     /// and `(ext, nullptr)` marks a non-empty tile extent.

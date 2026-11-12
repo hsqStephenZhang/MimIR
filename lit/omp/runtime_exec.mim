@@ -1,0 +1,4 @@
+// REQUIRES: omp
+// RUN: clang++ -O2 -fopenmp %S/runtime_aux.cpp %libdir/mim/rt/omp_rt.ll -o %t
+// RUN: env OMP_NUM_THREADS=4 %t
+// RUN: env OMP_NUM_THREADS=8 %t

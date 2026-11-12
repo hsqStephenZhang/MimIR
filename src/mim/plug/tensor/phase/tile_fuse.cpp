@@ -195,7 +195,7 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         // (kind, bind) per constructor of TileLevels / GroupLevels / ItemLevels / WarpLevels; -1 marks a case without
         // one.
         static constexpr int table[4][7][2] = {
-            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0},   {4, 0}, {-1, -1}},
+            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0},   {4, 0},   {0, 4}},
             {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3}},
             {{0, 0}, {0, 0},   {1, 0},   {2, 0}, {-1, -1}, {-1, -1}, {-1, -1}},
             {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}}
@@ -986,7 +986,8 @@ private:
     DefMap<const Def*> handed_;
     std::string reason_;
     std::vector<std::pair<const Def*, const Def*>> yielded_;
-    u64 bound_ = 0;
+    u64 bound_     = 0;
+    bool threaded_ = false;
 };
 
 // Boxed tiles carry literal storage caps derived from the tile sizes into every fused producer.
@@ -1197,8 +1198,12 @@ const Def* Levels::parallel(const Def* anchor,
                             u64 bind,
                             fe::Span<const LevelSpec> rest,
                             u64 depth) {
-    auto& w         = world();
-    auto scope_bind = fe::Restore(bound_, bind ? bind : bound_);
+    auto& w            = world();
+    const bool threads = bind == 4;
+    if (threads && (bound_ || threaded_)) return fail("a CPU thread level cannot nest inside a bound level");
+    if (bind && !threads && threaded_) return fail("GPU bindings cannot nest inside a CPU thread level");
+    auto scope_threads = fe::Restore(threaded_, threaded_ || threads);
+    auto scope_bind    = fe::Restore(bound_, threads ? bound_ : bind ? bind : bound_);
     if (!canonical_write(mr, ro, rn)) return fail("the root does not write loop d to output axis d");
     auto tiles = DefVec(ro);
     bool whole = true;
@@ -1213,7 +1218,7 @@ const Def* Levels::parallel(const Def* anchor,
         tiles[d]   = sizes[d] ? w.lit_nat(sizes[d]) : Lit::isa(extent) || !Lit::isa(bound) ? extent : bound;
         // Serial cache blocks need no capacity beyond the enclosing tile. In particular, MC must not
         // turn a skinny M-by-K panel into an MC-by-K allocation filled mostly with padding.
-        if (!bind && !bound_ && sizes[d])
+        if ((!bind || threads) && !bound_ && sizes[d])
             if (auto cap = Lit::isa(bound); cap && *cap) tiles[d] = w.lit_nat(std::min(sizes[d], *cap));
         whole &= !sizes[d] || tiles[d] == extent;
     }
@@ -1242,7 +1247,7 @@ const Def* Levels::parallel(const Def* anchor,
     scopes_.push_back(var);
     auto literal = fe::Vector<u64>(ro, [&](size_t d) { return sizes[d]; });
     auto group_scope = fe::Restore(group_scope_, bind == 1 ? std::optional{LevelScope{var, literal, mr.So}} : group_scope_);
-    auto item_scope  = fe::Restore(item_scope_, bind >= 2 ? std::optional{LevelScope{var, literal, mr.So}} : item_scope_);
+    auto item_scope  = fe::Restore(item_scope_, (bind == 2 || bind == 3) ? std::optional{LevelScope{var, literal, mr.So}} : item_scope_);
     // A reduction fused into a work-group's tile is split over the work-items of the item level that follows.
     auto items = std::optional<u64>();
     if (bind == 1)

@@ -1955,7 +1955,8 @@ anx mutual
         | Group: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)]
         | Red: [sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc)]
         | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc)]
-        | Pack: [sizes: «n; Nat», promote: Nat, rest: TileLevels (n, Acc)];
+        | Pack: [sizes: «n; Nat», promote: Nat, rest: TileLevels (n, Acc)]
+        | Threads: [sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc)];
     nom GroupLevels (n: Nat, Acc: *) =
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc)]
@@ -1980,6 +1981,9 @@ end
 anx lam serial_done {n: Nat, Acc: *} (_: []): TileLevels (n, Acc) = (TileLevels (n, Acc))#Done;
 anx lam serial_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc)): TileLevels (n, Acc) =
     (TileLevels (n, Acc))#Par (sizes, tail, rest);
+/// Bind disjoint output tiles to CPU threads; inner levels retain serial packing and reduction.
+anx lam thread_par {n: Nat, Acc: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc)): TileLevels (n, Acc) =
+    (TileLevels (n, Acc))#Threads (sizes, tail, rest);
 anx lam serial_group {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc)): TileLevels (n, Acc) =
     (TileLevels (n, Acc))#Group (sizes, tail, promote, rest);
 anx lam serial_red {n: Nat, Acc: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc)): TileLevels (n, Acc) =
@@ -2032,7 +2036,7 @@ axm tile_group: compile.Phase;
 /// ### bind
 ///
 /// Identity annotation on the body of a `tiled` or `tiled_multi` region: `to` is the level's binding, 1 for a
-/// work-group, 2 for a work-item and 3 for a warp.
+/// work-group, 2 for a work-item, 3 for a warp and 4 for CPU thread tiles.
 ///
 axm bind: {T: *} → [to: Nat] → T → T;
 ///

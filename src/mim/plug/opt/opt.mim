@@ -65,6 +65,7 @@ extern lam _default_compile (): compile.Phase =
 
         // affine + cps
         compile.named "affine.lower_index",
+        compile.named "omp.outline",
         compile.named "cps.conv",
         compile.named "affine.lower_for",
         // Pinned direct-style callbacks can only thread their local allocations after these ABI conversions.

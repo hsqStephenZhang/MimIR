@@ -1,8 +1,11 @@
 #include "mim/plug/tensor/phase/tile_group.h"
 
+#include <limits>
+
 #include <mim/pattern/graph.h>
 
 #include <mim/plug/core/core.h>
+#include <mim/plug/omp/omp.h>
 
 #include "mim/plug/tensor/phase/panel_layout.h"
 #include "mim/plug/tensor/tensor.h"
@@ -167,9 +170,8 @@ void TileGroup::start() {
                 continue;
             // A leaf with an explicit vector/unroll schedule already owns its register blocking.
             // In particular, reference tiling can expose these leaves outside a region.
-            auto& w = old_world();
-            auto plain = w.app(w.annex<btensor::mk_sched>(),
-                               w.tuple({w.lit_nat(mr.ranks()->nloops()), w.lit_nat_0()}));
+            auto& w    = old_world();
+            auto plain = w.app(w.annex<btensor::mk_sched>(), w.tuple({w.lit_nat(mr.ranks()->nloops()), w.lit_nat_0()}));
             if (!Check::test_alpha(mr.sched, plain) || !pure_scalar(mr.comb) || !pure_scalar(mr.post)) continue;
             // A partial reduction seeded by an explicit fold already owns its K decomposition.
             // Repartitioning its tail can change the storage caps of the fold's carried panels.
@@ -253,6 +255,46 @@ const Def* TileGroup::rewrite_imm_App(const App* app) {
                            w.tuple({w.lit_nat(ranks.ro), blocks->proj(4, 0), blocks->proj(4, 1), blocks->proj(4, 3),
                                     blocks->proj(4, 2), w.lit_nat(3)}));
             log().d("tensor.tile_group {} keeps reduction-scoped packing for runtime K", value);
+        }
+    }
+    if (group->second.kind == 1 && ranks.ro == 2 && driver().is_loaded("omp")) {
+        auto m         = Lit::isa(mr.So->proj(2, 0));
+        auto n         = Lit::isa(mr.So->proj(2, 1));
+        auto k         = Lit::isa(mr.Sr->proj(ranks.nloops(), ranks.nloops() - 1));
+        auto threads   = Lit::as(w.app(w.annex<omp::thread_hint>(), w.tuple()));
+        auto threshold = driver().arg_nat("omp", "threshold").value_or(1048576);
+        if (m && n && k && *m && *n && threads > 1 && static_cast<long double>(*m) * *n * *k >= threshold) {
+            auto blocks
+                = w.app(w.annex<group_blocks>(),
+                        w.tuple({bytes, lanes, w.lit_nat(driver().arg_nat("tensor", "group-registers").value_or(32)),
+                                 w.lit_nat(driver().arg_nat("tensor", "group-cache").value_or(262144))}));
+            auto nr = driver().arg_nat("tensor", "cpu-nr").value_or(0);
+            if (!nr) nr = Lit::as(blocks->proj(4, 1));
+            auto ceil      = [](u64 a, u64 b) { return a / b + (a % b != 0); };
+            auto best_work = std::numeric_limits<long double>::infinity();
+            auto best_pack = best_work;
+            u64 tm = *m, tn = *n;
+            auto choose = [&](u64 pm, u64 pn) {
+                auto rows = ceil(*m, pm);
+                auto cols = std::min(*n, ceil(ceil(*n, pn), nr) * nr);
+                auto work = static_cast<long double>(rows) * cols;
+                auto packing
+                    = static_cast<long double>(*m) * ceil(*n, cols) + static_cast<long double>(*n) * ceil(*m, rows);
+                if (work < best_work || (work == best_work && packing < best_pack)) {
+                    best_work = work;
+                    best_pack = packing;
+                    tm        = rows;
+                    tn        = cols;
+                }
+            };
+            for (u64 pm = 1; pm <= threads / pm; ++pm) {
+                if (threads % pm) continue;
+                choose(pm, threads / pm);
+                choose(threads / pm, pm);
+            }
+            levels = w.app(w.app(w.annex<thread_par>(), {w.lit_nat(ranks.nloops()), mr.To}),
+                           {w.tuple({w.lit_nat(tm), w.lit_nat(tn), w.lit_nat_0()}), w.lit_nat_0(), levels});
+            log().d("tensor.tile_group CPU threads {} tile {}x{}", threads, tm, tn);
         }
     }
     auto members

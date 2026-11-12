@@ -1,0 +1,28 @@
+// REQUIRES: omp
+// RUN: %mim -p opt -p omp %s -p ll -X omp:strict=1 -X ll:rt=extern -X ll:o=%t.ll
+// RUN: %FileCheck %s < %t.ll
+// RUN: clang++ -O3 -fopenmp -fsanitize=address %S/tiling_aux.cpp %t.ll %libdir/mim/rt/omp_rt.ll -o %t -Wno-override-module
+// RUN: env OMP_NUM_THREADS=4 LSAN_OPTIONS=suppressions=%S/libomp.supp %t
+// RUN: env OMP_NUM_THREADS=8 LSAN_OPTIONS=suppressions=%S/libomp.supp %t
+// RUN: %mim -p opt %s -p ll -X ll:rt=extern -X ll:o=%t.seq.ll
+// RUN: %FileCheck %s --check-prefix=SEQ < %t.seq.ll
+// RUN: clang++ -O3 -fsanitize=address %S/tiling_aux.cpp %t.seq.ll -o %t.seq -Wno-override-module
+// RUN: %t.seq
+
+plugin tensor;
+plugin core;
+plugin math;
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+lam gemm {M K N: Nat} (a: tensor.Tensor 2 (M,K) F32, b: tensor.Tensor 2 (K,N) F32): tensor.Tensor 2 (M,N) F32 =
+ tensor.tile_req (tensor.product_2d R (a,b), (),
+  tensor.thread_par ((12,16,0),0,
+   tensor.cpu_contraction_levels @F32 (2,4,8,8,16,4,3)), tensor.default_control);
+extern fun full (a: tensor.Tensor 2 (24,12) F32, b: tensor.Tensor 2 (12,32) F32): tensor.Tensor 2 (24,32) F32 =
+ return (gemm (a,b));
+extern fun tails (a: tensor.Tensor 2 (25,13) F32, b: tensor.Tensor 2 (13,33) F32): tensor.Tensor 2 (25,33) F32 =
+ return (gemm (a,b));
+
+// CHECK-COUNT-2: call void @mim_par_for
+// CHECK-NOT: call void @mim_par_for
+// SEQ-NOT: mim_par_for

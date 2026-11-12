@@ -97,6 +97,11 @@ if(NVIDIA_SMI)
     endif()
 endif()
 
+set(MIM_OMP_SUPPORTED False)
+if(MIM_HAS_OPENMP)
+    set(MIM_OMP_SUPPORTED True)
+endif()
+
 configure_file(lit.site.cfg.py.in lit.site.cfg.py @ONLY)
 configure_file("${PROJECT_SOURCE_DIR}/cmake/stage-lit-tests.cmake.in" "${CMAKE_CURRENT_BINARY_DIR}/stage-lit-tests.cmake" @ONLY)
 

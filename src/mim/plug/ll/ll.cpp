@@ -9,6 +9,7 @@
 #include <mim/plugin.h>
 
 #include <mim/plug/core/core.h>
+#include <mim/plug/omp/omp.h>
 
 namespace mim::plug::ll {
 
@@ -73,7 +74,8 @@ public:
         auto out     = Out(path);
         auto emitter = Emitter(world(), "llvm_emitter", *out.os());
         emitter.rt_mode(rt);
-        if (rt == Emitter::Rt::embed) emitter.load_rt_module("ll_rt.ll");
+        if (rt == Emitter::Rt::embed)
+            emitter.load_rt_module(world().driver().is_loaded("omp") ? "omp_rt.ll" : "ll_rt.ll");
         emitter.run();
     }
 };
@@ -1066,6 +1068,28 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         emit_unsafe(mem);
         auto v_jb = emit(jmpbuf);
         return bb.assign(name, "call i32 @_setjmp(i8* {})", v_jb);
+    } else if (auto launch = Axm::isa<omp::launch>(def)) {
+        // The OpenMP runtime wrapper (`omp/rt/mim_omp_rt.c`) forks the threads and hands each one a chunk.
+        declare_rt("void @mim_par_for(i64, i64, i64, ptr, ptr)");
+
+        auto [kernel, args]               = launch->uncurry_args<2>();
+        auto [mem, env, begin, end, step] = args->projs<5>();
+        emit_unsafe(mem);
+        auto v_kernel = "@" + tuple2str(kernel);
+        auto v_begin  = emit(begin);
+        auto v_end    = emit(end);
+        auto v_step   = emit(step);
+
+        auto v_env = "null"s;
+        if (env->type() != world().sigma()) {
+            auto t_env = convert(env->type());
+            auto v_val = emit(env);
+            v_env      = bb.assign(name + ".env", "alloca {}", t_env);
+            std::print(bb.body().emplace_back(), "store {} {}, ptr {}", t_env, v_val, v_env);
+        }
+        std::print(bb.body().emplace_back(), "call void @mim_par_for(i64 {}, i64 {}, i64 {}, ptr {}, ptr {})", v_begin,
+                   v_end, v_step, v_kernel, v_env);
+        return std::string();
     }
     return std::nullopt;
 }

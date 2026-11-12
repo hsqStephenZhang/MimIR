@@ -31,10 +31,24 @@ def main():
     parser.add_argument("--openblas", type=Path, required=True)
     parser.add_argument("--clang", default="/usr/lib/llvm-20/bin/clang++")
     parser.add_argument("--cpu", type=int, default=0)
+    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--cpus", help="Comma-separated physical CPUs (one NUMA node)")
+    parser.add_argument("--runtime-source", type=Path)
+    parser.add_argument("--omp-runtime", type=Path, help="Explicit shared OpenMP runtime; use PyTorch's libgomp")
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--calibrate-once", action="store_true")
     parser.add_argument("--isa", choices=["native", "avx2"], default="native")
     args = parser.parse_args()
+    cpus = {int(cpu) for cpu in args.cpus.split(",")} if args.cpus else {args.cpu}
+    if args.threads < 1 or len(cpus) != args.threads:
+        parser.error("Provide exactly --threads physical CPUs")
+    if bool(args.runtime_source) != bool(args.omp_runtime):
+        parser.error("--runtime-source and --omp-runtime must be used together")
+    # Every native pool must inherit the full mask, including pools created at import.
+    os.sched_setaffinity(0, cpus)
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        if os.environ.get(name) != str(args.threads):
+            parser.error(f"{name}={args.threads} must be set before Python starts")
     required_env = {
         "ATEN_CPU_CAPABILITY": "avx2",
         "MKL_ENABLE_INSTRUCTIONS": "AVX2",
@@ -58,12 +72,13 @@ def main():
 
     if args.isa == "avx2" and torch.backends.cpu.get_cpu_capability() != "AVX2":
         raise RuntimeError("PyTorch did not select the requested AVX2 dispatch")
-    torch.set_num_threads(1)
+    torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
-    os.sched_setaffinity(0, {args.cpu})
     manifest = json.loads((root / "manifest.json").read_text())
+    if manifest.get("threads", 1) != args.threads:
+        raise RuntimeError("IR thread hint differs from requested runtime thread count")
     config = dict(
-        benchmark=dict(device="cpu", threads=1, mcpu="icelake-server"),
+        benchmark=dict(device="cpu", threads=args.threads, mcpu="icelake-server"),
         artifacts={},
         openblas=dict(
             library=str(args.openblas),
@@ -81,6 +96,9 @@ def main():
     if args.phase == "prepare":
         # Compile on cores away from the later timing core, then finish every compilation before timing.
         os.sched_setaffinity(0, set(range(2, 12)))
+        if args.runtime_source:
+            subprocess.run(["gcc", "-O3", "-fPIC", "-fopenmp", "-c", str(args.runtime_source),
+                            "-o", str(root / "omp-runtime.o")], check=True)
         jobs = []
         for variant in manifest["variants"]:
             for case in manifest["cases"]:
@@ -103,6 +121,8 @@ def main():
                 "-Wno-override-module",
                 str(directory / "kernel.ll"),
                 str(root / "mimir/native_timer.cpp"),
+                *([str(root / "omp-runtime.o"), str(args.omp_runtime),
+                   "-Wl,-rpath," + str(args.omp_runtime.parent)] if args.omp_runtime else []),
                 "-o",
                 str(directory / "kernel.so"),
             ]
@@ -131,6 +151,7 @@ def main():
             for directory in pool.map(compile_one, jobs):
                 print(json.dumps(dict(compiled=directory)), flush=True)
         pytorch = PyTorch(config, settings)
+        os.sched_setaffinity(0, cpus)
         pytorch.build_timer(output)
         blas = OpenBLAS(config, output)
         metadata = dict(
@@ -143,7 +164,12 @@ def main():
             openblas_sha256=digest(args.openblas.resolve()),
             rng="np.random.default_rng(np.random.SeedSequence([42,M,N,K])); uniform(-1,1) cast float32",
             cpu=args.cpu,
-            threads=1,
+            threads=args.threads,
+            cpus=sorted(cpus),
+            omp_runtime=str(args.omp_runtime) if args.omp_runtime else None,
+            runtime_source_sha256=digest(args.runtime_source) if args.runtime_source else None,
+            thread_environment={name: value for name, value in os.environ.items()
+                                if name.startswith(("OMP_", "GOMP_", "MKL_", "OPENBLAS_"))},
             isa=args.isa,
             target_flags=target_flags,
             isa_environment={
@@ -166,6 +192,8 @@ def main():
         save(output / "metadata.json", metadata)
     else:
         prepared = json.loads((output / "metadata.json").read_text())
+        if prepared.get("threads", 1) != args.threads or prepared.get("cpus", [args.cpu]) != sorted(cpus):
+            raise RuntimeError("Prepared thread count or affinity differs")
         if prepared.get("isa", "native") != args.isa:
             raise RuntimeError(
                 "Prepared ISA differs; use a separate output root and prepare it first"
@@ -182,7 +210,9 @@ def main():
                     )
         # The wrappers were built and verified during preparation; loading them does not compile anything.
         blaslib = ctypes.CDLL(str(args.openblas))
-        blaslib.openblas_set_num_threads(1)
+        blaslib.openblas_set_num_threads(args.threads)
+        if blaslib.openblas_get_num_threads() != args.threads:
+            raise RuntimeError("OpenBLAS thread count differs")
         blas = object.__new__(OpenBLAS)
         ptr = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
         blas.library_path = output / "openblas_timer.so"
@@ -311,7 +341,7 @@ def main():
             / ("paired-native.json" if args.phase == "run" else "validation.json"),
             dict(
                 affinity=sorted(os.sched_getaffinity(0)),
-                threads=1,
+                threads=args.threads,
                 warmup=5,
                 repeats=9,
                 min_repeat_ms=100,

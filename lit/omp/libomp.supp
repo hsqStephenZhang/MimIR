@@ -1,0 +1,2 @@
+# Process-initialization allocation in the system LLVM OpenMP runtime.
+leak:___kmp_allocate
