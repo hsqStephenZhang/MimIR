@@ -1,6 +1,7 @@
 // REQUIRES: omp
 // RUN: %mim -p opt -p omp %s -p ll -X omp:strict=1 -X ll:rt=extern -X ll:o=%t.ll
 // RUN: %FileCheck %s < %t.ll
+// RUN: %FileCheck %s --check-prefix=STATIC < %t.ll
 // RUN: clang++ -O3 -fopenmp -fsanitize=address %S/tiling_aux.cpp %t.ll %libdir/mim/rt/omp_rt.ll -o %t -Wno-override-module
 // RUN: env OMP_NUM_THREADS=4 LSAN_OPTIONS=suppressions=%S/libomp.supp %t
 // RUN: env OMP_NUM_THREADS=8 LSAN_OPTIONS=suppressions=%S/libomp.supp %t
@@ -26,3 +27,5 @@ extern fun tails (a: tensor.Tensor 2 (25,13) F32, b: tensor.Tensor 2 (13,33) F32
 // CHECK-COUNT-2: call void @mim_par_for
 // CHECK-NOT: call void @mim_par_for
 // SEQ-NOT: mim_par_for
+// Static thread edge dispatch keeps the packed panels and fold buffers literal.
+// STATIC-NOT: @malloc(i64 %

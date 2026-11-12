@@ -1607,7 +1607,28 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         }
         // A warp's lanes share its tile like a work-item's own; only the tensor-core lowering tells them apart.
         auto level = fe::Restore(bound_level_, plan.bind == 4 ? bound_level_ : std::min<u64>(plan.bind, 2));
-        body->set(true, emit(*rank, state, yield));
+        if (plan.bind == 4) {
+            // CPU thread tiles have literal output bounds. Specialize the last
+            // tile's extent instead of passing a runtime clamp through every
+            // serial packing/register level below it. Otherwise one odd outer
+            // dimension can turn the entire GEMM into dynamic tail code.
+            std::function<const Def*(size_t, const Def*)> dispatch = [&](size_t d, const Def* acc) -> const Def* {
+                if (d == *rank) return emit(*rank, acc, yield);
+                if (counts[d] == 1 || *sizes[d] % steps[d] == 0) return dispatch(d + 1, acc);
+                auto tail  = *sizes[d] % steps[d];
+                auto full  = w.mut_con(acc->type())->set("threadTileFull");
+                auto edge  = w.mut_con(acc->type())->set("threadTileEdge");
+                extents[d] = old.lit_nat(steps[d]);
+                full->set(true, dispatch(d + 1, full->var()));
+                extents[d] = old.lit_nat(tail);
+                edge->set(true, dispatch(d + 1, edge->var()));
+                auto last = w.call(core::ncmp::e, Defs{offsets[d], w.lit_nat(*sizes[d] - tail)});
+                return w.app(w.extract(w.tuple({full, edge}), last), acc);
+            };
+            body->set(true, dispatch(0, state));
+        } else {
+            body->set(true, emit(*rank, state, yield));
+        }
         return loop;
     };
     auto done  = w.mut_con(call->type())->set("tileScratchDone");
