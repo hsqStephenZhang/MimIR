@@ -239,6 +239,33 @@ struct Linear {
     }
     bool operator==(const Linear&) const = default;
 
+    /// This form with each natural-number atom's sums and literal multiples expanded; a saturating difference stays.
+    Linear expanded() const {
+        Linear result;
+        result.constant = constant;
+        for (auto [atom, coefficient] : atoms)
+            result.add(of_nat(atom), coefficient);
+        return result;
+    }
+
+    /// A natural number, whose sums and literal multiples are linear; a saturating difference is an atom.
+    static Linear of_nat(const Def* n) {
+        Linear result;
+        if (auto value = Lit::isa(n)) {
+            result.constant = *value;
+        } else if (auto add = Axm::isa(core::nat::add, n)) {
+            result.add(of_nat(add->arg(2, 0)), 1);
+            result.add(of_nat(add->arg(2, 1)), 1);
+        } else if (auto mul = Axm::isa(core::nat::mul, n); mul && Lit::isa(mul->arg(2, 1))) {
+            result.add(of_nat(mul->arg(2, 0)), *Lit::isa(mul->arg(2, 1)));
+        } else if (mul && Lit::isa(mul->arg(2, 0))) {
+            result.add(of_nat(mul->arg(2, 1)), *Lit::isa(mul->arg(2, 0)));
+        } else {
+            result.atoms[n] = 1;
+        }
+        return result;
+    }
+
     static Linear of(const Def* index) {
         Linear result;
         if (auto lit = Axm::isa<affine::lit>(index)) {

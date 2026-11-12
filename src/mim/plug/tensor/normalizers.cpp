@@ -516,13 +516,32 @@ const Def* normalize_tile_of_box(const Def*, const Def* callee, const Def* arg) 
     return producer_tile(producer, off, ext, cap).value;
 }
 
+namespace {
+
+/// Whether the access maps @p a and @p b send every index to the same coordinates.
+bool same_map(const Def* a, const Def* b) {
+    if (a == b) return true;
+    auto& w = a->world();
+    auto pi = a->type()->isa<Pi>();
+    if (!pi || !Check::test_alpha(pi, b->type())) return false;
+    auto var = w.mut_lam(pi)->var();
+    auto x = w.app(a, var), y = w.app(b, var);
+    auto r = Lit::isa(x->arity());
+    if (!r) return false;
+    for (u64 d = 0; d != *r; ++d)
+        if (!(Linear::of(x->proj(*r, d)).expanded() == Linear::of(y->proj(*r, d)).expanded())) return false;
+    return true;
+}
+
+} // namespace
+
 ProducerTile producer_init(const Def* producer, const Def* off, const Def* ext) {
     auto app = graph::map_reduce(producer);
     if (!app) return {nullptr, "producer is not a map_reduce_post"};
     auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
     auto& w = producer->world();
     if (auto outs = tensor_init(mr)) {
-        if (outs->map != mr.map_out) return {nullptr, "accumulator is not stored in the output layout"};
+        if (!same_map(outs->map, mr.map_out)) return {nullptr, "accumulator is not stored in the output layout"};
         auto call = w.app(w.app(w.annex<tile_of_ref>(), {mr.To, mr.Ro}), outs->shape);
         return {w.app(call, {outs->outs, off, ext}), {}};
     }

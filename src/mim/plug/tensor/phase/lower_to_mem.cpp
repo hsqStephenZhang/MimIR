@@ -1721,7 +1721,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     for (u64 i = 0; i != plan.count; ++i) {
         auto shape   = rewrite(plan.shapes->proj(plan.count, i));
         auto storage = bounded_shape(shape, in_group);
-        if (in_group) storage = padded_rows(storage);
+        if (in_group) storage = padded_like(padded_rows(storage), buffers[i]);
         if (storage != shape) storage_shapes_[plan.multiple ? app->proj(plan.count, i) : app] = storage;
     }
     auto out_mem = call->proj(plan.count + 1, 0);
@@ -2068,6 +2068,8 @@ bool LowerToMem::pointwise_step(const Def* root, const Def* accumulator, const D
     }
     auto app = root->isa<App>();
     if (!app) return false;
+    // A step that reads the accumulator only through requests finished before it never reads what it overwrites.
+    if (std::ranges::none_of(app->ops(), [&](const Def* op) { return mentions(op, accumulator, false); })) return true;
     if (Axm::isa<tensor::tiled>(app)) {
         auto [meta, shapes, it, ins, body] = app->uncurry_args<5>();
         auto rank                          = Lit::as(meta->proj(2, 1));
@@ -2120,15 +2122,20 @@ bool LowerToMem::pointwise_step(const Def* root, const Def* accumulator, const D
     return std::ranges::none_of(others, [&](const Def* term) { return mentions(term, accumulator, false); });
 }
 
-/// The buffer of a work-group request among @p inputs that @p request may overwrite: it reads the input pointwise, and
-/// every other reader in the fold step runs before it.
+/// The work-group buffer among @p inputs that @p request may overwrite: it reads the input pointwise, and every other
+/// reader in the fold step runs before it.
 const Def* LowerToMem::reusable_input(const App* request, const Def* inputs) {
     if (!step_root_) return nullptr;
     auto& old = old_world();
     auto n    = input_count(inputs);
     for (size_t k = 0; k != n; ++k) {
         auto input = Axm::peel<tensor::buf>(n == 1 ? inputs : inputs->proj(n, k));
-        if (!Axm::isa<tensor::tiled>(input) || !Check::test_alpha(input->type(), request->type())) continue;
+        // Another request's result, or a field of the fold's state.
+        auto field = input;
+        while (auto extract = field->isa<Extract>())
+            field = extract->tuple();
+        auto owned = Axm::isa<tensor::tiled>(input) || (input != field && field->isa<Var>());
+        if (!owned || !Check::test_alpha(input->type(), request->type())) continue;
         auto buffer = rewrite(input);
         if (!group_buffers_.contains(buffer)) continue;
         auto rank = Lit::isa(TensorType::isa(input->type())->r);
@@ -2388,6 +2395,52 @@ const Def* LowerToMem::store_fragments(const Def* source, const Fragments& fragm
     return w.tuple({mem, destination.buffer});
 }
 
+// Reads each lane's accumulator fragments from their rows and columns of the tensor @p init, through a unit-step slice.
+std::pair<const Def*, const Def*>
+LowerToMem::load_fragments(const Def* init, const Fragments& fragments, const Def* mem) {
+    auto& w          = new_world();
+    auto nat         = [&](u64 v) { return w.lit_nat(v); };
+    auto add         = [&](const Def* a, const Def* b) { return w.call(core::nat::add, Defs{a, b}); };
+    auto view        = Axm::peel<tensor::buf>(init);
+    auto shape       = fe::lookup(storage_shapes_, view);
+    auto start       = w.tuple({nat(0), nat(0)});
+    const App* slice = Axm::isa<tensor::slice>(view);
+    if (slice) {
+        auto [meta, s_in, box] = slice->callee()->as<App>()->uncurry_args<3>();
+        auto step              = box->proj(3, 1);
+        if (Lit::isa(step->proj(2, 0)) != 1 || Lit::isa(step->proj(2, 1)) != 1) slice = nullptr;
+    }
+    const Def* source;
+    if (slice) {
+        auto [meta, s_in, box] = slice->callee()->as<App>()->uncurry_args<3>();
+        source                 = rewrite(slice->arg());
+        shape                  = fe::lookup(storage_shapes_, slice->arg());
+        if (!shape) shape = rewrite(s_in);
+        start = rewrite(box->proj(3, 0));
+    } else {
+        source = rewrite(view);
+        if (!shape) shape = rewrite(TensorType::isa(view->type())->s);
+    }
+    auto lane   = lane_index(w);
+    auto ns     = fragments.cols / fragments.n;
+    auto values = DefVec();
+    for (u64 f = 0; f != fragments.count(); ++f) {
+        auto elements = DefVec();
+        for (u64 e = 0; e != 4; ++e) {
+            auto [local_row, local_col] = fragment_coords(w, mma_m16n8k8_tf32::l_c, w.tuple({lane, w.lit_idx(4, e)}));
+            auto at = std::array{add(nat(f / ns * fragments.m), local_row), add(nat(f % ns * fragments.n), local_col)};
+            auto index = w.tuple(DefVec(2, [&](size_t d) {
+                return w.call<core::idx>(w.lit_nat_0(), shape->proj(2, d), add(start->proj(2, d), at[d]));
+            }));
+            const Def* element;
+            std::tie(mem, element) = buffer::op_read(mem, source, *Shape(index).fold(shape))->projs<2>();
+            elements.push_back(element);
+        }
+        values.push_back(w.tuple(elements));
+    }
+    return {mem, w.tuple(values)};
+}
+
 // The work-group panels a fold step stages per block: the uniform `tensor.stage`s that depend on the step's @p var.
 // A panel whose type depends on @p var changes shape between blocks, so its two buffers could not alternate.
 DefVec LowerToMem::staged_panels(const Def* root, const Def* var) const {
@@ -2462,8 +2515,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto fragments = std::optional<Fragments>();
     if (mma) {
         auto extents = Lit::isa(extent->proj(2, 0)) && Lit::isa(extent->proj(2, 1));
-        if (!inplace || !splat_scalar(init) || rank != 2 || !extents)
-            app->blame("a tensor-core fold needs a literal 2D accumulator updated in place from a scalar seed").bail();
+        if (!inplace || rank != 2 || !extents)
+            app->blame("a tensor-core fold needs a literal 2D accumulator updated in place").bail();
         auto shape = mma->decurry()->arg(2, 1);
         fragments  = Fragments{Lit::as(extent->proj(2, 0)), Lit::as(extent->proj(2, 1)), Lit::as(shape->proj(3, 0)),
                                Lit::as(shape->proj(3, 1))};
@@ -2471,8 +2524,11 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto panels_scope = fe::Restore(mma_panels_, mma_panels_ || fragments);
     const Def *mem, *buffer;
     if (fragments) {
-        mem    = fresh_mem();
-        buffer = w.pack(fragments->count(), w.pack(4, rewrite(splat_scalar(init))));
+        mem = fresh_mem();
+        if (auto scalar = splat_scalar(init))
+            buffer = w.pack(fragments->count(), w.pack(4, rewrite(scalar)));
+        else
+            std::tie(mem, buffer) = load_fragments(init, *fragments, mem);
     } else {
         std::tie(mem, buffer)
             = buffer::op_alloc(w.lit_nat(rank), storage, rewrite(element), shared_mem(fresh_mem()))->projs<2>();

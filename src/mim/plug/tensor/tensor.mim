@@ -2225,6 +2225,20 @@ anx lam AccumulatorDefault {T: *, Ro: Nat}: * =
     [shape: «Ro; Nat», outs: Tensor Ro shape T];
 anx lam outs_default {T: *, Ro: Nat} (shape: «Ro; Nat») (value: Tensor Ro shape T): AccumulatorDefault @(T, Ro) =
     (shape, value);
+///
+/// `map_reduce` that folds into the elements of `acc` instead of a scalar seed, e.g. `C + A·B`.
+anx lam map_reduce_acc {nis: Nat} {To: *, Ro Rn: Nat}
+                       (So: «Ro; Nat», Sr: «Rn; Nat»)
+                       {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+                       (f: Fn [To, «i: nis; Tis#i»] → To, acc: Tensor Ro So To)
+                       (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+                       (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+                       (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro So To =
+    map_reduce_post @(nis, 0)
+        @(To, To, Ro, Rn, SchedT)
+        (So, Sr, mk_sched (Rn, 0))
+        @(Tis, Ris, Sis, (), (), ())
+        (f, outs_default @(To, Ro) So acc, id @To) map_out (maps, ()) (is, ());
 
 priv anx lam tile_rebuild {nis nps: Nat}
     {To Tp: *, Ro Rn: Nat, TSched: □}

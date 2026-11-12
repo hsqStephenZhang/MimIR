@@ -76,6 +76,7 @@ private:
     };
     const Def* lower_mma(const App*, const Destination&, const Fragments&);
     const Def* store_fragments(const Def* source, const Fragments&, const Destination&);
+    std::pair<const Def*, const Def*> load_fragments(const Def* init, const Fragments&, const Def* mem);
     DefVec staged_panels(const Def* root, const Def* var) const;
     const Def* merge_of(const Def*) const;
     std::tuple<const Def*, u64, const Def*, u64> peel_step(const Def*) const;
