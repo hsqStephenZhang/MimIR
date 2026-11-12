@@ -197,7 +197,7 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         static constexpr int table[4][7][2] = {
             {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0}, {-1, -1}, {-1, -1}},
             {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3}},
-            {{0, 0}, {0, 0},   {1, 0},   {2, 0}, {-1, -1}, {-1, -1}, {-1, -1}},
+            {{0, 0}, {0, 0},   {1, 0},   {2, 0},   {1, 4}, {-1, -1}, {-1, -1}},
             {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}}
         };
         if (i > 6 || table[scope][i][0] < 0) return std::nullopt;
@@ -1568,6 +1568,15 @@ const Def* Levels::reduction(const Def* anchor,
         if (!law) return fail("a work-item reduction requires a recognized reassociable combiner");
         if (!Check::test_alpha(mr.init, law->identity))
             return fail("a work-item reduction's seed is not the combiner's identity");
+    }
+    if (bind == 4) {
+        auto k = Lit::isa(K);
+        if (!k || *k % sizes[loop]) return fail("a lane reduction needs a literal extent that its blocks divide");
+        auto lanes = *k / sizes[loop];
+        if (lanes > 32 || (lanes & (lanes - 1)))
+            return fail("a lane reduction needs a power of two of at most 32 lanes");
+        if (!law || !Check::test_alpha(mr.init, law->identity))
+            return fail("a lane reduction requires a recognized reassociable combiner whose identity is the seed");
     }
 
     auto off  = w.pack(mr.Ro, w.lit_nat_0());

@@ -77,6 +77,18 @@ private:
     const Def* lower_mma(const App*, const Destination&, const Fragments&);
     const Def* store_fragments(const Def* source, const Fragments&, const Destination&);
     std::pair<const Def*, const Def*> load_fragments(const Def* init, const Fragments&, const Def* mem);
+    u64 lane_count(const Def* body) const;
+    const Def* lower_lane_fold(const App*,
+                               Lam*,
+                               const Def*,
+                               const Def*,
+                               const Def*,
+                               u64,
+                               const Def*,
+                               const Def*,
+                               const Def*,
+                               bool,
+                               bool);
     DefVec staged_panels(const Def* root, const Def* var) const;
     const Def* merge_of(const Def*) const;
     std::tuple<const Def*, u64, const Def*, u64> peel_step(const Def*) const;
@@ -194,6 +206,8 @@ private:
     /// Inside a work-group level that runs in place, whose work-items read each other's results.
     bool composed_        = false;
     const Def* step_root_ = nullptr;
+    const Def* lane_      = nullptr;
+    u64 lanes_            = 1;
     /// The warp accumulators in fragment form, by value.
     DefMap<Fragments> fragments_;
     /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.

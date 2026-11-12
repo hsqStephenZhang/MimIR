@@ -1645,6 +1645,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     };
     // A bound level runs one linear loop over all its tiles, which `gpu.outline` maps to a one-dimensional id.
     auto emit_bound = [&](const Def* acc, const Def* exit) -> const Def* {
+        auto lanes  = plan.bind == 2 ? lane_count(region_body(app->arg()).first) : u64(1);
         u64 total   = 1;
         auto counts = fe::Vector<u64>(*rank, 1);
         for (size_t d = 0; d != *rank; ++d) {
@@ -1661,10 +1662,20 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
                                                   : "tileWarps");
         auto tag     = plan.bind == 1 ? gpu::bind::group : plan.bind == 2 ? gpu::bind::item : gpu::bind::warp;
         auto wrapped = w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body);
-        auto loop    = w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(total), w.lit_i64(1), acc});
+        // A work-item whose reduction runs on its lanes takes that many adjacent ids, which must fill whole warps.
+        if (lanes > 1 && total * lanes % 32)
+            app->blame("the {} work-items' lanes of a lane reduction do not fill whole warps", total).bail();
+        auto loop = w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(total * lanes), w.lit_i64(1), acc});
         auto [index, state, yield] = body->vars<3>();
-        auto linear                = w.call<core::bitcast>(w.type_nat(), index);
-        auto stride                = total;
+        const Def* linear          = w.call<core::bitcast>(w.type_nat(), index);
+        const Def* lane            = lane_;
+        if (lanes > 1) {
+            lane   = w.call(core::nat::rem, Defs{linear, w.lit_nat(lanes)});
+            linear = w.call(core::nat::div, Defs{linear, w.lit_nat(lanes)});
+        }
+        auto lane_scope  = fe::Restore(lane_, lane);
+        auto lanes_scope = fe::Restore(lanes_, lanes > 1 ? lanes : lanes_);
+        auto stride      = total;
         for (size_t d = 0; d != *rank; ++d) {
             if (counts[d] == 1) {
                 // A one-tile bound region depends on its binder in every dim, so nothing it stages floats out.
@@ -2505,11 +2516,14 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto bounded      = storage != extent;
     // Without the gpu plugin a bound reduction runs as the sequential fold, like bound parallel levels run as loops.
     auto bound_fold = level == 2 && driver().is_loaded("gpu");
+    auto lane_fold  = level == 4 && driver().is_loaded("gpu");
     // Only a work-item bound reduction over a whole tile merges straight into a destination.
     if (destination && (!bound_fold || bounded)) return nullptr;
     if (bound_fold)
         return lower_bound_fold(app, parameter, root, result, merge, rank, shape, element, extent, storage, bounded,
                                 inplace, destination);
+    if (lane_fold)
+        return lower_lane_fold(app, parameter, root, result, merge, rank, element, extent, storage, bounded, inplace);
     // A warp's tensor-core block keeps the accumulator as fragments in every lane's registers.
     auto mma       = driver().is_loaded("gpu") && bound_level_ != 0 ? Axm::isa<tensor::mma>(result) : nullptr;
     auto fragments = std::optional<Fragments>();
@@ -2760,6 +2774,99 @@ const Def* LowerToMem::merge_of(const Def* comb) const {
             if (op) stack.push_back(op);
     }
     return app->callee();
+}
+
+// The lanes a work-item region's reduction runs on: the block count of a lane-bound fold directly in @p body.
+u64 LowerToMem::lane_count(const Def* body) const {
+    auto pending = DefVec{body};
+    auto seen    = DefSet();
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto def = pending[i];
+        if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>()) continue;
+        if (i != 0 && Axm::isa<tensor::tiled>(def)) continue;
+        if (auto fold = Axm::isa<tensor::tile_fold>(def))
+            if (auto step = fold->arg()->isa<Lam>(); step && step->is_set() && region_body(step->body()).second == 4)
+                if (auto n = Lit::isa(fold->uncurry_args<6>()[1]->proj(2, 0))) return *n;
+        for (auto op : def->ops())
+            if (op) pending.push_back(op);
+    }
+    return 1;
+}
+
+// The blocks of a lane-bound reduction run one per lane of the work-item, each folding its own seed.
+// The partials then meet by warp shuffles in a butterfly, which leaves every lane with the merged tile.
+const Def* LowerToMem::lower_lane_fold(const App* app,
+                                       Lam* parameter,
+                                       const Def* root,
+                                       const Def* result,
+                                       const Def* merge,
+                                       u64 rank,
+                                       const Def* element,
+                                       const Def* extent,
+                                       const Def* storage,
+                                       bool bounded,
+                                       bool inplace) {
+    auto& w                                             = new_world();
+    auto [type, blocks, init, input_type, inputs, body] = app->uncurry_args<6>();
+    auto [count, stride]                                = blocks->projs<2>();
+    auto [accumulator, offset]                          = parameter->var()->projs<2>();
+    auto n                                              = Lit::isa(count);
+    auto seed                                           = splat_scalar(init);
+    auto call                                           = result->isa<App>();
+    auto mr_app                                         = call ? Axm::isa<tensor::map_reduce_post>(call) : nullptr;
+    if (!lane_ || !n || *n != lanes_)
+        app->blame("tensor.tile_fold: a lane reduction must run directly in a work-item with as many lanes").bail();
+    if (!inplace) app->blame("tensor.tile_fold: a lane reduction needs an in-place step").bail();
+    if (!seed) app->blame("tensor.tile_fold: a lane reduction needs a scalar seed, its combine's identity").bail();
+    if (!mr_app) app->blame("tensor.tile_fold: a lane reduction's step must be a map_reduce_post").bail();
+    if (!merge) merge = merge_of(btensor::MapRedPost::of(mr_app->callee()->as<App>()).comb);
+    if (!merge) app->blame("tensor.tile_fold: a lane reduction's combiner does not merge partials").bail();
+    auto dims = std::vector<u64>(rank);
+    u64 elems = 1;
+    for (size_t d = 0; d != rank; ++d) {
+        auto lit = Lit::isa(storage->proj(rank, d));
+        if (!lit) app->blame("tensor.tile_fold: a lane reduction needs a literal tile").bail();
+        dims[d] = *lit;
+        elems *= *lit;
+    }
+    auto literal_storage = w.tuple(DefVec(rank, [&](size_t d) { return w.lit_nat(dims[d]); }));
+    auto zero            = w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat(0); }));
+    auto el              = rewrite(element);
+    auto [mem, priv]     = buffer::op_alloc(w.lit_nat(rank), literal_storage, el, fresh_mem())->projs<2>();
+    mem                  = copy_box(mem, priv, literal_storage, rewrite(seed), nullptr, literal_storage, {});
+    const Def* update;
+    {
+        auto pending = fe::Restore(pending_, {});
+        auto cache   = fe::Restore(realizations_, realizations_);
+        push();
+        bind_old(parameter->has_var());
+        map(accumulator, priv);
+        if (bounded) storage_shapes_[accumulator] = literal_storage;
+        map(offset, w.call(core::nat::mul, Defs{lane_, rewrite(stride)}));
+        prepare_realizations(root);
+        update = lower_into(root, {mem, priv, literal_storage, zero, extent});
+        pop();
+    }
+    auto op            = rewrite(merge);
+    auto [merged, out] = update->projs<2>();
+    for (u64 e = 0; e != elems; ++e) {
+        auto coords = DefVec(rank);
+        for (size_t d = rank, rest = e; d-- > 0; rest /= dims[d])
+            coords[d] = w.lit_i64(rest % dims[d]);
+        auto index         = btensor::folded_idx(literal_storage, coords);
+        auto [read, value] = buffer::op_read(merged, out, index)->projs<2>();
+        for (auto mask = *n / 2; mask != 0; mask /= 2) {
+            auto other = w.app(w.annex<gpu::shfl_xor>(), w.tuple({value, w.lit_i32(u32(mask))}));
+            value      = w.app(op, w.tuple({value, other}));
+        }
+        merged = buffer::op_write(read, out, index, value)->proj(2, 0);
+    }
+    // The result buffer must depend on the shuffles' memory.
+    auto [result_run, result_call]
+        = btensor::ds_splice(w.tuple({merged, out}), w.sigma({merged->type(), out->type()}), "laneFoldResult");
+    result_run->app(true, result_run->ret_var(), result_run->var(2, 0));
+    if (bounded) storage_shapes_[app] = literal_storage;
+    return scalar_result(app, result_call->proj(2, 0), result_call->proj(2, 1));
 }
 
 // R8: the blocks of a work-item bound reduction run one per work-item, each folding its own seed, and the

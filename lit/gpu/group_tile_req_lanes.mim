@@ -1,0 +1,31 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/group_tile_req_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Each work-item's dot products run on four adjacent lanes, each folding a quarter of k; warp shuffles merge them.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F    = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+let inner = group_item ((4, 4, 0), 1, item_lanes ((0, 0, 16), 1, item_done ()));
+
+lam body (off ext: «2; Nat») (a: Tensor 2 (64, 64) F, b: Tensor 2 (64, 64) F): Tensor 2 ext F =
+    let at = slice @(F, 2) (64, 64) ((off#0₂, 0), (1, 1), (ext#0₂, 64)) a;
+    let bt = slice @(F, 2) (64, 64) ((0, off#1₂), (1, 1), (64, ext#1₂)) b;
+    let root = map_reduce (ext, (ext#0₂, ext#1₂, 64)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (at, bt);
+    group_tile_req (root, (), (16, 64, 0), inner, default_control);
+
+extern fun gemm (a b: tensor.Tensor 2 (64, 64) F): tensor.Tensor 2 (64, 64) F =
+    return (tiled ((64, 64), (16, 64), 1) (buf a, buf b)
+        (bind @([off ext: «2; Nat»] → [Tensor 2 (64, 64) F, Tensor 2 (64, 64) F] → Tensor 2 ext F) 1 body));

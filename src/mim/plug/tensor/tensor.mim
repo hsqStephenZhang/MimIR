@@ -1964,6 +1964,8 @@ axm report_groups: compile.Phase;
 /// `promote` sets bit `i` to stage input `i` into shared memory: a reduction level stages a panel per block,
 /// a work-group level its whole box.
 /// `RedItems` splits a reduction over the work-items and merges their partials.
+/// `Lanes` splits a work-item's reduction into blocks of `sizes`, each folded by one of as many adjacent lanes, which
+/// then merge their partials by warp shuffles; it needs a recognized reassociable law over F32.
 /// `Combiner` is accepted only for a recognized reassociable law whose identity is the seed.
 /// `Merge` supplies an explicit permission and a merge function whose accumulator type is checked.
 /// `Mma` computes a warp's reduction block on tensor cores with TF32 inputs; `shape` is the instruction's
@@ -1993,7 +1995,8 @@ anx mutual
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)]
         | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc, mma)]
-        | Vec: [sizes: «n; Nat», rest: ItemLevels (n, Acc, mma)];
+        | Vec: [sizes: «n; Nat», rest: ItemLevels (n, Acc, mma)]
+        | Lanes: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)];
     nom WarpLevels (n: Nat, Acc: *, mma: Bool) =
         | Done
         | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, mma)]
@@ -2037,6 +2040,8 @@ anx lam item_red_pipelined {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail 
     (ItemLevels (n, Acc, mma))#Red (sizes, tail, promote, pipeline, rest);
 anx lam item_vec {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», rest: ItemLevels (n, Acc, mma)): ItemLevels (n, Acc, mma) =
     (ItemLevels (n, Acc, mma))#Vec (sizes, rest);
+anx lam item_lanes {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)): ItemLevels (n, Acc, mma) =
+    (ItemLevels (n, Acc, mma))#Lanes (sizes, tail, rest);
 anx lam warp_done {n: Nat, Acc: *, mma: Bool} (_: []): WarpLevels (n, Acc, mma) = (WarpLevels (n, Acc, mma))#Done;
 anx lam warp_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: Nat, rest: WarpLevels (n, Acc, mma)): WarpLevels (n, Acc, mma) =
     (WarpLevels (n, Acc, mma))#Red (sizes, tail, promote, 0, rest);
@@ -2070,6 +2075,7 @@ axm tile_group: compile.Phase;
 ///
 /// Identity annotation on the body of a `tiled` or `tiled_multi` region: `to` is the level's binding, 1 for a
 /// work-group, 2 for a work-item and 3 for a warp.
+/// On a reduction step, 2 runs its blocks on the work-items and 4 on the lanes of one work-item.
 ///
 axm bind: {T: *} → [to: Nat] → T → T;
 ///
