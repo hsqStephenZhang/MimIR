@@ -589,6 +589,10 @@ bool reduction_types(const Def* callee, const Def* producer) {
 
 } // namespace
 
+const Def* normalize_warp_keep(const Def*, const Def*, const Def* arg) {
+    return arg->world().driver().is_loaded("gpu") ? nullptr : arg;
+}
+
 const Def* normalize_tile_of_init(const Def*, const Def* callee, const Def* arg) {
     auto [producer, off, ext] = arg->projs<3>();
     if (!reduction_types(callee, producer)) return nullptr;

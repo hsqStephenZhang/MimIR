@@ -21,13 +21,18 @@ warp 级运算都写成 Mim 里的纯函数，它们就是规格：在 CPU 上�
 | `v#(l xor c)`，`c` 是字面量 | `gpu.shfl_xor (v, c)` |
 | `v#i`，`i` 是 lane 的其它函数 | `gpu.shfl_idx (v, i)` |
 
+warp 程序的输入由 `gpu.lanes (self, x)` 给出：每个 lane 的本地值 `x` 组成的 warp 值，`self` 是本 lane。
+读 pack 时 MimIR 的规范化会直接代入 pack 体，所以剩下的读只可能读 `gpu.lanes`、`gpu.warp_mma` 或 `tensor.warp_keep`。
+`warp_keep` 是恒等，标记"共享算好的值"：读别的 lane 时 shuffle 该 lane 算出的结果，而不是代入定义重算；
+没有加载 `gpu` 时它在规范化时消失，所以规格在 CPU 上照常求值。
+
 降级只改变表示，不改变值，所以一个 warp 程序在 CPU 上的结果就是它在 GPU 上的结果；前提是 warp 内收敛（`gpu.outline` 已检查 warp 集体操作不在发散分支里）。
 
 ## 层次
 
 1. **语义层（Mim，`tensor.warp`）**：warp 值、mma 分片（复用 `mma_m16n8k8_tf32` 的 `l_a/l_b/l_c` 与 `mma_ref`）、
    分片与 tile 互转的规格、分片上的逐元素、按行广播、行归约（规格与 quad 实现）、C 布局到 A 布局的置换。
-2. **分布降级（gpu 插件的一个 phase）**：warp 区域内按上表把 `«32; T»` 的值换成本地分量与 shuffle。
+2. **分布降级（`tensor.distribute`，在 `gpu.erase_phases` 之后）**：warp 区域内按上表把 `«32; T»` 的值换成本地分量与 shuffle。
 3. **调度层**：warp 拥有的 fold：work-group → warp（拥有一个行块）→ 按 key 的 fold（状态是分片，在寄存器）→ 步内的 warp 级运算；
    K/V 面板仍由整个 work-group 协作填充，所以 warp 区域里有 barrier，所有 warp 必须执行同样多的步，由 `check_sync` 检查。
 4. **TileFuse 生成**：把请求映射到语义层的运算（mma、逐元素、行归约），并让相邻请求沿用同一个行拥有者。
@@ -46,7 +51,9 @@ warp 级运算都写成 Mim 里的纯函数，它们就是规格：在 CPU 上�
 
 ## 里程碑
 
-- **M1**：语义层与 CPU 上的引理测试。
-- **M2**：分布降级；用语义层写出的 warp 程序在 GPU 上执行，对照 `mma_ref` 与参考结果。
+- **M1**（完成）：语义层与引理。`quad_covers_rows`、`c_to_a_permutes` 在编译期由 `refly.check` 穷举证明；
+  `c_tile (c_of t) = t`、`row_fold` 等于规格、置换后的乘积等于原乘积在 CPU 上执行比较（`lit/tensor/warp_frag.mim`）。
+- **M2**（完成）：分布降级；`lit/{gpu,nvptx}/warp_lanes.mim` 里一个 warp 用 `gpu.warp_mma` 与 `tensor.warp.row_fold` 算乘积与行最大值，
+  降成一条 `mma_tf32` 与每个半行两次 `shfl_xor`，在 GPU 上对照参考结果。
 - **M3**：调度层在 attention 上，对照手写 `flash_tc` 与 `attn_fa`。
 - **M4**：TileFuse 自动生成。

@@ -1,0 +1,49 @@
+// RUN: %mim %s -p opt -o - | %FileCheck %s
+
+// A warp program on warp values: each lane passes its fragments, the warp multiplies them on the tensor cores and
+// reduces the rows of the product, and each lane keeps its component; reading another lane's is a shuffle.
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+plugin tensor;
+
+let F = math.F32;
+let A = «32, 4; F»;
+let B = «32, 2; F»;
+let R = «32, 2; F»;
+
+lam fmax (x y: F): F = math.extrema.fmax math.mode.fast (x, y);
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            _: Idx 1, lane: Idx 32, (), (a: gpu.GlobalPtr A, b: gpu.GlobalPtr B, c d: gpu.GlobalPtr A, r: gpu.GlobalPtr R),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let m       = gpu.generic_mem m1;
+    let at      = λ (T: *) (p: gpu.GlobalPtr «32; T»): mem.Ptr0 T = mem.lea (core.bitcast (mem.Ptr0 «32; T») p, lane);
+    let (m, af) = mem.load (m, at «4; F» a);
+    let (m, bf) = mem.load (m, at «2; F» b);
+    let (m, cf) = mem.load (m, at «4; F» c);
+    let product = gpu.warp_mma (gpu.lanes (lane, af), gpu.lanes (lane, bf), gpu.lanes (lane, cf));
+    let rows    = tensor.warp.row_fold @(1, 1) (fmax, math.neg_inf math.f32) product;
+    let m       = mem.store (m, at «4; F» d, product#lane);
+    let m       = mem.store (m, at «2; F» r, rows#lane);
+    return (gpu.global_mem m, m3, m4, m5);
+
+extern fun warp_rows (m0: mem.M 0, a: mem.Ptr0 A, b: mem.Ptr0 B, c d: mem.Ptr0 A, r: mem.Ptr0 R): [mem.M 0, I32] =
+    let (m0, m1, m4)  = gpu.init m0;
+    let (m0, m1, da)  = gpu.alloc_copy.block (m0, m1, a);
+    let (m0, m1, db)  = gpu.alloc_copy.block (m0, m1, b);
+    let (m0, m1, dc)  = gpu.alloc_copy.block (m0, m1, c);
+    let (m1, dd)      = mem.alloc (A, 1) m1;
+    let (m1, dr)      = mem.alloc (R, 1) m1;
+    ret (m0, m1, m4)  = gpu.launch (1, 32, gpu.default_stream, ff, ()) kernel (da, db, dc, dd, dr) $ (m0, m1, m4);
+    let (m0, m1)      = gpu.copy_to_host.block (m0, m1, dd, d);
+    let (m0, m1)      = gpu.copy_to_host.block (m0, m1, dr, r);
+    let m0            = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);
+
+// CHECK: gpu.mma_tf32
+// CHECK: gpu.shfl_xor
+// CHECK-NOT: gpu.lanes
+// CHECK-NOT: gpu.warp_mma

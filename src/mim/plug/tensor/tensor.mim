@@ -261,6 +261,14 @@ pub anx lam mma_ref
             (‹k: 8; k›, c#lane#reg)››;
 end
 ///
+/// ### warp_keep
+///
+/// The identity on a warp value, marking it shared: a lane reading another's component shuffles what that lane computed
+/// instead of recomputing it from the definition.
+/// It vanishes unless the `gpu` plugin is loaded; then `tensor.distribute` resolves its reads.
+///
+axm warp_keep: {T: *} → «32; T» → «32; T», normalize_warp_keep;
+///
 /// ### warp
 ///
 /// A warp's value is an array over its 32 lanes, lane `l` holding component `l`; see `docs/warp-schedule.zh-CN.md`.
@@ -316,10 +324,10 @@ pub anx lam row_fold_spec {mt nt: Nat} {T: *} (op: [T, T] → T, init: T) (f: C 
 /// For an associative and commutative `op` with identity `init` it equals `r_of (row_fold_spec op init f)`, since
 /// the four lanes of a quad hold the row's columns exactly once (`quad_covers_rows`).
 pub anx lam row_fold {mt nt: Nat} {T: *} (op: [T, T] → T, init: T) (f: C (mt, nt) T): R mt T =
-    let own = ‹lane: 32; ‹i: mt; ‹h: 2;
+    let own = warp_keep ‹lane: 32; ‹i: mt; ‹h: 2;
         vec.fold.l @(T, T) @(2 * nt) op
             (init, ‹k: 2 * nt; f#lane#i#(core.idx 0 nt (core.idx2nat k / 2))#(core.idx 0 4 (2 * core.idx2nat h + core.idx2nat k % 2))›)›››;
-    let pair = ‹lane: 32; ‹i: mt; ‹h: 2; op (own#lane#i#h, own#(core.bit2.xor 0 (lane, core.idx 0 32 1))#i#h)›››;
+    let pair = warp_keep ‹lane: 32; ‹i: mt; ‹h: 2; op (own#lane#i#h, own#(core.bit2.xor 0 (lane, core.idx 0 32 1))#i#h)›››;
     ‹lane: 32; ‹i: mt; ‹h: 2; op (pair#lane#i#h, pair#(core.bit2.xor 0 (lane, core.idx 0 32 2))#i#h)›››;
 
 /// Whether the four lanes `l xor m` of a quad hold row `r_pos (l, i, h)` at registers of half `h`, each column once.
@@ -1983,6 +1991,13 @@ axm combine_products: compile.Phase;
 /// Lowers the derived operations to the core ones by re-applying the matching `_impl` annexes.
 ///
 axm lower_tensor: compile.Phase;
+///
+/// ### distribute
+///
+/// Keeps each lane's component of the warp values built by `gpu.lanes`, `gpu.warp_mma` and `warp_keep`: reading the
+/// own lane's component is the local value, another lane's a shuffle (`shfl_xor` for `self xor c`, else `shfl_idx`).
+///
+axm distribute: compile.Phase;
 ///
 /// ### lower_map_reduce
 ///

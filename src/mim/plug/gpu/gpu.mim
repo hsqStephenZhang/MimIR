@@ -328,6 +328,28 @@ axm mma_tf32: [«4; math.F32», «2; math.F32», «4; math.F32»] → «4; math.
 ///
 axm shfl_xor: [x: math.F32, mask: I32] → math.F32;
 
+/// #### shfl_idx
+///
+/// The `x` of the work-item in lane `src`, across the full warp (`shfl.sync.idx`).
+///
+axm shfl_idx: [x: math.F32, src: I32] → math.F32;
+
+/// #### lanes
+///
+/// The warp's value made of every work-item's `x`, component `self` being this one's: a warp program's input.
+/// A warp program is a function on such `«32; T»` values, `tensor.warp`'s functions among them;
+/// `tensor.distribute` keeps each lane's component, so reading component `self` is `x` and reading another is a shuffle.
+/// It needs the whole warp converged, as any warp collective does.
+///
+axm lanes: {T: *} → [self: Idx 32, x: T] → «32; T»;
+
+/// #### warp_mma
+///
+/// The warp's tensor-core product `tensor.mma_m16n8k8_tf32.mma_ref (a, b, c)` on warp values; `tensor.distribute` lowers
+/// it to each lane's `mma_tf32`.
+///
+axm warp_mma: [a: «32; «4; math.F32»», b: «32; «2; math.F32»», c: «32; «4; math.F32»»] → «32; «4; math.F32»»;
+
 /// #### tf32_rna
 ///
 /// Rounds the significand of an F32 to the 10 bits of TF32, to nearest with ties away from zero (`cvt.rna.tf32.f32`).

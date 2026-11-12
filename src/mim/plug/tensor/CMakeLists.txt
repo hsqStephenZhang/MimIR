@@ -10,6 +10,7 @@ add_mim_plugin(tensor
         phase/lower.cpp
         phase/constraints.cpp
         phase/lower_map_reduce.cpp
+        phase/distribute.cpp
         phase/lower_to_mem.cpp
         phase/panel_layout.cpp
         phase/fuse.cpp

@@ -5,6 +5,7 @@
 #include <mim/pattern/witness.h>
 
 #include "mim/plug/tensor/pattern.h"
+#include "mim/plug/tensor/phase/distribute.h"
 #include "mim/plug/tensor/phase/combine_products.h"
 #include "mim/plug/tensor/phase/fuse.h"
 #include "mim/plug/tensor/phase/group.h"
@@ -130,6 +131,7 @@ static void reg_witnesses(pattern::Witnesses& witnesses) {
 
 static void reg_phases(Flags2Phases& phases) {
     Phase::hook<raise_attention, phase::AttentionRaise>(phases);
+    Phase::hook<distribute, phase::Distribute>(phases);
     Phase::hook<group_attention, phase::AttentionSchedule>(phases);
     Phase::hook<combine_products, phase::CombineProducts>(phases);
     Phase::hook<reassoc, phase::Reassoc>(phases);
