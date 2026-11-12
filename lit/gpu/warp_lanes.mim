@@ -25,7 +25,7 @@ con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
     let (m, bf) = mem.load (m, at «2; F» b);
     let (m, cf) = mem.load (m, at «4; F» c);
     let product = gpu.warp_mma (gpu.lanes (lane, af), gpu.lanes (lane, bf), gpu.lanes (lane, cf));
-    let rows    = tensor.warp.row_fold @(1, 1) (fmax, math.neg_inf math.f32) product;
+    let rows    = tensor.warp.row_fold @1 (fmax, math.neg_inf math.f32) product;
     let m       = mem.store (m, at «4; F» d, product#lane);
     let m       = mem.store (m, at «2; F» r, rows#lane);
     return (gpu.global_mem m, m3, m4, m5);

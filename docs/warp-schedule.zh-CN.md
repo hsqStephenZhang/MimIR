@@ -30,7 +30,7 @@ warp 程序的输入由 `gpu.lanes (self, x)` 给出：每个 lane 的本地值 
 
 ## 层次
 
-1. **语义层（Mim，`tensor.warp`）**：warp 值、mma 分片（复用 `mma_m16n8k8_tf32` 的 `l_a/l_b/l_c` 与 `mma_ref`）、
+1. **语义层（Mim，`tensor.warp`）**：一个 warp 拥有一个 16 行的块（多个块用数组）；warp 值、mma 分片（复用 `mma_m16n8k8_tf32` 的 `l_a/l_b/l_c` 与 `mma_ref`）、
    分片与 tile 互转的规格、分片上的逐元素、按行广播、行归约（规格与 quad 实现）、C 布局到 A 布局的置换。
 2. **分布降级（`tensor.distribute`，在 `gpu.erase_phases` 之后）**：warp 区域内按上表把 `«32; T»` 的值换成本地分量与 shuffle。
 3. **调度层**：warp 拥有的 fold：work-group → warp（拥有一个行块）→ 按 key 的 fold（状态是分片，在寄存器）→ 步内的 warp 级运算；
@@ -55,5 +55,14 @@ warp 程序的输入由 `gpu.lanes (self, x)` 给出：每个 lane 的本地值 
   `c_tile (c_of t) = t`、`row_fold` 等于规格、置换后的乘积等于原乘积在 CPU 上执行比较（`lit/tensor/warp_frag.mim`）。
 - **M2**（完成）：分布降级；`lit/{gpu,nvptx}/warp_lanes.mim` 里一个 warp 用 `gpu.warp_mma` 与 `tensor.warp.row_fold` 算乘积与行最大值，
   降成一条 `mma_tf32` 与每个半行两次 `shfl_xor`，在 GPU 上对照参考结果。
-- **M3**：调度层在 attention 上，对照手写 `flash_tc` 与 `attn_fa`。
+- **M3a**（完成）：`bench/gpu_attn/flash_warp.py` 把手写 `flash_tc` 每一步的计算改写成 warp 程序
+  （`gpu.warp_mma`、`row_fold`、`row_own` 与最后一次 `quad_merge`、`c_zip`/`c_rows`、`a_of_c` 与 `key_perm`），面板与循环仍手写。
+  RTX PRO 6000 上与手写版本一致（BH × L = 32 × 2048：0.305 对 0.306 ms；128 × 2048：1.088 对 1.087 ms），结果正确：
+  warp 代数的规格经分布降级就是手写的代码。
+- **M3b**：调度层在 attention 上（warp 拥有的 fold、面板由 work-group 填充），对照 `flash_warp` 与 `attn_fa`。
 - **M4**：TileFuse 自动生成。
+
+## 已知问题
+
+- 带长度为 1 的轴的融合 Pack（如 `‹l: 32; ‹i: 1; ‹j: 4; …›››`）被下标读时，类型已折叠掉该轴而 Pack 的形状仍保留它，
+  紧随的下标会剥错轴，产生 "expected `F`, got `«4; F»`" 的类型错误；语义层因此不带行块轴。核心问题未修。
