@@ -487,12 +487,14 @@ const Def* normalize_cmp(const Def* type, const Def* c, const Def* arg) {
 template<conv id>
 const Def* normalize_conv(const Def* dst_t, const Def*, const Def* x) {
     auto& world = dst_t->world();
-    auto s_t    = x->type()->as<App>();
-    auto d_t    = dst_t->as<App>();
-    auto s      = s_t->arg();
-    auto d      = d_t->arg();
-    auto ls     = Lit::isa(s);
-    auto ld     = Lit::isa(d);
+    auto s_t    = x->type()->isa<App>();
+    auto d_t    = dst_t->isa<App>();
+    // A type still being substituted, such as a Var, is no `Idx` or float yet.
+    if (!s_t || !d_t) return {};
+    auto s  = s_t->arg();
+    auto d  = d_t->arg();
+    auto ls = Lit::isa(s);
+    auto ld = Lit::isa(d);
 
     if (s_t == d_t) return x;
     if (x->isa<Bot>()) return world.bot(d_t);
