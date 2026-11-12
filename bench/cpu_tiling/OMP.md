@@ -51,6 +51,15 @@ Reproduction scripts:
   `--threads T --cpus comma,separated,physical,cpus` sets affinity before importing
   numerical libraries. For `--runtime-source`, also supply `--omp-runtime`.
 
+Both scripts also run on the local machine. `bmm-cases.txt` uses gemm-bench's
+`B M K N` case-file order (the manifest stores `B M N K`). For BMM the runner
+compares `aten::bmm.out`, native `cblas_sgemm_batch_strided`, and a C loop over
+`cblas_sgemm`; the latter uses the configured thread budget inside each GEMM.
+Use `--mcpu haswell --isa avx2` on AVX2 machines. `--bind-openblas-workers`
+pins each pthread worker to a selected core and checks the resulting masks.
+The current recursive compiler may need `ulimit -s 65536` when lowering a
+singleton batch with a large matrix; this changes the compiler stack only.
+
 Set `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS` consistently.
 Use one socket, distinct physical cores, `MKL_DYNAMIC=FALSE`, `OMP_DYNAMIC=FALSE`,
 `OMP_PROC_BIND=TRUE`, explicit `GOMP_CPU_AFFINITY` for the selected cores,

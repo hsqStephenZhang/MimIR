@@ -1,0 +1,16 @@
+# B M K N; contiguous FP32 A[B,M,K], B[B,K,N], C[B,M,N].
+bmm b1_sq128 1 128 128 128 1
+bmm b1_sq512 1 512 512 512 1
+bmm b2_sq256 2 256 256 256 1
+bmm b3_sq128 3 128 128 128 1
+bmm b8_sq64 8 64 64 64 1
+bmm b8_sq256 8 256 256 256 1
+bmm b8_sq512 8 512 512 512 1
+bmm b32_sq32 32 32 32 32 1
+bmm b32_sq128 32 128 128 128 1
+bmm b64_sq16 64 16 16 16 1
+bmm b64_sq64 64 64 64 64 1
+bmm b256_sq16 256 16 16 16 1
+bmm b16_odd 16 97 383 257 1
+bmm b16_skinny 16 8 2304 512 1
+bmm b16_m49 16 49 512 512 1

@@ -1,0 +1,9 @@
+warning: <unknown>:0:0: loop not vectorized: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+1 warning generated.
+{"threads": 4, "rows": [{"shape": [8, 256, 256, 256], "calls": 20, "launches": 20, "team": 4, "workers": [0, 1, 2, 3], "cpus": [0, 2, 4, 6]}, {"shape": [3, 128, 128, 128], "calls": 20, "launches": 20, "team": 4, "workers": [0, 1, 2, 3], "cpus": [0, 2, 4, 6]}, {"shape": [1, 128, 128, 128], "calls": 20, "launches": 0, "team": 0, "workers": [], "cpus": []}]}
+warning: <unknown>:0:0: loop not vectorized: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+1 warning generated.
+{"threads": 6, "rows": [{"shape": [8, 256, 256, 256], "calls": 20, "launches": 20, "team": 6, "workers": [0, 1, 2, 3, 4, 5], "cpus": [0, 2, 4, 6, 8, 10]}, {"shape": [3, 128, 128, 128], "calls": 20, "launches": 20, "team": 6, "workers": [0, 1, 2, 3, 4, 5], "cpus": [0, 2, 4, 6, 8, 10]}, {"shape": [1, 128, 128, 128], "calls": 20, "launches": 0, "team": 0, "workers": [], "cpus": []}]}
+warning: <unknown>:0:0: loop not vectorized: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+1 warning generated.
+{"threads": 8, "rows": [{"shape": [8, 256, 256, 256], "calls": 20, "launches": 20, "team": 8, "workers": [0, 1, 2, 3, 4, 5, 6, 7], "cpus": [0, 2, 4, 6, 8, 10, 12, 13]}, {"shape": [3, 128, 128, 128], "calls": 20, "launches": 20, "team": 8, "workers": [0, 1, 2, 3, 4, 5, 6, 7], "cpus": [0, 2, 4, 6, 8, 10, 12, 13]}, {"shape": [1, 128, 128, 128], "calls": 20, "launches": 0, "team": 0, "workers": [], "cpus": []}]}

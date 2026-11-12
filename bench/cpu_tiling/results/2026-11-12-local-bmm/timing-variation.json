@@ -1,0 +1,72 @@
+[
+  {
+    "threads": 1,
+    "name": "b16_skinny",
+    "backend": "pytorch",
+    "max_min": 1.379681554542803,
+    "median_us": 6184.509052631579
+  },
+  {
+    "threads": 4,
+    "name": "b8_sq512",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.3769310937194648,
+    "median_us": 4732.970833333333
+  },
+  {
+    "threads": 4,
+    "name": "b16_skinny",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.5442347943819836,
+    "median_us": 3999.417620689655
+  },
+  {
+    "threads": 4,
+    "name": "b16_skinny",
+    "backend": "openblas",
+    "max_min": 1.3406654701054364,
+    "median_us": 3486.554342089221
+  },
+  {
+    "threads": 4,
+    "name": "b16_skinny",
+    "backend": "pytorch",
+    "max_min": 1.3154700154455616,
+    "median_us": 3646.8126562499997
+  },
+  {
+    "threads": 6,
+    "name": "b64_sq64",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.5727287134751975,
+    "median_us": 51.15732046332047
+  },
+  {
+    "threads": 6,
+    "name": "b16_odd",
+    "backend": "pytorch",
+    "max_min": 1.340558962592936,
+    "median_us": 408.41447122302156
+  },
+  {
+    "threads": 6,
+    "name": "b16_skinny",
+    "backend": "openblas",
+    "max_min": 1.3072725980674464,
+    "median_us": 3646.1815430686393
+  },
+  {
+    "threads": 6,
+    "name": "b16_m49",
+    "backend": "mimir_multilevel_omp_6x16",
+    "max_min": 1.4506688354313773,
+    "median_us": 613.7366836158193
+  },
+  {
+    "threads": 8,
+    "name": "b16_skinny",
+    "backend": "pytorch",
+    "max_min": 1.3186452149038796,
+    "median_us": 4631.035178571427
+  }
+]

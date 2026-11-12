@@ -1,0 +1,13 @@
+....Combined summary: /tmp/tmpoom8pdtf/summary.csv
+Running pytorch (cpu, CPU 0)
+Running openblas (cpu, CPU 0)
+Running mimir (cpu, CPU 0)
+Running pytorch (cpu, CPU 0)
+Running pytorch (cpu, CPU 0)
+Running tvm (cpu, CPU 0)
+Running iree (cpu, CPU 0)
+..
+----------------------------------------------------------------------
+Ran 6 tests in 0.029s
+
+OK

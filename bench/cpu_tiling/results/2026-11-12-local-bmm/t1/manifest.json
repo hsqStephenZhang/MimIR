@@ -1,0 +1,293 @@
+{
+  "source_commit": "eabf14aabff55684f9fd1a1af74c02d8cd4245b9",
+  "source_dirty": true,
+  "bench_revision": "ffcc8afca9f370af2b0b3a60a1f389d1e93bdd16",
+  "cases": [
+    {
+      "op": "bmm",
+      "name": "b1_sq128",
+      "shape": [
+        1,
+        128,
+        128,
+        128
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b1_sq512",
+      "shape": [
+        1,
+        512,
+        512,
+        512
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b2_sq256",
+      "shape": [
+        2,
+        256,
+        256,
+        256
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b3_sq128",
+      "shape": [
+        3,
+        128,
+        128,
+        128
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b8_sq64",
+      "shape": [
+        8,
+        64,
+        64,
+        64
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b8_sq256",
+      "shape": [
+        8,
+        256,
+        256,
+        256
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b8_sq512",
+      "shape": [
+        8,
+        512,
+        512,
+        512
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b32_sq32",
+      "shape": [
+        32,
+        32,
+        32,
+        32
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b32_sq128",
+      "shape": [
+        32,
+        128,
+        128,
+        128
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b64_sq16",
+      "shape": [
+        64,
+        16,
+        16,
+        16
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b64_sq64",
+      "shape": [
+        64,
+        64,
+        64,
+        64
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "medium",
+        "regular"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b256_sq16",
+      "shape": [
+        256,
+        16,
+        16,
+        16
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "regular",
+        "small"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b16_odd",
+      "shape": [
+        16,
+        97,
+        257,
+        383
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "irregular",
+        "medium"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b16_skinny",
+      "shape": [
+        16,
+        8,
+        512,
+        2304
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "irregular",
+        "large"
+      ]
+    },
+    {
+      "op": "bmm",
+      "name": "b16_m49",
+      "shape": [
+        16,
+        49,
+        512,
+        512
+      ],
+      "reps": 1,
+      "tags": [
+        "bmm",
+        "irregular",
+        "medium"
+      ]
+    }
+  ],
+  "variants": [
+    "mimir_multilevel_omp_6x16"
+  ],
+  "threads": 1,
+  "target": "icelake-server -mno-avx512f",
+  "flags": [
+    "-X",
+    "btensor:registers=128",
+    "-X",
+    "tensor:strict=1",
+    "-X",
+    "omp:strict=1",
+    "-X",
+    "omp:threads=1",
+    "-X",
+    "ll:rt=extern",
+    "-X",
+    "tensor:cpu-order=1",
+    "-X",
+    "tensor:cpu-mr=6",
+    "-X",
+    "tensor:cpu-nr=16",
+    "-X",
+    "tensor:cpu-mc=320",
+    "-X",
+    "tensor:cpu-nc=104512",
+    "-X",
+    "tensor:cpu-kc=320"
+  ],
+  "files": {
+    "ir/mimir_multilevel_omp_6x16/16_49_512_512/kernel.ll": "040a4e472080026975f0eeda2127db265b35fd39ddae959c102337bfdd9dc680",
+    "ir/mimir_multilevel_omp_6x16/16_8_512_2304/kernel.ll": "a567bd1a77972e26212fa82570bb5c81d1404abc081fd3dfe52bd76363ad3208",
+    "ir/mimir_multilevel_omp_6x16/16_97_257_383/kernel.ll": "35fef38bbb61906f115fc33550914fe9fdf3eaaa6db4ec630a5038f46aa275d4",
+    "ir/mimir_multilevel_omp_6x16/256_16_16_16/kernel.ll": "5c33d2bc47f39bdb62e2dc5793695e21bb35da0687b44c0622a86b66e1c89426",
+    "ir/mimir_multilevel_omp_6x16/64_64_64_64/kernel.ll": "96d8b04b7518f9b7251d4105ba2660f399a59fcce35ab8330c3d7e4fb378c7bc",
+    "ir/mimir_multilevel_omp_6x16/64_16_16_16/kernel.ll": "c7ee704e3d10f638c7b7ae7308cdb6f9fbf40b9dccebf7db4b62646588ef5c77",
+    "ir/mimir_multilevel_omp_6x16/32_128_128_128/kernel.ll": "38e5d1a099537584a59b24336ebd80b8be73fdc7f6a0de7b8f6311cc52586f21",
+    "ir/mimir_multilevel_omp_6x16/32_32_32_32/kernel.ll": "f7de2a9172bc4dc4fa7184c22612745f7d56f703fb0dfa4a64c96a3ae78167a2",
+    "ir/mimir_multilevel_omp_6x16/8_512_512_512/kernel.ll": "52d2d2392afb1f1d9745ecf9a29bcabcf36e455ee14ae2cc8cd908a1692c6460",
+    "ir/mimir_multilevel_omp_6x16/8_256_256_256/kernel.ll": "59f0d0746325bae7b7bc6b35f699b8724166683f35ba6de222c8eae823715d0b",
+    "ir/mimir_multilevel_omp_6x16/8_64_64_64/kernel.ll": "877a10ff401bed2087f6560fab224e35b9128dffd04f65dff35f8680af5f6072",
+    "ir/mimir_multilevel_omp_6x16/3_128_128_128/kernel.ll": "25f36393fcb84b077c181570630ff834376203c64936aff3007b65cd74d12654",
+    "ir/mimir_multilevel_omp_6x16/2_256_256_256/kernel.ll": "be8fe80d0cc1bde3157fca9686cb5f8163630b7cf16989b702340c06e0c758b8",
+    "ir/mimir_multilevel_omp_6x16/1_512_512_512/kernel.ll": "a84445cd841245865506d2839ac0bcc82aab0a87c39b416d6f51fe1f677f642c",
+    "ir/mimir_multilevel_omp_6x16/1_128_128_128/kernel.ll": "ecb53d02621a798a429fdec037cf0f859268f40f8a6440f2832ee60f79bbdf51"
+  }
+}

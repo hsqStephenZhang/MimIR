@@ -1,0 +1,37 @@
+{
+  "source_commit": "eabf14aabff55684f9fd1a1af74c02d8cd4245b9",
+  "source_diff": [
+    "bench/cpu_tiling/OMP.md",
+    "bench/cpu_tiling/prepare_omp.py",
+    "bench/cpu_tiling/remote_cpu.py"
+  ],
+  "bench_commit": "ffcc8afca9f370af2b0b3a60a1f389d1e93bdd16",
+  "sha256": {
+    "src/mim/plug/tensor/phase/tile_group.cpp": "0626ce8527efefa5c75e1e3d53ca80e116c8fd836c70f694f55e85616ac539d1",
+    "src/mim/plug/omp/rt/mim_omp_rt.c": "90bf004b61cb87a9bd8bb0b4bd65617da8ffca6c8c3360a4f23150fe96159122",
+    "build/bin/mim": "04eaa5126bba0c075fb9986c042e7413426bffe5b3b14d99b54c5b611dc26cfe",
+    "build/lib/mim/libmim_affine.so": "adb40d0847263047a0fb3b91eac974341a47fd839151d23977a7420dbcbb49de",
+    "build/lib/mim/libmim_autodiff.so": "d6442d510f0d266cf3ce501ffaf733b210fc262fd4740ec6a738131ee6404300",
+    "build/lib/mim/libmim_btensor.so": "862c887f2cf50aba6973d88a43f3f092a2af791228f8cca58016bf492cec7b79",
+    "build/lib/mim/libmim_buffer.so": "3d935f3a4a2c786c0d273550235c3d3123010bcf1fe621ee092b0bf834005bf0",
+    "build/lib/mim/libmim_clos.so": "d08408bcc33d598efad7b96640365a8b7604ad28f66e5e4b57af4d45ae7a2607",
+    "build/lib/mim/libmim_compile.so": "18cf60c19df15ed22f0bdbbb095b3d0d2c6e0d0077742dc6b66d53350ef30820",
+    "build/lib/mim/libmim_core.so": "fdc3fd480423c09b305c3c8a2a9f9ec091b750210e6e166d3fead565300bf86b",
+    "build/lib/mim/libmim_cps.so": "498359eb981730c224582f96b2738b6225b09d8c5055adff1674d80131ec6df9",
+    "build/lib/mim/libmim_demo.so": "ddcfce5edbc609fb77d4337a459a92bfd37bd589682697a4826c5c44334299be",
+    "build/lib/mim/libmim_gpu.so": "ceb624f03198e315f69ec75a2c086cbf32c01e244f7d98f8ebe738eb95cf9b23",
+    "build/lib/mim/libmim_ll.so": "5528eb0ef04d69b6ad0229868f116b30c7229052544ba20a233ebe528d77102e",
+    "build/lib/mim/libmim_math.so": "ccbb2bb5a316bf4e874c260ebd57704b27813d089c4500575a577ecf16cfe339",
+    "build/lib/mim/libmim_mem.so": "3b15a381e53ec7b745ac80ac16dbc72b1c91ccbee252546e525b631e4d8adb16",
+    "build/lib/mim/libmim_nvptx.so": "d819e214574d799a86f81431e76f5c4f6e46cd5a012cbc0f6ae849cc378c73be",
+    "build/lib/mim/libmim_omp.so": "2d338a48ec9a7020e22e331442d822c97030a6dd361e7cf838e31cf509edba97",
+    "build/lib/mim/libmim_opt.so": "0dd345dd00539084334019d8a765208d291cd38737678780e633ab28ae539ad7",
+    "build/lib/mim/libmim_option.so": "7a8edb00f8e05056047ee4eade3bf840ef869cdea1d820185269d23443a534d1",
+    "build/lib/mim/libmim_ord.so": "b82b290a11b2ab458364c7ca994439771f0356369904dabad83343c72594979b",
+    "build/lib/mim/libmim_refly.so": "02a523f16fcc186066900548e75e7a764ca5f067276cfe57110856d169cde14e",
+    "build/lib/mim/libmim_regex.so": "ea029e1367b7432629d481f6fb26067f5a58d92ec9fca36f74e14488865ba91e",
+    "build/lib/mim/libmim_tensor.so": "f8b917720e4a563733f2a0ac478453e871e5d1986efb8ca03bdc76420e93047e",
+    "build/lib/mim/libmim_tuple.so": "159d073999781de57507743ad07ce9f9641da99602704e1e93d044932ad3f4e9",
+    "build/lib/mim/libmim_vec.so": "9525e974917953c9c380747e5895980b21d9e5d184e6508c74980e1a010a548a"
+  }
+}

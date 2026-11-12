@@ -52,7 +52,8 @@ with ThreadPoolExecutor(max_workers=a.jobs) as pool:
 manifest = dict(source_commit=subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip(),
                 source_dirty=bool(subprocess.check_output(['git', '-C', str(source), 'diff', '--name-only'], text=True).strip()),
                 bench_revision=subprocess.check_output(['git', '-C', str(a.bench), 'rev-parse', 'HEAD'], text=True).strip(),
-                cases=cases, variants=[variant], threads=a.threads, target='icelake-server -mno-avx512f',
+                cases=cases, variants=[variant], threads=a.threads,
+                target='CPU LLVM IR; native ISA selected during compilation',
                 flags=flags, files={str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
                                    for path in root.glob('ir/**/kernel.ll')})
 (root / 'manifest.json').write_text(json.dumps(manifest, indent=2))

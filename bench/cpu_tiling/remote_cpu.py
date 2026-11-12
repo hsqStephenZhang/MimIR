@@ -330,7 +330,7 @@ def main():
                     calibrated_counts[name] = kernel.last_iterations
 
             def fixed_time(name, kernel, count):
-                if name == "openblas":
+                if name in ("openblas", "openblas_loop"):
                     seconds = kernel.timer(*kernel.arguments, count)
                 elif name == "pytorch":
                     seconds = kernel.library.measure(kernel.handle, count)
