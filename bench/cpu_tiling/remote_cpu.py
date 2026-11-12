@@ -135,10 +135,11 @@ def main():
                 "-o",
                 str(directory / "kernel.so"),
             ]
+            ir_sha256 = digest(directory / "kernel.ll")
             previous = directory / "compile.json"
+            record = json.loads(previous.read_text()) if previous.is_file() else {}
             cached = (
-                previous.is_file()
-                and json.loads(previous.read_text())["command"] == command
+                record.get("command") == command and record.get("ir_sha256") == ir_sha256
             )
             if not (directory / "kernel.so").is_file() or not cached:
                 start = time.monotonic()
@@ -152,7 +153,7 @@ def main():
                     )
                 save(
                     directory / "compile.json",
-                    dict(command=command, seconds=time.monotonic() - start),
+                    dict(command=command, ir_sha256=ir_sha256, seconds=time.monotonic() - start),
                 )
             return str(directory.relative_to(root))
 
