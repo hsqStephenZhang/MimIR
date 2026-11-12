@@ -14,7 +14,8 @@ namespace mim::plug::mem {
 /// An allocation *escapes* if it flows into the data of a tail call - returned, or handed to a callee or continuation -
 /// or if an escaping Lam mentions it.
 /// Any op but `mem.load`, the address of a `mem.store`, and a `mem.free` of the allocation itself may retain the
-/// pointers it is handed, so they escape there. A Lam escapes if its use is *unknown* - it is used as a value - or if
+/// pointers it is handed, so they escape there unless its plugin proves the borrowing contract in mem::BorrowsFn.
+/// A Lam escapes if its use is *unknown* - it is used as a value - or if
 /// an escaping Lam jumps to it. An axiom in control position is assumed to only pass control on to the continuations it
 /// receives.
 ///
@@ -64,6 +65,7 @@ private:
     void leave() override;
 
     bool may_hold(const Def* type) const;
+    bool borrows(const App*);
     std::optional<fe::Vector<const App*>> walk(Lam* lam, const App* tail);
     /// Yields where @p mem starts in @p lam - its memory Var or the memory it captures - or `nullptr` if lost.
     /// Collects the @p ops on the way in reverse program order.
@@ -94,6 +96,7 @@ private:
     DefSet shared_;
     DefSet freed_;
     LamSet escaping_;
+    DefMap<bool> borrows_;
 };
 
 } // namespace mim::plug::mem

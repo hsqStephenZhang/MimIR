@@ -4,6 +4,7 @@
 
 #include <fe/worklist.h>
 
+#include <mim/driver.h>
 #include <mim/tuple.h>
 
 namespace mim::plug::mem {
@@ -92,7 +93,7 @@ void EscapeAnalysis::leave() {
         // A pointer stored into memory may be loaded again anywhere.
         if (auto store = Axm::isa<mem::store>(op)) {
             escape(store->arg(3, 2));
-        } else if (!Axm::isa<mem::load>(op) && !freed_alloc(op)) {
+        } else if (!Axm::isa<mem::load>(op) && !freed_alloc(op) && !borrows(op)) {
             escape(op->callee());
             escape(op->arg());
         }
@@ -125,6 +126,17 @@ void EscapeAnalysis::leave() {
     if (escaping)
         for (auto target : chain.targets)
             if (auto k = target->isa_mut<Lam>()) escape(k);
+}
+
+bool EscapeAnalysis::borrows(const App* app) {
+    if (auto i = borrows_.find(app); i != borrows_.end()) return i->second;
+    bool result = false;
+    if (auto axm = app->axm(); axm && isa_mem(app))
+        if (auto hook
+            = reinterpret_cast<BorrowsFn*>(driver().find_plugin_sym(Annex::demangle(axm->plugin()), "mim_mem_borrows")))
+            result = hook(app);
+    borrows_[app] = result;
+    return result;
 }
 
 bool EscapeAnalysis::may_hold(const Def* type) const {

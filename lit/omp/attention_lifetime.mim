@@ -1,0 +1,26 @@
+// REQUIRES: omp
+// RUN: %mim -p opt -p omp %s -p ll -X omp:strict=1 -X omp:threads=4 -X omp:threshold=0 -X ll:rt=extern -X ll:o=%t.ll
+// RUN: %FileCheck %s < %t.ll
+// RUN: clang++ -O2 -fopenmp -fsanitize=address %S/attention_lifetime_aux.cpp %t.ll %libdir/mim/rt/omp_rt.ll -o %t -Wno-override-module
+// RUN: env OMP_NUM_THREADS=4 LSAN_OPTIONS=suppressions=%S/libomp.supp %t
+// RUN: env OMP_NUM_THREADS=8 LSAN_OPTIONS=suppressions=%S/libomp.supp %t
+
+plugin tensor;
+plugin math;
+plugin core;
+let F = math.F32;
+let T = tensor.Tensor 3 (4,32,16) F;
+
+extern fun attention (q: T, k: T, v: T): T =
+    return (tensor.sdpa math.mode.contract @(4,32,32,16,16)
+        (0.25:F, tensor.buf q, tensor.buf k, tensor.buf v));
+
+extern fun causal (q: T, k: T, v: T): T =
+    let mask = tensor.generate (4,32,32) (λ (_ i j: I64): F =
+        core.select (core.icmp.ule (j,i), 0:F, math.neg_inf math.f32));
+    return (tensor.sdpa_masked math.mode.contract @(4,32,32,16,16)
+        (0.25:F, tensor.buf q, tensor.buf k, tensor.buf v, mask));
+
+// Both materialized matmuls run in parallel, for both variants.
+// CHECK-COUNT-4: call void @mim_par_for
+// CHECK-NOT: call void @mim_par_for

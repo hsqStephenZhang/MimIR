@@ -10,6 +10,11 @@
 
 namespace mim::plug::mem {
 
+/// Optional plugin symbol `mim_mem_borrows`: proves that a saturated memory operation borrows its arguments.
+/// It must finish all uses before returning, neither retain nor free any argument handle, and return only memory.
+/// Missing hooks and failed proofs keep the conservative escape behavior. Last-use tracking still includes the call.
+using BorrowsFn = bool(const App*);
+
 /// @name mem.M
 ///@{
 

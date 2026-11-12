@@ -221,11 +221,18 @@ void Driver::register_witness(flags_t flags, pattern::Witness witness) {
     fe::assert_emplace(witnesses_, flags, witness);
 }
 
-void* Driver::get_fun_ptr(std::string_view plugin, const char* name) {
+void* Driver::find_plugin_sym(std::string_view plugin, const char* name) const {
     auto loaded = fe::lookup(plugins_, plugin);
     if (!loaded) return nullptr;
     for (const auto& sym : loaded->syms)
         if (std::strcmp(sym.name, name) == 0) return sym.ptr;
+    return nullptr;
+}
+
+void* Driver::get_fun_ptr(std::string_view plugin, const char* name) {
+    if (auto sym = find_plugin_sym(plugin, name)) return sym;
+    auto loaded = fe::lookup(plugins_, plugin);
+    if (!loaded) return nullptr;
     return loaded->handle ? fe::dl::get(loaded->handle.get(), name) : nullptr;
 }
 

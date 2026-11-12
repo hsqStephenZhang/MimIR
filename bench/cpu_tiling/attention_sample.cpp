@@ -21,18 +21,16 @@ static size_t live_bytes() {
     return info.uordblks + info.hblkhd;
 }
 
-// Leaking kernels get a fresh process per sample. Clean kernels may serve
-// multiple requests after a longer warmup. No intermediate is freed here.
+// Persistent, warmed kernels serve multiple timing requests. The caller frees only the returned tensor.
 int main(int argc, char** argv) {
     try {
-        if (argc != 13 && argc != 14)
-            throw std::runtime_error("library inputs H M S D N causal threads cpus kind leak_bound [stream]");
-        bool stream = argc == 14;
+        if (argc != 12 && argc != 13)
+            throw std::runtime_error("library inputs H M S D N causal threads cpus kind [stream]");
+        bool stream = argc == 13;
         int64_t dims[6];
         for (int i = 0; i < 6; ++i)
             dims[i] = std::stoll(argv[3 + i]);
         int threads = std::stoi(argv[9]), kind = std::stoi(argv[11]);
-        size_t leak_bound = std::stoull(argv[12]);
         cpu_set_t cpus;
         CPU_ZERO(&cpus);
         std::stringstream list(argv[10]);
@@ -85,32 +83,32 @@ int main(int argc, char** argv) {
         int warmup_calls = 3;
         for (int i = 0; i < warmup_calls; ++i)
             measure(1);
-        if (!leak_bound) {
-            while (std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_start).count() < 0.2) {
-                measure(8);
-                warmup_calls += 8;
-            }
+        while (std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_start).count() < 0.2) {
+            measure(8);
+            warmup_calls += 8;
         }
         auto warmup_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_start).count();
         std::cout.precision(16);
         auto sample = [&]() {
             auto estimate = measure(1);
-            int limit     = leak_bound ? std::max<size_t>(1, (256 * 1024 * 1024) / leak_bound) : 10000000;
-            int count     = std::clamp<int>(std::ceil(0.03 / estimate), 1, limit);
+            int count     = std::clamp<int>(std::ceil(0.12 / estimate), 1, 10000000);
             auto before   = live_bytes();
             auto seconds  = measure(count);
+            while (seconds * count < 0.1 && count < 10000000) {
+                count = std::clamp<int>(std::ceil(0.12 / seconds), count + 1, 10000000);
+                before = live_bytes();
+                seconds = measure(count);
+            }
             auto after    = live_bytes();
             rusage usage;
             getrusage(RUSAGE_SELF, &usage);
             std::cout << "{\"seconds\":" << seconds << ",\"iterations\":" << count
                       << ",\"total_ms\":" << seconds * count * 1000 << ",\"maxrss_kib\":" << usage.ru_maxrss
                       << ",\"live_growth_bytes\":" << static_cast<int64_t>(after) - static_cast<int64_t>(before)
-                      << ",\"warmup_calls\":" << warmup_calls << ",\"warmup_seconds\":" << warmup_seconds
-                      << ",\"leak_limited\":" << (count == limit && leak_bound ? "true" : "false") << "}\n"
+                      << ",\"warmup_calls\":" << warmup_calls << ",\"warmup_seconds\":" << warmup_seconds << "}\n"
                       << std::flush;
         };
         if (stream) {
-            if (leak_bound) throw std::runtime_error("Leaking kernels require fresh processes");
             std::cout << "{\"ready\":true}\n" << std::flush;
             std::string request;
             while (std::getline(std::cin, request))

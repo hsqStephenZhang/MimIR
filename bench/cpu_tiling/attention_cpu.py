@@ -1,11 +1,10 @@
-"""Local native CPU SDPA benchmark, with isolated and memory-bounded samples."""
+"""Local native CPU SDPA benchmark, with warmed persistent workers and continuous samples."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import random
@@ -221,34 +220,26 @@ def run(args, cases):
         samples = {name: [] for name in kernels}
         orders = []
         rng = random.Random(42)
-        commands, workers = {}, {}
+        workers = {}
         try:
             for name, (library, kind, launches) in kernels.items():
-                bound = math.prod(case["shape"][:3]) * 16 if name == "mimir_default" and launches else 0
                 command = [str(args.root / "sample"), str(library), str(args.root / "inputs" / case["name"] / "qkv.bin"),
                            *map(str, case["shape"]), str(int(case["causal"])), str(args.threads),
-                           ",".join(map(str, MASKS[args.threads])), str(kind), str(bound)]
-                commands[name] = command
-                if not bound:
-                    worker = subprocess.Popen([*command, "stream"], env=environment(args.threads),
-                                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                              stderr=subprocess.PIPE, text=True)
-                    workers[name] = worker
-                    assert json.loads(worker.stdout.readline())["ready"]
+                           ",".join(map(str, MASKS[args.threads])), str(kind)]
+                worker = subprocess.Popen([*command, "stream"], env=environment(args.threads),
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True)
+                workers[name] = worker
+                assert json.loads(worker.stdout.readline())["ready"]
             for repeat in range(9):
                 order = list(kernels)
                 rng.shuffle(order)
                 orders.append(order)
                 for name in order:
-                    if name in workers:
-                        worker = workers[name]
-                        worker.stdin.write("sample\n")
-                        worker.stdin.flush()
-                        value = json.loads(worker.stdout.readline())
-                    else:
-                        result = subprocess.run(commands[name], env=environment(args.threads), capture_output=True,
-                                                text=True, check=True, timeout=180)
-                        value = json.loads(result.stdout)
+                    worker = workers[name]
+                    worker.stdin.write("sample\n")
+                    worker.stdin.flush()
+                    value = json.loads(worker.stdout.readline())
                     samples[name].append(value)
         finally:
             for worker in workers.values():

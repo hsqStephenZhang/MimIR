@@ -198,6 +198,8 @@ public:
         return loaded && !loaded->dir.empty() ? &loaded->dir : nullptr;
     }
     void* get_fun_ptr(std::string_view plugin, const char* name);
+    /// Looks only in Plugin::syms; missing optional hooks return nullptr, without dynamic-symbol lookup.
+    void* find_plugin_sym(std::string_view plugin, const char* name) const;
 
     template<class F>
     auto get_fun_ptr(std::string_view plugin, const char* name) {

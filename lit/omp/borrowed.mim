@@ -1,0 +1,77 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+plugin core;
+plugin mem;
+plugin omp;
+plugin compile;
+
+extern lam _compile (): compile.Phase = compile.phases ff (
+    omp.outline,
+    mem.free_locals,
+);
+
+let P = mem.Ptr0 I32;
+
+// A pointer converted to integer bits and stored still escapes.
+// CHECK-LABEL: extern fun bits
+// CHECK-NOT: mem.free
+// CHECK: omp.launch
+// CHECK-NOT: mem.free
+// CHECK: return
+extern fun bits (m: mem.M 0, dst: mem.Ptr0 I64): mem.M 0 =
+    let (m, p) = mem.alloc (I32, 0) m;
+    con body (m: mem.M 0, lo hi: I64, done: Cn [mem.M 0]) =
+        done (mem.store (m, dst, core.bitcast I64 p));
+    return (omp.par_for body (m, 0I64, 1I64, 1I64));
+
+// A synchronous scalar reader borrows p. Keep p live through the launch, then release it.
+// CHECK-LABEL: extern fun borrow
+// CHECK: mem.alloc
+// CHECK-NOT: mem.free
+// CHECK: omp.launch
+// CHECK-NEXT: let {{.*}} = mem.free
+// CHECK-NEXT: return
+extern fun borrow (m: mem.M 0, dst: P): mem.M 0 =
+    let (m, p) = mem.alloc (I32, 0) m;
+    let m = mem.store (m, p, 42I32);
+    con body (m: mem.M 0, lo hi: I64, done: Cn [mem.M 0]) =
+        let (m, v) = mem.load (m, p);
+        done (mem.store (m, dst, v));
+    let m = omp.par_for body (m, 0I64, 1I64, 1I64);
+    return m;
+
+// A kernel that consumes p must not cause an additional free in its caller.
+// CHECK-LABEL: extern fun consume
+// CHECK-NOT: mem.free
+// CHECK: omp.launch
+// CHECK-NOT: mem.free
+// CHECK: return
+extern fun consume (m: mem.M 0): mem.M 0 =
+    let (m, p) = mem.alloc (I32, 0) m;
+    con body (m: mem.M 0, lo hi: I64, done: Cn [mem.M 0]) = done (mem.free (m, p));
+    return (omp.par_for body (m, 0I64, 1I64, 1I64));
+
+// Synchronous execution alone does not prevent a kernel from retaining p in memory.
+// CHECK-LABEL: extern fun retain
+// CHECK-NOT: mem.free
+// CHECK: omp.launch
+// CHECK-NOT: mem.free
+// CHECK: return
+extern fun retain (m: mem.M 0, dst: mem.Ptr0 P): mem.M 0 =
+    let (m, p) = mem.alloc (I32, 0) m;
+    con body (m: mem.M 0, lo hi: I64, done: Cn [mem.M 0]) = done (mem.store (m, dst, p));
+    return (omp.par_for body (m, 0I64, 1I64, 1I64));
+
+extern con opaque [mem.M 0, P, Cn [mem.M 0]];
+
+// Unknown callees can retain p as well.
+// CHECK-LABEL: extern fun unknown
+// CHECK-NOT: mem.free
+// CHECK: omp.launch
+// CHECK-NOT: mem.free
+// CHECK: return
+extern fun unknown (m: mem.M 0): mem.M 0 =
+    let (m, p) = mem.alloc (I32, 0) m;
+    con body (m: mem.M 0, lo hi: I64, done: Cn [mem.M 0]) = opaque (m, p, done);
+    return (omp.par_for body (m, 0I64, 1I64, 1I64));
+
