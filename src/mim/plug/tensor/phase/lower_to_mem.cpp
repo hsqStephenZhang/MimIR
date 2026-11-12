@@ -2034,6 +2034,84 @@ bool LowerToMem::linear_step(const Def* root, const Def* accumulator, const Def*
     return true;
 }
 
+namespace {
+bool mentions(const Def* def, const Def* target) {
+    auto pending = DefVec{def};
+    auto seen    = DefSet();
+    for (size_t i = 0; i != pending.size(); ++i) {
+        auto term = pending[i];
+        if (term == target) return true;
+        if (!seen.insert(term).second || term->isa<Var>() || term->isa<Axm>()) continue;
+        for (auto op : term->ops())
+            if (op) pending.push_back(op);
+    }
+    return false;
+}
+} // namespace
+
+/// Whether @p root reads @p accumulator only where it writes its own element, so it may overwrite it in place.
+bool LowerToMem::pointwise_step(const Def* root, const Def* accumulator, const Def* origin) {
+    auto& w = old_world();
+    for (size_t i = 0; i != 128; ++i) {
+        auto app = root->isa<App>();
+        if (!app) return false;
+        auto lam = app->callee()->isa<Lam>();
+        if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
+        root = lam->reduce(app->arg()).back();
+    }
+    auto app = root->isa<App>();
+    if (!app) return false;
+    if (Axm::isa<tensor::tiled>(app)) {
+        auto [meta, shapes, it, ins, body] = app->uncurry_args<5>();
+        auto rank                          = Lit::as(meta->proj(2, 1));
+        auto lam                           = region_body(app->arg()).first->isa<Lam>();
+        if (!lam || !lam->is_set()) return false;
+        auto param = w.mut_lam(w.pi(w.arr(rank, w.type_nat()), w.type_nat()));
+        auto off   = param->var();
+        auto next  = w.tuple(DefVec(
+            rank, [&](size_t d) { return w.call(core::nat::add, Defs{origin->proj(rank, d), off->proj(rank, d)}); }));
+        return pointwise_step(w.app(lam->reduce(w.tuple({off, shapes->proj(3, 1)})).back(), ins), accumulator, next);
+    }
+    if (!Axm::isa<tensor::map_reduce_post>(app)) return false;
+    auto mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto rank  = Lit::isa(mr.Ro);
+    auto loops = Lit::isa(mr.Rn);
+    auto nis   = Lit::isa(mr.nis);
+    if (!rank || !nis || loops != rank) return false;
+    auto output_map = mr.map_out->isa<Lam>();
+    if (!output_map || !output_map->is_set()) return false;
+    auto probe                 = w.mut_lam(mr.map_out->type()->as<Pi>());
+    auto output                = output_map->reduce(probe->var()).back();
+    auto [inputs, post_inputs] = app->arg()->projs<2>();
+    auto others                = DefVec{mr.comb, mr.post, mr.init, post_inputs};
+    for (size_t k = 0; k != *nis; ++k) {
+        auto input  = inputs->proj(*nis, k);
+        auto source = TensorInit{mr.Sis->proj(*nis, k), mr.maps->proj(*nis, k), input};
+        while (auto read = panel::tensor_read(source.outs, source.shape)) {
+            if (!TensorType::isa(read->src->type())) break;
+            source = TensorInit{read->S, panel::compose_read_map(read->map, source.map), read->src};
+        }
+        if (Axm::peel<tensor::buf>(source.outs) != accumulator) {
+            others.push_back(input);
+            others.push_back(mr.maps->proj(*nis, k));
+            continue;
+        }
+        auto map = source.map->isa<Lam>();
+        if (!map || !map->is_set()) return false;
+        auto read = map->reduce(probe->var()).back();
+        for (size_t d = 0; d != *rank; ++d) {
+            auto written = Linear::of(output->proj(*rank, d));
+            for (size_t l = 0; l != *loops; ++l) {
+                auto atom = written.atoms.find(probe->var(*loops, l));
+                if ((atom == written.atoms.end() ? 0 : atom->second) != (l == d ? 1 : 0)) return false;
+            }
+            written.add(Linear::of(w.call<affine::lit>(origin->proj(*rank, d))), 1);
+            if (!(Linear::of(read->proj(*rank, d)) == written)) return false;
+        }
+    }
+    return std::ranges::none_of(others, [&](const Def* term) { return mentions(term, accumulator); });
+}
+
 // Clipped tiles keep their cap as storage, so region parameters must index them by it.
 void LowerToMem::forward_storage(const Def* inputs, const Def* proxy) {
     auto n = Lit::as(inputs->type()->arity());
@@ -2861,7 +2939,29 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
     DefVec primary, spare, storages;
     fe::Vector<bool> pooled;
     // A work-group's fold keeps its state in shared memory at its bounded storage, written by all its work-items.
-    auto group      = bound_level_ == 1 && driver().is_loaded("gpu");
+    auto group = bound_level_ == 1 && driver().is_loaded("gpu");
+    // A field that only its own update reads, element by element, is updated in place.
+    auto in_place = fe::Vector<bool>();
+    if (auto sigma = type->isa_imm<Sigma>(); sigma && group) {
+        auto n     = sigma->num_ops();
+        auto value = root;
+        for (size_t i = 0; i != 128; ++i) {
+            auto call = value->isa<App>();
+            if (!call) break;
+            auto lam = call->callee()->isa<Lam>();
+            if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
+            value = lam->reduce(call->arg()).back();
+        }
+        for (size_t i = 0; i != n; ++i) {
+            auto field  = accumulator->proj(n, i);
+            auto rank   = TensorType::isa(sigma->op(i)) ? Lit::isa(TensorType::isa(sigma->op(i))->r) : std::nullopt;
+            auto inside = rank && *rank != 0;
+            for (size_t j = 0; inside && j != n; ++j)
+                if (j != i) inside = !mentions(value->proj(n, j), field);
+            auto zero = old.tuple(DefVec(rank.value_or(0), [&](size_t) { return old.lit_nat(0); }));
+            in_place.push_back(inside && pointwise_step(value->proj(n, i), field, zero));
+        }
+    }
     auto shared     = [&w](const Def* m) { return w.app(w.annex<gpu::shared_scope>(), m); };
     auto initialize = [&](const Def* t, const Def* value) -> const Def* {
         if (!TensorType::isa(t)) {
@@ -2878,9 +2978,12 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
         const Def *current, *next;
         auto extent  = rewrite(shape);
         auto storage = group ? bounded_shape(extent, true) : nullptr;
+        auto alone   = primary.size() < in_place.size() && in_place[primary.size()];
         if (group) {
             std::tie(mem, current) = buffer::op_alloc(rank, storage, rewrite(element), shared(mem))->projs<2>();
-            std::tie(mem, next)    = buffer::op_alloc(rank, storage, rewrite(element), shared(mem))->projs<2>();
+            next                   = current;
+            if (!alone)
+                std::tie(mem, next) = buffer::op_alloc(rank, storage, rewrite(element), shared(mem))->projs<2>();
         } else if (owned) {
             current = allocate(rank, extent, rewrite(element)).second;
             next    = allocate(rank, extent, rewrite(element)).second;

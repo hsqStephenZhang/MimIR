@@ -86,9 +86,8 @@ lam body (off ext: «2; Nat») (q: Tensor 2 (HL, D) F, k: Tensor 2 (HL, D) F, v:
             default_control);
         (mx, l, o);
     let (_, l, o) = tile_fold @Acc (core.nat.div (L, bk), bk) init (qt, k, v) step;
-    let out = group_tile_req (map_reduce @2 @(F, 2, 2) ((rows, D), (rows, D)) @((F, F), (2, 1), ((rows, D), rows)) (divided, ⊥:F) (proj_map @(2, 2) (0, 1))
-        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, l), (), (bm, D), o_elem_levels, default_control);
-    reshape (rows, D) ext out;
+    group_tile_req (map_reduce @2 @(F, 2, 2) (ext, ext) @((F, F), (2, 1), ((rows, D), rows)) (divided, ⊥:F) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, l), (), (bm, D), o_elem_levels, default_control)
 
 extern fun attn (q k v: tensor.Tensor 2 (HL, D) F): tensor.Tensor 2 (HL, D) F =
     return (tiled ((HL, D), (bm, D), 1) (buf q, buf k, buf v)
