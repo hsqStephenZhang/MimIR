@@ -1,0 +1,248 @@
+[
+  {
+    "threads": 1,
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-fixed/t1/mimir_default/h8_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-fixed/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-fixed/probe/t1-mimir_default-h8_s128_d64-native"
+    ],
+    "command": [
+      "/tmp/mimir-attention-fixed/probe/t1-mimir_default-h8_s128_d64-native",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "1000"
+    ],
+    "calls": 1000,
+    "warmup_calls": 10,
+    "live_growth_bytes": 0,
+    "maxrss_kib": 23944
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-fixed/t4/mimir_default/h8_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-fixed/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-fixed/probe/t4-mimir_default-h8_s128_d64-native"
+    ],
+    "command": [
+      "/tmp/mimir-attention-fixed/probe/t4-mimir_default-h8_s128_d64-native",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "1000"
+    ],
+    "calls": 1000,
+    "warmup_calls": 10,
+    "live_growth_bytes": 0,
+    "maxrss_kib": 23944
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s512_d64",
+      "shape": [
+        8,
+        512,
+        512,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-fixed/t4/mimir_default/h8_s512_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-fixed/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-fixed/probe/t4-mimir_default-h8_s512_d64-native"
+    ],
+    "command": [
+      "/tmp/mimir-attention-fixed/probe/t4-mimir_default-h8_s512_d64-native",
+      "8",
+      "512",
+      "512",
+      "64",
+      "64",
+      "1000"
+    ],
+    "calls": 1000,
+    "warmup_calls": 10,
+    "live_growth_bytes": 0,
+    "maxrss_kib": 35412
+  },
+  {
+    "threads": 4,
+    "case": {
+      "name": "h8_s256_causal",
+      "shape": [
+        8,
+        256,
+        256,
+        64,
+        64
+      ],
+      "causal": true
+    },
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-fixed/t4/mimir_default/h8_s256_causal/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-fixed/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-fixed/probe/t4-mimir_default-h8_s256_causal-native"
+    ],
+    "command": [
+      "/tmp/mimir-attention-fixed/probe/t4-mimir_default-h8_s256_causal-native",
+      "8",
+      "256",
+      "256",
+      "64",
+      "64",
+      "1000"
+    ],
+    "calls": 1000,
+    "warmup_calls": 10,
+    "live_growth_bytes": 0,
+    "maxrss_kib": 23944
+  },
+  {
+    "threads": 6,
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-fixed/t6/mimir_default/h8_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-fixed/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-fixed/probe/t6-mimir_default-h8_s128_d64-native"
+    ],
+    "command": [
+      "/tmp/mimir-attention-fixed/probe/t6-mimir_default-h8_s128_d64-native",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "1000"
+    ],
+    "calls": 1000,
+    "warmup_calls": 10,
+    "live_growth_bytes": 0,
+    "maxrss_kib": 23944
+  },
+  {
+    "threads": 8,
+    "case": {
+      "name": "h8_s128_d64",
+      "shape": [
+        8,
+        128,
+        128,
+        64,
+        64
+      ],
+      "causal": false
+    },
+    "compile": [
+      "clang++",
+      "-O2",
+      "-march=haswell",
+      "-mno-avx512f",
+      "-Wno-override-module",
+      "/tmp/mimir-attention-fixed/t8/mimir_default/h8_s128_d64/kernel.ll",
+      "/tmp/mimir-attention-leak-probe.cpp",
+      "/tmp/mimir-attention-fixed/omp.o",
+      "/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib/libgomp.so.1",
+      "-Wl,-rpath,/workspaces/ml-compiler/gemm-bench/.venv/lib/python3.11/site-packages/torch/lib",
+      "-o",
+      "/tmp/mimir-attention-fixed/probe/t8-mimir_default-h8_s128_d64-native"
+    ],
+    "command": [
+      "/tmp/mimir-attention-fixed/probe/t8-mimir_default-h8_s128_d64-native",
+      "8",
+      "128",
+      "128",
+      "64",
+      "64",
+      "1000"
+    ],
+    "calls": 1000,
+    "warmup_calls": 10,
+    "live_growth_bytes": 0,
+    "maxrss_kib": 23944
+  }
+]

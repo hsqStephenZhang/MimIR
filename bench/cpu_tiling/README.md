@@ -3,6 +3,9 @@
 新增多核结果：[ss420e 4/8 核实验](results/2026-11-12-ss420e-omp/README.md)，
 接入机制与复现方式见 [CPU thread tiling](OMP.md)。
 
+CPU attention：[修复 OpenMP 缓冲区泄露后的本机 1/4/6/8 线程重测](results/2026-11-12-local-attention-fixed/README.md)，
+含 Torch SDPA/显式组合对照、LSan 与持续内存检查。
+
 本目录保存 2026-11-11 在 i5-14600KF 上的 FP32 单线程 GEMM 排查。矩阵形状按
 `M × K × N` 表述；JSON 的 `shape` 遵循 gemm-bench 的 `[M, N, K]`。
 

@@ -1,0 +1,48 @@
+{
+  "source_commit": "6afcdb0144469e9e17096ce7ea4af73dde20a235",
+  "source_sha256": {
+    "bench/cpu_tiling/attention_native.cpp": "551c592525cc9d01404935af9a73146fe206b5d04eacefc033590dd99001588b",
+    "bench/cpu_tiling/attention_sample.cpp": "de18f44e43c757b20af5ba4cc264c19e7e4d46abf11c5217c45602e5a7614e24",
+    "bench/cpu_tiling/attention-cases.json": "22b4eeff2074a3ada3e7656a1cbd603462f577fea9dddb801fdde84198e1883d",
+    "bench/cpu_tiling/attention_audit.py": "50b2a8440a2b3a2a0f4a3f77bb58157934e318369b2c597da31f553cbf265ccb",
+    "bench/cpu_tiling/attention_cpu.py": "e30c8dbd3cf97533249e20ff5ad0778496c949361c87ac17758bb876dbb9c333",
+    "bench/cpu_tiling/attention_torch.cpp": "32c25408f6d1b81ac4985df65b68e0509c8b59b300e7b2dd33a17a00b8a02903",
+    "include/mim/driver.h": "c25112b5ec7344f936309684af0251161da08edbb28ba3d4c20aad822fafe68d",
+    "src/mim/driver.cpp": "def59b5873e135612140386edb3edd839d526bb87f0bc1aa30aea39ea78359fc",
+    "include/mim/plug/mem/mem.h": "dd8f186d8886a5e01e398fffff1625e2155704a1650ca60342e3f1f6e121d5d6",
+    "include/mim/plug/mem/escape_analysis.h": "da47af176fccaa28687d9c1e088630e96449a30bb880883ba0f300facab89b42",
+    "src/mim/plug/mem/escape_analysis.cpp": "36bee6bf5d6601679725cada7a8e46cfc934e9a683e8cc25dfb60aabba21fbf8",
+    "src/mim/plug/omp/omp.cpp": "005ded016ae6e3e682b5dc7b980115a01c5fe10d3266543eb16cf491c6526359"
+  },
+  "sample_binary_sha256": "1e68a4f659114896536931e2c2649414282d4cc382e8ad7a46c6bc3f91eb3f27",
+  "thread_masks": {
+    "1": [
+      0
+    ],
+    "4": [
+      0,
+      2,
+      4,
+      6
+    ],
+    "6": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10
+    ],
+    "8": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      13
+    ]
+  },
+  "note": "Compiler built from the exact fix sources before commit 6afcdb0144; metadata records the then-HEAD plus dirty source paths. Source hashes and compiler/plugin hashes identify the tested artifacts."
+}

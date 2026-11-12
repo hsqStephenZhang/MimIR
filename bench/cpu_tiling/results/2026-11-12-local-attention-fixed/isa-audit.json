@@ -1,0 +1,618 @@
+[
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h1_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h1_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h8_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h8_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h8_s256_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h8_s256_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h8_s512_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h8_s512_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h8_s128_d128",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h8_s128_d128",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h4_cross_128_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h4_cross_128_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h8_decode_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h8_decode_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h1_odd",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h1_odd",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h8_s128_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h8_s128_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h8_s256_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h8_s256_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_default",
+    "name": "h32_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 1,
+    "variant": "mimir_online",
+    "name": "h32_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h1_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h1_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h8_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h8_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h8_s256_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h8_s256_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h8_s512_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h8_s512_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h8_s128_d128",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h8_s128_d128",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h4_cross_128_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h4_cross_128_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h8_decode_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h8_decode_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h1_odd",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h1_odd",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h8_s128_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h8_s128_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h8_s256_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h8_s256_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_default",
+    "name": "h32_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 4,
+    "variant": "mimir_online",
+    "name": "h32_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h1_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h1_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h8_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h8_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h8_s256_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h8_s256_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h8_s512_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h8_s512_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h8_s128_d128",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h8_s128_d128",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h4_cross_128_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h4_cross_128_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h8_decode_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h8_decode_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h1_odd",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h1_odd",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h8_s128_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h8_s128_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h8_s256_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h8_s256_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_default",
+    "name": "h32_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 6,
+    "variant": "mimir_online",
+    "name": "h32_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h1_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h1_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h8_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h8_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h8_s256_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h8_s256_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h8_s512_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h8_s512_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h8_s128_d128",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h8_s128_d128",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h4_cross_128_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h4_cross_128_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h8_decode_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h8_decode_512",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h1_odd",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h1_odd",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h8_s128_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h8_s128_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h8_s256_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h8_s256_causal",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_default",
+    "name": "h32_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  },
+  {
+    "threads": 8,
+    "variant": "mimir_online",
+    "name": "h32_s128_d64",
+    "zmm": 0,
+    "evex": 0
+  }
+]

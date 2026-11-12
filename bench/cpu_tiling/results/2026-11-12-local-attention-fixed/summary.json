@@ -1,0 +1,38 @@
+{
+  "1": {
+    "default_vs_sdpa": 0.5856715760306137,
+    "default_vs_explicit": 0.7009003224797412,
+    "mimir_default_speedup": 1.0,
+    "mimir_online_speedup": 1.0,
+    "torch_sdpa_speedup": 1.0,
+    "torch_explicit_speedup": 1.0,
+    "max_default_growth_bytes_per_call": 0.0
+  },
+  "4": {
+    "default_vs_sdpa": 0.2688930576534209,
+    "default_vs_explicit": 0.506713317999766,
+    "mimir_default_speedup": 1.3145224410846001,
+    "mimir_online_speedup": 1.0011956481658162,
+    "torch_sdpa_speedup": 2.863139853874293,
+    "torch_explicit_speedup": 1.8182849554853788,
+    "max_default_growth_bytes_per_call": 0.0
+  },
+  "6": {
+    "default_vs_sdpa": 0.23073499982522494,
+    "default_vs_explicit": 0.46574621553397216,
+    "mimir_default_speedup": 1.38667096272942,
+    "mimir_online_speedup": 0.9928153934070526,
+    "torch_sdpa_speedup": 3.5197684304192927,
+    "torch_explicit_speedup": 2.086797686237883,
+    "max_default_growth_bytes_per_call": 0.0
+  },
+  "8": {
+    "default_vs_sdpa": 0.33026443287848817,
+    "default_vs_explicit": 0.5440147775148039,
+    "mimir_default_speedup": 1.227140804400147,
+    "mimir_online_speedup": 0.9952466600163979,
+    "torch_sdpa_speedup": 2.176139533586821,
+    "torch_explicit_speedup": 1.5810294519227592,
+    "max_default_growth_bytes_per_call": 0.0
+  }
+}
