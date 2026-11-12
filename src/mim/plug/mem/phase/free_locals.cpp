@@ -130,8 +130,29 @@ const Def* FreeLocals::thread(const Def* arg, const Def* mem, const DefVec& allo
 
 const Def* FreeLocals::free(const Def* mem, const DefVec& allocs) {
     // TODO: address spaces other than 0 are barely tested; some, like gpu shared memory, cannot be freed.
-    for (auto alloc : allocs)
-        mem = new_world().call<mem::free>(Defs{mem, rewrite(alloc->proj(2, 1))});
+    auto space = [](const Def* m) { return Lit::isa(Axm::as<mem::M>(m->type())->arg()); };
+    auto& w    = new_world();
+    // A memory converted from another address space, like a kernel's exit, frees that space's allocations before.
+    if (auto conv = mem->isa<App>(); conv && Axm::isa<mem::M>(conv->arg()->type())) {
+        auto inner = DefVec();
+        for (auto alloc : allocs)
+            if (space(alloc->proj(2, 0)) == space(conv->arg()) && space(conv->arg()) != space(mem))
+                inner.emplace_back(alloc);
+        if (!inner.empty()) {
+            mem        = w.app(conv->callee(), free(conv->arg(), inner));
+            auto outer = DefVec();
+            for (auto alloc : allocs)
+                if (std::ranges::find(inner, alloc) == inner.end()) outer.emplace_back(alloc);
+            return free(mem, outer);
+        }
+    }
+    for (auto alloc : allocs) {
+        if (space(alloc->proj(2, 0)) != space(mem)) {
+            log().d("free_locals: `{}` lives in another address space than `{}`, leaking it", alloc, mem);
+            continue;
+        }
+        mem = w.call<mem::free>(Defs{mem, rewrite(alloc->proj(2, 1))});
+    }
     return mem;
 }
 

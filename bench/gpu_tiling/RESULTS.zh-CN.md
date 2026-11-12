@@ -327,4 +327,4 @@ FP32 SIMT kernel 在 3、4 级下仍然正确，速度与 2 级相当。
 - 与 PyTorch TF32 的差距（4096 下 1.37×）主要来自 tensor core 主干本身（纯 SGEMM 也慢约 1.25×）。
 - 初版记录的 1024 / `pipeline=4` 为 0.075 ms，是一次异常测量；重测已推送的提交也在 0.115–0.128 ms，已更正。
 - `gemm_dqf_g3`（SIMT 版的融合写法）结果正确，但很慢（约 16 ms）。原因是 group 级把 s 的列切片复制进 scratch 槽位后，item 累加器的分配落进了 `mslot` 的回调，逃逸分析判它逃逸，累加器因此留在设备堆上。
-- 已知问题：W' 若由两层逐元素算子合成（`fuse_tensor` 合并后有两个只按列读的输入，如 s 和 t），放宽后 work-group 级会各复制一份列切片，其中一份留在设备堆上，`mem.free_locals` 为它插入 `free` 时用错了地址空间，编译失败。改动之前这类程序能编译。
+- W' 由两层逐元素算子合成时，work-group 级会留下一块设备堆分配；`mem.free_locals` 现在把它的 `free` 放到 kernel 出口转换（`gpu.global_mem`）之前的 generic 内存上。

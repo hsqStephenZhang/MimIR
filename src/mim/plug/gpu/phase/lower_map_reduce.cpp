@@ -200,11 +200,12 @@ Lam* build_kernel(World& w,
         = w.call(core::wrap::add, core::Mode::none,
                  Defs{w.call(core::wrap::mul, core::Mode::none, Defs{group_i64, w.lit_i64(grid.n_items)}), item_i64});
 
-    auto in_range     = w.call(core::icmp::ul, Defs{flat, w.lit_i64(grid.total)});
-    auto early_return = w.mut_con(w.sigma(Defs{}))->set("outOfRange");
-    early_return->app(true, k_ret, Defs{k_global, k_shared, k_const, k_local});
-    auto body = w.mut_con(w.sigma(Defs{}))->set("inRange");
-    kernel->branch(true, in_range, body, early_return);
+    auto in_range = w.call(core::icmp::ul, Defs{flat, w.lit_i64(grid.total)});
+    // Both branches take the global memory, so threading does not give them a generic one.
+    auto early_return = w.mut_con(global_ty)->set("outOfRange");
+    early_return->app(true, k_ret, Defs{early_return->var(), k_shared, k_const, k_local});
+    auto body = w.mut_con(global_ty)->set("inRange");
+    kernel->branch(true, in_range, body, early_return, k_global);
 
     auto write_back           = w.mut_con(Defs{global_ty, To})->set("writeBack");
     auto [wb_mem, acc_final]  = write_back->vars<2>();
@@ -235,7 +236,7 @@ Lam* build_kernel(World& w,
     after_post->app(true, k_ret, Defs{final_mem, k_shared, k_const, k_local});
     btensor::app_cps(write_back, global_post, {pcur, acc_final, w.tuple(post_elems)}, after_post);
 
-    const Def* acc           = w.tuple({k_global, init});
+    const Def* acc           = w.tuple({body->var(), init});
     const Def* cont          = write_back;
     Lam* current_mut         = body;
     auto sr                  = Sr->projs(nloops_nat);
