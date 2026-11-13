@@ -157,9 +157,9 @@ CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKi
 |---|---|---|---|
 | MMA atom 的操作数类型（F16/BF16 vs TF32） | CuTe `MMA_Traits<SM90_64xNx16_F32F16F16_SS>`、TK `warpgroup::mma` 的 16 位断言 | 层级链索引 `NoMma`/`Tf32Mma`/`HalfMma` | elaboration（类型） |
 | MMA 指令形状 | CuTe GMMA atom 的 `Shape_MNK`、TK `static_assert(M == 64 …)` | `wg_mma`/`warp_mma` 的 `require` | elaboration |
-| 指令 tile 与所属 tile 匹配 / 整除 | TK `rt`/`st` 的 `rows`、`cols` 断言，CuTe `tile_to_shape` 的整除 | `WarpgroupLevels` 以 warpgroup tile 为索引（必须相等），`WarpLevels` 以 warp tile 为索引（`warp_mma` 要求整除，`error/tile_warp_mma_divides.mim`） | elaboration |
-| 消费者 warpgroup 个数 | CUTLASS `KernelTmaWarpSpecializedPingpong` 要求两个 consumer | `GroupLevels` / `WarpgroupLevels` 的 work-group tile 索引算出个数 | elaboration |
-| cluster 形状 | CUTLASS `ClusterShape` 的可移植上限 8 | `serial_cluster` 的 `require` | elaboration |
+| 指令 tile 与所属 tile 匹配 / 整除 | TK `warpgroup.cuh` 的 `static_assert(D::width == N)` 等，CuTe `tile_to_shape` 的整除 | `WarpgroupLevels` 以 warpgroup tile 为索引（必须相等），`WarpLevels` 以 warp tile 为索引（`warp_mma` 要求整除，`error/tile_warp_mma_divides.mim`） | elaboration |
+| 消费者 warpgroup 个数 | CUTLASS `sm90_gemm_tma_warpspecialized_pingpong.hpp` 固定 `NumMmaWarpGroups = 2` | `GroupLevels` / `WarpgroupLevels` 的 work-group tile 索引算出个数 | elaboration |
+| cluster 大小 | CUDA 的可移植上限 8；CUTLASS `cluster_launch.hpp` 设 `NonPortableClusterSizeAllowed` 后放宽到 `MaxClusterSize = 32`，我们不设该属性 | `serial_cluster` 的 `require` | elaboration |
 | tile 调度参数合法（tail、向量层最内） | CuTe 的形状都是编译期参数 | 构造器上的 `require` / `match`（`error/tile_tail.mim`、`error/tile_vec_innermost.mim`） | elaboration |
 
 仍然在 `TileFuse` 晚检的，都依赖根运算本身而不只依赖层级值：
