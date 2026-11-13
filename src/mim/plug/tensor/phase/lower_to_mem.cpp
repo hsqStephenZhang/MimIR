@@ -4418,7 +4418,8 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each barrier.
     if (Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(parts)))) {
         auto rounds = w.app(w.annex(tensor::r8_plan::rounds), {w.lit_nat(parts), w.lit_nat(elems)});
-        for (auto round : rounds->projs()) {
+        // A single round's tuple is the round itself, so the count comes from the plan, not the value's arity.
+        for (auto round : rounds->projs(parts / 2)) {
             auto [active, s, pairs, trip] = round->projs<4>([](auto value) { return Lit::as(value); });
             if (!active) continue;
             auto merge_round             = w.mut_lam(w.pi(fill->var()->type(), acc_ty))->set("boundTreeRound");

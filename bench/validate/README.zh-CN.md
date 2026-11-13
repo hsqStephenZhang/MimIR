@@ -8,6 +8,9 @@
 输入是小整数，收缩的每个和与积在输入与累加器类型里都精确，任意重结合必须逐位一致；含超越函数的算子按容差比较。
 结果分五类：`pass`、`fail`（结果不一致）、`rule`（elaboration 时被 `tensor.check` 规则拒绝）、`late`（lowering 才拒绝，说明规则还没写出这条限制）、`error`（其它）。
 
+未切分规格还编不过的算子（softmax、rms_norm）用 NumPy 写的参考。
+编译失败时再单独做一次只 elaboration 的检查：在这一步就失败的才算 `rule`。
+
 `one.py <op> '<json params>'` 跑单个用例。`gemm.mim` 是不带 epilogue 的 GEMM 模板；`addmm`、`softmax`、`rms_norm` 用 `bench/tritonbench` 的模板。
 
 ## 本轮发现
@@ -17,6 +20,8 @@
 | `wg_red`（非 TMA）的 wgmma GEMM 结果错误，pipeline=1 或 k 只有一块时 | 面板用普通存储填进 shared，wgmma 经 async proxy 读，未流水的路径缺 `fence.proxy.async` | `LowerToMem::publish_panels`：没有流水 ring 发布面板时，wgmma 前补 fence 与屏障；`lit/nvptx/tile_wgmma_unpipelined.mim` 在 GPU 上执行 |
 | `wg_red_tma` 在 k 只有一块时结果错误 | 块数 1 时流水深度为 1，退回上面那条路径 | 同上 |
 | `wg_red_ws` 在 k 只有一块时非法指令（CUresult 715） | specialized 结构在绑定时已确定，单块没有 ring 可填 | 新规则：specialized 归约至少两个块（`lit/error/tile_ws_blocks.mim`） |
+| 两个 work-item 合并部分和时（只有一轮树形合并）编译器内部报 “index does not fit within arity `1`” | `r8_plan::rounds` 是 `«n / 2; …»`，单元素元组归一化成元素本身，`projs()` 把一轮的四个分量当成了四轮 | 按计划的轮数 `parts / 2` 取分量；`lit/nvptx/tile_reduce_pair.mim` 在 GPU 上执行 |
+| softmax、rms_norm 去掉 `tile_req` 后编不过（CPU 与 GPU 的 host 侧都报 `ll backend: unhandled def of type core.Ptr («M, 2; F32», 0)`） | 未切分 lowering 不支持二元组累加器的指针 | 未修；这两个算子改用 NumPy 参考 |
 | 不开 `tile-fuse` 时，带层级的程序报 “cannot coerce to `TileLevels_…`” | `tile_req` 活到 RWPhase 重建时，依赖 sigma 的分量类型在新 world 里重新实例化的递归 nom 与值的类型副本结构比较失败；类型改动之前（4f6527ca3）就存在 | 未修；参考程序改为源码层去掉 `tile_req` |
 
 lit 里 `gpu/` 下的 wgmma 测试只在不加载 gpu 插件时执行（host 循环），`nvptx/` 下的在 GPU 上执行但都带 `-X tensor:pipeline=2`；

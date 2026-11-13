@@ -53,6 +53,22 @@ def addmm_params():
     return p
 
 
+def softmax_ref(x):
+    x = x.astype(np.float32)
+    e = np.exp(x - x.max(-1, keepdims=True))
+    return (e / e.sum(-1, keepdims=True)).astype(np.float16)
+
+
+def rms_norm_ref(x, w):
+    x = x.astype(np.float32)
+    return (x / np.sqrt((x * x).mean(-1, keepdims=True) + 1e-6) * w.astype(np.float32)).astype(np.float16)
+
+
+# The untiled meaning of these does not lower yet (`ll` lacks the pointer to their pair accumulators), so a NumPy
+# reference stands in.
+NUMPY_REF = {"softmax": softmax_ref, "rms_norm": rms_norm_ref}
+
+
 def small_ints(shape, lo=-2, hi=2):
     return np.random.randint(lo, hi + 1, size=shape)
 
@@ -79,7 +95,7 @@ OPS = {
                 lambda p: [np.random.randn(p["M"], p["N"]).astype(np.float16)],
                 lambda p: ((p["M"], p["N"]), np.float16), False),
     "rms_norm": (lambda: {"M": pick([4, 8, 64]), "N": pick([64, 256, 1024]), "R": pick([1, 2, 4]),
-                          "I": pick([4, 8, 16])},
+                          "I": pick([4, 8, 16]), "P": pick([0, 1])},
                  lambda p: [np.random.randn(p["M"], p["N"]).astype(np.float16),
                             np.random.rand(p["N"]).astype(np.float16)],
                  lambda p: ((p["M"], p["N"]), np.float16), False),
@@ -89,6 +105,11 @@ OPS = {
 def first_error(log):
     line = next((l for l in log.splitlines() if "error" in l or "unrealized" in l), log[-300:])
     return line.split("error: ")[-1].split(": ", 1)[-1][:160] if "unrealized" in line else line.split("error: ")[-1][:160]
+
+
+def rejected(name):
+    """Whether elaboration alone already rejects `name.mim`, as the tile rules do."""
+    return run([MIM, "-p", "gpu", f"{name}.mim", "-o", "/dev/null"]).returncode != 0
 
 
 def run(cmd, **kw):
@@ -123,27 +144,35 @@ def main():
         name = f"{OPNAME}_{case}"
         text = render_local(OPNAME, p) if os.path.exists(os.path.join(HERE, f"{OPNAME}.mim")) else render(OPNAME, p)
         spec = re.sub(r"tile_req \((\w+), [^;]*\)\);", r"\1);", text)
-        ref, why = build(f"{name}_ref", spec, (["-p", "opt"], ["-p", "ll", "-X", f"ll:o={name}_ref.ll"]))
+        if OPNAME in NUMPY_REF:
+            ref, why = "numpy", ""
+        else:
+            ref, why = build(f"{name}_ref", spec, (["-p", "opt"], ["-p", "ll", "-X", f"ll:o={name}_ref.ll"]))
         if not ref:
-            kind = "rule" if f"{name}_ref.mim:" in why else "error"
+            kind = "rule" if rejected(f"{name}_ref") else "error"
             tally[kind] += 1
             print(f"{name} {p}: {kind}: {first_error(why)}")
             continue
         test, why = build(name, text, (["-p", "opt", "-p", "gpu", "-X", "tensor:tile-fuse=1", *EXTRA],
                                        ["-p", "nvptx", "-X", "nvptx:sm=90a"]))
         if not test:
-            kind = "rule" if f"{name}.mim:" in why else "late"
+            kind = "rule" if rejected(name) else "late"
             tally[kind] += 1
             print(f"{name} {p}: {kind}: {first_error(why)}")
             continue
         args  = []
-        for i, a in enumerate(inputs(p)):
+        ins   = inputs(p)
+        for i, a in enumerate(ins):
             a.tofile(f"{name}.in{i}")
             args.append(f"{name}.in{i}")
         shape, dtype = output(p)
         size  = int(np.prod(shape)) * np.dtype(dtype).itemsize
         outs  = []
         for exe, tag in ((ref, "ref"), (test, "test")):
+            if exe == "numpy":
+                outs.append(NUMPY_REF[OPNAME](*[np.fromfile(a, dtype=np.float16).reshape(i.shape) for a, i in
+                                                 zip(args, ins)]))
+                continue
             r = run([exe, "1", f"{name}.{tag}.out", str(size), *args], timeout=600)
             if r.returncode:
                 outs = None

@@ -1,0 +1,24 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_reduce_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Two work-items per row merge their partials in a single tree round.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+let levels = serial_group ((4, 0), 1, 0, group_red_items ((0, 8), 1, group_done ()));
+
+extern fun rowsum16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 F32 =
+    return (tile_req (reduce (math.arith.add fast, 0.0:F32) 1₂ (buf x), (), levels, default_control));
+
+// LOG: L1 red loop=1 ks=4 tail=peel inputs=1 fused=0 tail_fused=0 bind=2
+// LOG: gpu.outline tileGroups{{.*}}: 4 groups × 4 items
+
