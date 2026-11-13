@@ -981,7 +981,8 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         return v_p;
     } else if (auto malloc = Axm::isa<mem::malloc>(def)) {
         auto address_space = malloc->decurry()->arg(2, 1);
-        declare("i8* @malloc(i64)");
+        // Generated code never reads `errno`, so an allocation touches no memory a load could see.
+        declare("noalias i8* @malloc(i64) nounwind willreturn memory(inaccessiblemem: readwrite)");
 
         auto [m, n] = malloc->args<2>();
         emit_unsafe(m);

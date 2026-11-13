@@ -3,9 +3,7 @@
 // RUN: %t
 // RUN: %mim -p opt -p ll -X tensor:strict=1 -X tensor:reference-tiles=1 %s
 // RUN: clang++ -O3 -fsanitize=address %S/group_rules_aux.cpp %{s:stem}.ll -o %t.ref -Wno-override-module
-// RUN: env ASAN_OPTIONS=detect_leaks=0 %t.ref
-
-// The reference fold carries a fresh accumulator per step, which nothing releases without ownership tracking.
+// RUN: %t.ref
 
 plugin tensor;
 plugin math;

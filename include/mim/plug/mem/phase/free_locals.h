@@ -39,6 +39,9 @@ private:
     /// A continuation that frees @p allocs and jumps on to @p cont.
     const Def* trampoline(const Def* cont, const DefVec& allocs);
     const Def* free(const Def* mem, const DefVec& allocs);
+    /// The owned pointer parameters, each with its continuation.
+    std::vector<std::pair<const Def*, Lam*>> owned_params();
+    static bool uses_directly(Lam* lam, const Def* param);
 
     EscapeAnalysis escape_;
     GIDMap<const Nest::Node*, DefSet> mentions_;
@@ -47,6 +50,8 @@ private:
     DefMap<DefVec> frees_;
     /// Old tail ↦ old target ↦ allocations to free on the way there.
     DefMap<DefMap<DefVec>> edges_;
+    /// Owned pointer parameter ↦ the value entering its continuation from outside, which is never freed.
+    DefMap<const Def*> owned_;
 };
 
 } // namespace mim::plug::mem::phase

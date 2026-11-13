@@ -103,15 +103,24 @@ cross_entropy 输出每行的 loss（`reduction="none"`），用 3 个 kernel：
 - `tensor/reduction_tiles_exec.mim`（泄漏）：k 为运行时值时，尾块的 epilogue 用了结果缓冲刚分配完时的 mem。
   AddMem 先改写参数（mem 占位在这时解析），再改写 callee，而 fold 的结果作为初值放在 callee 里，链就分叉了，
   逃逸分析于是看不到最后一次使用。现在初值来自一次带 mem 的调用时，结果缓冲从这次调用之后的 mem 开始分配。
-- `tensor/group_rules_exec.mim`（泄漏）：`reference-tiles=1` 的参考 `tile_fold_impl` 是值语义循环，每步产生一个新的累加器张量；
-  旧的那个只有在知道它归循环所有（初值可能是外部缓冲）时才能释放，需要所有权检查。
-  测试中参考实现那次运行改为不检查泄漏，并注明原因。
+- `tensor/group_rules_exec.mim`（泄漏）：`reference-tiles=1` 的参考 `tile_fold_impl` 是值语义循环，每一步把一块新分配的累加器作为循环参数传给下一轮。
+  FreeLocals 只释放分配点本身，流进 continuation 参数的分配一律当作逃逸，所以每轮都泄漏一块。
+  现在 FreeLocals 认识“受管”的指针参数，条件是：
+  - 每条回边传入的都是循环体内新分配、只经 `lea`/`load`/`store` 访问、只传给这次跳转的缓冲；
+  - 入口只有一个；
+  - 参数自身只经 `lea`/`load`/`store` 使用。
+
+  这样的参数在它不再存活的地方被释放，并与入口值比较：`free(acc == init ? null : acc)`。
+  入口值（这里是两个循环共用的初值）永远归调用者，不会被释放。
+  `mem/free_locals.mim` 增加了 `carried` 用例，测试在开启 ASan 泄漏检测时通过。
 - `tensor/fuse_yield.mim`：`rejected` 的生产者被算了两遍。原因是 `compile.scalarize` 改写参数为函数的公理应用（`tiled … p body`）时，
   用一个独立的 `Keep` 改写器处理 callee，把共享的 `p` 拷贝成了组合子各不相同的两份，hash-consing 合不起来，
   于是 `outer` 那份被 `fuse_tensor` 融合重算。
   - 直接修 scalarize 会改变后面 SEO 和内联的行为；
   - 现在由 `fuse_tensor` 把 α 等价的拷贝认作同一个生产者，前提是其中一份反正要物化；两份都会被融合时（`tile_reduce_fused` 里重算 `exp`）保持原样。
 
-  `rejected` 已经正确。剩下的 `halo`（lower 模式 12，期望 10；budget 模式 27，期望 17）原先被 `rejected` 的断言挡住了。
-  按文档，期望值是 clang -O3 消掉相邻 tile 重复的 halo 元素之后的计数，现在这个 CSE 没有发生。还没有定位到是哪次改动造成的。
+  `halo`（原先被 `rejected` 的断言挡住）期望的计数是 clang -O3 消掉相邻 tile 重复的 halo 元素之后的值。
+  这个 CSE 失败的原因是两次读 `x[4]` 之间夹着每个 tile 的 over-box 缓冲的 `malloc`：LLVM 推断 `malloc` 可能写 `errno`，
+  而 IR 没有类型别名信息，排除不了 `x` 指向 `errno`。生成的代码从不读 `errno`，所以 ll 后端把 `malloc` 声明为只访问不可见内存，
+  `halo` 回到 10（budget 模式 17）。
 - 本轮还修了新出现的一个回归：最早的合并规则把两份都会融合的拷贝也合并了，导致 `tile_reduce_fused` 报类型错误。

@@ -57,6 +57,31 @@ extern con callee (m: mem.M 0, return: Cn [mem.M 0, I32]) =
     let (m, p) = mem.alloc (I32, 0) m;
     con done (m: mem.M 0, v: I32) = return (m, v);
     load (m, p, done);
+// A loop that reads its buffer and replaces it by a fresh one every turn owns all but the one it started with:
+// it frees the old one once read, comparing it with the starting one, which stays the caller's.
+// CHECK-LABEL: extern con carried
+// CHECK: core.icmp
+// CHECK: con done
+// CHECK: mem.free
+// CHECK: con redo
+// CHECK: mem.free
+// CHECK-NEXT: turn (
+extern con carried (m: mem.M 0, n: I32, return: Cn [mem.M 0, I32]) =
+    let (m, start) = mem.alloc (I32, 0) m;
+    let m          = mem.store (m, start, 1I32);
+    con turn (m: mem.M 0, i: I32, p: P) =
+        con redo (m: mem.M 0) =
+            let (m, v) = mem.load (m, p);
+            let (m, q) = mem.alloc (I32, 0) m;
+            let m      = mem.store (m, q, v + v);
+            turn (m, i + 1I32, q);
+        con done (m: mem.M 0) =
+            let (m, v) = mem.load (m, p);
+            return (m, v);
+        (done, redo)#(core.icmp.ul (i, n)) m;
+    turn (m, 0I32, start);
+
+
 
 // A continuation returned inside a pair may run after the function has returned: the pointer it reads escapes.
 // CHECK-LABEL: extern fun closure

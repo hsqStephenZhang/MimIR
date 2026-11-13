@@ -2,6 +2,8 @@
 
 #include <fe/worklist.h>
 
+#include <mim/plug/core/core.h>
+
 namespace mim::plug::mem::phase {
 
 bool FreeLocals::analyze() {
@@ -21,6 +23,9 @@ bool FreeLocals::analyze() {
             }
         }
     }
+
+    for (auto [param, home] : owned_params())
+        shared.emplace_back(home, param);
 
     if (!shared.empty()) {
         auto homes = LamSet();
@@ -43,10 +48,13 @@ bool FreeLocals::analyze() {
 
 const DefSet& FreeLocals::mentions(const Nest::Node* node) {
     auto res = DefSet();
-    if (auto lam = node->mut() ? node->mut()->isa_mut<Lam>() : nullptr)
+    if (auto lam = node->mut() ? node->mut()->isa_mut<Lam>() : nullptr) {
         if (auto i = escape_.chains().find(lam); i != escape_.chains().end())
             for (auto [alloc, _] : i->second.last)
                 res.emplace(alloc);
+        for (auto& [param, _] : owned_)
+            if (uses_directly(lam, param)) res.emplace(param);
+    }
     for (auto child : node->children().nodes()) {
         const auto& sub = mentions(child);
         res.insert(sub.begin(), sub.end());
@@ -128,6 +136,104 @@ const Def* FreeLocals::thread(const Def* arg, const Def* mem, const DefVec& allo
     return new_world().tuple(arg->projs([&](const Def* proj) { return thread(proj, mem, allocs); }));
 }
 
+// A continuation's pointer parameter owns its buffer when every jump back into the continuation passes a fresh
+// allocation that nothing else keeps, and it is only ever read and written through: all but the one value entering from
+// outside are then the continuation's to free, which a comparison with that value tells at run time.
+std::vector<std::pair<const Def*, Lam*>> FreeLocals::owned_params() {
+    owned_.clear();
+    auto users = DefMap<DefVec>();
+    auto calls = LamMap<std::vector<const App*>>();
+    auto seen  = DefSet();
+    auto todo  = DefVec();
+    for (auto mut : old_world().externals().muts())
+        todo.push_back(mut);
+    while (!todo.empty()) {
+        auto def = todo.back();
+        todo.pop_back();
+        if (!seen.emplace(def).second) continue;
+        if (auto app = def->isa<App>())
+            if (auto lam = app->callee()->isa_mut<Lam>()) calls[lam].push_back(app);
+        for (auto op : def->deps())
+            if (op) {
+                users[op].push_back(def);
+                todo.push_back(op);
+            }
+    }
+    auto none     = DefVec();
+    auto users_of = [&](const Def* def) -> const DefVec& {
+        auto i = users.find(def);
+        return i == users.end() ? none : i->second;
+    };
+    // Whether @p ptr is only an address that `lea`, `load` and `store` access, or the argument of @p jump.
+    auto accessed = [&](const Def* ptr, const Def* jump) {
+        for (auto user : users_of(ptr)) {
+            auto tuple = user->isa<Tuple>();
+            if (!tuple) return false;
+            if (tuple == jump) {
+                if (users_of(tuple).size() != 1) return false;
+                continue;
+            }
+            for (auto op : users_of(tuple)) {
+                auto app = op->isa<App>();
+                if (!app || app->arg() != tuple) return false;
+                if (Axm::isa<mem::lea>(app) && tuple->op(0) == ptr) continue;
+                if ((Axm::isa<mem::load>(app) || Axm::isa<mem::store>(app)) && tuple->op(1) == ptr) continue;
+                return false;
+            }
+        }
+        return true;
+    };
+    auto result = std::vector<std::pair<const Def*, Lam*>>();
+    for (auto& [lam, sites] : calls) {
+        auto var = lam->has_var();
+        if (!var || !lam->is_set() || !Pi::isa_cn(lam->type())) continue;
+        auto n = lam->num_vars();
+        for (size_t k = 0; k != n; ++k) {
+            auto param = lam->var(n, k);
+            auto ptr   = Axm::isa<mem::Ptr>(param->type());
+            if (!ptr || Lit::isa(ptr->arg(2, 1)) != 0 || !accessed(param, nullptr)) continue;
+            const Def* entry = nullptr;
+            auto owned       = true;
+            auto loops       = false;
+            for (auto site : sites) {
+                auto arg = site->arg()->proj(n, k);
+                if (!site->has_free_var(var)) {
+                    owned &= !entry && arg->in_scope(lam);
+                    entry = arg;
+                    continue;
+                }
+                auto made  = arg->isa<Extract>();
+                auto alloc = made ? made->tuple()->isa<App>() : nullptr;
+                owned &= alloc && Lit::isa(made->index()) == 1 && EscapeAnalysis::allocates(alloc)
+                      && !escape_.freed(alloc);
+                loops = true;
+                if (!owned) break;
+                // The allocation reaches nothing but its reads and writes and this jump.
+                owned &= accessed(arg, site->arg());
+            }
+            if (owned && loops && entry) {
+                owned_[param] = entry;
+                result.emplace_back(param, lam);
+            }
+        }
+    }
+    return result;
+}
+
+bool FreeLocals::uses_directly(Lam* lam, const Def* param) {
+    auto seen = DefSet();
+    auto todo = DefVec{lam->body()};
+    while (!todo.empty()) {
+        auto def = todo.back();
+        todo.pop_back();
+        if (!def || !seen.emplace(def).second || def->isa_mut()) continue;
+        if (def == param) return true;
+        for (auto op : def->ops())
+            todo.push_back(op);
+    }
+    return false;
+}
+
 const Def* FreeLocals::free(const Def* mem, const DefVec& allocs) {
     // TODO: address spaces other than 0 are barely tested; some, like gpu shared memory, cannot be freed.
     auto space = [](const Def* m) { return Lit::isa(Axm::as<mem::M>(m->type())->arg()); };
@@ -136,7 +242,8 @@ const Def* FreeLocals::free(const Def* mem, const DefVec& allocs) {
     if (auto conv = mem->isa<App>(); conv && Axm::isa<mem::M>(conv->arg()->type())) {
         auto inner = DefVec();
         for (auto alloc : allocs)
-            if (space(alloc->proj(2, 0)) == space(conv->arg()) && space(conv->arg()) != space(mem))
+            if (!owned_.contains(alloc) && space(alloc->proj(2, 0)) == space(conv->arg())
+                && space(conv->arg()) != space(mem))
                 inner.emplace_back(alloc);
         if (!inner.empty()) {
             mem        = w.app(conv->callee(), free(conv->arg(), inner));
@@ -147,6 +254,14 @@ const Def* FreeLocals::free(const Def* mem, const DefVec& allocs) {
         }
     }
     for (auto alloc : allocs) {
+        if (auto entry = fe::lookup(owned_, alloc)) {
+            auto ptr  = rewrite(alloc);
+            auto i64  = w.type_i64();
+            auto same = w.call(core::icmp::e,
+                               Defs{w.call<core::bitcast>(i64, ptr), w.call<core::bitcast>(i64, rewrite(entry))});
+            mem = w.call<mem::free>(Defs{mem, w.select(same, w.call<core::bitcast>(ptr->type(), w.lit_i64(0)), ptr)});
+            continue;
+        }
         if (space(alloc->proj(2, 0)) != space(mem)) {
             log().d("free_locals: `{}` lives in another address space than `{}`, leaking it", alloc, mem);
             continue;
