@@ -261,6 +261,69 @@ pub anx lam mma_ref
             (‹k: 8; k›, c#lane#reg)››;
 end
 ///
+/// ### mma_m16n8k16
+///
+/// Fragment coordinates of `mma.sync.m16n8k16` with 16-bit inputs, a register holding the pair `h` of halves; C's are `mma_m16n8k8_tf32.l_c`.
+/// A warpgroup MMA (`gpu.wgmma_*`) gives warp `w` rows `16 w .. 16 w + 15` in the same layouts.
+pub mod mma_m16n8k16
+pub anx lam l_a (lane: Idx 32, reg: Idx 4, h: Idx 2): [Idx 16, Idx 16] =
+    let l = core.idx2nat lane;
+    let r = core.idx2nat reg;
+    (core.idx 0 16 (l / 4 + 8 * (r % 2)), core.idx 0 16 (2 * (l % 4) + core.idx2nat h + 8 * (r / 2)));
+
+pub anx lam l_b (lane: Idx 32, reg: Idx 2, h: Idx 2): [Idx 16, Idx 8] =
+    let l = core.idx2nat lane;
+    (core.idx 0 16 (2 * (l % 4) + core.idx2nat h + 8 * core.idx2nat reg), core.idx 0 8 (l / 4));
+
+lam a_at {T: *} (a: «32; «4, 2; T»», row col: Idx 16): T =
+    let r = core.idx2nat row;
+    let k = core.idx2nat col;
+    a#(core.idx 0 32 (4 * (r % 8) + k % 8 / 2))#(core.idx 0 4 (r / 8 + 2 * (k / 8)))#(core.idx 0 2 (k % 2));
+
+lam b_at {T: *} (b: «32; «2, 2; T»», row: Idx 16, col: Idx 8): T =
+    let k = core.idx2nat row;
+    b#(core.idx 0 32 (4 * core.idx2nat col + k % 8 / 2))#(core.idx 0 2 (k / 8))#(core.idx 0 2 (k % 2));
+
+/// `c + a·b` with the inputs widened by `up`.
+pub anx lam mma_ref {T: *} (up: T → math.F32)
+    (a: «32; «4, 2; T»», b: «32; «2, 2; T»», c: «32; «4; math.F32»»)
+    : «32; «4; math.F32»» =
+    ‹lane: 32; ‹reg: 4;
+        let (row, col) = mma_m16n8k8_tf32.l_c (lane, reg);
+        vec.fold.r @(math.F32, Idx 16) @16
+            (λ (k: Idx 16, acc: math.F32): math.F32 =
+                math.arith.add 0 (acc, math.arith.mul 0 (up (a_at (a, row, k)), up (b_at (b, k, col)))))
+            (‹k: 16; k›, c#lane#reg)››;
+
+/// Two C tiles side by side, narrowed by `down`, as one A fragment: register `reg` is C tile `reg / 2`, registers `2 (reg % 2) + h`.
+pub anx lam a_of_c2 {T: *} (down: math.F32 → T) (c: «32, 2, 4; math.F32»): «32; «4, 2; T»» =
+    ‹lane: 32; ‹reg: 4; ‹h: 2;
+        down c#lane#(core.idx 0 2 (core.idx2nat reg / 2))#(core.idx 0 4 (2 * (core.idx2nat reg % 2) + core.idx2nat h))›››;
+
+/// Whether `a_of_c2` places at A position `(row, k)` the element `(row, k)` of the two C tiles: no key permutation is needed.
+pub anx let c_pair_is_a: Bool =
+    vec.scan.for_all @(Idx 256) @256
+        (λ (x: Idx 256): Bool =
+            let lane = core.idx 0 32 (core.idx2nat x / 8);
+            let reg  = core.idx 0 4 (core.idx2nat x / 2 % 4);
+            let h    = core.idx 0 2 (core.idx2nat x % 2);
+            let (a_row, a_col) = l_a (lane, reg, h);
+            let (c_row, c_col) = mma_m16n8k8_tf32.l_c (lane, core.idx 0 4 (2 * (core.idx2nat reg % 2) + core.idx2nat h));
+            core.bit2.and 0 (core.idx2nat a_row == core.idx2nat c_row,
+                             core.idx2nat a_col == 8 * (core.idx2nat reg / 2) + core.idx2nat c_col))
+        ‹x: 256; x›;
+
+/// Whether `l_a` and `l_b` place every element of their tiles exactly once.
+pub anx let layouts_cover: Bool =
+    core.bit2.and 0 (
+        vec.is_unique ‹x: 256;
+            let (r, k) = l_a (core.idx 0 32 (core.idx2nat x / 8), core.idx 0 4 (core.idx2nat x / 2 % 4), core.idx 0 2 (core.idx2nat x % 2));
+            16 * core.idx2nat r + core.idx2nat k›,
+        vec.is_unique ‹x: 128;
+            let (k, n) = l_b (core.idx 0 32 (core.idx2nat x / 4), core.idx 0 2 (core.idx2nat x / 2 % 2), core.idx 0 2 (core.idx2nat x % 2));
+            8 * core.idx2nat k + core.idx2nat n›);
+end
+///
 /// ### warp_keep
 ///
 /// The identity on a warp value, marking it shared: a lane reading another's component shuffles what that lane computed

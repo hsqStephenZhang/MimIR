@@ -100,3 +100,25 @@ A 操作数来自内存且不随步变的乘积，其 A 分片在循环外装载
 
 - 带长度为 1 的轴的融合 Pack（如 `‹l: 32; ‹i: 1; ‹j: 4; …›››`）被下标读时，类型已折叠掉该轴而 Pack 的形状仍保留它，
   紧随的下标会剥错轴，产生 "expected `F`, got `«4; F»`" 的类型错误；语义层因此不带行块轴。核心问题未修。
+
+## 16 位与 Hopper 原语（2026-11-13）
+
+| 原语 | PTX | 与 warp 代数的关系 |
+|---|---|---|
+| `gpu.mma_f16`/`mma_bf16` | `mma.sync.m16n8k16`，F32 累加 | 规格 `tensor.mma_m16n8k16.mma_ref`；C 布局同 k8 |
+| `gpu.ldmatrix_b16` | `ldmatrix(.trans).b16` | 非转置给出 A/K 的分片，转置给出行主序 B/V 的分片 |
+| `gpu.wgmma_f16`/`bf16`，`wgmma_rs_*` | `wgmma.mma_async.m64nNk16` | warpgroup 的累加器 = 4 个 warp 各一个 `C nt`（行 `16 w ..`）；RS 的 A 是每个 warp 的 k16 A 分片 |
+| `gpu.wgmma_fence/commit/wait` | `wgmma.fence/commit_group/wait_group` | `wait` 把累加器与寄存器操作数传过去，异步写在 SSA 上显式 |
+| `gpu.wgmma_desc`（Mim 函数）、`gpu.shared_addr` | 矩阵描述符 | 128 B swizzle：行 `r` 的 16 字节块 `c` 存在 `c xor (r mod 8)` |
+| `gpu.tensor_map`（host）、`gpu.tma_load` | `cuTensorMapEncodeTiled`、`cp.async.bulk.tensor.2d` | 产生与描述符相同的 swizzle 布局 |
+| `gpu.mbar_*` | `mbarrier.*` | 生产者/消费者环的满/空信号 |
+| `gpu.sync_named/arrive_named`、`gpu.setmaxnreg`、`gpu.fence_proxy_async` | `bar.sync/arrive id, n`、`setmaxnreg`、`fence.proxy.async` | warp 特化与乒乓 |
+
+形式化：
+- `tensor.mma_m16n8k16.c_pair_is_a`（`refly.check` 穷举）：两个相邻的 n8 C tile 就是一个 k16 A 分片，寄存器 `reg` 的第 `h` 半是 C tile `reg / 2` 的寄存器 `2 (reg mod 2) + h`。
+  因此 16 位下 P 留在寄存器作 PV 的 A，不需要 TF32 时的 key 置换（`c_to_a_permutes`）；`a_of_c2` 是这一转换的规格。
+- `layouts_cover`：k16 的 A、B 布局各覆盖其 tile 恰好一次。
+- `mma_ref` 在 CPU 上与 `a_of_c2` 组合，对照直接装载的乘积（`lit/tensor/warp_frag.mim`）。
+- 可信边界：swizzle 布局、描述符字段与 TMA 盒的一致性由 GPU 上的 `lit/{gpu,nvptx}/{wgmma,tma}.mim` 检查，不在 Mim 里证明；mbarrier 的相位协议在手写 kernel 里由约定保证，没有检查。
+
+尚未进入编译路径：`lower_mma` 与 warp 拥有的区域仍固定为 TF32 m16n8k8；warpgroup 拥有的区域、生产者 warpgroup 的调度层表示都还没有。

@@ -18,6 +18,8 @@ let F = math.F32;
 let _ = refly.check (tensor.warp.quad_covers_rows 8, tt, "a quad must hold each of its rows once");
 let _ = refly.check (tensor.warp.quad_covers_rows 3, tt, "a quad must hold each of its rows once");
 let _ = refly.check (tensor.warp.c_to_a_permutes, tt, "a C fragment read as A must permute the keys");
+let _ = refly.check (tensor.mma_m16n8k16.c_pair_is_a, tt, "two k16 C tiles must be an A fragment");
+let _ = refly.check (tensor.mma_m16n8k16.layouts_cover, tt, "the k16 A and B layouts must cover their tiles");
 
 lam f (x: Nat): F = math.conv.s2f math.f32 (core.bitcast I32 x);
 lam add (x y: I32): I32 = core.wrap.add 0 (x, y);
@@ -65,4 +67,20 @@ extern fun main (_: I32, _: mem.Ptr0 (mem.Ptr0 mem.Char)): I32 =
             vec.scan.for_all @(Idx 4) @4 (λ (reg: Idx 4): Bool = math.cmp.e 0 (got#lane#reg, want#lane#reg)) ‹reg: 4; reg›)
         ‹lane: 32; lane›;
 
-    return (core.wrap.add 0 (core.wrap.add 0 (count round, count summed), core.wrap.add 0 (count maxed, count product)));
+    let down    = λ (x: F): math.F16 = math.conv.f2f math.f16 x;
+    let up      = λ (x: math.F16): F = math.conv.f2f math.f32 x;
+    let p16     = ‹row: 16; ‹col: 16; f ((3 * core.idx2nat row + 5 * core.idx2nat col + 1) % 7)››;
+    let v16     = ‹row: 16; ‹col: 8; f ((7 * core.idx2nat row + 2 * core.idx2nat col + 3) % 5)››;
+    let c2      = ‹lane: 32; ‹j: 2; ‹reg: 4;
+        let (r, c) = tensor.mma_m16n8k8_tf32.l_c (lane, reg);
+        p16#r#(core.idx 0 16 (8 * core.idx2nat j + core.idx2nat c))›››;
+    let a16     = ‹lane: 32; ‹reg: 4; ‹h: 2; let (r, k) = tensor.mma_m16n8k16.l_a (lane, reg, h); down p16#r#k›››;
+    let b16     = ‹lane: 32; ‹reg: 2; ‹h: 2; let (k, n) = tensor.mma_m16n8k16.l_b (lane, reg, h); down v16#k#n›››;
+    let want16  = tensor.mma_m16n8k16.mma_ref @math.F16 up (a16, b16, acc);
+    let got16   = tensor.mma_m16n8k16.mma_ref @math.F16 up (tensor.mma_m16n8k16.a_of_c2 @math.F16 down c2, b16, acc);
+    let product16 = vec.scan.for_all @(Idx 32) @32
+        (λ (lane: Idx 32): Bool =
+            vec.scan.for_all @(Idx 4) @4 (λ (reg: Idx 4): Bool = math.cmp.e 0 (got16#lane#reg, want16#lane#reg)) ‹reg: 4; reg›)
+        ‹lane: 32; lane›;
+
+    return (core.wrap.add 0 (core.wrap.add 0 (core.wrap.add 0 (count round, count summed), core.wrap.add 0 (count maxed, count product)), count product16));
