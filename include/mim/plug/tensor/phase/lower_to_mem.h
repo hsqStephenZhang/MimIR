@@ -251,6 +251,10 @@ private:
     bool pingpong_       = false;
     /// How many groups of warpgroup MMAs a fold step leaves pending.
     u64 wgmma_pending_ = 0;
+    /// In a persistent work-group, the index of its current tile among its own, and whether its tiles need a
+    /// barrier between them.
+    const Def* tile_round_ = nullptr;
+    bool round_fence_      = true;
     const Def* outside(const Def* def) const;
     /// In a warpgroup-owned region, the old-world first row of the warp's 16, `16 · warp_rank`.
     const Def* group_rows_ = nullptr;

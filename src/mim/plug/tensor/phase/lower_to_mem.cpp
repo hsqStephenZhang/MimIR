@@ -1768,12 +1768,57 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
                 cluster = {size, multicast};
                 if (split) parts = size;
             }
-        auto extra = special ? u64(1) : u64(0);
-        auto loop  = w.call<affine::For>(
-            wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(total * lanes * parts + extra), w.lit_i64(1), acc});
+        u64 ctas = 0;
+        if (auto bound = Axm::isa<tensor::bind>(app->arg()); bound && plan.bind == 1)
+            if (auto marked = Axm::isa<tensor::persistent>(bound->arg())) {
+                ctas = std::min(Lit::as(marked->decurry()->arg()), total);
+                if (Axm::isa<tensor::cluster>(marked->arg()))
+                    app->blame("a persistent work-group level does not run in clusters").bail();
+            }
+        auto extra    = special ? u64(1) : u64(0);
+        auto launched = ctas ? ctas : total * lanes * parts + extra;
+        auto loop     = w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(launched), w.lit_i64(1), acc});
         auto [index, state, yield] = body->vars<3>();
         const Def* linear          = w.call<core::bitcast>(w.type_nat(), index);
         if (parts > 1) linear = w.call(core::nat::div, Defs{linear, w.lit_nat(parts)});
+        // A persistent work-group runs the tiles `ctas` apart from its own in turn.
+        Lam* tile            = body;
+        const Def* tile_acc  = state;
+        const Def* tile_exit = yield;
+        Lam* round_done      = nullptr;
+        const Def* round_end = nullptr;
+        const Def* round     = nullptr;
+        if (ctas) {
+            auto rounds                   = w.lit_i64((total + ctas - 1) / ctas);
+            auto [tiles, tiles_call]      = affine::counting_for(rounds, state, yield, w.sym("tileRounds"));
+            auto [counter, carried, next] = tiles->vars<3>();
+            round                         = w.call<core::bitcast>(w.type_nat(), counter);
+            linear     = w.call(core::nat::add, Defs{linear, w.call(core::nat::mul, Defs{round, w.lit_nat(ctas)})});
+            tile       = w.mut_con(carried->type())->set("tileRound");
+            round_done = w.mut_con(carried->type())->set("tileRoundDone");
+            auto skip  = w.mut_con(carried->type())->set("tileRoundSkip");
+            skip->app(true, next, skip->var());
+            round_end = next;
+            tiles->app(true, w.extract(w.tuple({skip, tile}), w.call(core::ncmp::l, Defs{linear, w.lit_nat(total)})),
+                       carried);
+            body->set(true, tiles_call);
+            tile_acc  = tile->var();
+            tile_exit = round_done;
+        }
+        // The producer warp makes a warp count that is no multiple of four, so one sub-partition's register file holds
+        // more warps than the others.
+        if (special) {
+            auto per_partition = (4 * total + 1 + 3) / 4;
+            auto acc_state     = DefVec(tile_acc->projs(plan.count + 1));
+            acc_state[0]       = w.app(
+                w.app(w.annex<gpu::reg_budget>(), w.lit_nat(std::min<u64>(255, 16384 / (32 * per_partition) / 8 * 8))),
+                acc_state[0]);
+            tile_acc = w.tuple(acc_state);
+        }
+        auto rounding = fe::Restore(tile_round_, ctas ? round : tile_round_);
+        // Only the persistent level resets the flag, so a specialized reduction below may clear it for this level.
+        auto fenced = round_fence_;
+        if (ctas) round_fence_ = true;
         const Def* producer = nullptr;
         if (special) {
             if (*special && total != 2)
@@ -1821,7 +1866,13 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
                        Defs{old.call<core::bitcast>(old.type_nat(), old.app(old.annex<gpu::warp_rank>(), old.tuple())),
                             old.lit_nat(16)});
         auto groups = fe::Restore(group_rows_, plan.bind == 7 ? first : plan.bind == 5 ? nullptr : group_rows_);
-        body->set(true, emit(*rank, state, yield));
+        tile->set(true, emit(*rank, tile_acc, tile_exit));
+        if (round_done) {
+            auto next = DefVec(round_done->var()->projs(plan.count + 1));
+            if (round_fence_) next[0] = w.app(w.annex<gpu::fence>(), next[0]);
+            round_fence_ = fenced;
+            round_done->app(true, round_end, w.tuple(next));
+        }
         return loop;
     };
     auto done = w.mut_con(call->type())->set("tileScratchDone");
@@ -3529,8 +3580,11 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                             Defs{w.call(core::bit2::and_, w.lit_nat_0(), Defs{item, w.lit_i64(127)}), w.lit_i64(0)});
         return w.call(core::bit2::and_, w.lit_nat(2), Defs{producer_, first});
     };
-    auto i32   = [&](const Def* nat) { return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(u64(1) << 32), nat); };
-    auto at_of = [&](const Def* buffers, const Def* slot) {
+    auto i32 = [&](const Def* nat) { return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(u64(1) << 32), nat); };
+    // In a persistent work-group, the ring's fills count on across its tiles.
+    const Def* round_base = w.lit_nat_0();
+    auto global           = [&](const Def* fill) { return w.call(core::nat::add, Defs{round_base, fill}); };
+    auto at_of            = [&](const Def* buffers, const Def* slot) {
         auto [br, bs, bT] = Axm::as<buffer::Buf>(buffers->type())->args<3>();
         auto index        = w.call<core::idx>(w.lit_nat_0(), w.lit_nat(ring.size()), slot);
         return w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}), {buffers, w.tuple({index})});
@@ -3539,6 +3593,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto empty_at = [&](const Def* slot) { return at_of(empties, slot); };
     // Fill `fill` of the ring goes to slot `fill % depth`, which `fill / depth` fills used before.
     auto fill_tma = [&](const Def* at, const Def* block, const DefVec& targets, const Def* fill) {
+        fill       = global(fill);
         auto depth = w.lit_nat(ring.size());
         auto slot  = w.call(core::nat::rem, Defs{fill, depth});
         if (sharing || specialized) {
@@ -3636,12 +3691,24 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     tma         = tma && panels != 0;
     specialized = tma && producer_ && fragments && fragments->group;
     if (specialized && cluster_) app->blame("a specialized reduction does not share panels across a cluster").bail();
+    // A persistent work-group sets its ring up in its first tile.
+    // Its tiles fill whole cycles of the ring, so the rotating buffers start every tile at slot 0.
+    auto first_round = tile_round_ ? w.call(core::ncmp::e, Defs{tile_round_, w.lit_nat_0()}) : w.lit_tt();
+    if (tma && tile_round_) {
+        if (!specialized) app->blame("a TMA reduction in a persistent work-group must be specialized").bail();
+        if (!literal_count || *literal_count % ring.size())
+            app->blame("a persistent ring of {} slots needs a multiple of {} blocks per tile", ring.size(), ring.size())
+                .bail();
+        round_base   = w.call(core::nat::mul, Defs{tile_round_, w.lit_nat(*literal_count)});
+        round_fence_ = false;
+    }
+    auto initiator = [&] { return w.call(core::bit2::and_, w.lit_nat(2), Defs{leader(), first_round}); };
     if (tma) {
         std::tie(mem, bars) = buffer::op_alloc(w.lit_nat(1), w.tuple({w.lit_nat(ring.size())}), w.type_i64(),
                                                w.app(w.annex<gpu::shared_scope>(), mem))
                                   ->projs<2>();
         for (u64 s = 0; s != ring.size(); ++s)
-            mem = w.app(w.annex<gpu::mbar_init_if>(), {mem, bar_at(w.lit_nat(s)), w.lit_i32(1), leader()});
+            mem = w.app(w.annex<gpu::mbar_init_if>(), {mem, bar_at(w.lit_nat(s)), w.lit_i32(1), initiator()});
         if (sharing || specialized) {
             std::tie(mem, empties) = buffer::op_alloc(w.lit_nat(1), w.tuple({w.lit_nat(ring.size())}), w.type_i64(),
                                                       w.app(w.annex<gpu::shared_scope>(), mem))
@@ -3649,21 +3716,36 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             // Every warp of every consumer releases a slot it read; a cluster's work-groups each once.
             auto arrivals = specialized ? 4 * consumers_ : cluster_->first;
             for (u64 s = 0; s != ring.size(); ++s)
-                mem = w.app(w.annex<gpu::mbar_init_if>(), {mem, empty_at(w.lit_nat(s)), w.lit_i32(arrivals), leader()});
+                mem = w.app(w.annex<gpu::mbar_init_if>(),
+                            {mem, empty_at(w.lit_nat(s)), w.lit_i32(arrivals), initiator()});
         }
         // A cluster's work-groups multicast into each other's ring, so each sees the others' barriers initialized.
         if (cluster_) mem = w.app(w.app(w.annex<gpu::cluster_size>(), w.lit_nat(cluster_->first)), mem);
-        mem = cluster_ ? w.app(w.annex<gpu::sync_cluster>(), w.app(w.annex<gpu::fence_mbarrier_init>(), mem))
-                       : w.app(w.annex<gpu::fence>(), mem);
+        if (cluster_) {
+            mem = w.app(w.annex<gpu::sync_cluster>(), w.app(w.annex<gpu::fence_mbarrier_init>(), mem));
+        } else if (tile_round_) {
+            // Later tiles skip the barrier, so a producer ahead of its consumers never waits for their stores.
+            auto [run, call] = btensor::ds_splice(mem, mem->type(), "ringSetUp");
+            auto set_up      = w.mut_con(mem->type())->set("ringFence");
+            auto ready       = w.mut_con(mem->type())->set("ringReady");
+            run->app(true, w.extract(w.tuple({ready, set_up}), first_round), run->var(2, 0));
+            set_up->app(true, run->ret_var(), w.app(w.annex<gpu::fence>(), set_up->var()));
+            ready->app(true, run->ret_var(), ready->var());
+            mem = call;
+        } else {
+            mem = w.app(w.annex<gpu::fence>(), mem);
+        }
     }
     // Ping-pong: the first consumer issues first, the second hands it the turn once.
     if (specialized && pingpong_) {
         auto second = w.call(core::bit2::and_, w.lit_nat(2),
                              Defs{w.call(core::ncmp::e, Defs{consumer_, w.lit_nat(1)}),
                                   w.call(core::bit2::xor_, w.lit_nat(2), Defs{producer_, w.lit_tt()})});
+        second      = w.call(core::bit2::and_, w.lit_nat(2), Defs{second, first_round});
         mem         = w.app(w.annex<gpu::arrive_named_if>(), {mem, w.lit_i32(1), w.lit_i32(256), second});
     }
-    for (u64 s = 0; s + 1 < ring.size(); ++s)
+    // The producer fills each block in its own step, as far ahead as the empty slots let it.
+    for (u64 s = 0; !specialized && s + 1 < ring.size(); ++s)
         mem = tma ? fill_tma(mem, shifted(w.lit_nat(s)), ring[s], w.lit_nat(s))
                   : fill_block(mem, w.lit_nat(s), ring[s]);
     auto state = DefVec{mem, buffer};
@@ -3677,7 +3759,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         auto done    = w.mut_con(start->type())->set("tileFoldDone");
         auto settled = w.app(w.annex<gpu::async_wait>(), done->var(width, 0));
         // The last `depth - 1` fills refill blocks no step reads; they land before the panels go away.
-        for (u64 k = *literal_count; tma && k + 1 < *literal_count + ring.size(); ++k)
+        for (u64 k = *literal_count; tma && !specialized && k + 1 < *literal_count + ring.size(); ++k)
             settled = w.app(w.annex<gpu::mbar_wait_at>(),
                             {settled, bar_at(w.lit_nat(k % ring.size())), w.lit_i32(k / ring.size() % 2)});
         if (tma && cluster_) settled = w.app(w.annex<gpu::sync_cluster>(), settled);
@@ -3719,7 +3801,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 forward_layouts(ring[0][j], at_stage(s, j));
         }
         auto depth   = w.lit_nat(ring.size());
-        auto slot    = w.call(core::nat::rem, Defs{iteration, depth});
+        auto slot    = w.call(core::nat::rem, Defs{global(iteration), depth});
         auto rotated = [&](const Def* m, const Def* buffer) {
             auto next = DefVec{m, buffer};
             for (u64 s = 0; s != ring.size(); ++s)
@@ -3731,14 +3813,12 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         auto consume = w.mut_con(loop_mem->type())->set("foldConsume");
         auto produce = w.mut_con(loop_mem->type())->set("foldProduce");
         loop->app(true, w.extract(w.tuple({consume, produce}), producer_), loop_mem);
-        auto next = shifted(
-            w.app(w.annex(tensor::pipeline_plan::refill_block), {iteration, depth, w.lit_nat(*literal_count)}));
-        auto free   = DefVec(panels, [&](size_t j) { return at_stage(ring.size() - 1, j); });
-        auto fill   = w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)});
-        auto filled = fill_tma(produce->var(), next, free, fill);
+        auto current = DefVec(panels, [&](size_t j) { return at_stage(0, j); });
+        auto filled  = fill_tma(produce->var(), shifted(iteration), current, iteration);
         produce->app(true, yield, rotated(filled, loop_buffer));
-        auto parity = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{iteration, depth}), w.lit_nat(2)});
-        loop_mem    = w.app(w.annex<gpu::mbar_wait_at>(), {consume->var(), bar_at(slot), i32(parity)});
+        auto parity
+            = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{global(iteration), depth}), w.lit_nat(2)});
+        loop_mem = w.app(w.annex<gpu::mbar_wait_at>(), {consume->var(), bar_at(slot), i32(parity)});
         prepare_realizations(root);
         // A ring of four or more slots keeps a step's MMAs in flight and releases the previous step's slot once those
         // have read it; a shallower one would leave the producer a single slot ahead.
@@ -3751,10 +3831,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                                Defs{w.call(core::bit2::and_, w.lit_nat_0(), Defs{item, w.lit_i64(31)}), w.lit_i64(0)});
         auto released = slot;
         if (overlap) {
-            auto later = w.call(core::ncmp::ne, Defs{w.call<core::bitcast>(w.type_nat(), index), w.lit_nat_0()});
+            auto later = w.call(core::ncmp::ne, Defs{global(iteration), w.lit_nat_0()});
             release    = w.call(core::bit2::and_, w.lit_nat(2), Defs{release, later});
-            released   = w.call(core::nat::rem,
-                                Defs{w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)}), depth});
+            released = w.call(core::nat::rem,
+                              Defs{w.call(core::nat::add, Defs{global(iteration), w.lit_nat(ring.size() - 1)}), depth});
         }
         auto freed = w.app(w.annex<gpu::mbar_arrive_if>(), {update->proj(2, 0), empty_at(released), release});
         consume->app(true, yield, rotated(freed, update->proj(2, 1)));

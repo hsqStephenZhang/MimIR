@@ -2229,6 +2229,9 @@ axm report_groups: compile.Phase;
 /// `pipeline` of a reduction inside a work-group is how many blocks' panels are in flight, `n` filling `n - 1` blocks
 /// ahead of the one being computed; 0 takes `-X tensor:pipeline`, and the `*_red` constructors leave it 0.
 /// The CPU lowering runs bound levels as loops.
+/// `Persistent` launches `ctas` work-groups for the next `Group` level, each running its tiles `ctas` apart in turn;
+/// a specialized reduction's ring and mbarriers persist across them, so the producer fills the next tile's panels
+/// while the consumers store the last one.
 ///
 anx nom TileMerge (Acc: *) = | Combiner | Merge: [Acc, Acc] → Acc;
 anx mutual
@@ -2238,7 +2241,8 @@ anx mutual
         | Group: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, mma)]
         | Red: [sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, mma)]
         | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc, mma)]
-        | Cluster: [size multicast split: Nat, rest: TileLevels (n, Acc, mma)];
+        | Cluster: [size multicast split: Nat, rest: TileLevels (n, Acc, mma)]
+        | Persistent: [ctas: Nat, rest: TileLevels (n, Acc, mma)];
     nom GroupLevels (n: Nat, Acc: *, mma: Bool) =
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, mma)]
@@ -2279,6 +2283,8 @@ anx lam serial_vec {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», rest: TileLev
     (TileLevels (n, Acc, mma))#Vec (sizes, rest);
 anx lam serial_cluster {n: Nat, Acc: *, mma: Bool} (size multicast: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
     (TileLevels (n, Acc, mma))#Cluster (size, multicast, 0, rest);
+anx lam serial_persistent {n: Nat, Acc: *, mma: Bool} (ctas: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
+    (TileLevels (n, Acc, mma))#Persistent (ctas, rest);
 anx lam serial_cluster_split {n: Nat, Acc: *, mma: Bool} (size: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
     (TileLevels (n, Acc, mma))#Cluster (size, 0, 1, rest);
 anx lam group_done {n: Nat, Acc: *, mma: Bool} (_: []): GroupLevels (n, Acc, mma) = (GroupLevels (n, Acc, mma))#Done;
@@ -2379,6 +2385,10 @@ axm specialize: {T: *} → [pingpong: Nat] → T → T;
 /// copies of the inputs set in `multicast`, or with `split` splitting the reduction of each tile among them.
 ///
 axm cluster: {T: *} → [size multicast split: Nat] → T → T;
+///
+/// Identity annotation inside a work-group region's `bind`: `ctas` work-groups run its tiles, each `ctas` apart in turn.
+///
+axm persistent: {T: *} → [ctas: Nat] → T → T;
 ///
 /// Identity annotation on a reduction block that a warp computes on tensor cores, from TF32 or 16-bit inputs into an F32
 /// accumulator; `shape` is the instruction's tile of the block's loops.

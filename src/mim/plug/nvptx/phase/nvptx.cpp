@@ -755,6 +755,8 @@ std::string DeviceEmitter::prepare() {
     u64 registers = 0;
     auto slots    = DefVec();
     auto seen     = DefSet();
+    auto pending  = DefVec();
+    auto calls    = MutMap<DefVec>();
     for (auto todo = DefVec{kernel}; !todo.empty();) {
         auto def = todo.back();
         todo.pop_back();
@@ -765,9 +767,35 @@ std::string DeviceEmitter::prepare() {
         const Def* addressed = nullptr;
         if (auto addr = Axm::isa<gpu::shared_addr>(def)) addressed = addr->arg();
         if (auto tma = Axm::isa<gpu::tma_load>(def)) addressed = tma->arg(6, 1);
-        if (addressed) swizzled_slots_.emplace(slot_of(addressed));
+        if (addressed) pending.push_back(addressed);
+        if (auto app = def->isa<App>()) {
+            auto callee = app->callee();
+            if (auto pick = callee->isa<Extract>()) callee = pick->tuple();
+            for (auto target : callee->isa<Tuple>() ? callee->ops() : Defs{callee})
+                if (auto lam = target->isa_mut<Lam>()) calls[lam].push_back(app->arg());
+        }
         for (auto dep : def->deps())
             todo.push_back(dep);
+    }
+    // An address a loop carries, such as a ring's rotating slot, is traced back through the arguments that reach it.
+    for (auto traced = DefSet(); !pending.empty();) {
+        auto slot = slot_of(pending.back());
+        pending.pop_back();
+        if (!traced.emplace(slot).second) continue;
+        if (Axm::isa<gpu::slot_shared>(slot)) {
+            swizzled_slots_.emplace(slot);
+            continue;
+        }
+        auto [var, index, arity] = std::tuple<const Def*, const Def*, u64>{slot, nullptr, 1};
+        if (auto extract = slot->isa<Extract>()) {
+            var   = extract->tuple();
+            index = extract->index();
+            arity = Lit::as(extract->tuple()->arity());
+        }
+        if (auto v = var->isa<Var>())
+            if (auto lam = v->binder()->isa<Lam>())
+                for (auto arg : calls[lam])
+                    pending.push_back(index ? arg->proj(arity, Lit::as(index)) : arg);
     }
     auto bytes = [](const Def* slot) {
         auto size = Lit::as(core::op(core::trait::size, slot->as<App>()->decurry()->arg()));

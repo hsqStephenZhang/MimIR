@@ -486,17 +486,52 @@ tensor map 由 `gpu.buf_tensor_map` 描述，lower_to_mem 把它建在区域外�
 | 128×128，`wg_red_ws` 3 级 | 288 | 2 | 0.313 | 2.39 |
 | 128×128，`wg_red_ws` 3 级，ping-pong | 288 | 2 | 0.309 | 2.39 |
 | 128×256，`wg_red_tma` 3 级 | 256 | 1 | 0.317 | 2.21 |
+| 128×256，`wg_red_tma` 4 级 | 256 | 1 | 0.313 | 2.21 |
 | 128×256，`wg_red_ws` 3 级 | 288 | 1 | 0.293 | 2.26 |
 | 128×256，`wg_red_ws` 4 级（wait 1） | 288 | 1 | 0.274 | 2.38 |
 | 128×256，`wg_red_ws` 4 级（wait 1），ping-pong | 288 | 1 | 0.277 | 2.34 |
 | cuBLAS f16 | | | 0.204 | 1.82 |
 
-- 同为 128×256 时，特化在 4096 上比非特化快 13%：环可以加深到 4 级（非特化 4 级的 192 KB 环放不下，会退回未分块的 kernel），
-  wgmma 也能跨步在飞。在 8192 上两者相近。
+- 同为 128×256、4 级时，特化在 4096 上比非特化快 12%，因为 wgmma 能跨步在飞，生产者也不占用计算 warpgroup。在 8192 上两者相近。
 - 但它们都不如每 SM 两个块的 128×128 非特化版：两个块互相掩盖了对方的填充延迟和 epilogue，这已经是特化想要的重叠。
   128×128 的特化版没有多出可用的级数，只增加了 mbarrier 往返和角色分支。
   wait 0/1 的对比在 1–3% 以内，说明剩余差距不在主循环。每 SM 一个块时，epilogue 无法与下一个 tile 的主循环重叠，
   要补上这一点，需要持久化 kernel（CUTLASS 的 ping-pong 让两个消费者各算一个 tile，一个做 epilogue 时另一个做 MMA）。
 - 我们的 ping-pong 是同一 tile 内两半交替，tensor core 本来就被它们共享，因此几乎没有收益（±1%）。
 - 4 个消费者（256×128，544 线程）时，17 个 warp 轮流分到 4 个 SMSP，其中一个分到 5 个 warp，每个 104 寄存器，
-  超过每个 SMSP 16K 的寄存器容量，launch 报 701（`cuOccupancyMaxActiveBlocksPerMultiprocessor` = 0）。
+  超过每个 SMSP 16K 的寄存器容量，launch 报 701（`cuOccupancyMaxActiveBlocksPerMultiprocessor` = 0）。下一节已修复。
+
+### persistent work-group（H200 NVL，2026-11-13）
+
+调度：`serial_persistent (ctas, serial_group (…))` 只启动 `ctas` 个 work-group，每个依次跑相隔 `ctas` 的 tile
+（`tileRounds` 循环，最后一轮不足时跳过）。
+- 特化归约的环和 mbarrier 跨 tile 保留。只在第一轮初始化，初始化后的 barrier 也只在第一轮执行。
+  填充计数接着上一个 tile 往下数（`轮次 × 每 tile 块数`），因此槽位与 parity 连续；要求每个 tile 的块数是环级数的倍数。
+- 生产者不再预取序言，而是每步填自己那一块，只受“空”mbarrier 约束。这样它做完一个 tile 的填充后不必等任何人，
+  可以直接越过 tile 边界去填下一个 tile，与消费者写回结果重叠。round 之间没有 barrier（非特化的 body 仍会加一道）。
+- ping-pong 的初始令牌只在第一轮交出。
+
+排查过程中修了三个问题：
+- 生产者不做序言填充后，TMA 目标和 wgmma 描述符都只经过循环携带的变量，nvptx 认不出这些 128B swizzle 槽位，也就没有按 1024 字节对齐，
+  导致 716 未对齐。原先的非 persistent 版本是因为面板碰巧排在最前才没出错。
+  现在 nvptx 沿 continuation 的实参反向追踪这些变量，直到找到槽位。
+- 嵌套的 warpgroup 层恢复了“round 之间是否需要 barrier”的标志，导致每轮末尾多出一个 `bar.sync`，生产者无法越过 tile 边界。
+  加上这个 barrier 时 persistent 版本反而更慢（4096 为 0.280 ms）。
+- 特化 kernel 按每个 SMSP 最多分到的 warp 数设 `.maxnreg`（`gpu.reg_budget`），4 个消费者（544 线程）不再报 701：256×128、4 级在 4096 上为 0.292 ms。
+- 上一轮的 tmab_256_4 在 27 ms 退化，是基准脚本把 promote 掩码错写成 4（输入 2 不存在），tile_req 未实现，不是编译器问题。
+
+`krun_e2e.sh`，单位 ms：
+
+| 配置 | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|
+| 128×128，`wg_red_tma` 3 级（每 SM 2 块） | **0.0405** | **0.254** | 2.21 |
+| 128×256，`wg_red_ws` 4 级 | 0.0471 | 0.270 | 2.39 |
+| 128×256，`wg_red_ws` 4 级，persistent 132 | 0.0471 | 0.268 | 2.16 |
+| 128×256，`wg_red_ws` 4 级，ping-pong，persistent 132（`gemm_tiled_wg_persistent.mim`） | 0.0469 | 0.265 | **2.135** |
+| 128×128，`wg_red_ws` 4 级，persistent 132 | | 0.350 | 2.80 |
+| 128×128，`wg_red_ws` 2 级，persistent 264 | | 0.299 | 2.38 |
+| cuBLAS f16 | | 0.204 | 1.82 |
+
+- 8192 上 persistent 比非 persistent 的特化版快 10%，也比最快的非特化版快 3%，达到 cuBLAS 的 85%。
+- 4096 只有 512 个 tile，每个 work-group 约 4 轮，能重叠的写回结果太少；128×128 的非特化版靠每 SM 两个块，仍快 4%。
+- 128×128 的 persistent 不划算：4 级时每 SM 只剩一个块，2 级时环太浅。
