@@ -124,3 +124,22 @@ cross_entropy 输出每行的 loss（`reduction="none"`），用 3 个 kernel：
   而 IR 没有类型别名信息，排除不了 `x` 指向 `errno`。生成的代码从不读 `errno`，所以 ll 后端把 `malloc` 声明为只访问不可见内存，
   `halo` 回到 10（budget 模式 17）。
 - 本轮还修了新出现的一个回归：最早的合并规则把两份都会融合的拷贝也合并了，导致 `tile_reduce_fused` 报类型错误。
+
+## 第三轮：参照 CUTLASS / ThunderKittens 收紧层级类型（2026-11-13）
+
+CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKittens 的 `warpgroup::mma` 用 `static_assert` 检查 M/N/K 与 16 位操作数；
+我们原先把这些检查推迟到 `TileFuse`（警告 “unrealized tensor.tile_req” 后静默退化）或 `lower_to_mem`（报错位置常常不对）。
+
+- 层级链的第三个索引从 `Bool` 改成**操作数种类的类型** `NoMma` / `Tf32Mma` / `HalfMma`，由 `root_contraction` 从根的输入类型算出。
+  `Mma` / `Wgmma` 层带一个该类型的值，所以层级链的结构依赖这个索引：F32 收缩配 `wg_mma`、F16 收缩配 `(16, 8, 8)` 的 `warp_mma`
+  都在 `tile_req` 的调用处报类型错误（`error/tile_mma_operands.mim`）。
+  只换索引而不让结构依赖它时，两个实例会被当成同一类型，错误要到 `RWPhase` 重建时才以无位置的 “cannot coerce” 出现。
+- `warp_mma` 的种类由形状决定（`k = 8` 为 TF32，`k = 16` 为 16 位），因此无需隐式参数推断。
+- 新公理 `tensor.require (cond, value, msg)`：条件归约为真时就是 `value`，为假时在构造处报 `msg`。用于构造器上局部可判定的约束：
+  - `wg_mma`：`(64, 8 j, 16)` 且 `8 j ≤ 256`（`error/tile_wgmma_shape.mim`）；
+  - `warp_mma`：`(16, 8, 8)` 或 `(16, 8, 16)`；
+  - `serial_cluster` / `serial_cluster_split`：2 到 8 个 work-group（`error/tile_cluster_size.mim`）；
+  - `serial_persistent`：至少一个 work-group；`wg_red_ws`：`pingpong` 为 0 或 1。
+- 跨层约束（warpgroup tile 为 64 行、`wg_mma` 的 N 等于 warpgroup tile、ping-pong 恰好两个消费者、persistent 下不能有 cluster）仍在 `lower_to_mem` 检查。
+  把它们提前需要让 `WarpgroupLevels` 再以外层 tile 形状为索引，相当于 CuTe 的 tile/layout 类型，留作下一步。
+- 生成代码不变：addmm (20120, 512, 1536) 0.0799 ms，linear_gelu (8192, 4096, 1024) 0.1662 ms，softmax 4096² 0.0383 ms。
