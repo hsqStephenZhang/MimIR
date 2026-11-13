@@ -182,6 +182,107 @@ pub anx lam map_affine {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; affi
     λ (x: «r; affine.Index»): «r; affine.Index» = interpret @r @s (affine_index_ops, layout, x);
 pub anx lam map_i64 {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; I64» → «r; I64» =
     λ (x: «r; I64»): «r; I64» = interpret @r @s (i64_index_ops, layout, x);
+
+/// #### F₂ interpretation
+///
+/// GPU layouts are mostly linear maps over the bits of their coordinates, so for power-of-two extents a layout's
+/// injectivity and the contiguity of its vector fills are decidable by Gaussian elimination over F₂.
+/// A coordinate over `n` input bits is a matrix: row `i` is output bit `i` as the exclusive or of the input bits its
+/// low `n` mask bits select and of its constant in mask bit `n`.
+/// Multiplying, dividing and taking the remainder by a power of two move or drop rows, and an addition is an exclusive
+/// or while its operands share no bit; anything else leaves the class, which `linear` records.
+/// Without padding a layout's addresses stay below `2^n`, so `n + 1` output bits hold them.
+lam F2 (n: Nat): * = [Bool, «n + 1; I64»];
+let powers = ‹k: 32; vec.fold.r @(Nat, Nat) @(core.idx2nat k) core.nat.mul (‹core.idx2nat k; 2›, 1)›;
+lam any {m: Nat} (p: «m; Bool»): Bool = vec.fold.r @(Bool, Bool) @m (core.bit2.or 0) (p, ff);
+lam total {m: Nat} (v: «m; Nat»): Nat = vec.fold.r @(Nat, Nat) @m core.nat.add (v, 0);
+lam both (p q: Bool): Bool = core.bit2.and 0 (p, q);
+/// Whether `k` is a power of two, and its exponent.
+lam log2 (k: Nat): [Bool, Nat] = (any ‹j: 32; powers#j == k›, total ‹j: 32; (0, core.idx2nat j)#(powers#j == k)›);
+lam bit (j: Nat): I64 = core.wrap.shl 0 (1I64, core.bitcast I64 j);
+lam nonzero (v: I64): Bool = (tt, ff)#(core.icmp.e (v, 0I64));
+lam has (row: I64) (j: Nat): Bool = nonzero (core.bit2.and 0 (row, bit j));
+lam at (n: Nat) (k: Nat): Idx (n + 1) = core.idx 0 (n + 1) (core.select (k < n + 1, k, 0));
+
+lam f2_lit (n: Nat) (k: Nat): F2 n = (tt, ‹i: n + 1; (0I64, bit n)#((k / powers#(core.idx 0 32 (core.idx2nat i))) % 2 == 1)›);
+lam f2_add (n: Nat) (x y: F2 n): F2 n =
+    let (lx, rx) = x;
+    let (ly, ry) = y;
+    let shared   = any ‹i: n + 1; both (nonzero (rx#i), nonzero (ry#i))›;
+    (both (both (lx, ly), (tt, ff)#shared), ‹i: n + 1; core.bit2.xor 0 (rx#i, ry#i)›);
+lam f2_mul (n: Nat) (x: F2 n, k: Nat): F2 n =
+    let (lx, rx) = x;
+    let (pow, s) = log2 k;
+    (both (lx, pow), ‹i: n + 1; let ii = core.idx2nat i; (0I64, rx#(at n (ii - s)))#(s <= ii)›);
+lam f2_div (n: Nat) (x: F2 n, k: Nat): F2 n =
+    let (lx, rx) = x;
+    let (pow, s) = log2 k;
+    (both (lx, pow), ‹i: n + 1; let ii = core.idx2nat i; (0I64, rx#(at n (ii + s)))#(ii + s < n + 1)›);
+lam f2_rem (n: Nat) (x: F2 n, k: Nat): F2 n =
+    let (lx, rx) = x;
+    let (pow, s) = log2 k;
+    (both (lx, pow), ‹i: n + 1; (0I64, rx#i)#(core.idx2nat i < s)›);
+lam f2_xor (n: Nat) (x y: F2 n): F2 n =
+    let (lx, rx) = x;
+    let (ly, ry) = y;
+    (both (lx, ly), ‹i: n + 1; core.bit2.xor 0 (rx#i, ry#i)›);
+lam f2_ops (n: Nat): IndexOps = (F2 n, f2_lit n, f2_add n, f2_mul n, f2_div n, f2_rem n, f2_xor n);
+
+/// Gaussian elimination's step for column `c`: an unused row with bit `c` becomes the pivot and clears it from the rest.
+lam eliminate {b: Nat} (rows: «b; I64», used: «b; Bool», rank: Nat, c: Nat): [«b; I64», «b; Bool», Nat] =
+    let candidates = ‹i: b; both (has (rows#i) c, (tt, ff)#(used#i))›;
+    let found      = any candidates;
+    let pivot      = vec.fold.r @(Nat, Idx b) @b
+        (λ (i: Idx b, acc: Nat): Nat = (acc, core.idx2nat i)#(candidates#i)) (‹i: b; i›, 0);
+    let row        = rows#(core.idx 0 b pivot);
+    (‹i: b; (rows#i, core.bit2.xor 0 (rows#i, row))#(both (both (found, has (rows#i) c), core.idx2nat i != pivot))›,
+     ‹i: b; core.bit2.or 0 (used#i, both (found, core.idx2nat i == pivot))›,
+     rank + (0, 1)#found);
+/// The rank of `rows` over their low `m` mask bits.
+lam rank {b: Nat} (m: Nat, rows: «b; I64»): Nat =
+    let (_, _, r) = vec.fold.l @([«b; I64», «b; Bool», Nat], Idx m) @m
+        (λ (st: [«b; I64», «b; Bool», Nat], c: Idx m): [«b; I64», «b; Bool», Nat] =
+            let (rows, used, r) = st;
+            eliminate (rows, used, r, core.idx2nat c))
+        ((rows, ‹b; ff›, 0), ‹c: m; c›);
+    r;
+
+/// The bits of each logical extent and where a coordinate's bits start among the inputs.
+lam widths {r: Nat} (s: «r; Nat»): «r; Nat» = ‹d: r; (log2 (s#d))#1₂›;
+lam offsets {r: Nat} (s: «r; Nat»): «r; Nat» =
+    ‹d: r; total ‹e: r; (0, (widths s)#e)#(core.idx2nat e < core.idx2nat d)››;
+/// The F₂ address of a layout's element: its physical coordinates merged row-major.
+lam address {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): F2 (total (widths s)) =
+    let n    = total (widths s);
+    let x    = ‹d: r; ((log2 (s#d))#0₂,
+                       ‹i: n + 1; (0I64, bit ((offsets s)#d + core.idx2nat i))#(core.idx2nat i < (widths s)#d)›)›;
+    let phys = interpret @r @s (f2_ops n, layout, x);
+    let ext  = shape layout;
+    vec.fold.r @(F2 n, Idx r) @r
+        (λ (p: Idx r, acc: F2 n): F2 n =
+            let stride = vec.fold.r @(Nat, Idx r) @r
+                (λ (q: Idx r, st: Nat): Nat = st * (1, ext#q)#(core.idx2nat p < core.idx2nat q)) (‹q: r; q›, 1);
+            f2_add n (f2_mul n (phys#p, stride), acc))
+        (‹p: r; p›, f2_lit n 0);
+
+/// Whether a layout maps distinct elements to distinct addresses: 0 if its extents leave the F₂ class, 1 if not, 2 if so.
+pub anx lam injective {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): Nat =
+    let n           = total (widths s);
+    let (lin, rows) = address @r @s layout;
+    let variable    = core.wrap.sub 0 (bit n, 1I64);
+    core.select (lin, (1, 2)#(rank (n, ‹i: n + 1; core.bit2.and 0 (rows#i, variable)›) == n), 0);
+/// Whether a fill's runs of `run` consecutive elements along the last logical dim land on `run` consecutive,
+/// `run`-aligned addresses: the low address bits are exactly those coordinate bits, which no other address bit reads.
+/// 0 if undecided, 1 if not, 2 if so.
+pub anx lam contiguous {r: Nat} {s: «r; Nat»} (layout: Expr (r, s), run: Nat): Nat =
+    let n           = total (widths s);
+    let (lin, rows) = address @r @s layout;
+    let (pow, t)    = log2 run;
+    let base        = (offsets s)#(core.idx 0 r (r - 1));
+    let window      = core.wrap.shl 0 (core.wrap.sub 0 (bit t, 1I64), core.bitcast I64 base);
+    let wrong       = ‹i: n + 1; let ii = core.idx2nat i;
+                          (nonzero (core.bit2.and 0 (rows#i, window)), (tt, ff)#(core.icmp.e (rows#i, bit (base + ii))))#(ii < t)›;
+    core.select (both (lin, pow), (2, 1)#(any wrong), 0);
 end
 
 pub mod r8_plan

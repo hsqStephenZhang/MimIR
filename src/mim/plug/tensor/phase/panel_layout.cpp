@@ -142,6 +142,20 @@ struct Fill {
 
 } // namespace
 
+namespace {
+
+// The verdict of an F₂ layout query: 0 if undecided, 1 if not, 2 if so.
+u64 decide(const Def* query) { return Lit::isa(query).value_or(0); }
+
+// Every chosen panel layout must keep distinct elements apart; F₂ decides it over power-of-two extents.
+void injective(const Def* expr, const Def* storage) {
+    auto& w = expr->world();
+    if (decide(at_shape(w.annex(tensor::layout_expr::injective), expr, storage)) == 1)
+        storage->blame("panel layout maps two elements to one address").bail();
+}
+
+} // namespace
+
 const Def* at_shape(const Def* map, const Def* expr, const Def* logical) {
     auto& w = logical->world();
     return w.app(w.app(w.app(map, w.lit_nat(logical->num_projs())), logical), expr);
@@ -226,6 +240,7 @@ Choice wgmma(const Def* storage, size_t inner, u64 bytes, bool k_major) {
     layout.permuted = permuted_dims(dims, layout);
     auto shape      = physical_dims(dims, layout);
     auto expr       = term(layout, storage, shape);
+    injective(expr, storage);
     return {expr, at_shape(w.annex(tensor::layout_expr::shape), expr, storage), layout, true};
 }
 
@@ -379,7 +394,13 @@ Choice choose(const Def* storage, size_t inner, u64 vec, u64 bytes, const Reads*
                       : "none");
     auto expr     = term(best_layout, storage, best_shape);
     auto physical = at_shape(w.annex(tensor::layout_expr::shape), expr, storage);
-    return {expr, physical, best_layout, vec != 1 && fill.contiguous(best_layout, best_shape)};
+    injective(expr, storage);
+    // Over power-of-two extents F₂ decides contiguity for every vector; sampling covers the first 64 otherwise.
+    auto decided
+        = vec != 1 && inner + 1 == n
+            ? decide(at_shape(w.annex(tensor::layout_expr::contiguous), w.tuple({expr, w.lit_nat(vec)}), storage))
+            : 0;
+    return {expr, physical, best_layout, decided ? decided == 2 : vec != 1 && fill.contiguous(best_layout, best_shape)};
 }
 
 const Def* compose_read_map(const Def* inner, const Def* outer) {

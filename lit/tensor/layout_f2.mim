@@ -1,0 +1,26 @@
+// RUN: %mim %s
+
+// Over power-of-two extents a layout is a matrix over F₂, so its injectivity and its fills' contiguity are decided.
+
+plugin tensor;
+plugin refly;
+
+use tensor.layout_expr;
+
+let identity = make @2 ((64, 64), 1, (0₃, 1₃, 2₃), (0, 0), 1, 1, 0, 1, ff);
+let _ = refly.struc.e (injective identity, 2);
+let _ = refly.struc.e (contiguous (identity, 64), 2);
+
+// The 128-byte swizzle of a wgmma panel exchanges 16-byte chunks, so vectors of 8 F16 stay whole and 16 do not.
+let swizzled = make @2 ((64, 64), 1, (0₃, 1₃, 2₃), (0, 0), 8, 8, 0, 8, tt);
+let _ = refly.struc.e (injective swizzled, 2);
+let _ = refly.struc.e (contiguous (swizzled, 8), 2);
+let _ = refly.struc.e (contiguous (swizzled, 16), 1);
+
+// Padding leaves the class, so nothing is decided.
+let padded = make @2 ((64, 64), 1, (0₃, 1₃, 2₃), (0, 4), 1, 1, 0, 1, ff);
+let _ = refly.struc.e (injective padded, 0);
+
+// A permutation that repeats a dim, which `make` rejects, maps two rows onto one.
+let collapsed = ((‹(64, 64)›, 1, (0₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1, ff) inj Data (2, (64, 64))) inj Expr (2, (64, 64));
+let _ = refly.struc.e (injective collapsed, 1);
