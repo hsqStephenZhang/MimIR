@@ -150,3 +150,20 @@ CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKi
   - `serial_persistent` 用 `match` 检查下一层不是 `Cluster`（`error/tile_persistent_cluster.mim`）。
   `lower_to_mem` 里对应的检查保留，作为非字面量链的兜底。
 - 生成代码不变：addmm (20120, 512, 1536) 0.0796 ms，linear_gelu (8192, 4096, 1024) 0.1662 ms，softmax 4096² 0.0383 ms，cross_entropy 16384×65536 1.169 ms。
+
+### 与参考实现逐条对照
+
+| 参考里的静态检查 | 出处 | 我们的对应 | 时机 |
+|---|---|---|---|
+| MMA atom 的操作数类型（F16/BF16 vs TF32） | CuTe `MMA_Traits<SM90_64xNx16_F32F16F16_SS>`、TK `warpgroup::mma` 的 16 位断言 | 层级链索引 `NoMma`/`Tf32Mma`/`HalfMma` | elaboration（类型） |
+| MMA 指令形状 | CuTe GMMA atom 的 `Shape_MNK`、TK `static_assert(M == 64 …)` | `wg_mma`/`warp_mma` 的 `require` | elaboration |
+| 指令 tile 与所属 tile 匹配 / 整除 | TK `rt`/`st` 的 `rows`、`cols` 断言，CuTe `tile_to_shape` 的整除 | `WarpgroupLevels` 以 warpgroup tile 为索引（必须相等），`WarpLevels` 以 warp tile 为索引（`warp_mma` 要求整除，`error/tile_warp_mma_divides.mim`） | elaboration |
+| 消费者 warpgroup 个数 | CUTLASS `KernelTmaWarpSpecializedPingpong` 要求两个 consumer | `GroupLevels` / `WarpgroupLevels` 的 work-group tile 索引算出个数 | elaboration |
+| cluster 形状 | CUTLASS `ClusterShape` 的可移植上限 8 | `serial_cluster` 的 `require` | elaboration |
+| tile 调度参数合法（tail、向量层最内） | CuTe 的形状都是编译期参数 | 构造器上的 `require` / `match`（`error/tile_tail.mim`、`error/tile_vec_innermost.mim`） | elaboration |
+
+仍然在 `TileFuse` 晚检的，都依赖根运算本身而不只依赖层级值：
+- `promote` 的位不超过输入个数，以及并行层不切归约循环：需要根的输入个数和 `ro / rn` 划分，而层级只以总循环数 `n` 为索引；
+- 操作数 A 行主序 / K 主序：对应 TK 中 `st` 的 layout 类型，但在我们这里，layout 是 promotion 之后才确定的；
+- lane 归约的 lane 数（2 的幂且 ≤ 32）：需要归约循环的长度；
+- warp 内 MMA 的 k 块整除：`WarpLevels` 的索引只能沿链原样传递（nom 不支持非一致递归），`warp_red` 改变的 k 块进不了索引。

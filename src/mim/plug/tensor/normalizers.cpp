@@ -853,6 +853,20 @@ const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     return nullptr;
 }
 
+const Def* normalize_within(const Def*, const Def*, const Def* arg) {
+    auto& w             = arg->world();
+    auto [outer, sizes] = arg->projs<2>();
+    auto n              = Lit::isa(sizes->arity());
+    if (!n) return nullptr;
+    DefVec extents(*n);
+    for (size_t d = 0; d != *n; ++d) {
+        auto size = Lit::isa(sizes->proj(*n, d));
+        if (!size) return nullptr;
+        extents[d] = *size ? sizes->proj(*n, d) : outer->proj(*n, d);
+    }
+    return w.tuple(extents);
+}
+
 const Def* normalize_require(const Def*, const Def*, const Def* arg) {
     auto& w                 = arg->world();
     auto [cond, value, msg] = arg->projs<3>();
