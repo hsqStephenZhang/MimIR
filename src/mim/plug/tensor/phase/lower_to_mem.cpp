@@ -3759,8 +3759,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         auto slot  = w.call(core::nat::rem, Defs{fill, depth});
         if (sharing || specialized) {
             // The phase before a slot's first use counts as completed, so its first fill passes.
-            auto uses   = w.call(core::nat::div, Defs{fill, depth});
-            auto parity = w.call(core::nat::rem, Defs{w.call(core::nat::add, Defs{uses, w.lit_nat(1)}), w.lit_nat(2)});
+            auto parity = w.app(w.app(w.annex(tensor::pipeline_plan::empty_parity), fill), depth);
             at          = w.app(w.annex<gpu::mbar_wait_if>(), {at, empty_at(slot), i32(parity), issuer()});
         }
         auto future = old.mut_lam(parameter->type()->as<Pi>());
@@ -3977,13 +3976,23 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         auto current = DefVec(panels, [&](size_t j) { return at_stage(0, j); });
         auto filled  = fill_tma(produce->var(), shifted(iteration), current, iteration);
         produce->app(true, yield, rotated(filled, loop_buffer));
-        auto parity
-            = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{global(iteration), depth}), w.lit_nat(2)});
-        loop_mem = w.app(w.annex<gpu::mbar_wait_at>(), {consume->var(), bar_at(slot), i32(parity)});
+        auto parity = w.app(w.app(w.annex(tensor::pipeline_plan::full_parity), global(iteration)), depth);
+        loop_mem    = w.app(w.annex<gpu::mbar_wait_at>(), {consume->var(), bar_at(slot), i32(parity)});
         prepare_realizations(root);
         // A ring of four or more slots keeps a step's MMAs in flight and releases the previous step's slot once those
         // have read it; a shallower one would leave the producer a single slot ahead.
-        auto overlap   = u64(ring.size() >= 4);
+        auto overlap = u64(ring.size() >= 4);
+        if (literal_count) {
+            // The protocol model covers two tiles' fills, so a persistent ring's count across tiles is checked too.
+            auto fills = w.lit_nat(std::min<u64>(2 * *literal_count, 16));
+            auto safe
+                = w.app(w.app(w.app(w.app(w.annex(tensor::pipeline_plan::ring_safe), fills), w.lit_nat(ring.size())),
+                              w.lit_nat(overlap)),
+                        w.lit_nat_1());
+            if (Lit::isa(safe) != 1)
+                app->blame("a ring of {} slots releasing {} steps late breaks its protocol", ring.size(), overlap)
+                    .bail();
+        }
         auto in_flight = fe::Restore(wgmma_pending_, overlap);
         auto update    = lower_into(root, {loop_mem, loop_buffer, storage, rewrite(zero), extent});
         // The MMAs' wait is warp-synchronous, so a warp's first lane releases the slot for all of it.
@@ -4009,11 +4018,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             // The current block's group is the oldest: the younger `depth - 2` may still be pending.
             const Def* waited;
             if (tma) {
-                auto depth = w.lit_nat(ring.size());
-                auto parity
-                    = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{iteration, depth}), w.lit_nat(2)});
-                waited = w.app(w.annex<gpu::mbar_wait_at>(),
-                               {loop_mem, bar_at(w.call(core::nat::rem, Defs{iteration, depth})), i32(parity)});
+                auto depth  = w.lit_nat(ring.size());
+                auto parity = w.app(w.app(w.annex(tensor::pipeline_plan::full_parity), iteration), depth);
+                waited      = w.app(w.annex<gpu::mbar_wait_at>(),
+                                    {loop_mem, bar_at(w.call(core::nat::rem, Defs{iteration, depth})), i32(parity)});
             } else {
                 waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat(ring.size() - 2)), loop_mem);
                 // `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it first.

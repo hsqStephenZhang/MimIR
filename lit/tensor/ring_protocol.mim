@@ -1,0 +1,16 @@
+// RUN: %mim %s
+
+// The ring's mbarrier parities keep every fill apart from its consumption, for rings, lags and persistent fill counts
+// the lowering uses, while a producer parity off by one is caught.
+
+plugin tensor;
+plugin refly;
+
+use tensor.pipeline_plan;
+
+let _ = refly.struc.e (ring_safe 1 2 0 1, tt);
+let _ = refly.struc.e (ring_safe 7 2 0 1, tt);
+let _ = refly.struc.e (ring_safe 12 3 0 1, tt);
+let _ = refly.struc.e (ring_safe 12 4 1 1, tt);
+let _ = refly.struc.e (ring_safe 16 4 0 1, tt);
+let _ = refly.struc.e (ring_safe 12 4 0 0, ff);

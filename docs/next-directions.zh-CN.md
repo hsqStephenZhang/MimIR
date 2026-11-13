@@ -159,3 +159,8 @@ D6 (覆盖面) 与上面并行；动态形状依赖 assert 语义
 - **D1 第一步**：`layout_expr` 的同一个 `interpret` 增加 F₂ 索引代数（每行一个 `I64` 掩码），`injective`、`contiguous` 由高斯消元判定；
   所有选定的面板布局在 2 的幂形状上验证单射，fill 的向量连续性在可判定时取代 64 位置抽查（`lit/tensor/layout_f2.mim`）。
   编译时间无可测开销。
+- **D2 第一步**：TMA ring 的 mbarrier 协议写进 `pipeline_plan`（`full_parity`、`empty_parity`），lower_to_mem 改为从这里取 parity，只剩一份公式。
+  `ring_safe fills depth lag offset` 是协议的可执行模型：在所有（已填 p，已消费 c）状态上，由 PE 穷举检查不覆盖未消费的槽、不读未填的槽、不死锁；
+  正确的 parity 通过，偏一位的被抓出（`lit/tensor/ring_protocol.mim`）。模型还给出比注释更精确的结论：延迟释放的步数必须小于槽数。
+  lower_to_mem 在块数为字面量时对所用配置调用 `ring_safe`。
+  差分测试把 “ping-pong 只有一个消费者”从 lowering 的晚期拒绝变成规则：Group 层的块按实际长度裁剪后再数 warpgroup（`lit/error/tile_pingpong_clipped.mim`）。

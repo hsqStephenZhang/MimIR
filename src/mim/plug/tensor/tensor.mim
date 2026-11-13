@@ -196,7 +196,8 @@ lam F2 (n: Nat): * = [Bool, «n + 1; I64»];
 let powers = ‹k: 32; vec.fold.r @(Nat, Nat) @(core.idx2nat k) core.nat.mul (‹core.idx2nat k; 2›, 1)›;
 lam any {m: Nat} (p: «m; Bool»): Bool = vec.fold.r @(Bool, Bool) @m (core.bit2.or 0) (p, ff);
 lam total {m: Nat} (v: «m; Nat»): Nat = vec.fold.r @(Nat, Nat) @m core.nat.add (v, 0);
-lam both (p q: Bool): Bool = core.bit2.and 0 (p, q);
+/// Taking an unnamed pair keeps field names off every `«2; Bool»`, which would otherwise capture `x#p` elsewhere.
+lam both (pq: «2; Bool»): Bool = core.bit2.and 0 pq;
 /// Whether `k` is a power of two, and its exponent.
 lam log2 (k: Nat): [Bool, Nat] = (any ‹j: 32; powers#j == k›, total ‹j: 32; (0, core.idx2nat j)#(powers#j == k)›);
 lam bit (j: Nat): I64 = core.wrap.shl 0 (1I64, core.bitcast I64 j);
@@ -304,6 +305,36 @@ pub anx lam ring_block (iteration slot blocks: Nat): Nat =
     (blocks - 1, iteration + slot)#(iteration + slot < blocks);
 pub anx lam refill_block (iteration depth blocks: Nat): Nat = ring_block (iteration, depth - 1, blocks);
 pub anx lam rotated_source (slot depth: Nat): Nat = (slot + 1) % depth;
+///
+/// A TMA ring's mbarrier protocol: fill `f` lands in slot `f % depth`, its consumer waits on that slot's full barrier for
+/// the phase of parity `(f / depth) % 2`, and its producer waits on the slot's empty barrier for the phase of parity
+/// `(f / depth + 1) % 2`; a fresh barrier's phase before its first counts as completed, so the first round passes.
+/// `mbarrier.try_wait.parity p` returns once the phase of parity `p` completed, i.e. while the barrier's completed
+/// phases `c` have `c % 2 != p`.
+pub anx lam full_parity (fill: Nat) (depth: Nat): Nat = (fill / depth) % 2;
+pub anx lam empty_parity (fill: Nat) (depth: Nat): Nat = (fill / depth + 1) % 2;
+/// How many of the first `upto` fills land in slot `s`.
+lam landed (upto: Nat) (depth: Nat) (s: Nat): Nat = core.select (s < upto, (upto - s - 1) / depth + 1, 0);
+lam passes (completed: Nat) (parity: Nat): Bool = completed % 2 != parity;
+lam every {m: Nat} (p: «m; Bool»): Bool = vec.fold.r @(Bool, Bool) @m (core.bit2.and 0) (p, tt);
+lam some {m: Nat} (p: «m; Bool»): Bool = vec.fold.r @(Bool, Bool) @m (core.bit2.or 0) (p, ff);
+lam implies (p: Bool) (q: Bool): Bool = core.bit2.or 0 ((tt, ff)#(p), q);
+/// Checks the protocol for `fills` fills of a ring of `depth` slots whose consumer releases a slot `lag` steps after
+/// reading it, with the producer's parity offset by `offset` (1 in `empty_parity`), over every state of `p` fills and
+/// `c` consumptions: a wait that passes never lets the producer overwrite an unconsumed slot or the consumer read an
+/// unfilled one, and some side can always go on until both are done.
+pub anx lam ring_safe (fills: Nat) (depth: Nat) (lag: Nat) (offset: Nat): Bool =
+    every ‹pi: fills + 1; every ‹ci: fills + 1;
+        let p = core.idx2nat pi;
+        let c = core.idx2nat ci;
+        let released = core.select (lag < c, c - lag, 0);
+        let empty    = landed released depth (p % depth);
+        let produce  = core.bit2.and 0 (p < fills, passes empty ((p / depth + offset) % 2));
+        let consume  = core.bit2.and 0 (c < fills, passes (landed p depth (c % depth)) (full_parity c depth));
+        let state    = core.bit2.and 0 (c <= p, p <= c + depth);
+        implies state (every (implies produce (landed p depth (p % depth) == empty),
+                              implies consume (c < p),
+                              implies (core.bit2.or 0 (p < fills, c < fills)) (some (produce, consume))))››;
 end
 
 /// ### mma_m16n8k8_tf32
@@ -2538,13 +2569,14 @@ pub mod check
         "{} blocks per tile do not fill whole cycles of a persistent ring of {} slots",
         "a bound level cannot peel its tail",
         "a vector level marks a single parallel loop with size 1 or splits the last reduction loop",
-        "a specialized reduction needs at least two blocks, not {}");
+        "a specialized reduction needs at least two blocks, not {}",
+        "warpgroup ping-pong alternates two consumers, not {}");
 
     lam any {n: Nat} (p: «n; Bool»): Bool = vec.fold.r @(Bool, Bool) @n (core.bit2.or 0) (p, ff);
     lam count {n: Nat} (p: «n; Bool»): Nat = vec.fold.r @(Nat, Nat) @n core.nat.add (‹d: n; (0, 1)#(p#d)›, 0);
     lam sum {n: Nat} (x: «n; Nat»): Nat = vec.fold.r @(Nat, Nat) @n core.nat.add (x, 0);
-    lam both (x y: Bool): Bool = core.bit2.and 0 (x, y);
-    lam either (x y: Bool): Bool = core.bit2.or 0 (x, y);
+    lam both (xy: «2; Bool»): Bool = core.bit2.and 0 xy;
+    lam either (xy: «2; Bool»): Bool = core.bit2.or 0 xy;
     lam positive (x: Nat): Nat = (x, 1)#(x == 0);
     /// A verdict is the index of the broken rule into `messages`, 0 if none, and up to two values the message reports.
     let Verdict = «3; Nat»;
@@ -2577,6 +2609,16 @@ pub mod check
     lam ring {n: Nat} (persistent: Bool, pipeline: Nat, block sizes: «n; Nat»): Verdict =
         let (k, s) = reduced (block, sizes);
         fail_with (both (both (persistent, pipeline != 0), core.nat.rem (k / s, positive pipeline) != 0), 12, k / s, pipeline);
+    /// A level's block as its loops' extents cap it, an unknown extent of 0 leaving the level's size.
+    lam clip {n: Nat} (os: «2; «n; Nat»»): «n; Nat» =
+        let (outer, sizes) = os;
+        ‹d: n; (outer#d, core.select (core.bit2.and 0 (outer#d != 0, outer#d < sizes#d), outer#d, sizes#d))#(sizes#d != 0)›;
+    /// How many warpgroups tile a work-group's block `g` by `t`, 0 while an extent is unknown.
+    lam consumers {n: Nat} (gt: «2; «n; Nat»»): Nat =
+        let (g, t) = gt;
+        let known  = vec.fold.r @(Bool, Bool) @n (core.bit2.and 0) (‹d: n; core.bit2.or 0 (t#d == 0, g#d != 0)›, tt);
+        core.select (known, vec.fold.r @(Nat, Nat) @n core.nat.mul
+            (‹d: n; (1, (g#d + positive (t#d) - 1) / positive (t#d))#(t#d != 0)›, 1), 0);
     lam specialized {n: Nat} (block sizes: «n; Nat»): Verdict =
         let (k, s) = reduced (block, sizes);
         fail_with (both (k != 0, k / s < 2), 15, k / s, 0);
@@ -2590,24 +2632,26 @@ pub mod check
                               1 < count ‹d: n; both (sizes#d != 0, core.idx2nat d < ro)›)), 14);
 
     lam wg_ok {n: Nat, Acc Mma: *, g t: «n; Nat»}
-        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: WarpgroupLevels (n, Acc, Mma, g, t))@(core.pe.is_closed l): Verdict =
+        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, warpgroups: Nat,
+         l: WarpgroupLevels (n, Acc, Mma, g, t))@(core.pe.is_closed l): Verdict =
         match l with
             | 0 => ok
             | 1 (sizes, _, promote, _, rest) =>
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
                     wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, rest)))
+                           persistent, warpgroups, rest)))
             | 2 (shape, _, _) => mma (shape, block, a, b)
             | 3 (sizes, _, promote, _, rest) =>
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (persistent, 11),
                 or_else (splits (cluster, split, block, sizes),
                     wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, rest)))))
-            | 4 (sizes, _, promote, pipeline, _, _, rest) =>
+                           persistent, warpgroups, rest)))))
+            | 4 (sizes, _, promote, pipeline, pingpong, _, rest) =>
+                or_else (fail_with (both (both (pingpong == 1, warpgroups != 0), warpgroups != 2), 16, warpgroups, 0),
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (cluster != 0, 10),
                 or_else (specialized (block, sizes), or_else (ring (persistent, pipeline, block, sizes),
                     wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, rest))))));
+                           persistent, warpgroups, rest)))))));
     lam warp_ok {n: Nat, Acc Mma: *, w: «n; Nat»} (ro nis: Nat, block: «n; Nat», a b: Bool, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Verdict =
         match l with
             | 0 => ok
@@ -2638,7 +2682,7 @@ pub mod check
                     item_ok (ro, nis, within (block, sizes), a, b, rest)))
             | 3 (sizes, _, promote, _, rest) =>
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                    group_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
+                    group_ok (ro, nis, clip (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
                               split, persistent, rest)))
             | 4 (sizes, _, _, rest) =>
                 or_else (reduction_sizes (ro, sizes),
@@ -2649,7 +2693,7 @@ pub mod check
                     warp_ok (ro, nis, within (block, sizes), a, b, rest)))
             | 7 (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, sizes)) =>
                 or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
-                    wg_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest)));
+                    wg_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, consumers (block, sizes), rest)));
     lam tile_ok {n: Nat, Acc Mma: *}
         (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
         match l with
@@ -2660,7 +2704,7 @@ pub mod check
             | 2 (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma, sizes)) =>
                 or_else (parallel_sizes (ro, sizes), or_else (promotes (nis, promote),
                 or_else (peels (tail, block, sizes), or_else (clusters (cluster, split, block, sizes),
-                    group_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
+                    group_ok (ro, nis, clip (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
                               split, persistent, rest)))))
             | 3 (sizes, _, promote, rest) =>
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
