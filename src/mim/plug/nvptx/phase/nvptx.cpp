@@ -102,8 +102,27 @@ private:
         return v_ptr;
     }
 
-    /// The `extractvalue` index paths of the F32 leaves of an aggregate of nested arrays and tuples.
-    static void leaf_paths(const Def* type, const std::string& prefix, std::vector<std::string>& paths) {
+    /// The 32-bit shared-window address of the shared-memory pointer @p ptr.
+    std::string shared_u32(ll::BB& bb, const std::string& name, const Def* ptr) {
+        auto v_ptr = emit(ptr);
+        auto shared
+            = Lit::as(Axm::as<mem::Ptr>(ptr->type())->arg(2, 1)) == 3
+                ? v_ptr
+                : bb.assign(name + ".s", "addrspacecast {} {} to ptr addrspace(3)", convert(ptr->type()), v_ptr);
+        return bb.assign(name, "ptrtoint ptr addrspace(3) {} to i32", shared);
+    }
+
+    /// A side-effecting PTX statement that may touch memory.
+    static void
+    inline_asm(ll::BB& bb, std::string_view text, std::string_view constraints, const std::vector<std::string>& args) {
+        auto clobber = constraints.empty() ? "~{memory}"s : std::format("{},~{{memory}}", constraints);
+        std::print(bb.body().emplace_back(), "call void asm sideeffect \"{}\", \"{}\"({})", text, clobber,
+                   fe::Join(args, ", "));
+    }
+
+    /// The `extractvalue` index paths and types of the leaves of an aggregate of nested arrays and tuples.
+    static void
+    leaf_paths(const Def* type, const std::string& prefix, std::vector<std::pair<std::string, const Def*>>& paths) {
         if (auto arr = type->isa<Arr>(); arr && Lit::isa(arr->arity()))
             for (u64 i = 0, e = Lit::as(arr->arity()); i != e; ++i)
                 leaf_paths(arr->elem(), std::format("{}, {}", prefix, i), paths);
@@ -111,7 +130,7 @@ private:
             for (size_t i = 0; i != sigma->num_ops(); ++i)
                 leaf_paths(sigma->op(i), std::format("{}, {}", prefix, i), paths);
         else
-            paths.push_back(prefix);
+            paths.emplace_back(prefix, type);
     }
 
     /// A shared slot of whole 1 KiB blocks may hold `wgmma`'s 128-byte swizzle atoms, which must be 1 KiB aligned.
@@ -424,6 +443,44 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
         auto res = bb.assign(name, "call i32 @{}(ptr {})", Cu_Stream_Sync, stream);
         emit_cu_error_handling(bb, res);
         return res;
+    } else if (auto tmap = Axm::isa<gpu::tensor_map>(def)) {
+        auto [mem, map, base, rows, cols, box_rows, box_cols] = tmap->args<7>();
+        emit_unsafe(mem);
+        auto elem  = tmap->decurry()->decurry()->arg();
+        auto dtype = math::isa_bf16(elem) ? 9 : math::isa_f(elem) == 16 ? 6 : math::isa_f(elem) == 32 ? 7 : -1;
+        if (dtype < 0) def->blame(MIM_NVPTX_BE "a tensor map of `{}` elements is not supported", elem).bail();
+        auto size    = Lit::as(core::op(core::trait::size, elem));
+        auto v_map   = emit(map);
+        auto v_rows  = emit(rows);
+        auto v_cols  = emit(cols);
+        auto dims    = bb.assign(name + ".dims", "alloca [2 x i64]");
+        auto strides = bb.assign(name + ".strides", "alloca i64");
+        auto box     = bb.assign(name + ".box", "alloca [2 x i32]");
+        auto unit    = bb.assign(name + ".unit", "alloca [2 x i32]");
+        auto at      = [&](const std::string& arr, std::string_view t, int i) {
+            return bb.assign(std::format("{}.{}", arr, i), "getelementptr [2 x {}], ptr {}, i64 0, i64 {}", t, arr, i);
+        };
+        auto store = [&](std::string_view t, const std::string& v, const std::string& ptr) {
+            std::print(bb.body().emplace_back(), "store {} {}, ptr {}", t, v, ptr);
+        };
+        auto dim0 = at(dims, "i64", 0), dim1 = at(dims, "i64", 1);
+        store("i64", v_cols, dim0);
+        store("i64", v_rows, dim1);
+        store("i64", bb.assign(name + ".stride", "mul i64 {}, {}", v_cols, size), strides);
+        auto box0 = at(box, "i32", 0), box1 = at(box, "i32", 1);
+        store("i32", emit(box_cols), box0);
+        store("i32", emit(box_rows), box1);
+        auto unit0 = at(unit, "i32", 0), unit1 = at(unit, "i32", 1);
+        store("i32", "1", unit0);
+        store("i32", "1", unit1);
+        auto global = bb.assign(name + ".base", "inttoptr i64 {} to ptr", emit(base));
+        declare("i32 @cuTensorMapEncodeTiled(ptr, i32, i32, ptr, ptr, ptr, ptr, ptr, i32, i32, i32, i32)");
+        auto res = bb.assign(name + ".res",
+                             "call i32 @cuTensorMapEncodeTiled(ptr {}, i32 {}, i32 2, ptr {}, ptr {}, ptr {}, ptr {}, "
+                             "ptr {}, i32 0, i32 3, i32 2, i32 0)",
+                             v_map, dtype, global, dims, strides, box, unit);
+        emit_cu_error_handling(bb, res);
+        return std::string();
     } else if (auto alloc = Axm::isa<gpu::alloc>(def)) {
         bool is_async;
         switch (alloc.id()) {
@@ -832,14 +889,54 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         std::print(bb.body().emplace_back(), "call void @{}(ptr addrspace(3) {}, ptr addrspace(1) {})", intrinsic,
                    shared, global);
         return std::string();
+    } else if (Axm::isa<gpu::mbar_init>(def) || Axm::isa<gpu::mbar_arrive>(def) || Axm::isa<gpu::mbar_expect_tx>(def)
+               || Axm::isa<gpu::mbar_wait>(def)) {
+        auto app = def->as<App>();
+        auto n   = Axm::isa<gpu::mbar_arrive>(def) ? 2 : 3;
+        emit_unsafe(app->arg(n, 0));
+        auto bar = shared_u32(bb, name + ".bar", app->arg(n, 1));
+        if (Axm::isa<gpu::mbar_arrive>(def)) {
+            inline_asm(bb, "mbarrier.arrive.shared::cta.b64 _, [$0];", "r", {"i32 " + bar});
+            return std::string();
+        }
+        auto x = "i32 " + emit(app->arg(n, 2));
+        auto text
+            = Axm::isa<gpu::mbar_init>(def) ? "mbarrier.init.shared::cta.b64 [$0], $1;"
+            : Axm::isa<gpu::mbar_expect_tx>(def)
+                ? "mbarrier.arrive.expect_tx.shared::cta.b64 _, [$0], $1;"
+                : "{ .reg .pred p; W${:uid}: mbarrier.try_wait.parity.shared::cta.b64 p, [$0], $1; @!p bra W${:uid}; }";
+        inline_asm(bb, text, "r,r", {"i32 " + bar, x});
+        return std::string();
+    } else if (auto tma = Axm::isa<gpu::tma_load>(def)) {
+        auto [mem, dst, map, col, row, bar] = tma->args<6>();
+        emit_unsafe(mem);
+        auto v_dst = shared_u32(bb, name + ".dst", dst);
+        auto v_bar = shared_u32(bb, name + ".bar", bar);
+        auto v_map = emit(map);
+        auto t_map = convert(map->type());
+        if (t_map != "ptr") v_map = bb.assign(name + ".gm", "addrspacecast {} {} to ptr", t_map, v_map);
+        auto map_i = bb.assign(name + ".map", "ptrtoint ptr {} to i64", v_map);
+        inline_asm(bb,
+                   "cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [$0], [$1, {$2, "
+                   "$3}], [$4];",
+                   "r,l,r,r,r",
+                   {"i32 " + v_dst, "i64 " + map_i, "i32 " + emit(col), "i32 " + emit(row), "i32 " + v_bar});
+        return std::string();
+    } else if (Axm::isa<gpu::sync_named>(def) || Axm::isa<gpu::arrive_named>(def)) {
+        auto app = def->as<App>();
+        emit_unsafe(app->arg(3, 0));
+        auto text = Axm::isa<gpu::sync_named>(def) ? "bar.sync $0, $1;" : "bar.arrive $0, $1;";
+        inline_asm(bb, text, "r,r", {"i32 " + emit(app->arg(3, 1)), "i32 " + emit(app->arg(3, 2))});
+        return std::string();
+    } else if (auto reg = Axm::isa<gpu::setmaxnreg>(def)) {
+        auto [mem, inc, n] = reg->args<3>();
+        emit_unsafe(mem);
+        inline_asm(bb,
+                   std::format("setmaxnreg.{}.sync.aligned.u32 {};", Lit::as<bool>(inc) ? "inc" : "dec", Lit::as(n)),
+                   "", {});
+        return std::string();
     } else if (auto addr = Axm::isa<gpu::shared_addr>(def)) {
-        auto ptr   = addr->arg();
-        auto v_ptr = emit(ptr);
-        auto shared
-            = Lit::as(addr->decurry()->arg()) == 3
-                ? v_ptr
-                : bb.assign(name + ".s", "addrspacecast {} {} to ptr addrspace(3)", convert(ptr->type()), v_ptr);
-        return bb.assign(name, "ptrtoint ptr addrspace(3) {} to i32", shared);
+        return shared_u32(bb, name, addr->arg());
     } else if (Axm::isa<gpu::wgmma_f16>(def) || Axm::isa<gpu::wgmma_bf16>(def) || Axm::isa<gpu::wgmma_rs_f16>(def)
                || Axm::isa<gpu::wgmma_rs_bf16>(def)) {
         auto [nt, mem, a, b, trans_b, acc] = def->as<App>()->args<6>();
@@ -927,15 +1024,19 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         auto v_x = emit(x);
         declare("void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64)");
         std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 {})", Lit::as(n));
-        // The accumulators change asynchronously until the wait, so each is redefined after it.
+        // The accumulators change and the register operands stay in use until the wait, so each is redefined after it.
         auto t_x   = convert(x->type());
-        auto paths = std::vector<std::string>();
+        auto paths = std::vector<std::pair<std::string, const Def*>>();
         leaf_paths(x->type(), "", paths);
         auto value = v_x;
         for (size_t i = 0; i != paths.size(); ++i) {
-            auto f = bb.assign(std::format("{}.w{}", name, i), "extractvalue {} {}{}", t_x, v_x, paths[i]);
-            auto g = bb.assign(std::format("{}.f{}", name, i), "call float asm sideeffect \"\", \"=f,0\"(float {})", f);
-            value = bb.assign(std::format("{}.x{}", name, i), "insertvalue {} {}, float {}{}", t_x, value, g, paths[i]);
+            auto& [path, leaf] = paths[i];
+            auto t             = convert(leaf);
+            auto reg           = t == "float" ? "f" : t == "double" ? "d" : t == "half" || t == "bfloat" ? "h" : "r";
+            auto f             = bb.assign(std::format("{}.w{}", name, i), "extractvalue {} {}{}", t_x, v_x, path);
+            auto g = bb.assign(std::format("{}.f{}", name, i), "call {} asm sideeffect \"\", \"={},0\"({} {})", t, reg,
+                               t, f);
+            value  = bb.assign(std::format("{}.x{}", name, i), "insertvalue {} {}, {} {}{}", t_x, value, t, g, path);
         }
         return value;
     } else if (auto ld = Axm::isa<gpu::ldmatrix_b16>(def)) {

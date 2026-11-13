@@ -219,3 +219,40 @@ P 留在寄存器、作为 `gpu.wgmma_rs_f16` 的 A 与 V（MN-major）相乘。
 - 128 个寄存器，无溢出；BC=128 时 80 KB shared（动态）。
 - 已快于 PyTorch 的 FA2 后端 1.3×。与 cuDNN 的差距对应 FA3 余下的三项：装载由计算线程发出（TMA + mbarrier 的生产者 warpgroup）、
   每步等完 S 才做 softmax、两个 warpgroup 的 softmax 与 GEMM 不交错。
+
+## FA3 结构：warp 特化 + TMA + mbarrier（H200 NVL，2026-11-13）
+
+新原语：`gpu.mbar_init/mbar_arrive/mbar_expect_tx/mbar_wait`（mbarrier）、host 端 `gpu.tensor_map`（`cuTensorMapEncodeTiled`，128 B swizzle）与设备端 `gpu.tma_load`
+（`cp.async.bulk.tensor.2d`，完成时记到 mbarrier 上）、`gpu.sync_named/arrive_named`（命名 barrier）、`gpu.setmaxnreg`。
+`wgmma_wait` 现在也把寄存器操作数（RS 变体的 P）传过等待，让它们活到 wgmma 读完为止。
+`lit/{gpu,nvptx}/tma.mim`：TMA 装入的 swizzle 盒与 `wgmma` 描述符假定的布局一致。
+
+`flash_fa3.py`：384 线程。warpgroup 0 是生产者，其中一个线程用 TMA 装 Q 一次、按 128 个 key 一块装 K/V 进 `stages` 个槽的环；
+每个槽有 "K 满"、"V 满"、"空" 三个 mbarrier，此外没有任何 barrier。warpgroup 1、2 各消费 64 行，计算同 `flash_wg`。
+选项：`reg`（`setmaxnreg`：生产者 40、消费者 232，需 `-X nvptx:Xptxas=--maxrregcount=168` 让 ptxas 知道入口寄存器数）、
+`ov`（warpgroup 内流水：先发 S_j 与 P_{j-1}·V_{j-1}，在后者执行时做 S_j 的 softmax）、`pp`（两个消费者的 MMA 用命名 barrier 交替）。
+`MIMFLAGS=... GEN=flash_fa3 kflash16.sh <BH> <L> f16 <stages> reg ov pp`。
+
+32 × 2048 上逐项（2 级）：
+
+| 选项 | 寄存器 | ms |
+|---|---:|---:|
+| 无 | 126 | 0.125 |
+| `ov` | 159 | 0.128 |
+| `pp` | 126 | 0.175 |
+| `reg`（setmaxnreg 生效） | 168 | 0.113 |
+| `reg ov` | 168 | 0.126 |
+| `reg ov pp` | 168 | 0.109 |
+
+全部选项：
+
+| BH × L | 2 级 | 4 级 | `flash_wg` | cuDNN | 相对 cuDNN |
+|---|---:|---:|---:|---:|---:|
+| 32 × 1024 | 0.036 | 0.035 | 0.035 | 0.0349 | 1.00 |
+| 32 × 2048 | 0.109 | 0.107 | 0.113 | 0.0982 | 0.92 |
+| 32 × 4096 | 0.386 | 0.361 | 0.398 | 0.333 | 0.92 |
+| 128 × 2048 | 0.432 | 0.402 | 0.416 | 0.341 | 0.85 |
+| 128 × 4096 | 1.457 | 1.401（392 TF） | 1.538 | 1.283 | 0.92 |
+
+- 只有 warp 特化而不做寄存器重分配与交错时比 `flash_wg` 慢：384 线程让每 SM 只驻留 1 个块，块内没有别的工作掩盖 softmax。
+- 乒乓单独使用会让两个消费者互相等待；与 warpgroup 内流水一起时，一个 warpgroup 的 softmax 正好覆盖另一个的 MMA。

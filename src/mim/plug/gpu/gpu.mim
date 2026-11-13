@@ -383,7 +383,7 @@ axm wgmma_rs_bf16: [nt: Nat, mem.M 0, a: «4, 2; math.BF16», b: I64, trans_b: B
 ///
 /// `wgmma_fence` orders prior register and shared-memory accesses before the following `wgmma`s (`wgmma.fence`).
 /// `wgmma_commit` closes the group of the `wgmma`s issued since the last one (`wgmma.commit_group`).
-/// `wgmma_wait` waits until at most `n` groups are pending and passes the accumulators `x` they wrote (`wgmma.wait_group`).
+/// `wgmma_wait` waits until at most `n` groups are pending and passes `x`, the accumulators they wrote and the register operands they read (`wgmma.wait_group`).
 ///
 axm wgmma_fence: mem.M 0 → mem.M 0;
 axm wgmma_commit: mem.M 0 → mem.M 0;
@@ -394,6 +394,49 @@ axm wgmma_wait: {T: *} → [mem.M 0, n: Nat, x: T] → [mem.M 0, T];
 /// Makes this work-item's prior generic-proxy writes to shared memory visible to the async proxy that `wgmma` and TMA read through (`fence.proxy.async.shared::cta`).
 ///
 axm fence_proxy_async: mem.M 0 → mem.M 0;
+///
+/// ### Asynchronous Barriers and Tensor Copies
+///
+/// An mbarrier is a 64-bit object in shared memory.
+/// Its current phase completes once `count` arrivals and all expected transaction bytes have arrived; then the next phase begins, with the parity flipped.
+///
+/// #### mbar_init, mbar_arrive, mbar_expect_tx, mbar_wait
+///
+/// `mbar_init` sets up `bar` for `count` arrivals per phase; other work-items see it after the next barrier.
+/// `mbar_arrive` arrives once; `mbar_expect_tx` arrives once and expects `bytes` more of asynchronous copies in the current phase.
+/// `mbar_wait` waits until the phase of parity `parity` has completed.
+///
+axm mbar_init: [mem.M 0, bar: mem.Ptr0 I64, count: I32] → mem.M 0;
+axm mbar_arrive: [mem.M 0, bar: mem.Ptr0 I64] → mem.M 0;
+axm mbar_expect_tx: [mem.M 0, bar: mem.Ptr0 I64, bytes: I32] → mem.M 0;
+axm mbar_wait: [mem.M 0, bar: mem.Ptr0 I64, parity: I32] → mem.M 0;
+///
+/// #### tensor_map
+///
+/// On the host: encodes into `map` the TMA descriptor of a row-major `rows × cols` matrix of `E` at device address `base`, copied in boxes of `box_rows × box_cols` with 128-byte swizzle (`cuTensorMapEncodeTiled`).
+/// A kernel uses a copy of `map` in device memory.
+///
+axm tensor_map: [E: *] → {X: *} → [mem.M 0, map: mem.Ptr0 «16; I64», base: mem.Ptr (X, 1), rows cols: I64, box_rows box_cols: I32] → mem.M 0;
+///
+/// #### tma_load
+///
+/// Copies the box at column `col` and row `row` of the tensor that `map` describes to `dst` in shared memory, and counts its bytes as transactions on `bar` (`cp.async.bulk.tensor.2d`).
+/// One work-item issues it; `dst` must be 1 KiB aligned.
+///
+axm tma_load: {T: *} → {a: Nat} → [mem.M 0, dst: mem.Ptr0 T, map: mem.Ptr («16; I64», a), col row: I32, bar: mem.Ptr0 I64] → mem.M 0;
+///
+/// #### sync_named, arrive_named
+///
+/// Barrier `id` (1 to 15) of `count` work-items, a multiple of 32: `sync_named` arrives and waits, `arrive_named` only arrives (`bar.sync`, `bar.arrive`).
+///
+axm sync_named: [mem.M 0, id count: I32] → mem.M 0;
+axm arrive_named: [mem.M 0, id count: I32] → mem.M 0;
+///
+/// #### setmaxnreg
+///
+/// Raises (`inc`) or lowers the warpgroup's per-thread register budget to `n`, a multiple of 8 from 24 to 256 (`setmaxnreg`).
+///
+axm setmaxnreg: [mem.M 0, inc: Bool, n: Nat] → mem.M 0;
 
 /// #### lanes
 ///

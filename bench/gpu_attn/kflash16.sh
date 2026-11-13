@@ -9,7 +9,7 @@ GEN=${GEN:-flash_h16}
 n=${GEN}_${TY}_${BH}_${L}$([ $# -gt 0 ] && printf '_%s' "$@")
 mkdir -p $B/out && cd $B/out
 python3 $B/$GEN.py $BH $L $TY "$@" > $n.mim
-$R/${MIM_BUILD:-build-h200}/bin/mim -p opt -p gpu $n.mim -p nvptx -X nvptx:sm=${SM:-90a} > $n.log 2>&1 || { echo "$n: mim failed"; grep -m3 -A3 error $n.log; exit 1; }
+$R/${MIM_BUILD:-build-h200}/bin/mim -p opt -p gpu $n.mim -p nvptx -X nvptx:sm=${SM:-90a} $MIMFLAGS > $n.log 2>&1 || { echo "$n: mim failed"; grep -m3 -A3 error $n.log; exit 1; }
 clang++ -O2 -DH=$BH -DL=$L $([ $TY = bf16 ] && echo -DBF16) $B/flash_driver16.cpp $n.ll -lcuda -o $n.exec -Wno-override-module || exit 1
 check=$(./$n.exec 1 | tail -1)
 nsys profile -o $n --force-overwrite true ./$n.exec 5 > /dev/null 2>&1

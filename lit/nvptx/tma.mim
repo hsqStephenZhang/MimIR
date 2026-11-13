@@ -1,0 +1,14 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=90a -X nvptx:no-embed
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %FileCheck %s --check-prefix=HOST --input-file=%{s:stem}.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// CHECK-DAG: mbarrier.init.shared::cta.b64
+// CHECK-DAG: mbarrier.arrive.expect_tx.shared::cta.b64
+// CHECK-DAG: cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
+// CHECK-DAG: mbarrier.try_wait.parity.shared::cta.b64
+// HOST: call i32 @cuTensorMapEncodeTiled(ptr {{.*}}, i32 6, i32 2,

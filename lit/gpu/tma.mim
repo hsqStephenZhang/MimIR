@@ -1,0 +1,64 @@
+// RUN: %mim %s -p opt -o - | %FileCheck %s
+
+// One work-item copies the second 64×64 box of a 128×64 F16 matrix into 128-byte-swizzled shared memory with TMA,
+// completing an mbarrier; after waiting on it, the work-group writes the box back unswizzled.
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+
+use core.ops.u.w;
+
+let H    = math.F16;
+let Mat  = «128, 8, 8; H»;
+let Box  = «64, 8, 8; H»;
+let TMap = «16; I64»;
+
+lam ix (n: Nat) (x: I64): Idx n = core.conv.u n x;
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            _: Idx 1, item_id: Idx 128, (), (map: gpu.GlobalPtr TMap, out: gpu.GlobalPtr Box),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let m        = gpu.generic_mem m1;
+    let (m, box) = gpu.slot_shared Box m;
+    let (m, bar) = gpu.slot_shared I64 m;
+    let tid      = core.conv.u 0 item_id;
+    (skip, init)#(tid == 0I64) m
+    where
+        con init (m: mem.M 0) = ready (gpu.mbar_init (m, bar, 1I32));
+        con skip (m: mem.M 0) = ready m;
+        con ready (m: mem.M 0) =
+            let (m1, m3) = gpu.sync_work_items (gpu.global_mem m, m3);
+            (wait, issue)#(tid == 0I64) (gpu.generic_mem m1)
+            where
+                con issue (m: mem.M 0) =
+                    let m = gpu.mbar_expect_tx (m, bar, 8192I32);
+                    wait (gpu.tma_load (m, box, map, 0I32, 64I32, bar));
+                con wait (m: mem.M 0) =
+                    let m = gpu.mbar_wait (m, bar, 0I32);
+                    lam copy (m: mem.M 0, i: I64): mem.M 0 =
+                        let c      = tid + 128I64 * i;
+                        let r      = core.shr.l (c, 3I64);
+                        let col    = core.bit2.and 0 (c, 7I64);
+                        let (m, x) = mem.load (m, mem.lea (mem.lea (box, ix 64 r), ix 8 (core.bit2.xor 0 (col, core.bit2.and 0 (r, 7I64)))));
+                        mem.store (m, mem.lea (mem.lea (core.bitcast (mem.Ptr0 Box) out, ix 64 r), ix 8 col), x);
+                    let m = copy (copy (copy (copy (m, 0I64), 1I64), 2I64), 3I64);
+                    return (gpu.global_mem m, m3, m4, m5);
+            end;
+    end;
+
+extern fun tma_box (m0: mem.M 0, a: mem.Ptr0 Mat, out: mem.Ptr0 Box): [mem.M 0, I32] =
+    let (m0, m1, m4)  = gpu.init m0;
+    let (m0, m1, da)  = gpu.alloc_copy.block (m0, m1, a);
+    let (m0, map)     = mem.alloc (TMap, 0) m0;
+    let m0            = gpu.tensor_map H (m0, map, da, 128I64, 64I64, 64I32, 64I32);
+    let (m0, m1, dm)  = gpu.alloc_copy.block (m0, m1, map);
+    let (m1, dout)    = mem.alloc (Box, 1) m1;
+    ret (m0, m1, m4)  = gpu.launch (1, 128, gpu.default_stream, ff, ()) kernel (dm, dout) $ (m0, m1, m4);
+    let (m0, m1)      = gpu.copy_to_host.block (m0, m1, dout, out);
+    let m0            = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);
+
+// CHECK-DAG: gpu.tensor_map
+// CHECK-DAG: gpu.tma_load
