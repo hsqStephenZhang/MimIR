@@ -78,8 +78,12 @@ private:
         u64 count() const { return rows / m * (cols / n); }
     };
     const Def* lower_mma(const App*, const Destination&, const Fragments&);
-    const Def* store_fragments(const Def* source, const Fragments&, const Destination&);
-    const Def* write_fragments(const Def* source, const Fragments&, const Destination&);
+    /// Maps a fragment element at the tile's `(row, col)` to the value written there, reading on the memory chain.
+    using Epilogue
+        = std::function<std::pair<const Def*, const Def*>(const Def* mem, const Def* row, const Def* col, const Def*)>;
+    const Def* store_fragments(const Def* source, const Fragments&, const Destination&, const Epilogue& = {});
+    const Def* write_fragments(const Def* source, const Fragments&, const Destination&, const Epilogue& = {});
+    const Def* store_epilogue(const App*, const Destination&);
     std::pair<const Def*, const Def*> load_fragments(const Def* init, const Fragments&, const Def* mem);
     u64 lane_count(const Def* body) const;
     const Def* warp_term(const Def*);
@@ -256,6 +260,9 @@ private:
     const Def* tile_round_ = nullptr;
     bool round_fence_      = true;
     const Def* outside(const Def* def) const;
+    bool fills_with_tma(const Def* region) const;
+    /// Whether the work-group tile computes past the tensor's edge and its stores must stay inside.
+    bool padded_ = false;
     /// In a warpgroup-owned region, the old-world first row of the warp's 16, `16 · warp_rank`.
     const Def* group_rows_ = nullptr;
     /// The old-world row of a warp's position @p row in its owned region.

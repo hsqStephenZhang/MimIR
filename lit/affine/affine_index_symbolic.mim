@@ -20,5 +20,5 @@ extern fun g {m n: Nat} (mm: mem.M 0, a: Idx m, b: Idx n): [mem.M 0, «i: 2; Idx
 // CHECK-DAG: core.conv.u @ m{{[0-9_]*}} 0
 // CHECK-DAG: core.conv.u @ n{{[0-9_]*}} 0
 // ... and the results are narrowed back to the symbolic `Idx m` / `Idx n`.
-// CHECK-DAG: core.conv.u @ 0 m{{[0-9_]*}}
-// CHECK-DAG: core.conv.u @ 0 n{{[0-9_]*}}
+// CHECK-DAG: core.idx 2 m{{[0-9_]*}}
+// CHECK-DAG: core.idx 2 n{{[0-9_]*}}

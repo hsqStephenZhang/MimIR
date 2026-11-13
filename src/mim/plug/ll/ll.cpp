@@ -792,10 +792,12 @@ std::optional<std::string> Emitter::emit_core(BB& bb, const std::string& name, c
 
         return bb.assign(name, "{} i64 {}, {}", op, a, b);
     } else if (auto idx = Axm::isa<core::idx>(def)) {
-        auto x = emit(idx->arg());
-        auto s = idx_bitwidth(idx->type());
-        auto t = convert(idx->type());
-        if (s < 64) return bb.assign(name, "trunc i64 {} to {}", x, t);
+        auto x    = emit(idx->arg());
+        auto s    = idx_bitwidth(idx->type());
+        auto t    = convert(idx->type());
+        auto mode = Lit::isa(idx->decurry()->decurry()->arg());
+        if (s < 64)
+            return bb.assign(name, "trunc{} i64 {} to {}", mode && *mode & nat_t(core::Mode::nuw) ? " nuw" : "", x, t);
         return x;
     } else if (auto bit1 = Axm::isa<core::bit1>(def)) {
         if (bit1.id() != core::bit1::neg) def->blame(MIM_LL_BE "unhandled `core.bit1` id").bail();
@@ -1037,7 +1039,8 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         auto pointee = mem::pointee(ptr);
         if (use_simd()) require_static_array_value(pointee);
         auto t_val = convert(pointee, false);
-        auto value = bb.assign(name, "load {}, {} {}{}", t_val, t_ptr, v_ptr, alignment(ptr, pointee));
+        auto value
+            = bb.assign(name, "load {}, {} {}{}{}", t_val, t_ptr, v_ptr, alignment(ptr, pointee), access_md(ptr));
         return repack(bb, name, pointee, value, true);
     } else if (auto store = Axm::isa<mem::store>(def)) {
         auto [mem, ptr, val] = store->args<3>();
@@ -1047,8 +1050,8 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         auto v_val = repack(bb, name, val->type(), emit(val), false);
         auto t_ptr = convert(ptr->type());
         auto t_val = convert(val->type(), false);
-        std::print(bb.body().emplace_back(), "store {} {}, {} {}{}", t_val, v_val, t_ptr, v_ptr,
-                   alignment(ptr, val->type()));
+        std::print(bb.body().emplace_back(), "store {} {}, {} {}{}{}", t_val, v_val, t_ptr, v_ptr,
+                   alignment(ptr, val->type()), access_md(ptr));
         return std::string();
     } else if (auto q = Axm::isa<clos::alloc_jmpbuf>(def)) {
         // The size of a `jmp_buf` is platform/libc-dependent, so it is computed by a C runtime

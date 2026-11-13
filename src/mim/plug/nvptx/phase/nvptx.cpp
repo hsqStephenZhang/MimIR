@@ -138,6 +138,35 @@ private:
     u64 slot_align(const Def* slot) const { return swizzled_slots_.contains(slot) ? 1024 : 16; }
 
     DefSet swizzled_slots_;
+    /// The kernel's parameter tuple and, per parameter, its `!alias.scope` and `!noalias` lists.
+    const Def* kernel_arg_ = nullptr;
+    std::vector<std::pair<u64, u64>> param_scopes_;
+    u64 next_md_ = 2000000;
+
+    /// The parameter @p ptr points into, through offsets and casts.
+    std::optional<size_t> param_of(const Def* ptr) const {
+        for (size_t i = 0; i != 64; ++i) {
+            if (ptr == kernel_arg_) return param_scopes_.size() == 1 ? std::optional<size_t>(0) : std::nullopt;
+            if (auto lea = Axm::isa<mem::lea>(ptr))
+                ptr = lea->arg(2, 0);
+            else if (auto cast = Axm::isa<core::bitcast>(ptr))
+                ptr = cast->arg();
+            else if (auto extract = ptr->isa<Extract>(); extract && extract->tuple() == kernel_arg_)
+                return Lit::isa(extract->index());
+            else
+                return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    // Each parameter is its own device allocation, so accesses through different ones never alias.
+    std::string access_md(const Def* ptr) override {
+        if (!kernel_arg_) return {};
+        auto param = param_of(ptr);
+        if (!param || *param >= param_scopes_.size()) return {};
+        auto [scope, others] = param_scopes_[*param];
+        return std::format(", !alias.scope !{}, !noalias !{}", scope, others);
+    }
 
     LamSet kernels_;
     /// Under `-X nvptx:profile=1` a kernel sums the cycles before and at each barrier site; the first thread prints
@@ -851,6 +880,26 @@ std::string DeviceEmitter::prepare() {
 
     auto& bb = lam2bb_[kernel];
 
+    kernel_arg_ = arg;
+    param_scopes_.clear();
+    auto params = Lit::isa(arg->type()->arity()).value_or(1);
+    auto domain = next_md_++;
+    std::println(access_md_decls_, "!{} = distinct !{{!{}, !\"{}\"}}", domain, domain, id(kernel).substr(1));
+    auto scopes = std::vector<u64>(params);
+    for (auto& scope : scopes) {
+        scope = next_md_++;
+        std::println(access_md_decls_, "!{} = distinct !{{!{}, !{}}}", scope, scope, domain);
+    }
+    for (u64 i = 0; i != params; ++i) {
+        auto own = next_md_++, rest = next_md_++;
+        std::println(access_md_decls_, "!{} = !{{!{}}}", own, scopes[i]);
+        auto list = std::string();
+        for (u64 j = 0; j != params; ++j)
+            if (j != i) list += std::format("{}!{}", list.empty() ? "" : ", ", scopes[j]);
+        std::println(access_md_decls_, "!{} = !{{{}}}", rest, list);
+        param_scopes_.emplace_back(own, rest);
+    }
+
     auto register_sreg_idx = [&](const Def* def, std::string_view sreg) {
         auto name        = id(def);
         auto type        = def->type();
@@ -946,6 +995,19 @@ void DeviceEmitter::emit_epilogue(Lam* lam) {
 
 std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& bb, const Def* def) {
     auto name = id(def);
+
+    // Each pointer parameter is its own device allocation, so its generic address is masked to the 16-byte alignment
+    // that lets LLVM widen the accesses through it.
+    if (auto cast = Axm::isa<core::bitcast>(def); cast && kernel_arg_ && Axm::isa<mem::Ptr>(def->type()))
+        if (auto extract = cast->arg()->isa<Extract>(); extract && extract->tuple() == kernel_arg_) {
+            auto t_src = convert(cast->arg()->type()), t_dst = convert(def->type());
+            if (t_src != t_dst) {
+                auto value
+                    = bb.assign(name + ".unmasked", "addrspacecast {} {} to {}", t_src, emit(cast->arg()), t_dst);
+                declare("ptr @llvm.ptrmask.p0.i64(ptr, i64)");
+                return bb.assign(name, "call ptr @llvm.ptrmask.p0.i64(ptr {}, i64 -16)", value);
+            }
+        }
 
     if (auto sync_work_items = Axm::isa<gpu::sync_work_items>(def)) {
         declare("void @llvm.nvvm.barrier0()");
@@ -1448,7 +1510,7 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         if (func_name.empty()) fe::throwf("Trigonometric tag used by {} is currently unused", def);
         func_name                = func_name + ll::detail::math_suffix(tri->arg()->type());
         auto libdevice_func_name = "__nv_" + func_name;
-        declare("{} @{}({})", type, libdevice_func_name, type);
+        declare("{} @{}({}) nounwind willreturn memory(none)", type, libdevice_func_name, type);
         uses_libdevice = true;
         bb.assign(name, "call {} @{}({} {})", type, libdevice_func_name, type, arg);
         return name;
@@ -1469,7 +1531,7 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         if (func_name.empty()) fe::throwf("Exponential tag used by {} is currently unused", def);
         func_name                = func_name + ll::detail::math_suffix(exp->arg()->type());
         auto libdevice_func_name = "__nv_" + func_name;
-        declare("{} @{}({})", type, libdevice_func_name, type);
+        declare("{} @{}({}) nounwind willreturn memory(none)", type, libdevice_func_name, type);
         uses_libdevice = true;
         bb.assign(name, "call {} @{}({} {})", type, libdevice_func_name, type, arg);
         return name;

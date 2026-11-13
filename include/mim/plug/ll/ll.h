@@ -262,6 +262,8 @@ protected:
     }
 
     virtual bool use_simd() const { return true; }
+    /// Metadata a target attaches to a load or store through @p ptr, such as its alias scope.
+    virtual std::string access_md(const Def* /*ptr*/) { return {}; }
 
     Lam* curr_lam_ = nullptr;
     std::ostream& ostream_;
@@ -274,6 +276,8 @@ protected:
     std::set<std::string> decls_;
     std::ostringstream type_decls_;
     std::ostringstream vars_decls_;
+    /// Module-level metadata nodes a target defines for its accesses.
+    std::ostringstream access_md_decls_;
     std::ostringstream func_decls_;
     std::ostringstream func_impls_;
     LamMap<const Def*> simd_phi_;
@@ -447,6 +451,7 @@ inline void Emitter::start() {
                          md.second ? LoopMdBase : LoopMdBase + 1);
         section(md_decls.str());
     }
+    section(access_md_decls_.str());
 }
 
 inline void Emitter::visit(const Nest& nest) {

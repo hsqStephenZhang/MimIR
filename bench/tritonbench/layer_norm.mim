@@ -1,0 +1,44 @@
+// LayerNorm of an @M@ × @N@ F16 matrix with F16 weight and bias as one kernel: work-items fold `(Σx, Σx²)` over @I@
+// elements of a row each, merge the partials, then normalize their elements.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let H    = math.F16;
+let F32  = math.F32;
+let fast = math.mode.fast;
+let S2   = [F32, F32];
+
+fun moments (acc: S2, xs: [H])@tt: S2 =
+    let (s, q) = acc;
+    let (x)    = xs;
+    let x      = math.conv.f2f math.f32 x;
+    return (math.arith.add fast (s, x), math.arith.add fast (q, math.arith.mul fast (x, x)));
+
+lam merge (a b: S2): S2 =
+    let (s1, q1) = a;
+    let (s2, q2) = b;
+    (math.arith.add fast (s1, s2), math.arith.add fast (q1, q2));
+
+fun normalize (_: H, xwbs: [H, H, H, S2])@tt: H =
+    let (x, w, b, sq) = xwbs;
+    let (s, q)        = sq;
+    let mean          = math.arith.mul fast (s, @INV_N@:F32);
+    let var           = math.arith.sub fast (math.arith.mul fast (q, @INV_N@:F32), math.arith.mul fast (mean, mean));
+    let r             = math.rrt fast (math.arith.add fast (var, 0.00001:F32));
+    let y             = math.arith.mul fast (math.arith.sub fast (math.conv.f2f math.f32 x, mean), r);
+    return (math.conv.f2f math.f16 (math.arith.add fast (math.arith.mul fast (y, math.conv.f2f math.f32 w), math.conv.f2f math.f32 b)));
+
+let levels = serial_group ((@R@, 0), 1, @P@, group_item ((1, @I@), 1, item_done ()));
+
+extern fun tb_layer_norm (x: tensor.Tensor 2 (@M@, @N@) H, w b: tensor.Tensor 1 @N@ H): tensor.Tensor 2 (@M@, @N@) H =
+    let x  = buf x;
+    let sq = merge_with merge (map_reduce ((@M@), (@M@, @N@)) (moments, (0.0:F32, 0.0:F32)) (proj_map @(2, 1) 0)
+        (affine.id @2) x);
+    let y  = map_reduce @4 @(H, 2, 2) ((@M@, @N@), (@M@, @N@)) @((H, H, H, S2), (2, 1, 1, 1), ((@M@, @N@), @N@, @N@, @M@))
+        (normalize, ⊥:H) (affine.id @2)
+        (affine.id @2, proj_map @(2, 1) 1, proj_map @(2, 1) 1, proj_map @(2, 1) 0) (x, buf w, buf b, sq);
+    return (tile_req (y, sq, levels, default_control));

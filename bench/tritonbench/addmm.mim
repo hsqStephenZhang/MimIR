@@ -1,0 +1,33 @@
+// `bias + a · b` for F16 @M@ × @K@ and @K@ × @N@ matrices and an F16 row bias, F32 accumulation, F16 result: @TM@ × @TN@
+// work-group tiles of warpgroups of 64 rows, k in blocks of 64 filled with TMA into a ring of @S@ slots by a producer
+// warp; the bias add and the conversion run on the accumulator fragments.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let H    = math.F16;
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [H, H])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (math.conv.f2f math.f32 x, math.conv.f2f math.f32 y)));
+
+lam gelu (x: F32): F32 =
+    let u = math.arith.mul fast (0.7978845608:F32, math.arith.add fast (x, math.arith.mul fast (0.044715:F32,
+        math.arith.mul fast (x, math.arith.mul fast (x, x)))));
+    math.arith.mul fast (math.arith.mul fast (0.5:F32, x), math.arith.add fast (1.0:F32, math.tri.tanh fast u));
+
+fun epilogue (c: F32, b: H)@tt: H = return (math.conv.f2f math.f16 (@ACT@ (math.arith.add fast (c, math.conv.f2f math.f32 b))));
+
+let levels = @LEVELS@;
+
+extern fun tb_@OP@ (a: tensor.Tensor 2 (@M@, @K@) H, b: tensor.Tensor 2 (@K@, @N@) H, bias: tensor.Tensor 1 @N@ H): tensor.Tensor 2 (@M@, @N@) H =
+    let y = map_reduce_post @(2, 1) @(F32, H, 2, 3, SchedT)
+        ((@M@, @N@), (@M@, @N@, @K@), mk_sched (3, 0)) @((H, H), (2, 2), ((@M@, @K@), (@K@, @N@)), H, 1, @N@)
+        (mac, 0.0:F32, epilogue) (proj_map @(3, 2) (0, 1))
+        ((proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)), proj_map @(2, 1) 1) ((buf a, buf b), buf bias);
+    return (tile_req (y, (), levels, default_control));

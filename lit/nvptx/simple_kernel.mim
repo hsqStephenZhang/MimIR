@@ -33,6 +33,6 @@
 // DEVICE: store i32 42, [[GL_PTR_T]] addrspace(1)* %[[GL_PTR]]
 
 // OPTIMIZED-LABEL: define ptx_kernel void @kernel
-// OPTIMIZED-NOT: call
+// OPTIMIZED-NOT: {{call .*@[^l]}}
 // OPTIMIZED: store i32 42,
 // OPTIMIZED-NEXT: ret void

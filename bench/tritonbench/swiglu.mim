@@ -1,0 +1,23 @@
+// SwiGLU `silu(a) · b` of two @M@ × @N@ F16 matrices: work-groups of @R@ × @C@ elements, work-items of @I@.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let H    = math.F16;
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun swiglu (_: H, ab: [H, H])@tt: H =
+    let (a, b) = ab;
+    let a      = math.conv.f2f math.f32 a;
+    let s      = math.arith.div fast (a, math.arith.add fast (1.0:F32, math.exp.exp fast (math.arith.sub fast (0.0:F32, a))));
+    return (math.conv.f2f math.f16 (math.arith.mul fast (s, math.conv.f2f math.f32 b)));
+
+let levels = serial_group ((@R@, @C@), 1, 0, group_item ((1, @I@), 1, item_done ()));
+
+extern fun tb_swiglu (a b: tensor.Tensor 2 (@M@, @N@) H): tensor.Tensor 2 (@M@, @N@) H =
+    let y = map_reduce ((@M@, @N@), (@M@, @N@)) (swiglu, ⊥:H) (affine.id @2) (affine.id @2, affine.id @2) (buf a, buf b);
+    return (tile_req (y, (), levels, default_control));

@@ -70,7 +70,7 @@ def check(args):
                 assert calls.pop(0) == [
                     "llvm-link", f"{stem}_dev.ll", str(libdevice), "-o", f"{stem}_dev_raw.bc",
                 ]
-            passes = "verify" if mode == "custom" else "default<O2>,nvvm-reflect"
+            passes = "verify" if mode == "custom" else "nvvm-reflect,default<O3>"
             opt_input = f"{stem}_dev_raw.bc" if args.libdevice else f"{stem}_dev.ll"
             assert calls[0] == [
                 "opt", "-mtriple=nvptx64-nvidia-cuda", f"-passes={passes}",

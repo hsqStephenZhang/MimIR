@@ -1,0 +1,44 @@
+// Row softmax of an @M@ × @N@ F16 matrix as one kernel: a work-group keeps @R@ rows resident in shared memory, its
+// work-items fold their share of each row into an online `(max, sum)` and merge the partials, then normalize.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let H    = math.F16;
+let F32  = math.F32;
+let fast = math.mode.fast;
+let ML   = [F32, F32];
+
+fun step (acc: ML, xs: [H])@tt: ML =
+    let (m, l) = acc;
+    let (x)    = xs;
+    let x      = math.conv.f2f math.f32 x;
+    let m2     = math.extrema.fmax fast (m, x);
+    return (m2, math.arith.add fast (math.arith.mul fast (l, math.exp.exp fast (math.arith.sub fast (m, m2))),
+                                     math.exp.exp fast (math.arith.sub fast (x, m2))));
+
+lam merge (a b: ML): ML =
+    let (m1, l1) = a;
+    let (m2, l2) = b;
+    let m        = math.extrema.fmax fast (m1, m2);
+    (m, math.arith.add fast (math.arith.mul fast (l1, math.exp.exp fast (math.arith.sub fast (m1, m))),
+                            math.arith.mul fast (l2, math.exp.exp fast (math.arith.sub fast (m2, m)))));
+
+fun normalize (_: H, xv_ml: [H, ML])@tt: H =
+    let (xv, ml) = xv_ml;
+    let (m, l)   = ml;
+    let x        = math.conv.f2f math.f32 xv;
+    return (math.conv.f2f math.f16 (math.arith.div fast (math.exp.exp fast (math.arith.sub fast (x, m)), l)));
+
+let levels = serial_group ((@R@, 0), 1, @P@, group_item ((1, @I@), 1, item_done ()));
+
+extern fun tb_softmax (x: tensor.Tensor 2 (@M@, @N@) H): tensor.Tensor 2 (@M@, @N@) H =
+    let x  = buf x;
+    let ml = merge_with merge (map_reduce ((@M@), (@M@, @N@)) (step, (math.neg_inf math.f32, 0.0:F32))
+        (proj_map @(2, 1) 0) (affine.id @2) x);
+    let y = map_reduce @2 @(H, 2, 2) ((@M@, @N@), (@M@, @N@)) @((H, ML), (2, 1), ((@M@, @N@), @M@)) (normalize, ⊥:H)
+        (affine.id @2) (affine.id @2, proj_map @(2, 1) 0) (x, ml);
+    return (tile_req (y, ml, levels, default_control));

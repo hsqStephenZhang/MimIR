@@ -1365,7 +1365,8 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         // A vector runs along the logical last dim, so the layout must keep that dim innermost.
         auto keeps_last
             = !layout || (view->perm.back() + 1 == view->perm.size() && (view->split == 1 || view->split % n == 0));
-        auto vectors   = panels_.contains(buffer) && n > 1 && last && *last % n == 0 && physical_last
+        auto global    = getenv("VECG") && bound_level_ != 0 && !layout;
+        auto vectors   = (panels_.contains(buffer) || global) && n > 1 && last && *last % n == 0 && physical_last
                       && *physical_last % n == 0 && keeps_last;
         auto placement = layout ? layout_lam(layout, logical) : w.app(w.annex<affine::id>(), w.lit_nat(r));
         if (!vectors) {
@@ -1431,7 +1432,10 @@ const Def* LowerToMem::lower_into(const Def* root, const Destination& destinatio
     if (auto app = root->isa<App>()) {
         if (Axm::isa<tensor::scalar>(app))
             return buffer::op_write(destination.mem, destination.buffer, new_world().tuple(), rewrite(app->arg()));
-        if (Axm::isa<tensor::map_reduce_post>(app)) return lower_map_reduce(app, &destination);
+        if (Axm::isa<tensor::map_reduce_post>(app)) {
+            if (auto stored = store_epilogue(app, destination)) return stored;
+            return lower_map_reduce(app, &destination);
+        }
         if (Axm::isa<tensor::tiled>(app)) return lower_tiled(app, &destination);
         if (Axm::isa<tensor::tile_fold>(app))
             if (auto merged = lower_tile_fold(app, &destination)) return merged;
@@ -1838,6 +1842,12 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         auto lane_scope  = fe::Restore(lane_, lane);
         auto lanes_scope = fe::Restore(lanes_, lanes > 1 ? lanes : lanes_);
         auto stride      = total;
+        // A work-group whose operands TMA fills computes its last, partial tiles in full, reading zeros past the
+        // edge, and stores only the rows and columns inside.
+        auto padded = false;
+        for (size_t d = 0; d != *rank; ++d)
+            padded |= plan.bind == 1 && sizes[d] && *sizes[d] % steps[d] && fills_with_tma(app->arg());
+        auto padding = fe::Restore(padded_, padded_ || padded);
         for (size_t d = 0; d != *rank; ++d) {
             if (counts[d] == 1) {
                 // A one-tile bound region depends on its binder in every dim, so nothing it stages floats out.
@@ -1852,7 +1862,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             auto quotient = w.call(core::nat::div, Defs{linear, w.lit_nat(stride)});
             auto tile     = w.call(core::nat::rem, Defs{quotient, w.lit_nat(counts[d])});
             offsets[d]    = w.call(core::nat::mul, Defs{tile, w.lit_nat(steps[d])});
-            extents[d]    = *sizes[d] % steps[d] ? nullptr : old.lit_nat(steps[d]);
+            extents[d]    = *sizes[d] % steps[d] && !padded ? nullptr : old.lit_nat(steps[d]);
         }
         // A warp's lanes share its tile like a work-item's own; only the tensor-core lowering tells them apart.
         auto level     = fe::Restore(bound_level_, std::min<u64>(plan.bind, 2));
@@ -2642,8 +2652,79 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
 
 // Writes each lane's accumulator fragments to their rows and columns of @p destination.
 // A specialized region's producer warp holds no accumulator, so only the consumers write theirs.
-const Def* LowerToMem::store_fragments(const Def* source, const Fragments& fragments, const Destination& destination) {
-    if (!producer_ || !fragments.group) return write_fragments(source, fragments, destination);
+// A pointwise map over a fold's accumulator fragments, such as a bias add, runs on each element as it is written.
+const Def* LowerToMem::store_epilogue(const App* app, const Destination& destination) {
+    auto& old = old_world();
+    auto mr   = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ro = Lit::isa(mr.Ro), rn = Lit::isa(mr.Rn), nis = Lit::isa(mr.nis), nps = Lit::isa(mr.nps);
+    if (ro != 2 || rn != 2 || !nis || !nps) return nullptr;
+    auto [inputs, posts] = app->arg()->projs<2>();
+    std::optional<u64> held;
+    const Def* source = nullptr;
+    for (u64 k = 0; k != *nis && !held; ++k) {
+        auto value = Axm::peel<tensor::buf>(inputs->proj(*nis, k));
+        auto fold  = Axm::isa<tensor::tile_fold>(value->isa<Extract>() ? value->as<Extract>()->tuple() : value);
+        if (!fold || map_dims(mr.maps->proj(*nis, k), 2) != std::vector<u64>{0, 1}) continue;
+        source = rewrite(value);
+        if (fe::lookup(fragments_, source)) held = k;
+    }
+    if (!held) return nullptr;
+    auto fragments = *fe::lookup(fragments_, source);
+    // The other inputs are read element by element on the memory chain of the writes; the epilogue itself is pure.
+    struct Input {
+        const Def *buffer, *map, *rank, *shape;
+    };
+    auto& w      = new_world();
+    auto others  = std::vector<Input>();
+    auto types   = DefVec{TensorType::isa(inputs->proj(*nis, *held)->type())->T};
+    auto collect = [&](const Def* input, const Def* map, const Def* rank, const Def* shape) {
+        types.push_back(TensorType::isa(input->type())->T);
+        // A view is read through its source, which keeps a bias tile from being copied out per work-item.
+        while (auto read = panel::tensor_read(input, shape)) {
+            if (!TensorType::isa(read->src->type())) break;
+            input = read->src;
+            rank  = read->R;
+            shape = read->S;
+            map   = panel::compose_read_map(read->map, map);
+        }
+        others.push_back({rewrite(input), rewrite(map), rewrite(rank), rewrite(shape)});
+    };
+    for (u64 k = 0; k != *nis; ++k)
+        if (k != *held)
+            collect(inputs->proj(*nis, k), mr.maps->proj(*nis, k), mr.Ris->proj(*nis, k), mr.Sis->proj(*nis, k));
+    for (u64 k = 0; k != *nps; ++k)
+        collect(posts->proj(*nps, k), mr.post_maps->proj(*nps, k), mr.Rps->proj(*nps, k), mr.Sps->proj(*nps, k));
+    auto g      = old.mut_lam(old.pi(old.sigma(types), TensorType::isa(app->type())->T))->set("fragmentEpilogue");
+    auto values = DefVec(g->var()->projs(types.size()));
+    auto next   = size_t(1);
+    auto ins    = old.tuple(DefVec(*nis, [&](size_t k) { return k == *held ? values[0] : values[next++]; }));
+    auto ps     = old.tuple(DefVec(*nps, [&](size_t) { return values[next++]; }));
+    auto call   = [&](const Def* f, const Def* arg) { return old.app(cps::op_cps2ds_dep(f), arg); };
+    g->set(true, call(mr.post, old.tuple({call(mr.comb, old.tuple({mr.init, ins})), ps})));
+    auto lowered = rewrite(g);
+    auto so      = rewrite(mr.So);
+    return store_fragments(
+        source, fragments, destination, [&, so, lowered](const Def* mem, const Def* r, const Def* c, const Def* v) {
+            auto loops = w.tuple({w.call<core::idx>(w.lit_nat_0(), so->proj(2, 0), r),
+                                  w.call<core::idx>(w.lit_nat_0(), so->proj(2, 1), c)});
+            auto args  = DefVec{v};
+            for (auto& input : others) {
+                auto at = btensor::op_affine_map(input.map, input.rank, w.lit_nat(2), so, input.shape, loops, mem);
+                auto [br, bs, bT] = Axm::as<buffer::Buf>(input.buffer->type())->args<3>();
+                std::tie(mem, at) = at->projs<2>();
+                const Def* element;
+                std::tie(mem, element) = buffer::op_read(mem, input.buffer, *Shape(at).fold(bs))->projs<2>();
+                args.push_back(element);
+            }
+            return std::pair{mem, w.app(lowered, w.tuple(args))};
+        });
+}
+
+const Def* LowerToMem::store_fragments(const Def* source,
+                                       const Fragments& fragments,
+                                       const Destination& destination,
+                                       const Epilogue& epilogue) {
+    if (!producer_ || !fragments.group) return write_fragments(source, fragments, destination, epilogue);
     // The accumulator is an argument of the branch, so the fold that computes it runs in both roles.
     auto& w          = new_world();
     auto mem_type    = destination.mem->type();
@@ -2655,11 +2736,14 @@ const Def* LowerToMem::store_fragments(const Def* source, const Fragments& fragm
     skip->app(true, run->ret_var(), skip->var());
     auto inner = destination;
     inner.mem  = write->var();
-    write->app(true, run->ret_var(), write_fragments(acc, fragments, inner)->proj(2, 0));
+    write->app(true, run->ret_var(), write_fragments(acc, fragments, inner, epilogue)->proj(2, 0));
     return w.tuple({call, destination.buffer});
 }
 
-const Def* LowerToMem::write_fragments(const Def* source, const Fragments& fragments, const Destination& destination) {
+const Def* LowerToMem::write_fragments(const Def* source,
+                                       const Fragments& fragments,
+                                       const Destination& destination,
+                                       const Epilogue& epilogue) {
     auto& w   = new_world();
     auto rank = Lit::as(destination.shape->arity());
     auto nat  = [&](u64 v) { return w.lit_nat(v); };
@@ -2702,21 +2786,70 @@ const Def* LowerToMem::write_fragments(const Def* source, const Fragments& fragm
         }
         mem = w.app(w.annex<gpu::sync_cluster>(), mem);
     }
+    auto paired = Lit::isa(destination.shape->proj(rank, rank - 1));
+    if (rank != 2 || (paired && *paired % 2)) paired = std::nullopt;
     for (u64 f = 0; f != fragments.count(); ++f) {
         auto value = partials.empty() ? source->proj(fragments.count(), f)
                                       : w.tuple(DefVec(4, [&](size_t e) { return partials[f * 4 + e]; }));
-        for (u64 e = 0; e != 4; ++e) {
+        // A lane's elements `e` and `e + 1` are adjacent columns of one row, so an even row length writes them as a
+        // pair.
+        for (u64 e = 0; e != 4; e += 2) {
             auto [local_row, local_col] = fragment_coords(w, mma_m16n8k8_tf32::l_c, w.tuple({lane, w.lit_idx(4, e)}));
             auto row                    = add(base, add(nat(f / ns * fragments.m), local_row));
             auto col                    = add(nat(f % ns * fragments.n), local_col);
-            auto at                     = std::array{row, col};
-            auto index                  = w.tuple(DefVec(rank, [&](size_t d) {
-                auto coord = add(destination.origin->proj(rank, d), at[d]);
-                return w.call<core::idx>(w.lit_nat_0(), destination.shape->proj(rank, d), coord);
-            }));
-            mem = buffer::op_write(mem, destination.buffer, *Shape(index).fold(destination.shape),
-                                   w.extract(value, w.lit_idx(4, e)))
-                      ->proj(2, 0);
+            auto pair                   = DefVec(2);
+            for (u64 h = 0; h != 2; ++h) {
+                pair[h] = w.extract(value, w.lit_idx(4, e + h));
+                if (epilogue) std::tie(mem, pair[h]) = epilogue(mem, row, h ? add(col, nat(1)) : col, pair[h]);
+            }
+            auto coords
+                = DefVec(rank, [&](size_t d) { return add(destination.origin->proj(rank, d), d == 0 ? row : col); });
+            // A padded tile writes only inside its destination.
+            const Def* inside = nullptr;
+            for (size_t d = 0; padded_ && d != rank; ++d) {
+                auto last = d + 1 == rank ? add(coords[d], nat(1)) : coords[d];
+                auto in   = w.call(core::ncmp::l, Defs{last, destination.shape->proj(rank, d)});
+                inside    = inside ? w.call(core::bit2::and_, w.lit_nat(2), Defs{inside, in}) : in;
+            }
+            Lam* guard        = nullptr;
+            Lam* write        = nullptr;
+            const Def* joined = nullptr;
+            if (inside) {
+                // The pair is an argument of the branch, so what computes it stays outside.
+                std::tie(guard, joined)
+                    = btensor::ds_splice(w.tuple({mem, w.tuple(pair)}), mem->type(), "fragmentGuard");
+                auto [m, values] = guard->var(2, 0)->projs<2>();
+                write            = w.mut_con({mem->type(), values->type()})->set("fragmentWrite");
+                auto pass        = w.mut_con({mem->type(), values->type()})->set("fragmentSkip");
+                guard->app(true, w.extract(w.tuple({pass, write}), inside), w.tuple({m, values}));
+                pass->app(true, guard->ret_var(), pass->var(2, 0));
+                mem = write->var(2, 0);
+                for (u64 h = 0; h != 2; ++h)
+                    pair[h] = write->var(2, 1)->proj(2, h);
+            }
+            if (paired) {
+                auto runs     = DefVec(destination.shape->projs(rank));
+                runs.back()   = nat(*paired / 2);
+                coords.back() = w.call(core::nat::div, Defs{coords.back(), nat(2)});
+                auto index    = w.tuple(
+                    DefVec(rank, [&](size_t d) { return w.call<core::idx>(w.lit_nat_0(), runs[d], coords[d]); }));
+                mem = buffer::op_write(mem, buffer::op_vectorize(nat(2), destination.buffer),
+                                       *Shape(index).fold(w.tuple(runs)), w.tuple(pair))
+                          ->proj(2, 0);
+            } else {
+                for (u64 h = 0; h != 2; ++h) {
+                    auto index = w.tuple(DefVec(rank, [&](size_t d) {
+                        auto coord = d + 1 == rank && h ? add(coords[d], nat(1)) : coords[d];
+                        return w.call<core::idx>(w.lit_nat_0(), destination.shape->proj(rank, d), coord);
+                    }));
+                    mem = buffer::op_write(mem, destination.buffer, *Shape(index).fold(destination.shape), pair[h])
+                              ->proj(2, 0);
+                }
+            }
+            if (guard) {
+                write->app(true, guard->ret_var(), mem);
+                mem = joined;
+            }
         }
     }
     return w.tuple({mem, destination.buffer});
@@ -2986,6 +3119,20 @@ const Def* LowerToMem::warp_term(const Def* def) {
 }
 
 // @p def with each region input it projects from replaced by the region's argument, as long as there is one.
+bool LowerToMem::fills_with_tma(const Def* region) const {
+    auto todo = DefVec{region};
+    auto seen = DefSet{region};
+    while (!todo.empty()) {
+        auto def = todo.back();
+        todo.pop_back();
+        if (Axm::isa<tensor::fill_tma>(def)) return true;
+        if (def->isa<Axm>()) continue;
+        for (auto op : def->deps())
+            if (op && seen.insert(op).second) todo.push_back(op);
+    }
+    return false;
+}
+
 const Def* LowerToMem::outside(const Def* def) const {
     if (auto outer = fe::lookup(outer_of_, def)) return outside(outer);
     if (auto extract = def->isa<Extract>()) {
@@ -4164,6 +4311,25 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         items->set(true, wrap_fresh_mem(items->body()));
         pop();
     }
+    auto op = rewrite(merge);
+    // A warp's work-items first merge their partials with shuffles, so the shared tree merges one per warp.
+    auto f32      = w.annex<math::F32>();
+    auto lanewise = [&](const Def* type) {
+        if (type == f32) return true;
+        auto n = Lit::isa(type->arity());
+        if (!n || *n < 2) return false;
+        for (u64 i = 0; i != *n; ++i)
+            if (type->proj(*n, i) != f32) return false;
+        return true;
+    };
+    auto shuffled = [&](const Def* value, u64 mask) -> const Def* {
+        auto lane = [&](const Def* x) { return w.app(w.annex<gpu::shfl_xor>(), w.tuple({x, w.lit_i32(u32(mask))})); };
+        if (value->type() == f32) return lane(value);
+        auto k = Lit::as(value->type()->arity());
+        return w.tuple(DefVec(k, [&](size_t i) { return lane(value->proj(k, i)); }));
+    };
+    auto warps = Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(*n))) && *n % 32 == 0 && lanewise(el);
+    auto parts = warps ? *n / 32 : *n;
     {
         // The private tile goes to the work-item's rows of the partials.
         Lam* cur        = store;
@@ -4172,12 +4338,18 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto iters      = affine::counting_nest(cur, exit, acc, literal_storage->projs(rank), "boundFoldStore");
         auto [rm, value]
             = buffer::op_read(acc, update->proj(2, 1), btensor::folded_idx(literal_storage, iters))->projs<2>();
+        auto slot = index;
+        if (warps) {
+            for (u64 mask = 16; mask != 0; mask /= 2)
+                value = w.app(op, w.tuple({value, shuffled(value, mask)}));
+            slot = w.call(core::shr::l, Defs{index, w.lit_i64(5)});
+        }
         auto at = DefVec(iters.begin(), iters.end());
         if (rank) {
-            auto base = w.call(core::wrap::mul, core::Mode::none, Defs{index, w.lit_i64(rows)});
+            auto base = w.call(core::wrap::mul, core::Mode::none, Defs{slot, w.lit_i64(rows)});
             at[0]     = w.call(core::wrap::add, core::Mode::none, Defs{base, at[0]});
         } else {
-            at.push_back(index);
+            at.push_back(slot);
         }
         auto wm = buffer::op_write(rm, run_partials, btensor::folded_idx(pshape, at), value)->proj(2, 0);
         cur->app(true, exit, wm);
@@ -4186,7 +4358,6 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         = w.app(panel(w.annex<gpu::coop_fill>()), w.tuple({fresh->proj(2, 0), fresh->proj(2, 1), fill}))->projs<2>();
     token                = w.app(w.app(w.annex<gpu::sync_publish>(), {g, w.lit_nat(epoch)}), filled);
     const Def* published = w.app(panel(w.annex<gpu::publish_view>()), w.tuple({token, partials}));
-    auto op              = rewrite(merge);
     // The merged tile lands in the destination at its origin, or in a work-group buffer of its own.
     auto target = [&](const DefVec& coords) {
         if (!destination) return btensor::folded_idx(literal_storage, coords);
@@ -4228,8 +4399,8 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     combine->set(true, w.tuple({combine_call, w.tuple()}));
     auto view_of = [&](const Def* buf) { return w.app(panel(w.annex<gpu::view>()), buf); };
     // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each barrier.
-    if (Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(*n)))) {
-        auto rounds = w.app(w.annex(tensor::r8_plan::rounds), {w.lit_nat(*n), w.lit_nat(elems)});
+    if (Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(parts)))) {
+        auto rounds = w.app(w.annex(tensor::r8_plan::rounds), {w.lit_nat(parts), w.lit_nat(elems)});
         for (auto round : rounds->projs()) {
             auto [active, s, pairs, trip] = round->projs<4>([](auto value) { return Lit::as(value); });
             if (!active) continue;
@@ -4276,7 +4447,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto [wmem, wval]      = write->vars<2>();
         write->app(true, jyield, buffer::op_write(wmem, rbuf, target(coords), wval)->proj(2, 0));
         auto [tbody, tcall]
-            = affine::counting_for(w.lit_i64(*n), w.tuple({jmem, rewrite(seed)}), write, w.sym("boundCombineStep"));
+            = affine::counting_for(w.lit_i64(parts), w.tuple({jmem, rewrite(seed)}), write, w.sym("boundCombineStep"));
         citems->set(true, tcall);
         auto [t, tacc, tyield] = tbody->vars<3>();
         auto [tmem, tval]      = tacc->projs<2>();

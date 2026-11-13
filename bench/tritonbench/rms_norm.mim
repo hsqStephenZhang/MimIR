@@ -1,0 +1,31 @@
+// RMSNorm of an @M@ × @N@ F16 matrix with an F16 weight as one kernel: a work-group's work-items each fold @I@ elements
+// of a row's sum of squares, merge the partials, then scale their elements.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let H    = math.F16;
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun square (acc: F32, xs: [H])@tt: F32 =
+    let (x) = xs;
+    let x   = math.conv.f2f math.f32 x;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, x)));
+
+fun scale (_: H, xws: [H, H, F32])@tt: H =
+    let (x, w, s) = xws;
+    let r         = math.rrt fast (math.arith.add fast (math.arith.mul fast (s, @INV_N@:F32), 0.000001:F32));
+    return (math.conv.f2f math.f16 (math.arith.mul fast (math.arith.mul fast (math.conv.f2f math.f32 x, r), math.conv.f2f math.f32 w)));
+
+let levels = serial_group ((@R@, 0), 1, @P@, group_item ((1, @I@), 1, item_done ()));
+
+extern fun tb_rms_norm (x: tensor.Tensor 2 (@M@, @N@) H, w: tensor.Tensor 1 @N@ H): tensor.Tensor 2 (@M@, @N@) H =
+    let x  = buf x;
+    let ss = map_reduce ((@M@), (@M@, @N@)) (square, 0.0:F32) (proj_map @(2, 1) 0) (affine.id @2) x;
+    let y  = map_reduce @3 @(H, 2, 2) ((@M@, @N@), (@M@, @N@)) @((H, H, F32), (2, 1, 1), ((@M@, @N@), @N@, @M@))
+        (scale, ⊥:H) (affine.id @2) (affine.id @2, proj_map @(2, 1) 1, proj_map @(2, 1) 0) (x, buf w, ss);
+    return (tile_req (y, ss, levels, default_control));

@@ -410,10 +410,13 @@ const Def* LowerIndex::rewrite_imm_App(const App* app) {
 
         auto [out_mem, out_idxs] = w.app(idx_map_lam, {mem, lifted})->projs<2>();
 
-        auto sout_n   = rewrite(sout);
-        auto n_out    = sout_n->num_projs();
-        auto narrowed = w.tuple(DefVec(
-            n_out, [&](size_t j) { return w.call(core::conv::u, sout_n->proj(n_out, j), out_idxs->proj(n_out, j)); }));
+        auto sout_n = rewrite(sout);
+        auto n_out  = sout_n->num_projs();
+        // A map's coordinates address its output shape, so narrowing them never wraps.
+        auto narrowed = w.tuple(DefVec(n_out, [&](size_t j) {
+            auto nat = w.call<core::bitcast>(w.type_nat(), out_idxs->proj(n_out, j));
+            return w.call<core::idx>(w.lit_nat(nat_t(core::Mode::nuw)), sout_n->proj(n_out, j), nat);
+        }));
 
         return w.tuple({out_mem, narrowed});
     }
