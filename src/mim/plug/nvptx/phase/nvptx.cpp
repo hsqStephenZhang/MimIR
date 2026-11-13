@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <format>
 #include <map>
+#include <ranges>
 
 #include <fe/log.h>
 #include <fe/sys.h>
@@ -133,11 +134,10 @@ private:
             paths.emplace_back(prefix, type);
     }
 
-    /// A shared slot of whole 1 KiB blocks may hold `wgmma`'s 128-byte swizzle atoms, which must be 1 KiB aligned.
-    static u64 slot_align(const Def* slot) {
-        auto size = Lit::as(core::op(core::trait::size, slot->as<App>()->decurry()->arg()));
-        return size % 1024 == 0 ? 1024 : 16;
-    }
+    /// The 128-byte swizzle atoms that `wgmma` descriptors and TMA address must be 1 KiB aligned.
+    u64 slot_align(const Def* slot) const { return swizzled_slots_.contains(slot) ? 1024 : 16; }
+
+    DefSet swizzled_slots_;
 
     LamSet kernels_;
     /// Under `-X nvptx:profile=1` a kernel sums the cycles before and at each barrier site; the first thread prints
@@ -174,6 +174,19 @@ bool is_global(const Def* ptr) {
         else
             return false;
     }
+}
+
+// The `slot_shared` that the shared pointer @p ptr points into, or @p ptr itself.
+const Def* slot_of(const Def* ptr) {
+    while (true)
+        if (auto lea = Axm::isa<mem::lea>(ptr))
+            ptr = lea->arg(2, 0);
+        else if (auto cast = Axm::isa<core::bitcast>(ptr))
+            ptr = cast->arg();
+        else if (auto extract = ptr->isa<Extract>(); extract && Axm::isa<gpu::slot_shared>(extract->tuple()))
+            return extract->tuple();
+        else
+            return ptr;
 }
 
 // The global pointer @p val is loaded from.
@@ -699,6 +712,10 @@ std::string DeviceEmitter::prepare() {
         todo.pop_back();
         if (!seen.emplace(def).second) continue;
         if (Axm::isa<gpu::slot_shared>(def)) slots.push_back(def);
+        const Def* addressed = nullptr;
+        if (auto addr = Axm::isa<gpu::shared_addr>(def)) addressed = addr->arg();
+        if (auto tma = Axm::isa<gpu::tma_load>(def)) addressed = tma->arg(6, 1);
+        if (addressed) swizzled_slots_.emplace(slot_of(addressed));
         for (auto dep : def->deps())
             todo.push_back(dep);
     }
@@ -740,7 +757,9 @@ std::string DeviceEmitter::prepare() {
         auto kname             = id(kernel).substr(1);
         dynamic_array_         = "@" + kname + "_dynamic_shared";
         dynamic_shared_[kname] = total;
-        std::println(vars_decls_, "{} = external addrspace(3) global [0 x i8], align 1024", dynamic_array_);
+        std::println(
+            vars_decls_, "{} = external addrspace(3) global [0 x i8], align {}", dynamic_array_,
+            std::ranges::max(slots | std::views::transform([&](const Def* slot) { return slot_align(slot); })));
     } else {
         dynamic_slots_.clear();
     }
