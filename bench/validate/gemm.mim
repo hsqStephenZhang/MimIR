@@ -1,0 +1,22 @@
+// `a · b` for F16 @M@ × @K@ and @K@ × @N@ matrices into F32, without an epilogue.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let H    = math.F16;
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [H, H])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (math.conv.f2f math.f32 x, math.conv.f2f math.f32 y)));
+
+let levels = @LEVELS@;
+
+extern fun tb_gemm (a: tensor.Tensor 2 (@M@, @K@) H, b: tensor.Tensor 2 (@K@, @N@) H): tensor.Tensor 2 (@M@, @N@) F32 =
+    let root = map_reduce ((@M@, @N@), (@M@, @N@, @K@)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+    return (tile_req (root, (), levels, default_control));

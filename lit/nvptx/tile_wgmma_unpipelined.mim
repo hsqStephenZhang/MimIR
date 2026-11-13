@@ -1,0 +1,13 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: cp %S/../gpu/tile_wgmma_mn.mim %{s:stem}.mim
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=1 %{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=90a
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=1 %{s:stem}.mim -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_wgmma_mn_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// Panels filled with plain stores, one block at a time, reach wgmma only through a fence to the async proxy.
+
+// CHECK: fence.proxy.async.shared::cta
+// CHECK: wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16

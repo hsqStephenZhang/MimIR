@@ -2436,7 +2436,8 @@ pub mod check
         "a TMA reduction in a persistent work-group must be specialized",
         "{} blocks per tile do not fill whole cycles of a persistent ring of {} slots",
         "a bound level cannot peel its tail",
-        "a vector level marks a single parallel loop with size 1 or splits the last reduction loop");
+        "a vector level marks a single parallel loop with size 1 or splits the last reduction loop",
+        "a specialized reduction needs at least two blocks, not {}");
 
     lam any {n: Nat} (p: «n; Bool»): Bool = vec.fold.r @(Bool, Bool) @n (core.bit2.or 0) (p, ff);
     lam count {n: Nat} (p: «n; Bool»): Nat = vec.fold.r @(Nat, Nat) @n core.nat.add (‹d: n; (0, 1)#(p#d)›, 0);
@@ -2475,6 +2476,9 @@ pub mod check
     lam ring {n: Nat} (persistent: Bool, pipeline: Nat, block sizes: «n; Nat»): Verdict =
         let (k, s) = reduced (block, sizes);
         fail_with (both (both (persistent, pipeline != 0), core.nat.rem (k / s, positive pipeline) != 0), 12, k / s, pipeline);
+    lam specialized {n: Nat} (block sizes: «n; Nat»): Verdict =
+        let (k, s) = reduced (block, sizes);
+        fail_with (both (k != 0, k / s < 2), 15, k / s, 0);
     lam peels {n: Nat} (tail: Nat, block sizes: «n; Nat»): Verdict =
         fail (both (tail == 1, any ‹d: n; both (both (sizes#d != 0, sizes#d < block#d),
                                                  core.nat.rem (block#d, positive (sizes#d)) != 0)›), 13);
@@ -2500,9 +2504,9 @@ pub mod check
                            persistent, rest)))))
             | 4 (sizes, _, promote, pipeline, _, _, rest) =>
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (cluster != 0, 10),
-                or_else (ring (persistent, pipeline, block, sizes),
+                or_else (specialized (block, sizes), or_else (ring (persistent, pipeline, block, sizes),
                     wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, rest)))));
+                           persistent, rest))))));
     lam warp_ok {n: Nat, Acc Mma: *, w: «n; Nat»} (ro nis: Nat, block: «n; Nat», a b: Bool, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Verdict =
         match l with
             | 0 => ok

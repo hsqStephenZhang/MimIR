@@ -722,7 +722,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
         auto instr        = math::isa_bf16(H) ? w.annex<gpu::wgmma_rs_bf16>() : w.annex<gpu::wgmma_rs_f16>();
         auto v_a          = rewrite(a);
         const Def* acc    = rewrite(c);
-        auto mem          = w.app(w.annex<gpu::wgmma_fence>(), fresh_mem());
+        auto mem          = w.app(w.annex<gpu::wgmma_fence>(), publish_panels(fresh_mem()));
         for (u64 kc = 0; kc != nk; ++kc) {
             auto logical_at = rewrite(at->proj(nk, kc));
             auto physical   = btensor::op_affine_map(place, br, br, logical, bs, logical_at, none)->proj(2, 1);
@@ -2481,6 +2481,14 @@ const Def* LowerToMem::region_input(const Def* inputs) {
     return view_reads(inputs, proxy, views);
 }
 
+// Panels a work-group filled with generic stores reach `wgmma` through the async proxy only after every filler fenced
+// them.
+const Def* LowerToMem::publish_panels(const Def* mem) {
+    if (proxied_) return mem;
+    auto& w = new_world();
+    return w.app(w.annex<gpu::fence>(), w.app(w.annex<gpu::fence_proxy_async>(), mem));
+}
+
 // Whether a `wgmma` operand panel is MN-major, from its layout's split, and the bytes between its atoms of 128 bytes.
 std::pair<bool, u64> LowerToMem::wgmma_major(const Def* buffer) {
     auto layout = fe::lookup(layouts_, buffer);
@@ -2580,7 +2588,7 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
                 auto own = w.call<core::idx>(w.lit_nat_0(), nat(u64(1) << 32), add(consumer_, nat(1)));
                 mem      = w.app(w.annex<gpu::sync_named>(), {mem, own, w.lit_i32(256)});
             }
-            mem = w.app(w.annex<gpu::wgmma_fence>(), mem);
+            mem = w.app(w.annex<gpu::wgmma_fence>(), publish_panels(mem));
             for (u64 ks = 0; ks != depth / kt; ++ks)
                 std::tie(mem, tiles)
                     = w.app(instr, {nat(nt), mem, desc(0, ks), desc(1, ks), w.lit_bool(b_mn), tiles})->projs<2>();
@@ -3402,7 +3410,8 @@ const Def* LowerToMem::warp_fold(const App* app) {
         return w.app(w.annex<gpu::async_commit>(), at);
     };
     if (panels != 0) mem = fill_block(mem, w.lit_nat_0(), ring[0]);
-    auto rings = DefVec();
+    auto proxied = fe::Restore(proxied_, proxied_ || (panels != 0 && group_rows_));
+    auto rings   = DefVec();
     for (auto& buffers : ring)
         rings.insert(rings.end(), buffers.begin(), buffers.end());
     auto state             = w.tuple({mem, first, w.tuple(carried_values), w.tuple(rings)});
@@ -3699,7 +3708,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             ring.push_back(buffers);
         }
     }
-    auto panels = ring.empty() ? size_t(0) : ring[0].size();
+    auto panels  = ring.empty() ? size_t(0) : ring[0].size();
+    auto proxied = fe::Restore(proxied_, proxied_ || panels != 0);
     // The input of the step's product each pipelined panel stages, for its multicast bit.
     auto slots = std::vector<u64>(panels, u64(64));
     auto bare  = [](const Def* def) {

@@ -63,6 +63,7 @@ def render(op, params):
     levels = {
         "ws": "serial_group ((@TM@, @TN@, 0), @TAIL@, 0, group_warpgroup ((64, @TN@, 0), 1, wg_red_ws ((0, 0, 64), 1, 3, @S@, 0, wg_mma (64, @TN@, 16))))",
         "pws": "serial_persistent (132, serial_group ((@TM@, @TN@, 0), @TAIL@, 0, group_warpgroup ((64, @TN@, 0), 1, wg_red_ws ((0, 0, 64), 1, 3, @S@, @PP@, wg_mma (64, @TN@, 16)))))",
+        "red": "serial_group ((@TM@, @TN@, 0), @TAIL@, 0, group_warpgroup ((64, @TN@, 0), 1, wg_red ((0, 0, 64), 1, 3, wg_mma (64, @TN@, 16))))",
         "tma": "serial_group ((@TM@, @TN@, 0), @TAIL@, 0, group_warpgroup ((64, @TN@, 0), 1, wg_red_tma ((0, 0, 64), 1, 3, @S@, wg_mma (64, @TN@, 16))))",
     }
     text = text.replace("@LEVELS@", levels.get(params.get("L", ""), "@LEVELS@"))

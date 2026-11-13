@@ -239,6 +239,8 @@ private:
     DefMap<Fragments> fragments_;
     /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.
     bool mma_panels_ = false;
+    /// While a fold's pipelined fills publish its panels to the async proxy, through which `wgmma` reads them.
+    bool proxied_ = false;
     /// The value outside a region of the inputs its body receives, so host-side work on them can stay outside.
     DefMap<const Def*> outer_of_;
     /// The cluster size and multicast mask of the work-group region being lowered.
@@ -270,6 +272,7 @@ private:
     const Def* wgmma_lane(const App*);
     const Def* wgmma_a(const btensor::MapRedPost&, u64 nk);
     std::pair<bool, u64> wgmma_major(const Def* buffer);
+    const Def* publish_panels(const Def* mem);
     const Def* wgmma_desc(const Def* buffer, const Def* index);
     bool uniform(const Def*) const;
     std::function<const Def*(const Def*)> cooperative();
