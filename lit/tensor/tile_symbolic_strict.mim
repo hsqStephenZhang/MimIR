@@ -1,0 +1,16 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 -X tensor:strict=1 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=STRICT
+
+// A tile size known only at run time cannot be checked at elaboration: the request falls back, or fails under strict.
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+extern fun rows (t: Nat, x: tensor.Tensor 2 (16, 16) I64): tensor.Tensor 1 16 I64 =
+    return (tile_req (reduce (core.wrap.add 0 @0, 0I64) 1₂ (buf x), (), serial_par ((t, 0), 1, serial_done ()), default_control));
+
+// CHECK: unrealized tensor.tile_req {{.*}}: tile sizes must be literals
+// STRICT: error: unrealized tensor.tile_req {{.*}}: tile sizes must be literals
