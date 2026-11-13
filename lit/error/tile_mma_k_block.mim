@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_mma_k_block.mim:26:{{.*}}error: the tensor-core tile `(16, 8, 16)` does not divide its block of loop 2, 24
+// CHECK: tile_mma_k_block.mim:26:{{.*}}error: a tensor-core tile does not divide its block
 
 // A warp's mma tile divides the k block its reduction level leaves.
 

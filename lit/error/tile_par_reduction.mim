@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_par_reduction.mim:25:{{.*}}error: a parallel level cannot tile reduction loop 2
+// CHECK: tile_par_reduction.mim:25:{{.*}}error: a parallel level cannot tile a reduction loop
 
 // A parallel level tiles only the root's parallel loops.
 

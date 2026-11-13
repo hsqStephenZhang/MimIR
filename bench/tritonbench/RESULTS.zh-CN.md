@@ -162,14 +162,29 @@ CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKi
 | cluster 大小 | CUDA 的可移植上限 8；CUTLASS `cluster_launch.hpp` 设 `NonPortableClusterSizeAllowed` 后放宽到 `MaxClusterSize = 32`，我们不设该属性 | `serial_cluster` 的 `require` | elaboration |
 | tile 调度参数合法（tail、向量层最内） | CuTe 的形状都是编译期参数 | 构造器上的 `require` / `match`（`error/tile_tail.mim`、`error/tile_vec_innermost.mim`） | elaboration |
 
-依赖根运算本身的约束，层级类型只以循环总数 `n` 为索引，表达不了；现在由 `tile_req` 的 normalizer 在 elaboration 时检查。
-这和 `require` 同一个机制：常量条件在构造时求值，报错位置指向 `tile_req` / `group_tile_req` 调用处。
-它复用从 `TileFuse` 挪到 `tensor.h` 的 `tile_levels` 解析，并沿链记录每个循环的块大小：
-- 并行层不切归约循环、归约层只切一个归约循环（`error/tile_par_reduction.mim`）；
-- `promote` 的位不超过根的输入个数（`error/tile_promote_inputs.mim`）；
-- lane 归约把它的块分给 2 的幂、至多 32 个 lane（`error/tile_lanes.mim`）；
-- MMA tile 整除它所在的块，包括 `warp_red` 留下的 k 块（`error/tile_mma_k_block.mim`），对应 TK `warpgroup.cuh` 的 `static_assert(B::rows/TILE_ROW_DIM == K)`；
-- MMA 层之上必须有层把 A、B 提升进 shared-memory panel（`error/tile_mma_promote.mim`），对应 CuTe GMMA `SS` atom 要求两个操作数都在 smem。
+依赖根运算本身的约束，层级类型只以循环总数 `n` 为索引，表达不了。
+这些约束现在是 `tensor.mim` 里 `mod check` 中的 Mim 规则，由部分求值（PE）在 elaboration 时求出：
+- C++ 只做反射：`check.parallel` / `check.inputs` / `check.extents` 读出根的并行循环数、输入个数和各循环长度（运行期长度读成 0，表示未知）。
+- 规则是普通的 Mim `lam`，`match` 沿层级链递归，记录每个循环的块大小和 A、B 是否已提升，返回第一条违反的规则编号。
+  报错文字也在 Mim 里（`check.messages`）；`tile_req` 的 normalizer 只构造 `check.levels (op, levels)`，结果是非零字面量就在调用处报错。
+- 递归函数用 `@(core.pe.is_closed l)` 作 filter：链是闭项才展开，定义体里和符号链上保持未归约，不会耗尽 PE fuel。
+- 块大小为 0（未知）时规则一律放过，所以一条规则判定不了不会连带其它规则；放过的部分仍由 `TileFuse` / `lower_to_mem` 晚检。
+
+迁移过来的 14 条规则（括号内是对应的 `lit/error` 测试）：
+- 原 C++ `check_levels`：并行层不切归约循环（`tile_par_reduction`）、归约层只切一个归约循环、`promote` 不超过输入个数（`tile_promote_inputs`）、
+  lane 数（`tile_lanes`）、MMA 整除它的块（`tile_mma_k_block`）、MMA 之上提升了 A、B（`tile_mma_promote`）；
+- 原 `lower_to_mem` 晚检：cluster 大小整除 work-group 数（`tile_cluster_groups`）、split 的块数（`tile_split_blocks`）、
+  specialized 归约不在 cluster 下（`tile_ws_cluster`）、persistent 下的 TMA 归约必须 specialized（`tile_persistent_tma`）、
+  persistent ring 整除每个 tile 的块数（`tile_persistent_ring`）、bound 层不 peel 尾块（`tile_bound_peel`）；
+- 原 `TileFuse` 晚检：向量层的尺寸（`tile_vec_sizes`）。
+
+例如 tritonbench 的 addmm 以 `TAIL=1` 切 M=20120 时，原先在 `lower_to_mem` 报 “a bound tensor.tiled level cannot peel its tail”，位置指向 `tensor.mim` 内部；
+现在在用户文件的 `tile_req` 调用处报 “a bound level cannot peel its tail”。
+
+实现时碰到的 Mim 限制：
+- `mutual` 块里对带隐式参数的 lam 做前向引用，以及带隐式参数的 lam 在自身体内递归，都会把调用归约成实参本身；
+  所以每条规则由外层 lam 接住隐式参数，递归交给体内没有隐式参数的 `go`，各规则按被调用者在前的顺序定义。
+- 元组选择 `(a, b)#c` 两个分支都会求值，递归只能放在 `match` 的 arm 里。
 
 `TileFuse` 里 “A 必须行主序” 的检查对类型正确的请求不可达：`root_contraction` 已要求 A 按 `(m, k)` 读取，panel 轴总是 m。
 `TileFuse` / `lower_to_mem` 里原有的检查都保留，用来兜住非字面量的链，以及组合子是否可重结合这类语义条件。

@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_promote_inputs.mim:25:{{.*}}error: a level promotes input bits `8` of 2 inputs
+// CHECK: tile_promote_inputs.mim:25:{{.*}}error: a level promotes an input the root does not read
 
 // A level promotes only inputs the root reads.
 

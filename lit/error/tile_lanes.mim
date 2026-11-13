@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_lanes.mim:27:{{.*}}error: a lane reduction splits its block of 64 into a power of two of at most 32 lanes, not 64 / 1
+// CHECK: tile_lanes.mim:27:{{.*}}error: a lane reduction splits its block into a power of two of at most 32 lanes
 
 // A lane reduction runs on a power of two of at most 32 lanes.
 
