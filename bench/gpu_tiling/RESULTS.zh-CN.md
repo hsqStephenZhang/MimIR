@@ -370,3 +370,18 @@ A 用 `ldmatrix.x4`、B 用 `ldmatrix.x4.trans`，`cp.async` 双缓冲，C 以�
 
 - 2 级比 4 级快：64 KB shared 让每 SM 驻留 3 个块，块间交错掩盖了 `wgmma_wait 0` 与装载的延迟；4 级时只有 1 个。
 - 余下的差距：每步等完本组 wgmma 才发下一组（`wait 1` 需要读写缓冲的跨 warpgroup 同步）、装载由计算线程用 `cp.async` 发出（TMA + mbarrier + warp 特化未做）、128×128 的 tile。
+
+### 编译路径的 16 位 GEMM（H200 NVL，2026-11-13）
+
+tile-fuse 现在接受混合精度收缩：输入 F16/BF16，combiner 为 `acc + up x · up y`，累加器 F32（`contraction_type`），
+`warp_mma (16, 8, 16)`；`lower_mma` 按输入类型选 k 步长，A 用 `gpu.buf_ldmatrix_b16`，B 按 `mma_m16n8k16.l_b` 成对读，
+面板填充按字节计算。`gemm_tiled_h16.mim` / `gemm_tiled_bf16.mim` 与 TF32 的 `gemm_tiled_tc.mim` 用同一层级链，
+`TY=f16f32 N=<n> krun.sh gemm_tiled_h16.mim -X tensor:pipeline=<p>`（C 为 F32）。
+
+| n | `pipeline=0` | 2 | 4 | 手写 mma.sync（`gemm_h16`） | 手写 WGMMA（`gemm_wg`） |
+|---|---:|---:|---:|---:|---:|
+| 1024 | 0.0388 ms（55 TF） | | | 72 TF | 118 TF |
+| 2048 | 0.116（149 TF） | 0.0987（174 TF） | 0.0975（176 TF） | 202 TF | 392 TF |
+| 4096 | 0.776（177 TF） | 0.656（210 TF） | 0.632（218 TF） | 243 TF | 467 TF |
+
+bf16 4096、`pipeline=2`：0.655 ms。编译路径达到同结构手写版的 0.9×；与 WGMMA 的差距要靠 warpgroup 层（下一步）。

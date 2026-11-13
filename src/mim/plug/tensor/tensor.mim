@@ -275,6 +275,11 @@ pub anx lam l_b (lane: Idx 32, reg: Idx 2, h: Idx 2): [Idx 16, Idx 8] =
     let l = core.idx2nat lane;
     (core.idx 0 16 (2 * (l % 4) + core.idx2nat h + 8 * core.idx2nat reg), core.idx 0 8 (l / 4));
 
+/// The row-major A panel uses lane `l` for row `l % 16` at k offset `8 * (l / 16)`; `ldmatrix_b16 4` then yields `l_a`.
+pub anx lam panel_a_addr (lane: Idx 32): [Idx 16, Idx 16] =
+    let l = core.idx2nat lane;
+    (core.idx 0 16 (l % 16), core.idx 0 16 (8 * (l / 16)));
+
 lam a_at {T: *} (a: «32; «4, 2; T»», row col: Idx 16): T =
     let r = core.idx2nat row;
     let k = core.idx2nat col;
@@ -2185,8 +2190,9 @@ axm report_groups: compile.Phase;
 /// then merge their partials by warp shuffles; it needs a recognized reassociable law over F32.
 /// `Combiner` is accepted only for a recognized reassociable law whose identity is the seed.
 /// `Merge` supplies an explicit permission and a merge function whose accumulator type is checked.
-/// `Mma` computes a warp's reduction block on tensor cores with TF32 inputs; `shape` is the instruction's
-/// tile of the root's loops, `(16, 8, 8)` for a matrix product, and divides the warp's tile and block.
+/// `Mma` computes a warp's reduction block on tensor cores; `shape` is the instruction's tile of the root's loops and
+/// divides the warp's tile and block: `(16, 8, 8)` for a matrix product of F32 inputs, run with TF32 inputs, and
+/// `(16, 8, 16)` for one of F16 or BF16 inputs widened into an F32 accumulator, `acc + up x · up y`.
 /// Promoted inputs of a reduction inside a warp are staged as panels over the whole work-group's tile.
 /// `pipeline` of a reduction inside a work-group is how many blocks' panels are in flight, `n` filling `n - 1` blocks
 /// ahead of the one being computed; 0 takes `-X tensor:pipeline`, and the `*_red` constructors leave it 0.
@@ -2301,8 +2307,8 @@ axm bind: {T: *} → [to: Nat] → T → T;
 ///
 axm pipeline: {T: *} → [depth: Nat] → T → T;
 ///
-/// Identity annotation on a reduction block that a warp computes on tensor cores with TF32 inputs; `shape` is the
-/// instruction's tile of the block's loops.
+/// Identity annotation on a reduction block that a warp computes on tensor cores, from TF32 or 16-bit inputs into an F32
+/// accumulator; `shape` is the instruction's tile of the block's loops.
 ///
 axm mma: {T: *} → [n: Nat, shape: «n; Nat»] → T → T;
 ///

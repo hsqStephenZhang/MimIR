@@ -166,7 +166,7 @@ const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>
 
 // A tensor-core panel keeps its source's contiguous dim innermost, so its fill copies 16-byte runs.
 // The pad makes ldmatrix's 8 rows of a narrow panel, or the scalar fragment loads of a wide one, hit distinct banks.
-Choice mma(const Def* storage, size_t inner) {
+Choice mma(const Def* storage, size_t inner, u64 bytes) {
     auto& w   = storage->world();
     auto n    = storage->num_projs();
     auto dims = std::vector<u64>(n);
@@ -179,9 +179,11 @@ Choice mma(const Def* storage, size_t inner) {
     layout.permuted = permuted_dims(dims, layout);
     auto shape      = physical_dims(dims, layout);
     auto& last      = shape.back();
-    if (last <= 32 && last / 4 % 2 == 0)
+    if (bytes == 2 && last * 2 % 32 == 0)
+        last += 8;
+    else if (bytes == 4 && last <= 32 && last / 4 % 2 == 0)
         last += 4;
-    else if (last > 32 && last % 32 == 0)
+    else if (bytes == 4 && last > 32 && last % 32 == 0)
         last += 8;
     auto expr     = term(layout, storage, shape);
     auto physical = at_shape(w.annex(tensor::layout_expr::shape), expr, storage);

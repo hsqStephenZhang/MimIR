@@ -1,11 +1,13 @@
-// kbench16 <cubin> <kernel> <groups> <items> <f16|bf16> [iters] [n] [smem]: times a generated n³ 16-bit GEMM kernel back to back.
-// The kernel takes its three device buffers as one by-value array (A, B, C), row-major, C in the input type.
+// kbench16 <cubin> <kernel> <groups> <items> <f16|bf16>[f32] [iters] [n] [smem]: times a generated n³ 16-bit GEMM kernel back to back.
+// The kernel takes its three device buffers as one by-value array, row-major, C in the input type or with `f32` in F32;
+// the operand order is found by checking the result.
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <vector>
 
 #include <cuda.h>
@@ -34,7 +36,7 @@ struct Bf16 {
     }
 };
 
-template<class H> int run(int argc, char** argv) {
+template<class H, class C> int run(int argc, char** argv) {
     int groups = std::atoi(argv[3]), items = std::atoi(argv[4]), iters = argc > 6 ? std::atoi(argv[6]) : 300;
     size_t N      = argc > 7 ? std::atoi(argv[7]) : 1024;
     unsigned smem = argc > 8 ? std::atoi(argv[8]) : 0;
@@ -50,35 +52,45 @@ template<class H> int run(int argc, char** argv) {
     CHECK(cuModuleGetFunction(&fn, mod, argv[2]));
     if (smem) CHECK(cuFuncSetAttribute(fn, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, smem));
 
-    std::vector<H> a(N * N), b(N * N), c(N * N);
+    std::vector<H> a(N * N), b(N * N);
+    std::vector<C> c(N * N);
     for (size_t i = 0; i < N * N; ++i) {
         a[i] = H(float(i % 97) / 97.0f - 0.5f);
         b[i] = H(float(i % 89) / 89.0f - 0.5f);
     }
     std::array<CUdeviceptr, 3> buf;
-    for (auto& p : buf) CHECK(cuMemAlloc(&p, N * N * sizeof(H)));
-    CHECK(cuMemcpyHtoD(buf[0], a.data(), N * N * sizeof(H)));
-    CHECK(cuMemcpyHtoD(buf[1], b.data(), N * N * sizeof(H)));
-    CHECK(cuMemsetD8(buf[2], 0, N * N * sizeof(H)));
+    for (auto& p : buf) CHECK(cuMemAlloc(&p, N * N * 4));
     void* params[] = {buf.data()};
-    CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, smem, nullptr, params, nullptr));
-    CHECK(cuCtxSynchronize());
-    CHECK(cuMemcpyDtoH(c.data(), buf[2], N * N * sizeof(H)));
-    int bad = 0;
-    for (size_t s = 0; s < 256; ++s) {
-        size_t i = (s * 131 + 7) % N, j = (s * 977 + 3) % N;
-        double ref = 0;
-        for (size_t k = 0; k < N; ++k) ref += double(float(a[i * N + k])) * double(float(b[k * N + j]));
-        double got = float(c[i * N + j]);
-        if (std::fabs(ref - got) > 2e-2 * (1 + std::fabs(ref))) {
-            if (bad < 3) std::printf("C[%zu][%zu] = %g want %g\n", i, j, got, ref);
-            ++bad;
+    auto check = [&](int ia, int ib, int ic, bool report) {
+        CHECK(cuMemcpyHtoD(buf[ia], a.data(), N * N * sizeof(H)));
+        CHECK(cuMemcpyHtoD(buf[ib], b.data(), N * N * sizeof(H)));
+        CHECK(cuMemsetD8(buf[ic], 0, N * N * sizeof(C)));
+        CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, smem, nullptr, params, nullptr));
+        CHECK(cuCtxSynchronize());
+        CHECK(cuMemcpyDtoH(c.data(), buf[ic], N * N * sizeof(C)));
+        int bad = 0;
+        for (size_t s = 0; s < 256; ++s) {
+            size_t i = (s * 131 + 7) % N, j = (s * 977 + 3) % N;
+            double ref = 0;
+            for (size_t k = 0; k < N; ++k) ref += double(float(a[i * N + k])) * double(float(b[k * N + j]));
+            double got = float(c[i * N + j]);
+            if (std::fabs(ref - got) > 2e-2 * (1 + std::fabs(ref))) {
+                if (report && bad < 3) std::printf("C[%zu][%zu] = %g want %g\n", i, j, got, ref);
+                ++bad;
+            }
         }
-    }
+        return bad;
+    };
+    int order[3] = {0, 1, 2}, bad = check(0, 1, 2, false);
+    for (int ia = 0; ia < 3 && bad; ++ia)
+        for (int ib = 0; ib < 3 && bad; ++ib)
+            if (ib != ia && !(bad = check(ia, ib, 3 - ia - ib, false))) order[0] = ia, order[1] = ib, order[2] = 3 - ia - ib;
     if (bad) {
-        std::printf("FAIL (%d)\n", bad);
+        check(0, 1, 2, true);
+        std::printf("FAIL\n");
         return 1;
     }
+    check(order[0], order[1], order[2], false);
     for (int i = 0; i < 20; ++i) CHECK(cuLaunchKernel(fn, groups, 1, 1, items, 1, 1, smem, nullptr, params, nullptr));
     CUevent start, stop;
     CHECK(cuEventCreate(&start, 0));
@@ -100,5 +112,9 @@ template<class H> int run(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
-    return std::strcmp(argv[5], "bf16") == 0 ? run<Bf16>(argc, argv) : run<_Float16>(argc, argv);
+    auto ty = std::string_view(argv[5]);
+    if (ty == "bf16") return run<Bf16, Bf16>(argc, argv);
+    if (ty == "bf16f32") return run<Bf16, float>(argc, argv);
+    if (ty == "f16f32") return run<_Float16, float>(argc, argv);
+    return run<_Float16, _Float16>(argc, argv);
 }

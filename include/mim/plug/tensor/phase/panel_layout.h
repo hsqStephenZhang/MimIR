@@ -52,7 +52,7 @@ const Def* at_shape(const Def* map, const Def* expr, const Def* logical);
 const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>& physical);
 
 /// A tensor-core panel's layout: its fill's contiguous dim @p inner innermost, padded against bank conflicts.
-Choice mma(const Def* storage, size_t inner);
+Choice mma(const Def* storage, size_t inner, u64 bytes);
 
 /// The layout that spreads a fill of `vec` elements of `bytes` along dim @p inner, and the item level's @p reads,
 /// over the 32 shared-memory banks best.

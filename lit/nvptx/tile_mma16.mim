@@ -1,0 +1,13 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=80
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// The warps' blocks run as m16n8k16 mma.sync on F16 fragments, A's loaded with ldmatrix from panels filled by cp.async.
+
+// CHECK: call void @llvm.nvvm.cp.async.cg.shared.global.16
+// CHECK: call { i32, i32, i32, i32 } @llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.b16.p3
+// CHECK: call { float, float, float, float } @llvm.nvvm.mma.m16n8k16.row.col.f32.f32(<2 x half>

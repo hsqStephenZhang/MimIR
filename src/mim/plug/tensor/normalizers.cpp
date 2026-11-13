@@ -800,31 +800,45 @@ bool reads_loops(const Def* map, u64 a, u64 b) {
 // Whether `x` and `y` are `a` and `b` in either order.
 bool either(const Def* x, const Def* y, const Def* a, const Def* b) { return (x == a && y == b) || (x == b && y == a); }
 
-// `C (m, n) += A (m, k) · B (k, n)` over F32, with B also read transposed, whose combiner returns `acc + a · b`.
-bool contraction(const App* root) {
+// `C (m, n) += A (m, k) · B (k, n)` with B also read transposed and an F32 accumulator, whose combiner returns
+// `acc + a · b` over F32 inputs or `acc + up a · up b` over F16 or BF16 ones; the inputs' type, or nullptr.
+const Def* contraction_input(const App* root) {
     auto& w    = root->world();
     auto mr    = btensor::MapRedPost::of(root->callee()->as<App>());
     auto ranks = mr.ranks();
     auto F32   = w.annex<math::F32>();
-    if (!ranks || ranks->ro != 2 || ranks->rr != 1 || Lit::isa(mr.nis) != 2) return false;
-    if (mr.To != F32 || mr.Tis->proj(2, 0) != F32 || mr.Tis->proj(2, 1) != F32) return false;
+    if (!ranks || ranks->ro != 2 || ranks->rr != 1 || Lit::isa(mr.nis) != 2) return nullptr;
+    auto T      = mr.Tis->proj(2, 0);
+    auto narrow = math::isa_bf16(T) || math::isa_f(T) == 16;
+    if (mr.To != F32 || mr.Tis->proj(2, 1) != T || (T != F32 && !narrow)) return nullptr;
     if (!reads_loops(mr.map_out, 0, 1) || !reads_loops(mr.maps->proj(2, 0), 0, 2)
         || !(reads_loops(mr.maps->proj(2, 1), 2, 1) || reads_loops(mr.maps->proj(2, 1), 1, 2)))
-        return false;
+        return nullptr;
     auto lam   = mr.comb->isa_mut<Lam>();
     auto value = lam && lam->is_set() ? returned(lam) : nullptr;
     auto add   = value ? Axm::isa(math::arith::add, value) : nullptr;
-    if (!add) return false;
+    if (!add) return nullptr;
     auto [acc, ins] = lam->var(2, 0)->projs<2>();
     auto [l, r]     = add->args<2>();
     auto product    = l == acc ? r : r == acc ? l : nullptr;
     auto mul        = product ? Axm::isa(math::arith::mul, product) : nullptr;
-    return mul && either(mul->arg(2, 0), mul->arg(2, 1), ins->proj(2, 0), ins->proj(2, 1));
+    if (!mul) return nullptr;
+    auto [x, y] = mul->args<2>();
+    if (narrow) {
+        auto up_x = Axm::isa(math::conv::f2f, x), up_y = Axm::isa(math::conv::f2f, y);
+        if (!up_x || !up_y) return nullptr;
+        x = up_x->arg(), y = up_y->arg();
+    }
+    return either(x, y, ins->proj(2, 0), ins->proj(2, 1)) ? T : nullptr;
 }
+
+bool contraction(const App* root) { return contraction_input(root) != nullptr; }
 
 } // namespace
 
-bool is_contraction(const App* root) { return contraction(root); }
+bool is_contraction(const App* root) { return contraction_input(root) == root->world().annex<math::F32>(); }
+
+const Def* contraction_type(const App* root) { return contraction_input(root); }
 
 const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) return op->world().lit_bool(contraction(root));

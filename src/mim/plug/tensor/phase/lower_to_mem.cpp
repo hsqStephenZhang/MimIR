@@ -2333,7 +2333,7 @@ const Def* LowerToMem::region_input(const Def* inputs) {
 }
 
 // One warp's tensor-core block: A's fragments by ldmatrix from its row-major panel, B's by scalar loads, and the
-// accumulator, an SSA value of fragments, updated per instruction.
+// accumulator, an SSA value of fragments, updated per instruction; F32 inputs use m16n8k8, 16-bit ones m16n8k16.
 const Def* LowerToMem::lower_mma(const App* app, const Destination& destination, const Fragments& fragments) {
     auto& w     = new_world();
     auto root   = app->arg()->as<App>();
@@ -2341,11 +2341,14 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
     auto panels = fe::Restore(mma_panels_, true);
     auto batch  = fe::Restore<std::optional<Batch>>(batch_, open_batch(destination.mem));
     auto is     = rewrite(root->arg())->proj(2, 0);
+    auto T      = rewrite(old_mr.Tis->proj(2, 0));
+    auto narrow = T != w.annex<math::F32>();
+    auto kt     = narrow ? u64(16) : u64(8);
     return close_batch(destination.mem, destination.buffer->type(), [&](const Def* mem) -> const Def* {
         auto Sr = rewrite(old_mr.Sr);
         for (u64 d = 0; d != 3; ++d) {
             auto extent = Lit::isa(Sr->proj(3, d));
-            auto tile   = std::array{fragments.m, fragments.n, u64(8)}[d];
+            auto tile   = std::array{fragments.m, fragments.n, kt}[d];
             if (!extent || *extent % tile)
                 app->blame("the tensor-core tile does not divide the warp's block {}", Sr).bail();
         }
@@ -2382,39 +2385,60 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
             }));
         };
         auto ms = fragments.rows / fragments.m, ns = fragments.cols / fragments.n;
-        auto acc = DefVec(destination.buffer->projs(fragments.count()));
-        for (u64 ks = 0; ks != depth / 8; ++ks) {
+        auto acc  = DefVec(destination.buffer->projs(fragments.count()));
+        auto read = [&](const Def* lane_reg, Enum auto map, u64 ni, u64 ks) {
+            auto [row, col]                     = fragment_coords(w, map, lane_reg);
+            auto [buffer, storage, physical, r] = coords(1, nat(0), add(nat(ni * 8), col), add(nat(ks * kt), row));
+            const Def* value;
+            std::tie(mem, value) = buffer::op_read(mem, buffer, *Shape(physical).fold(storage))->template projs<2>();
+            return value;
+        };
+        for (u64 ks = 0; ks != depth / kt; ++ks) {
             auto a = DefVec(ms);
             for (u64 mi = 0; mi != ms; ++mi) {
-                auto [row, col]                     = fragment_coords(w, mma_m16n8k8_tf32::panel_a_addr, lane);
-                auto [buffer, storage, physical, r] = coords(0, add(nat(mi * 16), row), nat(0), add(nat(ks * 8), col));
+                auto width                          = narrow ? u64(8) : u64(4);
+                auto [row, col]                     = narrow ? fragment_coords(w, mma_m16n8k16::panel_a_addr, lane)
+                                                             : fragment_coords(w, mma_m16n8k8_tf32::panel_a_addr, lane);
+                auto [buffer, storage, physical, r] = coords(0, add(nat(mi * 16), row), nat(0), add(nat(ks * kt), col));
                 auto runs                           = DefVec(storage->projs(r));
-                runs.back()                         = w.call(core::nat::div, Defs{runs.back(), nat(4)});
+                runs.back()                         = w.call(core::nat::div, Defs{runs.back(), nat(width)});
                 auto run                            = DefVec(physical->projs(r));
                 auto last                           = w.call<core::idx2nat>(run.back());
-                run.back() = w.call<core::idx>(w.lit_nat_0(), runs.back(), w.call(core::nat::div, Defs{last, nat(4)}));
-                auto vectors      = buffer::op_vectorize(nat(4), buffer);
+                run.back()
+                    = w.call<core::idx>(w.lit_nat_0(), runs.back(), w.call(core::nat::div, Defs{last, nat(width)}));
+                auto vectors      = buffer::op_vectorize(nat(width), buffer);
                 auto index        = *Shape(w.tuple(run)).fold(w.tuple(runs));
                 auto [vr, vs, vT] = Axm::as<buffer::Buf>(vectors->type())->args<3>();
-                auto loaded       = w.app(w.app(w.annex<gpu::buf_ldmatrix>(), {vr, vs}), {nat(4), mem, vectors, index});
+                auto loaded = narrow
+                                ? w.app(w.app(w.app(w.annex<gpu::buf_ldmatrix_b16>(), T), {vr, vs}),
+                                        {nat(4), w.lit_ff(), mem, vectors, index})
+                                : w.app(w.app(w.annex<gpu::buf_ldmatrix>(), {vr, vs}), {nat(4), mem, vectors, index});
                 std::tie(mem, a[mi]) = loaded->projs<2>();
-                a[mi]                = rounded(a[mi], 4);
+                if (!narrow) a[mi] = rounded(a[mi], 4);
             }
             auto b = DefVec(ns);
             for (u64 ni = 0; ni != ns; ++ni) {
-                auto half = DefVec(2);
-                for (u64 h = 0; h != 2; ++h) {
-                    auto [row, col] = fragment_coords(w, mma_m16n8k8_tf32::l_b, w.tuple({lane, w.lit_idx(2, h)}));
-                    auto [buffer, storage, physical, r]
-                        = coords(1, nat(0), add(nat(ni * 8), col), add(nat(ks * 8), row));
-                    std::tie(mem, half[h]) = buffer::op_read(mem, buffer, *Shape(physical).fold(storage))->projs<2>();
+                if (narrow) {
+                    auto regs = DefVec(2, [&](size_t reg) {
+                        return w.tuple(DefVec(2, [&](size_t h) {
+                            return read(w.tuple({lane, w.lit_idx(2, reg), w.lit_idx(2, h)}), mma_m16n8k16::l_b, ni, ks);
+                        }));
+                    });
+                    b[ni]     = w.tuple(regs);
+                } else {
+                    auto half = DefVec(2, [&](size_t h) {
+                        return read(w.tuple({lane, w.lit_idx(2, h)}), mma_m16n8k8_tf32::l_b, ni, ks);
+                    });
+                    b[ni]     = rounded(w.tuple(half), 2);
                 }
-                b[ni] = rounded(w.tuple(half), 2);
             }
+            auto instr = !narrow           ? w.annex<gpu::mma_tf32>()
+                       : math::isa_bf16(T) ? w.annex<gpu::mma_bf16>()
+                                           : w.annex<gpu::mma_f16>();
             for (u64 mi = 0; mi != ms; ++mi)
                 for (u64 ni = 0; ni != ns; ++ni) {
                     auto& c = acc[mi * ns + ni];
-                    c       = w.app(w.annex<gpu::mma_tf32>(), w.tuple({a[mi], b[ni], c}));
+                    c       = w.app(instr, w.tuple({a[mi], b[ni], c}));
                 }
         }
         return w.tuple({mem, w.tuple(acc)});

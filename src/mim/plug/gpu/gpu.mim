@@ -483,6 +483,14 @@ axm buf_ldmatrix: {r: Nat, s: «r; Nat»}
                 → [n: Nat, mem.M 0, buffer.Buf (r, s, «4; math.F32»), idx: «i: r; Idx s#i»]
                 → [mem.M 0, «n; math.F32»];
 ///
+/// #### buf_ldmatrix_b16
+///
+/// `ldmatrix_b16` on the row of a work-group panel of 16-bit `T` at `idx`; `buffer.lower_ptr` takes its address.
+///
+axm buf_ldmatrix_b16: {T: *} → {r: Nat, s: «r; Nat»}
+                    → [n: Nat, trans: Bool, mem.M 0, buffer.Buf (r, s, «8; T»), idx: «i: r; Idx s#i»]
+                    → [mem.M 0, «n, 2; T»];
+///
 /// ## Phases
 ///
 /// ### check_addr_spaces_repl

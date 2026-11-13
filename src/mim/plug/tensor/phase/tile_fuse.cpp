@@ -767,7 +767,7 @@ const Def* panel_term(const App* staged, const PanelSite& site) {
     }
     if (!inner) return nullptr;
     auto storage = w.tuple(DefVec(dims.size(), [&](size_t d) { return w.lit_nat(dims[d].first); }));
-    auto choice  = site.mma ? panel::mma(storage, *inner)
+    auto choice  = site.mma ? panel::mma(storage, *inner, *bytes)
                             : panel::choose(storage, *inner, vec, *bytes, reads ? &*reads : nullptr);
     if (choice.layout.identity() && choice.physical == storage) return nullptr;
     return w.tuple({storage, choice.expr});
@@ -1651,8 +1651,10 @@ const Def* Levels::mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 d
     auto& w = world();
     if (bound_ != 3) return fail("a tensor-core level must be inside a warp");
     auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
-    // The request's type admits `warp_mma` only for an F32 matrix product.
-    if (shape[0] != 16 || shape[1] != 8 || shape[2] != 8) return fail("a TF32 tensor-core tile is (16, 8, 8)");
+    // The request's type admits `warp_mma` only for a matrix product with an F32 accumulator.
+    auto narrow = mr.Tis->proj(2, 0) != w.annex<math::F32>();
+    if (shape[0] != 16 || shape[1] != 8 || shape[2] != (narrow ? 16u : 8u))
+        return fail(narrow ? "a 16-bit tensor-core tile is (16, 8, 16)" : "a TF32 tensor-core tile is (16, 8, 8)");
     // A's panels are tiled along its rows; B's along the dim it reads n from, which promotion chose, as either of the
     // orders its type admits.
     for (u64 slot = 0; slot != 2; ++slot) {

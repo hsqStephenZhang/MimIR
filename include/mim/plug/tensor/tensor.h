@@ -56,6 +56,9 @@ inline const Def* op_from_array(const Def* type, const Def* array) {
 const App* isa_pointwise(const Def*);
 /// Whether @p root is `C (m, n) += A (m, k) · B (k, n)` over F32, B possibly read transposed, combining `acc + a · b`.
 bool is_contraction(const App* root);
+/// The input type of a tensor-core matrix product: `math.F32`, or `F16`/`BF16` widened into an F32 accumulator; nullptr
+/// otherwise.
+const Def* contraction_type(const App* root);
 
 inline const Def* op_get(const Def* tensor, const Def* index) {
     auto [r, s, T] = *TensorType::isa(tensor->type());
