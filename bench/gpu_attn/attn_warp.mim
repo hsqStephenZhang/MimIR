@@ -50,14 +50,14 @@ let HL = core.nat.mul (H, L);
 lam warp_body (goff: Nat) (off ext: «2; Nat») (q: Tensor 2 (HL, D) F, k: Tensor 2 (HL, D) F, v: Tensor 2 (HL, D) F): Tensor 2 ext F =
     let rows = ext#0₂;
     let row0 = core.nat.add (goff, off#0₂);
-    let head = core.nat.mul (core.nat.div (row0, L), L);
+    let head = core.nat.mul (core.nat.div (goff, L), L);
     let Acc  = [Tensor 1 rows F, Tensor 1 rows F, Tensor 2 (rows, D) F];
     let init: Acc = (splat (rows, math.neg_inf math.f32), splat (rows, 0:F), splat ((rows, D), 0:F));
     lam step (acc: Acc, ko: Nat) (q: Tensor 2 (HL, D) F, k: Tensor 2 (HL, D) F, v: Tensor 2 (HL, D) F): Acc =
         let (m, l, o) = acc;
         let qt = slice @(F, 2) (HL, D) ((row0, 0), (1, 1), (rows, D)) q;
-        let kt = slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (bk, D)) k;
-        let vt = slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (bk, D)) v;
+        let kt = stage @(F, 2, 0) (bk, D) ((), (), (0₂, 1₂), 0:F) 0 (slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (bk, D)) k);
+        let vt = stage @(F, 2, 0) (bk, D) ((), (), (0₂, 1₂), 0:F) 0 (slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (bk, D)) v);
         let s = map_reduce ((rows, bk), (rows, bk, D)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
             (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (1, 2)) (qt, kt);
         let mx = map_reduce (rows, (rows, bk)) (fmax, math.neg_inf math.f32) (proj_map @(2, 1) 0)

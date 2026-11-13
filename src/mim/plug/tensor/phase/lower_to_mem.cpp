@@ -642,7 +642,8 @@ LowerToMem::allocate(const Def* rank, const Def* shape, const Def* type, bool fi
     if (r)
         for (size_t d = 0; d != *r; ++d)
             literal &= Lit::isa(shape->proj(*r, d)).has_value();
-    if (!scratch_ || !fills || !literal || !type->is_closed()) {
+    // A work-group's shared buffer becomes a static slot, which a scratch binding could not free.
+    if (!scratch_ || !fills || !literal || !type->is_closed() || uniform_) {
         auto [after, buffer] = buffer::op_alloc(rank, shape, type, shared_mem(mem ? mem : fresh_mem()))->projs<2>();
         if (!literal) transient(rank, shape, type, buffer);
         return {after, buffer};
@@ -910,6 +911,13 @@ const Def* LowerToMem::lower_generate(const App* app) {
         vector_store = mma_panels_ || choice.contiguous;
         layout = choice.expr, layout_view = choice.layout;
     }
+    // The warps of a warp-owned region read a shared panel across its rows, so its rows are padded by 16 bytes.
+    if (auto n = Lit::isa(r); warp_self_ && uniform_ && !layout && size && n && *n >= 2 && 16 % *size == 0)
+        if (auto last = Lit::isa(storage->proj(*n, *n - 1)); last && *last * *size % 128 == 0) {
+            auto dims   = DefVec(storage->projs(*n));
+            dims.back() = w.lit_nat(*last + 16 / *size);
+            storage     = w.tuple(dims);
+        }
     auto bounded = storage != logical;
     check_buffer_shape(r, storage);
     auto out_ty       = buffer::type_buf(r, storage, T);

@@ -88,6 +88,9 @@ W2（完成）：区域里的 `tile_fold` 由 `warp_fold` 发成循环，状态�
 不用 `group_tile_req`；K/V 由每个 lane 直接从全局内存读（W3 未做）。RTX PRO 6000 上 32 × 2048 为 0.590 ms
 （`attn_fa` 0.827，手写 0.305），没有 shared 与 barrier，140 个寄存器。
 
+W3（部分）：step 里的 `tensor.stage` 在 warp 拥有的区域由整个 work-group 协作填充进 shared（K/V 块的起点只依赖 work-group，
+填充才是统一的），面板行尾填充 16 字节；共享缓冲不走 scratch，免得在 kernel 结尾被释放。跨步预取未做。
+
 步骤：W1 上表的翻译；W2 区域里的 fold，状态在寄存器里跨步；W3 K/V 面板由 work-group 协作填充；W4 attention。
 区域可以由用户显式写出，也可以由 TileFuse 的层级生成；W1 对两者相同，先用显式标记。
 
