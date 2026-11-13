@@ -2233,115 +2233,149 @@ axm report_groups: compile.Phase;
 /// a specialized reduction's ring and mbarriers persist across them, so the producer fills the next tile's panels
 /// while the consumers store the last one.
 ///
+/// The tensor-core contraction a tile request's root computes into an F32 accumulator, as the type that indexes its
+/// level chain: `NoMma`, `Tf32Mma` for F32 operands run as TF32, or `HalfMma` for 16-bit (F16 or BF16) operands
+/// widened as `acc + up a · up b`.
+/// An MMA level carries a value of that type, so it only type-checks for the operands its instruction takes.
+anx nom NoMma = | No;
+anx nom Tf32Mma = | Tf32;
+anx nom HalfMma = | Half;
+///
+/// A schedule constraint: `require (cond, value, msg)` is `value` if `cond` holds and a type error reporting `msg` if
+/// it does not.
+///
+axm require: {T: *} → {n: Nat} → [Bool, T, «n; I8»] → T, normalize_require;
+///
 anx nom TileMerge (Acc: *) = | Combiner | Merge: [Acc, Acc] → Acc;
 anx mutual
-    nom TileLevels (n: Nat, Acc: *, mma: Bool) =
+    nom TileLevels (n: Nat, Acc: *, Mma: *) =
         | Done
-        | Par: [sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, mma)]
-        | Group: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, mma)]
-        | Red: [sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, mma)]
-        | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc, mma)]
-        | Cluster: [size multicast split: Nat, rest: TileLevels (n, Acc, mma)]
-        | Persistent: [ctas: Nat, rest: TileLevels (n, Acc, mma)];
-    nom GroupLevels (n: Nat, Acc: *, mma: Bool) =
+        | Par: [sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)]
+        | Group: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma)]
+        | Red: [sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)]
+        | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)]
+        | Cluster: [size multicast split: Nat, rest: TileLevels (n, Acc, Mma)]
+        | Persistent: [ctas: Nat, rest: TileLevels (n, Acc, Mma)];
+    nom GroupLevels (n: Nat, Acc: *, Mma: *) =
         | Done
-        | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, mma)]
-        | Item: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)]
-        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc, mma)]
-        | RedItems: [sizes: «n; Nat», tail: Nat, merge: TileMerge Acc, rest: GroupLevels (n, Acc, mma)]
-        | Vec: [sizes: «n; Nat», rest: GroupLevels (n, Acc, mma)]
-        | Warp: [sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, mma)]
-        | Warpgroup: [sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, mma)];
-    nom ItemLevels (n: Nat, Acc: *, mma: Bool) =
+        | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, Mma)]
+        | Item: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)]
+        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc, Mma)]
+        | RedItems: [sizes: «n; Nat», tail: Nat, merge: TileMerge Acc, rest: GroupLevels (n, Acc, Mma)]
+        | Vec: [sizes: «n; Nat», rest: GroupLevels (n, Acc, Mma)]
+        | Warp: [sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, Mma)]
+        | Warpgroup: [sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma)];
+    nom ItemLevels (n: Nat, Acc: *, Mma: *) =
         | Done
-        | Par: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)]
-        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc, mma)]
-        | Vec: [sizes: «n; Nat», rest: ItemLevels (n, Acc, mma)]
-        | Lanes: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)];
-    nom WarpLevels (n: Nat, Acc: *, mma: Bool) =
+        | Par: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)]
+        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc, Mma)]
+        | Vec: [sizes: «n; Nat», rest: ItemLevels (n, Acc, Mma)]
+        | Lanes: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)];
+    nom WarpLevels (n: Nat, Acc: *, Mma: *) =
         | Done
-        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, mma)]
-        | Mma: [shape: «n; Nat», contraction: «mma»];
-    nom WarpgroupLevels (n: Nat, Acc: *, mma: Bool) =
+        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, Mma)]
+        | Mma: [shape: «n; Nat», operands: Mma];
+    nom WarpgroupLevels (n: Nat, Acc: *, Mma: *) =
         | Done
-        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)]
-        | Wgmma: [shape: «n; Nat», contraction: «mma»]
-        | RedTma: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)]
-        | RedWs: [sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: WarpgroupLevels (n, Acc, mma)];
+        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma)]
+        | Wgmma: [shape: «n; Nat», operands: Mma]
+        | RedTma: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma)]
+        | RedWs: [sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: WarpgroupLevels (n, Acc, Mma)];
 end
 ///
 /// The constructors as functions, so a chain infers `n` and `Acc` from the request.
 ///
-anx lam serial_done {n: Nat, Acc: *, mma: Bool} (_: []): TileLevels (n, Acc, mma) = (TileLevels (n, Acc, mma))#Done;
-anx lam serial_par {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
-    (TileLevels (n, Acc, mma))#Par (sizes, tail, rest);
-anx lam serial_group {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
-    (TileLevels (n, Acc, mma))#Group (sizes, tail, promote, rest);
-anx lam serial_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
-    (TileLevels (n, Acc, mma))#Red (sizes, tail, promote, rest);
-anx lam serial_vec {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
-    (TileLevels (n, Acc, mma))#Vec (sizes, rest);
-anx lam serial_cluster {n: Nat, Acc: *, mma: Bool} (size multicast: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
-    (TileLevels (n, Acc, mma))#Cluster (size, multicast, 0, rest);
-anx lam serial_persistent {n: Nat, Acc: *, mma: Bool} (ctas: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
-    (TileLevels (n, Acc, mma))#Persistent (ctas, rest);
-anx lam serial_cluster_split {n: Nat, Acc: *, mma: Bool} (size: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
-    (TileLevels (n, Acc, mma))#Cluster (size, 0, 1, rest);
-anx lam group_done {n: Nat, Acc: *, mma: Bool} (_: []): GroupLevels (n, Acc, mma) = (GroupLevels (n, Acc, mma))#Done;
-anx lam group_par {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#Par (sizes, tail, rest);
-anx lam group_item {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#Item (sizes, tail, rest);
-anx lam group_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#Red (sizes, tail, promote, 0, rest);
-anx lam group_red_pipelined {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#Red (sizes, tail, promote, pipeline, rest);
-anx lam group_red_items {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#RedItems (sizes, tail, (TileMerge Acc)#Combiner, rest);
-anx lam group_red_merge {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, merge: [Acc, Acc] → Acc, rest: GroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#RedItems (sizes, tail, (TileMerge Acc)#Merge merge, rest);
-anx lam group_vec {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», rest: GroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#Vec (sizes, rest);
-anx lam group_warp {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#Warp (sizes, tail, rest);
-anx lam item_done {n: Nat, Acc: *, mma: Bool} (_: []): ItemLevels (n, Acc, mma) = (ItemLevels (n, Acc, mma))#Done;
-anx lam item_par {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)): ItemLevels (n, Acc, mma) =
-    (ItemLevels (n, Acc, mma))#Par (sizes, tail, rest);
-anx lam item_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: Nat, rest: ItemLevels (n, Acc, mma)): ItemLevels (n, Acc, mma) =
-    (ItemLevels (n, Acc, mma))#Red (sizes, tail, promote, 0, rest);
-anx lam item_red_pipelined {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc, mma)): ItemLevels (n, Acc, mma) =
-    (ItemLevels (n, Acc, mma))#Red (sizes, tail, promote, pipeline, rest);
-anx lam item_vec {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», rest: ItemLevels (n, Acc, mma)): ItemLevels (n, Acc, mma) =
-    (ItemLevels (n, Acc, mma))#Vec (sizes, rest);
-anx lam item_lanes {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)): ItemLevels (n, Acc, mma) =
-    (ItemLevels (n, Acc, mma))#Lanes (sizes, tail, rest);
-anx lam warp_done {n: Nat, Acc: *, mma: Bool} (_: []): WarpLevels (n, Acc, mma) = (WarpLevels (n, Acc, mma))#Done;
-anx lam warp_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: Nat, rest: WarpLevels (n, Acc, mma)): WarpLevels (n, Acc, mma) =
-    (WarpLevels (n, Acc, mma))#Red (sizes, tail, promote, 0, rest);
-anx lam warp_red_pipelined {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, mma)): WarpLevels (n, Acc, mma) =
-    (WarpLevels (n, Acc, mma))#Red (sizes, tail, promote, pipeline, rest);
-anx lam warp_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpLevels (n, Acc, tt) = (WarpLevels (n, Acc, tt))#Mma (shape, ‹tt›);
-anx lam group_warpgroup {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
-    (GroupLevels (n, Acc, mma))#Warpgroup (sizes, tail, rest);
-anx lam wg_done {n: Nat, Acc: *, mma: Bool} (_: []): WarpgroupLevels (n, Acc, mma) = (WarpgroupLevels (n, Acc, mma))#Done;
-anx lam wg_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: Nat, rest: WarpgroupLevels (n, Acc, mma)): WarpgroupLevels (n, Acc, mma) =
-    (WarpgroupLevels (n, Acc, mma))#Red (sizes, tail, promote, 0, rest);
-anx lam wg_red_pipelined {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)): WarpgroupLevels (n, Acc, mma) =
-    (WarpgroupLevels (n, Acc, mma))#Red (sizes, tail, promote, pipeline, rest);
-anx lam wg_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpgroupLevels (n, Acc, tt) = (WarpgroupLevels (n, Acc, tt))#Wgmma (shape, ‹tt›);
-anx lam wg_red_tma {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)): WarpgroupLevels (n, Acc, mma) =
-    (WarpgroupLevels (n, Acc, mma))#RedTma (sizes, tail, promote, pipeline, rest);
-anx lam wg_red_ws {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: WarpgroupLevels (n, Acc, mma)): WarpgroupLevels (n, Acc, mma) =
-    (WarpgroupLevels (n, Acc, mma))#RedWs (sizes, tail, promote, pipeline, pingpong, rest);
+anx lam serial_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = (TileLevels (n, Acc, Mma))#Done;
+anx lam serial_par {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Par (sizes, tail, rest);
+anx lam serial_group {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Group (sizes, tail, promote, rest);
+anx lam serial_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Red (sizes, tail, promote, rest);
+anx lam serial_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Vec (sizes, rest);
+anx lam serial_cluster {n: Nat, Acc: *, Mma: *} (size multicast: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Cluster (size, multicast, 0, rest);
+anx lam serial_persistent {n: Nat, Acc: *, Mma: *} (ctas: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Persistent (ctas, rest);
+anx lam serial_cluster_split {n: Nat, Acc: *, Mma: *} (size: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Cluster (size, 0, 1, rest);
+anx lam group_done {n: Nat, Acc: *, Mma: *} (_: []): GroupLevels (n, Acc, Mma) = (GroupLevels (n, Acc, Mma))#Done;
+anx lam group_par {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#Par (sizes, tail, rest);
+anx lam group_item {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#Item (sizes, tail, rest);
+anx lam group_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#Red (sizes, tail, promote, 0, rest);
+anx lam group_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#Red (sizes, tail, promote, pipeline, rest);
+anx lam group_red_items {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#RedItems (sizes, tail, (TileMerge Acc)#Combiner, rest);
+anx lam group_red_merge {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, merge: [Acc, Acc] → Acc, rest: GroupLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#RedItems (sizes, tail, (TileMerge Acc)#Merge merge, rest);
+anx lam group_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: GroupLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#Vec (sizes, rest);
+anx lam group_warp {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#Warp (sizes, tail, rest);
+anx lam item_done {n: Nat, Acc: *, Mma: *} (_: []): ItemLevels (n, Acc, Mma) = (ItemLevels (n, Acc, Mma))#Done;
+anx lam item_par {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
+    (ItemLevels (n, Acc, Mma))#Par (sizes, tail, rest);
+anx lam item_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
+    (ItemLevels (n, Acc, Mma))#Red (sizes, tail, promote, 0, rest);
+anx lam item_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
+    (ItemLevels (n, Acc, Mma))#Red (sizes, tail, promote, pipeline, rest);
+anx lam item_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
+    (ItemLevels (n, Acc, Mma))#Vec (sizes, rest);
+anx lam item_lanes {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
+    (ItemLevels (n, Acc, Mma))#Lanes (sizes, tail, rest);
+anx lam warp_done {n: Nat, Acc: *, Mma: *} (_: []): WarpLevels (n, Acc, Mma) = (WarpLevels (n, Acc, Mma))#Done;
+anx lam warp_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: WarpLevels (n, Acc, Mma)): WarpLevels (n, Acc, Mma) =
+    (WarpLevels (n, Acc, Mma))#Red (sizes, tail, promote, 0, rest);
+anx lam warp_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, Mma)): WarpLevels (n, Acc, Mma) =
+    (WarpLevels (n, Acc, Mma))#Red (sizes, tail, promote, pipeline, rest);
+/// The operands a warp's `mma` tile takes: `(16, 8, 8)` runs F32 ones as TF32, `(16, 8, 16)` takes 16-bit ones.
+anx lam warp_mma_kind (shape: «3; Nat»): * =
+    let (m, n, k) = shape;
+    (HalfMma, Tf32Mma)#(k == 8);
+anx lam warp_mma_shape (shape: «3; Nat»): Bool =
+    let (m, n, k) = shape;
+    core.bit2.and 0 (core.bit2.and 0 (m == 16, n == 8), core.bit2.or 0 (k == 8, k == 16));
+/// The operand kind of a warp's `mma` tile, as a value of the type its shape selects.
+axm warp_mma_operands: [shape: «3; Nat»] → warp_mma_kind shape;
+/// A contraction root's levels end in an MMA over its three loops `(m, n, k)`.
+anx lam warp_mma {Acc: *} (shape: «3; Nat»): WarpLevels (3, Acc, warp_mma_kind shape) =
+    (WarpLevels (3, Acc, warp_mma_kind shape))#Mma
+        (require (warp_mma_shape shape, shape, "a warp's mma tile is (16, 8, 8) for F32 operands or (16, 8, 16) for 16-bit ones"),
+         warp_mma_operands shape);
+anx lam group_warpgroup {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
+    (GroupLevels (n, Acc, Mma))#Warpgroup (sizes, tail, rest);
+anx lam wg_done {n: Nat, Acc: *, Mma: *} (_: []): WarpgroupLevels (n, Acc, Mma) = (WarpgroupLevels (n, Acc, Mma))#Done;
+anx lam wg_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: WarpgroupLevels (n, Acc, Mma)): WarpgroupLevels (n, Acc, Mma) =
+    (WarpgroupLevels (n, Acc, Mma))#Red (sizes, tail, promote, 0, rest);
+anx lam wg_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma)): WarpgroupLevels (n, Acc, Mma) =
+    (WarpgroupLevels (n, Acc, Mma))#Red (sizes, tail, promote, pipeline, rest);
+/// Whether `(m, n, k)` is the tile of one `wgmma` over 16-bit operands, `(64, 8 j, 16)` with `8 j <= 256`.
+anx lam wgmma_shape (shape: «3; Nat»): Bool =
+    let (m, n, k) = shape;
+    core.bit2.and 0 (core.bit2.and 0 (m == 64, k == 16),
+                     core.bit2.and 0 (core.nat.rem (n, 8) == 0, core.bit2.and 0 (n != 0, n <= 256)));
+/// A `wgmma` takes 16-bit operands.
+anx lam wg_mma {Acc: *} (shape: «3; Nat»): WarpgroupLevels (3, Acc, HalfMma) =
+    (WarpgroupLevels (3, Acc, HalfMma))#Wgmma
+        (require (wgmma_shape shape, shape, "a wgmma tile is (64, 8 j, 16) with 8 j <= 256"), HalfMma#Half);
+anx lam wg_red_tma {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma)): WarpgroupLevels (n, Acc, Mma) =
+    (WarpgroupLevels (n, Acc, Mma))#RedTma (sizes, tail, promote, pipeline, rest);
+anx lam wg_red_ws {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: WarpgroupLevels (n, Acc, Mma)): WarpgroupLevels (n, Acc, Mma) =
+    (WarpgroupLevels (n, Acc, Mma))#RedWs (sizes, tail, promote, pipeline, pingpong, rest);
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
 /// The loop count and accumulator type of the `map_reduce_post` that computes a tile request's root; they index the
 /// request's levels, so a chain over other loops or another accumulator does not type-check.
 axm root_loops: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Nat, normalize_root_loops;
 axm root_acc: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → *, normalize_root_acc;
-/// Whether that `map_reduce_post` is a matrix product `C (m, n) += A (m, k) · B (k, n)` into an F32 accumulator
-/// (`contraction_type`); only then may its levels end in `warp_mma` or `wg_mma`.
-axm root_contraction: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Bool, normalize_root_contraction;
+/// The contraction that `map_reduce_post` computes: `Tf32Mma` or `HalfMma` for a matrix product
+/// `C (m, n) += A (m, k) · B (k, n)` of F32 or 16-bit inputs into an F32 accumulator (`contraction_type`), `NoMma` otherwise.
+axm root_contraction: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → *, normalize_root_contraction;
 axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *}
             → [op: Tensor r s T, members: M,
                levels: TileLevels (root_loops op, root_acc op, root_contraction op), control: K]
@@ -2428,8 +2462,8 @@ anx lam group_blocks (bytes lanes registers cache_bytes: Nat): «4; Nat» =
 /// 2 another reduction and 0 an elementwise root, both one tile per index of all parallel loops but the last
 /// (one per row for a row reduction).
 ///
-anx lam default_tile_config {Acc: *, mma: Bool} (ro rr kind: Nat, bytes lanes registers cache_bytes: Nat)
-    : TileLevels (ro + rr, Acc, mma) =
+anx lam default_tile_config {Acc: *, Mma: *} (ro rr kind: Nat, bytes lanes registers cache_bytes: Nat)
+    : TileLevels (ro + rr, Acc, Mma) =
     let n      = ro + rr;
     let blocks = group_blocks (bytes, lanes, registers, cache_bytes);
     let (mr, nr, kc, nc) = (blocks#0₄, blocks#1₄, blocks#2₄, blocks#3₄);

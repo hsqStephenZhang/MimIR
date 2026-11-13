@@ -1,0 +1,25 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: tile_wgmma_shape.mim:20:{{.*}}error: a wgmma tile is (64, 8 j, 16) with 8 j <= 256
+
+// A wgmma tile has an N that is a multiple of 8.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+let levels = serial_group ((64, 16, 0), 1, 0, group_warpgroup ((64, 16, 0), 1, wg_red ((0, 0, 16), 1, 3, wg_mma (64, 12, 16))));
+
+extern fun gemm (a: tensor.Tensor 2 (64, 16) F32, b: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (64, 16) F32 =
+    let root = map_reduce ((64, 16), (64, 16, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+    return (tile_req (root, (), levels, default_control));

@@ -837,8 +837,6 @@ const Def* contraction_input(const App* root) {
     return either(x, y, ins->proj(2, 0), ins->proj(2, 1)) ? T : nullptr;
 }
 
-bool contraction(const App* root) { return contraction_input(root) != nullptr; }
-
 } // namespace
 
 bool is_contraction(const App* root) { return contraction_input(root) == root->world().annex<math::F32>(); }
@@ -846,7 +844,20 @@ bool is_contraction(const App* root) { return contraction_input(root) == root->w
 const Def* contraction_type(const App* root) { return contraction_input(root); }
 
 const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
-    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) return op->world().lit_bool(contraction(root));
+    auto& w = op->world();
+    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) {
+        auto T = contraction_input(root);
+        if (!T) return w.annex<NoMma>();
+        return T == w.annex<math::F32>() ? w.annex<Tf32Mma>() : w.annex<HalfMma>();
+    }
+    return nullptr;
+}
+
+const Def* normalize_require(const Def*, const Def*, const Def* arg) {
+    auto& w                 = arg->world();
+    auto [cond, value, msg] = arg->projs<3>();
+    if (cond == w.lit_tt()) return value;
+    if (cond == w.lit_ff()) arg->blame("{}", tuple2str(msg)).bail();
     return nullptr;
 }
 
