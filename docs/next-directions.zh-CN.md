@@ -164,3 +164,5 @@ D6 (覆盖面) 与上面并行；动态形状依赖 assert 语义
   正确的 parity 通过，偏一位的被抓出（`lit/tensor/ring_protocol.mim`）。模型还给出比注释更精确的结论：延迟释放的步数必须小于槽数。
   lower_to_mem 在块数为字面量时对所用配置调用 `ring_safe`。
   差分测试把 “ping-pong 只有一个消费者”从 lowering 的晚期拒绝变成规则：Group 层的块按实际长度裁剪后再数 warpgroup（`lit/error/tile_pingpong_clipped.mim`）。
+- **D4 第一步**：`bench/tune/tune.py` 枚举模板的调度参数，以 elaboration（规则）剪枝、实测排序。softmax 4096² 找到 0.0314 ms（手选 0.0385），addmm 确认手选最优。
+  搜索暴露了规则还缺的一类：资源可行性。超过 1024 个 work-item 的 work-group 由 outline 分轮次执行，正确但慢，大 grid 下崩溃（已记录、未修），暂按代价剪掉。

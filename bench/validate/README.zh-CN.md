@@ -22,6 +22,7 @@
 | `wg_red_ws` 在 k 只有一块时非法指令（CUresult 715） | specialized 结构在绑定时已确定，单块没有 ring 可填 | 新规则：specialized 归约至少两个块（`lit/error/tile_ws_blocks.mim`） |
 | 两个 work-item 合并部分和时（只有一轮树形合并）编译器内部报 “index does not fit within arity `1`” | `r8_plan::rounds` 是 `«n / 2; …»`，单元素元组归一化成元素本身，`projs()` 把一轮的四个分量当成了四轮 | 按计划的轮数 `parts / 2` 取分量；`lit/nvptx/tile_reduce_pair.mim` 在 GPU 上执行 |
 | softmax、rms_norm 去掉 `tile_req` 后编不过（CPU 与 GPU 的 host 侧都报 `ll backend: unhandled def of type core.Ptr («M, 2; F32», 0)`） | 未切分 lowering 不支持二元组累加器的指针 | 未修；这两个算子改用 NumPy 参考 |
+| 一个 work-group 超过 1024 个 work-item 时（`gpu.outline` 让每个线程按轮次跑多个），softmax 在 M ≥ 1024 时 CUresult 700，M 较小时正确但极慢（M=256 时 62 ms） | 未查明；轮次路径在大 grid 下越界 | 未修；`bench/tune` 把这类调度按代价剪掉。复现：`tb.py softmax M=1024 N=4096 R=2 I=4 P=0` |
 | 不开 `tile-fuse` 时，带层级的程序报 “cannot coerce to `TileLevels_…`” | `tile_req` 活到 RWPhase 重建时，依赖 sigma 的分量类型在新 world 里重新实例化的递归 nom 与值的类型副本结构比较失败；类型改动之前（4f6527ca3）就存在 | 未修；参考程序改为源码层去掉 `tile_req` |
 
 lit 里 `gpu/` 下的 wgmma 测试只在不加载 gpu 插件时执行（host 循环），`nvptx/` 下的在 GPU 上执行但都带 `-X tensor:pipeline=2`；
