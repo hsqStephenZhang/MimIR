@@ -250,35 +250,6 @@ const Def* Outline::outline(const App* app) {
     captures(body->body(), body->free_vars(), seen, pieces);
     for (size_t i = 0; i != n_acc; ++i)
         if (i != mem_i && !init->proj(n_acc, i)->is_closed()) pieces.push_back(init->proj(n_acc, i));
-    // A TMA descriptor is encoded on the host, so one of a buffer the loop carries is built from the loop's initial
-    // value, which stays the same for every work-group.
-    auto hoisted = std::vector<std::pair<const Def*, const Def*>>();
-    {
-        auto& old  = old_world();
-        auto outer = body->free_vars();
-        auto entry = [&](u64 group) { return old.tuple({old.lit_i64(group), init, exit}); };
-        auto todo  = DefVec{body->body()};
-        auto done  = DefSet();
-        while (!todo.empty()) {
-            auto def = todo.back();
-            todo.pop_back();
-            if (!done.emplace(def).second || def->isa<Var>()) continue;
-            if (Axm::isa<gpu::device_tensor_map>(def)) {
-                auto [base, rows, cols, box_rows, box_cols] = def->as<App>()->args<5>();
-                auto vars                                   = base->free_vars();
-                auto host                                   = VarRewriter(body->has_var(), entry(0)).rewrite(def);
-                // The same descriptor for any work-group: it does not depend on the loop's index.
-                if (std::ranges::all_of(vars, [&](const Var* v) { return outer.contains(v) || v == body->has_var(); })
-                    && host == VarRewriter(body->has_var(), entry(1)).rewrite(def)) {
-                    hoisted.emplace_back(def, host);
-                    pieces.push_back(host);
-                    continue;
-                }
-            }
-            for (auto op : def->ops())
-                if (op && !op->is_closed()) todo.push_back(op);
-        }
-    }
     DefSet unique;
     std::erase_if(pieces, [&](const Def* piece) { return !unique.emplace(piece).second; });
 
@@ -363,8 +334,6 @@ const Def* Outline::outline(const App* app) {
         }
         map(pieces[i], arg);
     }
-    for (auto [inside, host] : hoisted)
-        map(inside, lookup(host));
     // Components come before the tuples they split off, so a whole tuple rebuilds from kernel arguments.
     for (auto split : splits_) {
         auto n = split->num_projs();
