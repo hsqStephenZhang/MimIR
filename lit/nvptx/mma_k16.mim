@@ -1,0 +1,12 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=80 -X nvptx:no-embed
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=80
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// CHECK-DAG: fptrunc float %{{.*}} to half
+// CHECK-DAG: fptrunc float %{{.*}} to bfloat
+// CHECK-DAG: call { float, float, float, float } @llvm.nvvm.mma.m16n8k16.row.col.f32.f32(<2 x half>
+// CHECK-DAG: call { float, float, float, float } @llvm.nvvm.mma.m16n8k16.row.col.bf16(i32

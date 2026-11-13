@@ -961,6 +961,8 @@ const Def* normalize_trait(const Def*, const Def*, const Def* type) {
         return world.lit_nat(8);
     } else if (type->isa<Pi>()) {
         return world.lit_nat(8); // Gets lowered to function ptr
+    } else if (math::isa_bf16(type)) {
+        return world.lit_nat(2);
     } else if (auto size = Idx::isa(type)) {
         if (auto w = Idx::size2bitwidth(size)) return world.lit_nat(std::max(1_n, std::bit_ceil(*w) / 8_n));
     } else if (auto w = math::isa_f(type)) {

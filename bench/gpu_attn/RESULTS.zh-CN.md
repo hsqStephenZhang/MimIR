@@ -181,3 +181,22 @@ warp 拥有的 fold 把 step 里随步变化的面板（`staged_panels`）放进
 | 128 × 4096 | 5.29 | 4.61 | 1.15 | 17.1 |
 
 （PyTorch 一列取自同一台 H200 上此前的 `torch_attn_h200.out`。）
+
+## 16 位 FA2（H200 NVL，2026-11-13）
+
+`flash_h16.py` 是 `flash_tc.py` 的 16 位版本：Q/K/V/O 为 F16 或 BF16，`mma.sync.m16n8k16`，softmax 在 F32。
+K 的分片用 `ldmatrix`、V 的用 `ldmatrix.trans`；两个 S 的累加 tile 正好是一个 P 的 A 分片（k16 下 C 与 A 布局一致），不需要 key 置换。
+`kflash16.sh <BH> <L> <f16|bf16>`，驱动 `flash_driver16.cpp`，nsys kernel 时间。PyTorch 一列取自 `torch_attn_h200.out`（FA2 后端）。
+
+| BH × L | 手写 f16 | 手写 bf16 | PyTorch fp16 flash | 比值 | 手写 TF32 |
+|---|---:|---:|---:|---:|---:|
+| 32 × 1024 | 0.057 | 0.056 | 0.0425 | 1.34 | 0.089 |
+| 32 × 2048 | 0.182 | 0.181 | 0.142 | 1.28 | 0.317 |
+| 32 × 4096 | 0.673 | 0.673 | 0.521 | 1.29 | 1.20 |
+| 128 × 2048 | 0.686 | 0.686 | 0.532 | 1.29 | 1.21 |
+| 128 × 4096 | 2.57 | 2.56 | 2.02 | 1.27 | 4.61 |
+
+- 132 个寄存器，37 KB shared，4 个 warp 各 16 行。
+- 与 PyTorch FA2 的差距：它一个 warp 拥有 32 行（128 行的块），每个 K/V 分片被两个行块复用；
+  缩放没有并进 `exp2` 的 FFMA；行和每步都完整求和。
+- 编译路径（`attn_warp`、`lower_mma`）目前固定为 TF32 m16n8k8，尚未支持 16 位。

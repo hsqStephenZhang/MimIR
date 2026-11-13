@@ -1,0 +1,45 @@
+// RUN: %mim %s -p opt -o - | %FileCheck %s
+
+// One warp multiplies 16×16 by 16×8 tiles on the tensor cores with F16 and with BF16 inputs, accumulating in F32.
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+
+let F = math.F32;
+let A = «32, 4, 2; F»;
+let B = «32, 2, 2; F»;
+let C = «32, 4; F»;
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            _: Idx 1, lane: Idx 32, (), (a: gpu.GlobalPtr A, b: gpu.GlobalPtr B, c d_h d_b: gpu.GlobalPtr C),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let m       = gpu.generic_mem m1;
+    let at      = λ (T: *) (p: gpu.GlobalPtr «32; T»): mem.Ptr0 T = mem.lea (core.bitcast (mem.Ptr0 «32; T») p, lane);
+    let (m, af) = mem.load (m, at «4, 2; F» a);
+    let (m, bf) = mem.load (m, at «2, 2; F» b);
+    let (m, cf) = mem.load (m, at «4; F» c);
+    let ah      = ‹r: 4; ‹h: 2; math.conv.f2f math.f16 (af#r#h)››;
+    let bh      = ‹r: 2; ‹h: 2; math.conv.f2f math.f16 (bf#r#h)››;
+    let ab      = ‹r: 4; ‹h: 2; math.conv.f2f math.bf16 (af#r#h)››;
+    let bb      = ‹r: 2; ‹h: 2; math.conv.f2f math.bf16 (bf#r#h)››;
+    let m       = mem.store (m, at «4; F» d_h, gpu.mma_f16 (ah, bh, cf));
+    let m       = mem.store (m, at «4; F» d_b, gpu.mma_bf16 (ab, bb, cf));
+    return (gpu.global_mem m, m3, m4, m5);
+
+extern fun mma_k16 (m0: mem.M 0, a: mem.Ptr0 A, b: mem.Ptr0 B, c d_h d_b: mem.Ptr0 C): [mem.M 0, I32] =
+    let (m0, m1, m4)  = gpu.init m0;
+    let (m0, m1, da)  = gpu.alloc_copy.block (m0, m1, a);
+    let (m0, m1, db)  = gpu.alloc_copy.block (m0, m1, b);
+    let (m0, m1, dc)  = gpu.alloc_copy.block (m0, m1, c);
+    let (m1, dh)      = mem.alloc (C, 1) m1;
+    let (m1, dbf)     = mem.alloc (C, 1) m1;
+    ret (m0, m1, m4)  = gpu.launch (1, 32, gpu.default_stream, ff, ()) kernel (da, db, dc, dh, dbf) $ (m0, m1, m4);
+    let (m0, m1)      = gpu.copy_to_host.block (m0, m1, dh, d_h);
+    let (m0, m1)      = gpu.copy_to_host.block (m0, m1, dbf, d_b);
+    let m0            = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);
+
+// CHECK: gpu.mma_f16
+// CHECK: gpu.mma_bf16

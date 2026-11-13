@@ -59,6 +59,7 @@ inline const char* math_suffix(const Def* type) {
 }
 
 inline const char* llvm_suffix(const Def* type) {
+    if (math::isa_bf16(type)) return ".bf16";
     if (auto w = math::isa_f(type)) {
         switch (*w) {
             case 16: return ".f16";

@@ -328,3 +328,23 @@ FP32 SIMT kernel 在 3、4 级下仍然正确，速度与 2 级相当。
 - 初版记录的 1024 / `pipeline=4` 为 0.075 ms，是一次异常测量；重测已推送的提交也在 0.115–0.128 ms，已更正。
 - `gemm_dqf_g3`（SIMT 版的融合写法）结果正确，但很慢（约 16 ms）。原因是 group 级把 s 的列切片复制进 scratch 槽位后，item 累加器的分配落进了 `mslot` 的回调，逃逸分析判它逃逸，累加器因此留在设备堆上。
 - W' 由两层逐元素算子合成时，work-group 级会留下一块设备堆分配；`mem.free_locals` 现在把它的 `free` 放到 kernel 出口转换（`gpu.global_mem`）之前的 generic 内存上。
+
+## 16 位 tensor core GEMM（H200 NVL，2026-11-13）
+
+新原语：`gpu.mma_f16`/`gpu.mma_bf16`（`mma.sync.m16n8k16`，F32 累加）与 `gpu.ldmatrix_b16`（16 位元素，可选 `.trans`）；
+ll 后端把 `F (7, 8)` 发成 `bfloat`，`core.trait.size` 认识它。
+
+`gemm_h16.py` 是 `gemm_tc.py` 的 16 位版本：128×128 work-group，BK=32，8 个 warp 各 64×32，
+A 用 `ldmatrix.x4`、B 用 `ldmatrix.x4.trans`，`cp.async` 双缓冲，C 以输入类型写回。
+`krun16.sh <n> <f16|bf16>` 生成、编译并用 `kbench16` 计时（CUDA event 中位数，采样对照 CPU 参考）；基线 `torch_h16.py`。
+
+| n | 手写 f16 | 手写 bf16 | cuBLAS f16 | cuBLAS bf16 | 手写 / cuBLAS |
+|---|---:|---:|---:|---:|---:|
+| 1024 | 0.0298 ms（72 TF） | 0.0297 | 0.0137（157 TF） | 0.0137 | 46% |
+| 2048 | 0.0851（202 TF） | 0.0845 | 0.0346（497 TF） | 0.0344 | 41% |
+| 4096 | 0.566（243 TF） | 0.567 | 0.204（675 TF） | 0.197 | 36% |
+| 8192 | 4.43（248 TF） | 4.35 | 1.82（604 TF） | 1.79 | 41% |
+
+- 同一结构在 TF32 下（A100）达到 cuBLAS TF32 的 74–85%；在 H200 的 16 位上只有 36–46%。
+  cuBLAS 在 Hopper 上用 `wgmma`（warpgroup 级、操作数直接从 shared 读）与 TMA，`mma.sync` 的吞吐上限远低于它。
+  继续调 mma.sync 的 tile 和流水深度收益有限，下一步是 WGMMA 原语。

@@ -321,6 +321,14 @@ axm global_mem: mem.M 0 → GlobalM;
 /// Each work-item holds 4 elements of A, 2 of B and 4 of C and D in the fragment layout of the PTX ISA.
 ///
 axm mma_tf32: [«4; math.F32», «2; math.F32», «4; math.F32»] → «4; math.F32»;
+///
+/// #### mma_f16, mma_bf16
+///
+/// A warp's `D = A·B + C` on a 16×8×16 tile with F16 or BF16 inputs and F32 accumulation (`mma.sync.m16n8k16`).
+/// Each work-item holds 4 pairs of A, 2 pairs of B and 4 elements of C and D; a pair is one 32-bit register.
+///
+axm mma_f16: [«4, 2; math.F16», «2, 2; math.F16», «4; math.F32»] → «4; math.F32»;
+axm mma_bf16: [«4, 2; math.BF16», «2, 2; math.BF16», «4; math.F32»] → «4; math.F32»;
 
 /// #### shfl_xor
 ///
@@ -363,6 +371,13 @@ anx lam tf32_rna_ref (x: math.F32): math.F32 =
 /// Work-item `i` passes the address of row `i % 8` of matrix `i / 8` and receives element `(i / 4, i % 4)` of each matrix.
 ///
 axm ldmatrix: {a: Nat} → [n: Nat, mem.M a, mem.Ptr («4; math.F32», a)] → [mem.M a, «n; math.F32»];
+///
+/// #### ldmatrix_b16
+///
+/// Loads `n` 8×8 matrices of 16-bit elements `T` from shared memory (`ldmatrix.sync.m8n8.b16`, `.trans` if `trans`).
+/// Work-item `i` passes the address of row `i % 8` of matrix `i / 8` and receives elements `(i / 4, 2 (i % 4) + h)` of each matrix, or their transposes.
+///
+axm ldmatrix_b16: {T: *} → {a: Nat} → [n: Nat, trans: Bool, mem.M a, mem.Ptr («8; T», a)] → [mem.M a, «n, 2; T»];
 ///
 /// #### buf_ldmatrix
 ///

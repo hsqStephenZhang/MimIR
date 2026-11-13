@@ -209,6 +209,8 @@ std::string Emitter::convert_impl(const Def* type, bool simd) {
         // (its only value is 0, so any i1 zext/trunc of it stays correct).
         auto w                    = idx_bitwidth(type);
         return types_[simd][type] = "i" + std::to_string(std::max<nat_t>(1, w));
+    } else if (math::isa_bf16(type)) {
+        return types_[simd][type] = "bfloat";
     } else if (auto w = math::isa_f(type)) {
         switch (*w) {
             case 16: return types_[simd][type] = "half";
@@ -649,6 +651,8 @@ std::string Emitter::emit_lit(const Def* def) {
     if (auto lit = def->isa<Lit>()) {
         if (lit->type()->isa<Nat>() || Idx::isa(lit->type())) {
             return std::to_string(lit->get());
+        } else if (math::isa_bf16(lit->type())) {
+            return std::format("0xR{:04x}", lit->get<u16>());
         } else if (auto w = math::isa_f(lit->type())) {
             u64 hex;
 
@@ -1191,8 +1195,9 @@ std::optional<std::string> Emitter::emit_math(BB& bb, const std::string& name, c
         auto t_src = convert(conv->arg()->type());
         auto t_dst = convert(conv->type());
 
-        auto s_src = math::isa_f(conv->arg()->type());
-        auto s_dst = math::isa_f(conv->type());
+        auto width = [](const Def* t) { return math::isa_bf16(t) ? std::optional<nat_t>(16) : math::isa_f(t); };
+        auto s_src = width(conv->arg()->type());
+        auto s_dst = width(conv->type());
 
         switch (conv.id()) {
             case math::conv::f2f: op = s_src < s_dst ? "fpext" : "fptrunc"; break;
