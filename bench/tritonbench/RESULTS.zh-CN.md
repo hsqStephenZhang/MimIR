@@ -162,8 +162,14 @@ CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKi
 | cluster 大小 | CUDA 的可移植上限 8；CUTLASS `cluster_launch.hpp` 设 `NonPortableClusterSizeAllowed` 后放宽到 `MaxClusterSize = 32`，我们不设该属性 | `serial_cluster` 的 `require` | elaboration |
 | tile 调度参数合法（tail、向量层最内） | CuTe 的形状都是编译期参数 | 构造器上的 `require` / `match`（`error/tile_tail.mim`、`error/tile_vec_innermost.mim`） | elaboration |
 
-仍然在 `TileFuse` 晚检的，都依赖根运算本身而不只依赖层级值：
-- `promote` 的位不超过输入个数，以及并行层不切归约循环：需要根的输入个数和 `ro / rn` 划分，而层级只以总循环数 `n` 为索引；
-- 操作数 A 行主序 / K 主序：对应 TK 中 `st` 的 layout 类型，但在我们这里，layout 是 promotion 之后才确定的；
-- lane 归约的 lane 数（2 的幂且 ≤ 32）：需要归约循环的长度；
-- warp 内 MMA 的 k 块整除：`WarpLevels` 的索引只能沿链原样传递（nom 不支持非一致递归），`warp_red` 改变的 k 块进不了索引。
+依赖根运算本身的约束，层级类型只以循环总数 `n` 为索引，表达不了；现在由 `tile_req` 的 normalizer 在 elaboration 时检查。
+这和 `require` 同一个机制：常量条件在构造时求值，报错位置指向 `tile_req` / `group_tile_req` 调用处。
+它复用从 `TileFuse` 挪到 `tensor.h` 的 `tile_levels` 解析，并沿链记录每个循环的块大小：
+- 并行层不切归约循环、归约层只切一个归约循环（`error/tile_par_reduction.mim`）；
+- `promote` 的位不超过根的输入个数（`error/tile_promote_inputs.mim`）；
+- lane 归约把它的块分给 2 的幂、至多 32 个 lane（`error/tile_lanes.mim`）；
+- MMA tile 整除它所在的块，包括 `warp_red` 留下的 k 块（`error/tile_mma_k_block.mim`），对应 TK `warpgroup.cuh` 的 `static_assert(B::rows/TILE_ROW_DIM == K)`；
+- MMA 层之上必须有层把 A、B 提升进 shared-memory panel（`error/tile_mma_promote.mim`），对应 CuTe GMMA `SS` atom 要求两个操作数都在 smem。
+
+`TileFuse` 里 “A 必须行主序” 的检查对类型正确的请求不可达：`root_contraction` 已要求 A 按 `(m, k)` 读取，panel 轴总是 m。
+`TileFuse` / `lower_to_mem` 里原有的检查都保留，用来兜住非字面量的链，以及组合子是否可重结合这类语义条件。

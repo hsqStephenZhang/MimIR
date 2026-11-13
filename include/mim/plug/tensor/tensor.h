@@ -60,6 +60,24 @@ bool is_contraction(const App* root);
 /// otherwise.
 const Def* contraction_type(const App* root);
 
+/// One level of a `tile_req`: `kind` 0 parallel, 1 reduction, 2 vector, 3 tensor-core block, 4 cluster, 5 persistent.
+/// `bind` 0 serial, 1 work-group, 2 work-item, 3 warp, 6 warpgroup.
+/// `pipeline` is a reduction's depth inside a work-group, 0 until TileFuse::realize resolves the default.
+struct LevelSpec {
+    u64 kind, tail, promote, bind;
+    const Def* sizes;
+    const Def* merge;
+    u64 pipeline = 1;
+    bool tma     = false;
+    u64 split    = 0;
+    /// A `RedWs` level: a producer warpgroup fills the ring; `pingpong` alternates the consumers' MMAs.
+    bool ws      = false;
+    u64 pingpong = 0;
+};
+
+/// The levels of a `tile_req` chain, outermost first; `nullopt` unless the chain is a literal value.
+std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels);
+
 inline const Def* op_get(const Def* tensor, const Def* index) {
     auto [r, s, T] = *TensorType::isa(tensor->type());
     auto& w        = tensor->world();

@@ -853,6 +853,151 @@ const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     return nullptr;
 }
 
+std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
+    enum { Serial, Group, Item, Warp, Warpgroup } scope = Serial;
+    std::vector<LevelSpec> specs;
+    for (auto cur = levels;;) {
+        // The chain's noms are newtypes over variants: a `Name` wraps the case's `Inj`.
+        if (auto name = cur->isa<Name>()) cur = name->op();
+        auto inj = cur->isa<Inj>();
+        if (!inj) return std::nullopt;
+        auto i = inj->index();
+        if (i == 0) return specs;
+        // `WarpLevels#Mma` and `WarpgroupLevels#Wgmma` hold their shape first, then evidence, and end the chain.
+        if ((scope == Warp || scope == Warpgroup) && i == 2) {
+            auto value = inj->value();
+            specs.push_back(LevelSpec{3, 0, 0, 0, value->proj(value->num_projs(), 0), nullptr});
+            return specs;
+        }
+        auto n     = inj->value()->num_projs();
+        auto field = [&](size_t j) { return inj->value()->proj(n, j); };
+        auto lit   = [&](size_t j) { return Lit::isa(field(j)); };
+        LevelSpec spec{0, 0, 0, 0, field(0), nullptr};
+        // (kind, bind) per constructor of TileLevels / GroupLevels / ItemLevels / WarpLevels / WarpgroupLevels; -1
+        // marks a case without one.
+        static constexpr int table[5][8][2] = {
+            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0},   {4, 0},   {5, 0}, {-1, -1}},
+            {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3},   {0, 6}},
+            {{0, 0}, {0, 0},   {1, 0},   {2, 0},   {1, 4}, {-1, -1}, {-1, -1}, {-1, -1}},
+            {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
+            {{0, 0}, {1, 0}, {-1, -1},   {1, 0},   {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}}
+        };
+        if (i > 7 || table[scope][i][0] < 0) return std::nullopt;
+        spec.kind = table[scope][i][0], spec.bind = table[scope][i][1];
+        if (spec.kind == 4) {
+            // `Cluster` carries its size and multicast mask where other levels carry sizes and a tail.
+            auto size = lit(0), multicast = lit(1), split = lit(2);
+            if (!size || !multicast || !split) return std::nullopt;
+            spec.tail = *size, spec.promote = *multicast, spec.split = *split;
+            specs.push_back(spec);
+            cur = field(n - 1);
+            continue;
+        }
+        if (spec.kind == 5) {
+            auto ctas = lit(0);
+            if (!ctas) return std::nullopt;
+            spec.tail = *ctas;
+            specs.push_back(spec);
+            cur = field(n - 1);
+            continue;
+        }
+        if (spec.kind != 2) {
+            auto tail = lit(1);
+            if (!tail) return std::nullopt;
+            spec.tail = *tail;
+        }
+        if ((spec.kind == 1 && spec.bind == 0) || (spec.kind == 0 && spec.bind == 1)) {
+            auto promote = lit(2);
+            if (!promote) return std::nullopt;
+            spec.promote = *promote;
+        }
+        spec.tma = scope == Warpgroup && (i == 3 || i == 4);
+        spec.ws  = scope == Warpgroup && i == 4;
+        if (spec.ws) {
+            auto pingpong = lit(4);
+            if (!pingpong) return std::nullopt;
+            spec.pingpong = *pingpong;
+        }
+        if (spec.kind == 1 && spec.bind == 0 && scope != Serial) {
+            auto pipeline = lit(3);
+            if (!pipeline) return std::nullopt;
+            spec.pipeline = *pipeline;
+        }
+        if (spec.kind == 1 && spec.bind == 2) {
+            auto option = field(2);
+            if (auto name = option->isa<Name>()) option = name->op();
+            auto merge = option->isa<Inj>();
+            if (!merge) return std::nullopt;
+            if (merge->index() == 1) spec.merge = merge->value();
+        }
+        specs.push_back(spec);
+        if (spec.bind == 1) scope = Group;
+        if (spec.kind == 0 && spec.bind == 2) scope = Item;
+        if (spec.kind == 0 && spec.bind == 3) scope = Warp;
+        if (spec.kind == 0 && spec.bind == 6) scope = Warpgroup;
+        cur = field(n - 1);
+    }
+}
+
+namespace {
+
+// The checks on a literal level chain that need its root: which loops reduce, how many inputs it reads and how far.
+void check_levels(const App* root, const Def* levels, const std::vector<LevelSpec>& specs) {
+    auto mr    = btensor::MapRedPost::of(root->callee()->as<App>());
+    auto ranks = mr.ranks();
+    auto nis   = Lit::isa(mr.nis);
+    if (!ranks || !nis) return;
+    auto ro = ranks->ro, rn = ranks->nloops();
+    auto block = fe::Vector<u64>(rn, 0);
+    for (u64 d = 0; d != rn; ++d)
+        block[d] = Lit::isa(mr.Sr->proj(rn, d)).value_or(0);
+    auto size    = [&](const LevelSpec& spec, u64 d) { return Lit::isa(spec.sizes->proj(rn, d)).value_or(0); };
+    u64 promoted = 0;
+    for (auto& spec : specs) {
+        if (spec.kind > 3) continue;
+        promoted |= spec.promote;
+        if (spec.kind == 3) {
+            if ((promoted & 3) != 3) levels->blame("a tensor-core level reads A and B from promoted panels").bail();
+            for (u64 d = 0; d != rn; ++d)
+                if (auto s = size(spec, d); s && block[d] % s)
+                    levels
+                        ->blame("the tensor-core tile `{}` does not divide its block of loop {}, {}", spec.sizes, d,
+                                block[d])
+                        .bail();
+            continue;
+        }
+        if (spec.promote >> *nis)
+            levels->blame("a level promotes input bits `{}` of {} inputs", spec.promote, *nis).bail();
+        auto loops = 0;
+        for (u64 d = 0; d != rn; ++d) {
+            auto s = size(spec, d);
+            if (!s) continue;
+            if (spec.kind == 0 && d >= ro) levels->blame("a parallel level cannot tile reduction loop {}", d).bail();
+            if (spec.kind == 1 && d < ro) levels->blame("a reduction level cannot tile parallel loop {}", d).bail();
+            if (spec.kind == 1 && ++loops > 1) levels->blame("a reduction level tiles a single reduction loop").bail();
+            if (spec.kind == 1 && spec.bind == 4 && block[d]) {
+                auto lanes = block[d] / s;
+                if (block[d] % s || lanes > 32 || (lanes & (lanes - 1)))
+                    levels
+                        ->blame("a lane reduction splits its block of {} into a power of two of at most 32 lanes, not "
+                                "{} / {}",
+                                block[d], block[d], s)
+                        .bail();
+            }
+            if (spec.kind != 2) block[d] = s;
+        }
+    }
+}
+
+} // namespace
+
+const Def* normalize_tile_req(const Def*, const Def*, const Def* arg) {
+    auto [op, members, levels, control] = arg->projs<4>();
+    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op)))
+        if (auto specs = tile_levels(levels)) check_levels(root, levels, *specs);
+    return nullptr;
+}
+
 const Def* normalize_within(const Def*, const Def*, const Def* arg) {
     auto& w             = arg->world();
     auto [outer, sizes] = arg->projs<2>();

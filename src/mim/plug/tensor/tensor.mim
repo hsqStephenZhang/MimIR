@@ -2409,7 +2409,7 @@ axm root_contraction: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → *,
 axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *}
             → [op: Tensor r s T, members: M,
                levels: TileLevels (root_loops op, root_acc op, root_contraction op), control: K]
-            → Tensor r s T;
+            → Tensor r s T, normalize_tile_req;
 /// A tile request inside a work-group: `levels` start at the work-group's scope, whose tile is `sizes`, at least as
 /// large as `op`, so the work-group runs it in place.
 anx lam group_tile_req {T: *, r: Nat, s: «r; Nat», M K: *}
