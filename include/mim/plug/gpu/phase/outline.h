@@ -23,6 +23,7 @@ private:
     const Def* item_id_  = nullptr;
     const Def* k_shared_ = nullptr;
     const Def* lane_     = nullptr;
+    const Def* rank_     = nullptr;
     u64 n_items_         = 1;
     bool in_item_        = false;
     bool in_async_       = false;

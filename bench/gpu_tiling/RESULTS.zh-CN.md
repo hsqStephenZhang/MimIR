@@ -385,3 +385,23 @@ tile-fuse 现在接受混合精度收缩：输入 F16/BF16，combiner 为 `acc +
 | 4096 | 0.776（177 TF） | 0.656（210 TF） | 0.632（218 TF） | 243 TF | 467 TF |
 
 bf16 4096、`pipeline=2`：0.655 ms。编译路径达到同结构手写版的 0.9×；与 WGMMA 的差距要靠 warpgroup 层（下一步）。
+
+### 编译路径的 warpgroup 层（H200 NVL，2026-11-13）
+
+调度语言新增 `GroupLevels#Warpgroup` 与 `WarpgroupLevels = Done | Red | Wgmma`（`group_warpgroup`、`wg_red`、`wg_mma`），
+绑定 6 降成 `gpu.bind.warpgroup`（每次迭代 128 个 work-item，`gpu.warp_rank` 给出 warp 在 warpgroup 里的序号）。
+`wg_mma (64, N, 16)` 让 warpgroup 的整个 64×N tile 每个 k 步发一条 `wgmma`：操作数面板选 K-major、128 字节行、按行 swizzle 的布局
+（`panel::wgmma`，只在源沿归约块连续时选用），描述符取面板元素的 shared 地址（`gpu.buf_addr`），每个 warp 持有自己 16 行的 `C (N/8)`，
+面板等待之后插入 `fence_proxy_async`。目前只支持两个操作数都 K-major（`a · bᵀ`）。
+
+`gemm_tiled_wg.mim`：`serial_group ((128, 128, 0), …, group_warpgroup ((64, 128, 0), 1, wg_red ((0, 0, 64), 1, 3, wg_mma (64, 128, 16))))`，
+`TY=f16f32t N=<n> krun.sh gemm_tiled_wg.mim -X tensor:pipeline=<p> -X nvptx:sm=90a`。cuBLAS 一列是 `torch.mm (a, b.t ())`，C 为 F16。
+
+| n | `pipeline=2` | 4 | 手写 `gemm_wg` | 编译的 mma.sync 版 | cuBLAS `a·bᵀ` |
+|---|---:|---:|---:|---:|---:|
+| 1024 | 0.0180 ms（120 TF） | 0.0177（121 TF） | 118 TF | 55 TF | 145 TF |
+| 2048 | 0.0470（366 TF） | 0.0530（324 TF） | 392 TF | 174 TF | 483 TF |
+| 4096 | 0.304（452 TF） | 0.316（435 TF） | 467 TF | 218 TF | 671 TF |
+| 8192 | 2.38（462 TF） | | 475 TF | | 623 TF |
+
+编译路径达到手写 WGMMA 版的 0.93–1.0×，是 mma.sync 编译路径的 2.1×，cuBLAS 的 67–83%。

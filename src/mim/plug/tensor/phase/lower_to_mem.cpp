@@ -1049,6 +1049,13 @@ const Def* lane_index(World& w) {
     return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(32), lane);
 }
 
+/// The first row a warp holds of a warpgroup's accumulator, 0 for a warp's own.
+const Def* group_row(World& w, bool group) {
+    if (!group) return w.lit_nat_0();
+    auto rank = w.call<core::bitcast>(w.type_nat(), w.app(w.annex<gpu::warp_rank>(), w.tuple()));
+    return w.call(core::nat::mul, Defs{rank, w.lit_nat(16)});
+}
+
 /// The warp loop's lane as an index; `tensor.distribute` takes the same term for the own lane.
 const Def* warp_lane(World& w) {
     auto lane = w.call<core::bitcast>(w.type_nat(), w.app(w.annex<gpu::lane_id>(), w.tuple()));
@@ -1701,8 +1708,12 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         auto body    = w.mut_con({w.type_i64(), acc->type(), w.cn(acc->type())})
                            ->set(plan.bind == 1   ? "tileGroups"
                                  : plan.bind == 2 ? "tileItems"
+                                 : plan.bind == 6 ? "tileWarpgroups"
                                                   : "tileWarps");
-        auto tag     = plan.bind == 1 ? gpu::bind::group : plan.bind == 2 ? gpu::bind::item : gpu::bind::warp;
+        auto tag     = plan.bind == 1 ? gpu::bind::group
+                     : plan.bind == 2 ? gpu::bind::item
+                     : plan.bind == 6 ? gpu::bind::warpgroup
+                                      : gpu::bind::warp;
         auto wrapped = w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body);
         // A work-item whose reduction runs on its lanes takes that many adjacent ids, which must fill whole warps.
         if (lanes > 1 && total * lanes % 32)
@@ -2385,7 +2396,30 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
             }));
         };
         auto ms = fragments.rows / fragments.m, ns = fragments.cols / fragments.n;
-        auto acc  = DefVec(destination.buffer->projs(fragments.count()));
+        auto acc = DefVec(destination.buffer->projs(fragments.count()));
+        if (fragments.group) {
+            // A descriptor starts at the shared address of its operand's first element of the k step.
+            auto desc = [&](size_t i, u64 ks) {
+                auto [buffer, storage, physical, r] = coords(i, nat(0), nat(0), nat(ks * kt));
+                if (!fe::lookup(layouts_, buffer))
+                    app->blame("a wgmma operand panel needs its K-major swizzled layout").bail();
+                auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
+                auto addr         = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}),
+                                          {buffer, *Shape(physical).fold(storage)});
+                return w.app(w.annex<gpu::wgmma_desc>(), {addr, w.lit_i64(16), w.lit_i64(1024), w.lit_i64(1)});
+            };
+            auto nt          = fragments.count();
+            auto instr       = math::isa_bf16(T) ? w.annex<gpu::wgmma_bf16>() : w.annex<gpu::wgmma_f16>();
+            const Def* tiles = w.tuple(acc);
+            mem              = w.app(w.annex<gpu::wgmma_fence>(), mem);
+            for (u64 ks = 0; ks != depth / kt; ++ks)
+                std::tie(mem, tiles)
+                    = w.app(instr, {nat(nt), mem, desc(0, ks), desc(1, ks), w.lit_ff(), tiles})->projs<2>();
+            mem = w.app(w.annex<gpu::wgmma_commit>(), mem);
+            std::tie(mem, tiles)
+                = w.app(w.app(w.annex<gpu::wgmma_wait>(), tiles->type()), {mem, nat(0), tiles})->projs<2>();
+            return w.tuple({mem, w.tuple(DefVec(nt, [&](size_t j) { return tiles->proj(nt, j); }))});
+        }
         auto read = [&](const Def* lane_reg, Enum auto map, u64 ni, u64 ks) {
             auto [row, col]                     = fragment_coords(w, map, lane_reg);
             auto [buffer, storage, physical, r] = coords(1, nat(0), add(nat(ni * 8), col), add(nat(ks * kt), row));
@@ -2454,11 +2488,12 @@ const Def* LowerToMem::store_fragments(const Def* source, const Fragments& fragm
     auto lane = lane_index(w);
     auto ns   = fragments.cols / fragments.n;
     auto mem  = destination.mem;
+    auto base = group_row(w, fragments.group);
     for (u64 f = 0; f != fragments.count(); ++f) {
         auto value = source->proj(fragments.count(), f);
         for (u64 e = 0; e != 4; ++e) {
             auto [local_row, local_col] = fragment_coords(w, mma_m16n8k8_tf32::l_c, w.tuple({lane, w.lit_idx(4, e)}));
-            auto row                    = add(nat(f / ns * fragments.m), local_row);
+            auto row                    = add(base, add(nat(f / ns * fragments.m), local_row));
             auto col                    = add(nat(f % ns * fragments.n), local_col);
             auto at                     = std::array{row, col};
             auto index                  = w.tuple(DefVec(rank, [&](size_t d) {
@@ -2506,7 +2541,8 @@ LowerToMem::load_fragments(const Def* init, const Fragments& fragments, const De
         auto elements = DefVec();
         for (u64 e = 0; e != 4; ++e) {
             auto [local_row, local_col] = fragment_coords(w, mma_m16n8k8_tf32::l_c, w.tuple({lane, w.lit_idx(4, e)}));
-            auto at = std::array{add(nat(f / ns * fragments.m), local_row), add(nat(f % ns * fragments.n), local_col)};
+            auto at    = std::array{add(group_row(w, fragments.group), add(nat(f / ns * fragments.m), local_row)),
+                                    add(nat(f % ns * fragments.n), local_col)};
             auto index = w.tuple(DefVec(2, [&](size_t d) {
                 return w.call<core::idx>(w.lit_nat_0(), shape->proj(2, d), add(start->proj(2, d), at[d]));
             }));
@@ -3032,8 +3068,11 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         if (!inplace || rank != 2 || !extents)
             app->blame("a tensor-core fold needs a literal 2D accumulator updated in place").bail();
         auto shape = mma->decurry()->arg(2, 1);
-        fragments  = Fragments{Lit::as(extent->proj(2, 0)), Lit::as(extent->proj(2, 1)), Lit::as(shape->proj(3, 0)),
-                               Lit::as(shape->proj(3, 1))};
+        if (Lit::as(shape->proj(3, 0)) == 64)
+            fragments = Fragments{16, Lit::as(extent->proj(2, 1)), 16, 8, true};
+        else
+            fragments = Fragments{Lit::as(extent->proj(2, 0)), Lit::as(extent->proj(2, 1)), Lit::as(shape->proj(3, 0)),
+                                  Lit::as(shape->proj(3, 1))};
     }
     auto panels_scope = fe::Restore(mma_panels_, mma_panels_ || fragments);
     const Def *mem, *buffer;
@@ -3192,7 +3231,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         }
         // The current block's group is the oldest: the younger `depth - 2` may still be pending.
         auto waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat(ring.size() - 2)), loop_mem);
-        loop_mem    = w.app(w.annex<gpu::fence>(), waited);
+        // `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it first.
+        if (fragments && fragments->group) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
+        loop_mem = w.app(w.annex<gpu::fence>(), waited);
         // The last blocks fill their own panels once more, which keeps the loop body free of a branch.
         auto next = w.app(w.annex(tensor::pipeline_plan::refill_block),
                           {iteration, w.lit_nat(ring.size()), w.lit_nat(*literal_count)});

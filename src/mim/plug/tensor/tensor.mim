@@ -2175,7 +2175,8 @@ axm report_groups: compile.Phase;
 /// `members` are the producers the partition placed in `op`'s group; only they are fused.
 /// `levels` lists the levels outermost first as a chain whose type names the scope its levels run in:
 /// `TileLevels` for serial code, `GroupLevels` inside a work-group, `ItemLevels` inside a work-item,
-/// `WarpLevels` inside a warp, whose 32 work-items compute its tile together.
+/// `WarpLevels` inside a warp, whose 32 work-items compute its tile together, and `WarpgroupLevels` inside a warpgroup
+/// of four consecutive warps.
 /// Entering a work-group or a work-item continues in the next chain, so a level the scope does not offer,
 /// such as a work-item bound reduction outside a work-group, does not type-check.
 /// `control: FuseQuery → FuseDecision` decides, per candidate, whether to fuse and whether to yield.
@@ -2193,7 +2194,9 @@ axm report_groups: compile.Phase;
 /// `Mma` computes a warp's reduction block on tensor cores; `shape` is the instruction's tile of the root's loops and
 /// divides the warp's tile and block: `(16, 8, 8)` for a matrix product of F32 inputs, run with TF32 inputs, and
 /// `(16, 8, 16)` for one of F16 or BF16 inputs widened into an F32 accumulator, `acc + up x · up y`.
-/// Promoted inputs of a reduction inside a warp are staged as panels over the whole work-group's tile.
+/// `Wgmma` computes a warpgroup's reduction block with one `wgmma` per k step from the work-group's panels; `shape` is
+/// `(64, N, 16)` for the warpgroup's whole `64 × N` tile, with F16 or BF16 inputs both K-major (`a · bᵀ`).
+/// Promoted inputs of a reduction inside a warp or a warpgroup are staged as panels over the whole work-group's tile.
 /// `pipeline` of a reduction inside a work-group is how many blocks' panels are in flight, `n` filling `n - 1` blocks
 /// ahead of the one being computed; 0 takes `-X tensor:pipeline`, and the `*_red` constructors leave it 0.
 /// The CPU lowering runs bound levels as loops.
@@ -2213,7 +2216,8 @@ anx mutual
         | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc, mma)]
         | RedItems: [sizes: «n; Nat», tail: Nat, merge: TileMerge Acc, rest: GroupLevels (n, Acc, mma)]
         | Vec: [sizes: «n; Nat», rest: GroupLevels (n, Acc, mma)]
-        | Warp: [sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, mma)];
+        | Warp: [sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, mma)]
+        | Warpgroup: [sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, mma)];
     nom ItemLevels (n: Nat, Acc: *, mma: Bool) =
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, mma)]
@@ -2224,6 +2228,10 @@ anx mutual
         | Done
         | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, mma)]
         | Mma: [shape: «n; Nat», contraction: «mma»];
+    nom WarpgroupLevels (n: Nat, Acc: *, mma: Bool) =
+        | Done
+        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)]
+        | Wgmma: [shape: «n; Nat», contraction: «mma»];
 end
 ///
 /// The constructors as functions, so a chain infers `n` and `Acc` from the request.
@@ -2271,14 +2279,22 @@ anx lam warp_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: N
 anx lam warp_red_pipelined {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, mma)): WarpLevels (n, Acc, mma) =
     (WarpLevels (n, Acc, mma))#Red (sizes, tail, promote, pipeline, rest);
 anx lam warp_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpLevels (n, Acc, tt) = (WarpLevels (n, Acc, tt))#Mma (shape, ‹tt›);
+anx lam group_warpgroup {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
+    (GroupLevels (n, Acc, mma))#Warpgroup (sizes, tail, rest);
+anx lam wg_done {n: Nat, Acc: *, mma: Bool} (_: []): WarpgroupLevels (n, Acc, mma) = (WarpgroupLevels (n, Acc, mma))#Done;
+anx lam wg_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote: Nat, rest: WarpgroupLevels (n, Acc, mma)): WarpgroupLevels (n, Acc, mma) =
+    (WarpgroupLevels (n, Acc, mma))#Red (sizes, tail, promote, 0, rest);
+anx lam wg_red_pipelined {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)): WarpgroupLevels (n, Acc, mma) =
+    (WarpgroupLevels (n, Acc, mma))#Red (sizes, tail, promote, pipeline, rest);
+anx lam wg_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpgroupLevels (n, Acc, tt) = (WarpgroupLevels (n, Acc, tt))#Wgmma (shape, ‹tt›);
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
 /// The loop count and accumulator type of the `map_reduce_post` that computes a tile request's root; they index the
 /// request's levels, so a chain over other loops or another accumulator does not type-check.
 axm root_loops: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Nat, normalize_root_loops;
 axm root_acc: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → *, normalize_root_acc;
-/// Whether that `map_reduce_post` is an F32 matrix product `C (m, n) += A (m, k) · B (k, n)`; only then may its levels
-/// end in `warp_mma`.
+/// Whether that `map_reduce_post` is a matrix product `C (m, n) += A (m, k) · B (k, n)` into an F32 accumulator
+/// (`contraction_type`); only then may its levels end in `warp_mma` or `wg_mma`.
 axm root_contraction: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Bool, normalize_root_contraction;
 axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *}
             → [op: Tensor r s T, members: M,
@@ -2300,6 +2316,7 @@ axm tile_group: compile.Phase;
 /// work-group, 2 for a work-item and 3 for a warp.
 /// On a reduction step, 2 runs its blocks on the work-items and 4 on the lanes of one work-item.
 /// 5 binds a region of 16 rows to a warp that owns it: its tensors are warp values (`tensor.warp`) in registers.
+/// 6 binds it to a warpgroup of four consecutive warps.
 ///
 axm bind: {T: *} → [to: Nat] → T → T;
 ///

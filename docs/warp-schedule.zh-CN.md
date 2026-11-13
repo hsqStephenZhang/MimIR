@@ -122,3 +122,12 @@ A 操作数来自内存且不随步变的乘积，其 A 分片在循环外装载
 - 可信边界：swizzle 布局、描述符字段与 TMA 盒的一致性由 GPU 上的 `lit/{gpu,nvptx}/{wgmma,tma}.mim` 检查，不在 Mim 里证明；mbarrier 的相位协议在手写 kernel 里由约定保证，没有检查。
 
 尚未进入编译路径：`lower_mma` 与 warp 拥有的区域仍固定为 TF32 m16n8k8；warpgroup 拥有的区域、生产者 warpgroup 的调度层表示都还没有。
+
+## warpgroup 层（2026-11-13）
+
+层次：grid ─ cluster ─ work-group ─ **warpgroup** ─ warp ─ lane。warpgroup 是一个真正的作用域：`GroupLevels#Warpgroup` 进入 `WarpgroupLevels`，
+后者只提供 `Red`（面板仍铺满整个 work-group 的 tile、由所有 work-item 填充）与 `Wgmma`。参考语义仍是循环，正确性论证不变。
+值的表示不需要新东西：warpgroup 的累加器就是四个 warp 各一个 `C nt`，这也是以后 warpgroup 拥有区域（FA3 的消费者）的基础。
+
+未做：MN-major 操作数（行主序 B、attention 的 V），需要把 n 切成 64 宽的 atom、k 作行的面板布局；
+TMA + mbarrier 作为流水归约层的另一种填充方式（生产者 warpgroup）；cluster 层（TMA multicast、DSMEM 归约）。

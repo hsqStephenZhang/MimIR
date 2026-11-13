@@ -70,8 +70,11 @@ private:
     /// A warp's accumulator held as tensor-core fragments: every lane keeps a value of `count` `«4; F32»` of the
     /// `rows × cols` tile, fragment `mi · cols / n + ni` covering rows `mi · m + …` and columns `ni · n + …` in the PTX
     /// layout.
+    /// A tensor-core accumulator of `rows × cols` in tiles of `m × n`; in a warpgroup's (`group`) each warp holds the
+    /// 16 rows at `16 · warp_rank`.
     struct Fragments {
         u64 rows, cols, m, n;
+        bool group = false;
         u64 count() const { return rows / m * (cols / n); }
     };
     const Def* lower_mma(const App*, const Destination&, const Fragments&);

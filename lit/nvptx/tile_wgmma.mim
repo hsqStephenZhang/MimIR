@@ -1,0 +1,14 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=90a
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=2 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// The warpgroups' blocks run as one wgmma per k step on panels filled by cp.async and published to the async proxy.
+
+// CHECK-DAG: call void @llvm.nvvm.cp.async.cg.shared.global.16
+// CHECK-DAG: fence.proxy.async.shared::cta
+// CHECK-DAG: wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16
+// CHECK-DAG: call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 0)

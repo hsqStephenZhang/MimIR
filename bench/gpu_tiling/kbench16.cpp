@@ -1,5 +1,5 @@
-// kbench16 <cubin> <kernel> <groups> <items> <f16|bf16>[f32] [iters] [n] [smem]: times a generated n³ 16-bit GEMM kernel back to back.
-// The kernel takes its three device buffers as one by-value array, row-major, C in the input type or with `f32` in F32;
+// kbench16 <cubin> <kernel> <groups> <items> <f16|bf16>[f32[t]] [iters] [n] [smem]: times a generated n³ 16-bit GEMM kernel back to back.
+// The kernel takes its three device buffers as one by-value array, row-major, C in the input type or with `f32` in F32, `t` reading B as Bᵀ;
 // the operand order is found by checking the result.
 #include <algorithm>
 #include <array>
@@ -36,7 +36,7 @@ struct Bf16 {
     }
 };
 
-template<class H, class C> int run(int argc, char** argv) {
+template<class H, class C> int run(int argc, char** argv, bool bt = false) {
     int groups = std::atoi(argv[3]), items = std::atoi(argv[4]), iters = argc > 6 ? std::atoi(argv[6]) : 300;
     size_t N      = argc > 7 ? std::atoi(argv[7]) : 1024;
     unsigned smem = argc > 8 ? std::atoi(argv[8]) : 0;
@@ -72,7 +72,7 @@ template<class H, class C> int run(int argc, char** argv) {
         for (size_t s = 0; s < 256; ++s) {
             size_t i = (s * 131 + 7) % N, j = (s * 977 + 3) % N;
             double ref = 0;
-            for (size_t k = 0; k < N; ++k) ref += double(float(a[i * N + k])) * double(float(b[k * N + j]));
+            for (size_t k = 0; k < N; ++k) ref += double(float(a[i * N + k])) * double(float(b[bt ? j * N + k : k * N + j]));
             double got = float(c[i * N + j]);
             if (std::fabs(ref - got) > 2e-2 * (1 + std::fabs(ref))) {
                 if (report && bad < 3) std::printf("C[%zu][%zu] = %g want %g\n", i, j, got, ref);
@@ -116,5 +116,7 @@ int main(int argc, char** argv) {
     if (ty == "bf16") return run<Bf16, Bf16>(argc, argv);
     if (ty == "bf16f32") return run<Bf16, float>(argc, argv);
     if (ty == "f16f32") return run<_Float16, float>(argc, argv);
+    if (ty == "f16f32t") return run<_Float16, float>(argc, argv, true);
+    if (ty == "bf16f32t") return run<Bf16, float>(argc, argv, true);
     return run<_Float16, _Float16>(argc, argv);
 }

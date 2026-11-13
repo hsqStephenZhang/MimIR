@@ -163,7 +163,7 @@ const Def* close(const Def* value, const Var* var, const Def* binder, const DefV
 }
 
 /// One level of a `tile_req`: `kind` 0 parallel, 1 reduction, 2 vector, 3 tensor-core block; `bind` 0 serial,
-/// 1 work-group, 2 work-item, 3 warp.
+/// 1 work-group, 2 work-item, 3 warp, 6 warpgroup.
 /// `pipeline` is a reduction's depth inside a work-group, 0 until TileFuse::realize resolves the default.
 struct LevelSpec {
     u64 kind, tail, promote, bind;
@@ -174,7 +174,7 @@ struct LevelSpec {
 
 /// The levels of a `tile_req` chain, outermost first; `nullopt` unless the chain is a literal value.
 std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
-    enum { Serial, Group, Item, Warp } scope = Serial;
+    enum { Serial, Group, Item, Warp, Warpgroup } scope = Serial;
     std::vector<LevelSpec> specs;
     for (auto cur = levels;;) {
         // The chain's noms are newtypes over variants: a `Name` wraps the case's `Inj`.
@@ -183,8 +183,9 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         if (!inj) return std::nullopt;
         auto i = inj->index();
         if (i == 0) return specs;
-        // `WarpLevels#Mma` holds its shape and the root's contraction evidence, and ends the chain.
-        if (scope == Warp && i == 2) {
+        // `WarpLevels#Mma` and `WarpgroupLevels#Wgmma` hold their shape and the root's contraction evidence, and end
+        // the chain.
+        if ((scope == Warp || scope == Warpgroup) && i == 2) {
             specs.push_back(LevelSpec{3, 0, 0, 0, inj->value()->proj(2, 0), nullptr});
             return specs;
         }
@@ -192,15 +193,16 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         auto field = [&](size_t j) { return inj->value()->proj(n, j); };
         auto lit   = [&](size_t j) { return Lit::isa(field(j)); };
         LevelSpec spec{0, 0, 0, 0, field(0), nullptr};
-        // (kind, bind) per constructor of TileLevels / GroupLevels / ItemLevels / WarpLevels; -1 marks a case without
-        // one.
-        static constexpr int table[4][7][2] = {
-            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0}, {-1, -1}, {-1, -1}},
-            {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3}},
-            {{0, 0}, {0, 0},   {1, 0},   {2, 0},   {1, 4}, {-1, -1}, {-1, -1}},
-            {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}}
+        // (kind, bind) per constructor of TileLevels / GroupLevels / ItemLevels / WarpLevels / WarpgroupLevels; -1
+        // marks a case without one.
+        static constexpr int table[5][8][2] = {
+            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0}, {-1, -1}, {-1, -1}, {-1, -1}},
+            {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3},   {0, 6}},
+            {{0, 0}, {0, 0},   {1, 0},   {2, 0},   {1, 4}, {-1, -1}, {-1, -1}, {-1, -1}},
+            {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
+            {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}}
         };
-        if (i > 6 || table[scope][i][0] < 0) return std::nullopt;
+        if (i > 7 || table[scope][i][0] < 0) return std::nullopt;
         spec.kind = table[scope][i][0], spec.bind = table[scope][i][1];
         if (spec.kind != 2) {
             auto tail = lit(1);
@@ -228,6 +230,7 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         if (spec.bind == 1) scope = Group;
         if (spec.kind == 0 && spec.bind == 2) scope = Item;
         if (spec.kind == 0 && spec.bind == 3) scope = Warp;
+        if (spec.kind == 0 && spec.bind == 6) scope = Warpgroup;
         cur = field(n - 1);
     }
 }
@@ -639,7 +642,9 @@ struct PanelSite {
     DefMap<size_t> origins;
     /// The tile grid of the item level that reads the panel.
     std::optional<std::pair<std::vector<u64>, std::vector<u64>>> items;
-    bool mma = false;
+    bool mma = false, wgmma = false;
+    /// The origin of the reduction block being staged.
+    const Def* k0 = nullptr;
 };
 
 bool site_multiple(const PanelSite& site, const Def* def, u64 v) {
@@ -714,9 +719,10 @@ const Def* panel_term(const App* staged, const PanelSite& site) {
         for (size_t j = 0; j != *k; ++j)
             if (Lit::isa(pos->proj(*k, j)) == c) inner = *r + j;
     };
-    u64 vec    = 1;
-    auto slice = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(staged->arg()));
-    auto reads = std::optional<panel::Reads>();
+    u64 vec                     = 1;
+    const Def* contiguous_start = nullptr;
+    auto slice                  = Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(staged->arg()));
+    auto reads                  = std::optional<panel::Reads>();
     if (slice) {
         auto [slice_meta, source_shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
         auto [start, step, extent]           = box->projs<3>();
@@ -731,6 +737,7 @@ const Def* panel_term(const App* staged, const PanelSite& site) {
         }
         auto contiguous = panel::contiguous_dim(read, rank, physical_rank);
         if (contiguous) along(contiguous->first);
+        if (contiguous) contiguous_start = start->proj(*r, contiguous->first);
         if (inner && 16 % *bytes == 0 && 16 / *bytes >= 2) {
             auto c = contiguous->first, ri = Lit::as(physical_rank);
             auto v   = 16 / *bytes;
@@ -767,8 +774,12 @@ const Def* panel_term(const App* staged, const PanelSite& site) {
     }
     if (!inner) return nullptr;
     auto storage = w.tuple(DefVec(dims.size(), [&](size_t d) { return w.lit_nat(dims[d].first); }));
-    auto choice  = site.mma ? panel::mma(storage, *inner, *bytes)
-                            : panel::choose(storage, *inner, vec, *bytes, reads ? &*reads : nullptr);
+    // A `wgmma` operand is K-major: its source is contiguous along the reduction block.
+    auto k_major = slice && site.k0 && contiguous_start == site.k0;
+    auto choice  = site.wgmma && k_major ? panel::wgmma(storage, *inner, *bytes)
+                 : site.mma              ? panel::mma(storage, *inner, *bytes)
+                                         : panel::choose(storage, *inner, vec, *bytes, reads ? &*reads : nullptr);
+    if (site.wgmma && !choice.expr) return nullptr;
     if (choice.layout.identity() && choice.physical == storage) return nullptr;
     return w.tuple({storage, choice.expr});
 }
@@ -1028,6 +1039,7 @@ private:
                          u64 depth);
     const Def* vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const LevelSpec> rest, u64 depth);
     const Def* mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 depth);
+    const Def* wgmma(const App* root, u64 rn, fe::Span<const u64> shape, u64 depth);
 
     const fe::Log& log_;
     const App* request_;
@@ -1479,7 +1491,7 @@ const Def* Levels::reduction(const Def* anchor,
     auto group_wide = bound_ >= 2 && group_scope_ && item_scope_;
     if (promote) {
         auto tiles = fe::Vector<u64>(ro, 0);
-        if (group_wide) tiles = bound_ == 3 ? group_scope_->tiles : item_scope_->tiles;
+        if (group_wide) tiles = bound_ == 3 || bound_ == 6 ? group_scope_->tiles : item_scope_->tiles;
         for (auto& level : rest) {
             if (group_wide) break;
             if (level.kind == 0) {
@@ -1510,6 +1522,7 @@ const Def* Levels::reduction(const Def* anchor,
     if (uniform && group_scope_ && group_scope_->tiles.size() == ro) {
         site.emplace();
         site->mma   = std::ranges::any_of(rest, [](const LevelSpec& level) { return level.kind == 3; });
+        site->wgmma = site->mma && bound_ == 6;
         auto& group = *group_scope_;
         auto caps   = fe::Vector<std::pair<u64, bool>>(ro);
         for (u64 d = 0; d != ro; ++d) {
@@ -1541,6 +1554,7 @@ const Def* Levels::reduction(const Def* anchor,
             // extent.
             if (!Lit::isa(k)) site->caps[k] = {sizes[loop], literal_k && *literal_k % sizes[loop] == 0};
             site->multiples[k0] = sizes[loop];
+            site->k0            = k0;
         }
         for (auto [slot, axis, panel_loop, tile] : panels) {
             auto app = graph::map_reduce(value);
@@ -1649,6 +1663,7 @@ const Def* Levels::reduction(const Def* anchor,
 
 const Def* Levels::mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 depth) {
     auto& w = world();
+    if (bound_ == 6) return wgmma(root, rn, shape, depth);
     if (bound_ != 3) return fail("a tensor-core level must be inside a warp");
     auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
     // The request's type admits `warp_mma` only for a matrix product with an F32 accumulator.
@@ -1668,6 +1683,30 @@ const Def* Levels::mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 d
         if (auto extent = Lit::isa(mr.Sr->proj(rn, d)); extent && *extent % shape[d])
             return fail("the tensor-core tile does not divide the warp's block");
     log_.d("tensor.tile_fuse {} L{} mma shape={}", op_, depth, fe::Join(shape));
+    auto annotation = w.app(w.app(w.annex<tensor::mma>(), root->type()),
+                            {w.lit_nat(rn), w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(shape[d]); }))});
+    return w.app(annotation, root);
+}
+
+// A warpgroup's whole tile is one `wgmma` per k step from 128-byte-swizzled panels; lower_to_mem checks they are
+// K-major.
+const Def* Levels::wgmma(const App* root, u64 rn, fe::Span<const u64> shape, u64 depth) {
+    auto& w = world();
+    auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
+    if (mr.Tis->proj(2, 0) == w.annex<math::F32>()) return fail("a warpgroup tensor-core level needs 16-bit inputs");
+    if (shape[0] != 64 || shape[2] != 16 || shape[1] % 8 || shape[1] == 0 || shape[1] > 256)
+        return fail("a warpgroup tensor-core tile is (64, 8 n, 16) with 8 n <= 256");
+    // The extents become literal once lower_to_mem specializes the tile bodies, which checks them again.
+    for (u64 d = 0; d != 2; ++d)
+        if (auto extent = Lit::isa(mr.Sr->proj(rn, d)); extent && *extent != shape[d])
+            return fail("a warpgroup tensor-core tile covers the warpgroup's whole tile");
+    for (u64 slot = 0; slot != 2; ++slot) {
+        auto staged = Axm::isa<tensor::stage>(Axm::peel<tensor::placed>(root->arg(2, 0)->proj(2, slot)));
+        if (!staged) return fail("the tensor-core operands must be promoted into work-group panels");
+    }
+    if (auto k = Lit::isa(mr.Sr->proj(rn, 2)); k && *k % 16)
+        return fail("the tensor-core tile does not divide the block");
+    log_.d("tensor.tile_fuse {} L{} wgmma shape={}", op_, depth, fe::Join(shape));
     auto annotation = w.app(w.app(w.annex<tensor::mma>(), root->type()),
                             {w.lit_nat(rn), w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(shape[d]); }))});
     return w.app(annotation, root);

@@ -190,6 +190,28 @@ Choice mma(const Def* storage, size_t inner, u64 bytes) {
     return {expr, physical, layout, true};
 }
 
+// A `wgmma` operand panel stores its fill's contiguous dim innermost in 128-byte rows, its one other dim of more than
+// one element as the rows, and swizzles 16-byte chunks by the row, the layout its descriptors read.
+Choice wgmma(const Def* storage, size_t inner, u64 bytes) {
+    auto& w     = storage->world();
+    auto n      = storage->num_projs();
+    auto dims   = std::vector<u64>(n);
+    auto layout = Layout{std::vector<size_t>()};
+    for (size_t d = 0; d != n; ++d)
+        dims[d] = Lit::as(storage->proj(n, d));
+    for (size_t d = 0; d != n; ++d)
+        if (d != inner && dims[d] != 1) layout.perm.push_back(d);
+    if (layout.perm.size() != 1 || dims[inner] * bytes != 128) return {nullptr, storage, layout, true};
+    for (size_t d = 0; d != n; ++d)
+        if (d != inner && dims[d] == 1) layout.perm.push_back(d);
+    layout.perm.push_back(inner);
+    layout.swizzle  = Swizzle{16 / bytes, 8, 0, 8, true};
+    layout.permuted = permuted_dims(dims, layout);
+    auto shape      = physical_dims(dims, layout);
+    auto expr       = term(layout, storage, shape);
+    return {expr, at_shape(w.annex(tensor::layout_expr::shape), expr, storage), layout, true};
+}
+
 // The storage of a panel whose fill moves `vec` elements of `bytes` along dim `inner` per step, in the layout that
 // spreads the fill's warp stores and the items' warp reads over the 32 shared-memory banks best, and whether the
 // fill's vector stays contiguous in it.

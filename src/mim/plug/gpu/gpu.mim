@@ -248,14 +248,22 @@ anx lam synced_scope (m1: GlobalM, m3: SharedM,
 /// An `async` loop is chained, and its stores into shared memory become `store_async`; an `async_wait` before the `fence` publishes them.
 ///
 /// A `warp` loop runs one iteration per warp of 32 work-items, which see their lane as `lane_id ()`.
+/// A `warpgroup` loop runs one iteration per warpgroup of four consecutive warps, which see their lane and their warp's
+/// rank in the warpgroup as `warp_rank ()`.
 ///
-axm bind.(group, item, cooperative, chained, async, warp): {T: *} → T → T;
+axm bind.(group, item, cooperative, chained, async, warp, warpgroup): {T: *} → T → T;
 ///
 /// #### lane_id
 ///
 /// The work-item's lane in its warp inside a `warp` loop; `gpu.outline` resolves it.
 ///
 axm lane_id: [] → I64;
+///
+/// #### warp_rank
+///
+/// The work-item's warp's rank, 0 to 3, in its warpgroup inside a `warpgroup` loop; `gpu.outline` resolves it.
+///
+axm warp_rank: [] → I64;
 ///
 /// #### store_async
 ///
@@ -482,6 +490,12 @@ axm ldmatrix_b16: {T: *} → {a: Nat} → [n: Nat, trans: Bool, mem.M a, mem.Ptr
 axm buf_ldmatrix: {r: Nat, s: «r; Nat»}
                 → [n: Nat, mem.M 0, buffer.Buf (r, s, «4; math.F32»), idx: «i: r; Idx s#i»]
                 → [mem.M 0, «n; math.F32»];
+///
+/// #### buf_addr
+///
+/// The shared-window address of the element of a work-group panel at `idx`; `buffer.lower_ptr` takes it.
+///
+axm buf_addr: {T: *} → {r: Nat, s: «r; Nat»} → [buffer.Buf (r, s, T), idx: «i: r; Idx s#i»] → I32;
 ///
 /// #### buf_ldmatrix_b16
 ///

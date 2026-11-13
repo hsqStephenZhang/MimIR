@@ -54,6 +54,10 @@ const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>
 /// A tensor-core panel's layout: its fill's contiguous dim @p inner innermost, padded against bank conflicts.
 Choice mma(const Def* storage, size_t inner, u64 bytes);
 
+/// A `wgmma` operand panel's layout: K-major 128-byte rows, 16-byte chunks swizzled by the row; `expr` is nullptr if
+/// the panel has another shape.
+Choice wgmma(const Def* storage, size_t inner, u64 bytes);
+
 /// The layout that spreads a fill of `vec` elements of `bytes` along dim @p inner, and the item level's @p reads,
 /// over the 32 shared-memory banks best.
 Choice choose(const Def* storage, size_t inner, u64 vec, u64 bytes, const Reads* reads);

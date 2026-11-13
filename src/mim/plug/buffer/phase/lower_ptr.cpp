@@ -90,6 +90,11 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         auto [n, mem, buf, idx] = ld->args<4>([this](const Def* d) { return rewrite(d); });
         auto row                = mem::op_lea_tuple(buf, idx);
         return w.app(w.app(w.annex<gpu::ldmatrix>(), w.lit_nat_0()), {n, mem, row});
+    } else if (auto addr = Axm::isa<gpu::buf_addr>(app)) {
+        auto [buf, idx] = addr->args<2>([this](const Def* d) { return rewrite(d); });
+        auto ptr        = mem::op_lea_tuple(buf, idx);
+        auto T          = Axm::as<mem::Ptr>(ptr->type())->arg(2, 0);
+        return w.app(w.app(w.app(w.annex<gpu::shared_addr>(), T), w.lit_nat_0()), ptr);
     } else if (auto ld = Axm::isa<gpu::buf_ldmatrix_b16>(app)) {
         auto [n, trans, mem, buf, idx] = ld->args<5>([this](const Def* d) { return rewrite(d); });
         auto T                         = rewrite(ld->decurry()->decurry()->arg());
