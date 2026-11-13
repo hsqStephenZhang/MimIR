@@ -433,3 +433,34 @@ tensor map 由 `gpu.buf_tensor_map` 描述，lower_to_mem 把它建在区域外�
 | 8192 | 2.19 | 2.17（507 TF） | 2.64 | 2.17 | 1.82 |
 
 3 级 TMA 在 4096³ 比 cp.async 快 12%，到 cuBLAS 的 79%。余下的差距：没有专门的生产者 warpgroup（leader 也参与计算）、每步等完 wgmma、128×128 的 tile。
+
+### cluster 层（H200 NVL，2026-11-13）
+
+原语：`gpu.cluster_size n`（kernel 标记，后端加 `"nvvm.cluster_dim"`，launch 不变）、`cluster_rank`、`sync_cluster`（`barrier.cluster`）、
+`fence_mbarrier_init`、`tma_load_multicast_if`、`mbar_arrive_cluster_if`（`mapa` + 远程 arrive）、`mbar_wait_if`、`load_peer`（DSMEM 读）。
+`lit/{gpu,nvptx}/{cluster,dsmem}.mim` 在 GPU 上检查 multicast 与 DSMEM。
+
+调度：`TileLevels#Cluster: [size multicast split]`，下一层 work-group 以 `size` 个相邻 tile 成簇。
+- `serial_cluster (size, multicast, …)`：`multicast` 第 i 位的输入由簇共同装：每个 CTA 用 TMA multicast 装 `1/size` 的行。
+  每个槽位另有“空”mbarrier（计数 = 簇大小），CTA 读完一个槽位后由 leader 对簇内各 CTA 远程 arrive，leader multicast 前先等它。
+- `serial_cluster_split (size, …)`：簇内 CTA 计算同一 tile、各走 `1/size` 的归约块（TMA 环按 rank 偏移），
+  片段写进本地 shared 后经 DSMEM 读取所有 rank 的部分和相加。
+`lit/{gpu,nvptx}/tile_wgmma_{cluster,split}.mim` 在 GPU 上对照 CPU 参考。
+
+`krun_e2e.sh`，`a · b`，TMA 3 级：
+
+| 配置 | 1024 | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|---:|
+| 不分簇（`wg_red_tma` 3 级） | 0.0160 | 0.0405 | 0.2565 | 2.10 |
+| 簇 2，不共享（`serial_cluster (2, 0, …)`） | | | 0.2578 | |
+| 簇 2，A multicast，每步 cluster barrier（早期版本） | | | 0.387 | 2.86 |
+| 簇 2，A multicast，“空”mbarrier | | | 0.429 | 3.15 |
+| 簇 4，A multicast | | | 0.444 | 3.13 |
+| 簇 2，split-K（DSMEM 合并） | 0.0196 | 0.0900 | | |
+| 簇 4，split-K | 0.0551 | 0.1936 | | |
+
+功能正确，但在这个 GEMM 上都变慢：
+- 只按簇启动不影响性能；变慢来自簇内耦合。leader 同时是消费者，环只能领先 `depth - 1` 块，任一 CTA 落后都会拖住整簇的填充。
+  multicast 节省的是 L2 带宽，而这个 128×128、BK=64 的 GEMM 不受它限制。要有收益，需要专门的生产者 warpgroup 提前跑、更大的 tile。
+- split-K 的合并每个线程逐个读 64 个值、两道 cluster barrier、64 KB 暂存（每 SM 只剩 1 个块）；
+  1024³ 时 64 个 tile 本就少于 132 个 SM，但合并的开销超过了多用的 SM。改进方向是向量化的 DSMEM 读、reduce-scatter 而非每个 rank 都求全和。

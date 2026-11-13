@@ -103,6 +103,10 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         if (!lane_) app->blame("gpu.outline: a lane id must nest inside a warp loop").bail();
         return lane_;
     }
+    if (Axm::isa<gpu::item_index>(app)) {
+        if (!item_id_) app->blame("gpu.outline: an item index must nest inside a work-group loop").bail();
+        return item_id_;
+    }
     if (Axm::isa<gpu::leader>(app)) {
         if (!item_id_) app->blame("gpu.outline: the leader must nest inside a work-group loop").bail();
         return w.call(core::icmp::e, Defs{item_id_, w.lit_i64(0)});

@@ -271,6 +271,12 @@ axm warp_rank: [] → I64;
 ///
 axm leader: [] → Bool;
 ///
+/// #### item_index
+///
+/// The work-item's index in its work-group; `gpu.outline` resolves it.
+///
+axm item_index: [] → I64;
+///
 /// #### store_async
 ///
 /// Stores into shared memory like `mem.store`.
@@ -482,6 +488,21 @@ axm fence_mbarrier_init: mem.M 0 → mem.M 0;
 /// `tma_load_if` that writes the box to the same shared address in each work-group of the cluster whose rank is set in `mask`, completing the mbarrier at `bar` in each.
 ///
 axm tma_load_multicast_if: [mem.M 0, dst: I32, map: GlobalPtr «16; I64», col row: I32, bar: I32, mask: I32, issue: Bool] → mem.M 0;
+///
+/// #### mbar_arrive_cluster_if, mbar_wait_if
+///
+/// `mbar_arrive_cluster_if` arrives once on the mbarrier at shared address `bar` of the cluster's work-group `rank`, releasing this work-group's prior accesses to the cluster.
+/// `mbar_wait_if` is `mbar_wait_at` in the work-items whose `issue` holds.
+///
+axm mbar_arrive_cluster_if: [mem.M 0, bar: I32, rank: I32, issue: Bool] → mem.M 0;
+///
+/// #### load_peer
+///
+/// Loads the F32 at shared address `addr` of the cluster's work-group `rank` through distributed shared memory (`mapa`, `ld.shared::cluster`).
+/// Its writes there are visible after a `sync_cluster` that follows them.
+///
+axm load_peer: [mem.M 0, addr: I32, rank: I32] → [mem.M 0, math.F32];
+axm mbar_wait_if: [mem.M 0, bar: I32, parity: I32, issue: Bool] → mem.M 0;
 ///
 /// #### device_tensor_map, buf_tensor_map
 ///

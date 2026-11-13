@@ -1039,6 +1039,32 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
                    {"i32 " + emit(dst), "i64 " + map_i, "i32 " + emit(col), "i32 " + emit(row), "i32 " + emit(bar),
                     "i16 " + bits, "i32 " + pred});
         return std::string();
+    } else if (auto peer = Axm::isa<gpu::load_peer>(def)) {
+        auto [mem, addr, rank] = peer->args<3>();
+        emit_unsafe(mem);
+        return bb.assign(name,
+                         "call float asm sideeffect \"{{ .reg .b32 r; mapa.shared::cluster.u32 r, $1, $2; "
+                         "ld.shared::cluster.f32 $0, [r]; }}\", \"=f,r,r,~{{memory}}\"(i32 {}, i32 {})",
+                         emit(addr), emit(rank));
+    } else if (auto arrive = Axm::isa<gpu::mbar_arrive_cluster_if>(def)) {
+        auto [mem, bar, rank, issue] = arrive->args<4>();
+        emit_unsafe(mem);
+        auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb,
+                   "{ .reg .pred q; .reg .b32 r; setp.ne.b32 q, $2, 0; mapa.shared::cluster.u32 r, $0, $1; @q "
+                   "mbarrier.arrive.release.cluster.shared::cluster.b64 _, [r]; }",
+                   "r,r,r", {"i32 " + emit(bar), "i32 " + emit(rank), "i32 " + pred});
+        return std::string();
+    } else if (auto wait = Axm::isa<gpu::mbar_wait_if>(def)) {
+        auto [mem, bar, parity, issue] = wait->args<4>();
+        emit_unsafe(mem);
+        auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(
+            bb,
+            "{ .reg .pred p, q; setp.ne.b32 q, $2, 0; @!q bra D${:uid}; W${:uid}: "
+            "mbarrier.try_wait.parity.acquire.cluster.shared::cta.b64 p, [$0], $1; @!p bra W${:uid}; D${:uid}: }",
+            "r,r,r", {"i32 " + emit(bar), "i32 " + emit(parity), "i32 " + pred});
+        return std::string();
     } else if (auto wait = Axm::isa<gpu::mbar_wait_at>(def)) {
         auto [mem, bar, parity] = wait->args<3>();
         emit_unsafe(mem);

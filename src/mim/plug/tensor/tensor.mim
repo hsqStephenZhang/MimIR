@@ -2218,6 +2218,10 @@ axm report_groups: compile.Phase;
 /// `(64, N, 16)` for the warpgroup's whole `64 × N` tile, with F16 or BF16 inputs both K-major (`a · bᵀ`).
 /// Promoted inputs of a reduction inside a warp or a warpgroup are staged as panels over the whole work-group's tile.
 /// `RedTma` is a warpgroup's `Red` whose panels the work-group's leader fills with TMA, each ring slot completing an mbarrier.
+/// `Cluster` runs the next `Group` level's work-groups in clusters of `size` consecutive tiles; a `RedTma` below loads
+/// each input set in `multicast` once per cluster, each work-group a `1 / size` share of its rows multicast to all.
+/// With `split` 1 the cluster's work-groups compute the same tile instead, each `1 / size` of a `RedTma` reduction below,
+/// and add their accumulators through distributed shared memory.
 /// `pipeline` of a reduction inside a work-group is how many blocks' panels are in flight, `n` filling `n - 1` blocks
 /// ahead of the one being computed; 0 takes `-X tensor:pipeline`, and the `*_red` constructors leave it 0.
 /// The CPU lowering runs bound levels as loops.
@@ -2229,7 +2233,8 @@ anx mutual
         | Par: [sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, mma)]
         | Group: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, mma)]
         | Red: [sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, mma)]
-        | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc, mma)];
+        | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc, mma)]
+        | Cluster: [size multicast split: Nat, rest: TileLevels (n, Acc, mma)];
     nom GroupLevels (n: Nat, Acc: *, mma: Bool) =
         | Done
         | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, mma)]
@@ -2267,6 +2272,10 @@ anx lam serial_red {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote:
     (TileLevels (n, Acc, mma))#Red (sizes, tail, promote, rest);
 anx lam serial_vec {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
     (TileLevels (n, Acc, mma))#Vec (sizes, rest);
+anx lam serial_cluster {n: Nat, Acc: *, mma: Bool} (size multicast: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
+    (TileLevels (n, Acc, mma))#Cluster (size, multicast, 0, rest);
+anx lam serial_cluster_split {n: Nat, Acc: *, mma: Bool} (size: Nat, rest: TileLevels (n, Acc, mma)): TileLevels (n, Acc, mma) =
+    (TileLevels (n, Acc, mma))#Cluster (size, 0, 1, rest);
 anx lam group_done {n: Nat, Acc: *, mma: Bool} (_: []): GroupLevels (n, Acc, mma) = (GroupLevels (n, Acc, mma))#Done;
 anx lam group_par {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, mma)): GroupLevels (n, Acc, mma) =
     (GroupLevels (n, Acc, mma))#Par (sizes, tail, rest);
@@ -2353,6 +2362,11 @@ axm pipeline: {T: *} → [depth: Nat] → T → T;
 /// Identity annotation on a reduction step inside a work-group whose pipelined panels are filled by TMA and mbarriers.
 ///
 axm fill_tma: {T: *} → T → T;
+///
+/// Identity annotation inside a work-group region's `bind`: its work-groups run in clusters of `size`, sharing the TMA
+/// copies of the inputs set in `multicast`, or with `split` splitting the reduction of each tile among them.
+///
+axm cluster: {T: *} → [size multicast split: Nat] → T → T;
 ///
 /// Identity annotation on a reduction block that a warp computes on tensor cores, from TF32 or 16-bit inputs into an F32
 /// accumulator; `shape` is the instruction's tile of the block's loops.

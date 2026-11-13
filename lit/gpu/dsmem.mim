@@ -1,0 +1,45 @@
+// RUN: %mim %s -p opt -o - | %FileCheck %s
+
+// Split-K across a cluster: two work-groups each sum half of every work-item's 16 elements and add the other's partials,
+// which stay in that work-group's shared memory, through distributed shared memory; both write the same total.
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+
+use core.ops.u.w;
+
+let F    = math.F32;
+let fast = math.mode.fast;
+let In   = «2, 128, 8; F»;
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            gid: Idx 2, item_id: Idx 128, (), (x: gpu.GlobalPtr In, out: gpu.GlobalPtr «128; F»),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let m          = gpu.cluster_size 2 (gpu.generic_mem m1);
+    let (m, part)  = gpu.slot_shared «128; F» m;
+    let rank       = gpu.cluster_rank ();
+    let (m, xs)    = mem.load (m, mem.lea (mem.lea (core.bitcast (mem.Ptr0 In) x, gid), item_id));
+    let sum        = math.arith.add fast (math.arith.add fast (math.arith.add fast (xs#0₈, xs#1₈), math.arith.add fast (xs#2₈, xs#3₈)),
+                                          math.arith.add fast (math.arith.add fast (xs#4₈, xs#5₈), math.arith.add fast (xs#6₈, xs#7₈)));
+    let slot       = mem.lea (part, item_id);
+    let m          = mem.store (m, slot, sum);
+    let m          = gpu.sync_cluster m;
+    let (m, other) = gpu.load_peer (m, gpu.shared_addr slot, core.wrap.sub 0 (1I32, rank));
+    let total      = math.arith.add fast (sum, other);
+    let m          = mem.store (m, mem.lea (core.bitcast (mem.Ptr0 «128; F») out, item_id), total);
+    let m          = gpu.sync_cluster m;
+    return (gpu.global_mem m, m3, m4, m5);
+
+extern fun cluster_sum (m0: mem.M 0, x: mem.Ptr0 In, out: mem.Ptr0 «128; F»): [mem.M 0, I32] =
+    let (m0, m1, m4)  = gpu.init m0;
+    let (m0, m1, dx)  = gpu.alloc_copy.block (m0, m1, x);
+    let (m1, dout)    = mem.alloc («128; F», 1) m1;
+    ret (m0, m1, m4)  = gpu.launch (2, 128, gpu.default_stream, ff, ()) kernel (dx, dout) $ (m0, m1, m4);
+    let (m0, m1)      = gpu.copy_to_host.block (m0, m1, dout, out);
+    let m0            = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);
+
+// CHECK-DAG: gpu.load_peer
+// CHECK-DAG: gpu.sync_cluster

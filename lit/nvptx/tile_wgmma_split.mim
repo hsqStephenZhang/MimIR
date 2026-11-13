@@ -1,0 +1,16 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=90a
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_wgmma_split_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// A cluster of two work-groups splits each tile's reduction and adds the halves through distributed shared memory.
+
+// CHECK-DAG: cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
+// CHECK-DAG: mbarrier.try_wait.parity.shared::cta.b64
+// CHECK-DAG: ld.shared::cluster.f32
+// CHECK-DAG: "nvvm.cluster_dim"="2,1,1"
+// CHECK-DAG: wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16
+// CHECK-DAG: call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 0)

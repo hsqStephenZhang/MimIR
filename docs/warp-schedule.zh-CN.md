@@ -135,3 +135,9 @@ TMA + mbarrier 作为流水归约层的另一种填充方式（生产者 warpgro
 warpgroup 拥有的区域（`bind 7`，2026-11-13）：64 行的区域，每个 warp 的项与 `bind 5` 相同、行坐标加 `16 · warp_rank`；
 16 位乘积是每个 lane 的 `tensor.wgmma_lane (a#self, panel, at, c#self)` 再经 `warp_keep` 成为 warp 值（P 作 A 分片依据 `mma_m16n8k16.c_pair_is_a`）。
 MN-major 操作数（行主序 B、V）与 K-major 一样从按 128 字节段 swizzle 的面板读（见 `bench/gpu_tiling/RESULTS.zh-CN.md`）。
+
+## cluster 层（2026-11-13）
+
+`TileLevels#Cluster` 位于 work-group 之上：相邻 `size` 个 work-group 成簇。两种用法：输入的 TMA multicast（簇内共享面板，
+每槽位“满”“空”两个 mbarrier，“空”由簇内各 CTA 远程 arrive），以及 split-K（各 rank 走一段归约块，经 DSMEM 合并累加器）。
+参考语义仍是循环：簇只改变谁装载、谁计算哪一段，结果的规格不变；每个槽位的相位协议由 lower_to_mem 生成，没有机械检查。

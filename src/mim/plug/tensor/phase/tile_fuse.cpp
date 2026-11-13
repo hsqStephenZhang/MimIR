@@ -162,15 +162,16 @@ const Def* close(const Def* value, const Var* var, const Def* binder, const DefV
     return rewriter.rewrite(value);
 }
 
-/// One level of a `tile_req`: `kind` 0 parallel, 1 reduction, 2 vector, 3 tensor-core block; `bind` 0 serial,
-/// 1 work-group, 2 work-item, 3 warp, 6 warpgroup.
-/// `pipeline` is a reduction's depth inside a work-group, 0 until TileFuse::realize resolves the default.
+/// One level of a `tile_req`: `kind` 0 parallel, 1 reduction, 2 vector, 3 tensor-core block, 4 cluster; `bind` 0
+/// serial, 1 work-group, 2 work-item, 3 warp, 6 warpgroup. `pipeline` is a reduction's depth inside a work-group, 0
+/// until TileFuse::realize resolves the default.
 struct LevelSpec {
     u64 kind, tail, promote, bind;
     const Def* sizes;
     const Def* merge;
     u64 pipeline = 1;
     bool tma     = false;
+    u64 split    = 0;
 };
 
 /// The levels of a `tile_req` chain, outermost first; `nullopt` unless the chain is a literal value.
@@ -197,7 +198,7 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         // (kind, bind) per constructor of TileLevels / GroupLevels / ItemLevels / WarpLevels / WarpgroupLevels; -1
         // marks a case without one.
         static constexpr int table[5][8][2] = {
-            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0}, {-1, -1}, {-1, -1}, {-1, -1}},
+            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0},   {4, 0}, {-1, -1}, {-1, -1}},
             {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3},   {0, 6}},
             {{0, 0}, {0, 0},   {1, 0},   {2, 0},   {1, 4}, {-1, -1}, {-1, -1}, {-1, -1}},
             {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
@@ -205,6 +206,15 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         };
         if (i > 7 || table[scope][i][0] < 0) return std::nullopt;
         spec.kind = table[scope][i][0], spec.bind = table[scope][i][1];
+        if (spec.kind == 4) {
+            // `Cluster` carries its size and multicast mask where other levels carry sizes and a tail.
+            auto size = lit(0), multicast = lit(1), split = lit(2);
+            if (!size || !multicast || !split) return std::nullopt;
+            spec.tail = *size, spec.promote = *multicast, spec.split = *split;
+            specs.push_back(spec);
+            cur = field(n - 1);
+            continue;
+        }
         if (spec.kind != 2) {
             auto tail = lit(1);
             if (!tail) return std::nullopt;
@@ -1067,6 +1077,8 @@ private:
     u64 bound_ = 0;
     /// Whether the reduction level being tiled fills its panels with TMA.
     bool tma_ = false;
+    /// The cluster size and multicast mask of the next work-group level.
+    std::optional<std::array<u64, 3>> cluster_;
 };
 
 // Boxed tiles carry literal storage caps derived from the tile sizes into every fused producer.
@@ -1222,6 +1234,11 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64
     if (!rks) return fail("the root's ranks are not literal");
     auto ro = rks->ro, rn = rks->nloops();
     auto& level = levels.front();
+    if (level.kind == 4) {
+        if (level.tail < 2 || level.tail > 8) return fail("a cluster has 2 to 8 work-groups");
+        cluster_ = {level.tail, level.promote, level.split};
+        return tile(anchor, levels.subspan(1), depth + 1);
+    }
     if (level.tail > 1) return fail("a tail is 0 (cap) or 1 (peel)");
     if (Lit::isa(level.sizes->arity()) != rn)
         return fail("the levels tile a different number of loops than the root has");
@@ -1432,7 +1449,13 @@ const Def* Levels::parallel(const Def* anchor,
     inner->set(true, close(value, var, body->var(), inputs, inner->var()));
     body->set(true, inner);
     const Def* region = body;
-    if (bind) region = w.app(w.app(w.app(w.annex<tensor::bind>(), body->type()), w.lit_nat(bind)), body);
+    if (bind == 1 && cluster_) {
+        region = w.app(w.app(w.app(w.annex<tensor::cluster>(), body->type()),
+                             {w.lit_nat((*cluster_)[0]), w.lit_nat((*cluster_)[1]), w.lit_nat((*cluster_)[2])}),
+                       body);
+        cluster_.reset();
+    }
+    if (bind) region = w.app(w.app(w.app(w.annex<tensor::bind>(), region->type()), w.lit_nat(bind)), region);
 
     log_.d("tensor.tile_fuse {} L{} par tiles={} tail={} inputs={} fused={} yielded={} bind={}", op_, depth,
            w.tuple(tiles), peel ? "peel" : "cap", inputs.size(), fused.count, yields.size(), bind);

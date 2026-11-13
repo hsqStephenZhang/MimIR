@@ -236,6 +236,12 @@ private:
     bool mma_panels_ = false;
     /// The value outside a region of the inputs its body receives, so host-side work on them can stay outside.
     DefMap<const Def*> outer_of_;
+    /// The cluster size and multicast mask of the work-group region being lowered.
+    std::optional<std::pair<u64, u64>> cluster_;
+    /// How many work-groups of a cluster share each tile's reduction, 1 unless the cluster splits it.
+    u64 split_ = 1;
+    /// The work-items of the warpgroup-bound region being lowered.
+    u64 group_threads_ = 0;
     const Def* outside(const Def* def) const;
     /// In a warpgroup-owned region, the old-world first row of the warp's 16, `16 · warp_rank`.
     const Def* group_rows_ = nullptr;
