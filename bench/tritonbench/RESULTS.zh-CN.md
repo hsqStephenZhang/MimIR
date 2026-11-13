@@ -140,6 +140,13 @@ CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKi
   - `warp_mma`：`(16, 8, 8)` 或 `(16, 8, 16)`；
   - `serial_cluster` / `serial_cluster_split`：2 到 8 个 work-group（`error/tile_cluster_size.mim`）；
   - `serial_persistent`：至少一个 work-group；`wg_red_ws`：`pingpong` 为 0 或 1。
-- 跨层约束（warpgroup tile 为 64 行、`wg_mma` 的 N 等于 warpgroup tile、ping-pong 恰好两个消费者、persistent 下不能有 cluster）仍在 `lower_to_mem` 检查。
-  把它们提前需要让 `WarpgroupLevels` 再以外层 tile 形状为索引，相当于 CuTe 的 tile/layout 类型，留作下一步。
-- 生成代码不变：addmm (20120, 512, 1536) 0.0799 ms，linear_gelu (8192, 4096, 1024) 0.1662 ms，softmax 4096² 0.0383 ms。
+- 跨层约束也提前到了 elaboration，做法对应 CuTe 把 tile 形状放进类型：
+  - `GroupLevels (n, Acc, Mma, group)` 以 work-group 的 tile 为索引，`serial_group (sizes, …)` / `group_tile_req` 要求下层是 `GroupLevels (…, sizes)`；
+  - `WarpgroupLevels (n, Acc, Mma, group, tile)` 再以 warpgroup 的 tile 为索引，`group_warpgroup (sizes, …)` 要求 `tile = sizes`，
+    而 `wg_mma (m, n, k)` 的类型是 `WarpgroupLevels (…, (m, n, 0))`，所以 warpgroup tile 必须是 64 行、N 等于 wgmma 的 N
+    （`error/tile_wgmma_rows.mim`、`error/tile_wgmma_n.mim`）；
+  - 索引只有出现在结构里才会被区分和推断，所以 `Wgmma` / `RedWs` 各带一个 `ScopeTile tile` / `ScopeTile group` 的证据；
+  - `wg_red_ws` 用两个索引算出计算 warpgroup 的个数，`pingpong 1` 要求恰好两个（`error/tile_pingpong_consumers.mim`）；
+  - `serial_persistent` 用 `match` 检查下一层不是 `Cluster`（`error/tile_persistent_cluster.mim`）。
+  `lower_to_mem` 里对应的检查保留，作为非字面量链的兜底。
+- 生成代码不变：addmm (20120, 512, 1536) 0.0796 ms，linear_gelu (8192, 4096, 1024) 0.1662 ms，softmax 4096² 0.0383 ms，cross_entropy 16384×65536 1.169 ms。

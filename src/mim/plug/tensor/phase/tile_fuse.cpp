@@ -188,10 +188,10 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
         if (!inj) return std::nullopt;
         auto i = inj->index();
         if (i == 0) return specs;
-        // `WarpLevels#Mma` and `WarpgroupLevels#Wgmma` hold their shape and the root's contraction evidence, and end
-        // the chain.
+        // `WarpLevels#Mma` and `WarpgroupLevels#Wgmma` hold their shape first, then evidence, and end the chain.
         if ((scope == Warp || scope == Warpgroup) && i == 2) {
-            specs.push_back(LevelSpec{3, 0, 0, 0, inj->value()->proj(2, 0), nullptr});
+            auto value = inj->value();
+            specs.push_back(LevelSpec{3, 0, 0, 0, value->proj(value->num_projs(), 0), nullptr});
             return specs;
         }
         auto n     = inj->value()->num_projs();
