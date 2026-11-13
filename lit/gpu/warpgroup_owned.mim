@@ -1,0 +1,94 @@
+// RUN: %mim -p opt -p gpu %s -o - | %FileCheck %s
+
+// One head of 256 × 64 F16 attention, 128 query rows per work-group in two warpgroups that own 64 rows each: both
+// products run on warpgroup MMAs, Q·Kᵀ from a K-major panel, P·V with P in registers from an MN-major one.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F    = math.F32;
+let Hf   = math.F16;
+let mode = math.mode.fast;
+let H    = 1;
+let L    = 256;
+let D    = 64;
+let bm   = 128;
+let bk   = 64;
+
+fun mac (acc: F, xy: [Hf, Hf])@tt: F =
+    let (x, y) = xy;
+    return (math.arith.add mode (acc, math.arith.mul mode (math.conv.f2f math.f32 x, math.conv.f2f math.f32 y)));
+fun fmax (acc: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.extrema.fmax mode (acc, x));
+fun fsum (acc: F, xs: [Hf])@tt: F =
+    let (x) = xs;
+    return (math.arith.add mode (acc, math.conv.f2f math.f32 x));
+// The softmax runs in base 2: maxima are kept scaled by `log2 e`, and `exp2` replaces `exp`.
+let scale2 = math.arith.mul mode (0.125000:F, 1.442695041:F);
+fun maxed (_: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.extrema.fmax mode (x, math.arith.mul mode (y, scale2)));
+fun rescale (_: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.exp.exp2 mode (math.arith.sub mode (x, y)));
+fun probs (_: Hf, sm: [F, F])@tt: Hf =
+    let (s, m) = sm;
+    return (math.conv.f2f math.f16 (math.exp.exp2 mode (math.arith.sub mode (math.arith.mul mode (s, scale2), m))));
+fun summed (_: F, lcr: [F, F, F])@tt: F =
+    let (l, c, r) = lcr;
+    return (math.arith.add mode (math.arith.mul mode (l, c), r));
+fun scaled (_: F, oc: [F, F])@tt: F =
+    let (o, c) = oc;
+    return (math.arith.mul mode (o, c));
+fun divided (_: F, ol: [F, F])@tt: F =
+    let (o, l) = ol;
+    return (math.arith.div mode (o, l));
+
+let HL = core.nat.mul (H, L);
+
+// The rows `goff + off .. +64` of one warpgroup: a fold over the key blocks keeps (max, sum, out) in its registers.
+lam wg_body (goff: Nat) (off ext: «2; Nat») (q: Tensor 2 (HL, D) Hf, k: Tensor 2 (HL, D) Hf, v: Tensor 2 (HL, D) Hf): Tensor 2 ext F =
+    let rows = ext#0₂;
+    let row0 = core.nat.add (goff, off#0₂);
+    let head = core.nat.mul (core.nat.div (goff, L), L);
+    let Acc  = [Tensor 1 rows F, Tensor 1 rows F, Tensor 2 (rows, D) F];
+    let init: Acc = (splat (rows, math.neg_inf math.f32), splat (rows, 0:F), splat ((rows, D), 0:F));
+    lam step (acc: Acc, ko: Nat) (q: Tensor 2 (HL, D) Hf, k: Tensor 2 (HL, D) Hf, v: Tensor 2 (HL, D) Hf): Acc =
+        let (m, l, o) = acc;
+        let qt = slice @(Hf, 2) (HL, D) ((row0, 0), (1, 1), (rows, D)) q;
+        let kt = stage @(Hf, 2, 0) (bk, D) ((), (), (0₂, 1₂), 0:Hf) 0 (slice @(Hf, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (bk, D)) k);
+        let vt = stage @(Hf, 2, 0) (bk, D) ((), (), (0₂, 1₂), 0:Hf) 0 (slice @(Hf, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (bk, D)) v);
+        let s = map_reduce ((rows, bk), (rows, bk, D)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
+            (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (1, 2)) (qt, kt);
+        let rs = map_reduce (rows, (rows, bk)) (fmax, math.neg_inf math.f32) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1),) s;
+        let mx = map_reduce (rows, rows) (maxed, ⊥:F) (proj_map @(1, 1) 0) (proj_map @(1, 1) 0, proj_map @(1, 1) 0) (m, rs);
+        let c = map_reduce (rows, rows) (rescale, ⊥:F) (proj_map @(1, 1) 0) (proj_map @(1, 1) 0, proj_map @(1, 1) 0) (m, mx);
+        let p = map_reduce @2 @(Hf, 2, 2) ((rows, bk), (rows, bk)) @((F, F), (2, 1), ((rows, bk), rows)) (probs, ⊥:Hf) (proj_map @(2, 2) (0, 1))
+            (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (s, mx);
+        let r = map_reduce (rows, (rows, bk)) (fsum, 0.0:F) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1),) p;
+        let l = map_reduce (rows, rows) (summed, ⊥:F) (proj_map @(1, 1) 0)
+            (proj_map @(1, 1) 0, proj_map @(1, 1) 0, proj_map @(1, 1) 0) (l, c, r);
+        let o = map_reduce @2 @(F, 2, 2) ((rows, D), (rows, D)) @((F, F), (2, 1), ((rows, D), rows)) (scaled, ⊥:F) (proj_map @(2, 2) (0, 1))
+            (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, c);
+        let o = map_reduce_acc ((rows, D), (rows, D, bk)) (mac, o) (proj_map @(3, 2) (0, 1))
+            (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (p, vt);
+        (mx, l, o);
+    let (_, l, o) = tile_fold @Acc (core.nat.div (L, bk), bk) init (q, k, v) step;
+    map_reduce @2 @(F, 2, 2) (ext, ext) @((F, F), (2, 1), ((rows, D), rows)) (divided, ⊥:F) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, l);
+
+lam group_body (off ext: «2; Nat») (q: Tensor 2 (HL, D) Hf, k: Tensor 2 (HL, D) Hf, v: Tensor 2 (HL, D) Hf): Tensor 2 ext F =
+    tiled @(F, 2) (ext, (64, D), 1) (q, k, v)
+        (bind @([off ext: «2; Nat»] → [Tensor 2 (HL, D) Hf, Tensor 2 (HL, D) Hf, Tensor 2 (HL, D) Hf] → Tensor 2 ext F) 7 (wg_body (off#0₂)));
+
+extern fun attn (q k v: tensor.Tensor 2 (HL, D) Hf): tensor.Tensor 2 (HL, D) F =
+    return (tiled ((HL, D), (bm, D), 1) (buf q, buf k, buf v)
+        (bind @([off ext: «2; Nat»] → [Tensor 2 (HL, D) Hf, Tensor 2 (HL, D) Hf, Tensor 2 (HL, D) Hf] → Tensor 2 ext F) 1 group_body));
+
+// CHECK-DAG: gpu.wgmma_rs_f16
+// CHECK-DAG: gpu.fence_proxy_async

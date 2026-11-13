@@ -1129,7 +1129,9 @@ std::optional<std::string> Emitter::emit_math(BB& bb, const std::string& name, c
         f += detail::llvm_suffix(extrema->type());
 
         declare("{} @{}({}, {})", t, f, t, t);
-        return bb.assign(name, "tail call {} @{}({} {}, {} {})", t, f, t, a, t, b);
+        auto mode  = Lit::isa(extrema->uncurry_args<3>()[0]);
+        auto flags = mode ? fmath_flags(static_cast<math::Mode>(*mode)) : std::string();
+        return bb.assign(name, "tail call{} {} @{}({} {}, {} {})", flags, t, f, t, a, t, b);
     } else if (auto pow = Axm::isa<math::pow>(def)) {
         auto [a, b]   = pow->args<2>([this](auto def) { return emit(def); });
         auto t        = convert(pow->type());

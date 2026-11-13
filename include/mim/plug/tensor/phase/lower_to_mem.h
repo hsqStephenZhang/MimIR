@@ -234,6 +234,14 @@ private:
     DefMap<Fragments> fragments_;
     /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.
     bool mma_panels_ = false;
+    /// In a warpgroup-owned region, the old-world first row of the warp's 16, `16 · warp_rank`.
+    const Def* group_rows_ = nullptr;
+    /// The old-world row of a warp's position @p row in its owned region.
+    const Def* owned_row(const Def* row);
+    const Def* wgmma_lane(const App*);
+    const Def* wgmma_a(const btensor::MapRedPost&, u64 nk);
+    std::pair<bool, u64> wgmma_major(const Def* buffer);
+    const Def* wgmma_desc(const Def* buffer, const Def* index);
     bool uniform(const Def*) const;
     std::function<const Def*(const Def*)> cooperative();
     const Def* shared_mem(const Def*);

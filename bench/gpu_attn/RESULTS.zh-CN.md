@@ -256,3 +256,26 @@ P 留在寄存器、作为 `gpu.wgmma_rs_f16` 的 A 与 V（MN-major）相乘。
 
 - 只有 warp 特化而不做寄存器重分配与交错时比 `flash_wg` 慢：384 线程让每 SM 只驻留 1 个块，块内没有别的工作掩盖 softmax。
 - 乒乓单独使用会让两个消费者互相等待；与 warpgroup 内流水一起时，一个 warpgroup 的 softmax 正好覆盖另一个的 MMA。
+
+## 编译路径：warpgroup 拥有的区域（`attn_wg.mim`，H200 NVL，2026-11-13）
+
+`bind 7` 让一个 warpgroup 拥有 64 行：warp `w` 的项与 warp 拥有区域相同，只是行坐标加 `16 · warp_rank`；
+16 位输入的乘积翻译成每个 lane 的 `tensor.wgmma_lane`（A 分片来自寄存器：Q 在循环外按 `mma_m16n8k16.l_a` 装一次，
+P 直接用两个累加 tile 作 A 分片），结果用 `warp_keep` 包起来，行归约的跨 lane 读仍是 shuffle。
+B 面板由区域自动选 wgmma 布局（K 为 K-major，V 为 MN-major），按块实例化时沿用；环形双缓冲，等待后 `fence_proxy_async`。
+程序是 `attn_warp.mim` 的 16 位版本：Q/K/V 为 F16，P 收窄为 F16，softmax 与输出在 F32，以 2 为底。
+`BM=128 BK=64 DRIVER=attn_driver16.cpp kattn.sh attn_wg.mim <H> <L> 64 -X nvptx:sm=90a`。
+
+| H × L | `attn_wg`（编译） | 手写 `flash_wg`（BC=64） | 比值 | PyTorch FA2 | cuDNN |
+|---|---:|---:|---:|---:|---:|
+| 32 × 1024 | 0.038 | 0.037 | 0.97 | 0.0446 | 0.0349 |
+| 32 × 2048 | 0.126 | 0.122 | 0.97 | 0.145 | 0.098 |
+| 32 × 4096 | 0.454 | 0.436 | 0.96 | 0.524 | 0.333 |
+| 128 × 2048 | 0.473 | 0.457 | 0.97 | 0.529 | 0.341 |
+| 128 × 4096 | 1.747 | 1.691 | 0.97 | 2.02 | 1.283 |
+
+从 0.239 ms 到 0.126 ms 的几步（32 × 2048）：
+- 2 字节元素的面板填充也按 16 字节向量连续判定（`panel::decode`），于是走 `cp.async`：0.220；
+- 规格改为先求 S 的行最大值再与旧最大值比较，并以 2 为底：0.197 / 0.203；
+- ll 后端给 `llvm.maxnum/minnum` 带上 fast-math 标志，LLVM 才能折叠行归约里每个元素的 `fmax (-inf, x)`：0.180；
+- 融合给 S 的每个消费者各造了一份 Q 的融合映射，两份 S 各自发了一组 wgmma；`warp_term` 对 α 等价的 `map_reduce` 复用同一翻译：0.126。

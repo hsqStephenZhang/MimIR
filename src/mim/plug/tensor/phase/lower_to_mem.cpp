@@ -703,6 +703,39 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
     if (Axm::isa<tensor::from_array>(app)) return lower_from_array(app);
     if (Axm::isa<tensor::get>(app) || Axm::isa<tensor::get_fused>(app)) return lower_get(app);
+    if (auto lane = Axm::isa<tensor::wgmma_lane>(app)) {
+        // The fragments and accumulators are the lane's; the operand panel is read through descriptors.
+        auto [a, b, at, c] = lane->args<4>();
+        auto H             = rewrite(lane->decurry()->decurry()->decurry()->arg());
+        auto nk            = Lit::as(a->type()->arity());
+        auto nt            = Lit::as(c->type()->arity());
+        auto buffer        = rewrite(b);
+        auto logical       = logical_shapes_[buffer];
+        auto layout        = fe::lookup(layouts_, buffer);
+        if (!layout || !logical) app->blame("a wgmma operand panel needs its swizzled layout").bail();
+        auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
+        auto rank         = Lit::as(br);
+        auto mn           = wgmma_major(buffer).first;
+        auto place        = layout_lam(layout, logical);
+        auto none         = w.bot(w.call<mem::M>(0));
+        auto instr        = math::isa_bf16(H) ? w.annex<gpu::wgmma_rs_bf16>() : w.annex<gpu::wgmma_rs_f16>();
+        auto v_a          = rewrite(a);
+        const Def* acc    = rewrite(c);
+        auto mem          = w.app(w.annex<gpu::wgmma_fence>(), fresh_mem());
+        for (u64 kc = 0; kc != nk; ++kc) {
+            auto logical_at = rewrite(at->proj(nk, kc));
+            auto physical   = btensor::op_affine_map(place, br, br, logical, bs, logical_at, none)->proj(2, 1);
+            auto desc       = wgmma_desc(buffer, *Shape(physical).fold(bs));
+            std::tie(mem, acc)
+                = w.app(instr, {w.lit_nat(nt), mem, w.extract(v_a, w.lit_idx(nk, kc)), desc, w.lit_bool(mn), acc})
+                      ->projs<2>();
+        }
+        mem       = w.app(w.annex<gpu::wgmma_commit>(), mem);
+        auto kept = w.tuple({acc, v_a});
+        auto done = w.app(w.app(w.annex<gpu::wgmma_wait>(), kept->type()), {mem, w.lit_nat_0(), kept});
+        (void)rank;
+        return done->proj(2, 1)->proj(2, 0);
+    }
     if (Axm::isa<tensor::as_vectors>(app)) return lower_as_vectors(app);
     if (Axm::isa<tensor::set>(app)) return lower_set(app);
     if (Axm::isa<tensor::scalar>(app)) {
@@ -1706,14 +1739,14 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             total *= counts[d];
         }
         auto body    = w.mut_con({w.type_i64(), acc->type(), w.cn(acc->type())})
-                           ->set(plan.bind == 1   ? "tileGroups"
-                                 : plan.bind == 2 ? "tileItems"
-                                 : plan.bind == 6 ? "tileWarpgroups"
-                                                  : "tileWarps");
-        auto tag     = plan.bind == 1 ? gpu::bind::group
-                     : plan.bind == 2 ? gpu::bind::item
-                     : plan.bind == 6 ? gpu::bind::warpgroup
-                                      : gpu::bind::warp;
+                           ->set(plan.bind == 1                     ? "tileGroups"
+                                 : plan.bind == 2                   ? "tileItems"
+                                 : plan.bind == 6 || plan.bind == 7 ? "tileWarpgroups"
+                                                                    : "tileWarps");
+        auto tag     = plan.bind == 1                   ? gpu::bind::group
+                     : plan.bind == 2                   ? gpu::bind::item
+                     : plan.bind == 6 || plan.bind == 7 ? gpu::bind::warpgroup
+                                                        : gpu::bind::warp;
         auto wrapped = w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body);
         // A work-item whose reduction runs on its lanes takes that many adjacent ids, which must fill whole warps.
         if (lanes > 1 && total * lanes % 32)
@@ -1747,7 +1780,13 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         }
         // A warp's lanes share its tile like a work-item's own; only the tensor-core lowering tells them apart.
         auto level = fe::Restore(bound_level_, std::min<u64>(plan.bind, 2));
-        auto owned = fe::Restore(warp_self_, plan.bind == 5 ? warp_lane(old_world()) : warp_self_);
+        auto owned = fe::Restore(warp_self_, plan.bind == 5 || plan.bind == 7 ? warp_lane(old_world()) : warp_self_);
+        auto& old  = old_world();
+        auto first
+            = old.call(core::nat::mul,
+                       Defs{old.call<core::bitcast>(old.type_nat(), old.app(old.annex<gpu::warp_rank>(), old.tuple())),
+                            old.lit_nat(16)});
+        auto groups = fe::Restore(group_rows_, plan.bind == 7 ? first : plan.bind == 5 ? nullptr : group_rows_);
         body->set(true, emit(*rank, state, yield));
         return loop;
     };
@@ -2343,6 +2382,30 @@ const Def* LowerToMem::region_input(const Def* inputs) {
     return view_reads(inputs, proxy, views);
 }
 
+// Whether a `wgmma` operand panel is MN-major, from its layout's split, and the bytes between its atoms of 128 bytes.
+std::pair<bool, u64> LowerToMem::wgmma_major(const Def* buffer) {
+    auto layout = fe::lookup(layouts_, buffer);
+    if (!layout) buffer->blame("a wgmma operand panel needs its swizzled layout").bail();
+    while (layout->isa<Inj>() || layout->isa<Name>())
+        layout = layout->isa<Inj>() ? layout->as<Inj>()->value() : layout->as<Name>()->op();
+    auto [r, s, T] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
+    auto rank      = Lit::as(r);
+    auto lbo       = Lit::as(core::op(core::trait::size, T));
+    for (u64 d = 1; d != rank; ++d)
+        lbo *= Lit::as(s->proj(rank, d));
+    return {Lit::as(layout->proj(9, 1)) != 1, lbo};
+}
+
+// The descriptor of a `wgmma` operand starting at the panel's element @p index: 1 KiB between 8-row groups and,
+// MN-major, the atoms' distance.
+const Def* LowerToMem::wgmma_desc(const Def* buffer, const Def* index) {
+    auto& w           = new_world();
+    auto [mn, lbo]    = wgmma_major(buffer);
+    auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
+    auto addr         = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}), {buffer, index});
+    return w.app(w.annex<gpu::wgmma_desc>(), {addr, w.lit_i64(mn ? lbo : 16), w.lit_i64(1024), w.lit_i64(1)});
+}
+
 // One warp's tensor-core block: A's fragments by ldmatrix from its row-major panel, B's by scalar loads, and the
 // accumulator, an SSA value of fragments, updated per instruction; F32 inputs use m16n8k8, 16-bit ones m16n8k16.
 const Def* LowerToMem::lower_mma(const App* app, const Destination& destination, const Fragments& fragments) {
@@ -2398,39 +2461,25 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
         auto ms = fragments.rows / fragments.m, ns = fragments.cols / fragments.n;
         auto acc = DefVec(destination.buffer->projs(fragments.count()));
         if (fragments.group) {
-            // A descriptor starts at the shared address of its operand's first element of the k step.
-            // A descriptor starts at the shared address of its operand's first element of the k step; an MN-major
-            // panel's atoms of 128 bytes lie `lbo` bytes apart.
-            auto mn_major = [&](size_t i) {
-                auto [buffer, storage, physical, r] = coords(i, nat(0), nat(0), nat(0));
-                auto layout                         = fe::lookup(layouts_, buffer);
-                if (!layout) app->blame("a wgmma operand panel needs its swizzled layout").bail();
-                while (layout->isa<Inj>() || layout->isa<Name>())
-                    layout = layout->isa<Inj>() ? layout->as<Inj>()->value() : layout->as<Name>()->op();
-                auto lbo = Lit::as(core::op(core::trait::size, T));
-                for (u64 d = 1; d != r; ++d)
-                    lbo *= Lit::as(storage->proj(r, d));
-                return std::pair{Lit::as(layout->proj(9, 1)) != 1, lbo};
-            };
-            auto [a_mn, a_lbo] = mn_major(0);
-            auto [b_mn, b_lbo] = mn_major(1);
-            if (a_mn) app->blame("a wgmma operand A must be K-major").bail();
-            auto desc = [&](size_t i, u64 ks, bool mn, u64 lbo) {
+            auto operand = [&](size_t i, u64 ks) {
                 auto [buffer, storage, physical, r] = coords(i, nat(0), nat(0), nat(ks * kt));
-                auto [br, bs, bT]                   = Axm::as<buffer::Buf>(buffer->type())->args<3>();
-                auto addr                           = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}),
-                                                            {buffer, *Shape(physical).fold(storage)});
-                return w.app(w.annex<gpu::wgmma_desc>(),
-                             {addr, w.lit_i64(mn ? lbo : 16), w.lit_i64(1024), w.lit_i64(1)});
+                return std::pair{buffer, *Shape(physical).fold(storage)};
+            };
+            auto [a_buffer, a0] = operand(0, 0);
+            auto [b_buffer, b0] = operand(1, 0);
+            if (wgmma_major(a_buffer).first) app->blame("a wgmma operand A must be K-major").bail();
+            auto [b_mn, b_lbo] = wgmma_major(b_buffer);
+            auto desc          = [&](size_t i, u64 ks) {
+                auto [buffer, index] = operand(i, ks);
+                return wgmma_desc(buffer, index);
             };
             auto nt          = fragments.count();
             auto instr       = math::isa_bf16(T) ? w.annex<gpu::wgmma_bf16>() : w.annex<gpu::wgmma_f16>();
             const Def* tiles = w.tuple(acc);
             mem              = w.app(w.annex<gpu::wgmma_fence>(), mem);
             for (u64 ks = 0; ks != depth / kt; ++ks)
-                std::tie(mem, tiles) = w.app(instr, {nat(nt), mem, desc(0, ks, false, a_lbo), desc(1, ks, b_mn, b_lbo),
-                                                     w.lit_bool(b_mn), tiles})
-                                           ->projs<2>();
+                std::tie(mem, tiles)
+                    = w.app(instr, {nat(nt), mem, desc(0, ks), desc(1, ks), w.lit_bool(b_mn), tiles})->projs<2>();
             mem = w.app(w.annex<gpu::wgmma_commit>(), mem);
             std::tie(mem, tiles)
                 = w.app(w.app(w.annex<gpu::wgmma_wait>(), tiles->type()), {mem, nat(0), tiles})->projs<2>();
@@ -2650,6 +2699,9 @@ const Def* LowerToMem::warp_term(const Def* def) {
     }
     auto app = Axm::isa<tensor::map_reduce_post>(def);
     if (!app) def->blame("a warp-owned region keeps only map_reduce results in registers, not `{}`", def).bail();
+    // Fusion gives each consumer its own copy of a producer's fused maps; equal copies share one translation.
+    for (auto& [known, term] : warp_terms_)
+        if (Axm::isa<tensor::map_reduce_post>(known) && Check::alpha<Check::T>(known, def)) return warp_terms_[def] = term;
     auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
     auto ro = Lit::isa(mr.Ro), rn = Lit::isa(mr.Rn), nis = Lit::isa(mr.nis), nps = Lit::isa(mr.nps);
     if (!ro || !rn || !nis || !nps)
@@ -2661,7 +2713,8 @@ const Def* LowerToMem::warp_term(const Def* def) {
         if (!extent) def->blame("a warp-owned region needs literal extents, not `{}`", shape).bail();
         return *extent;
     };
-    if (dim(mr.So, *ro, 0) != 16) def->blame("a warp-owned region holds 16 rows, not `{}`", mr.So).bail();
+    if (dim(mr.So, *ro, 0) != (group_rows_ ? 64u : 16u))
+        def->blame("a warp-owned region holds 16 rows, a warpgroup-owned 64, not `{}`", mr.So).bail();
     auto nt = *ro == 2 ? dim(mr.So, 2, 1) / 8 : 0;
     if (*ro == 2 && dim(mr.So, 2, 1) % 8) def->blame("a warp-owned tile's columns are a multiple of 8").bail();
     auto inputs = app->arg()->proj(2, 0);
@@ -2689,9 +2742,9 @@ const Def* LowerToMem::warp_term(const Def* def) {
         auto coords = DefVec();
         if (*ro == 2) {
             auto [r, c] = old.app(old.app(old.annex(tensor::warp::c_pos), old.lit_nat(nt)), {lane, j, reg})->projs<2>();
-            coords      = {nat(r), nat(c)};
+            coords      = {owned_row(nat(r)), nat(c)};
         } else {
-            coords = {nat(old.app(old.annex(tensor::warp::r_pos), {lane, reg}))};
+            coords = {owned_row(nat(old.app(old.annex(tensor::warp::r_pos), {lane, reg})))};
         }
         auto ins = old.tuple(DefVec(*nis, [&](size_t k) { return warp_element(mr, k, coords, lane, j, reg); }));
         g->set(true, post(call(mr.comb, old.tuple({mr.init, ins})), coords, lane, j, reg));
@@ -2707,7 +2760,7 @@ const Def* LowerToMem::warp_term(const Def* def) {
         auto g              = old.mut_lam(old.pi(old.sigma({I(32), I(nt), I(4)}), mr.To));
         auto [lane, j, reg] = g->vars<3>();
         auto [r, c] = old.app(old.app(old.annex(tensor::warp::c_pos), old.lit_nat(nt)), {lane, j, reg})->projs<2>();
-        auto coords = DefVec{nat(r), nat(c)};
+        auto coords = DefVec{owned_row(nat(r)), nat(c)};
         auto ins    = old.tuple(DefVec(*nis, [&](size_t k) { return warp_element(mr, k, coords, lane, j, reg); }));
         g->set(true, call(mr.comb, old.tuple({mr.init, ins})));
         auto elems = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), mr.To), g);
@@ -2715,9 +2768,17 @@ const Def* LowerToMem::warp_term(const Def* def) {
             old.app(old.app(old.app(old.annex(tensor::warp::row_fold), old.lit_nat(nt)), mr.To), {op, mr.init}), elems);
         auto p        = old.mut_lam(old.pi(old.sigma({I(32), I(2)}), T));
         auto [pl, ph] = p->vars<2>();
-        auto row      = nat(old.app(old.annex(tensor::warp::r_pos), {pl, ph}));
+        auto row      = owned_row(nat(old.app(old.annex(tensor::warp::r_pos), {pl, ph})));
         p->set(true, post(old.extract(old.extract(rows, pl), ph), DefVec{row}, pl, nullptr, ph));
         term = old.app(old.app(old.annex(tensor::warp::r_gen), T), p);
+    } else if (*ro == 2 && *rn == 3 && *nis == 2 && group_rows_) {
+        term              = wgmma_lane(app);
+        auto g            = old.mut_lam(old.pi(old.sigma({I(32), I(nt), I(4)}), T));
+        auto [pl, pj, pr] = g->vars<3>();
+        auto [row, col]   = old.app(old.app(old.annex(tensor::warp::c_pos), old.lit_nat(nt)), {pl, pj, pr})->projs<2>();
+        auto acc          = old.extract(old.extract(old.extract(term, pl), pj), pr);
+        g->set(true, post(acc, DefVec{owned_row(nat(row)), nat(col)}, pl, pj, pr));
+        term = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), T), g);
     } else if (*ro == 2 && *rn == 3 && *nis == 2) {
         if (!is_contraction(app))
             def->blame("a warp-owned product must combine `acc + a · b`, not `{}`", mr.comb).bail();
@@ -2766,12 +2827,105 @@ const Def* LowerToMem::warp_term(const Def* def) {
         auto [pl, pj, pr] = g->vars<3>();
         auto [row, col]   = old.app(old.app(old.annex(tensor::warp::c_pos), old.lit_nat(nt)), {pl, pj, pr})->projs<2>();
         auto acc          = old.extract(old.extract(old.extract(term, pl), pj), pr);
-        g->set(true, post(acc, DefVec{nat(row), nat(col)}, pl, pj, pr));
+        g->set(true, post(acc, DefVec{owned_row(nat(row)), nat(col)}, pl, pj, pr));
         term = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), T), g);
     } else {
         def->blame("a warp-owned region has no translation for `{}`", def).bail();
     }
     return warp_terms_[def] = term;
+}
+
+const Def* LowerToMem::owned_row(const Def* row) {
+    auto& old = old_world();
+    return group_rows_ ? old.call(core::nat::add, Defs{group_rows_, row}) : row;
+}
+
+// The A fragments of a warpgroup-owned product's `nk` chunks of 16 keys, each lane's from its warp's rows.
+const Def* LowerToMem::wgmma_a(const btensor::MapRedPost& mr, u64 nk) {
+    auto& old = old_world();
+    auto H    = mr.Tis->proj(2, 0);
+    auto nat  = [&](const Def* x) { return old.call<core::idx2nat>(x); };
+    auto g = old.mut_lam(old.pi(old.sigma({old.type_idx(nk), old.type_idx(32), old.type_idx(4), old.type_idx(2)}), H));
+    auto [kc, lane, reg, h] = g->vars<4>();
+    auto [r, k]             = old.app(old.annex(tensor::mma_m16n8k16::l_a), {lane, reg, h})->projs<2>();
+    auto key = old.call(core::nat::add, Defs{old.call(core::nat::mul, Defs{nat(kc), old.lit_nat(16)}), nat(k)});
+    g->set(true, warp_element(mr, 0, DefVec{owned_row(nat(r)), old.lit_nat_0(), key}, lane, nullptr, reg));
+    return old.app(old.app(old.app(old.annex(tensor::warp::a16_gen), old.lit_nat(nk)), H), g);
+}
+
+// A warpgroup-owned product `c + up a · up b` over chunks of 16 keys: each lane passes its A fragments and accumulator
+// to `wgmma_lane`, which reads B from its panel; the lanes' results are kept, so a row reduction shuffles them.
+const Def* LowerToMem::wgmma_lane(const App* app) {
+    auto& old = old_world();
+    auto mr   = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto H    = contraction_type(app);
+    if (!H || H == old.annex<math::F32>())
+        app->blame("a warpgroup-owned product must combine 16-bit inputs as `acc + up a · up b`, not `{}`", mr.comb)
+            .bail();
+    auto lit = [&](const Def* shape, u64 n, u64 d) {
+        auto extent = Lit::isa(shape->proj(n, d));
+        if (!extent) app->blame("a warpgroup-owned product needs literal extents, not `{}`", shape).bail();
+        return *extent;
+    };
+    auto nt = lit(mr.Sr, 3, 1) / 8, kk = lit(mr.Sr, 3, 2);
+    if (kk % 16) app->blame("a warpgroup-owned product reduces a multiple of 16").bail();
+    auto nk     = kk / 16;
+    auto inputs = app->arg()->proj(2, 0);
+    auto scope  = fe::Restore(mr_inputs_, inputs);
+    auto nat    = [&](const Def* x) { return old.call<core::idx2nat>(x); };
+    auto self   = warp_self_;
+    auto da     = map_dims(mr.maps->proj(2, 0), 3);
+    auto a_val  = Axm::peel<tensor::buf>(inputs->proj(2, 0));
+    const Def* a;
+    if (auto hoisted = fe::lookup(hoisted_a_, app)) {
+        a = hoisted;
+    } else if (Axm::isa<tensor::map_reduce_post>(a_val) && da && *da == std::vector<u64>{0, 2}) {
+        // Accumulator tiles `2 kc` and `2 kc + 1` are A's chunk `kc` (`mma_m16n8k16.c_pair_is_a`).
+        auto p  = warp_term(a_val);
+        auto np = 2 * nk;
+        auto g
+            = old.mut_lam(old.pi(old.sigma({old.type_idx(nk), old.type_idx(32), old.type_idx(4), old.type_idx(2)}), H));
+        auto [kc, lane, reg, h] = g->vars<4>();
+        auto tile = old.call(core::nat::add, Defs{old.call(core::nat::mul, Defs{nat(kc), old.lit_nat(2)}),
+                                                  old.call(core::nat::div, Defs{nat(reg), old.lit_nat(2)})});
+        auto elem
+            = old.call(core::nat::add,
+                       Defs{old.call(core::nat::mul,
+                                     Defs{old.call(core::nat::rem, Defs{nat(reg), old.lit_nat(2)}), old.lit_nat(2)}),
+                            nat(h)});
+        g->set(true, old.extract(
+                         old.extract(old.extract(p, lane), old.call<core::idx>(old.lit_nat_0(), old.lit_nat(np), tile)),
+                         old.call<core::idx>(old.lit_nat_0(), old.lit_nat(4), elem)));
+        a = old.app(old.app(old.app(old.annex(tensor::warp::a16_gen), old.lit_nat(nk)), H), g);
+    } else {
+        a = wgmma_a(mr, nk);
+    }
+    auto b = Axm::peel<tensor::buf>(inputs->proj(2, 1));
+    if (!Axm::isa<tensor::stage>(Axm::peel<tensor::placed>(b)))
+        app->blame("a warpgroup-owned product reads B from a work-group panel").bail();
+    auto Ri = mr.Ris->proj(2, 1), Si = mr.Sis->proj(2, 1);
+    auto none = old.bot(old.call<mem::M>(0));
+    auto at   = old.tuple(DefVec(nk, [&](size_t kc) {
+        auto loops = old.tuple(DefVec(3, [&](size_t d) {
+            return old.call<core::idx>(old.lit_nat_0(), mr.Sr->proj(3, d), old.lit_nat(d == 2 ? 16 * kc : 0));
+        }));
+        return btensor::op_affine_map(mr.maps->proj(2, 1), Ri, old.lit_nat(3), mr.Sr, Si, loops, none)->proj(2, 1);
+    }));
+    const Def* c;
+    if (auto outs = tensor_init(mr)) {
+        c = warp_term(outs->outs);
+    } else {
+        auto g = old.mut_lam(old.pi(old.sigma({old.type_idx(32), old.type_idx(nt), old.type_idx(4)}), mr.To));
+        g->set(true, mr.init);
+        c = old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), mr.To), g);
+    }
+    auto own_a
+        = old.tuple(DefVec(nk, [&](size_t kc) { return old.extract(old.extract(a, old.lit_idx(nk, kc)), self); }));
+    auto callee
+        = old.app(old.app(old.app(old.annex<tensor::wgmma_lane>(), H), {old.lit_nat(nk), old.lit_nat(nt), Ri}), Si);
+    auto own   = old.app(callee, {own_a, b, at, old.extract(c, self)});
+    auto lanes = old.pack(32, own);
+    return old.app(old.app(old.annex<tensor::warp_keep>(), own->type()), lanes);
 }
 
 // A fold in a warp-owned region keeps its state as each lane's components, carried by the loop; the step sees them as
@@ -2809,12 +2963,43 @@ const Def* LowerToMem::warp_fold(const App* app) {
             for (auto op : def->ops())
                 if (op) pending.push_back(op);
             auto product = Axm::isa<tensor::map_reduce_post>(def);
-            if (!product || !is_contraction(product)) continue;
-            auto mr     = btensor::MapRedPost::of(product->callee()->as<App>());
+            auto H       = product ? contraction_type(product) : nullptr;
+            if (!H || (H != old.annex<math::F32>()) != bool(group_rows_)) continue;
+            auto mr = btensor::MapRedPost::of(product->callee()->as<App>());
+            // A warpgroup's products read B through descriptors, from a panel in the layout their maps ask for.
+            if (auto b = Axm::peel<tensor::placed>(Axm::peel<tensor::buf>(product->arg()->proj(2, 0)->proj(2, 1)));
+                group_rows_ && Axm::isa<tensor::stage>(b) && !placed_layouts_.contains(b)) {
+                auto [rank, shape, T] = TensorType::decode(b->type()->as<Nom>());
+                auto r                = Lit::as(rank);
+                auto db               = map_dims(mr.maps->proj(2, 1), 3);
+                auto bytes            = Lit::as(core::op(core::trait::size, T));
+                auto choice = panel::wgmma(rewrite(shape), r - 1, bytes, db && db->size() == r && db->back() == 2);
+                if (choice.expr) placed_layouts_[b] = w.tuple({rewrite(shape), choice.expr});
+            }
             auto input  = product->arg()->proj(2, 0)->proj(2, 0);
             auto source = Axm::peel<tensor::buf>(input);
             if (Axm::isa<tensor::map_reduce_post>(source) || source->has_free_var(parameter->has_var())) continue;
             auto nk = Lit::isa(mr.Sr->proj(3, 2));
+            if (group_rows_) {
+                if (!nk || *nk % 16) continue;
+                *nk /= 16;
+                auto scope = fe::Restore(mr_inputs_, product->arg()->proj(2, 0));
+                auto a     = rewrite(wgmma_a(mr, *nk));
+                auto loaded
+                    = w.tuple(DefVec(*nk, [&](size_t c) { return w.extract(w.extract(a, w.lit_idx(*nk, c)), lane); }));
+                auto proxy = old.mut_lam(
+                    old.pi(old.arr({old.lit_nat(*nk), old.lit_nat(4), old.lit_nat(2)}, H), old.type_nat()));
+                bind_old(proxy->has_var());
+                carried_values.push_back(loaded);
+                proxies.push_back(proxy);
+                auto at = old.mut_lam(
+                    old.pi(old.sigma({old.type_idx(*nk), old.type_idx(32), old.type_idx(4), old.type_idx(2)}), H));
+                auto [ac, al, ar, ah] = at->vars<4>();
+                at->set(true, old.extract(old.extract(old.extract(old.extract(lanes(proxy->var()), al), ac), ar), ah));
+                hoisted_a_[product]
+                    = old.app(old.app(old.app(old.annex(tensor::warp::a16_gen), old.lit_nat(*nk)), H), at);
+                continue;
+            }
             if (!nk || *nk % 8) continue;
             *nk /= 8;
             auto F     = mr.To;
@@ -2851,6 +3036,9 @@ const Def* LowerToMem::warp_fold(const App* app) {
         if (auto block = Lit::isa(stride)) multiples_[probe->var(2, 1)] = *block;
         auto probes = blocks_of(probe->var());
         if (probes.size() != stages.size()) app->blame("pipelined warp fold found {} panels", probes.size()).bail();
+        // Each block's instance of a panel takes the layout chosen for the step's.
+        for (size_t i = 0; i != stages.size(); ++i)
+            if (auto layout = fe::lookup(placed_layouts_, stages[i])) placed_layouts_[probes[i]] = layout;
         auto memo    = fe::Restore(fresh_memo_, {});
         auto probing = fe::Restore(probe_fill_, true);
         push();
@@ -2891,6 +3079,7 @@ const Def* LowerToMem::warp_fold(const App* app) {
         bind_old(future->has_var());
         map(future->var(2, 1), w.call(core::nat::mul, Defs{block, rewrite(stride)}));
         for (size_t j = 0; j != panels; ++j) {
+            if (auto layout = fe::lookup(placed_layouts_, stages[j])) placed_layouts_[roots[pipelined[j]]] = layout;
             fill_target_ = {at, targets[j]};
             filled_mem_  = nullptr;
             rewrite(roots[pipelined[j]]);
@@ -2933,8 +3122,10 @@ const Def* LowerToMem::warp_fold(const App* app) {
                 forward_layouts(ring[0][j], at_stage(1, j));
             }
             // Every lane's copies of this block are done and every warp read the previous one, which the next fills.
-            loop_mem
-                = w.app(w.annex<gpu::fence>(), w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat_0()), loop_mem));
+            // A warpgroup's `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it.
+            auto waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat_0()), loop_mem);
+            if (group_rows_) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
+            loop_mem = w.app(w.annex<gpu::fence>(), waited);
             auto next = w.app(w.annex(tensor::pipeline_plan::refill_block),
                               {w.call<core::bitcast>(w.type_nat(), index), w.lit_nat(2), w.lit_nat(*literal_count)});
             loop_mem  = fill_block(loop_mem, next, DefVec(panels, [&](size_t j) { return at_stage(1, j); }));
@@ -2987,16 +3178,17 @@ const Def* LowerToMem::store_warp(const Def* root, const Destination& destinatio
                 auto jj = w.lit_idx(nt, j), rr = w.lit_idx(4, reg);
                 auto [r, c] = w.app(w.app(w.annex(tensor::warp::c_pos), w.lit_nat(nt)), {lane, jj, rr})->projs<2>();
                 auto elem   = w.extract(w.extract(w.extract(value, lane), jj), rr);
-                mem = buffer::op_write(mem, destination.buffer, *Shape(at({nat(r), nat(c)})).fold(destination.shape),
-                                       elem)
+                auto row    = group_rows_ ? w.call(core::nat::add, Defs{rewrite(group_rows_), nat(r)}) : nat(r);
+                mem = buffer::op_write(mem, destination.buffer, *Shape(at({row, nat(c)})).fold(destination.shape), elem)
                           ->proj(2, 0);
             }
     } else {
         for (u64 h = 0; h != 2; ++h) {
-            auto hh   = w.lit_idx(2, h);
-            auto row  = w.app(w.annex(tensor::warp::r_pos), {lane, hh});
+            auto hh  = w.lit_idx(2, h);
+            auto row = nat(w.app(w.annex(tensor::warp::r_pos), {lane, hh}));
+            if (group_rows_) row = w.call(core::nat::add, Defs{rewrite(group_rows_), row});
             auto elem = w.extract(w.extract(value, lane), hh);
-            mem       = buffer::op_write(mem, destination.buffer, *Shape(at({nat(row)})).fold(destination.shape), elem)
+            mem       = buffer::op_write(mem, destination.buffer, *Shape(at({row})).fold(destination.shape), elem)
                             ->proj(2, 0);
         }
     }

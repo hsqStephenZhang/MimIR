@@ -131,3 +131,7 @@ A 操作数来自内存且不随步变的乘积，其 A 分片在循环外装载
 
 未做：MN-major 操作数（行主序 B、attention 的 V），需要把 n 切成 64 宽的 atom、k 作行的面板布局；
 TMA + mbarrier 作为流水归约层的另一种填充方式（生产者 warpgroup）；cluster 层（TMA multicast、DSMEM 归约）。
+
+warpgroup 拥有的区域（`bind 7`，2026-11-13）：64 行的区域，每个 warp 的项与 `bind 5` 相同、行坐标加 `16 · warp_rank`；
+16 位乘积是每个 lane 的 `tensor.wgmma_lane (a#self, panel, at, c#self)` 再经 `warp_keep` 成为 warp 值（P 作 A 分片依据 `mma_m16n8k16.c_pair_is_a`）。
+MN-major 操作数（行主序 B、V）与 K-major 一样从按 128 字节段 swizzle 的面板读（见 `bench/gpu_tiling/RESULTS.zh-CN.md`）。

@@ -349,6 +349,18 @@ axm warp_keep: {T: *} → «32; T» → «32; T», normalize_warp_keep;
 ///
 axm mma_warp: [a: «32, 4; math.F32», b: «32, 2; math.F32», c: «32, 4; math.F32»] → «32, 4; math.F32», normalize_mma_warp;
 ///
+/// ### wgmma_lane
+///
+/// One lane's accumulator `c` plus its warp's 16 rows of `A · B` on a warpgroup's tensor cores, over `nk` chunks of 16 keys.
+/// `a#kc` is the lane's A fragment of chunk `kc` in the layout of `mma_m16n8k16.l_a`; `b` is a work-group panel of 16-bit
+/// `T` whose element `at#kc` is B's `(16 kc, 0)`, read K-major or MN-major as its storage layout holds it.
+/// Per warp it is `mma_m16n8k16.mma_ref` on the warp's rows; LowerToMem lowers it to `gpu.wgmma_rs_*` in a
+/// warpgroup-owned region (`bind 7`).
+///
+axm wgmma_lane: {T: *} → {nk nt r: Nat} → {s: «r; Nat»}
+              → [a: «nk, 4, 2; T», b: Tensor r s T, at: «nk; «i: r; Idx s#i»», c: «nt, 4; math.F32»]
+              → «nt, 4; math.F32»;
+///
 /// ### warp
 ///
 /// A warp's value is an array over its 32 lanes, lane `l` holding component `l`; see `docs/warp-schedule.zh-CN.md`.
@@ -439,11 +451,14 @@ pub anx lam key_perm (k: Idx 8): Idx 8 =
 pub anx lam a_of_c {nt: Nat} {T: *} (f: C nt T): «32, nt, 4; T» =
     ‹lane: 32; ‹j: nt; ‹reg: 4; f#lane#j#(core.idx 0 4 (2 * (core.idx2nat reg % 2) + core.idx2nat reg / 2))›››;
 
-/// A C fragment, a row vector, and the A and B fragments of `nk` k-chunks, from their elements at each position.
+/// A C fragment, a row vector, and the A and B fragments of `nk` k-chunks (`a16_gen`: of 16 keys, in pairs), from their
+/// elements at each position.
 pub anx lam c_gen {nt: Nat} {T: *} (g: [Idx 32, Idx nt, Idx 4] → T): C nt T = ‹lane: 32; ‹j: nt; ‹reg: 4; g (lane, j, reg)›››;
 pub anx lam r_gen {T: *} (g: [Idx 32, Idx 2] → T): R T = ‹lane: 32; ‹h: 2; g (lane, h)››;
 pub anx lam a_gen {nk: Nat} {T: *} (g: [Idx nk, Idx 32, Idx 4] → T): «nk, 32, 4; T» =
     ‹kc: nk; ‹lane: 32; ‹reg: 4; g (kc, lane, reg)›››;
+pub anx lam a16_gen {nk: Nat} {T: *} (g: [Idx nk, Idx 32, Idx 4, Idx 2] → T): «nk, 32, 4, 2; T» =
+    ‹kc: nk; ‹lane: 32; ‹reg: 4; ‹h: 2; g (kc, lane, reg, h)››››;
 pub anx lam b_gen {nk nt: Nat} {T: *} (g: [Idx nk, Idx nt, Idx 32, Idx 2] → T): «nk, nt, 32, 2; T» =
     ‹kc: nk; ‹j: nt; ‹lane: 32; ‹reg: 2; g (kc, j, lane, reg)››››;
 
@@ -2322,6 +2337,8 @@ axm tile_group: compile.Phase;
 /// On a reduction step, 2 runs its blocks on the work-items and 4 on the lanes of one work-item.
 /// 5 binds a region of 16 rows to a warp that owns it: its tensors are warp values (`tensor.warp`) in registers.
 /// 6 binds it to a warpgroup of four consecutive warps.
+/// 7 binds a region of 64 rows to a warpgroup that owns it: warp `w` keeps rows `16 w ..` as warp values, and products of
+/// 16-bit inputs run on `wgmma_lane`.
 ///
 axm bind: {T: *} → [to: Nat] → T → T;
 ///

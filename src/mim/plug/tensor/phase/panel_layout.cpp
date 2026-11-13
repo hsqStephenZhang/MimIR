@@ -215,9 +215,11 @@ Choice wgmma(const Def* storage, size_t inner, u64 bytes, bool k_major) {
     } else {
         // The split's quotient is pre-split position `n - 1` and its remainder position `n`.
         if (inner != n - 1 || dims[inner] % atom) return none;
+        // A single atom keeps the rows outermost, so no physical dim of one element leads.
         layout.split = atom;
-        layout.perm  = {n - 1, rows[0]};
+        layout.perm  = dims[inner] == atom ? std::vector<size_t>{rows[0]} : std::vector<size_t>{n - 1, rows[0]};
         layout.perm.insert(layout.perm.end(), units.begin(), units.end());
+        if (dims[inner] == atom) layout.perm.push_back(n - 1);
         layout.perm.push_back(n);
     }
     layout.swizzle  = Swizzle{16 / bytes, 8, 0, 8, true};
@@ -467,7 +469,7 @@ Choice decode(const Def* expr, const Def* storage, size_t inner, u64 vec, u64 by
     auto shape      = std::vector<u64>(n);
     for (size_t d = 0; d != n; ++d)
         shape[d] = Lit::as(physical->proj(n, d));
-    auto contiguous = bytes >= 4 && bytes % 4 == 0 && 16 % bytes == 0 && vec != 1
+    auto contiguous = bytes >= 2 && bytes % 2 == 0 && 16 % bytes == 0 && vec != 1
                    && Fill(dims, inner, vec, 16 / bytes).contiguous(layout, shape);
     return {expr, physical, layout, contiguous};
 }
