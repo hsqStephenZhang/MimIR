@@ -79,6 +79,7 @@ private:
     };
     const Def* lower_mma(const App*, const Destination&, const Fragments&);
     const Def* store_fragments(const Def* source, const Fragments&, const Destination&);
+    const Def* write_fragments(const Def* source, const Fragments&, const Destination&);
     std::pair<const Def*, const Def*> load_fragments(const Def* init, const Fragments&, const Def* mem);
     u64 lane_count(const Def* body) const;
     const Def* warp_term(const Def*);
@@ -242,6 +243,14 @@ private:
     u64 split_ = 1;
     /// The work-items of the warpgroup-bound region being lowered.
     u64 group_threads_ = 0;
+    /// In a specialized warpgroup region: whether this warpgroup is the producer, the consumer's index, how many
+    /// consumers there are, and whether they alternate their MMAs.
+    const Def* producer_ = nullptr;
+    const Def* consumer_ = nullptr;
+    u64 consumers_       = 0;
+    bool pingpong_       = false;
+    /// How many groups of warpgroup MMAs a fold step leaves pending.
+    u64 wgmma_pending_ = 0;
     const Def* outside(const Def* def) const;
     /// In a warpgroup-owned region, the old-world first row of the warp's 16, `16 · warp_rank`.
     const Def* group_rows_ = nullptr;

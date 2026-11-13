@@ -2218,6 +2218,10 @@ axm report_groups: compile.Phase;
 /// `(64, N, 16)` for the warpgroup's whole `64 × N` tile, with F16 or BF16 inputs both K-major (`a · bᵀ`).
 /// Promoted inputs of a reduction inside a warp or a warpgroup are staged as panels over the whole work-group's tile.
 /// `RedTma` is a warpgroup's `Red` whose panels the work-group's leader fills with TMA, each ring slot completing an mbarrier.
+/// `RedWs` specializes the warpgroups: one more warp only fills the ring with TMA, waiting on each slot's "empty" mbarrier,
+/// while the warpgroups only compute, waiting on "full" and arriving on "empty", with no work-group barrier per step.
+/// With a ring of four or more slots, a step's MMAs stay in flight and release the previous step's slot.
+/// With `pingpong` 1 the two computing warpgroups take turns issuing their MMAs.
 /// `Cluster` runs the next `Group` level's work-groups in clusters of `size` consecutive tiles; a `RedTma` below loads
 /// each input set in `multicast` once per cluster, each work-group a `1 / size` share of its rows multicast to all.
 /// With `split` 1 the cluster's work-groups compute the same tile instead, each `1 / size` of a `RedTma` reduction below,
@@ -2258,7 +2262,8 @@ anx mutual
         | Done
         | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)]
         | Wgmma: [shape: «n; Nat», contraction: «mma»]
-        | RedTma: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)];
+        | RedTma: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)]
+        | RedWs: [sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: WarpgroupLevels (n, Acc, mma)];
 end
 ///
 /// The constructors as functions, so a chain infers `n` and `Acc` from the request.
@@ -2320,6 +2325,8 @@ anx lam wg_red_pipelined {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail pr
 anx lam wg_mma {n: Nat, Acc: *} (shape: «n; Nat»): WarpgroupLevels (n, Acc, tt) = (WarpgroupLevels (n, Acc, tt))#Wgmma (shape, ‹tt›);
 anx lam wg_red_tma {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, mma)): WarpgroupLevels (n, Acc, mma) =
     (WarpgroupLevels (n, Acc, mma))#RedTma (sizes, tail, promote, pipeline, rest);
+anx lam wg_red_ws {n: Nat, Acc: *, mma: Bool} (sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: WarpgroupLevels (n, Acc, mma)): WarpgroupLevels (n, Acc, mma) =
+    (WarpgroupLevels (n, Acc, mma))#RedWs (sizes, tail, promote, pipeline, pingpong, rest);
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
 /// The loop count and accumulator type of the `map_reduce_post` that computes a tile request's root; they index the
@@ -2362,6 +2369,11 @@ axm pipeline: {T: *} → [depth: Nat] → T → T;
 /// Identity annotation on a reduction step inside a work-group whose pipelined panels are filled by TMA and mbarriers.
 ///
 axm fill_tma: {T: *} → T → T;
+///
+/// Identity annotation inside a warpgroup region's `bind`: one more warp produces its reductions' panels, and with
+/// `pingpong` 1 the two warpgroups alternate their MMAs.
+///
+axm specialize: {T: *} → [pingpong: Nat] → T → T;
 ///
 /// Identity annotation inside a work-group region's `bind`: its work-groups run in clusters of `size`, sharing the TMA
 /// copies of the inputs set in `multicast`, or with `split` splitting the reduction of each tile among them.

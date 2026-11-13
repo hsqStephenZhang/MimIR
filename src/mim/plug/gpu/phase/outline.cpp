@@ -30,14 +30,15 @@ const App* bound_loop(const Def* def, bind id) {
 // The largest work-item loop count under @p def; a shorter work-item loop leaves the surplus items idle.
 std::optional<u64> item_count(const Def* def, DefSet& seen) {
     if (auto [_, ins] = seen.emplace(def); !ins) return {};
-    auto count = std::optional<u64>();
-    auto warp  = bound_loop(def, bind::warp);
-    auto group = bound_loop(def, bind::warpgroup);
+    auto count   = std::optional<u64>();
+    auto warp    = bound_loop(def, bind::warp);
+    auto special = bound_loop(def, bind::specialized);
+    auto group   = special ? special : bound_loop(def, bind::warpgroup);
     if (auto loop = warp ? warp : group ? group : bound_loop(def, bind::item)) {
         count = trip_count(loop->uncurry_args<3>()[2]);
         if (!count) loop->blame("gpu.outline requires a literal work-item count").bail();
         if (warp) *count *= 32;
-        if (group) *count *= 128;
+        if (group) *count = special ? 128 * (*count - 1) + 32 : 128 * *count;
     }
     for (auto op : def->ops()) {
         if (!op || op->isa<Var>()) continue;
@@ -115,8 +116,9 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         if (!rank_) app->blame("gpu.outline: a warp rank must nest inside a warpgroup loop").bail();
         return rank_;
     }
-    auto group = bound_loop(app, bind::warpgroup);
-    auto warp  = group ? group : bound_loop(app, bind::warp);
+    auto special = bound_loop(app, bind::specialized);
+    auto group   = special ? special : bound_loop(app, bind::warpgroup);
+    auto warp    = group ? group : bound_loop(app, bind::warp);
     if (auto loop = warp ? warp : bound_loop(app, bind::item)) {
         if (!item_id_) app->blame("gpu.outline: a work-item loop must nest inside a work-group loop").bail();
         auto [annotated, exit, args] = loop->uncurry_args<3>();

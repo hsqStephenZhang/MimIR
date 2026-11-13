@@ -172,6 +172,9 @@ struct LevelSpec {
     u64 pipeline = 1;
     bool tma     = false;
     u64 split    = 0;
+    /// A `RedWs` level: a producer warpgroup fills the ring; `pingpong` alternates the consumers' MMAs.
+    bool ws      = false;
+    u64 pingpong = 0;
 };
 
 /// The levels of a `tile_req` chain, outermost first; `nullopt` unless the chain is a literal value.
@@ -202,7 +205,7 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
             {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3},   {0, 6}},
             {{0, 0}, {0, 0},   {1, 0},   {2, 0},   {1, 4}, {-1, -1}, {-1, -1}, {-1, -1}},
             {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
-            {{0, 0}, {1, 0}, {-1, -1},   {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}}
+            {{0, 0}, {1, 0}, {-1, -1},   {1, 0},   {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}}
         };
         if (i > 7 || table[scope][i][0] < 0) return std::nullopt;
         spec.kind = table[scope][i][0], spec.bind = table[scope][i][1];
@@ -225,7 +228,13 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
             if (!promote) return std::nullopt;
             spec.promote = *promote;
         }
-        spec.tma = scope == Warpgroup && i == 3;
+        spec.tma = scope == Warpgroup && (i == 3 || i == 4);
+        spec.ws  = scope == Warpgroup && i == 4;
+        if (spec.ws) {
+            auto pingpong = lit(4);
+            if (!pingpong) return std::nullopt;
+            spec.pingpong = *pingpong;
+        }
         if (spec.kind == 1 && spec.bind == 0 && scope != Serial) {
             auto pipeline = lit(3);
             if (!pipeline) return std::nullopt;
@@ -1449,6 +1458,12 @@ const Def* Levels::parallel(const Def* anchor,
     inner->set(true, close(value, var, body->var(), inputs, inner->var()));
     body->set(true, inner);
     const Def* region = body;
+    // A warpgroup level whose reduction is specialized runs one more warpgroup, the producer.
+    if (bind == 6)
+        for (auto& level : rest)
+            if (level.ws)
+                region
+                    = w.app(w.app(w.app(w.annex<tensor::specialize>(), body->type()), w.lit_nat(level.pingpong)), body);
     if (bind == 1 && cluster_) {
         region = w.app(w.app(w.app(w.annex<tensor::cluster>(), body->type()),
                              {w.lit_nat((*cluster_)[0]), w.lit_nat((*cluster_)[1]), w.lit_nat((*cluster_)[2])}),

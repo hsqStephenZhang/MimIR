@@ -751,15 +751,17 @@ std::string DeviceEmitter::prepare() {
     auto [m1, m3, m4, m5, group_id, item_id, smem, arg, ret_lam] = kernel->vars<9>();
 
     dynamic_slots_.clear();
-    u64 cluster = 1;
-    auto slots  = DefVec();
-    auto seen   = DefSet();
+    u64 cluster   = 1;
+    u64 registers = 0;
+    auto slots    = DefVec();
+    auto seen     = DefSet();
     for (auto todo = DefVec{kernel}; !todo.empty();) {
         auto def = todo.back();
         todo.pop_back();
         if (!seen.emplace(def).second) continue;
         if (Axm::isa<gpu::slot_shared>(def)) slots.push_back(def);
         if (auto size = Axm::isa<gpu::cluster_size>(def)) cluster = Lit::as(size->decurry()->arg());
+        if (auto budget = Axm::isa<gpu::reg_budget>(def)) registers = Lit::as(budget->decurry()->arg());
         const Def* addressed = nullptr;
         if (auto addr = Axm::isa<gpu::shared_addr>(def)) addressed = addr->arg();
         if (auto tma = Axm::isa<gpu::tma_load>(def)) addressed = tma->arg(6, 1);
@@ -816,6 +818,7 @@ std::string DeviceEmitter::prepare() {
     locals_[arg]  = arg_name;
     // A kernel launched in clusters declares their size, so a plain launch groups its work-groups.
     auto attributes = cluster > 1 ? std::format(" \"nvvm.cluster_dim\"=\"{},1,1\"", cluster) : std::string();
+    if (registers) attributes += std::format(" \"nvvm.maxnreg\"=\"{}\"", registers);
     std::println(func_impls_, "{} {}){} {{", convert(arg->type()), arg_name, attributes);
 
     auto& bb = lam2bb_[kernel];
@@ -1008,6 +1011,8 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         return std::string();
     } else if (auto size = Axm::isa<gpu::cluster_size>(def)) {
         return emit_unsafe(size->arg());
+    } else if (auto budget = Axm::isa<gpu::reg_budget>(def)) {
+        return emit_unsafe(budget->arg());
     } else if (Axm::isa<gpu::cluster_rank>(def)) {
         declare("i32 @llvm.nvvm.read.ptx.sreg.cluster.ctarank()");
         return bb.assign(name, "call i32 @llvm.nvvm.read.ptx.sreg.cluster.ctarank()");
@@ -1046,6 +1051,20 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
                          "call float asm sideeffect \"{{ .reg .b32 r; mapa.shared::cluster.u32 r, $1, $2; "
                          "ld.shared::cluster.f32 $0, [r]; }}\", \"=f,r,r,~{{memory}}\"(i32 {}, i32 {})",
                          emit(addr), emit(rank));
+    } else if (auto arrive = Axm::isa<gpu::mbar_arrive_if>(def)) {
+        auto [mem, bar, issue] = arrive->args<3>();
+        emit_unsafe(mem);
+        auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb, "{ .reg .pred q; setp.ne.b32 q, $1, 0; @q mbarrier.arrive.shared::cta.b64 _, [$0]; }", "r,r",
+                   {"i32 " + emit(bar), "i32 " + pred});
+        return std::string();
+    } else if (auto arrive = Axm::isa<gpu::arrive_named_if>(def)) {
+        auto [mem, id, count, issue] = arrive->args<4>();
+        emit_unsafe(mem);
+        auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb, "{ .reg .pred q; setp.ne.b32 q, $2, 0; @q bar.arrive $0, $1; }", "r,r,r",
+                   {"i32 " + emit(id), "i32 " + emit(count), "i32 " + pred});
+        return std::string();
     } else if (auto arrive = Axm::isa<gpu::mbar_arrive_cluster_if>(def)) {
         auto [mem, bar, rank, issue] = arrive->args<4>();
         emit_unsafe(mem);

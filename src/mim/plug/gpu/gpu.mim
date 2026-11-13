@@ -250,8 +250,10 @@ anx lam synced_scope (m1: GlobalM, m3: SharedM,
 /// A `warp` loop runs one iteration per warp of 32 work-items, which see their lane as `lane_id ()`.
 /// A `warpgroup` loop runs one iteration per warpgroup of four consecutive warps, which see their lane and their warp's
 /// rank in the warpgroup as `warp_rank ()`.
+/// A `specialized` loop is a `warpgroup` loop whose last iteration runs on a single warp, a producer that needs fewer
+/// work-items than the others.
 ///
-axm bind.(group, item, cooperative, chained, async, warp, warpgroup): {T: *} → T → T;
+axm bind.(group, item, cooperative, chained, async, warp, warpgroup, specialized): {T: *} → T → T;
 ///
 /// #### lane_id
 ///
@@ -458,6 +460,13 @@ axm arrive_named: [mem.M 0, id count: I32] → mem.M 0;
 ///
 axm setmaxnreg: [mem.M 0, inc: Bool, n: Nat] → mem.M 0;
 ///
+/// #### reg_budget
+///
+/// Marks the kernel it is in as compiled for at most `n` registers per work-item at entry (`.maxnreg`), the count that
+/// `setmaxnreg` redistributes between warpgroups.
+///
+axm reg_budget: Nat → mem.M 0 → mem.M 0;
+///
 /// #### mbar_init_if, mbar_expect_tx_if, mbar_wait_at, tma_load_if
 ///
 /// `mbar_init`, `mbar_expect_tx`, `mbar_wait` and `tma_load` on the mbarrier and the destination at shared addresses; the
@@ -503,6 +512,13 @@ axm mbar_arrive_cluster_if: [mem.M 0, bar: I32, rank: I32, issue: Bool] → mem.
 ///
 axm load_peer: [mem.M 0, addr: I32, rank: I32] → [mem.M 0, math.F32];
 axm mbar_wait_if: [mem.M 0, bar: I32, parity: I32, issue: Bool] → mem.M 0;
+///
+/// #### mbar_arrive_if, arrive_named_if
+///
+/// `mbar_arrive` on the mbarrier at shared address `bar`, and `arrive_named`, in the work-items whose `issue` holds.
+///
+axm mbar_arrive_if: [mem.M 0, bar: I32, issue: Bool] → mem.M 0;
+axm arrive_named_if: [mem.M 0, id count: I32, issue: Bool] → mem.M 0;
 ///
 /// #### device_tensor_map, buf_tensor_map
 ///

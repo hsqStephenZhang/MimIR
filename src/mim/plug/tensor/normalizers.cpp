@@ -151,6 +151,7 @@ std::pair<const Def*, u64> region_body(const Def* body) {
     if (auto bound = Axm::isa<tensor::bind>(body)) {
         auto inner = bound->arg();
         if (auto cluster = Axm::isa<tensor::cluster>(inner)) inner = cluster->arg();
+        if (auto special = Axm::isa<tensor::specialize>(inner)) inner = special->arg();
         return {inner, Lit::expect(bound->decurry()->arg(), "a literal tensor.bind level")};
     }
     return {body, 0};

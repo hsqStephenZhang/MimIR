@@ -464,3 +464,39 @@ tensor map 由 `gpu.buf_tensor_map` 描述，lower_to_mem 把它建在区域外�
   multicast 节省的是 L2 带宽，而这个 128×128、BK=64 的 GEMM 不受它限制。要有收益，需要专门的生产者 warpgroup 提前跑、更大的 tile。
 - split-K 的合并每个线程逐个读 64 个值、两道 cluster barrier、64 KB 暂存（每 SM 只剩 1 个块）；
   1024³ 时 64 个 tile 本就少于 132 个 SM，但合并的开销超过了多用的 SM。改进方向是向量化的 DSMEM 读、reduce-scatter 而非每个 rank 都求全和。
+
+### warp 特化与 warpgroup ping-pong（H200 NVL，2026-11-13）
+
+调度：`wg_red_ws (sizes, tail, promote, pipeline, pingpong, rest)`，归约步打上 `tensor.specialize [pingpong]`。
+- 每个 work-group 多一个生产者 warp（`gpu.bind.specialized`：最后一次迭代只有 32 个 work-item，两个消费者时共 288 线程）。
+  循环体按角色分成 `foldProduce`/`foldConsume`。生产者等槽位的“空”mbarrier，再用 TMA 填它；消费者等“满”mbarrier，
+  算完后每个 warp 的首 lane 在“空”上 arrive（计数 = 4 × 消费者数）。循环里没有 work-group barrier，生产者也不写结果。
+- 环有 4 级以上时，消费者让本步的 wgmma 保持在飞（`wgmma.wait_group 1`），并释放上一步的槽位；循环结束后再 `wait_group 0`。
+  环较浅时（如 3 级），这样做会让生产者只领先一个槽位，所以仍是 `wait 0`，本步结束即释放。
+- `pingpong 1`：两个消费者用命名 barrier 1/2（计数 256）轮流发 wgmma。每个消费者在 `wgmma_fence` 前 `bar.sync` 自己的
+  barrier，commit 后 `bar.arrive` 对方的；初始令牌由消费者 1 交出。
+- `setmaxnreg` 无法使用：两个角色在循环后汇合，ptxas 要求汇合处至少有 90 个寄存器，所以生产者用一个 warp，而不是一个 warpgroup。
+`lit/{gpu,nvptx}/tile_wgmma_{ws,pingpong}.mim` 在 GPU 上对照 CPU 参考。
+
+`krun_e2e.sh`，`a · b`（B MN-major），BK=64，单位 ms：
+
+| 配置 | 线程 | 每 SM 块数 | 4096 | 8192 |
+|---|---:|---:|---:|---:|
+| 128×128，`wg_red_tma` 3 级 | 256 | 2 | **0.255** | **2.18** |
+| 128×128，`wg_red_ws` 3 级 | 288 | 2 | 0.313 | 2.39 |
+| 128×128，`wg_red_ws` 3 级，ping-pong | 288 | 2 | 0.309 | 2.39 |
+| 128×256，`wg_red_tma` 3 级 | 256 | 1 | 0.317 | 2.21 |
+| 128×256，`wg_red_ws` 3 级 | 288 | 1 | 0.293 | 2.26 |
+| 128×256，`wg_red_ws` 4 级（wait 1） | 288 | 1 | 0.274 | 2.38 |
+| 128×256，`wg_red_ws` 4 级（wait 1），ping-pong | 288 | 1 | 0.277 | 2.34 |
+| cuBLAS f16 | | | 0.204 | 1.82 |
+
+- 同为 128×256 时，特化在 4096 上比非特化快 13%：环可以加深到 4 级（非特化 4 级的 192 KB 环放不下，会退回未分块的 kernel），
+  wgmma 也能跨步在飞。在 8192 上两者相近。
+- 但它们都不如每 SM 两个块的 128×128 非特化版：两个块互相掩盖了对方的填充延迟和 epilogue，这已经是特化想要的重叠。
+  128×128 的特化版没有多出可用的级数，只增加了 mbarrier 往返和角色分支。
+  wait 0/1 的对比在 1–3% 以内，说明剩余差距不在主循环。每 SM 一个块时，epilogue 无法与下一个 tile 的主循环重叠，
+  要补上这一点，需要持久化 kernel（CUTLASS 的 ping-pong 让两个消费者各算一个 tile，一个做 epilogue 时另一个做 MMA）。
+- 我们的 ping-pong 是同一 tile 内两半交替，tensor core 本来就被它们共享，因此几乎没有收益（±1%）。
+- 4 个消费者（256×128，544 线程）时，17 个 warp 轮流分到 4 个 SMSP，其中一个分到 5 个 warp，每个 104 寄存器，
+  超过每个 SMSP 16K 的寄存器容量，launch 报 701（`cuOccupancyMaxActiveBlocksPerMultiprocessor` = 0）。

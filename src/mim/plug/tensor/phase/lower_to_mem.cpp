@@ -1740,6 +1740,10 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             counts[d] = (*sizes[d] + steps[d] - 1) / steps[d];
             total *= counts[d];
         }
+        // A specialized warpgroup region adds a producer warp, which takes the first tile's coordinates.
+        auto special = std::optional<u64>();
+        if (auto bound = Axm::isa<tensor::bind>(app->arg()); bound && plan.bind == 6)
+            if (auto marked = Axm::isa<tensor::specialize>(bound->arg())) special = Lit::as(marked->decurry()->arg());
         auto body    = w.mut_con({w.type_i64(), acc->type(), w.cn(acc->type())})
                            ->set(plan.bind == 1                     ? "tileGroups"
                                  : plan.bind == 2                   ? "tileItems"
@@ -1747,6 +1751,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
                                                                     : "tileWarps");
         auto tag     = plan.bind == 1                   ? gpu::bind::group
                      : plan.bind == 2                   ? gpu::bind::item
+                     : plan.bind == 6 && special        ? gpu::bind::specialized
                      : plan.bind == 6 || plan.bind == 7 ? gpu::bind::warpgroup
                                                         : gpu::bind::warp;
         auto wrapped = w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body);
@@ -1763,11 +1768,23 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
                 cluster = {size, multicast};
                 if (split) parts = size;
             }
-        auto loop = w.call<affine::For>(wrapped, exit,
-                                        Defs{w.lit_i64(0), w.lit_i64(total * lanes * parts), w.lit_i64(1), acc});
+        auto extra = special ? u64(1) : u64(0);
+        auto loop  = w.call<affine::For>(
+            wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(total * lanes * parts + extra), w.lit_i64(1), acc});
         auto [index, state, yield] = body->vars<3>();
         const Def* linear          = w.call<core::bitcast>(w.type_nat(), index);
         if (parts > 1) linear = w.call(core::nat::div, Defs{linear, w.lit_nat(parts)});
+        const Def* producer = nullptr;
+        if (special) {
+            if (*special && total != 2)
+                app->blame("warpgroup ping-pong alternates two consumers, not {}", total).bail();
+            producer = w.call(core::ncmp::e, Defs{linear, w.lit_nat(total)});
+            linear   = w.call(core::nat::rem, Defs{linear, w.lit_nat(total)});
+        }
+        auto producing  = fe::Restore(producer_, special ? producer : producer_);
+        auto consuming  = fe::Restore(consumer_, special ? linear : consumer_);
+        auto counted    = fe::Restore(consumers_, special ? total : consumers_);
+        auto alternate  = fe::Restore(pingpong_, special ? *special != 0 : pingpong_);
         const Def* lane = lane_;
         if (lanes > 1) {
             lane   = w.call(core::nat::rem, Defs{linear, w.lit_nat(lanes)});
@@ -2493,13 +2510,24 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
             auto nt          = fragments.count();
             auto instr       = math::isa_bf16(T) ? w.annex<gpu::wgmma_bf16>() : w.annex<gpu::wgmma_f16>();
             const Def* tiles = w.tuple(acc);
-            mem              = w.app(w.annex<gpu::wgmma_fence>(), mem);
+            // Ping-pong: a consumer issues its MMAs on its turn and then hands the turn to the other one.
+            if (pingpong_ && consumer_) {
+                auto own = w.call<core::idx>(w.lit_nat_0(), nat(u64(1) << 32), add(consumer_, nat(1)));
+                mem      = w.app(w.annex<gpu::sync_named>(), {mem, own, w.lit_i32(256)});
+            }
+            mem = w.app(w.annex<gpu::wgmma_fence>(), mem);
             for (u64 ks = 0; ks != depth / kt; ++ks)
                 std::tie(mem, tiles)
                     = w.app(instr, {nat(nt), mem, desc(0, ks), desc(1, ks), w.lit_bool(b_mn), tiles})->projs<2>();
             mem = w.app(w.annex<gpu::wgmma_commit>(), mem);
+            if (pingpong_ && consumer_) {
+                auto other = w.call<core::idx>(w.lit_nat_0(), nat(u64(1) << 32),
+                                               w.call(core::nat::sub, Defs{nat(2), consumer_}));
+                mem        = w.app(w.annex<gpu::arrive_named>(), {mem, other, w.lit_i32(256)});
+            }
             std::tie(mem, tiles)
-                = w.app(w.app(w.annex<gpu::wgmma_wait>(), tiles->type()), {mem, nat(0), tiles})->projs<2>();
+                = w.app(w.app(w.annex<gpu::wgmma_wait>(), tiles->type()), {mem, nat(wgmma_pending_), tiles})
+                      ->projs<2>();
             return w.tuple({mem, w.tuple(DefVec(nt, [&](size_t j) { return tiles->proj(nt, j); }))});
         }
         auto read = [&](const Def* lane_reg, Enum auto map, u64 ni, u64 ks) {
@@ -2562,7 +2590,25 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
 }
 
 // Writes each lane's accumulator fragments to their rows and columns of @p destination.
+// A specialized region's producer warp holds no accumulator, so only the consumers write theirs.
 const Def* LowerToMem::store_fragments(const Def* source, const Fragments& fragments, const Destination& destination) {
+    if (!producer_ || !fragments.group) return write_fragments(source, fragments, destination);
+    // The accumulator is an argument of the branch, so the fold that computes it runs in both roles.
+    auto& w          = new_world();
+    auto mem_type    = destination.mem->type();
+    auto [run, call] = btensor::ds_splice(w.tuple({destination.mem, source}), mem_type, "storeConsumers");
+    auto [mem, acc]  = run->var(2, 0)->projs<2>();
+    auto write       = w.mut_con(mem_type)->set("storeWrite");
+    auto skip        = w.mut_con(mem_type)->set("storeSkip");
+    run->app(true, w.extract(w.tuple({write, skip}), producer_), mem);
+    skip->app(true, run->ret_var(), skip->var());
+    auto inner = destination;
+    inner.mem  = write->var();
+    write->app(true, run->ret_var(), write_fragments(acc, fragments, inner)->proj(2, 0));
+    return w.tuple({call, destination.buffer});
+}
+
+const Def* LowerToMem::write_fragments(const Def* source, const Fragments& fragments, const Destination& destination) {
     auto& w   = new_world();
     auto rank = Lit::as(destination.shape->arity());
     auto nat  = [&](u64 v) { return w.lit_nat(v); };
@@ -3474,8 +3520,17 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     for (size_t j = 0; j != panels; ++j)
         sharing |= cluster_ && slots[j] < 64 && (cluster_->second >> slots[j] & 1);
     auto leader = [&] { return w.app(w.annex<gpu::leader>(), w.tuple()); };
-    auto i32    = [&](const Def* nat) { return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(u64(1) << 32), nat); };
-    auto at_of  = [&](const Def* buffers, const Def* slot) {
+    // A specialized fold's copies are issued by the producer warp's first work-item.
+    auto specialized = false;
+    auto issuer      = [&]() -> const Def* {
+        if (!specialized) return leader();
+        auto item  = w.app(w.annex<gpu::item_index>(), w.tuple());
+        auto first = w.call(core::icmp::e,
+                            Defs{w.call(core::bit2::and_, w.lit_nat_0(), Defs{item, w.lit_i64(127)}), w.lit_i64(0)});
+        return w.call(core::bit2::and_, w.lit_nat(2), Defs{producer_, first});
+    };
+    auto i32   = [&](const Def* nat) { return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(u64(1) << 32), nat); };
+    auto at_of = [&](const Def* buffers, const Def* slot) {
         auto [br, bs, bT] = Axm::as<buffer::Buf>(buffers->type())->args<3>();
         auto index        = w.call<core::idx>(w.lit_nat_0(), w.lit_nat(ring.size()), slot);
         return w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}), {buffers, w.tuple({index})});
@@ -3486,11 +3541,11 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto fill_tma = [&](const Def* at, const Def* block, const DefVec& targets, const Def* fill) {
         auto depth = w.lit_nat(ring.size());
         auto slot  = w.call(core::nat::rem, Defs{fill, depth});
-        if (sharing) {
+        if (sharing || specialized) {
             // The phase before a slot's first use counts as completed, so its first fill passes.
             auto uses   = w.call(core::nat::div, Defs{fill, depth});
             auto parity = w.call(core::nat::rem, Defs{w.call(core::nat::add, Defs{uses, w.lit_nat(1)}), w.lit_nat(2)});
-            at          = w.app(w.annex<gpu::mbar_wait_if>(), {at, empty_at(slot), i32(parity), leader()});
+            at          = w.app(w.annex<gpu::mbar_wait_if>(), {at, empty_at(slot), i32(parity), issuer()});
         }
         auto future = old.mut_lam(parameter->type()->as<Pi>());
         if (auto size = Lit::isa(stride)) multiples_[future->var(2, 1)] = *size;
@@ -3545,14 +3600,14 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 loads.push_back([=, &w](const Def* m, const Def* bar) {
                     if (shares > 1)
                         return w.app(w.annex<gpu::tma_load_multicast_if>(),
-                                     {m, dst, map, col, row0, bar, all, leader()});
-                    return w.app(w.annex<gpu::tma_load_if>(), {m, dst, map, col, row0, bar, leader()});
+                                     {m, dst, map, col, row0, bar, all, issuer()});
+                    return w.app(w.annex<gpu::tma_load_if>(), {m, dst, map, col, row0, bar, issuer()});
                 });
             }
             (void)lbo;
         }
         auto bar = bar_at(slot);
-        at       = w.app(w.annex<gpu::mbar_expect_tx_if>(), {at, bar, w.lit_i32(bytes), leader()});
+        at       = w.app(w.annex<gpu::mbar_expect_tx_if>(), {at, bar, w.lit_i32(bytes), issuer()});
         for (auto& load : loads)
             at = load(at, bar);
         pop();
@@ -3578,25 +3633,35 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         pop();
         return w.app(w.annex<gpu::async_commit>(), at);
     };
-    tma = tma && panels != 0;
+    tma         = tma && panels != 0;
+    specialized = tma && producer_ && fragments && fragments->group;
+    if (specialized && cluster_) app->blame("a specialized reduction does not share panels across a cluster").bail();
     if (tma) {
         std::tie(mem, bars) = buffer::op_alloc(w.lit_nat(1), w.tuple({w.lit_nat(ring.size())}), w.type_i64(),
                                                w.app(w.annex<gpu::shared_scope>(), mem))
                                   ->projs<2>();
         for (u64 s = 0; s != ring.size(); ++s)
             mem = w.app(w.annex<gpu::mbar_init_if>(), {mem, bar_at(w.lit_nat(s)), w.lit_i32(1), leader()});
-        if (sharing) {
+        if (sharing || specialized) {
             std::tie(mem, empties) = buffer::op_alloc(w.lit_nat(1), w.tuple({w.lit_nat(ring.size())}), w.type_i64(),
                                                       w.app(w.annex<gpu::shared_scope>(), mem))
                                          ->projs<2>();
+            // Every warp of every consumer releases a slot it read; a cluster's work-groups each once.
+            auto arrivals = specialized ? 4 * consumers_ : cluster_->first;
             for (u64 s = 0; s != ring.size(); ++s)
-                mem = w.app(w.annex<gpu::mbar_init_if>(),
-                            {mem, empty_at(w.lit_nat(s)), w.lit_i32(cluster_->first), leader()});
+                mem = w.app(w.annex<gpu::mbar_init_if>(), {mem, empty_at(w.lit_nat(s)), w.lit_i32(arrivals), leader()});
         }
         // A cluster's work-groups multicast into each other's ring, so each sees the others' barriers initialized.
         if (cluster_) mem = w.app(w.app(w.annex<gpu::cluster_size>(), w.lit_nat(cluster_->first)), mem);
         mem = cluster_ ? w.app(w.annex<gpu::sync_cluster>(), w.app(w.annex<gpu::fence_mbarrier_init>(), mem))
                        : w.app(w.annex<gpu::fence>(), mem);
+    }
+    // Ping-pong: the first consumer issues first, the second hands it the turn once.
+    if (specialized && pingpong_) {
+        auto second = w.call(core::bit2::and_, w.lit_nat(2),
+                             Defs{w.call(core::ncmp::e, Defs{consumer_, w.lit_nat(1)}),
+                                  w.call(core::bit2::xor_, w.lit_nat(2), Defs{producer_, w.lit_tt()})});
+        mem         = w.app(w.annex<gpu::arrive_named_if>(), {mem, w.lit_i32(1), w.lit_i32(256), second});
     }
     for (u64 s = 0; s + 1 < ring.size(); ++s)
         mem = tma ? fill_tma(mem, shifted(w.lit_nat(s)), ring[s], w.lit_nat(s))
@@ -3616,7 +3681,12 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             settled = w.app(w.annex<gpu::mbar_wait_at>(),
                             {settled, bar_at(w.lit_nat(k % ring.size())), w.lit_i32(k / ring.size() % 2)});
         if (tma && cluster_) settled = w.app(w.annex<gpu::sync_cluster>(), settled);
-        done->app(true, exit, w.tuple({settled, done->var(width, 1)}));
+        auto result = done->var(width, 1);
+        if (specialized)
+            std::tie(settled, result)
+                = w.app(w.app(w.annex<gpu::wgmma_wait>(), result->type()), {settled, w.lit_nat_0(), result})
+                      ->projs<2>();
+        done->app(true, exit, w.tuple({settled, result}));
         exit = done;
     }
     auto remaining = first_scalar ? w.lit_nat(*literal_count - 1) : base ? w.lit_nat(*literal_count) : rewrite(count);
@@ -3639,70 +3709,124 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto iteration = w.call<core::bitcast>(w.type_nat(), index);
     if (first_scalar) iteration = w.call(core::nat::add, Defs{iteration, w.lit_nat(1)});
     map(offset, w.call(core::nat::mul, Defs{shifted(iteration), rewrite(stride)}));
-    if (panels != 0) {
+    if (specialized) {
+        // The producer warp refills the slot the consumers released while they compute on the full one.
+        // The roles synchronize only through the slots' mbarriers.
+        if (!inplace) app->blame("a specialized reduction updates its accumulator in place").bail();
         for (size_t j = 0; j != panels; ++j) {
             map(stages[j], at_stage(0, j));
             for (u64 s = 0; s != ring.size(); ++s)
                 forward_layouts(ring[0][j], at_stage(s, j));
         }
-        // The current block's group is the oldest: the younger `depth - 2` may still be pending.
-        const Def* waited;
-        if (tma) {
-            auto depth  = w.lit_nat(ring.size());
-            auto parity = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{iteration, depth}), w.lit_nat(2)});
-            waited      = w.app(w.annex<gpu::mbar_wait_at>(),
-                                {loop_mem, bar_at(w.call(core::nat::rem, Defs{iteration, depth})), i32(parity)});
-        } else {
-            waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat(ring.size() - 2)), loop_mem);
-            // `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it first.
-            if (fragments && fragments->group) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
+        auto depth   = w.lit_nat(ring.size());
+        auto slot    = w.call(core::nat::rem, Defs{iteration, depth});
+        auto rotated = [&](const Def* m, const Def* buffer) {
+            auto next = DefVec{m, buffer};
+            for (u64 s = 0; s != ring.size(); ++s)
+                for (size_t j = 0; j != panels; ++j)
+                    next.push_back(at_stage(
+                        Lit::as(w.app(w.annex(tensor::pipeline_plan::rotated_source), {w.lit_nat(s), depth})), j));
+            return w.tuple(next);
+        };
+        auto consume = w.mut_con(loop_mem->type())->set("foldConsume");
+        auto produce = w.mut_con(loop_mem->type())->set("foldProduce");
+        loop->app(true, w.extract(w.tuple({consume, produce}), producer_), loop_mem);
+        auto next = shifted(
+            w.app(w.annex(tensor::pipeline_plan::refill_block), {iteration, depth, w.lit_nat(*literal_count)}));
+        auto free   = DefVec(panels, [&](size_t j) { return at_stage(ring.size() - 1, j); });
+        auto fill   = w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)});
+        auto filled = fill_tma(produce->var(), next, free, fill);
+        produce->app(true, yield, rotated(filled, loop_buffer));
+        auto parity = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{iteration, depth}), w.lit_nat(2)});
+        loop_mem    = w.app(w.annex<gpu::mbar_wait_at>(), {consume->var(), bar_at(slot), i32(parity)});
+        prepare_realizations(root);
+        // A ring of four or more slots keeps a step's MMAs in flight and releases the previous step's slot once those
+        // have read it; a shallower one would leave the producer a single slot ahead.
+        auto overlap   = u64(ring.size() >= 4);
+        auto in_flight = fe::Restore(wgmma_pending_, overlap);
+        auto update    = lower_into(root, {loop_mem, loop_buffer, storage, rewrite(zero), extent});
+        // The MMAs' wait is warp-synchronous, so a warp's first lane releases the slot for all of it.
+        auto item     = w.app(w.annex<gpu::item_index>(), w.tuple());
+        auto release  = w.call(core::icmp::e,
+                               Defs{w.call(core::bit2::and_, w.lit_nat_0(), Defs{item, w.lit_i64(31)}), w.lit_i64(0)});
+        auto released = slot;
+        if (overlap) {
+            auto later = w.call(core::ncmp::ne, Defs{w.call<core::bitcast>(w.type_nat(), index), w.lit_nat_0()});
+            release    = w.call(core::bit2::and_, w.lit_nat(2), Defs{release, later});
+            released   = w.call(core::nat::rem,
+                                Defs{w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)}), depth});
         }
-        // A cluster's work-groups refill each other's slots, so all of them must have read a slot before its refill.
-        loop_mem = w.app(w.annex<gpu::fence>(), waited);
-        // Every work-item has read the previous block's slot; the leader releases it to each work-group of the cluster.
-        if (sharing) {
-            auto previous
-                = w.call(core::nat::rem, Defs{w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)}),
-                                              w.lit_nat(ring.size())});
-            auto issue = w.call(core::bit2::and_, w.lit_nat(2),
-                                Defs{leader(), w.call(core::ncmp::ne, Defs{iteration, w.lit_nat_0()})});
-            for (u64 r = 0; r != cluster_->first; ++r)
-                loop_mem = w.app(w.annex<gpu::mbar_arrive_cluster_if>(),
-                                 {loop_mem, empty_at(previous), w.lit_i32(r), issue});
-        }
-        // The last blocks fill their own panels once more, which keeps the loop body free of a branch.
-        auto next = shifted(w.app(w.annex(tensor::pipeline_plan::refill_block),
-                                  {iteration, w.lit_nat(ring.size()), w.lit_nat(*literal_count)}));
-        auto free = DefVec(panels, [&](size_t j) { return at_stage(ring.size() - 1, j); });
-        auto fill = w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)});
-        loop_mem  = tma ? fill_tma(loop_mem, next, free, fill) : fill_block(loop_mem, next, free);
-    }
-    prepare_realizations(root);
-    const Def* update;
-    if (inplace) {
-        update = lower_into(root, {loop_mem, loop_buffer, storage, rewrite(zero), extent});
-    } else if (!bounded) {
-        auto value = make_buffer(root, w.lit_nat(rank), rewrite(shape));
-        plain(value);
-        update = w.tuple({copy_buffer(loop_mem, loop_buffer, value, rewrite(shape), cooperative()), loop_buffer});
+        auto freed = w.app(w.annex<gpu::mbar_arrive_if>(), {update->proj(2, 0), empty_at(released), release});
+        consume->app(true, yield, rotated(freed, update->proj(2, 1)));
     } else {
-        auto value  = make_buffer(root, w.lit_nat(rank), extent);
-        auto source = fe::lookup(storage_shapes_, root);
-        plain(value);
-        update
-            = w.tuple({copy_box(loop_mem, loop_buffer, storage, value, source ? source : extent, extent, cooperative()),
-                       loop_buffer});
+        if (panels != 0) {
+            for (size_t j = 0; j != panels; ++j) {
+                map(stages[j], at_stage(0, j));
+                for (u64 s = 0; s != ring.size(); ++s)
+                    forward_layouts(ring[0][j], at_stage(s, j));
+            }
+            // The current block's group is the oldest: the younger `depth - 2` may still be pending.
+            const Def* waited;
+            if (tma) {
+                auto depth = w.lit_nat(ring.size());
+                auto parity
+                    = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{iteration, depth}), w.lit_nat(2)});
+                waited = w.app(w.annex<gpu::mbar_wait_at>(),
+                               {loop_mem, bar_at(w.call(core::nat::rem, Defs{iteration, depth})), i32(parity)});
+            } else {
+                waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat(ring.size() - 2)), loop_mem);
+                // `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it first.
+                if (fragments && fragments->group) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
+            }
+            // A cluster's work-groups refill each other's slots, so all of them must have read a slot before its
+            // refill.
+            loop_mem = w.app(w.annex<gpu::fence>(), waited);
+            // Every work-item has read the previous block's slot; the leader releases it to each work-group of the
+            // cluster.
+            if (sharing) {
+                auto previous
+                    = w.call(core::nat::rem, Defs{w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)}),
+                                                  w.lit_nat(ring.size())});
+                auto issue = w.call(core::bit2::and_, w.lit_nat(2),
+                                    Defs{leader(), w.call(core::ncmp::ne, Defs{iteration, w.lit_nat_0()})});
+                for (u64 r = 0; r != cluster_->first; ++r)
+                    loop_mem = w.app(w.annex<gpu::mbar_arrive_cluster_if>(),
+                                     {loop_mem, empty_at(previous), w.lit_i32(r), issue});
+            }
+            // The last blocks fill their own panels once more, which keeps the loop body free of a branch.
+            auto next = shifted(w.app(w.annex(tensor::pipeline_plan::refill_block),
+                                      {iteration, w.lit_nat(ring.size()), w.lit_nat(*literal_count)}));
+            auto free = DefVec(panels, [&](size_t j) { return at_stage(ring.size() - 1, j); });
+            auto fill = w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)});
+            loop_mem  = tma ? fill_tma(loop_mem, next, free, fill) : fill_block(loop_mem, next, free);
+        }
+        prepare_realizations(root);
+        const Def* update;
+        if (inplace) {
+            update = lower_into(root, {loop_mem, loop_buffer, storage, rewrite(zero), extent});
+        } else if (!bounded) {
+            auto value = make_buffer(root, w.lit_nat(rank), rewrite(shape));
+            plain(value);
+            update = w.tuple({copy_buffer(loop_mem, loop_buffer, value, rewrite(shape), cooperative()), loop_buffer});
+        } else {
+            auto value  = make_buffer(root, w.lit_nat(rank), extent);
+            auto source = fe::lookup(storage_shapes_, root);
+            plain(value);
+            update = w.tuple(
+                {copy_box(loop_mem, loop_buffer, storage, value, source ? source : extent, extent, cooperative()),
+                 loop_buffer});
+        }
+        if (panels != 0) {
+            auto next = DefVec{update->proj(2, 0), update->proj(2, 1)};
+            for (u64 s = 0; s != ring.size(); ++s)
+                for (size_t j = 0; j != panels; ++j)
+                    next.push_back(at_stage(Lit::as(w.app(w.annex(tensor::pipeline_plan::rotated_source),
+                                                          {w.lit_nat(s), w.lit_nat(ring.size())})),
+                                            j));
+            update = w.tuple(next);
+        }
+        loop->app(true, yield, update);
     }
-    if (panels != 0) {
-        auto next = DefVec{update->proj(2, 0), update->proj(2, 1)};
-        for (u64 s = 0; s != ring.size(); ++s)
-            for (size_t j = 0; j != panels; ++j)
-                next.push_back(at_stage(Lit::as(w.app(w.annex(tensor::pipeline_plan::rotated_source),
-                                                      {w.lit_nat(s), w.lit_nat(ring.size())})),
-                                        j));
-        update = w.tuple(next);
-    }
-    loop->app(true, yield, update);
     loop->set(true, wrap_fresh_mem(loop->body()));
     pop();
     run->set(true, loop_call);
