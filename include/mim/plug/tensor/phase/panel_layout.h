@@ -10,8 +10,9 @@
 /// The cost model that picks the storage layout of a work-group panel, and its `tensor.layout_expr` terms.
 namespace mim::plug::tensor::panel {
 
-/// A swizzle of 16-byte chunk `c` of row `r` with `g = (r >> shift) % groups`: a rotation stores it at chunk
-/// `(c + g) % chunks`, an exclusive or at `c ^ g`.
+/// A swizzle of 16-byte chunk `c` of segment `r` with `g = (r >> shift) % groups`: a rotation stores it at chunk
+/// `(c + g) % chunks`, an exclusive or at `c ^ g`; a segment is `chunks · width` elements of the linear physical order,
+/// one physical row unless the row is wider.
 struct Swizzle {
     u64 width, groups, shift, chunks;
     bool xored = false;
@@ -54,9 +55,11 @@ const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>
 /// A tensor-core panel's layout: its fill's contiguous dim @p inner innermost, padded against bank conflicts.
 Choice mma(const Def* storage, size_t inner, u64 bytes);
 
-/// A `wgmma` operand panel's layout: K-major 128-byte rows, 16-byte chunks swizzled by the row; `expr` is nullptr if
-/// the panel has another shape.
-Choice wgmma(const Def* storage, size_t inner, u64 bytes);
+/// A `wgmma` operand panel's layout with 16-byte chunks swizzled by 128-byte segment: K-major, the fill's contiguous
+/// dim
+/// @p inner of 128 bytes holds the reduction, one row each; MN-major (@p k_major false), the last dim @p inner is split
+/// into atoms of 128 bytes, each its reduction's rows; `expr` is nullptr if the panel has another shape.
+Choice wgmma(const Def* storage, size_t inner, u64 bytes, bool k_major);
 
 /// The layout that spreads a fill of `vec` elements of `bytes` along dim @p inner, and the item level's @p reads,
 /// over the 32 shared-memory banks best.

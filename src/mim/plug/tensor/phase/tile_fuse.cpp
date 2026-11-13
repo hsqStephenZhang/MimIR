@@ -774,11 +774,11 @@ const Def* panel_term(const App* staged, const PanelSite& site) {
     }
     if (!inner) return nullptr;
     auto storage = w.tuple(DefVec(dims.size(), [&](size_t d) { return w.lit_nat(dims[d].first); }));
-    // A `wgmma` operand is K-major: its source is contiguous along the reduction block.
+    // A `wgmma` operand is K-major if its source is contiguous along the reduction block, else MN-major.
     auto k_major = slice && site.k0 && contiguous_start == site.k0;
-    auto choice  = site.wgmma && k_major ? panel::wgmma(storage, *inner, *bytes)
-                 : site.mma              ? panel::mma(storage, *inner, *bytes)
-                                         : panel::choose(storage, *inner, vec, *bytes, reads ? &*reads : nullptr);
+    auto choice  = site.wgmma ? panel::wgmma(storage, *inner, *bytes, k_major)
+                 : site.mma   ? panel::mma(storage, *inner, *bytes)
+                              : panel::choose(storage, *inner, vec, *bytes, reads ? &*reads : nullptr);
     if (site.wgmma && !choice.expr) return nullptr;
     if (choice.layout.identity() && choice.physical == storage) return nullptr;
     return w.tuple({storage, choice.expr});

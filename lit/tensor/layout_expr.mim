@@ -49,3 +49,13 @@ let _ = refly.check (check_coords (tensor.layout_expr.shape @2 @(2, 4) rotated, 
                          "rotated layout must be injective and in bounds");
 let _ = refly.check (check_coords (tensor.layout_expr.shape @2 @(8, 32) xored, xored_coords), tt,
                          "xor-swizzled layout must be injective and in bounds");
+
+// An MN-major wgmma panel: columns split into atoms that become the physical rows, chunks xored by the segment's row.
+let segmented = tensor.layout_expr.make @(2) ((16, 32), 16, (1₃, 0₃, 2₃), (0, 0), 4, 4, 0, 4, tt);
+let inputs_1632 = ‹i: 512; let ii = core.idx2nat i; (core.bitcast I64 (ii / 32), core.bitcast I64 (ii % 32))›;
+let segmented_coords = ‹i: 512; tensor.layout_expr.map_i64 @2 @(16, 32) segmented (inputs_1632#i)›;
+let _ = refly.check (check_coords (tensor.layout_expr.shape @2 @(16, 32) segmented, segmented_coords), tt,
+                     "segmented layout must be injective and in bounds");
+let at = λ (k n: Nat): «2; I64» = tensor.layout_expr.map_i64 @2 @(16, 32) segmented (core.bitcast I64 k, core.bitcast I64 n);
+let _ = refly.check (core.bit2.and 0 (core.icmp.e ((at (1, 0))#1₂, 20I64), core.icmp.e ((at (3, 21))#1₂, 57I64)), tt,
+                     "a segment's chunk must be xored by its row");

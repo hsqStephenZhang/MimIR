@@ -100,10 +100,12 @@ struct Fill {
         for (size_t p = 1; p != shape.size(); ++p)
             col += physical[p] * strides[p];
         if (auto& swizzle = layout.swizzle) {
-            auto group = (row >> swizzle->shift) % swizzle->groups;
-            auto chunk
-                = swizzle->xored ? (col / swizzle->width) ^ group : (col / swizzle->width + group) % swizzle->chunks;
-            col = chunk * swizzle->width + col % swizzle->width;
+            auto segment = swizzle->chunks * swizzle->width;
+            auto inside  = col % segment;
+            auto group   = ((row * strides[0] + col) / segment >> swizzle->shift) % swizzle->groups;
+            auto chunk   = swizzle->xored ? (inside / swizzle->width) ^ group
+                                          : (inside / swizzle->width + group) % swizzle->chunks;
+            col          = col / segment * segment + chunk * swizzle->width + inside % swizzle->width;
         }
         return row * strides[0] + col;
     }
@@ -190,21 +192,34 @@ Choice mma(const Def* storage, size_t inner, u64 bytes) {
     return {expr, physical, layout, true};
 }
 
-// A `wgmma` operand panel stores its fill's contiguous dim innermost in 128-byte rows, its one other dim of more than
-// one element as the rows, and swizzles 16-byte chunks by the row, the layout its descriptors read.
-Choice wgmma(const Def* storage, size_t inner, u64 bytes) {
+// A `wgmma` operand panel holds its fill's contiguous dim in 128-byte segments and its one other dim of more than one
+// element as their rows, and swizzles 16-byte chunks by the segment, the layout its descriptors read.
+Choice wgmma(const Def* storage, size_t inner, u64 bytes, bool k_major) {
     auto& w     = storage->world();
     auto n      = storage->num_projs();
     auto dims   = std::vector<u64>(n);
     auto layout = Layout{std::vector<size_t>()};
+    auto atom   = 128 / bytes;
     for (size_t d = 0; d != n; ++d)
         dims[d] = Lit::as(storage->proj(n, d));
+    auto rows = std::vector<size_t>(), units = std::vector<size_t>();
     for (size_t d = 0; d != n; ++d)
-        if (d != inner && dims[d] != 1) layout.perm.push_back(d);
-    if (layout.perm.size() != 1 || dims[inner] * bytes != 128) return {nullptr, storage, layout, true};
-    for (size_t d = 0; d != n; ++d)
-        if (d != inner && dims[d] == 1) layout.perm.push_back(d);
-    layout.perm.push_back(inner);
+        if (d != inner) (dims[d] == 1 ? units : rows).push_back(d);
+    auto none = Choice{nullptr, storage, layout, true};
+    if (rows.size() != 1) return none;
+    if (k_major) {
+        if (dims[inner] != atom) return none;
+        layout.perm = rows;
+        layout.perm.insert(layout.perm.end(), units.begin(), units.end());
+        layout.perm.push_back(inner);
+    } else {
+        // The split's quotient is pre-split position `n - 1` and its remainder position `n`.
+        if (inner != n - 1 || dims[inner] % atom) return none;
+        layout.split = atom;
+        layout.perm  = {n - 1, rows[0]};
+        layout.perm.insert(layout.perm.end(), units.begin(), units.end());
+        layout.perm.push_back(n);
+    }
     layout.swizzle  = Swizzle{16 / bytes, 8, 0, 8, true};
     layout.permuted = permuted_dims(dims, layout);
     auto shape      = physical_dims(dims, layout);

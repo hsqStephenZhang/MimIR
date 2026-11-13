@@ -405,3 +405,12 @@ bf16 4096、`pipeline=2`：0.655 ms。编译路径达到同结构手写版的 0.
 | 8192 | 2.38（462 TF） | | 475 TF | | 623 TF |
 
 编译路径达到手写 WGMMA 版的 0.93–1.0×，是 mma.sync 编译路径的 2.1×，cuBLAS 的 67–83%。
+
+MN-major 操作数（2026-11-13）：swizzle 推广为按“段”作用于线性物理次序（段 = `chunks · width` 元素，段号即行；段宽等于行宽时与原定义相同），
+于是行主序 B 的面板可以把 n 切成 64 元素的 atom 作物理第 0 维、k 作行（`split = 64`）；lower_to_mem 据 `split` 发 `trans_b` 与 atom 间距 LBO。
+`gemm_tiled_wg_nn.mim`（`a · b`）：
+
+| n | 1024 | 2048 | 4096 | 8192 |
+|---|---:|---:|---:|---:|
+| 编译 `a · b`（`pipeline=2`） | 119 TF | 355 TF | 466 TF | 475 TF |
+| 手写 `gemm_wg`（`a · b`） | 118 TF | 392 TF | 467 TF | 475 TF |

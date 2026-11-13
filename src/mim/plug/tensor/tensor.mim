@@ -102,7 +102,8 @@ lam shape_impl {r: Nat}
 
 /// Split quotient and remainder, a checked permutation, and mixed-radix merging are jointly injective.
 /// Padding changes only physical extents, so it preserves coordinates.
-/// A checked block rotation is a bijection on the complete set of row chunks.
+/// A swizzle acts on segments of `chunks · width` elements of the linear physical order, a segment's index being its row.
+/// A checked block rotation is a bijection on a segment's complete set of chunks.
 /// So is an exclusive or with a group below a power-of-two chunk count.
 pub anx lam make {r: Nat}
     (logical: «r; Nat», split: Nat, perm: «r + 1; Idx (r + 1)», pad: «r; Nat»,
@@ -124,8 +125,8 @@ pub anx lam make {r: Nat}
     let physical = shape_impl (split, perm, pad, checked);
     let columns = vec.fold.r @(Nat, Idx r) @r
         (λ (p: Idx r, acc: Nat): Nat = acc * (1, physical#p)#(0 < core.idx2nat p)) (‹p: r; p›, 1);
-    let chunks = refly.check (core.bit2.or 0 (core.bit2.xor 0 (enabled, tt), chunks * width == columns), chunks,
-                              "layout swizzle chunks times width must equal the physical row width");
+    let chunks = refly.check (core.bit2.or 0 (core.bit2.xor 0 (enabled, tt), columns % (chunks * width) == 0), chunks,
+                              "layout swizzle chunks times width must divide the physical row width");
     let xor = core.bit2.and 0 (enabled, xor);
     let power = core.icmp.e (core.bit2.and 0 (core.bitcast I64 chunks, core.bitcast I64 (chunks - 1)), 0I64);
     let chunks = refly.check (core.bit2.or 0 (core.bit2.xor 0 (xor, tt), power), chunks,
@@ -165,10 +166,14 @@ lam interpret {r: Nat} {s: «r; Nat»} (ops: IndexOps, layout: Expr (r, s), x: �
             (acc, ops#add (ops#mul (placed#p, strides#p), acc))#(0 < core.idx2nat p))
         (‹p: r; p›, ops#lit 0);
     let row_step = vec.fold.r @(Nat, Nat) @(#layout)#shift core.nat.mul (‹_: (#layout)#shift; 2›, 1);
-    let group = ops#remainder (ops#floordiv (placed#(core.idx 0 r 0), row_step), (#layout)#groups);
-    let chunk = (ops#remainder (ops#add (ops#floordiv (col, (#layout)#width), group), (#layout)#chunks),
-                 ops#xor (ops#floordiv (col, (#layout)#width), group))#((#layout)#xor);
-    let swizzled = ops#add (ops#mul (chunk, (#layout)#width), ops#remainder (col, (#layout)#width));
+    let segment = (#layout)#chunks * (#layout)#width;
+    let line = ops#add (ops#mul (placed#(core.idx 0 r 0), strides#(core.idx 0 r 0) / segment), ops#floordiv (col, segment));
+    let inside = ops#remainder (col, segment);
+    let group = ops#remainder (ops#floordiv (line, row_step), (#layout)#groups);
+    let chunk = (ops#remainder (ops#add (ops#floordiv (inside, (#layout)#width), group), (#layout)#chunks),
+                 ops#xor (ops#floordiv (inside, (#layout)#width), group))#((#layout)#xor);
+    let swizzled = ops#add (ops#mul (ops#floordiv (col, segment), segment),
+                            ops#add (ops#mul (chunk, (#layout)#width), ops#remainder (inside, (#layout)#width)));
     ‹p: r; let pp = core.idx2nat p;
            let rotated = ops#remainder (ops#floordiv (swizzled, strides#p), physical#p);
            (placed#p, rotated)#(core.bit2.and 0 ((#layout)#groups != 1, 0 < pp))›;

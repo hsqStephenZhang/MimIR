@@ -2399,22 +2399,38 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
         auto acc = DefVec(destination.buffer->projs(fragments.count()));
         if (fragments.group) {
             // A descriptor starts at the shared address of its operand's first element of the k step.
-            auto desc = [&](size_t i, u64 ks) {
+            // A descriptor starts at the shared address of its operand's first element of the k step; an MN-major
+            // panel's atoms of 128 bytes lie `lbo` bytes apart.
+            auto mn_major = [&](size_t i) {
+                auto [buffer, storage, physical, r] = coords(i, nat(0), nat(0), nat(0));
+                auto layout                         = fe::lookup(layouts_, buffer);
+                if (!layout) app->blame("a wgmma operand panel needs its swizzled layout").bail();
+                while (layout->isa<Inj>() || layout->isa<Name>())
+                    layout = layout->isa<Inj>() ? layout->as<Inj>()->value() : layout->as<Name>()->op();
+                auto lbo = Lit::as(core::op(core::trait::size, T));
+                for (u64 d = 1; d != r; ++d)
+                    lbo *= Lit::as(storage->proj(r, d));
+                return std::pair{Lit::as(layout->proj(9, 1)) != 1, lbo};
+            };
+            auto [a_mn, a_lbo] = mn_major(0);
+            auto [b_mn, b_lbo] = mn_major(1);
+            if (a_mn) app->blame("a wgmma operand A must be K-major").bail();
+            auto desc = [&](size_t i, u64 ks, bool mn, u64 lbo) {
                 auto [buffer, storage, physical, r] = coords(i, nat(0), nat(0), nat(ks * kt));
-                if (!fe::lookup(layouts_, buffer))
-                    app->blame("a wgmma operand panel needs its K-major swizzled layout").bail();
-                auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
-                auto addr         = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}),
-                                          {buffer, *Shape(physical).fold(storage)});
-                return w.app(w.annex<gpu::wgmma_desc>(), {addr, w.lit_i64(16), w.lit_i64(1024), w.lit_i64(1)});
+                auto [br, bs, bT]                   = Axm::as<buffer::Buf>(buffer->type())->args<3>();
+                auto addr                           = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}),
+                                                            {buffer, *Shape(physical).fold(storage)});
+                return w.app(w.annex<gpu::wgmma_desc>(),
+                             {addr, w.lit_i64(mn ? lbo : 16), w.lit_i64(1024), w.lit_i64(1)});
             };
             auto nt          = fragments.count();
             auto instr       = math::isa_bf16(T) ? w.annex<gpu::wgmma_bf16>() : w.annex<gpu::wgmma_f16>();
             const Def* tiles = w.tuple(acc);
             mem              = w.app(w.annex<gpu::wgmma_fence>(), mem);
             for (u64 ks = 0; ks != depth / kt; ++ks)
-                std::tie(mem, tiles)
-                    = w.app(instr, {nat(nt), mem, desc(0, ks), desc(1, ks), w.lit_ff(), tiles})->projs<2>();
+                std::tie(mem, tiles) = w.app(instr, {nat(nt), mem, desc(0, ks, false, a_lbo), desc(1, ks, b_mn, b_lbo),
+                                                     w.lit_bool(b_mn), tiles})
+                                           ->projs<2>();
             mem = w.app(w.annex<gpu::wgmma_commit>(), mem);
             std::tie(mem, tiles)
                 = w.app(w.app(w.annex<gpu::wgmma_wait>(), tiles->type()), {mem, nat(0), tiles})->projs<2>();
