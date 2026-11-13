@@ -28,6 +28,9 @@ const App* bound_loop(const Def* def, bind id) {
 
 /// The work-item loop nested in a work-group loop's body, if any.
 // The largest work-item loop count under @p def; a shorter work-item loop leaves the surplus items idle.
+/// The most work-items a work-group runs at once.
+constexpr u64 Max_Items = 1024;
+
 std::optional<u64> item_count(const Def* def, DefSet& seen) {
     if (auto [_, ins] = seen.emplace(def); !ins) return {};
     auto count   = std::optional<u64>();
@@ -136,6 +139,19 @@ const Def* Outline::rewrite_imm_App(const App* app) {
                                              : lane_);
         auto count = trip_count(args);
         if (count) *count *= width;
+        // More work-items than a work-group holds run in turns, each work-item taking every `n_items_`-th one, so a
+        // warp's lanes stay consecutive work-items.
+        if (count && *count > n_items_ && !warp) {
+            if (*count % n_items_)
+                loop->blame("gpu.outline: {} work-items do not fill turns of {}", *count, n_items_).bail();
+            auto new_body        = rewrite(body);
+            auto turn            = w.mut_con(new_body->type()->as<Pi>()->dom())->set("itemTurn");
+            auto [j, acc, yield] = turn->vars<3>();
+            auto offset          = w.call(core::wrap::mul, core::Mode::none, Defs{j, w.lit_i64(n_items_)});
+            turn->app(true, new_body, {w.call(core::wrap::add, core::Mode::none, Defs{item_id_, offset}), acc, yield});
+            auto turns = w.tuple({w.lit_i64(0), w.lit_i64(*count / n_items_), w.lit_i64(1), rewrite(init)});
+            return w.call<affine::For>(turn, rewrite(exit), turns);
+        }
         if (!count || *count >= n_items_) {
             push();
             map(body->var(), {index, rewrite(init), rewrite(exit)});
@@ -245,7 +261,7 @@ const Def* Outline::outline(const App* app) {
     auto n_groups = trip_count(args);
     if (!n_groups) app->blame("gpu.outline requires a literal work-group count").bail();
     DefSet seen;
-    u64 n_items = item_count(body->body(), seen).value_or(1);
+    u64 n_items = std::min<u64>(item_count(body->body(), seen).value_or(1), Max_Items);
     if (n_items > 1024) app->blame("gpu.outline: {} work-items exceed a work-group", n_items).bail();
 
     auto init  = args->proj(4, 3);

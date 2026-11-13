@@ -27,7 +27,7 @@ struct NvptxCompileArgs {
     bool embed_ptx   = true;
     bool embed_cubin = true;
     std::string compute_cap, libdevice_path;
-    std::string link_llvm_args, opt_args = R"(-passes="nvvm-reflect,default<O3>")", llc_args, ptxas_args,
+    std::string link_llvm_args, opt_args = R"(-passes="nvvm-reflect,default<O3>" -unroll-threshold=600)", llc_args, ptxas_args,
                                 fatbinary_args;
 };
 
@@ -253,7 +253,7 @@ static constexpr PluginArg known_args[] = {
     {"sm=<SM>",                         "When embedding: compiles the device binary for compute capability `sm_<SM>`."},
     {"libdevice=<path>",                "When embedding and linking libdevice: uses the NVVM library at `<path>` instead of locating it via the CUDA paths."},
     {"Xlink_llvm=<args>",               "When embedding and linking libdevice: passes `<args>` to `link_llvm` (default: none)."},
-    {"Xopt=<args>",                     "When embedding: passes `<args>` to `opt`, with or without libdevice (default: `-passes=\"nvvm-reflect,default<O3>\"`)."},
+    {"Xopt=<args>",                     "When embedding: passes `<args>` to `opt`, with or without libdevice (default: `-passes=\"nvvm-reflect,default<O3>\" -unroll-threshold=600`)."},
     {"Xllc=<args>",                     "When embedding: passes `<args>` to `llc` (default: none)."},
     {"Xptxas=<args>",                   "When embedding: passes `<args>` to `ptxas` (default: none); also passed to `fatbinary` via `--cmdline` when the PTX image is embedded."},
     {"Xfatbinary=<args>",               "When embedding: passes `<args>` to `fatbinary` (default: none)."},

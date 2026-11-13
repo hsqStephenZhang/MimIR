@@ -1,0 +1,52 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/cross_entropy_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Per-row cross entropy of 8 rows of 4096 logits: the target logit is a `gather` through targets typed `Idx 4096`,
+// the log-sum-exp an online fold whose 2048 blocks of 2 run on a work-group's 1024 work-items in two turns.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let ML   = [F32, F32];
+
+fun step (acc: ML, xs: [F32])@tt: ML =
+    let (m, l) = acc;
+    let (x)    = xs;
+    let m2     = math.extrema.fmax fast (m, x);
+    return (m2, math.arith.add fast (math.arith.mul fast (l, math.exp.exp fast (math.arith.sub fast (m, m2))),
+                                     math.exp.exp fast (math.arith.sub fast (x, m2))));
+
+lam merge (a b: ML): ML =
+    let (m1, l1) = a;
+    let (m2, l2) = b;
+    let m        = math.extrema.fmax fast (m1, m2);
+    (m, math.arith.add fast (math.arith.mul fast (l1, math.exp.exp fast (math.arith.sub fast (m1, m))),
+                            math.arith.mul fast (l2, math.exp.exp fast (math.arith.sub fast (m2, m)))));
+
+fun class (_: Idx 4096, ts: [I32])@tt: Idx 4096 = let (t) = ts; return (core.conv.u 4096 t);
+
+fun loss (_: F32, mlp: [ML, F32])@tt: F32 =
+    let (ml, picked) = mlp;
+    let (m, l)       = ml;
+    return (math.arith.sub fast (math.arith.add fast (m, math.exp.log fast l), picked));
+
+let red_levels = serial_group ((1, 0), 1, 0, group_red_merge ((0, 2), 1, merge, group_done ()));
+let map_levels = serial_group (8, 1, 0, group_item (1, 1, item_done ()));
+
+extern fun cross_entropy (x: tensor.Tensor 2 (8, 4096) F32, t: tensor.Tensor 1 8 I32): tensor.Tensor 1 8 F32 =
+    let x      = buf x;
+    let target = map_reduce ((8, 1), (8, 1)) (class, ⊥:(Idx 4096)) (affine.id @2) (proj_map @(2, 1) 0,) (buf t,);
+    let picked = reshape (8, 1) 8 (gather ((8, 4096), (8, 1)) 1₂ (x, target));
+    let ml     = tile_req (map_reduce (8, (8, 4096)) (step, (math.neg_inf math.f32, 0.0:F32)) (proj_map @(2, 1) 0)
+        (affine.id @2) x, (), red_levels, default_control);
+    let y      = map_reduce (8, 8) (loss, ⊥:F32) (affine.id @1) (affine.id @1, affine.id @1) (ml, picked);
+    return (tile_req (y, (), map_levels, default_control));
+
+// CHECK-DAG: gpu.shfl_xor

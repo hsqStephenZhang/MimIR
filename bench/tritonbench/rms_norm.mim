@@ -26,6 +26,6 @@ let levels = serial_group ((@R@, 0), 1, @P@, group_item ((1, @I@), 1, item_done 
 extern fun tb_rms_norm (x: tensor.Tensor 2 (@M@, @N@) H, w: tensor.Tensor 1 @N@ H): tensor.Tensor 2 (@M@, @N@) H =
     let x  = buf x;
     let ss = map_reduce ((@M@), (@M@, @N@)) (square, 0.0:F32) (proj_map @(2, 1) 0) (affine.id @2) x;
-    let y  = map_reduce @3 @(H, 2, 2) ((@M@, @N@), (@M@, @N@)) @((H, H, F32), (2, 1, 1), ((@M@, @N@), @N@, @M@))
-        (scale, ⊥:H) (affine.id @2) (affine.id @2, proj_map @(2, 1) 1, proj_map @(2, 1) 0) (x, buf w, ss);
+    let y  = map_reduce ((@M@, @N@), (@M@, @N@)) (scale, ⊥:H) (affine.id @2)
+        (affine.id @2, proj_map @(2, 1) 1, proj_map @(2, 1) 0) (x, buf w, ss);
     return (tile_req (y, ss, levels, default_control));

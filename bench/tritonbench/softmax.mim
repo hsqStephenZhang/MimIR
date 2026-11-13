@@ -39,6 +39,5 @@ extern fun tb_softmax (x: tensor.Tensor 2 (@M@, @N@) H): tensor.Tensor 2 (@M@, @
     let x  = buf x;
     let ml = merge_with merge (map_reduce ((@M@), (@M@, @N@)) (step, (math.neg_inf math.f32, 0.0:F32))
         (proj_map @(2, 1) 0) (affine.id @2) x);
-    let y = map_reduce @2 @(H, 2, 2) ((@M@, @N@), (@M@, @N@)) @((H, ML), (2, 1), ((@M@, @N@), @M@)) (normalize, ⊥:H)
-        (affine.id @2) (affine.id @2, proj_map @(2, 1) 0) (x, ml);
+    let y = map_reduce ((@M@, @N@), (@M@, @N@)) (normalize, ⊥:H) (affine.id @2) (affine.id @2, proj_map @(2, 1) 0) (x, ml);
     return (tile_req (y, ml, levels, default_control));

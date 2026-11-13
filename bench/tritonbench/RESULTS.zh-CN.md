@@ -55,8 +55,63 @@
 
 ## 还没解决
 
-- 不同秩输入的 `map_reduce`（如 `(x: 2 维, ml: 1 维)`）推不出类型，要显式写 `@((H, ML), (2, 1), ((M, N), M))`。
 - 调度对每个 item 的元素数很敏感（softmax item 32：0.297，item 8：0.0405），目前完全手选，没有代价模型。
 - softmax 两遍都读全局的 x（L2 命中掩盖了代价）；行常驻寄存器还表达不了。
-- cross_entropy 需要按标签取 `x[i, t[i]]`，仿射的 `proj_map` 表达不了数据相关的下标。
 - 尾块的写回屏蔽和 TMA 越界补零是 lowering 的约定，相位类型里没有建模，`check_sync` 也不检查。
+
+## 第二轮（2026-11-13）
+
+### 类型层面
+
+- **不同秩输入的 `map_reduce` 可以推断了。**
+  `«i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»` 用下标变量 `i` 实例化时，按符号下标从异构元组 `((M, N), M)` 里取出的元素只有并集类型 `«2; Nat» ∪ Nat`。
+  原先这会因为“tuple element is not assignable”和“expected a shape”被拒绝。现在的处理：
+  - `World::component` 对依赖数组代入具体下标；
+  - `check_tuple` 对按数组或 pack 自身下标取出的元素不在符号层面判错，等下标成为字面量、重新构造元组时再检查；
+  - 形状检查接受各分支都是形状类型的并集。
+
+  `softmax`、`rms_norm`、`layer_norm` 的模板因此去掉了显式类型参数；`lit/tensor/map_reduce_mixed_rank.mim` 在 CPU 上执行验证。
+- **cross_entropy 用 `gather` 表达。** 标签先转成 `Idx V` 类型的张量，越界在类型里就排除了，再用 `gather` 取出 `x[i, t[i]]`；
+  log-sum-exp 是一遍 online `(max, sum)` fold，用 `group_red_merge` 显式给出合并函数（`merge_with` 包裹的根推不出 `root_acc`）。
+
+### softmax 与 cross_entropy
+
+- **一个 work-group 可以跑超过 1024 个 item。** outline 把块大小上限定为 1024；item 更多（必须是 1024 的整数倍）时，
+  线程 t 依次处理 item `t, t+1024, …`，同一 warp 的 lane 在每一轮都是相邻的 item，warp 内 shuffle 合并仍然成立。
+  这样相邻线程拿相邻的小块（块循环分布），访存可以合并。
+- **device 的 LLVM 流水线加了 `-unroll-threshold=600`。** 每个 item 16 个元素时循环只展开了一半（`v2.b16`），完全展开后变成 16 B 向量访存。
+
+单位 ms；对照为同口径（不清 L2）的 torch。
+
+| 算子 | 形状 | MimIR | eager | torch.compile |
+|---|---|---:|---:|---:|
+| softmax | 4096×1024 | 0.0108 | 0.0110 | 0.0132 |
+| softmax | 4096×2048 | 0.0200 | 0.0234 | 0.0314 |
+| softmax | 4096×4096 | 0.0385 | 0.0623 | 0.0426–0.0551 |
+| softmax | 4096×8192（item 16） | 0.0658 | 0.1438 | 0.1013 |
+| softmax | 4096×16384（item 16） | 0.1285 | 0.1360 | 0.1987 |
+| cross_entropy | 16384×4096 F32 | 0.1176 | 0.2118 | 0.1331 |
+| cross_entropy | 16384×16384 | 0.3667 | 0.6739 | 0.4069 |
+| cross_entropy | 16384×65536（item 16，16 轮） | **1.168**（之前 3.03） | 4.213 | 2.037 |
+
+cross_entropy 输出每行的 loss（`reduction="none"`），用 3 个 kernel：标签转换、行归约、最后的逐行映射。
+
+### 旧测试
+
+- `profile.mim`、`rules/grdeep.mim`、`tensor/group_default.mim`：`submodules/fe` 检出的版本比仓库记录的旧 19 个提交，
+  profile 输出没有反引号。更新子模块后通过。
+- `tensor/reduction_tiles_exec.mim`（泄漏）：k 为运行时值时，尾块的 epilogue 用了结果缓冲刚分配完时的 mem。
+  AddMem 先改写参数（mem 占位在这时解析），再改写 callee，而 fold 的结果作为初值放在 callee 里，链就分叉了，
+  逃逸分析于是看不到最后一次使用。现在初值来自一次带 mem 的调用时，结果缓冲从这次调用之后的 mem 开始分配。
+- `tensor/group_rules_exec.mim`（泄漏）：`reference-tiles=1` 的参考 `tile_fold_impl` 是值语义循环，每步产生一个新的累加器张量；
+  旧的那个只有在知道它归循环所有（初值可能是外部缓冲）时才能释放，需要所有权检查。
+  测试中参考实现那次运行改为不检查泄漏，并注明原因。
+- `tensor/fuse_yield.mim`：`rejected` 的生产者被算了两遍。原因是 `compile.scalarize` 改写参数为函数的公理应用（`tiled … p body`）时，
+  用一个独立的 `Keep` 改写器处理 callee，把共享的 `p` 拷贝成了组合子各不相同的两份，hash-consing 合不起来，
+  于是 `outer` 那份被 `fuse_tensor` 融合重算。
+  - 直接修 scalarize 会改变后面 SEO 和内联的行为；
+  - 现在由 `fuse_tensor` 把 α 等价的拷贝认作同一个生产者，前提是其中一份反正要物化；两份都会被融合时（`tile_reduce_fused` 里重算 `exp`）保持原样。
+
+  `rejected` 已经正确。剩下的 `halo`（lower 模式 12，期望 10；budget 模式 27，期望 17）原先被 `rejected` 的断言挡住了。
+  按文档，期望值是 clang -O3 消掉相邻 tile 重复的 halo 元素之后的计数，现在这个 CSE 没有发生。还没有定位到是哪次改动造成的。
+- 本轮还修了新出现的一个回归：最早的合并规则把两份都会融合的拷贝也合并了，导致 `tile_reduce_fused` 报类型错误。

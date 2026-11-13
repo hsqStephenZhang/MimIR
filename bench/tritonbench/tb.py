@@ -51,6 +51,10 @@ OPS = {
                lambda p: [torch.randn(p["M"], p["N"], dtype=torch.float16),
                           torch.randn(p["M"], p["N"], dtype=torch.float16)],
                lambda a, b: (torch.nn.functional.silu(a.float()) * b.float()).half(), 2e-2),
+    "cross_entropy": ("cross_entropy.mim",
+                      lambda p: [torch.randn(p["M"], p["V"], dtype=torch.float32),
+                                 torch.randint(0, p["V"], (p["M"],), dtype=torch.int32)],
+                      lambda x, t: torch.nn.functional.cross_entropy(x, t.long(), reduction="none"), 1e-4),
 }
 
 

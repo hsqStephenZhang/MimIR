@@ -735,6 +735,7 @@ public:
 
     /// The type of component @p i of the @p n-ary @p type, given its leading components @p parts.
     const Def* component(const Def* type, Defs parts, size_t n, size_t i);
+    bool indexed_symbolically(const Def* def);
     ///@}
 
     /// @name for_each

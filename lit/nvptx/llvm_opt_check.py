@@ -72,8 +72,9 @@ def check(args):
                 ]
             passes = "verify" if mode == "custom" else "nvvm-reflect,default<O3>"
             opt_input = f"{stem}_dev_raw.bc" if args.libdevice else f"{stem}_dev.ll"
+            unroll = [] if mode == "custom" else ["-unroll-threshold=600"]
             assert calls[0] == [
-                "opt", "-mtriple=nvptx64-nvidia-cuda", f"-passes={passes}",
+                "opt", "-mtriple=nvptx64-nvidia-cuda", f"-passes={passes}", *unroll,
                 opt_input, "-o", f"{stem}_dev_opt.bc",
             ], calls[0]
             assert calls[1] == [

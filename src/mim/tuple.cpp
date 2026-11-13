@@ -40,6 +40,9 @@ static bool isa_axes(const Def* type, auto leaf) {
     if (leaf(type)) return true;
     if (auto sigma = type->isa<Sigma>()) return std::ranges::all_of(sigma->ops(), leaf);
     if (auto arr = type->isa<Arr>()) return leaf(arr->body()->zonk());
+    // A tuple's element picked by a symbolic index has one of its candidates' types.
+    if (auto join = type->isa<Join>())
+        return std::ranges::all_of(join->ops(), [&](const Def* op) { return isa_axes(op, leaf); });
     return false;
 }
 

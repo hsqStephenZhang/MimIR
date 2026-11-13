@@ -1313,12 +1313,17 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         storage_shapes_[app] = storage;
     }
     const Def* seed = nullptr;
+    // An initial tensor a call computed, such as a fold's accumulator, leaves the memory after that call.
+    const Def* init_mem = nullptr;
     if (initial) {
         if (auto scalar = splat_scalar(initial->outs)) {
             seed = rewrite(scalar);
         } else {
             auto outs = to_buffer(rewrite(initial->outs), initial->outs);
             plain(outs);
+            if (auto made = outs->isa<Extract>(); made && Lit::isa(made->index()) == 1)
+                if (auto call = made->tuple(); Lit::isa(call->type()->arity()) == 2)
+                    if (Axm::isa<mem::M>(call->type()->proj(2, 0))) init_mem = call->proj(2, 0);
             auto shape = fe::lookup(storage_shapes_, initial->outs);
             seed       = w.tuple({shape ? shape : rewrite(initial->shape), rewrite(initial->map), outs});
         }
@@ -1365,8 +1370,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         // A vector runs along the logical last dim, so the layout must keep that dim innermost.
         auto keeps_last
             = !layout || (view->perm.back() + 1 == view->perm.size() && (view->split == 1 || view->split % n == 0));
-        auto global    = getenv("VECG") && bound_level_ != 0 && !layout;
-        auto vectors   = (panels_.contains(buffer) || global) && n > 1 && last && *last % n == 0 && physical_last
+        auto vectors   = panels_.contains(buffer) && n > 1 && last && *last % n == 0 && physical_last
                       && *physical_last % n == 0 && keeps_last;
         auto placement = layout ? layout_lam(layout, logical) : w.app(w.annex<affine::id>(), w.lit_nat(r));
         if (!vectors) {
@@ -1410,7 +1414,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         auto [am, dst] = allocate(mr.Ro, mr.So, mr.Tp, full_output(old_mr), start);
         return consume(dst)(am);
     };
-    auto [m, out] = close_batch(nullptr, buffer::type_buf(mr.Ro, mr.So, mr.Tp), own)->projs<2>();
+    auto [m, out] = close_batch(init_mem, buffer::type_buf(mr.Ro, mr.So, mr.Tp), own)->projs<2>();
     return scalar_result(app, m, out);
 }
 
@@ -4230,8 +4234,11 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     if (bound_level_ != 1)
         app->blame("tensor.tile_fold: a work-item bound reduction must nest directly inside a work-group level").bail();
     if (!inplace) app->blame("tensor.tile_fold: a work-item bound reduction needs an in-place step").bail();
-    if (!n || !*n || *n > 1024)
-        app->blame("tensor.tile_fold: a work-item bound reduction needs a literal block count of at most 1024").bail();
+    // Beyond a work-group's 1024 work-items, the blocks run in whole turns of them.
+    if (!n || !*n || (*n > 1024 && *n % 1024))
+        app->blame("tensor.tile_fold: a work-item bound reduction needs a literal block count of at most 1024 or a "
+                   "multiple of it")
+            .bail();
     if (!seed)
         app->blame("tensor.tile_fold: a work-item bound reduction needs a scalar seed, its combine's identity").bail();
     if (!mr_app) app->blame("tensor.tile_fold: a work-item bound reduction's step must be a map_reduce_post").bail();

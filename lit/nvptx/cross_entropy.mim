@@ -1,0 +1,12 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=90a
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/cross_entropy_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// The row folds run in turns of 1024 work-items, merged by warp shuffles before shared memory.
+
+// CHECK-DAG: shfl.sync.bfly
+// CHECK-DAG: !alias.scope

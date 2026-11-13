@@ -1,0 +1,22 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll
+// RUN: clang %S/map_reduce_mixed_rank_aux.c %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A map_reduce whose inputs have different ranks infers each input's rank and shape: a dependent array's element
+// picked by its own index only has the join of the shapes as its type, and each instance is checked once indexed.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32 = math.F32;
+
+fun add_row (_: F32, xs: [F32, F32])@tt: F32 =
+    let (x, s) = xs;
+    return (math.arith.add math.mode.fast (x, s));
+
+extern fun rows (x: Tensor 2 (4, 8) F32, s: Tensor 1 4 F32): Tensor 2 (4, 8) F32 =
+    return (map_reduce ((4, 8), (4, 8)) (add_row, ⊥:F32) (affine.id @2) (affine.id @2, proj_map @(2, 1) 0) (buf x, buf s));

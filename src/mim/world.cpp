@@ -563,7 +563,7 @@ void World::check_tuple(const Tuple* t) {
     for (size_t i = 0; i != n; ++i) {
         auto expected = component(type, t->ops(), n, i);
         auto op       = t->op(i);
-        if (!Check::coerce(expected, op) && !is_lenient())
+        if (!Check::coerce(expected, op) && !is_lenient() && !indexed_symbolically(op))
             op->blame("tuple element is not assignable to its type")
                 .n("expected `{}`, got `{}` in `{}`", expected, type_of(op), type)
                 .bail();
@@ -575,8 +575,17 @@ const Def* World::component(const Def* type, Defs parts, size_t n, size_t i) {
         auto args = DefVec(n, [&](size_t k) { return k < parts.size() ? parts[k] : var->proj(n, k); });
         return reduce(var, tuple(args), i);
     }
+    if (auto [arr, var] = type->isa_binder<Arr>(); var && !arr->shape().is_fused()) return arr->reduce(lit_idx(n, i));
     if (auto arr = type->isa_imm<Arr>()) return arr->elem();
     return type->proj(n, i);
+}
+
+// An element picked from a heterogeneous tuple by an array's or pack's own index only has the join of the candidates
+// as its type; each instance is checked once the index is a literal.
+bool World::indexed_symbolically(const Def* def) {
+    for (auto var : def->free_vars())
+        if (var->binder()->isa<Arr>() || var->binder()->isa<Pack>()) return true;
+    return false;
 }
 
 const Def* World::tuple(Sym sym) {

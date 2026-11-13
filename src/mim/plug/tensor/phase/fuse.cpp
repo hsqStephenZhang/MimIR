@@ -4,6 +4,7 @@
 
 #include <fe/bitset.h>
 
+#include <mim/check.h>
 #include <mim/def.h>
 #include <mim/lam.h>
 #include <mim/tuple.h>
@@ -631,6 +632,8 @@ void Fuse::start() {
     mr_consumers_.clear();
     shared_.clear();
     new2old_.clear();
+    copies_.clear();
+    auto sole_mr = DefSet();
     for (auto def : view.operations()) {
         if (!is_mr(def)) continue;
         auto uses = view.data_uses(def);
@@ -639,11 +642,33 @@ void Fuse::start() {
         bool sole
             = uses.size() == 1 && view.data_only_used_by(def, uses.front().consumer) == pattern::CheckResult::True;
         mr_consumers_[def] = sole ? 1 : 2;
+        if (sole && is_mr(uses.front().consumer)) sole_mr.insert(def);
+    }
+    // Scalarize copies a shared producer per context, with copied combiners. Where one copy is realized anyway, fusing
+    // the others would compute it again, so the copies become that one, shared by all their consumers.
+    auto classes = std::vector<DefVec>();
+    for (auto def : view.operations()) {
+        if (!is_mr(def)) continue;
+        auto same
+            = std::ranges::find_if(classes, [&](const DefVec& c) { return Check::alpha<Check::T>(c.front(), def); });
+        if (same == classes.end())
+            classes.push_back({def});
+        else
+            same->push_back(def);
+    }
+    for (const auto& copies : classes) {
+        if (copies.size() < 2 || std::ranges::all_of(copies, [&](const Def* c) { return sole_mr.contains(c); }))
+            continue;
+        for (auto copy : copies) {
+            mr_consumers_[copy] = 2;
+            if (copy != copies.front()) copies_[copy] = copies.front();
+        }
     }
     RWPhase::start();
 }
 
 const Def* Fuse::rewrite_imm_App(const App* app) {
+    if (auto original = fe::lookup(copies_, app)) return rewrite(original);
     if (graph::map_reduce(app)) {
         const App* cur = nullptr;
         if (!views_only_)
