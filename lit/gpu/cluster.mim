@@ -1,0 +1,60 @@
+// RUN: %mim %s -p opt -o - | %FileCheck %s
+
+// Two work-groups form a cluster: each copies half of a 64×64 F16 matrix's rows with TMA multicast into both of their
+// shared memories, so after its mbarrier completes each holds the whole matrix and writes it out.
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+
+use core.ops.u.w;
+
+let H    = math.F16;
+let Box  = «64, 8, 8; H»;
+let TMap = «16; I64»;
+
+lam ix (n: Nat) (x: I64): Idx n = core.conv.u n x;
+lam w32 (x: I64): I32 = core.conv.u i32 x;
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            gid: Idx 2, item_id: Idx 128, (), (map: gpu.GlobalPtr TMap, out: gpu.GlobalPtr «2; Box»),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let m        = gpu.cluster_size 2 (gpu.generic_mem m1);
+    let (m, box) = gpu.slot_shared Box m;
+    let (m, bar) = gpu.slot_shared I64 m;
+    let tid      = core.conv.u 0 item_id;
+    let leader   = tid == 0I64;
+    let rank     = gpu.cluster_rank ();
+    let addr     = gpu.shared_addr box;
+    let bar_at   = gpu.shared_addr bar;
+    let m        = gpu.fence_mbarrier_init (gpu.mbar_init_if (m, bar_at, 1I32, leader));
+    let m        = gpu.sync_cluster m;
+    let m        = gpu.mbar_expect_tx_if (m, bar_at, 8192I32, leader);
+    let half     = core.wrap.mul 0 (rank, 32I32);
+    let m        = gpu.tma_load_multicast_if (m, core.wrap.add 0 (addr, core.wrap.mul 0 (half, 128I32)), map, 0I32, half, bar_at, 3I32, leader);
+    let m        = gpu.mbar_wait_at (m, bar_at, 0I32);
+    lam copy (m: mem.M 0, i: I64): mem.M 0 =
+        let c      = tid + 128I64 * i;
+        let r      = core.shr.l (c, 3I64);
+        let col    = core.bit2.and 0 (c, 7I64);
+        let (m, x) = mem.load (m, mem.lea (mem.lea (box, ix 64 r), ix 8 (core.bit2.xor 0 (col, core.bit2.and 0 (r, 7I64)))));
+        mem.store (m, mem.lea (mem.lea (mem.lea (core.bitcast (mem.Ptr0 «2; Box») out, gid), ix 64 r), ix 8 col), x);
+    let m = copy (copy (copy (copy (m, 0I64), 1I64), 2I64), 3I64);
+    let m = gpu.sync_cluster m;
+    return (gpu.global_mem m, m3, m4, m5);
+
+extern fun cluster_box (m0: mem.M 0, a: mem.Ptr0 Box, out: mem.Ptr0 «2; Box»): [mem.M 0, I32] =
+    let (m0, m1, m4)  = gpu.init m0;
+    let (m0, m1, da)  = gpu.alloc_copy.block (m0, m1, a);
+    let (m0, map)     = mem.alloc (TMap, 0) m0;
+    let m0            = gpu.tensor_map H (m0, map, da, 64I64, 64I64, 32I32, 64I32);
+    let (m0, m1, dm)  = gpu.alloc_copy.block (m0, m1, map);
+    let (m1, dout)    = mem.alloc («2; Box», 1) m1;
+    ret (m0, m1, m4)  = gpu.launch (2, 128, gpu.default_stream, ff, ()) kernel (dm, dout) $ (m0, m1, m4);
+    let (m0, m1)      = gpu.copy_to_host.block (m0, m1, dout, out);
+    let m0            = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);
+
+// CHECK-DAG: gpu.tma_load_multicast_if
+// CHECK-DAG: gpu.sync_cluster

@@ -1,0 +1,12 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=90a -X nvptx:no-embed
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// CHECK-DAG: "nvvm.cluster_dim"="2,1,1"
+// CHECK-DAG: multicast::cluster
+// CHECK-DAG: call void @llvm.nvvm.barrier.cluster.arrive.aligned()
+// CHECK-DAG: fence.mbarrier_init.release.cluster

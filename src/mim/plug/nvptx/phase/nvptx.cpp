@@ -751,13 +751,15 @@ std::string DeviceEmitter::prepare() {
     auto [m1, m3, m4, m5, group_id, item_id, smem, arg, ret_lam] = kernel->vars<9>();
 
     dynamic_slots_.clear();
-    auto slots = DefVec();
-    auto seen  = DefSet();
+    u64 cluster = 1;
+    auto slots  = DefVec();
+    auto seen   = DefSet();
     for (auto todo = DefVec{kernel}; !todo.empty();) {
         auto def = todo.back();
         todo.pop_back();
         if (!seen.emplace(def).second) continue;
         if (Axm::isa<gpu::slot_shared>(def)) slots.push_back(def);
+        if (auto size = Axm::isa<gpu::cluster_size>(def)) cluster = Lit::as(size->decurry()->arg());
         const Def* addressed = nullptr;
         if (auto addr = Axm::isa<gpu::shared_addr>(def)) addressed = addr->arg();
         if (auto tma = Axm::isa<gpu::tma_load>(def)) addressed = tma->arg(6, 1);
@@ -812,7 +814,9 @@ std::string DeviceEmitter::prepare() {
 
     auto arg_name = id(arg);
     locals_[arg]  = arg_name;
-    std::println(func_impls_, "{} {}) {{", convert(arg->type()), arg_name);
+    // A kernel launched in clusters declares their size, so a plain launch groups its work-groups.
+    auto attributes = cluster > 1 ? std::format(" \"nvvm.cluster_dim\"=\"{},1,1\"", cluster) : std::string();
+    std::println(func_impls_, "{} {}){} {{", convert(arg->type()), arg_name, attributes);
 
     auto& bb = lam2bb_[kernel];
 
@@ -1001,6 +1005,39 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
         inline_asm(bb, std::format("{{ .reg .pred q; setp.ne.b32 q, $2, 0; @q {} }}", text), "r,r,r",
                    {"i32 " + emit(bar), "i32 " + emit(x), "i32 " + pred});
+        return std::string();
+    } else if (auto size = Axm::isa<gpu::cluster_size>(def)) {
+        return emit_unsafe(size->arg());
+    } else if (Axm::isa<gpu::cluster_rank>(def)) {
+        declare("i32 @llvm.nvvm.read.ptx.sreg.cluster.ctarank()");
+        return bb.assign(name, "call i32 @llvm.nvvm.read.ptx.sreg.cluster.ctarank()");
+    } else if (auto sync = Axm::isa<gpu::sync_cluster>(def)) {
+        emit_unsafe(sync->arg());
+        declare("void @llvm.nvvm.barrier.cluster.arrive.aligned()");
+        declare("void @llvm.nvvm.barrier.cluster.wait.aligned()");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.barrier.cluster.arrive.aligned()");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.barrier.cluster.wait.aligned()");
+        return std::string();
+    } else if (auto fence = Axm::isa<gpu::fence_mbarrier_init>(def)) {
+        emit_unsafe(fence->arg());
+        inline_asm(bb, "fence.mbarrier_init.release.cluster;", "", {});
+        return std::string();
+    } else if (auto tma = Axm::isa<gpu::tma_load_multicast_if>(def)) {
+        auto [mem, dst, map, col, row, bar, mask, issue] = tma->args<8>();
+        emit_unsafe(mem);
+        auto v_map = emit(map);
+        auto t_map = convert(map->type());
+        if (t_map != "ptr") v_map = bb.assign(name + ".gm", "addrspacecast {} {} to ptr", t_map, v_map);
+        auto map_i = bb.assign(name + ".map", "ptrtoint ptr {} to i64", v_map);
+        auto pred  = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        auto bits  = bb.assign(name + ".m", "trunc i32 {} to i16", emit(mask));
+        inline_asm(bb,
+                   "{ .reg .pred q; setp.ne.b32 q, $6, 0; @q "
+                   "cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes.multicast::"
+                   "cluster [$0], [$1, {$2, $3}], [$4], $5; }",
+                   "r,l,r,r,r,h,r",
+                   {"i32 " + emit(dst), "i64 " + map_i, "i32 " + emit(col), "i32 " + emit(row), "i32 " + emit(bar),
+                    "i16 " + bits, "i32 " + pred});
         return std::string();
     } else if (auto wait = Axm::isa<gpu::mbar_wait_at>(def)) {
         auto [mem, bar, parity] = wait->args<3>();
