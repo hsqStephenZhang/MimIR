@@ -2294,12 +2294,14 @@ anx lam serial_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Na
     (TileLevels (n, Acc, Mma))#Red (sizes, tail, promote, rest);
 anx lam serial_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
     (TileLevels (n, Acc, Mma))#Vec (sizes, rest);
+/// A portable cluster runs 2 to 8 work-groups.
+anx lam cluster_size (size: Nat): Bool = core.bit2.and 0 (2 <= size, size <= 8);
 anx lam serial_cluster {n: Nat, Acc: *, Mma: *} (size multicast: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
-    (TileLevels (n, Acc, Mma))#Cluster (size, multicast, 0, rest);
+    (TileLevels (n, Acc, Mma))#Cluster (require (cluster_size size, size, "a cluster has 2 to 8 work-groups"), multicast, 0, rest);
 anx lam serial_persistent {n: Nat, Acc: *, Mma: *} (ctas: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
-    (TileLevels (n, Acc, Mma))#Persistent (ctas, rest);
+    (TileLevels (n, Acc, Mma))#Persistent (require (ctas != 0, ctas, "a persistent level launches at least one work-group"), rest);
 anx lam serial_cluster_split {n: Nat, Acc: *, Mma: *} (size: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
-    (TileLevels (n, Acc, Mma))#Cluster (size, 0, 1, rest);
+    (TileLevels (n, Acc, Mma))#Cluster (require (cluster_size size, size, "a cluster has 2 to 8 work-groups"), 0, 1, rest);
 anx lam group_done {n: Nat, Acc: *, Mma: *} (_: []): GroupLevels (n, Acc, Mma) = (GroupLevels (n, Acc, Mma))#Done;
 anx lam group_par {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma) =
     (GroupLevels (n, Acc, Mma))#Par (sizes, tail, rest);
@@ -2366,7 +2368,7 @@ anx lam wg_mma {Acc: *} (shape: «3; Nat»): WarpgroupLevels (3, Acc, HalfMma) =
 anx lam wg_red_tma {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma)): WarpgroupLevels (n, Acc, Mma) =
     (WarpgroupLevels (n, Acc, Mma))#RedTma (sizes, tail, promote, pipeline, rest);
 anx lam wg_red_ws {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: WarpgroupLevels (n, Acc, Mma)): WarpgroupLevels (n, Acc, Mma) =
-    (WarpgroupLevels (n, Acc, Mma))#RedWs (sizes, tail, promote, pipeline, pingpong, rest);
+    (WarpgroupLevels (n, Acc, Mma))#RedWs (sizes, tail, promote, pipeline, require (pingpong <= 1, pingpong, "pingpong is 0 or 1"), rest);
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
 /// The loop count and accumulator type of the `map_reduce_post` that computes a tile request's root; they index the
