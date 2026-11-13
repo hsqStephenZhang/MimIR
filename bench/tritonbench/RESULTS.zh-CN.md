@@ -173,3 +173,10 @@ CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKi
 
 `TileFuse` 里 “A 必须行主序” 的检查对类型正确的请求不可达：`root_contraction` 已要求 A 按 `(m, k)` 读取，panel 轴总是 m。
 `TileFuse` / `lower_to_mem` 里原有的检查都保留，用来兜住非字面量的链，以及组合子是否可重结合这类语义条件。
+
+不在 elaboration 报错的两类，与 CUTLASS 的分界一致：
+- CUTLASS `sm90_mma_tma_gmma_ss_warpspecialized.hpp` 对编译期的 `TileShape` 用 `static_assert`（第 119–125 行，smem layout atom 整除 tile），
+  对运行期的问题形状用 `can_implement()`（第 249–260 行，M/N/K 的 TMA 对齐），不满足时返回 `false`，由调用者换 kernel。
+  我们的非字面量 tile 尺寸属于后一类，`TileFuse` 警告 “unrealized tensor.tile_req” 并回退，相当于 `can_implement` 返回 `false`。
+- 组合子是否可重结合、种子是否为单位元：`lit/tensor/tile_reduction_contracts.mim` 约定这类请求警告后回退、程序照常正确执行（测试里有 exec 校验），
+  属于“这个调度对这个运算不适用”，同样是 `can_implement` 一类，而不是调度本身写错。
