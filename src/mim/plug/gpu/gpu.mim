@@ -372,6 +372,13 @@ pub anx lam wgmma_desc (addr: I32, lbo sbo swizzle: I64): I64 =
 axm wgmma_f16: [nt: Nat, mem.M 0, a b: I64, trans_b: Bool, «nt, 4; math.F32»] → [mem.M 0, «nt, 4; math.F32»];
 axm wgmma_bf16: [nt: Nat, mem.M 0, a b: I64, trans_b: Bool, «nt, 4; math.F32»] → [mem.M 0, «nt, 4; math.F32»];
 ///
+/// #### wgmma_rs_f16, wgmma_rs_bf16
+///
+/// `wgmma_f16`/`wgmma_bf16` with A from registers: warp `w` passes rows `16 w .. 16 w + 15` of the 64×16 A in the A layout of `mma_f16`.
+///
+axm wgmma_rs_f16: [nt: Nat, mem.M 0, a: «4, 2; math.F16», b: I64, trans_b: Bool, «nt, 4; math.F32»] → [mem.M 0, «nt, 4; math.F32»];
+axm wgmma_rs_bf16: [nt: Nat, mem.M 0, a: «4, 2; math.BF16», b: I64, trans_b: Bool, «nt, 4; math.F32»] → [mem.M 0, «nt, 4; math.F32»];
+///
 /// #### wgmma_fence, wgmma_commit, wgmma_wait
 ///
 /// `wgmma_fence` orders prior register and shared-memory accesses before the following `wgmma`s (`wgmma.fence`).

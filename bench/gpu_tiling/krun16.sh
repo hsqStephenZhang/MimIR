@@ -8,7 +8,7 @@ mkdir -p $B/out && cd $B/out
 [ kbench16 -nt $B/kbench16.cpp ] || clang++ -O2 -std=c++20 $B/kbench16.cpp -I$HOME/opt/cuda/include -lcuda -o kbench16
 N=$1 TY=$2; shift 2
 GEN=${GEN:-gemm_h16}
-n=${GEN}_${TY}_${N}$(printf '_%s' "$@")
+n=${GEN}_${TY}_${N}$([ $# -gt 0 ] && printf '_%s' "$@")
 python3 $B/$GEN.py $N $TY "$@" > $n.mim
 $R/${MIM_BUILD:-build-h200}/bin/mim -p opt $n.mim -p nvptx -X nvptx:sm=${SM:-90a} -o - > $n.log 2>&1 || { echo "$n: mim failed"; grep -m3 -A3 error $n.log; exit 1; }
 k=$(grep -oE 'c"(tileKernel|kernel)_[0-9]*' $n.ll | head -1 | cut -c3-)

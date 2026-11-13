@@ -1,5 +1,5 @@
 #include <cstdio>
-extern "C" int wgmma_tile(_Float16* a, _Float16* bt, _Float16* b, float (*ck)[8][4], float (*cm)[8][4]);
+extern "C" int wgmma_tile(_Float16* a, _Float16* bt, _Float16* b, float (*ck)[8][4], float (*cm)[8][4], float (*cr)[8][4]);
 int main() {
     static _Float16 a[64 * 64], bt[64 * 64], b[64 * 64];
     float A[64][64], B[64][64];
@@ -11,8 +11,8 @@ int main() {
             b[k * 64 + n]    = _Float16(B[k][n]);
             bt[n * 64 + k]   = _Float16(B[k][n]);
         }
-    static float ck[128][8][4], cm[128][8][4];
-    wgmma_tile(a, bt, b, ck, cm);
+    static float ck[128][8][4], cm[128][8][4], cr[128][8][4];
+    wgmma_tile(a, bt, b, ck, cm, cr);
     int bad = 0;
     for (int tid = 0; tid < 128; ++tid)
         for (int j = 0; j < 8; ++j)
@@ -20,8 +20,8 @@ int main() {
                 int l = tid % 32, row = 16 * (tid / 32) + l / 4 + 8 * (e / 2), col = 8 * j + 2 * (l % 4) + e % 2;
                 float want = 0;
                 for (int k = 0; k < 64; ++k) want += A[row][k] * B[k][col];
-                if (ck[tid][j][e] != want || cm[tid][j][e] != want) {
-                    if (bad < 4) std::printf("C[%d][%d] = %g (K-major), %g (MN-major), want %g\n", row, col, ck[tid][j][e], cm[tid][j][e], want);
+                if (ck[tid][j][e] != want || cm[tid][j][e] != want || cr[tid][j][e] != want) {
+                    if (bad < 4) std::printf("C[%d][%d] = %g (K-major), %g (MN-major), %g (registers), want %g\n", row, col, ck[tid][j][e], cm[tid][j][e], cr[tid][j][e], want);
                     ++bad;
                 }
             }

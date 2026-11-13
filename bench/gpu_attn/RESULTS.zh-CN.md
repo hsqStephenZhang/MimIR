@@ -200,3 +200,22 @@ K 的分片用 `ldmatrix`、V 的用 `ldmatrix.trans`；两个 S 的累加 tile 
 - 与 PyTorch FA2 的差距：它一个 warp 拥有 32 行（128 行的块），每个 K/V 分片被两个行块复用；
   缩放没有并进 `exp2` 的 FFMA；行和每步都完整求和。
 - 编译路径（`attn_warp`、`lower_mma`）目前固定为 TF32 m16n8k8，尚未支持 16 位。
+
+## WGMMA attention（FA3 的计算结构，H200 NVL，2026-11-13）
+
+`flash_wg.py`：两个 warpgroup 各拥有 64 行（每个 warp 仍是 16 行、`C nt` 布局，与 warp 代数一致），Q、K、V 在 128 B swizzle 的 shared 里，
+K/V 以 BC 个 key 为块用 `cp.async` 双缓冲；`S = Q·Kᵀ` 用 `gpu.wgmma_f16`（两个操作数都从 shared 读），
+P 留在寄存器、作为 `gpu.wgmma_rs_f16` 的 A 与 V（MN-major）相乘。每步 `wgmma_wait 0`，没有 warp 特化、TMA 与 warpgroup 间乒乓。
+`GEN=flash_wg kflash16.sh <BH> <L> <f16|bf16> [BC]`；PyTorch 基线 `torch_attn16.py`（`torch_attn16_h200.out`）。
+
+| BH × L | `flash_wg` f16（BC=128） | bf16 | BC=64 | `flash_h16`（mma.sync） | PyTorch FA2 | cuDNN | 相对 cuDNN |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 32 × 1024 | 0.035 | 0.035 | 0.037 | 0.057 | 0.0446 | 0.0349 | 1.00 |
+| 32 × 2048 | 0.113 | 0.112 | 0.122 | 0.182 | 0.145 | 0.0982 | 0.87 |
+| 32 × 4096 | 0.398 | 0.398 | 0.436 | 0.673 | 0.524 | 0.333 | 0.84 |
+| 128 × 2048 | 0.416 | 0.415 | 0.457 | 0.686 | 0.529 | 0.341 | 0.82 |
+| 128 × 4096 | 1.538（357 TF） | 1.535 | 1.691 | 2.57 | 2.02 | 1.283（428 TF） | 0.83 |
+
+- 128 个寄存器，无溢出；BC=128 时 80 KB shared（动态）。
+- 已快于 PyTorch 的 FA2 后端 1.3×。与 cuDNN 的差距对应 FA3 余下的三项：装载由计算线程发出（TMA + mbarrier 的生产者 warpgroup）、
+  每步等完 S 才做 softmax、两个 warpgroup 的 softmax 与 GEMM 不交错。

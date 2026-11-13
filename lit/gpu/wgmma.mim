@@ -1,7 +1,7 @@
 // RUN: %mim %s -p opt -o - | %FileCheck %s
 
 // One warpgroup multiplies a 64×64 F16 tile by a 64×64 one with wgmma from 128-byte-swizzled shared memory, once with
-// B K-major (as Bᵀ) and once MN-major.
+// B K-major (as Bᵀ), once MN-major, and once with A from registers.
 
 plugin core;
 plugin gpu;
@@ -19,7 +19,7 @@ lam shr (x: I64, s: I64): I64 = core.shr.l (x, s);
 lam band (x: I64, s: I64): I64 = core.bit2.and 0 (x, s);
 
 con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
-            _: Idx 1, item_id: Idx 128, (), (a bt b: gpu.GlobalPtr Tile, ck cm: gpu.GlobalPtr «128; Acc»),
+            _: Idx 1, item_id: Idx 128, (), (a bt b: gpu.GlobalPtr Tile, ck cm cr: gpu.GlobalPtr «128; Acc»),
             return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
     let m        = gpu.generic_mem m1;
     let (m, sa)  = gpu.slot_shared Tile m;
@@ -48,25 +48,50 @@ con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
     let (m, n1)  = gpu.wgmma_f16 (8, m, desc (sa, 32I32), desc (sb, 2048I32), tt, n0);
     let (m, n2)  = gpu.wgmma_f16 (8, m, desc (sa, 64I32), desc (sb, 4096I32), tt, n1);
     let (m, n3)  = gpu.wgmma_f16 (8, m, desc (sa, 96I32), desc (sb, 6144I32), tt, n2);
+    let lane     = core.bit2.and 0 (tid, 31I64);
+    let row      = core.shr.l (tid, 5I64) * 16I64 + core.shr.l (lane, 2I64);
+    let ap       = core.bitcast (mem.Ptr0 «64, 32, 2; H») a;
+    lam frag (m: mem.M 0, ks: I64): [mem.M 0, «4, 2; H»] =
+        let at      = λ (r: I64): mem.Ptr0 «2; H» =
+            mem.lea (mem.lea (ap, ix 64 (row + 8I64 * core.bit2.and 0 (r, 1I64))),
+                     ix 32 (8I64 * ks + 4I64 * core.shr.l (r, 1I64) + core.bit2.and 0 (lane, 3I64)));
+        let (m, a0) = mem.load (m, at 0I64);
+        let (m, a1) = mem.load (m, at 1I64);
+        let (m, a2) = mem.load (m, at 2I64);
+        let (m, a3) = mem.load (m, at 3I64);
+        (m, (a0, a1, a2, a3));
+    let (m, f0)  = frag (m, 0I64);
+    let (m, f1)  = frag (m, 1I64);
+    let (m, f2)  = frag (m, 2I64);
+    let (m, f3)  = frag (m, 3I64);
+    let m        = gpu.wgmma_fence m;
+    let (m, r0)  = gpu.wgmma_rs_f16 (8, m, f0, desc (sbt, 0I32), ff, zero);
+    let (m, r1)  = gpu.wgmma_rs_f16 (8, m, f1, desc (sbt, 32I32), ff, r0);
+    let (m, r2)  = gpu.wgmma_rs_f16 (8, m, f2, desc (sbt, 64I32), ff, r1);
+    let (m, r3)  = gpu.wgmma_rs_f16 (8, m, f3, desc (sbt, 96I32), ff, r2);
     let m        = gpu.wgmma_commit m;
-    let (m, cs)  = gpu.wgmma_wait (m, 0, (k3, n3));
-    let (rk, rm) = cs;
+    let (m, cs)  = gpu.wgmma_wait (m, 0, (k3, n3, r3));
+    let (rk, rm, rr) = cs;
     let m        = mem.store (m, mem.lea (core.bitcast (mem.Ptr0 «128; Acc») ck, item_id), rk);
     let m        = mem.store (m, mem.lea (core.bitcast (mem.Ptr0 «128; Acc») cm, item_id), rm);
+    let m        = mem.store (m, mem.lea (core.bitcast (mem.Ptr0 «128; Acc») cr, item_id), rr);
     return (gpu.global_mem m, m3, m4, m5);
 
-extern fun wgmma_tile (m0: mem.M 0, a bt b: mem.Ptr0 Tile, ck cm: mem.Ptr0 «128; Acc»): [mem.M 0, I32] =
+extern fun wgmma_tile (m0: mem.M 0, a bt b: mem.Ptr0 Tile, ck cm cr: mem.Ptr0 «128; Acc»): [mem.M 0, I32] =
     let (m0, m1, m4) = gpu.init m0;
     let (m0, m1, da) = gpu.alloc_copy.block (m0, m1, a);
     let (m0, m1, dt) = gpu.alloc_copy.block (m0, m1, bt);
     let (m0, m1, db) = gpu.alloc_copy.block (m0, m1, b);
     let (m1, dk)     = mem.alloc («128; Acc», 1) m1;
     let (m1, dm)     = mem.alloc («128; Acc», 1) m1;
-    ret (m0, m1, m4) = gpu.launch (1, 128, gpu.default_stream, ff, ()) kernel (da, dt, db, dk, dm) $ (m0, m1, m4);
+    let (m1, dr)     = mem.alloc («128; Acc», 1) m1;
+    ret (m0, m1, m4) = gpu.launch (1, 128, gpu.default_stream, ff, ()) kernel (da, dt, db, dk, dm, dr) $ (m0, m1, m4);
     let (m0, m1)     = gpu.copy_to_host.block (m0, m1, dk, ck);
     let (m0, m1)     = gpu.copy_to_host.block (m0, m1, dm, cm);
+    let (m0, m1)     = gpu.copy_to_host.block (m0, m1, dr, cr);
     let m0           = gpu.deinit (m0, m1, m4);
     return (m0, 0I32);
 
 // CHECK: gpu.wgmma_f16
+// CHECK: gpu.wgmma_rs_f16
 // CHECK: gpu.wgmma_wait

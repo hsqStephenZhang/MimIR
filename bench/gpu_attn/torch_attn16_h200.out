@@ -1,0 +1,21 @@
+NVIDIA H200 NVL 2.12.0+cu130
+BH=  32 L= 1024 torch.float16   flash    0.0446 ms   192.4 TFLOP/s
+BH=  32 L= 1024 torch.float16   cudnn    0.0349 ms   245.8 TFLOP/s
+BH=  32 L= 1024 torch.bfloat16  flash    0.0444 ms   193.3 TFLOP/s
+BH=  32 L= 1024 torch.bfloat16  cudnn    0.0348 ms   247.2 TFLOP/s
+BH=  32 L= 2048 torch.float16   flash    0.1447 ms   237.5 TFLOP/s
+BH=  32 L= 2048 torch.float16   cudnn    0.0982 ms   349.9 TFLOP/s
+BH=  32 L= 2048 torch.bfloat16  flash    0.1445 ms   237.8 TFLOP/s
+BH=  32 L= 2048 torch.bfloat16  cudnn    0.0975 ms   352.4 TFLOP/s
+BH=  32 L= 4096 torch.float16   flash    0.5237 ms   262.4 TFLOP/s
+BH=  32 L= 4096 torch.float16   cudnn    0.3330 ms   412.7 TFLOP/s
+BH=  32 L= 4096 torch.bfloat16  flash    0.5225 ms   263.0 TFLOP/s
+BH=  32 L= 4096 torch.bfloat16  cudnn    0.3322 ms   413.7 TFLOP/s
+BH= 128 L= 2048 torch.float16   flash    0.5294 ms   259.6 TFLOP/s
+BH= 128 L= 2048 torch.float16   cudnn    0.3411 ms   402.9 TFLOP/s
+BH= 128 L= 2048 torch.bfloat16  flash    0.5291 ms   259.8 TFLOP/s
+BH= 128 L= 2048 torch.bfloat16  cudnn    0.3406 ms   403.5 TFLOP/s
+BH= 128 L= 4096 torch.float16   flash    2.0199 ms   272.2 TFLOP/s
+BH= 128 L= 4096 torch.float16   cudnn    1.2831 ms   428.4 TFLOP/s
+BH= 128 L= 4096 torch.bfloat16  flash    2.0432 ms   269.1 TFLOP/s
+BH= 128 L= 4096 torch.bfloat16  cudnn    1.2847 ms   427.9 TFLOP/s

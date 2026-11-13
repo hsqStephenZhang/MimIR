@@ -840,16 +840,19 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
                 ? v_ptr
                 : bb.assign(name + ".s", "addrspacecast {} {} to ptr addrspace(3)", convert(ptr->type()), v_ptr);
         return bb.assign(name, "ptrtoint ptr addrspace(3) {} to i32", shared);
-    } else if (Axm::isa<gpu::wgmma_f16>(def) || Axm::isa<gpu::wgmma_bf16>(def)) {
+    } else if (Axm::isa<gpu::wgmma_f16>(def) || Axm::isa<gpu::wgmma_bf16>(def) || Axm::isa<gpu::wgmma_rs_f16>(def)
+               || Axm::isa<gpu::wgmma_rs_bf16>(def)) {
         auto [nt, mem, a, b, trans_b, acc] = def->as<App>()->args<6>();
         emit_unsafe(mem);
+        auto rs    = Axm::isa<gpu::wgmma_rs_f16>(def) || Axm::isa<gpu::wgmma_rs_bf16>(def);
+        auto bf    = Axm::isa<gpu::wgmma_bf16>(def) || Axm::isa<gpu::wgmma_rs_bf16>(def);
         auto n     = Lit::as(nt);
         auto regs  = 4 * n;
         auto v_a   = emit(a);
         auto v_b   = emit(b);
         auto v_acc = emit(acc);
         auto t_acc = convert(acc->type());
-        auto ty    = Axm::isa<gpu::wgmma_bf16>(def) ? "bf16" : "f16";
+        auto ty    = bf ? "bf16"s : "f16"s;
         auto ins   = std::vector<std::string>();
         for (u64 j = 0; j != n; ++j)
             for (u64 e = 0; e != 4; ++e)
@@ -862,16 +865,40 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         auto constraints = std::vector<std::string>(regs, "=f");
         for (u64 i = 0; i != regs; ++i)
             constraints.push_back(std::to_string(i));
-        constraints.insert(constraints.end(), {"l", "l"});
-        auto asm_text
-            = std::format("wgmma.mma_async.sync.aligned.m64n{}k16.f32.{}.{} {{{}}}, ${}, ${}, 1, 1, 1, 0, {};", 8 * n,
-                          ty, ty, fe::Join(outs, ", "), 2 * regs, 2 * regs + 1, Lit::as<bool>(trans_b) ? 1 : 0);
-        auto t_ret = std::format("{{ {} }}", fe::Join(std::vector(regs, "float"s), ", "));
-        ins.push_back("i64 " + v_a);
+        auto a_operand = std::format("${}", 2 * regs);
+        auto next      = 2 * regs + 1;
+        if (rs) {
+            auto elem  = bf ? "bfloat"s : "half"s;
+            auto a_ops = std::vector<std::string>();
+            for (u64 r = 0; r != 4; ++r) {
+                auto pair = std::format("<2 x {}> poison", elem);
+                for (u64 h = 0; h != 2; ++h) {
+                    auto x = bb.assign(std::format("{}.a{}_{}", name, r, h), "extractvalue [4 x [2 x {}]] {}, {}, {}",
+                                       elem, v_a, r, h);
+                    pair   = std::format("<2 x {}> ", elem)
+                           + bb.assign(std::format("{}.a{}v{}", name, r, h), "insertelement {}, {} {}, i32 {}", pair,
+                                       elem, x, h);
+                }
+                ins.push_back("i32 " + bb.assign(std::format("{}.a{}i", name, r), "bitcast {} to i32", pair));
+                constraints.push_back("r");
+                a_ops.push_back(std::format("${}", 2 * regs + r));
+            }
+            a_operand = std::format("{{{}}}", fe::Join(a_ops, ", "));
+            next      = 2 * regs + 4;
+        } else {
+            ins.push_back("i64 " + v_a);
+            constraints.push_back("l");
+        }
         ins.push_back("i64 " + v_b);
-        auto d     = bb.assign(name + ".d", "call {} asm sideeffect \"{}\", \"{}\"({})", t_ret, asm_text,
-                               fe::Join(constraints, ","), fe::Join(ins, ", "));
-        auto value = "undef"s;
+        constraints.push_back("l");
+        auto flags    = rs ? std::format("1, 1, 1, {}", Lit::as<bool>(trans_b) ? 1 : 0)
+                           : std::format("1, 1, 1, 0, {}", Lit::as<bool>(trans_b) ? 1 : 0);
+        auto asm_text = std::format("wgmma.mma_async.sync.aligned.m64n{}k16.f32.{}.{} {{{}}}, {}, ${}, {};", 8 * n, ty,
+                                    ty, fe::Join(outs, ", "), a_operand, next, flags);
+        auto t_ret    = std::format("{{ {} }}", fe::Join(std::vector(regs, "float"s), ", "));
+        auto d        = bb.assign(name + ".d", "call {} asm sideeffect \"{}\", \"{}\"({})", t_ret, asm_text,
+                                  fe::Join(constraints, ","), fe::Join(ins, ", "));
+        auto value    = "undef"s;
         for (u64 j = 0; j != n; ++j)
             for (u64 e = 0; e != 4; ++e) {
                 auto f = bb.assign(std::format("{}.d{}_{}", name, j, e), "extractvalue {} {}, {}", t_ret, d, 4 * j + e);
