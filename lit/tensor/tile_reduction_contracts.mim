@@ -2,6 +2,8 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
 // RUN: clang++ -O1 %S/tile_reduction_contracts_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 -X tensor:strict=1 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=STRICT
+// STRICT: error: unrealized tensor.tile_req {{.*}}: a work-item reduction's seed is not the combiner's identity
 
 plugin tensor;
 plugin core;

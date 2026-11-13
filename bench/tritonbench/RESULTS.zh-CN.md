@@ -180,3 +180,4 @@ CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKi
   我们的非字面量 tile 尺寸属于后一类，`TileFuse` 警告 “unrealized tensor.tile_req” 并回退，相当于 `can_implement` 返回 `false`。
 - 组合子是否可重结合、种子是否为单位元：`lit/tensor/tile_reduction_contracts.mim` 约定这类请求警告后回退、程序照常正确执行（测试里有 exec 校验），
   属于“这个调度对这个运算不适用”，同样是 `can_implement` 一类，而不是调度本身写错。
+- 需要把这两类也当错误时用 `-X tensor:strict=1`：残留的请求以带位置的错误报出（`tensor/tile_reduction_contracts.mim` 的 `STRICT` 检查）。
