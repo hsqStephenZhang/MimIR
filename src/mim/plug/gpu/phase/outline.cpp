@@ -146,9 +146,11 @@ const Def* Outline::rewrite_imm_App(const App* app) {
             app->blame("gpu.outline: a work-item barrier cannot execute under a divergent item guard").bail();
         return sync(rewrite(fence->arg()));
     }
-    if ((Axm::isa<gpu::ldmatrix>(app) || Axm::isa<gpu::ldmatrix_b16>(app) || Axm::isa<gpu::mma_tf32>(app)
-         || Axm::isa<gpu::mma_f16>(app) || Axm::isa<gpu::mma_bf16>(app) || Axm::isa<gpu::buf_ldmatrix>(app)
-         || Axm::isa<gpu::shfl_xor>(app) || Axm::isa<gpu::shfl_idx>(app))
+    if ((Axm::isa<gpu::ldmatrix>(app) || Axm::isa<gpu::wgmma_f16>(app) || Axm::isa<gpu::wgmma_bf16>(app)
+         || Axm::isa<gpu::wgmma_fence>(app) || Axm::isa<gpu::wgmma_commit>(app) || Axm::isa<gpu::wgmma_wait>(app)
+         || Axm::isa<gpu::ldmatrix_b16>(app) || Axm::isa<gpu::mma_tf32>(app) || Axm::isa<gpu::mma_f16>(app)
+         || Axm::isa<gpu::mma_bf16>(app) || Axm::isa<gpu::buf_ldmatrix>(app) || Axm::isa<gpu::shfl_xor>(app)
+         || Axm::isa<gpu::shfl_idx>(app))
         && item_divergent_ && !warp_aligned_)
         app->blame("gpu.outline: a warp collective cannot execute under a non-warp-aligned item guard").bail();
     auto async   = bound_loop(app, bind::async);

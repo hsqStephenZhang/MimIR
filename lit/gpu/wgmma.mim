@@ -1,0 +1,72 @@
+// RUN: %mim %s -p opt -o - | %FileCheck %s
+
+// One warpgroup multiplies a 64×64 F16 tile by a 64×64 one with wgmma from 128-byte-swizzled shared memory, once with
+// B K-major (as Bᵀ) and once MN-major.
+
+plugin core;
+plugin gpu;
+plugin mem;
+plugin math;
+
+use core.ops.u.w;
+
+let H    = math.F16;
+let Tile = «64, 8, 8; H»;
+let Acc  = «8, 4; math.F32»;
+
+lam ix (n: Nat) (x: I64): Idx n = core.conv.u n x;
+lam shr (x: I64, s: I64): I64 = core.shr.l (x, s);
+lam band (x: I64, s: I64): I64 = core.bit2.and 0 (x, s);
+
+con kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+            _: Idx 1, item_id: Idx 128, (), (a bt b: gpu.GlobalPtr Tile, ck cm: gpu.GlobalPtr «128; Acc»),
+            return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let m        = gpu.generic_mem m1;
+    let (m, sa)  = gpu.slot_shared Tile m;
+    let (m, sbt) = gpu.slot_shared Tile m;
+    let (m, sb)  = gpu.slot_shared Tile m;
+    let tid      = core.conv.u 0 item_id;
+    lam copy (m: mem.M 0, src: gpu.GlobalPtr Tile, dst: mem.Ptr0 Tile, i: I64): mem.M 0 =
+        let c        = tid + 128I64 * i;
+        let r        = shr (c, 3I64);
+        let (m, x)   = mem.load (m, mem.lea (mem.lea (core.bitcast (mem.Ptr0 Tile) src, ix 64 r), ix 8 (band (c, 7I64))));
+        mem.store (m, mem.lea (mem.lea (dst, ix 64 r), ix 8 (core.bit2.xor 0 (band (c, 7I64), band (r, 7I64)))), x);
+    let m = copy (copy (copy (copy (m, a, sa, 0I64), a, sa, 1I64), a, sa, 2I64), a, sa, 3I64);
+    let m = copy (copy (copy (copy (m, bt, sbt, 0I64), bt, sbt, 1I64), bt, sbt, 2I64), bt, sbt, 3I64);
+    let m = copy (copy (copy (copy (m, b, sb, 0I64), b, sb, 1I64), b, sb, 2I64), b, sb, 3I64);
+    let m = gpu.fence_proxy_async m;
+    let (m1, m3) = gpu.sync_work_items (gpu.global_mem m, m3);
+    let m        = gpu.wgmma_fence (gpu.generic_mem m1);
+    let desc     = λ (p: mem.Ptr0 Tile, offset: I32): I64 =
+        gpu.wgmma_desc (core.wrap.add 0 (gpu.shared_addr p, offset), 16I64, 1024I64, 1I64);
+    let zero     = ‹8; ‹4; 0.0:math.F32››;
+    let (m, k0)  = gpu.wgmma_f16 (8, m, desc (sa, 0I32), desc (sbt, 0I32), ff, zero);
+    let (m, k1)  = gpu.wgmma_f16 (8, m, desc (sa, 32I32), desc (sbt, 32I32), ff, k0);
+    let (m, k2)  = gpu.wgmma_f16 (8, m, desc (sa, 64I32), desc (sbt, 64I32), ff, k1);
+    let (m, k3)  = gpu.wgmma_f16 (8, m, desc (sa, 96I32), desc (sbt, 96I32), ff, k2);
+    let (m, n0)  = gpu.wgmma_f16 (8, m, desc (sa, 0I32), desc (sb, 0I32), tt, zero);
+    let (m, n1)  = gpu.wgmma_f16 (8, m, desc (sa, 32I32), desc (sb, 2048I32), tt, n0);
+    let (m, n2)  = gpu.wgmma_f16 (8, m, desc (sa, 64I32), desc (sb, 4096I32), tt, n1);
+    let (m, n3)  = gpu.wgmma_f16 (8, m, desc (sa, 96I32), desc (sb, 6144I32), tt, n2);
+    let m        = gpu.wgmma_commit m;
+    let (m, cs)  = gpu.wgmma_wait (m, 0, (k3, n3));
+    let (rk, rm) = cs;
+    let m        = mem.store (m, mem.lea (core.bitcast (mem.Ptr0 «128; Acc») ck, item_id), rk);
+    let m        = mem.store (m, mem.lea (core.bitcast (mem.Ptr0 «128; Acc») cm, item_id), rm);
+    return (gpu.global_mem m, m3, m4, m5);
+
+extern fun wgmma_tile (m0: mem.M 0, a bt b: mem.Ptr0 Tile, ck cm: mem.Ptr0 «128; Acc»): [mem.M 0, I32] =
+    let (m0, m1, m4) = gpu.init m0;
+    let (m0, m1, da) = gpu.alloc_copy.block (m0, m1, a);
+    let (m0, m1, dt) = gpu.alloc_copy.block (m0, m1, bt);
+    let (m0, m1, db) = gpu.alloc_copy.block (m0, m1, b);
+    let (m1, dk)     = mem.alloc («128; Acc», 1) m1;
+    let (m1, dm)     = mem.alloc («128; Acc», 1) m1;
+    ret (m0, m1, m4) = gpu.launch (1, 128, gpu.default_stream, ff, ()) kernel (da, dt, db, dk, dm) $ (m0, m1, m4);
+    let (m0, m1)     = gpu.copy_to_host.block (m0, m1, dk, ck);
+    let (m0, m1)     = gpu.copy_to_host.block (m0, m1, dm, cm);
+    let m0           = gpu.deinit (m0, m1, m4);
+    return (m0, 0I32);
+
+// CHECK: gpu.wgmma_f16
+// CHECK: gpu.wgmma_wait

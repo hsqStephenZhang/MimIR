@@ -1,0 +1,13 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=90a -X nvptx:no-embed
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// CHECK-DAG: fence.proxy.async.shared::cta
+// CHECK-DAG: call void @llvm.nvvm.wgmma.fence.sync.aligned()
+// CHECK-DAG: wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16
+// CHECK-DAG: call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 0)
+// CHECK-DAG: align 1024

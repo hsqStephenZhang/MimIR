@@ -102,6 +102,24 @@ private:
         return v_ptr;
     }
 
+    /// The `extractvalue` index paths of the F32 leaves of an aggregate of nested arrays and tuples.
+    static void leaf_paths(const Def* type, const std::string& prefix, std::vector<std::string>& paths) {
+        if (auto arr = type->isa<Arr>(); arr && Lit::isa(arr->arity()))
+            for (u64 i = 0, e = Lit::as(arr->arity()); i != e; ++i)
+                leaf_paths(arr->elem(), std::format("{}, {}", prefix, i), paths);
+        else if (auto sigma = type->isa<Sigma>())
+            for (size_t i = 0; i != sigma->num_ops(); ++i)
+                leaf_paths(sigma->op(i), std::format("{}, {}", prefix, i), paths);
+        else
+            paths.push_back(prefix);
+    }
+
+    /// A shared slot of whole 1 KiB blocks may hold `wgmma`'s 128-byte swizzle atoms, which must be 1 KiB aligned.
+    static u64 slot_align(const Def* slot) {
+        auto size = Lit::as(core::op(core::trait::size, slot->as<App>()->decurry()->arg()));
+        return size % 1024 == 0 ? 1024 : 16;
+    }
+
     LamSet kernels_;
     /// Under `-X nvptx:profile=1` a kernel sums the cycles before and at each barrier site; the first thread prints
     /// them.
@@ -631,9 +649,12 @@ std::string DeviceEmitter::prepare() {
         auto size = Lit::as(core::op(core::trait::size, slot->as<App>()->decurry()->arg()));
         return (size + 15) / 16 * 16;
     };
+    auto place = [&](u64 offset, const Def* slot) {
+        return (offset + slot_align(slot) - 1) / slot_align(slot) * slot_align(slot);
+    };
     u64 plain = 0;
     for (auto slot : slots)
-        plain += bytes(slot);
+        plain = place(plain, slot) + bytes(slot);
     // The panels of different constructs are never live together, so each construct's panels may start at one base.
     // Overlaying hides that the panels never alias, so it only pays where the slots outgrow the static limit.
     u64 total   = 0;
@@ -643,6 +664,7 @@ std::string DeviceEmitter::prepare() {
             panels[Lit::as(scope->decurry()->arg())].push_back(slot);
             continue;
         }
+        total                = place(total, slot);
         dynamic_slots_[slot] = total;
         total += bytes(slot);
     }
@@ -650,6 +672,7 @@ std::string DeviceEmitter::prepare() {
     for (auto& [_, group] : panels) {
         u64 offset = total;
         for (auto slot : group) {
+            offset               = place(offset, slot);
             dynamic_slots_[slot] = offset;
             offset += bytes(slot);
         }
@@ -660,7 +683,7 @@ std::string DeviceEmitter::prepare() {
         auto kname             = id(kernel).substr(1);
         dynamic_array_         = "@" + kname + "_dynamic_shared";
         dynamic_shared_[kname] = total;
-        std::println(vars_decls_, "{} = external addrspace(3) global [0 x i8], align 16", dynamic_array_);
+        std::println(vars_decls_, "{} = external addrspace(3) global [0 x i8], align 1024", dynamic_array_);
     } else {
         dynamic_slots_.clear();
     }
@@ -809,6 +832,85 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         std::print(bb.body().emplace_back(), "call void @{}(ptr addrspace(3) {}, ptr addrspace(1) {})", intrinsic,
                    shared, global);
         return std::string();
+    } else if (auto addr = Axm::isa<gpu::shared_addr>(def)) {
+        auto ptr   = addr->arg();
+        auto v_ptr = emit(ptr);
+        auto shared
+            = Lit::as(addr->decurry()->arg()) == 3
+                ? v_ptr
+                : bb.assign(name + ".s", "addrspacecast {} {} to ptr addrspace(3)", convert(ptr->type()), v_ptr);
+        return bb.assign(name, "ptrtoint ptr addrspace(3) {} to i32", shared);
+    } else if (Axm::isa<gpu::wgmma_f16>(def) || Axm::isa<gpu::wgmma_bf16>(def)) {
+        auto [nt, mem, a, b, trans_b, acc] = def->as<App>()->args<6>();
+        emit_unsafe(mem);
+        auto n     = Lit::as(nt);
+        auto regs  = 4 * n;
+        auto v_a   = emit(a);
+        auto v_b   = emit(b);
+        auto v_acc = emit(acc);
+        auto t_acc = convert(acc->type());
+        auto ty    = Axm::isa<gpu::wgmma_bf16>(def) ? "bf16" : "f16";
+        auto ins   = std::vector<std::string>();
+        for (u64 j = 0; j != n; ++j)
+            for (u64 e = 0; e != 4; ++e)
+                ins.push_back("float "
+                              + bb.assign(std::format("{}.c{}_{}", name, j, e), "extractvalue {} {}, {}, {}", t_acc,
+                                          v_acc, j, e));
+        auto outs = std::vector<std::string>();
+        for (u64 i = 0; i != regs; ++i)
+            outs.push_back(std::format("${}", i));
+        auto constraints = std::vector<std::string>(regs, "=f");
+        for (u64 i = 0; i != regs; ++i)
+            constraints.push_back(std::to_string(i));
+        constraints.insert(constraints.end(), {"l", "l"});
+        auto asm_text
+            = std::format("wgmma.mma_async.sync.aligned.m64n{}k16.f32.{}.{} {{{}}}, ${}, ${}, 1, 1, 1, 0, {};", 8 * n,
+                          ty, ty, fe::Join(outs, ", "), 2 * regs, 2 * regs + 1, Lit::as<bool>(trans_b) ? 1 : 0);
+        auto t_ret = std::format("{{ {} }}", fe::Join(std::vector(regs, "float"s), ", "));
+        ins.push_back("i64 " + v_a);
+        ins.push_back("i64 " + v_b);
+        auto d     = bb.assign(name + ".d", "call {} asm sideeffect \"{}\", \"{}\"({})", t_ret, asm_text,
+                               fe::Join(constraints, ","), fe::Join(ins, ", "));
+        auto value = "undef"s;
+        for (u64 j = 0; j != n; ++j)
+            for (u64 e = 0; e != 4; ++e) {
+                auto f = bb.assign(std::format("{}.d{}_{}", name, j, e), "extractvalue {} {}, {}", t_ret, d, 4 * j + e);
+                value  = bb.assign(std::format("{}.v{}_{}", name, j, e), "insertvalue {} {}, float {}, {}, {}", t_acc,
+                                   value, f, j, e);
+            }
+        return value;
+    } else if (auto fence = Axm::isa<gpu::wgmma_fence>(def)) {
+        emit_unsafe(fence->arg());
+        declare("void @llvm.nvvm.wgmma.fence.sync.aligned()");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.fence.sync.aligned()");
+        return std::string();
+    } else if (auto commit = Axm::isa<gpu::wgmma_commit>(def)) {
+        emit_unsafe(commit->arg());
+        declare("void @llvm.nvvm.wgmma.commit_group.sync.aligned()");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.commit_group.sync.aligned()");
+        return std::string();
+    } else if (auto fence = Axm::isa<gpu::fence_proxy_async>(def)) {
+        emit_unsafe(fence->arg());
+        std::print(bb.body().emplace_back(),
+                   "call void asm sideeffect \"fence.proxy.async.shared::cta;\", \"~{{memory}}\"()");
+        return std::string();
+    } else if (auto wait = Axm::isa<gpu::wgmma_wait>(def)) {
+        auto [mem, n, x] = wait->args<3>();
+        emit_unsafe(mem);
+        auto v_x = emit(x);
+        declare("void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64)");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 {})", Lit::as(n));
+        // The accumulators change asynchronously until the wait, so each is redefined after it.
+        auto t_x   = convert(x->type());
+        auto paths = std::vector<std::string>();
+        leaf_paths(x->type(), "", paths);
+        auto value = v_x;
+        for (size_t i = 0; i != paths.size(); ++i) {
+            auto f = bb.assign(std::format("{}.w{}", name, i), "extractvalue {} {}{}", t_x, v_x, paths[i]);
+            auto g = bb.assign(std::format("{}.f{}", name, i), "call float asm sideeffect \"\", \"=f,0\"(float {})", f);
+            value = bb.assign(std::format("{}.x{}", name, i), "insertvalue {} {}, float {}{}", t_x, value, g, paths[i]);
+        }
+        return value;
     } else if (auto ld = Axm::isa<gpu::ldmatrix_b16>(def)) {
         auto [n, trans, mem, ptr] = ld->args<4>();
         emit_unsafe(mem);
@@ -982,7 +1084,8 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         emit_unsafe(slot->arg());
         auto pointee = convert(slot->decurry()->arg(), false);
         auto v_ptr   = "@" + def->unique_name() + ".slot";
-        std::println(vars_decls_, "{} = internal addrspace(3) global {} undef, align 16", v_ptr, pointee);
+        std::println(vars_decls_, "{} = internal addrspace(3) global {} undef, align {}", v_ptr, pointee,
+                     slot_align(def));
         bb.assign(name, "addrspacecast {} addrspace(3)* {} to {}*", pointee, v_ptr, pointee);
         return name;
     } else if (auto tri = Axm::isa<math::tri>(def)) {

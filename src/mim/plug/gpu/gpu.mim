@@ -341,6 +341,52 @@ axm shfl_xor: [x: math.F32, mask: I32] → math.F32;
 /// The `x` of the work-item in lane `src`, across the full warp (`shfl.sync.idx`).
 ///
 axm shfl_idx: [x: math.F32, src: I32] → math.F32;
+///
+/// ### Warpgroup Tensor Cores
+///
+/// A warpgroup is four consecutive warps of a work-group whose first warp index is a multiple of 4; the operations of this section are collective over it.
+/// `wgmma` reads A and B from shared memory through descriptors and accumulates asynchronously: the accumulator it returns may only be read after a `wgmma_wait` that passes it through.
+/// Warp `w` of the warpgroup holds rows `16 w .. 16 w + 15` of the 64-row accumulator in the layout of `mma.m16n8k8`'s C, tile `j` covering columns `8 j .. 8 j + 7`.
+///
+/// #### shared_addr
+///
+/// The byte address of a shared-memory pointer in the shared window.
+///
+axm shared_addr: {T: *} → {a: Nat} → mem.Ptr (T, a) → I32;
+///
+/// #### wgmma_desc
+///
+/// The matrix descriptor of a tile at shared byte address `addr`: core matrices of 8 rows × 16 bytes, `lbo` and `sbo` bytes apart along the leading and the strided dimension, `swizzle` 0 (none), 1 (128 B), 2 (64 B) or 3 (32 B).
+/// A swizzled tile's atoms of 8 rows must start 1 KiB aligned.
+///
+pub anx lam wgmma_desc (addr: I32, lbo sbo swizzle: I64): I64 =
+    let field = λ (x: I64, at: I64): I64 = core.wrap.shl 0 (core.bit2.and 0 (core.shr.l (x, 4I64), 0x3FFFI64), at);
+    core.bit2.or 0 (core.bit2.or 0 (field (core.conv.u 0 addr, 0I64), field (lbo, 16I64)),
+                    core.bit2.or 0 (field (sbo, 32I64), core.wrap.shl 0 (swizzle, 62I64)));
+///
+/// #### wgmma_f16, wgmma_bf16
+///
+/// `D = A·B + C` on a 64×(8 nt)×16 tile with F16 or BF16 inputs from the descriptors `a` and `b` and F32 accumulation (`wgmma.mma_async.m64nNk16`).
+/// A is K-major; B is K-major unless `trans_b`, then MN-major.
+///
+axm wgmma_f16: [nt: Nat, mem.M 0, a b: I64, trans_b: Bool, «nt, 4; math.F32»] → [mem.M 0, «nt, 4; math.F32»];
+axm wgmma_bf16: [nt: Nat, mem.M 0, a b: I64, trans_b: Bool, «nt, 4; math.F32»] → [mem.M 0, «nt, 4; math.F32»];
+///
+/// #### wgmma_fence, wgmma_commit, wgmma_wait
+///
+/// `wgmma_fence` orders prior register and shared-memory accesses before the following `wgmma`s (`wgmma.fence`).
+/// `wgmma_commit` closes the group of the `wgmma`s issued since the last one (`wgmma.commit_group`).
+/// `wgmma_wait` waits until at most `n` groups are pending and passes the accumulators `x` they wrote (`wgmma.wait_group`).
+///
+axm wgmma_fence: mem.M 0 → mem.M 0;
+axm wgmma_commit: mem.M 0 → mem.M 0;
+axm wgmma_wait: {T: *} → [mem.M 0, n: Nat, x: T] → [mem.M 0, T];
+///
+/// #### fence_proxy_async
+///
+/// Makes this work-item's prior generic-proxy writes to shared memory visible to the async proxy that `wgmma` and TMA read through (`fence.proxy.async.shared::cta`).
+///
+axm fence_proxy_async: mem.M 0 → mem.M 0;
 
 /// #### lanes
 ///

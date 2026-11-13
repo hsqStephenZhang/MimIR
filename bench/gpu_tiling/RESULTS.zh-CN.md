@@ -348,3 +348,25 @@ A 用 `ldmatrix.x4`、B 用 `ldmatrix.x4.trans`，`cp.async` 双缓冲，C 以�
 - 同一结构在 TF32 下（A100）达到 cuBLAS TF32 的 74–85%；在 H200 的 16 位上只有 36–46%。
   cuBLAS 在 Hopper 上用 `wgmma`（warpgroup 级、操作数直接从 shared 读）与 TMA，`mma.sync` 的吞吐上限远低于它。
   继续调 mma.sync 的 tile 和流水深度收益有限，下一步是 WGMMA 原语。
+
+### WGMMA（H200 NVL，2026-11-13）
+
+新原语：`gpu.wgmma_f16`/`gpu.wgmma_bf16`（`wgmma.mma_async.m64nNk16`，A、B 经描述符从 shared 读，F32 累加；累加器的布局是每个 warp 一个 `C nt`），
+`gpu.wgmma_fence`/`wgmma_commit`/`wgmma_wait`（`wait` 把累加器传过去，异步写入在 SSA 上可见），
+`gpu.shared_addr` 与 Mim 里的描述符函数 `gpu.wgmma_desc`，`gpu.fence_proxy_async`；整 KiB 的 shared 槽位按 1 KiB 对齐（128 B swizzle 的要求）。
+`lit/{gpu,nvptx}/wgmma.mim` 在 GPU 上对照 CPU 检查 K-major 与 MN-major 的 B。
+
+`gemm_wg.py`：128×128 work-group，两个 warpgroup 各 64×128（`nt = 16`），BK=64，A K-major、B MN-major（`trans_b`），
+128 B swizzle，`cp.async` 环形多级缓冲，每步 `wgmma_wait 0`。`GEN=gemm_wg krun16.sh <n> <f16|bf16> <级数>`。
+
+| n | 级数 | f16 | bf16 | cuBLAS f16 | 相对 cuBLAS | mma.sync 版 |
+|---|---:|---:|---:|---:|---:|---:|
+| 1024 | 2 | 0.0182 ms（118 TF） | — | 0.0137 | 75% | 72 TF |
+| 2048 | 2 | 0.0439（392 TF） | — | 0.0346 | 79% | 202 TF |
+| 2048 | 4 | 0.0560（307 TF） | — | | | |
+| 4096 | 2 | 0.294（467 TF） | 0.294（468 TF） | 0.204 | 69% | 243 TF |
+| 4096 | 4 | 0.333（412 TF） | 0.334 | | | |
+| 8192 | 2 | 2.32（475 TF） | 2.22（495 TF） | 1.82 | 78–81% | 248 TF |
+
+- 2 级比 4 级快：64 KB shared 让每 SM 驻留 3 个块，块间交错掩盖了 `wgmma_wait 0` 与装载的延迟；4 级时只有 1 个。
+- 余下的差距：每步等完本组 wgmma 才发下一组（`wait 1` 需要读写缓冲的跨 warpgroup 同步）、装载由计算线程用 `cp.async` 发出（TMA + mbarrier + warp 特化未做）、128×128 的 tile。
