@@ -90,6 +90,7 @@ W2（完成）：区域里的 `tile_fold` 由 `warp_fold` 发成循环，状态�
 
 W3（部分）：step 里的 `tensor.stage` 在 warp 拥有的区域由整个 work-group 协作填充进 shared（K/V 块的起点只依赖 work-group，
 填充才是统一的），面板行尾填充 16 字节；共享缓冲不走 scratch，免得在 kernel 结尾被释放。跨步预取未做。
+A 操作数来自内存且不随步变的乘积，其 A 分片在循环外装载一次、由循环携带（`hoisted_a_`）。
 
 步骤：W1 上表的翻译；W2 区域里的 fold，状态在寄存器里跨步；W3 K/V 面板由 work-group 协作填充；W4 attention。
 区域可以由用户显式写出，也可以由 TileFuse 的层级生成；W1 对两者相同，先用显式标记。

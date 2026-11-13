@@ -225,6 +225,8 @@ private:
     DefMap<const Def*> warp_terms_;
     const Def* mr_inputs_ = nullptr;
     const Def* mr_posts_  = nullptr;
+    /// A product's A fragments that a warp-owned fold loads once, before its loop.
+    DefMap<const Def*> hoisted_a_;
     /// The warp accumulators in fragment form, by value.
     DefMap<Fragments> fragments_;
     /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.

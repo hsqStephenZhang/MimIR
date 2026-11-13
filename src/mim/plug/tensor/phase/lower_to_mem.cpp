@@ -2656,7 +2656,9 @@ const Def* LowerToMem::warp_term(const Def* def) {
         auto a_value = Axm::peel<tensor::buf>(input(0));
         auto from_c  = Axm::isa<tensor::map_reduce_post>(a_value) && *da == std::vector<u64>{0, 2};
         const Def* a;
-        if (from_c) {
+        if (auto hoisted = fe::lookup(hoisted_a_, def)) {
+            a = hoisted;
+        } else if (from_c) {
             a = old.app(old.app(old.annex(tensor::warp::a_from_c), old.lit_nat(nk)), warp_term(a_value));
         } else {
             auto g               = old.mut_lam(old.pi(old.sigma({I(nk), I(32), I(4)}), F));
@@ -2716,12 +2718,56 @@ const Def* LowerToMem::warp_fold(const App* app) {
     auto inits = DefVec(n, [&](size_t i) { return warp_term(init->proj(n, i)); });
     auto local = old.sigma(DefVec(n, [&](size_t i) { return old.extract(inits[i], warp_self_)->type(); }));
     auto first = w.tuple(DefVec(n, [&](size_t i) { return w.extract(rewrite(inits[i]), lane); }));
-    auto state = w.tuple({fresh_mem(), first});
+    // A product's A operand read from memory that the step does not change is loaded once, before the loop.
+    auto hoisted = fe::Restore(hoisted_a_, hoisted_a_);
+    // The loop carries the loaded values unchanged, so their loads precede it.
+    auto carried_values = DefVec();
+    auto proxies        = std::vector<Lam*>();
+    {
+        auto pending = DefVec{root};
+        auto seen    = DefSet();
+        for (size_t i = 0; i != pending.size(); ++i) {
+            auto def = pending[i];
+            if (!seen.insert(def).second || def->isa<Var>() || def->isa<Axm>()) continue;
+            for (auto op : def->ops())
+                if (op) pending.push_back(op);
+            auto product = Axm::isa<tensor::map_reduce_post>(def);
+            if (!product || !is_contraction(product)) continue;
+            auto mr     = btensor::MapRedPost::of(product->callee()->as<App>());
+            auto input  = product->arg()->proj(2, 0)->proj(2, 0);
+            auto source = Axm::peel<tensor::buf>(input);
+            if (Axm::isa<tensor::map_reduce_post>(source) || source->has_free_var(parameter->has_var())) continue;
+            auto nk = Lit::isa(mr.Sr->proj(3, 2));
+            if (!nk || *nk % 8) continue;
+            *nk /= 8;
+            auto F     = mr.To;
+            auto scope = fe::Restore(mr_inputs_, product->arg()->proj(2, 0));
+            auto g     = old.mut_lam(old.pi(old.sigma({old.type_idx(*nk), old.type_idx(32), old.type_idx(4)}), F));
+            auto [kc, l, reg] = g->vars<3>();
+            auto [r, k] = old.app(old.app(old.annex(tensor::warp::a_pos), old.lit_nat(*nk)), {kc, l, reg})->projs<2>();
+            auto nat    = [&](const Def* x) { return old.call<core::idx2nat>(x); };
+            g->set(true, warp_element(mr, 0, DefVec{nat(r), old.lit_nat_0(), nat(k)}, l, nullptr, reg));
+            auto a      = rewrite(old.app(old.app(old.app(old.annex(tensor::warp::a_gen), old.lit_nat(*nk)), F), g));
+            auto loaded = w.tuple(DefVec(*nk, [&](size_t c) {
+                auto chunk = w.extract(w.extract(a, w.lit_idx(*nk, c)), lane);
+                return w.tuple(DefVec(4, [&](size_t e) { return w.extract(chunk, w.lit_idx(4, e)); }));
+            }));
+            auto proxy  = old.mut_lam(old.pi(old.arr({old.lit_nat(*nk), old.lit_nat(4)}, F), old.type_nat()));
+            bind_old(proxy->has_var());
+            carried_values.push_back(loaded);
+            proxies.push_back(proxy);
+            auto at = old.mut_lam(old.pi(old.sigma({old.type_idx(*nk), old.type_idx(32), old.type_idx(4)}), F));
+            auto [ac, al, ar] = at->vars<3>();
+            at->set(true, old.extract(old.extract(old.extract(lanes(proxy->var()), al), ac), ar));
+            hoisted_a_[product] = old.app(old.app(old.app(old.annex(tensor::warp::a_gen), old.lit_nat(*nk)), F), at);
+        }
+    }
+    auto state             = w.tuple({fresh_mem(), first, w.tuple(carried_values)});
     auto [run, call]       = btensor::ds_splice(state, state->type(), "warpFold");
     auto [loop, loop_call] = affine::counting_for(w.call<core::bitcast>(w.type_i64(), rewrite(count)), run->var(2, 0),
                                                   run->ret_var(), w.sym("warpFoldStep"));
-    auto [index, carried, yield] = loop->vars<3>();
-    auto [loop_mem, locals]      = carried->projs<2>();
+    auto [index, carried, yield]  = loop->vars<3>();
+    auto [loop_mem, locals, kept] = carried->projs<3>();
     {
         auto pending = fe::Restore(pending_, {});
         auto memo    = fe::Restore(fresh_memo_, {});
@@ -2733,6 +2779,8 @@ const Def* LowerToMem::warp_fold(const App* app) {
         auto proxy = old.mut_lam(old.pi(local, old.type_nat()));
         bind_old(proxy->has_var());
         map(proxy->var(), locals);
+        for (size_t i = 0; i != proxies.size(); ++i)
+            map(proxies[i]->var(), kept->proj(proxies.size(), i));
         for (size_t i = 0; i != n; ++i)
             warp_terms_[accumulator->proj(n, i)] = lanes(proxy->var(n, i));
         for (size_t i = 0; i != 128; ++i) {
@@ -2743,14 +2791,14 @@ const Def* LowerToMem::warp_fold(const App* app) {
             root = lam->reduce(call->arg()).back();
         }
         auto next = w.tuple(DefVec(n, [&](size_t i) { return w.extract(rewrite(warp_term(root->proj(n, i))), lane); }));
-        loop->app(true, yield, w.tuple({loop_mem, next}));
+        loop->app(true, yield, w.tuple({loop_mem, next, kept}));
         loop->set(true, wrap_fresh_mem(loop->body()));
         pop();
     }
     run->set(true, loop_call);
     auto result = old.mut_lam(old.pi(local, old.type_nat()));
     bind_old(result->has_var());
-    map(result->var(), call->proj(2, 1));
+    map(result->var(), call->proj(3, 1));
     return warp_terms_[app] = old.tuple(DefVec(n, [&](size_t i) { return lanes(result->var(n, i)); }));
 }
 
