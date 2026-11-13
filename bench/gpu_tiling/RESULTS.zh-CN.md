@@ -414,3 +414,22 @@ MN-major 操作数（2026-11-13）：swizzle 推广为按“段”作用于线�
 |---|---:|---:|---:|---:|
 | 编译 `a · b`（`pipeline=2`） | 119 TF | 355 TF | 466 TF | 475 TF |
 | 手写 `gemm_wg`（`a · b`） | 118 TF | 392 TF | 467 TF | 475 TF |
+
+### TMA + mbarrier 填充（H200 NVL，2026-11-13）
+
+`wg_red_tma (sizes, tail, promote, pipeline, rest)`：与 `wg_red` 相同，只是环里的面板由 work-group 的 leader（`gpu.leader`，即 0 号 work-item）
+用 TMA 填：每块面板一行一个 128 字节的盒（K-major）或每个 64 列 atom 一个盒（MN-major），盒的 128 B swizzle 就是 wgmma 面板的布局；
+每个槽位一个 mbarrier（`mbar_expect_tx_if`/`tma_load_if`，谓词代替分支），第 `i` 步等槽位 `i mod depth` 的相位 `(i / depth) mod 2`；
+每步的 barrier 仍保护槽位的复用，退出前等完最后几次多余的填充。
+tensor map 由 `gpu.buf_tensor_map` 描述，lower_to_mem 把它建在区域外的全局矩阵上（`outside`），`buffer.lower_ptr` 变成 host 端的
+`gpu.device_tensor_map`；outline 把它当捕获值，基址换成该矩阵的设备副本。
+
+`gemm_tiled_wg_tma.mim`（`a · b`，`PIPE` 替换为级数），kernel 多了 tensor map 参数，所以用 `krun_e2e.sh`（完整 host 程序 + nsys）计时：
+
+| n | TMA 2 级 | TMA 3 级 | TMA 4 级 | cp.async 2 级（`gemm_tiled_wg_nn`） | cuBLAS |
+|---|---:|---:|---:|---:|---:|
+| 2048 | 0.0417 ms | 0.0403（426 TF） | 0.0559 | 0.0405 | 0.0346 |
+| 4096 | 0.292 | **0.2565（536 TF）** | 0.361 | 0.292（471 TF） | 0.204（675 TF） |
+| 8192 | 2.19 | 2.17（507 TF） | 2.64 | 2.17 | 1.82 |
+
+3 级 TMA 在 4096³ 比 cp.async 快 12%，到 cuBLAS 的 79%。余下的差距：没有专门的生产者 warpgroup（leader 也参与计算）、每步等完 wgmma、128×128 的 tile。

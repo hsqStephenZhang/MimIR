@@ -456,6 +456,52 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
         auto res = bb.assign(name, "call i32 @{}(ptr {})", Cu_Stream_Sync, stream);
         emit_cu_error_handling(bb, res);
         return res;
+    } else if (auto dmap = Axm::isa<gpu::device_tensor_map>(def)) {
+        // Encodes the descriptor on the host and copies it to a fresh 128-byte device buffer the kernel reads.
+        auto [base, rows, cols, box_rows, box_cols] = dmap->args<5>();
+        auto elem                                   = dmap->decurry()->decurry()->decurry()->arg();
+        auto dtype = math::isa_bf16(elem) ? 9 : math::isa_f(elem) == 16 ? 6 : math::isa_f(elem) == 32 ? 7 : -1;
+        if (dtype < 0) def->blame(MIM_NVPTX_BE "a tensor map of `{}` elements is not supported", elem).bail();
+        auto size    = Lit::as(core::op(core::trait::size, elem));
+        auto v_map   = bb.assign(name + ".host", "alloca [16 x i64], align 64");
+        auto dims    = bb.assign(name + ".dims", "alloca [2 x i64]");
+        auto strides = bb.assign(name + ".strides", "alloca i64");
+        auto box     = bb.assign(name + ".box", "alloca [2 x i32]");
+        auto unit    = bb.assign(name + ".unit", "alloca [2 x i32]");
+        auto at      = [&](const std::string& arr, std::string_view t, int i) {
+            return bb.assign(std::format("{}.{}", arr, i), "getelementptr [2 x {}], ptr {}, i64 0, i64 {}", t, arr, i);
+        };
+        auto store = [&](std::string_view t, const std::string& v, const std::string& ptr) {
+            std::print(bb.body().emplace_back(), "store {} {}, ptr {}", t, v, ptr);
+        };
+        auto v_cols = emit(cols), v_rows = emit(rows);
+        auto dim0 = at(dims, "i64", 0), dim1 = at(dims, "i64", 1);
+        store("i64", v_cols, dim0);
+        store("i64", v_rows, dim1);
+        store("i64", bb.assign(name + ".stride", "mul i64 {}, {}", v_cols, size), strides);
+        auto box0 = at(box, "i32", 0), box1 = at(box, "i32", 1);
+        store("i32", bb.assign(name + ".bc", "trunc i64 {} to i32", emit(box_cols)), box0);
+        store("i32", bb.assign(name + ".br", "trunc i64 {} to i32", emit(box_rows)), box1);
+        auto unit0 = at(unit, "i32", 0), unit1 = at(unit, "i32", 1);
+        store("i32", "1", unit0);
+        store("i32", "1", unit1);
+        auto v_base = emit(base);
+        auto global
+            = convert(base->type()) == "i64" ? bb.assign(name + ".base", "inttoptr i64 {} to ptr", v_base) : v_base;
+        declare("i32 @cuTensorMapEncodeTiled(ptr, i32, i32, ptr, ptr, ptr, ptr, ptr, i32, i32, i32, i32)");
+        auto res = bb.assign(name + ".res",
+                             "call i32 @cuTensorMapEncodeTiled(ptr {}, i32 {}, i32 2, ptr {}, ptr {}, ptr {}, ptr {}, "
+                             "ptr {}, i32 0, i32 3, i32 2, i32 0)",
+                             v_map, dtype, global, dims, strides, box, unit);
+        emit_cu_error_handling(bb, res);
+        declare("i32 @{}(ptr, i64)", Cu_Mem_Alloc);
+        auto device = bb.assign(name + ".dev", "alloca i64");
+        emit_cu_error_handling(bb, bb.assign(name + ".alloc", "call i32 @{}(ptr {}, i64 128)", Cu_Mem_Alloc, device));
+        auto v_dev = bb.assign(name, "load i64, ptr {}", device);
+        declare("i32 @{}(i64, ptr, i64)", Cu_Memcpy_Htod);
+        emit_cu_error_handling(
+            bb, bb.assign(name + ".copy", "call i32 @{}(i64 {}, ptr {}, i64 128)", Cu_Memcpy_Htod, v_dev, v_map));
+        return v_dev;
     } else if (auto tmap = Axm::isa<gpu::tensor_map>(def)) {
         auto [mem, map, base, rows, cols, box_rows, box_cols] = tmap->args<7>();
         emit_unsafe(mem);
@@ -946,6 +992,38 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         emit_unsafe(app->arg(3, 0));
         auto text = Axm::isa<gpu::sync_named>(def) ? "bar.sync $0, $1;" : "bar.arrive $0, $1;";
         inline_asm(bb, text, "r,r", {"i32 " + emit(app->arg(3, 1)), "i32 " + emit(app->arg(3, 2))});
+        return std::string();
+    } else if (Axm::isa<gpu::mbar_init_if>(def) || Axm::isa<gpu::mbar_expect_tx_if>(def)) {
+        auto [mem, bar, x, issue] = def->as<App>()->args<4>();
+        emit_unsafe(mem);
+        auto text = Axm::isa<gpu::mbar_init_if>(def) ? "mbarrier.init.shared::cta.b64 [$0], $1;"
+                                                     : "mbarrier.arrive.expect_tx.shared::cta.b64 _, [$0], $1;";
+        auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb, std::format("{{ .reg .pred q; setp.ne.b32 q, $2, 0; @q {} }}", text), "r,r,r",
+                   {"i32 " + emit(bar), "i32 " + emit(x), "i32 " + pred});
+        return std::string();
+    } else if (auto wait = Axm::isa<gpu::mbar_wait_at>(def)) {
+        auto [mem, bar, parity] = wait->args<3>();
+        emit_unsafe(mem);
+        inline_asm(
+            bb, "{ .reg .pred p; W${:uid}: mbarrier.try_wait.parity.shared::cta.b64 p, [$0], $1; @!p bra W${:uid}; }",
+            "r,r", {"i32 " + emit(bar), "i32 " + emit(parity)});
+        return std::string();
+    } else if (auto tma = Axm::isa<gpu::tma_load_if>(def)) {
+        auto [mem, dst, map, col, row, bar, issue] = tma->args<7>();
+        emit_unsafe(mem);
+        auto v_map = emit(map);
+        auto t_map = convert(map->type());
+        if (t_map != "ptr") v_map = bb.assign(name + ".gm", "addrspacecast {} {} to ptr", t_map, v_map);
+        auto map_i = bb.assign(name + ".map", "ptrtoint ptr {} to i64", v_map);
+        auto pred  = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb,
+                   "{ .reg .pred q; setp.ne.b32 q, $5, 0; @q "
+                   "cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [$0], [$1, {$2, "
+                   "$3}], [$4]; }",
+                   "r,l,r,r,r,r",
+                   {"i32 " + emit(dst), "i64 " + map_i, "i32 " + emit(col), "i32 " + emit(row), "i32 " + emit(bar),
+                    "i32 " + pred});
         return std::string();
     } else if (auto reg = Axm::isa<gpu::setmaxnreg>(def)) {
         auto [mem, inc, n] = reg->args<3>();

@@ -104,7 +104,7 @@ private:
                                bool);
     DefVec staged_panels(const Def* root, const Def* var) const;
     const Def* merge_of(const Def*) const;
-    std::tuple<const Def*, u64, const Def*, u64> peel_step(const Def*) const;
+    std::tuple<const Def*, u64, const Def*, u64, bool> peel_step(const Def*) const;
     const Def* lower_bound_fold(const App*,
                                 Lam*,
                                 const Def*,
@@ -234,6 +234,9 @@ private:
     DefMap<Fragments> fragments_;
     /// While a tensor-core fold stages its panels: their fills store each source's contiguous dim innermost.
     bool mma_panels_ = false;
+    /// The value outside a region of the inputs its body receives, so host-side work on them can stay outside.
+    DefMap<const Def*> outer_of_;
+    const Def* outside(const Def* def) const;
     /// In a warpgroup-owned region, the old-world first row of the warp's 16, `16 · warp_rank`.
     const Def* group_rows_ = nullptr;
     /// The old-world row of a warp's position @p row in its owned region.

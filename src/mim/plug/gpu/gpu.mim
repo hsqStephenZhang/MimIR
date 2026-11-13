@@ -265,6 +265,12 @@ axm lane_id: [] → I64;
 ///
 axm warp_rank: [] → I64;
 ///
+/// #### leader
+///
+/// Whether this is work-item 0 of its work-group, which issues the work-group's TMA copies; `gpu.outline` resolves it.
+///
+axm leader: [] → Bool;
+///
 /// #### store_async
 ///
 /// Stores into shared memory like `mem.store`.
@@ -445,6 +451,25 @@ axm arrive_named: [mem.M 0, id count: I32] → mem.M 0;
 /// Raises (`inc`) or lowers the warpgroup's per-thread register budget to `n`, a multiple of 8 from 24 to 256 (`setmaxnreg`).
 ///
 axm setmaxnreg: [mem.M 0, inc: Bool, n: Nat] → mem.M 0;
+///
+/// #### mbar_init_if, mbar_expect_tx_if, mbar_wait_at, tma_load_if
+///
+/// `mbar_init`, `mbar_expect_tx`, `mbar_wait` and `tma_load` on the mbarrier and the destination at shared addresses; the
+/// `_if` forms take effect only in work-items whose `issue` holds, so the work-group runs them without branching.
+///
+axm mbar_init_if: [mem.M 0, bar: I32, count: I32, issue: Bool] → mem.M 0;
+axm mbar_expect_tx_if: [mem.M 0, bar: I32, bytes: I32, issue: Bool] → mem.M 0;
+axm mbar_wait_at: [mem.M 0, bar: I32, parity: I32] → mem.M 0;
+axm tma_load_if: [mem.M 0, dst: I32, map: GlobalPtr «16; I64», col row: I32, bar: I32, issue: Bool] → mem.M 0;
+///
+/// #### device_tensor_map, buf_tensor_map
+///
+/// The TMA descriptor, in device memory, of the row-major `rows × cols` matrix of `E` at device address `base`, copied in
+/// boxes of `box_rows × box_cols` with 128-byte swizzle; the host computes it before the launch that uses it.
+/// `buf_tensor_map` is it for a device buffer of rank 2; `buffer.lower_ptr` takes its address.
+///
+axm device_tensor_map: {E: *} → {X: *} → {a: Nat} → [base: mem.Ptr (X, a), rows cols box_rows box_cols: Nat] → GlobalPtr «16; I64»;
+axm buf_tensor_map: {T: *} → {s: «2; Nat»} → [buffer.Buf (2, s, T), box_rows box_cols: Nat] → GlobalPtr «16; I64»;
 
 /// #### lanes
 ///

@@ -90,6 +90,14 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         auto [n, mem, buf, idx] = ld->args<4>([this](const Def* d) { return rewrite(d); });
         auto row                = mem::op_lea_tuple(buf, idx);
         return w.app(w.app(w.annex<gpu::ldmatrix>(), w.lit_nat_0()), {n, mem, row});
+    } else if (auto map = Axm::isa<gpu::buf_tensor_map>(app)) {
+        auto [buf, box_rows, box_cols] = map->args<3>([this](const Def* d) { return rewrite(d); });
+        auto T                         = rewrite(map->decurry()->decurry()->arg());
+        auto s                         = rewrite(map->decurry()->arg());
+        auto base                      = rewrite(map->arg(3, 0));
+        auto [X, a]                    = Axm::as<mem::Ptr>(base->type())->args<2>();
+        return w.app(w.app(w.app(w.app(w.annex<gpu::device_tensor_map>(), T), X), a),
+                     {base, s->proj(2, 0), s->proj(2, 1), box_rows, box_cols});
     } else if (auto addr = Axm::isa<gpu::buf_addr>(app)) {
         auto [buf, idx] = addr->args<2>([this](const Def* d) { return rewrite(d); });
         auto ptr        = mem::op_lea_tuple(buf, idx);

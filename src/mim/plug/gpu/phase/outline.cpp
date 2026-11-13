@@ -103,6 +103,10 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         if (!lane_) app->blame("gpu.outline: a lane id must nest inside a warp loop").bail();
         return lane_;
     }
+    if (Axm::isa<gpu::leader>(app)) {
+        if (!item_id_) app->blame("gpu.outline: the leader must nest inside a work-group loop").bail();
+        return w.call(core::icmp::e, Defs{item_id_, w.lit_i64(0)});
+    }
     if (Axm::isa<gpu::warp_rank>(app)) {
         if (!rank_) app->blame("gpu.outline: a warp rank must nest inside a warpgroup loop").bail();
         return rank_;
@@ -246,6 +250,35 @@ const Def* Outline::outline(const App* app) {
     captures(body->body(), body->free_vars(), seen, pieces);
     for (size_t i = 0; i != n_acc; ++i)
         if (i != mem_i && !init->proj(n_acc, i)->is_closed()) pieces.push_back(init->proj(n_acc, i));
+    // A TMA descriptor is encoded on the host, so one of a buffer the loop carries is built from the loop's initial
+    // value, which stays the same for every work-group.
+    auto hoisted = std::vector<std::pair<const Def*, const Def*>>();
+    {
+        auto& old  = old_world();
+        auto outer = body->free_vars();
+        auto entry = [&](u64 group) { return old.tuple({old.lit_i64(group), init, exit}); };
+        auto todo  = DefVec{body->body()};
+        auto done  = DefSet();
+        while (!todo.empty()) {
+            auto def = todo.back();
+            todo.pop_back();
+            if (!done.emplace(def).second || def->isa<Var>()) continue;
+            if (Axm::isa<gpu::device_tensor_map>(def)) {
+                auto [base, rows, cols, box_rows, box_cols] = def->as<App>()->args<5>();
+                auto vars                                   = base->free_vars();
+                auto host                                   = VarRewriter(body->has_var(), entry(0)).rewrite(def);
+                // The same descriptor for any work-group: it does not depend on the loop's index.
+                if (std::ranges::all_of(vars, [&](const Var* v) { return outer.contains(v) || v == body->has_var(); })
+                    && host == VarRewriter(body->has_var(), entry(1)).rewrite(def)) {
+                    hoisted.emplace_back(def, host);
+                    pieces.push_back(host);
+                    continue;
+                }
+            }
+            for (auto op : def->ops())
+                if (op && !op->is_closed()) todo.push_back(op);
+        }
+    }
     DefSet unique;
     std::erase_if(pieces, [&](const Def* piece) { return !unique.emplace(piece).second; });
 
@@ -261,7 +294,9 @@ const Def* Outline::outline(const App* app) {
     DefVec kernel_args, host_ptrs, dev_ptrs, dev_tys;
     for (auto piece : pieces) {
         auto value = rewrite(piece);
-        if (auto ptr = Axm::isa<mem::Ptr>(value->type())) {
+        if (Axm::isa<gpu::device_tensor_map>(piece)) {
+            kernel_args.push_back(nullptr);
+        } else if (auto ptr = Axm::isa<mem::Ptr>(value->type())) {
             auto [T, a] = ptr->args<2>();
             if (Lit::isa(a) != 0)
                 piece->blame("gpu.outline: captured pointer `{}` is not in host memory", piece).bail();
@@ -278,6 +313,34 @@ const Def* Outline::outline(const App* app) {
         } else {
             kernel_args.push_back(value);
         }
+    }
+    // A TMA descriptor describes the device copy of its matrix, which the pointers' copies above may already provide.
+    auto copies = std::vector<std::pair<const Def*, const Def*>>();
+    for (size_t i = 0; i != pieces.size(); ++i) {
+        auto map = Axm::isa<gpu::device_tensor_map>(pieces[i]);
+        if (!map) continue;
+        auto args = DefVec(map->arg()->projs(5, [&](const Def* d) { return rewrite(d); }));
+        if (auto ptr = Axm::isa<mem::Ptr>(args[0]->type()); ptr && Lit::isa(ptr->arg(2, 1)) == 0) {
+            auto host = args[0];
+            auto dev  = static_cast<const Def*>(nullptr);
+            for (size_t p = 0; p != host_ptrs.size() && !dev; ++p)
+                if (host_ptrs[p] == host) dev = dev_ptrs[p];
+            for (auto [h, d] : copies)
+                if (!dev && h == host) dev = d;
+            if (!dev) {
+                auto T                = ptr->arg(2, 0);
+                auto [m1_alloc, copy] = w.app(w.app(w.annex<mem::alloc>(), {T, w.lit_nat(1)}), m1)->projs<2>();
+                dev                   = copy;
+                std::tie(m0, m1)      = w.app(w.app(w.annex<gpu::copy_to_device>(gpu::copy_to_device::block), T),
+                                              {m0, m1_alloc, host, dev})
+                                            ->projs<2>();
+                copies.emplace_back(host, dev);
+            }
+            args[0] = dev;
+        }
+        auto [X, a]    = Axm::as<mem::Ptr>(args[0]->type())->args<2>();
+        auto retyped   = w.app(w.app(rewrite(map->decurry()->decurry()->decurry()), X), a);
+        kernel_args[i] = w.app(retyped, w.tuple(args));
     }
     auto n_args  = kernel_args.size();
     auto arg_tys = DefVec(n_args, [&](size_t i) { return kernel_args[i]->type(); });
@@ -300,6 +363,8 @@ const Def* Outline::outline(const App* app) {
         }
         map(pieces[i], arg);
     }
+    for (auto [inside, host] : hoisted)
+        map(inside, lookup(host));
     // Components come before the tuples they split off, so a whole tuple rebuilds from kernel arguments.
     for (auto split : splits_) {
         auto n = split->num_projs();
@@ -340,6 +405,8 @@ const Def* Outline::outline(const App* app) {
     }
     for (size_t i = 0; i != dev_ptrs.size(); ++i)
         a1 = w.app(w.app(w.annex<mem::free>(), {dev_tys[i], w.lit_nat(1)}), {a1, dev_ptrs[i]});
+    for (auto [host, dev] : copies)
+        a1 = w.app(w.app(w.annex<mem::free>(), {Axm::as<mem::Ptr>(host->type())->arg(2, 0), w.lit_nat(1)}), {a1, dev});
     auto final_mem = w.app(w.annex<gpu::auto_deinit>(), Defs{a0, a1, a4});
     auto exit_acc = w.tuple(DefVec(n_acc, [&](size_t i) { return i == mem_i ? final_mem : new_init->proj(n_acc, i); }));
     after->app(true, new_exit, exit_acc);

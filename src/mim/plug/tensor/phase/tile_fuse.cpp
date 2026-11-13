@@ -170,6 +170,7 @@ struct LevelSpec {
     const Def* sizes;
     const Def* merge;
     u64 pipeline = 1;
+    bool tma     = false;
 };
 
 /// The levels of a `tile_req` chain, outermost first; `nullopt` unless the chain is a literal value.
@@ -200,7 +201,7 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
             {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3},   {0, 6}},
             {{0, 0}, {0, 0},   {1, 0},   {2, 0},   {1, 4}, {-1, -1}, {-1, -1}, {-1, -1}},
             {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
-            {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}}
+            {{0, 0}, {1, 0}, {-1, -1},   {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}}
         };
         if (i > 7 || table[scope][i][0] < 0) return std::nullopt;
         spec.kind = table[scope][i][0], spec.bind = table[scope][i][1];
@@ -214,6 +215,7 @@ std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
             if (!promote) return std::nullopt;
             spec.promote = *promote;
         }
+        spec.tma = scope == Warpgroup && i == 3;
         if (spec.kind == 1 && spec.bind == 0 && scope != Serial) {
             auto pipeline = lit(3);
             if (!pipeline) return std::nullopt;
@@ -1063,6 +1065,8 @@ private:
     std::string reason_;
     std::vector<std::pair<const Def*, const Def*>> yielded_;
     u64 bound_ = 0;
+    /// Whether the reduction level being tiled fills its panels with TMA.
+    bool tma_ = false;
 };
 
 // Boxed tiles carry literal storage caps derived from the tile sizes into every fused producer.
@@ -1231,6 +1235,7 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64
     switch (level.kind) {
         case 0: return parallel(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, rest, depth);
         case 1:
+            tma_ = level.tma;
             return reduction(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, level.merge,
                              level.pipeline, rest, depth);
         case 2: return vector(root, rn, literal, rest, depth);
@@ -1470,6 +1475,7 @@ const Def* Levels::reduction(const Def* anchor,
                              fe::Span<const LevelSpec> rest,
                              u64 depth) {
     auto& w   = world();
+    auto tma  = tma_;
     auto loop = rn;
     for (u64 d = 0; d != rn; ++d) {
         if (!sizes[d]) continue;
@@ -1626,6 +1632,7 @@ const Def* Levels::reduction(const Def* anchor,
     inner->set(true, close(value, var, step->var(), inputs, inner->var()));
     // A bound reduction's blocks run on the work-items, each folding its own seed; `lower_to_mem` merges them.
     const Def* marked = inner;
+    if (tma) marked = w.app(w.app(w.annex<tensor::fill_tma>(), marked->type()), marked);
     if (pipeline > 1)
         marked = w.app(w.app(w.app(w.annex<tensor::pipeline>(), marked->type()), w.lit_nat(pipeline)), marked);
     if (merge) marked = w.app(w.app(w.app(w.annex<tensor::merge_with>(), {inner->type(), mr.To}), merge), marked);

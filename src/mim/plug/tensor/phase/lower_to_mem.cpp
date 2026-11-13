@@ -682,7 +682,8 @@ void LowerToMem::prepare_realizations(const Def* root, const Lam* region, Defs d
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
     auto& w = new_world();
     if (Axm::isa<tensor::frozen>(app)) return rewrite(app->arg());
-    if (Axm::isa<tensor::mma>(app) || Axm::isa<tensor::pipeline>(app)) return rewrite(app->arg());
+    if (Axm::isa<tensor::mma>(app) || Axm::isa<tensor::pipeline>(app) || Axm::isa<tensor::fill_tma>(app))
+        return rewrite(app->arg());
     if (Axm::isa<tensor::prepack>(app)) return lower_prepack(app);
     if (Axm::isa<tensor::group_req>(app)) {
         report_group_request(app, "request reached bufferization without realization");
@@ -1648,6 +1649,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     bind_new(run->has_var());
     if (auto var = parameter->has_var()) bind_old(var);
     map(proxy, runtime->proj(2, 1));
+    outer_of_[runtime->proj(2, 1)] = captured;
     forward_storage(sources, proxy);
     forward_layouts(captured, runtime->proj(2, 1));
     // Offsets live in the new world; extents stay in the old one, where the body is specialized to them.
@@ -2701,7 +2703,8 @@ const Def* LowerToMem::warp_term(const Def* def) {
     if (!app) def->blame("a warp-owned region keeps only map_reduce results in registers, not `{}`", def).bail();
     // Fusion gives each consumer its own copy of a producer's fused maps; equal copies share one translation.
     for (auto& [known, term] : warp_terms_)
-        if (Axm::isa<tensor::map_reduce_post>(known) && Check::alpha<Check::T>(known, def)) return warp_terms_[def] = term;
+        if (Axm::isa<tensor::map_reduce_post>(known) && Check::alpha<Check::T>(known, def))
+            return warp_terms_[def] = term;
     auto mr = btensor::MapRedPost::of(app->callee()->as<App>());
     auto ro = Lit::isa(mr.Ro), rn = Lit::isa(mr.Rn), nis = Lit::isa(mr.nis), nps = Lit::isa(mr.nps);
     if (!ro || !rn || !nis || !nps)
@@ -2833,6 +2836,16 @@ const Def* LowerToMem::warp_term(const Def* def) {
         def->blame("a warp-owned region has no translation for `{}`", def).bail();
     }
     return warp_terms_[def] = term;
+}
+
+// @p def with each region input it projects from replaced by the region's argument, as long as there is one.
+const Def* LowerToMem::outside(const Def* def) const {
+    if (auto outer = fe::lookup(outer_of_, def)) return outside(outer);
+    if (auto extract = def->isa<Extract>()) {
+        auto tuple = outside(extract->tuple());
+        if (tuple != extract->tuple()) return outside(def->world().extract(tuple, extract->index()));
+    }
+    return def;
 }
 
 const Def* LowerToMem::owned_row(const Def* row) {
@@ -3122,10 +3135,11 @@ const Def* LowerToMem::warp_fold(const App* app) {
                 forward_layouts(ring[0][j], at_stage(1, j));
             }
             // Every lane's copies of this block are done and every warp read the previous one, which the next fills.
-            // A warpgroup's `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it.
+            // A warpgroup's `wgmma` reads the panels through the async proxy, so each filler publishes its writes to
+            // it.
             auto waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat_0()), loop_mem);
             if (group_rows_) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
-            loop_mem = w.app(w.annex<gpu::fence>(), waited);
+            loop_mem  = w.app(w.annex<gpu::fence>(), waited);
             auto next = w.app(w.annex(tensor::pipeline_plan::refill_block),
                               {w.call<core::bitcast>(w.type_nat(), index), w.lit_nat(2), w.lit_nat(*literal_count)});
             loop_mem  = fill_block(loop_mem, next, DefVec(panels, [&](size_t j) { return at_stage(1, j); }));
@@ -3228,10 +3242,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto parameter             = old.mut_lam(old.pi(old.sigma({init->type(), old.type_nat()}), old.type_nat()));
     auto [accumulator, offset] = parameter->var()->projs<2>();
     if (auto block = Lit::isa(stride)) multiples_[offset] = *block;
-    auto input                             = region_input(inputs);
-    auto [stepped, level, merge, pipeline] = peel_step(step->reduce(parameter->var()).back());
-    auto root                              = old.app(stepped, input);
-    auto result                            = root;
+    auto input                                  = region_input(inputs);
+    auto [stepped, level, merge, pipeline, tma] = peel_step(step->reduce(parameter->var()).back());
+    auto root                                   = old.app(stepped, input);
+    auto result                                 = root;
     for (size_t i = 0; i != 128; ++i) {
         auto call = result->isa<App>();
         if (!call) break;
@@ -3377,6 +3391,64 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         }
     }
     auto panels = ring.empty() ? size_t(0) : ring[0].size();
+    // With TMA, the leader copies each block's panels in boxes of 128-byte rows, completing the mbarrier of its slot.
+    const Def* bars = nullptr;
+    auto leader     = [&] { return w.app(w.annex<gpu::leader>(), w.tuple()); };
+    auto i32        = [&](const Def* nat) { return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(u64(1) << 32), nat); };
+    auto bar_at     = [&](const Def* slot) {
+        auto [br, bs, bT] = Axm::as<buffer::Buf>(bars->type())->args<3>();
+        auto index        = w.call<core::idx>(w.lit_nat_0(), w.lit_nat(ring.size()), slot);
+        return w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}), {bars, w.tuple({index})});
+    };
+    auto fill_tma = [&](const Def* at, const Def* block, const DefVec& targets, const Def* slot) {
+        auto future = old.mut_lam(parameter->type()->as<Pi>());
+        if (auto size = Lit::isa(stride)) multiples_[future->var(2, 1)] = *size;
+        auto roots = blocks_of(future->var());
+        push();
+        bind_old(future->has_var());
+        map(future->var(2, 1), w.call(core::nat::mul, Defs{block, rewrite(stride)}));
+        auto loads = std::vector<std::function<const Def*(const Def*, const Def*)>>();
+        u64 bytes  = 0;
+        for (size_t j = 0; j != panels; ++j) {
+            auto stage = Axm::isa<tensor::stage>(Axm::peel<tensor::placed>(roots[pipelined[j]]));
+            auto slice = stage ? Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(stage->arg())) : nullptr;
+            if (!slice) roots[pipelined[j]]->blame("a TMA-filled panel stages a slice").bail();
+            auto [slice_meta, source_shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
+            auto source                          = rewrite(slice->arg());
+            auto [sr, ss, sT]                    = Axm::as<buffer::Buf>(source->type())->args<3>();
+            if (Lit::isa(sr) != 2) slice->blame("a TMA-filled panel stages a slice of a matrix").bail();
+            auto start = rewrite(box->proj(3, 0));
+            auto rows = Lit::isa(box->proj(3, 2)->proj(2, 0)), cols = Lit::isa(box->proj(3, 2)->proj(2, 1));
+            auto size      = Lit::as(core::op(core::trait::size, sT));
+            auto [mn, lbo] = wgmma_major(targets[j]);
+            if (!rows || !cols || *cols * size % 128 || (!mn && *cols * size != 128))
+                slice->blame("a TMA-filled panel holds rows of 128 bytes or atoms of them").bail();
+            auto atom = 128 / size;
+            // The descriptor is the global matrix's, built where the matrix is known outside the kernel.
+            auto map          = w.app(w.app(w.app(w.annex<gpu::buf_tensor_map>(), sT), ss),
+                                      {outside(source), w.lit_nat(*rows), w.lit_nat(atom)});
+            auto [tr, ts, tT] = Axm::as<buffer::Buf>(targets[j]->type())->args<3>();
+            auto zero         = w.tuple(
+                DefVec(Lit::as(tr), [&](size_t d) { return w.lit_idx(Lit::as(ts->proj(Lit::as(tr), d)), 0); }));
+            auto base = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), tT), {tr, ts}), {targets[j], zero});
+            auto row0 = i32(start->proj(2, 0)), col0 = i32(start->proj(2, 1));
+            bytes += *rows * *cols * size;
+            for (u64 a = 0; a != *cols / atom; ++a) {
+                auto dst = w.call(core::wrap::add, core::Mode::none, Defs{base, w.lit_i32(a * *rows * 128)});
+                auto col = w.call(core::wrap::add, core::Mode::none, Defs{col0, w.lit_i32(a * atom)});
+                loads.push_back([=, &w](const Def* m, const Def* bar) {
+                    return w.app(w.annex<gpu::tma_load_if>(), {m, dst, map, col, row0, bar, leader()});
+                });
+            }
+            (void)lbo;
+        }
+        auto bar = bar_at(slot);
+        at       = w.app(w.annex<gpu::mbar_expect_tx_if>(), {at, bar, w.lit_i32(bytes), leader()});
+        for (auto& load : loads)
+            at = load(at, bar);
+        pop();
+        return at;
+    };
     // Fills block @p block's panels into @p targets after @p at and commits them as one group.
     auto fill_block = [&](const Def* at, const Def* block, const DefVec& targets) {
         auto future = old.mut_lam(parameter->type()->as<Pi>());
@@ -3397,8 +3469,17 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         pop();
         return w.app(w.annex<gpu::async_commit>(), at);
     };
+    tma = tma && panels != 0;
+    if (tma) {
+        std::tie(mem, bars) = buffer::op_alloc(w.lit_nat(1), w.tuple({w.lit_nat(ring.size())}), w.type_i64(),
+                                               w.app(w.annex<gpu::shared_scope>(), mem))
+                                  ->projs<2>();
+        for (u64 s = 0; s != ring.size(); ++s)
+            mem = w.app(w.annex<gpu::mbar_init_if>(), {mem, bar_at(w.lit_nat(s)), w.lit_i32(1), leader()});
+        mem = w.app(w.annex<gpu::fence>(), mem);
+    }
     for (u64 s = 0; s + 1 < ring.size(); ++s)
-        mem = fill_block(mem, w.lit_nat(s), ring[s]);
+        mem = tma ? fill_tma(mem, w.lit_nat(s), ring[s], w.lit_nat(s)) : fill_block(mem, w.lit_nat(s), ring[s]);
     auto state = DefVec{mem, buffer};
     for (auto& buffers : ring)
         state.insert(state.end(), buffers.begin(), buffers.end());
@@ -3407,8 +3488,13 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     auto start       = run->var(2, 0);
     auto exit        = run->ret_var();
     if (panels != 0) {
-        auto done = w.mut_con(start->type())->set("tileFoldDone");
-        done->app(true, exit, w.tuple({w.app(w.annex<gpu::async_wait>(), done->var(width, 0)), done->var(width, 1)}));
+        auto done    = w.mut_con(start->type())->set("tileFoldDone");
+        auto settled = w.app(w.annex<gpu::async_wait>(), done->var(width, 0));
+        // The last `depth - 1` fills refill blocks no step reads; they land before the panels go away.
+        for (u64 k = *literal_count; tma && k + 1 < *literal_count + ring.size(); ++k)
+            settled = w.app(w.annex<gpu::mbar_wait_at>(),
+                            {settled, bar_at(w.lit_nat(k % ring.size())), w.lit_i32(k / ring.size() % 2)});
+        done->app(true, exit, w.tuple({settled, done->var(width, 1)}));
         exit = done;
     }
     auto remaining = first_scalar ? w.lit_nat(*literal_count - 1) : rewrite(count);
@@ -3438,15 +3524,25 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 forward_layouts(ring[0][j], at_stage(s, j));
         }
         // The current block's group is the oldest: the younger `depth - 2` may still be pending.
-        auto waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat(ring.size() - 2)), loop_mem);
-        // `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it first.
-        if (fragments && fragments->group) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
+        const Def* waited;
+        if (tma) {
+            auto depth  = w.lit_nat(ring.size());
+            auto parity = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{iteration, depth}), w.lit_nat(2)});
+            waited      = w.app(w.annex<gpu::mbar_wait_at>(),
+                                {loop_mem, bar_at(w.call(core::nat::rem, Defs{iteration, depth})), i32(parity)});
+        } else {
+            waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat(ring.size() - 2)), loop_mem);
+            // `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it first.
+            if (fragments && fragments->group) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
+        }
         loop_mem = w.app(w.annex<gpu::fence>(), waited);
         // The last blocks fill their own panels once more, which keeps the loop body free of a branch.
         auto next = w.app(w.annex(tensor::pipeline_plan::refill_block),
                           {iteration, w.lit_nat(ring.size()), w.lit_nat(*literal_count)});
         auto free = DefVec(panels, [&](size_t j) { return at_stage(ring.size() - 1, j); });
-        loop_mem  = fill_block(loop_mem, next, free);
+        auto slot = w.call(core::nat::rem, Defs{w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)}),
+                                                w.lit_nat(ring.size())});
+        loop_mem  = tma ? fill_tma(loop_mem, next, free, slot) : fill_block(loop_mem, next, free);
     }
     prepare_realizations(root);
     const Def* update;
@@ -3485,7 +3581,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
 
 // A fold step's body without its `tensor.bind` level, `tensor.merge_with` merge and `tensor.pipeline` depth, and those
 // three.
-std::tuple<const Def*, u64, const Def*, u64> LowerToMem::peel_step(const Def* body) const {
+std::tuple<const Def*, u64, const Def*, u64, bool> LowerToMem::peel_step(const Def* body) const {
     auto [stepped, level] = region_body(body);
     const Def* merge      = nullptr;
     if (auto marked = Axm::isa<tensor::merge_with>(stepped)) {
@@ -3497,7 +3593,9 @@ std::tuple<const Def*, u64, const Def*, u64> LowerToMem::peel_step(const Def* bo
         depth   = Lit::as(marked->decurry()->arg());
         stepped = marked->arg();
     }
-    return {stepped, level, merge, depth};
+    auto tma = Axm::isa<tensor::fill_tma>(stepped);
+    if (tma) stepped = tma->arg();
+    return {stepped, level, merge, depth, bool(tma)};
 }
 
 // The binary `op` of a combiner `λ (acc, ins). op (acc, e)` (or `op (e, acc)`) whose `e` is free of `acc`: with the
