@@ -433,6 +433,11 @@ const Def* World::app(const Def* callee, const Def* arg) {
     // always β-reduce non-recursive, non-parametric lambdas
     if (auto imm = callee->isa_imm<Lam>()) return imm->body();
 
+    // A curried Lam whose inner Lam is still being filled, as a recursive call inside that body sees it, stays applied.
+    auto filling = [](const Lam* lam) {
+        auto inner = lam->body()->isa_mut<Lam>();
+        return inner && !inner->is_set();
+    };
     if (auto lam = callee->isa_mut<Lam>(); lam && lam->is_set()) {
         auto var = lam->has_var();
 
@@ -441,7 +446,7 @@ const Def* World::app(const Def* callee, const Def* arg) {
         if (var && arg == var) return lam->body();
 
         // β-reduce or partially evaluate a set, mutable Lam.
-        if (lam->filter() != lit_ff()) {
+        if (lam->filter() != lit_ff() && !filling(lam)) {
             if (!var) {
                 if (lam->filter() == lit_tt()) return lam->body();
             } else if (is_frozen()) {

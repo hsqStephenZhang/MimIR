@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_split_blocks.mim:27:{{.*}}error: a reduction split over a cluster needs a multiple of its size in blocks
+// CHECK: tile_split_blocks.mim:27:{{.*}}error: 4 blocks do not split evenly over a cluster of 8
 
 // A cluster that splits a reduction gives each work-group the same number of blocks.
 

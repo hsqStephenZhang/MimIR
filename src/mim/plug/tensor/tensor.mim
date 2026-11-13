@@ -2426,15 +2426,15 @@ pub mod check
         "a parallel level cannot tile a reduction loop",
         "a reduction level cannot tile a parallel loop",
         "a reduction level tiles a single reduction loop",
-        "a level promotes an input the root does not read",
-        "a lane reduction splits its block into a power of two of at most 32 lanes",
+        "a level promotes input bits {} of {} inputs",
+        "a lane reduction splits its block of {} into blocks of {}, not into a power of two of at most 32 lanes",
         "a tensor-core tile does not divide its block",
         "a tensor-core level reads A and B from promoted panels",
-        "a cluster's size does not divide its work-groups",
-        "a reduction split over a cluster needs a multiple of its size in blocks",
+        "{} work-groups do not form clusters of {}",
+        "{} blocks do not split evenly over a cluster of {}",
         "a specialized reduction does not share panels across a cluster",
         "a TMA reduction in a persistent work-group must be specialized",
-        "a persistent ring needs a multiple of its slots in blocks per tile",
+        "{} blocks per tile do not fill whole cycles of a persistent ring of {} slots",
         "a bound level cannot peel its tail",
         "a vector level marks a single parallel loop with size 1 or splits the last reduction loop");
 
@@ -2444,134 +2444,129 @@ pub mod check
     lam both (x y: Bool): Bool = core.bit2.and 0 (x, y);
     lam either (x y: Bool): Bool = core.bit2.or 0 (x, y);
     lam positive (x: Nat): Nat = (x, 1)#(x == 0);
-    lam or_else (code next: Nat): Nat = (code, next)#(code == 0);
-    lam fail (broken: Bool, code: Nat): Nat = (0, code)#broken;
+    /// A verdict is the index of the broken rule into `messages`, 0 if none, and up to two values the message reports.
+    let Verdict = «3; Nat»;
+    let ok      = (0, 0, 0);
+    lam or_else (verdict next: Verdict): Verdict = (verdict, next)#(verdict#0₃ == 0);
+    lam fail_with (broken: Bool, code x y: Nat): Verdict = (ok, (code, x, y))#broken;
+    lam fail (broken: Bool, code: Nat): Verdict = fail_with (broken, code, 0, 0);
     lam stages (staged: Bool, promote bit: Nat): Bool = either (staged, core.nat.rem (promote / bit, 2) == 1);
     /// The extent of the one reduction loop a level tiles and its block size.
     lam reduced {n: Nat} (block sizes: «n; Nat»): «2; Nat» = (sum ‹d: n; (0, block#d)#(sizes#d != 0)›, positive (sum sizes));
 
-    lam parallel_sizes {n: Nat} (ro: Nat, sizes: «n; Nat»): Nat =
+    lam parallel_sizes {n: Nat} (ro: Nat, sizes: «n; Nat»): Verdict =
         fail (any ‹d: n; both (sizes#d != 0, ro <= core.idx2nat d)›, 1);
-    lam reduction_sizes {n: Nat} (ro: Nat, sizes: «n; Nat»): Nat =
+    lam reduction_sizes {n: Nat} (ro: Nat, sizes: «n; Nat»): Verdict =
         or_else (fail (any ‹d: n; both (sizes#d != 0, core.idx2nat d < ro)›, 2), fail (1 < count ‹d: n; sizes#d != 0›, 3));
-    lam promotes (nis promote: Nat): Nat = fail (vec.fold.r @(Nat, Nat) @nis core.nat.mul (‹nis; 2›, 1) <= promote, 4);
-    lam lanes {n: Nat} (block sizes: «n; Nat»): Nat =
+    lam promotes (nis promote: Nat): Verdict = fail_with (vec.fold.r @(Nat, Nat) @nis core.nat.mul (‹nis; 2›, 1) <= promote, 4, promote, nis);
+    lam lanes {n: Nat} (block sizes: «n; Nat»): Verdict =
         let (k, s) = reduced (block, sizes);
         let count  = k / s;
-        fail (both (k != 0, either (core.nat.rem (k, s) != 0, (tt, ff)#(any ‹i: 6; count == (1, 2, 4, 8, 16, 32)#i›))), 5);
-    lam mma {n: Nat} (shape block: «n; Nat», a b: Bool): Nat = or_else ((6, 0)#(divides (shape, block)), (7, 0)#(both (a, b)));
-    lam clusters {n: Nat} (cluster split: Nat, block sizes: «n; Nat»): Nat =
+        fail_with (both (k != 0, either (core.nat.rem (k, s) != 0, (tt, ff)#(any ‹i: 6; count == (1, 2, 4, 8, 16, 32)#i›))), 5, k, s);
+    lam mma {n: Nat} (shape block: «n; Nat», a b: Bool): Verdict =
+        or_else (fail ((tt, ff)#(divides (shape, block)), 6), fail ((tt, ff)#(both (a, b)), 7));
+    lam clusters {n: Nat} (cluster split: Nat, block sizes: «n; Nat»): Verdict =
         let groups = vec.fold.r @(Nat, Nat) @n core.nat.mul
             (‹d: n; (1, (block#d + positive (sizes#d) - 1) / positive (sizes#d))#(sizes#d != 0)›, 1);
-        fail (both (both (cluster != 0, split == 0), core.nat.rem (groups, positive cluster) != 0), 8);
-    lam splits {n: Nat} (cluster split: Nat, block sizes: «n; Nat»): Nat =
+        fail_with (both (both (cluster != 0, split == 0), core.nat.rem (groups, positive cluster) != 0), 8, groups, cluster);
+    lam splits {n: Nat} (cluster split: Nat, block sizes: «n; Nat»): Verdict =
         let (k, s) = reduced (block, sizes);
-        fail (both (split != 0, either (core.nat.rem (k, s) != 0, core.nat.rem (k / s, positive cluster) != 0)), 9);
-    lam ring {n: Nat} (persistent: Bool, pipeline: Nat, block sizes: «n; Nat»): Nat =
+        fail_with (both (split != 0, either (core.nat.rem (k, s) != 0, core.nat.rem (k / s, positive cluster) != 0)), 9, k / s, cluster);
+    lam ring {n: Nat} (persistent: Bool, pipeline: Nat, block sizes: «n; Nat»): Verdict =
         let (k, s) = reduced (block, sizes);
-        fail (both (both (persistent, pipeline != 0), core.nat.rem (k / s, positive pipeline) != 0), 12);
-    lam peels {n: Nat} (tail: Nat, block sizes: «n; Nat»): Nat =
+        fail_with (both (both (persistent, pipeline != 0), core.nat.rem (k / s, positive pipeline) != 0), 12, k / s, pipeline);
+    lam peels {n: Nat} (tail: Nat, block sizes: «n; Nat»): Verdict =
         fail (both (tail == 1, any ‹d: n; both (both (sizes#d != 0, sizes#d < block#d),
                                                  core.nat.rem (block#d, positive (sizes#d)) != 0)›), 13);
-    lam vector {n: Nat} (ro: Nat, sizes: «n; Nat»): Nat =
+    lam vector {n: Nat} (ro: Nat, sizes: «n; Nat»): Verdict =
         let last = core.nat.sub (n, 1);
         fail (either (any ‹d: n; both (both (sizes#d != 0, ro <= core.idx2nat d), core.idx2nat d != last)›,
                       either (any ‹d: n; both (both (sizes#d != 0, core.idx2nat d < ro), sizes#d != 1)›,
                               1 < count ‹d: n; both (sizes#d != 0, core.idx2nat d < ro)›)), 14);
 
     lam wg_ok {n: Nat, Acc Mma: *, g t: «n; Nat»}
-        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: WarpgroupLevels (n, Acc, Mma, g, t)): Nat =
-        lam go (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: WarpgroupLevels (n, Acc, Mma, g, t))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (sizes, _, promote, _, rest) =>
-                    or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                        go (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                               persistent, rest)))
-                | 2 (shape, _, _) => mma (shape, block, a, b)
-                | 3 (sizes, _, promote, _, rest) =>
-                    or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (persistent, 11),
-                    or_else (splits (cluster, split, block, sizes),
-                        go (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                               persistent, rest)))))
-                | 4 (sizes, _, promote, pipeline, _, _, rest) =>
-                    or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (cluster != 0, 10),
-                    or_else (ring (persistent, pipeline, block, sizes),
-                        go (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                               persistent, rest)))));
-        go (ro, nis, block, a, b, cluster, split, persistent, l);
-    lam warp_ok {n: Nat, Acc Mma: *, w: «n; Nat»} (ro nis: Nat, block: «n; Nat», a b: Bool, l: WarpLevels (n, Acc, Mma, w)): Nat =
-        lam go (ro nis: Nat, block: «n; Nat», a b: Bool, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (sizes, _, promote, _, rest) =>
-                    or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                        go (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), rest)))
-                | 2 (shape, _, _) => mma (shape, block, a, b);
-        go (ro, nis, block, a, b, l);
-    lam item_ok {n: Nat, Acc Mma: *} (ro nis: Nat, block: «n; Nat», a b: Bool, l: ItemLevels (n, Acc, Mma)): Nat =
-        lam go (ro nis: Nat, block: «n; Nat», a b: Bool, l: ItemLevels (n, Acc, Mma))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (sizes, _, rest) => or_else (parallel_sizes (ro, sizes), go (ro, nis, within (block, sizes), a, b, rest))
-                | 2 (sizes, _, promote, _, rest) =>
-                    or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                        go (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), rest)))
-                | 3 (sizes, rest) => or_else (vector (ro, sizes), go (ro, nis, block, a, b, rest))
-                | 4 (sizes, _, rest) =>
-                    or_else (reduction_sizes (ro, sizes), or_else (lanes (block, sizes),
-                        go (ro, nis, within (block, sizes), a, b, rest)));
-        go (ro, nis, block, a, b, l);
+        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: WarpgroupLevels (n, Acc, Mma, g, t))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (sizes, _, promote, _, rest) =>
+                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
+                    wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
+                           persistent, rest)))
+            | 2 (shape, _, _) => mma (shape, block, a, b)
+            | 3 (sizes, _, promote, _, rest) =>
+                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (persistent, 11),
+                or_else (splits (cluster, split, block, sizes),
+                    wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
+                           persistent, rest)))))
+            | 4 (sizes, _, promote, pipeline, _, _, rest) =>
+                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (cluster != 0, 10),
+                or_else (ring (persistent, pipeline, block, sizes),
+                    wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
+                           persistent, rest)))));
+    lam warp_ok {n: Nat, Acc Mma: *, w: «n; Nat»} (ro nis: Nat, block: «n; Nat», a b: Bool, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (sizes, _, promote, _, rest) =>
+                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
+                    warp_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), rest)))
+            | 2 (shape, _, _) => mma (shape, block, a, b);
+    lam item_ok {n: Nat, Acc Mma: *} (ro nis: Nat, block: «n; Nat», a b: Bool, l: ItemLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (sizes, _, rest) => or_else (parallel_sizes (ro, sizes), item_ok (ro, nis, within (block, sizes), a, b, rest))
+            | 2 (sizes, _, promote, _, rest) =>
+                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
+                    item_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), rest)))
+            | 3 (sizes, rest) => or_else (vector (ro, sizes), item_ok (ro, nis, block, a, b, rest))
+            | 4 (sizes, _, rest) =>
+                or_else (reduction_sizes (ro, sizes), or_else (lanes (block, sizes),
+                    item_ok (ro, nis, within (block, sizes), a, b, rest)));
     lam group_ok {n: Nat, Acc Mma: *, g: «n; Nat»}
-        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: GroupLevels (n, Acc, Mma, g)): Nat =
-        lam go (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: GroupLevels (n, Acc, Mma, g))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (sizes, _, rest) =>
-                    or_else (parallel_sizes (ro, sizes),
-                             go (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
-                | 2 (sizes, tail, rest) =>
-                    or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
-                        item_ok (ro, nis, within (block, sizes), a, b, rest)))
-                | 3 (sizes, _, promote, _, rest) =>
-                    or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                        go (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
-                                  split, persistent, rest)))
-                | 4 (sizes, _, _, rest) =>
-                    or_else (reduction_sizes (ro, sizes),
-                             go (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
-                | 5 (sizes, rest) => or_else (vector (ro, sizes), go (ro, nis, block, a, b, cluster, split, persistent, rest))
-                | 6 (sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, Mma, within (g, sizes))) =>
-                    or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
-                        warp_ok (ro, nis, within (block, sizes), a, b, rest)))
-                | 7 (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, sizes)) =>
-                    or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
-                        wg_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest)));
-        go (ro, nis, block, a, b, cluster, split, persistent, l);
+        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: GroupLevels (n, Acc, Mma, g))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (sizes, _, rest) =>
+                or_else (parallel_sizes (ro, sizes),
+                         group_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
+            | 2 (sizes, tail, rest) =>
+                or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
+                    item_ok (ro, nis, within (block, sizes), a, b, rest)))
+            | 3 (sizes, _, promote, _, rest) =>
+                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
+                    group_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
+                              split, persistent, rest)))
+            | 4 (sizes, _, _, rest) =>
+                or_else (reduction_sizes (ro, sizes),
+                         group_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
+            | 5 (sizes, rest) => or_else (vector (ro, sizes), group_ok (ro, nis, block, a, b, cluster, split, persistent, rest))
+            | 6 (sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, Mma, within (g, sizes))) =>
+                or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
+                    warp_ok (ro, nis, within (block, sizes), a, b, rest)))
+            | 7 (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, sizes)) =>
+                or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
+                    wg_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest)));
     lam tile_ok {n: Nat, Acc Mma: *}
-        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: TileLevels (n, Acc, Mma)): Nat =
-        lam go (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (sizes, _, rest) =>
-                    or_else (parallel_sizes (ro, sizes),
-                             go (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
-                | 2 (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma, sizes)) =>
-                    or_else (parallel_sizes (ro, sizes), or_else (promotes (nis, promote),
-                    or_else (peels (tail, block, sizes), or_else (clusters (cluster, split, block, sizes),
-                        group_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
-                                  split, persistent, rest)))))
-                | 3 (sizes, _, promote, rest) =>
-                    or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                        go (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
-                                 split, persistent, rest)))
-                | 4 (sizes, rest) => or_else (vector (ro, sizes), go (ro, nis, block, a, b, cluster, split, persistent, rest))
-                | 5 (size, _, cut, rest) => go (ro, nis, block, a, b, size, cut, persistent, rest)
-                | 6 (_, rest) => go (ro, nis, block, a, b, cluster, split, tt, rest);
-        go (ro, nis, block, a, b, cluster, split, persistent, l);
+        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (sizes, _, rest) =>
+                or_else (parallel_sizes (ro, sizes),
+                         tile_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
+            | 2 (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma, sizes)) =>
+                or_else (parallel_sizes (ro, sizes), or_else (promotes (nis, promote),
+                or_else (peels (tail, block, sizes), or_else (clusters (cluster, split, block, sizes),
+                    group_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
+                              split, persistent, rest)))))
+            | 3 (sizes, _, promote, rest) =>
+                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
+                    tile_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
+                             split, persistent, rest)))
+            | 4 (sizes, rest) => or_else (vector (ro, sizes), tile_ok (ro, nis, block, a, b, cluster, split, persistent, rest))
+            | 5 (size, _, cut, rest) => tile_ok (ro, nis, block, a, b, size, cut, persistent, rest)
+            | 6 (_, rest) => tile_ok (ro, nis, block, a, b, cluster, split, tt, rest);
 
     anx lam levels {T: *, r: Nat, s: «r; Nat»}
-        (op: Tensor r s T, l: TileLevels (root_loops op, root_acc op, root_contraction op)): Nat =
+        (op: Tensor r s T, l: TileLevels (root_loops op, root_acc op, root_contraction op)): Verdict =
         tile_ok (parallel op, inputs op, extents op, ff, ff, 0, 0, ff, l);
 end
 axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *}

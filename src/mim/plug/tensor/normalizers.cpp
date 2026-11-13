@@ -882,12 +882,17 @@ const Def* normalize_tile_req(const Def*, const Def* callee, const Def* arg) {
     auto [T, r, s, M, K]          = callee->as<App>()->args<5>();
     auto entry                    = fe::lookup(w.annexes().flags2entry(), flags_t(check::levels));
     if (!entry) return nullptr;
-    auto code = Lit::isa(w.app(w.app(entry->def, {T, r, s}), {op, levels}));
-    if (code && *code) {
-        auto messages = w.annex(check::messages);
-        levels->blame("{}", tuple2str(messages->proj(messages->num_projs(), *code))).bail();
-    }
-    return nullptr;
+    auto verdict = w.app(w.app(entry->def, {T, r, s}), {op, levels});
+    auto code    = Lit::isa(verdict->proj(3, 0));
+    if (!code || !*code) return nullptr;
+    auto messages = w.annex(check::messages);
+    auto text     = tuple2str(messages->proj(messages->num_projs(), *code));
+    for (size_t i = 1; i != 3; ++i)
+        if (auto at = text.find("{}"); at != std::string::npos) {
+            auto value = Lit::isa(verdict->proj(3, i));
+            text.replace(at, 2, value ? std::to_string(*value) : "?");
+        }
+    levels->blame("{}", text).bail();
 }
 
 const Def* normalize_within(const Def*, const Def*, const Def* arg) {

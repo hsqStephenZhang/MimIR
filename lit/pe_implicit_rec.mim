@@ -1,0 +1,31 @@
+// RUN: %mim %s
+
+// A lam with implicit parameters may recurse into itself, directly or through a `mutual` group, under partial evaluation.
+
+plugin core;
+plugin refly;
+
+use core.ops.n;
+
+rec List = | Nil | Cons: [Nat, List];
+
+lam len {T: *} (t: T, l: List)@(core.pe.is_closed l): Nat =
+    match l with
+        | Nil         => 0
+        | Cons (_, r) => 1 + len (t, r);
+
+mutual
+    lam even {T: *} (t: T, l: List)@(core.pe.is_closed l): Bool =
+        match l with
+            | Nil         => tt
+            | Cons (_, r) => odd (t, r);
+    lam odd {T: *} (t: T, l: List)@(core.pe.is_closed l): Bool =
+        match l with
+            | Nil         => ff
+            | Cons (_, r) => even (t, r);
+end
+
+let xs = List#Cons (8, List#Cons (16, List#Nil));
+let _  = refly.struc.e (len (tt, xs), 2);
+let _  = refly.struc.e (even (0, xs), tt);
+let _  = refly.struc.e (odd (0, xs), ff);

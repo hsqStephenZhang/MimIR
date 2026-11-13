@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_persistent_ring.mim:27:{{.*}}error: a persistent ring needs a multiple of its slots in blocks per tile
+// CHECK: tile_persistent_ring.mim:27:{{.*}}error: 4 blocks per tile do not fill whole cycles of a persistent ring of 3 slots
 
 // A persistent ring starts every tile at slot 0.
 

@@ -55,11 +55,12 @@ PE 下的 Mim 有一般递归（`go` + filter，嵌套深度受 `--pe-fuel` 限�
 - 两份规则的一致性没有证明：Mim 规则相当于规格，`lower_to_mem` 是实现。
   Mim 放过而 lowering 拒绝会被晚检兜住；Mim 拒绝而 lowering 能处理则是误报。目前只靠 lit 约束。
 - PE 的限制：
-  - 带隐式参数的 lam 在自身体内递归，或在 `mutual` 中被前向引用时，调用会被归约成实参元组，需改由体内无隐式参数的 `go` 递归；
+  - 带隐式参数的 lam 在自身体内递归，或在 `mutual` 中被前向引用时，调用曾被归约到一个空壳 lam 上；
+    已在 `World::app` 修复：外层 lam 的体是尚未 set 的内层 lam 时不展开（`lit/pe_implicit_rec.mim`），规则不再需要体内的 `go` 包装；
   - 元组选择 `(a, b)#c` 两边都求值，递归只能放在 `match` arm 里；
-  - 必须加 `is_closed` filter，否则定义体里无限展开直到耗尽 fuel；
+  - 递归规则要带 `@(core.pe.is_closed l)` filter，否则 arm 引用了 lam 自身的变量时，每次 PE 都重建 arm，在符号链上无限展开（与 `lit/docs/iter.mim` 的写法一致）；
   - normalizer 分不清规则自己的变量和用户的符号尺寸，所以未知长度在反射处记为 0；
-  - 报错只带规则编号，丢了具体数值（原来如 “64 / 1”）。
+  - 规则返回 `Verdict = «3; Nat»`（规则编号和两个值），`messages` 用 `{}` 占位，报错带上具体数值，例如 “2 work-groups do not form clusters of 4”。
 - 同一 `mod` 的 annex 共用一个 tag；插件最多 256 个 tag。
 
 ## 处理方式（分层）

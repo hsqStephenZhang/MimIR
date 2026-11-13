@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_cluster_groups.mim:27:{{.*}}error: a cluster's size does not divide its work-groups
+// CHECK: tile_cluster_groups.mim:27:{{.*}}error: 2 work-groups do not form clusters of 4
 
 // A cluster's size divides the work-groups it groups.
 
