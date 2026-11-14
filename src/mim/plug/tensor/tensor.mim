@@ -2553,6 +2553,9 @@ pub mod check
     axm parallel: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Nat, normalize_check;
     axm inputs: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Nat, normalize_check;
     axm extents: {T: *, r: Nat} → {s: «r; Nat»} → [op: Tensor r s T] → «root_loops op; Nat», normalize_check;
+    /// The target's compute capability `-X nvptx:sm` names, as `2 · cc + a` for an architecture-specific `sm_<cc>a`, or
+    /// 0 when none is named and the backend picks the device's later.
+    axm target: [] → Nat, normalize_check;
 
     anx let messages = ("",
         "a parallel level cannot tile a reduction loop",
@@ -2570,7 +2573,10 @@ pub mod check
         "a bound level cannot peel its tail",
         "a vector level marks a single parallel loop with size 1 or splits the last reduction loop",
         "a specialized reduction needs at least two blocks, not {}",
-        "warpgroup ping-pong alternates two consumers, not {}");
+        "warpgroup ping-pong alternates two consumers, not {}",
+        "a warpgroup level runs wgmma, which needs sm_90a, not sm_{}",
+        "TMA and clusters need sm_90 or newer, not sm_{}",
+        "a warp's mma needs sm_80 or newer, not sm_{}");
 
     lam any {n: Nat} (p: «n; Bool»): Bool = vec.fold.r @(Bool, Bool) @n (core.bit2.or 0) (p, ff);
     lam count {n: Nat} (p: «n; Bool»): Nat = vec.fold.r @(Nat, Nat) @n core.nat.add (‹d: n; (0, 1)#(p#d)›, 0);
@@ -2619,6 +2625,11 @@ pub mod check
         let known  = vec.fold.r @(Bool, Bool) @n (core.bit2.and 0) (‹d: n; core.bit2.or 0 (t#d == 0, g#d != 0)›, tt);
         core.select (known, vec.fold.r @(Nat, Nat) @n core.nat.mul
             (‹d: n; (1, (g#d + positive (t#d) - 1) / positive (t#d))#(t#d != 0)›, 1), 0);
+    /// Whether a named target lacks capability `cc`, or its architecture-specific instructions when `specific`.
+    lam lacks (cc: Nat) (specific: Bool): Bool =
+        let t = target ();
+        both (t != 0, either (t / 2 < cc, both (specific, either (t / 2 != cc, t % 2 == 0))));
+    lam needs (cc: Nat) (specific: Bool) (code: Nat): Verdict = fail_with (lacks cc specific, code, target () / 2, 0);
     lam specialized {n: Nat} (block sizes: «n; Nat»): Verdict =
         let (k, s) = reduced (block, sizes);
         fail_with (both (k != 0, k / s < 2), 15, k / s, 0);
@@ -2642,10 +2653,10 @@ pub mod check
                            persistent, warpgroups, rest)))
             | 2 (shape, _, _) => mma (shape, block, a, b)
             | 3 (sizes, _, promote, _, rest) =>
-                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (persistent, 11),
+                or_else (needs 90 ff 18, or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (persistent, 11),
                 or_else (splits (cluster, split, block, sizes),
                     wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, warpgroups, rest)))))
+                           persistent, warpgroups, rest))))))
             | 4 (sizes, _, promote, pipeline, pingpong, _, rest) =>
                 or_else (fail_with (both (both (pingpong == 1, warpgroups != 0), warpgroups != 2), 16, warpgroups, 0),
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (cluster != 0, 10),
@@ -2658,7 +2669,7 @@ pub mod check
             | 1 (sizes, _, promote, _, rest) =>
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
                     warp_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), rest)))
-            | 2 (shape, _, _) => mma (shape, block, a, b);
+            | 2 (shape, _, _) => or_else (needs 80 ff 19, mma (shape, block, a, b));
     lam item_ok {n: Nat, Acc Mma: *} (ro nis: Nat, block: «n; Nat», a b: Bool, l: ItemLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
         match l with
             | 0 => ok
@@ -2693,7 +2704,8 @@ pub mod check
                     warp_ok (ro, nis, within (block, sizes), a, b, rest)))
             | 7 (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, sizes)) =>
                 or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
-                    wg_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, consumers (block, sizes), rest)));
+                    or_else (needs 90 tt 17,
+                    wg_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, consumers (block, sizes), rest))));
     lam tile_ok {n: Nat, Acc Mma: *}
         (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
         match l with
@@ -2711,7 +2723,7 @@ pub mod check
                     tile_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
                              split, persistent, rest)))
             | 4 (sizes, rest) => or_else (vector (ro, sizes), tile_ok (ro, nis, block, a, b, cluster, split, persistent, rest))
-            | 5 (size, _, cut, rest) => tile_ok (ro, nis, block, a, b, size, cut, persistent, rest)
+            | 5 (size, _, cut, rest) => or_else (needs 90 ff 18, tile_ok (ro, nis, block, a, b, size, cut, persistent, rest))
             | 6 (_, rest) => tile_ok (ro, nis, block, a, b, cluster, split, tt, rest);
 
     anx lam levels {T: *, r: Nat, s: «r; Nat»}

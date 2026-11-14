@@ -856,6 +856,16 @@ const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
 template<check id>
 const Def* normalize_check(const Def*, const Def*, const Def* op) {
     auto& w = op->world();
+    if constexpr (id == check::target) {
+        auto sm = arg_value(w.driver().args("nvptx"), "sm");
+        if (!sm) return w.lit_nat_0();
+        auto text = std::string(*sm);
+        if (text.starts_with("sm_")) text = text.substr(3);
+        auto specific = !text.empty() && text.back() == 'a';
+        if (specific) text.pop_back();
+        if (text.empty() || !std::ranges::all_of(text, [](char c) { return std::isdigit(c); })) return w.lit_nat_0();
+        return w.lit_nat(2 * std::stoull(text) + (specific ? 1 : 0));
+    }
     if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) {
         auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
         if (auto ranks = mr.ranks()) {

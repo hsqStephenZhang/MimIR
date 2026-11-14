@@ -167,3 +167,5 @@ D6 (覆盖面) 与上面并行；动态形状依赖 assert 语义
 - **D4 第一步**：`bench/tune/tune.py` 枚举模板的调度参数，以 elaboration（规则）剪枝、实测排序。softmax 4096² 找到 0.0314 ms（手选 0.0385），addmm 确认手选最优。
   搜索暴露了规则还缺的一类：资源可行性。超过 1024 个 work-item 的 work-group 由 outline 分轮次执行，正确但慢，大 grid 下崩溃（已记录、未修），暂按代价剪掉。
 - **D7 第一步**：nvptx 后端对 `afn` 模式的 F32 超越函数改调 `__nv_fast_*`，softmax 4096² 0.0314 → 0.0259 ms，cross_entropy 1.168 → 0.984 ms（`lit/nvptx/fast_math.mim`）。
+- **D5 第一步**：规则读取 `-X nvptx:sm` 指定的目标（`check.target`），warpgroup 层（wgmma）要求 sm_90a，TMA 与 cluster 要求 sm_90 以上，warp mma 要求 sm_80 以上；
+  为别的目标写的调度在调用处被拒绝（`lit/error/target_wgmma.mim`、`target_mma.mim`），未指定目标时由后端探测、规则放过。
