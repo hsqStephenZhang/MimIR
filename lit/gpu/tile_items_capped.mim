@@ -1,0 +1,34 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o /dev/null -VVVV 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_items_capped_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Work-groups of 8×8 cap a 20×12 output, so a group's work-item level tiles a runtime extent of at most 8.
+// It launches the items its bound allows and skips those past the extent, both as TileFuse realizes it and as the
+// law's meaning.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+lam gemm (a: tensor.Tensor 2 (20, 16) F32, b: tensor.Tensor 2 (16, 12) F32) =
+    law.of_map_reduce ((20, 12), (20, 12, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+
+extern fun nd_req (a: tensor.Tensor 2 (20, 16) F32, b: tensor.Tensor 2 (16, 12) F32): tensor.Tensor 2 (20, 12) F32 =
+    return (law.req (gemm (a, b), (), serial_group ((8, 8, 0), 0, 0, group_item ((2, 2, 0), 0, item_done ())), default_control));
+extern fun nd_run (a: tensor.Tensor 2 (20, 16) F32, b: tensor.Tensor 2 (16, 12) F32): tensor.Tensor 2 (20, 12) F32 =
+    return (law.run (gemm (a, b), serial_group ((8, 8, 0), 0, 0, group_item ((2, 2, 0), 0, item_done ())), default_control));
+
+// CHECK-COUNT-2: gpu.outline tileGroups{{.*}}: 6 groups × 16 items

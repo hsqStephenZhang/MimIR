@@ -126,7 +126,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   这一版逐个 KV 位置做点积，不用张量核，只证明语义与调度；性能要等矩阵形式的块（行块 × KV 块的 `mma`）进入解释器。
   记下的限制：
   - 在 `math.mode.fast` 下，种子里的 `-inf` 经 `sub`/`fmax` 成为 poison（`S = 1` 时 LLVM 直接折叠），所以这里用 `math.mode.none`；现有的 `sdpa_online_inputs` 同样让 `-inf` 经过给定模式的 `sub`，值得复查。
-  - 解释器的绑定层要求字面的 extent：组块不整除时（如 `M = 5`、组块 2），内层 work-item 层的 extent 不是字面量，`lower_to_mem` 拒绝；`TileFuse` 用存储上界和 `clip_sched` 处理，解释器还没有。
+  - 已修：组块不整除时（如 `M = 5`、组块 2），内层绑定层的 extent 是运行时值，`lower_to_mem` 原先拒绝——`TileFuse` 同样如此，并非只有解释器。现在绑定的 `tiled` 按 `nat_upper` 给出的上界启动，超出运行时 extent 的块跳过（`lit/gpu/tile_items_capped.mim`，两条路径都在 GPU 上执行正确）；注意力的行调度改回不整除的组块 `(1, 2)`。
   - 带 gpu 插件时，没有调度的注意力根（`denote`、`red_par` 的合并）在 GPU 降级中报内存空间不符（`core.M 0` 对 `core.M 1`），与定律无关，尚未查。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；

@@ -1740,12 +1740,20 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         auto lanes  = plan.bind == 2 ? lane_count(region_body(app->arg()).first) : u64(1);
         u64 total   = 1;
         auto counts = fe::Vector<u64>(*rank, 1);
+        // A runtime extent, as an enclosing capped tile has, launches tiles up to its bound; those past it are skipped.
+        auto runtime = fe::Vector<bool>(*rank, false);
         for (size_t d = 0; d != *rank; ++d) {
             if (sizes[d] == 0) return w.app(exit, acc);
             if (whole[d] || (sizes[d] && *sizes[d] == steps[d])) continue;
-            if (!sizes[d]) app->blame("a bound tensor.tiled level requires literal extents").bail();
-            if (*sizes[d] % steps[d] && !cap) app->blame("a bound tensor.tiled level cannot peel its tail").bail();
-            counts[d] = (*sizes[d] + steps[d] - 1) / steps[d];
+            auto size = sizes[d];
+            if (!size) {
+                size = nat_upper(shape->proj(*rank, d));
+                if (!size) app->blame("a bound tensor.tiled level requires literal or bounded extents").bail();
+                if (!cap) app->blame("a bound tensor.tiled level over a runtime extent caps its tail").bail();
+                runtime[d] = true;
+            }
+            if (*size % steps[d] && !cap) app->blame("a bound tensor.tiled level cannot peel its tail").bail();
+            counts[d] = (*size + steps[d] - 1) / steps[d];
             total *= counts[d];
         }
         // A specialized warpgroup region adds a producer warp, which takes the first tile's coordinates.
@@ -1859,14 +1867,14 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
                 offsets[d] = total != 1 ? w.lit_nat_0()
                            : d == 0     ? linear
                                         : w.call(core::nat::mul, Defs{linear, w.lit_nat(steps[d])});
-                extents[d] = whole[d] ? shape->proj(*rank, d) : old.lit_nat(steps[d]);
+                extents[d] = whole[d] ? shape->proj(*rank, d) : runtime[d] ? nullptr : old.lit_nat(steps[d]);
                 continue;
             }
             stride /= counts[d];
             auto quotient = w.call(core::nat::div, Defs{linear, w.lit_nat(stride)});
             auto tile     = w.call(core::nat::rem, Defs{quotient, w.lit_nat(counts[d])});
             offsets[d]    = w.call(core::nat::mul, Defs{tile, w.lit_nat(steps[d])});
-            extents[d]    = *sizes[d] % steps[d] && !padded ? nullptr : old.lit_nat(steps[d]);
+            extents[d]    = runtime[d] || (*sizes[d] % steps[d] && !padded) ? nullptr : old.lit_nat(steps[d]);
         }
         // A warp's lanes share its tile like a work-item's own; only the tensor-core lowering tells them apart.
         auto level     = fe::Restore(bound_level_, std::min<u64>(plan.bind, 2));
@@ -1879,8 +1887,22 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             = old.call(core::nat::mul,
                        Defs{old.call<core::bitcast>(old.type_nat(), old.app(old.annex<gpu::warp_rank>(), old.tuple())),
                             old.lit_nat(16)});
-        auto groups = fe::Restore(group_rows_, plan.bind == 7 ? first : plan.bind == 5 ? nullptr : group_rows_);
-        tile->set(true, emit(*rank, tile_acc, tile_exit));
+        auto groups       = fe::Restore(group_rows_, plan.bind == 7 ? first : plan.bind == 5 ? nullptr : group_rows_);
+        const Def* inside = w.lit_tt();
+        for (size_t d = 0; d != *rank; ++d)
+            if (runtime[d])
+                inside = w.call(
+                    core::bit2::and_, w.lit_nat(2),
+                    w.tuple({inside, w.call(core::ncmp::l, Defs{offsets[d], rewrite(shape->proj(*rank, d))})}));
+        if (inside == w.lit_tt()) {
+            tile->set(true, emit(*rank, tile_acc, tile_exit));
+        } else {
+            auto run  = w.mut_con(tile_acc->type())->set("tileInside");
+            auto skip = w.mut_con(tile_acc->type())->set("tileOutside");
+            run->set(true, emit(*rank, run->var(), tile_exit));
+            skip->app(true, tile_exit, skip->var());
+            tile->app(true, w.extract(w.tuple({skip, run}), inside), tile_acc);
+        }
         if (round_done) {
             auto next = DefVec(round_done->var()->projs(plan.count + 1));
             if (round_fence_) next[0] = w.app(w.annex<gpu::fence>(), next[0]);

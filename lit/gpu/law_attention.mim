@@ -58,11 +58,11 @@ lam attn (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N
 
 extern fun fa_rows (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
     return (law.run (attn (buf q, buf k, buf v),
-        serial_group ((1, 5, 0), 0, 0, group_item ((1, 1, 0), 0, item_red ((0, 0, 3), 1, 0, item_done ()))), default_control));
+        serial_group ((1, 2, 0), 0, 0, group_item ((1, 1, 0), 0, item_red ((0, 0, 3), 1, 0, item_done ()))), default_control));
 extern fun fa_items (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
     return (law.run (attn (buf q, buf k, buf v),
         serial_group ((1, 1, 0), 0, 0, group_red_merge ((0, 0, 2), 1, merge, group_done ())), default_control));
 
 // CHECK-NOT: tensor.tile_fuse {{.*}} red
-// CHECK-DAG: gpu.outline tileGroups{{.*}}: 2 groups × 5 items
+// CHECK-DAG: gpu.outline tileGroups{{.*}}: 6 groups × 2 items
 // CHECK-DAG: gpu.outline tileGroups{{.*}}: 10 groups × 3 items
