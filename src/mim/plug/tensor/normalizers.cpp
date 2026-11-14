@@ -17,6 +17,7 @@
 #include <mim/plug/mem/mem.h>
 
 #include "mim/plug/tensor/tensor.h"
+#include "mim/plug/tensor/phase/panel_layout.h"
 
 namespace mim::plug::tensor {
 
@@ -1291,6 +1292,39 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
         return arg;
     }
     return w.lit_nat(*n);
+}
+
+const Def* normalize_panel_layout(const Def*, const Def*, const Def* arg) {
+    auto [storage, inner, vec, bytes, mode, k_major, items, counts, steps, loop_dim, whole] = arg->projs<11>();
+    auto n = Lit::isa(storage->arity()), m = Lit::isa(counts->arity());
+    auto i = Lit::isa(inner), v = Lit::isa(vec), b = Lit::isa(bytes), md = Lit::isa(mode);
+    auto km = Lit::isa(k_major), it = Lit::isa(items);
+    if (!n || !m || !i || !v || !b || !md || !km || !it) return nullptr;
+    auto literal = [](const Def* def, u64 k) {
+        for (u64 d = 0; d != k; ++d)
+            if (!Lit::isa(def->proj(k, d))) return false;
+        return true;
+    };
+    if (!literal(storage, *n) || !literal(counts, *m) || !literal(steps, *m) || !literal(loop_dim, *n)
+        || !literal(whole, *n))
+        return nullptr;
+    auto reads = std::optional<panel::Reads>();
+    if (*it) {
+        reads.emplace();
+        for (u64 j = 0; j != *m; ++j) {
+            reads->counts.push_back(Lit::as(counts->proj(*m, j)));
+            reads->steps.push_back(Lit::as(steps->proj(*m, j)));
+        }
+        for (u64 d = 0; d != *n; ++d) {
+            auto j = Lit::as(loop_dim->proj(*n, d));
+            reads->loop_dim.push_back(j < *m ? std::optional<size_t>(j) : std::nullopt);
+            reads->whole.push_back(Lit::as(whole->proj(*n, d)) != 0);
+        }
+    }
+    auto choice = *md == 2 ? panel::wgmma(storage, *i, *b, *km != 0)
+                : *md == 1 ? panel::mma(storage, *i, *b)
+                           : panel::choose(storage, *i, *v, *b, reads ? &*reads : nullptr);
+    return choice.expr;
 }
 
 MIM_tensor_NORMALIZER_IMPL
