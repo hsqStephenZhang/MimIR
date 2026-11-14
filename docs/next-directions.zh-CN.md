@@ -169,3 +169,10 @@ D6 (覆盖面) 与上面并行；动态形状依赖 assert 语义
 - **D7 第一步**：nvptx 后端对 `afn` 模式的 F32 超越函数改调 `__nv_fast_*`，softmax 4096² 0.0314 → 0.0259 ms，cross_entropy 1.168 → 0.984 ms（`lit/nvptx/fast_math.mim`）。
 - **D5 第一步**：规则读取 `-X nvptx:sm` 指定的目标（`check.target`），warpgroup 层（wgmma）要求 sm_90a，TMA 与 cluster 要求 sm_90 以上，warp mma 要求 sm_80 以上；
   为别的目标写的调度在调用处被拒绝（`lit/error/target_wgmma.mim`、`target_mma.mim`），未指定目标时由后端探测、规则放过。
+- **D6 第一步（调查，未提交代码）**：让 work-group 层接受运行时长度（M 为参数的 GEMM、softmax、逐元素算子），逐层打通后得到阻塞链：
+  1. lower_to_mem 的 bound work-group 层：运行时块数、混合进制分解下标、cap 尾块，原型可行；
+  2. 内层 bound 层（item、warpgroup）看到的是被截断的运行时尾块长度，需要按常量上界（外层步长）切分并屏蔽越界；TMA 填充把尾块按整块算，所以 TMA 路径越过了这一步；
+  3. `gpu.outline` 需要运行时 grid（kernel 的 group 下标用 `Idx 0`、launch 截断为 i32，原型可行），
+     并且要在 kernel 内重建捕获了运行时形状的函数与类型：形状依赖 `m` 的 tile 体不再是闭项，变成带自由变量的函数值；
+  4. 重建时 RWPhase 对依赖类型（`«m; *»`）的 coerce 失败，与 `bench/validate` 记录的 “cannot coerce `TileLevels_…`” 同类。
+  所以动态形状的第一件事是修 core 里 RWPhase 对依赖类型、递归 nom 的重建，然后才是 2、3。
