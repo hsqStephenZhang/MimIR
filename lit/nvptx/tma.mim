@@ -4,8 +4,8 @@
 // RUN: %FileCheck %s --check-prefix=HOST --input-file=%{s:stem}.ll
 // RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
 // RUN: %mim %S/../gpu/%{s:stem}.mim -p opt -p nvptx -X nvptx:sm=90a
-// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
-// RUN: %if system-linux && cuda %{ %t %}
+// RUN: %if system-linux && cuda-sm90 %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda-sm90 %{ %t %}
 
 // CHECK-DAG: mbarrier.init.shared::cta.b64
 // CHECK-DAG: mbarrier.arrive.expect_tx.shared::cta.b64

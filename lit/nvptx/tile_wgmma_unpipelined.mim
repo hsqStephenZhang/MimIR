@@ -4,8 +4,8 @@
 // RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
 // RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
 // RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:pipeline=1 %{s:stem}.mim -p nvptx -X nvptx:sm=90a
-// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_wgmma_mn_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
-// RUN: %if system-linux && cuda %{ %t %}
+// RUN: %if system-linux && cuda-sm90 %{ clang++ -O1 %S/../gpu/tile_wgmma_mn_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda-sm90 %{ %t %}
 
 // Panels filled with plain stores, one block at a time, reach wgmma only through a fence to the async proxy.
 

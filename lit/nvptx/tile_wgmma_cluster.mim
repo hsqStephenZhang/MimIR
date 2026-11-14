@@ -3,8 +3,8 @@
 // RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
 // RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:sm=90a
-// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_wgmma_cluster_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
-// RUN: %if system-linux && cuda %{ %t %}
+// RUN: %if system-linux && cuda-sm90 %{ clang++ -O1 %S/../gpu/tile_wgmma_cluster_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda-sm90 %{ %t %}
 
 // A cluster of two work-groups shares A's panels by TMA multicast.
 

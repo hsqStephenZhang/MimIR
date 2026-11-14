@@ -1,4 +1,4 @@
-import os, sys
+import os, subprocess, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from mim_sh_test import MimShTest
 from mim_roundtrip_test import MimRoundTripTest
@@ -56,3 +56,11 @@ config.available_features.add(f"system-{sys.platform}")
 # lit.site.cfg.py. Tests gate on this via `// REQUIRES: cuda`.
 if getattr(config, 'cuda_can_run_on_device', False):
     config.available_features.add('cuda')
+    # Code built for `sm_90a` runs only on a device of compute capability 9.0; tests run it via `%if cuda-sm90`.
+    try:
+        caps = subprocess.run(['nvidia-smi', '--query-gpu=compute_cap', '--format=csv,noheader'],
+                              capture_output=True, text=True, timeout=30).stdout.split()
+        if caps and caps[0] == '9.0':
+            config.available_features.add('cuda-sm90')
+    except (OSError, subprocess.SubprocessError):
+        pass
