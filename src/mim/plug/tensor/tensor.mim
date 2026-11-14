@@ -3232,27 +3232,35 @@ pub mod law
         // The interpreter of a schedule maps each level to a step over a block of the loops: its origin `lo`, the
         // output tile's extent and the loops' extents, the inputs and the tile's accumulator.
         let Step = [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»,
-                    acc: Tensor Ro ext To] → Tensor Ro ext To;
+                    acc: Tensor Ro ext To, fresh: Bool] → Tensor Ro ext To;
         let at   = λ (d: Idx Rn): Idx Ro = core.idx 0 Ro (core.select (core.idx2nat d < Ro, core.idx2nat d, 0));
         let leaf = λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»,
-                      acc: Tensor Ro ext To): Tensor Ro ext To =
+                      acc: Tensor Ro ext To, _: Bool): Tensor Ro ext To =
             let off = ‹d: Ro; lo#(core.idx 0 Rn (core.idx2nat d))›;
             map_reduce_acc (ext, size) (f, acc) (tile_shift @(Rn, Ro) map_out (lo, off))
                 ‹i: nis; tile_shift @(Rn, Ris#i) (maps#i) (lo, ‹Ris#i; 0›)› xs;
         let split_par = λ (sizes: «Rn; Nat», tail scope: Nat, k: Step): Step =
             λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»,
-               acc: Tensor Ro ext To): Tensor Ro ext To =
+               acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To =
                 let ts   = ‹d: Ro; let z = sizes#(core.idx 0 Rn (core.idx2nat d)); (z, ext#d)#(z == 0)›;
-                let body = λ (off ext2: «Ro; Nat») (ins: [«i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», Tensor Ro ext To])
+                let inner = λ (off ext2: «Ro; Nat», xs2: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc2: Tensor Ro ext To)
                     : Tensor Ro ext2 To =
-                    let (xs2, acc2) = ins;
                     k (‹d: Rn; lo#d + (0, off#(at d))#(core.idx2nat d < Ro)›, ext2,
                        ‹d: Rn; (size#d, ext2#(at d))#(core.idx2nat d < Ro)›, xs2,
-                       slice @(To, Ro) ext (off, ‹Ro; 1›, ext2) acc2);
-                tiled (ext, ts, tail) (xs, acc) ((bind scope body, body)#(scope == 0));
+                       slice @(To, Ro) ext (off, ‹Ro; 1›, ext2) acc2, ff);
+                let carried = λ (off ext2: «Ro; Nat») (ins: [«i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», Tensor Ro ext To])
+                    : Tensor Ro ext2 To =
+                    let (xs2, acc2) = ins;
+                    inner (off, ext2, xs2, acc2);
+                // A fresh accumulator is still the seed, which each tile rebuilds rather than reads as a region input.
+                let seeded = λ (off ext2: «Ro; Nat») (xs2: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro ext2 To =
+                    k (‹d: Rn; lo#d + (0, off#(at d))#(core.idx2nat d < Ro)›, ext2,
+                       ‹d: Rn; (size#d, ext2#(at d))#(core.idx2nat d < Ro)›, xs2, splat (ext2, init), tt);
+                (tiled (ext, ts, tail) (xs, acc) ((bind scope carried, carried)#(scope == 0)),
+                 tiled (ext, ts, tail) xs ((bind scope seeded, seeded)#(scope == 0)))#fresh;
         let split_red = λ (sizes: «Rn; Nat», tail: Nat, k: Step): Step =
             λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»,
-               acc: Tensor Ro ext To): Tensor Ro ext To =
+               acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To =
                 let loop  = vec.fold.r @(Nat, Idx Rn) @Rn
                     (λ (d: Idx Rn, x: Nat): Nat = (x, core.idx2nat d)#(core.bit2.and 0 (sizes#d != 0, Ro <= core.idx2nat d)))
                     (‹d: Rn; d›, Rn);
@@ -3261,55 +3269,55 @@ pub mod law
                 let K     = size#(core.idx 0 Rn (core.select (loop < Rn, loop, 0)));
                 let unit  = core.select (ks == 0, 1, ks);
                 let block = λ (a: Tensor Ro ext To, k0 n: Nat, xs2: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro ext To =
-                    k (‹d: Rn; lo#d + (0, k0)#(core.idx2nat d == loop)›, ext, ‹d: Rn; (size#d, n)#(core.idx2nat d == loop)›, xs2, a);
+                    k (‹d: Rn; lo#d + (0, k0)#(core.idx2nat d == loop)›, ext, ‹d: Rn; (size#d, n)#(core.idx2nat d == loop)›, xs2, a, ff);
                 let peel  = tail == 1;
                 let full  = tile_fold (core.select (peel, K / unit, (K + unit - 1) / unit), unit) acc xs
                     (λ (a: Tensor Ro ext To, k0: Nat) (xs2: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro ext To =
                         block (a, k0, core.select (k0 + unit < K, unit, K - k0), xs2));
                 let split = (full, block (full, K / unit * unit, K % unit, xs))#(core.bit2.and 0 (peel, K % unit != 0));
-                (split, k (lo, ext, size, xs, acc))#(loop == Rn);
-        lam wg_step {M: *, g t: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: WarpgroupLevels (Rn, To, M, g, t))@(core.pe.is_closed l): Tensor Ro ext To =
+                (split, k (lo, ext, size, xs, acc, fresh))#(loop == Rn);
+        lam wg_step {M: *, g t: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool, l: WarpgroupLevels (Rn, To, M, g, t))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc)
-                | 1 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 2 _ => leaf (lo, ext, size, xs, acc)
-                | 3 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 4 (sizes, tl, _, _, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc);
-        lam warp_step {M: *, b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: WarpLevels (Rn, To, M, b))@(core.pe.is_closed l): Tensor Ro ext To =
+                | 0 => leaf (lo, ext, size, xs, acc, fresh)
+                | 1 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 2 _ => leaf (lo, ext, size, xs, acc, fresh)
+                | 3 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 4 (sizes, tl, _, _, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh);
+        lam warp_step {M: *, b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool, l: WarpLevels (Rn, To, M, b))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc)
-                | 1 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = warp_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 2 _ => leaf (lo, ext, size, xs, acc);
-        lam item_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
+                | 0 => leaf (lo, ext, size, xs, acc, fresh)
+                | 1 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = warp_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 2 _ => leaf (lo, ext, size, xs, acc, fresh);
+        lam item_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc)
-                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 2 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 3 (_, rest) => item_step (lo, ext, size, xs, acc, rest)
-                | 4 (sizes, tl, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc);
-        lam group_step {M: *, g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): Tensor Ro ext To =
+                | 0 => leaf (lo, ext, size, xs, acc, fresh)
+                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 2 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 3 (_, rest) => item_step (lo, ext, size, xs, acc, fresh, rest)
+                | 4 (sizes, tl, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh);
+        lam group_step {M: *, g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc)
-                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 2 (sizes, tl, rest) => split_par (sizes, tl, 2, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 3 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 4 (sizes, tl, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 5 (_, rest) => group_step (lo, ext, size, xs, acc, rest)
+                | 0 => leaf (lo, ext, size, xs, acc, fresh)
+                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 2 (sizes, tl, rest) => split_par (sizes, tl, 2, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 3 (sizes, tl, _, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 4 (sizes, tl, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 5 (_, rest) => group_step (lo, ext, size, xs, acc, fresh, rest)
                 | 6 (sizes: «Rn; Nat», tl: Nat, rest: WarpLevels (Rn, To, M, within (g, sizes))) =>
-                    split_par (sizes, tl, 3, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = warp_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                    split_par (sizes, tl, 3, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = warp_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
                 | 7 (sizes: «Rn; Nat», tl: Nat, rest: WarpgroupLevels (Rn, To, M, g, sizes)) =>
-                    split_par (sizes, tl, 6, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc);
-        lam tile_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
+                    split_par (sizes, tl, 6, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh);
+        lam tile_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc)
-                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = tile_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 2 (sizes: «Rn; Nat», tl _: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split_par (sizes, tl, 1, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 3 (sizes, tl, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = tile_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 4 (_, rest) => tile_step (lo, ext, size, xs, acc, rest)
-                | 5 (_, _, _, rest) => tile_step (lo, ext, size, xs, acc, rest)
-                | 6 (_, rest) => tile_step (lo, ext, size, xs, acc, rest);
+                | 0 => leaf (lo, ext, size, xs, acc, fresh)
+                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = tile_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 2 (sizes: «Rn; Nat», tl _: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split_par (sizes, tl, 1, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 3 (sizes, tl, _, rest) => split_red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, fresh: Bool): Tensor Ro ext To = tile_step (lo, ext, size, xs, acc, fresh, rest)) (lo, ext, size, xs, acc, fresh)
+                | 4 (_, rest) => tile_step (lo, ext, size, xs, acc, fresh, rest)
+                | 5 (_, _, _, rest) => tile_step (lo, ext, size, xs, acc, fresh, rest)
+                | 6 (_, rest) => tile_step (lo, ext, size, xs, acc, fresh, rest);
         let schedule = λ (levels: TileLevels (Rn, To, root_contraction root)): Tensor Ro So To =
-            tile_step (‹Rn; 0›, So, Sr, is, tile_of_init @(To, To, Ro) @So (root, zero, So), levels);
+            tile_step (‹Rn; 0›, So, Sr, is, splat (So, init), tt, levels);
         (Ro, nis, Sr, root, par, red, red_par, schedule);
 
     anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}

@@ -5,6 +5,7 @@
 // RUN: %t.exec
 
 // A plain chain runs as the law's meaning: work-groups, a peeled reduction split and work-items outline into one launch.
+// Each tile seeds its own accumulator, so the launch takes no more buffers than TileFuse's.
 // A chain that vectorizes is no longer plain, so TileFuse realizes it.
 
 plugin tensor;
@@ -36,7 +37,7 @@ extern fun law_fused (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (20, 1
 // LOG-NOT: tile_fuse {{.*}} L2 red
 // LOG-DAG: L1 par tiles=‹2; 2› tail=cap inputs=2 fused=0 yielded=0 bind=2
 // LOG-DAG: L0 par tiles=‹2; 8› tail=cap inputs=2 fused=0 yielded=0 bind=1
-// LOG-DAG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items, 4 device buffers, 4 arguments
-// LOG-DAG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items, 3 device buffers, 3 arguments
+// LOG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items, 3 device buffers, 3 arguments
+// LOG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items, 3 device buffers, 3 arguments
 
 // CHECK-COUNT-2: gpu.launch

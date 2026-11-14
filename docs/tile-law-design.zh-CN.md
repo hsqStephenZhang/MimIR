@@ -111,7 +111,8 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 - 第 3 步的实现部分：解释器的并行切分带上作用域（`Group` 绑定 work-group、`Item` 绑定 work-item、`Warp`/`Warpgroup` 绑定 warp 与 warpgroup，与 `TileFuse` 的 `tensor.bind` 一致），并遵守层级的尾块选择（`tail = 1` 剥离，`0` 截断）。
   这样，对“朴素”的链，定律的含义本身就是实现：`law.run (l, levels, control)` 用 Mim 的判定 `law.plain` 在 PE 时选择——链里没有面板提升、向量化、合并（`RedItems`、`Lanes`）、warp 级与 cluster/persistent 时用解释器，否则仍交给 `TileFuse`。
   `lit/gpu/law_run.mim` 中，work-group × 剥离尾块的归约 × work-item 的链由解释器生成，outline 成一个 kernel，并在 GPU 上执行正确（`lit/nvptx/law_run.mim`）；带 `item_vec` 的链回到 `TileFuse`。把剥离的尾块去掉的变异在 CPU 与 GPU 用例中都被测出。
-  已知差距：解释器把累加器的初值作为输入传进区域，所以 outline 多一个设备缓冲（4 个对 `TileFuse` 的 3 个）；下一步让叶子在第一块上自己初始化。
+  解释器的每一步带一个 `fresh` 标记：累加器仍是种子 `splat (So, init)` 时，并行切分不把它当区域输入，而由每个块自己构造 `splat (ext, init)`；归约折叠之后的累加器才经区域输入传递。
+  因此 outline 的设备缓冲与 `TileFuse` 相同（3 个）。不能用 `core.pe.is_closed acc` 代替这个标记：它只会归约成 `tt`，内层不闭合的累加器会把判定留到后端。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
