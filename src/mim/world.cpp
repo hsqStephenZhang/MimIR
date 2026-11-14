@@ -806,7 +806,7 @@ const Def* World::insert(const Def* d, const Def* index_, const Def* val) {
     d   = d->zonk();
     val = val->zonk();
 
-    auto type  = d->unfold_type();
+    auto type = d->unfold_type();
     if (type) type = type->zonk();
     auto index = check_index(index_->zonk());
 
