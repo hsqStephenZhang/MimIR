@@ -109,10 +109,16 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   归约类（`Red`、`RedItems`、`Lanes`、`RedTma`、`RedWs`）是 `split_red`，用 `tile_fold` 按原顺序折叠，尾块的长度截到剩余部分；`Done`、`Mma`、`Wgmma` 在块上做 `map_reduce_acc`；`Vec`、`Cluster`、`Persistent` 不改变语义，直接跳过。
   于是任何一条合法的调度都有一个由定律给出的含义，`TileFuse` 的实现可以逐条与它比较。
 - 第 3 步的实现部分：解释器的并行切分带上作用域（`Group` 绑定 work-group、`Item` 绑定 work-item、`Warp`/`Warpgroup` 绑定 warp 与 warpgroup，与 `TileFuse` 的 `tensor.bind` 一致），并遵守层级的尾块选择（`tail = 1` 剥离，`0` 截断）。
-  这样，对“朴素”的链，定律的含义本身就是实现：`law.run (l, levels, control)` 用 Mim 的判定 `law.plain` 在 PE 时选择——链里没有面板提升、向量化、合并（`RedItems`、`Lanes`）、warp 级与 cluster/persistent 时用解释器，否则仍交给 `TileFuse`。
+  这样，对“朴素”的链，定律的含义本身就是实现：`law.run (l, levels, control)` 用 Mim 的判定 `law.plain` 在 PE 时选择——链里没有面板提升、向量化、warp 级与 cluster/persistent 时用解释器，否则仍交给 `TileFuse`。
   `lit/gpu/law_run.mim` 中，work-group × 剥离尾块的归约 × work-item 的链由解释器生成，outline 成一个 kernel，并在 GPU 上执行正确（`lit/nvptx/law_run.mim`）；带 `item_vec` 的链回到 `TileFuse`。把剥离的尾块去掉的变异在 CPU 与 GPU 用例中都被测出。
   解释器的每一步带一个 `fresh` 标记：累加器仍是种子 `splat (So, init)` 时，并行切分不把它当区域输入，而由每个块自己构造 `splat (ext, init)`；归约折叠之后的累加器才经区域输入传递。
   因此 outline 的设备缓冲与 `TileFuse` 相同（3 个）。不能用 `core.pe.is_closed acc` 代替这个标记：它只会归约成 `tt`，内层不闭合的累加器会把判定留到后端。
+- 第 4 步的入口：work-item 归约（`RedItems`）与 lane 归约（`Lanes`）也是朴素的。解释器的归约切分 `split_bound` 带作用域与层级的 `TileMerge`：累加器仍是种子时，折叠的内层 lambda 被标上与 `TileFuse` 相同的 `tensor.bind`（2 或 4）和显式的 `tensor.merge_with`，于是 `lower_to_mem` 让各 work-item/lane 从自己的种子折叠，再用合并树或 warp shuffle 合并部分结果；累加器不是种子时退回按序折叠。
+  语义上，这正是定律的第三条切分引理在一个作用域上的实例；义务（种子是单位元、合并可结合）与 `TileFuse` 一样由识别出的组合子或显式的 `merge` 承担。
+  `lit/gpu/law_run_items.mim`（行求和，4 组 × 4 项，共享内存合并）与 `lit/gpu/law_run_lanes.mim`（64×64 GEMM，每项 4 条 lane，warp shuffle）都在 GPU 上执行正确；去掉绑定的变异被测出。
+- 用 `of_map_reduce_merging` 建一个累加器是二元组（在线 `(max, sum)`）的定律时，碰到两个 core 问题。
+  其一已修：`World::extract1` 取元素类型时没有 zonk，类型若仍是已求解的隐式参数的 Hole，arity 被当成 1（`lit/tensor/generic_pair_merge.mim`）。
+  其二未修：Hole 求解之后，同一个张量类型可能一份是嵌套的 `«ext; «2; F32»»`、另一份是融合的 `«ext, 2; F32»`，`Tensor` nom 按包裹的类型哈希，两份不相等。`Zonker::lookup` 的自映射捷径会把旧的嵌套形式留下，直接去掉这条捷径会让 zonk 不终止。所以元组累加器的定律暂不可用，这挡住了 FlashAttention 的在线 softmax，是下一个要解决的问题。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
