@@ -266,6 +266,22 @@ lam address {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): F2 (total (widths s)
             f2_add n (f2_mul n (phys#p, stride), acc))
         (‹p: r; p›, f2_lit n 0);
 
+/// Whether a K-major wgmma panel of `rows × atom` elements of `bytes` each, `atom · bytes` being 128, lies as the 128-byte
+/// swizzle its descriptor tells the hardware to read: CuTe's `Swizzle<3, 4, 3>` over byte offsets, which on element
+/// `e = row · atom + col` exchanges 16-byte chunks as `e ⊕ ((e / atom) % 8) · (16 / bytes)`.
+/// 0 if undecided, 1 if not, 2 if so.
+pub anx lam matches_sw128 {s: «2; Nat»} (layout: Expr (2, s), bytes: Nat): Nat =
+    let n     = total (widths s);
+    let coord = λ (d: Idx 2): F2 n =
+        (tt, ‹i: n + 1; (0I64, bit ((offsets s)#(d) + core.idx2nat i))#(core.idx2nat i < (widths s)#(d))›);
+    let atom  = s#1₂;
+    let e     = f2_add n (f2_mul n (coord 0₂, atom), coord 1₂);
+    let want  = f2_xor n (e, f2_mul n (f2_rem n (f2_div n (e, atom), 8), 16 / bytes));
+    let (lw, rw) = want;
+    let (lh, rh) = address @2 @s layout;
+    let differ   = any ‹i: n + 1; (tt, ff)#(core.icmp.e (rw#i, rh#i))›;
+    core.select (both (both (lw, lh), atom * bytes == 128), (2, 1)#differ, 0);
+
 /// Whether a layout maps distinct elements to distinct addresses: 0 if its extents leave the F₂ class, 1 if not, 2 if so.
 pub anx lam injective {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): Nat =
     let n           = total (widths s);

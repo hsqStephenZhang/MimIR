@@ -184,3 +184,5 @@ D6 (覆盖面) 与上面并行；动态形状依赖 assert 语义
   原型在分支 `wip/dynamic-extents`（700e4539f），不在主线：outline 覆盖 `coerce` 对指针做 bitcast 之后，`World::app` 的定义域检查又因同一原因失败，
   逐处打补丁不是正确的修法。要继续，先在 core 选定方案：重建时统一等价的依赖形状，或在 CPS 转换时让运行时形状只经由一个绑定流动。
   **2026-11-14 决定：动态形状往后放。**
+- **D1 第二步**：`layout_expr.matches_sw128` 用 F₂ 判定 K-major wgmma 面板的填充布局就是描述符让硬件读取的 128 字节 swizzle（CuTe `Swizzle<3, 4, 3>`），
+  错一位的 swizzle 与不 swizzle 的布局都被判为不一致（`lit/tensor/layout_f2.mim`）。fragment 布局（m16n8k8、m16n8k16）的双射与 ldmatrix 一致性此前已有穷举检查。

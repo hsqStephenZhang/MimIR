@@ -24,3 +24,12 @@ let _ = refly.struc.e (injective padded, 0);
 // A permutation that repeats a dim, which `make` rejects, maps two rows onto one.
 let collapsed = ((‹(64, 64)›, 1, (0₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1, ff) inj Data (2, (64, 64))) inj Expr (2, (64, 64));
 let _ = refly.struc.e (injective collapsed, 1);
+
+// The swizzle a K-major wgmma panel is filled in is the one its descriptor makes the hardware read.
+let _ = refly.struc.e (matches_sw128 (swizzled, 2), 2);
+let rows128 = make @2 ((128, 64), 1, (0₃, 1₃, 2₃), (0, 0), 8, 8, 0, 8, tt);
+let _ = refly.struc.e (matches_sw128 (rows128, 2), 2);
+// A swizzle shifted by one row bit, or one that rotates instead of exchanging, is not.
+let shifted = make @2 ((64, 64), 1, (0₃, 1₃, 2₃), (0, 0), 8, 8, 1, 8, tt);
+let _ = refly.struc.e (matches_sw128 (shifted, 2), 1);
+let _ = refly.struc.e (matches_sw128 (identity, 2), 1);
