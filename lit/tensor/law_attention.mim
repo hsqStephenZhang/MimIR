@@ -1,0 +1,69 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/../gpu/law_attention_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Attention as one tile law: loops (h, i, j), each row's accumulator (max, sum, out), and the online merge it vouches for.
+// Its meaning, blocking KV (the in-order split), split-KV (the merged split) and two schedules run as the law's meaning
+// all agree with softmax attention.
+// The ops run without fast math, since the seed's -inf would be poison under it.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+plugin vec;
+
+use tensor;
+
+let F     = math.F32;
+let mode  = math.mode.none;
+let add   = math.arith.add mode;
+let mul   = math.arith.mul mode;
+let sub   = math.arith.sub mode;
+let ninf  = math.neg_inf math.f32;
+let H = 2;
+let M = 5;
+let S = 7;
+let K = 3;
+let N = 4;
+let Acc = [F, F, «N; F»];
+
+lam scaled (x y: F): F = (math.exp.exp mode (sub (x, y)), 0:F)#(math.cmp.e math.mode.none (y, ninf));
+
+fun step (acc: Acc, xs: [«K; F», «K; F», «N; F»])@tt: Acc =
+    let (m, l, o)    = acc;
+    let (qr, kr, vr) = xs;
+    let s  = mul (0.5:F, vec.fold.l @(F, Idx K) @K (λ (a: F, d: Idx K): F = add (a, mul (qr#d, kr#d))) (0:F, ‹d: K; d›));
+    let m2 = math.extrema.fmax mode (m, s);
+    let c  = scaled (m, m2);
+    let p  = scaled (s, m2);
+    return (m2, add (mul (l, c), p), ‹n: N; add (mul (o#n, c), mul (p, vr#n))›);
+
+lam merge (a b: Acc): Acc =
+    let (m1, l1, o1) = a;
+    let (m2, l2, o2) = b;
+    let m  = math.extrema.fmax mode (m1, m2);
+    let c1 = scaled (m1, m);
+    let c2 = scaled (m2, m);
+    (m, add (mul (l1, c1), mul (l2, c2)), ‹n: N; add (mul (o1#n, c1), mul (o2#n, c2))›);
+
+lam rows {R C: Nat} (t: Tensor 3 (H, R, C) F): Tensor 2 (H, R) «C; F» =
+    generate (H, R) (λ (i: «2; I64»): «C; F» =
+        ‹c: C; get (t, (core.bitcast (Idx H) (i#0₂), core.bitcast (Idx R) (i#1₂), c))›);
+
+lam attn (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F) =
+    law.of_map_reduce_merging ((H, M), (H, M, S)) (step, (ninf, 0:F, ‹N; 0:F›), merge) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 1), proj_map @(3, 2) (0, 2), proj_map @(3, 2) (0, 2)) (rows q, rows k, rows v);
+
+extern fun fa_denote (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.denote (attn (buf q, buf k, buf v)));
+extern fun fa_blocks (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.schedule (attn (buf q, buf k, buf v), serial_par ((1, 2, 0), 0, serial_red ((0, 0, 3), 1, 0, serial_done ()))));
+extern fun fa_split (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.red_par (attn (buf q, buf k, buf v), 2, 3));
+extern fun fa_rows (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.run (attn (buf q, buf k, buf v),
+        serial_group ((1, 5, 0), 0, 0, group_item ((1, 1, 0), 0, item_red ((0, 0, 3), 1, 0, item_done ()))), default_control));
+extern fun fa_items (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.run (attn (buf q, buf k, buf v),
+        serial_group ((1, 1, 0), 0, 0, group_red_merge ((0, 0, 2), 1, merge, group_done ())), default_control));

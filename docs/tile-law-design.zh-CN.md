@@ -120,6 +120,14 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   其一已修：`World::extract1` 取元素类型时没有 zonk，类型若仍是已求解的隐式参数的 Hole，arity 被当成 1（`lit/tensor/generic_pair_merge.mim`）。
   其二已修：Hole 求解之后，同一个张量类型曾一份是嵌套的 `«ext; «2; F32»»`、另一份是融合的 `«ext, 2; F32»`，`Tensor` nom 按包裹的类型哈希，两份不相等。根源是 `ext` 是绑定变量的投影，类型 `«?r; Nat»` 里的 `?r` 已求解为 1，但 `Shape::rank` 读 arity 时没有 zonk，秩未知，`World::seq` 就不融合；现在 `Shape::rank` zonk arity。
   于是元组累加器的定律可用：`lit/gpu/law_run_merge.mim` 用 `of_map_reduce_merging` 建在线 `(max, sum)` 的定律，work-item 归约用它担保的 `merge`，在 GPU 上执行正确。这是 FlashAttention 在线 softmax 的前提。
+- 注意力作为一个定律（`lit/tensor/law_attention.mim`）：循环 `(h, i, j)`，每行的累加器 `(max, sum, out: «N; F»)`，输入是 `q`、`k`、`v` 的行（元素类型 `«K; F»`/`«N; F»`，现在用 `generate` 造出），`merge` 是在线 softmax 的合并，由 `of_map_reduce_merging` 担保。
+  于是 FlashAttention 的 KV 分块就是有序切分引理，split-KV（flash-decoding）就是合并切分引理：`denote`、`serial_red` 分块、3 段 `red_par` 都等于 softmax 注意力。
+  两条朴素调度经 `law.run` 在 GPU 上执行正确（`lit/gpu/law_attention.mim`、`lit/nvptx/law_attention.mim`）：每行一个 work-item 按序折叠 KV 块（2 组 × 5 项），以及每行一个 work-group、其 work-item 各折一段 KV 再用定律的 `merge` 合并（10 组 × 3 项）。把 `merge` 里第二段的缩放去掉的变异在 CPU 的 `red_par` 和 GPU 的 split-KV 中都被测出。
+  这一版逐个 KV 位置做点积，不用张量核，只证明语义与调度；性能要等矩阵形式的块（行块 × KV 块的 `mma`）进入解释器。
+  记下的限制：
+  - 在 `math.mode.fast` 下，种子里的 `-inf` 经 `sub`/`fmax` 成为 poison（`S = 1` 时 LLVM 直接折叠），所以这里用 `math.mode.none`；现有的 `sdpa_online_inputs` 同样让 `-inf` 经过给定模式的 `sub`，值得复查。
+  - 解释器的绑定层要求字面的 extent：组块不整除时（如 `M = 5`、组块 2），内层 work-item 层的 extent 不是字面量，`lower_to_mem` 拒绝；`TileFuse` 用存储上界和 `clip_sched` 处理，解释器还没有。
+  - 带 gpu 插件时，没有调度的注意力根（`denote`、`red_par` 的合并）在 GPU 降级中报内存空间不符（`core.M 0` 对 `core.M 1`），与定律无关，尚未查。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
