@@ -196,3 +196,17 @@ CuTe 的 `MMA_Atom` 把指令的操作数类型和形状编进 trait，ThunderKi
 - 组合子是否可重结合、种子是否为单位元：`lit/tensor/tile_reduction_contracts.mim` 约定这类请求警告后回退、程序照常正确执行（测试里有 exec 校验），
   属于“这个调度对这个运算不适用”，同样是 `can_implement` 一类，而不是调度本身写错。
 - 需要把这两类也当错误时用 `-X tensor:strict=1`：残留的请求以带位置的错误报出（`tensor/tile_reduction_contracts.mim` 与 `tensor/tile_symbolic_strict.mim` 的 `STRICT` 检查）。
+
+## 第四轮：快速超越函数（D7 第一步，2026-11-14）
+
+带 `afn`（允许近似函数）模式的 F32 `exp`/`log`/`sin`/`cos`/`tan`/`tanh` 改调 libdevice 的 `__nv_fast_*`：`expf` 由 87 行的精确版（区间规约加修正）变成一次 `ex2.approx (x · log2 e)`。
+误差仍在原容差内。配合 `bench/tune` 搜到的调度：
+
+| 算子 | 之前 | 现在 |
+|---|---:|---:|
+| softmax 4096²（搜索最优 R=1 I=16） | 0.0314 | **0.0259** |
+| softmax 4096²（原手选 R=1 I=8） | 0.0385 | 0.0290 |
+| cross_entropy 16384×65536 | 1.168 | **0.984** |
+| swiglu 8192×4096（访存瓶颈） | 0.0474 | 0.0480 |
+
+softmax 4096² 由此为 torch.compile（0.043–0.055 ms）的约 0.5–0.6 倍时间。

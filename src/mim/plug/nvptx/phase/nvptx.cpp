@@ -4,6 +4,7 @@
 #include <format>
 #include <map>
 #include <ranges>
+#include <set>
 
 #include <fe/log.h>
 #include <fe/sys.h>
@@ -237,6 +238,17 @@ bool reaches_if(const Def* def, DefSet& seen, std::predicate<const Def*> auto pr
 }
 
 bool is_gpu_auto_init(const Def* def) { return Axm::isa<gpu::auto_init>(def) != nullptr; }
+
+// An F32 function whose mode allows approximate functions calls libdevice's `__nv_fast_` variant, e.g. `expf` as one
+// `ex2.approx` of `x · log2 e`.
+std::string libdevice(const std::string& func, const App* app) {
+    static const auto fast
+        = std::set<std::string>{"expf", "exp10f", "logf", "log2f", "log10f", "sinf", "cosf", "tanf", "tanhf"};
+    auto mode = Lit::isa(app->uncurry_args<3>()[0]);
+    if (mode && fe::has_flag(static_cast<math::Mode>(*mode), math::Mode::afn) && fast.contains(func))
+        return "__nv_fast_" + func;
+    return "__nv_" + func;
+}
 } // namespace
 
 void HostEmitter::start() {
@@ -1509,7 +1521,7 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         }
         if (func_name.empty()) fe::throwf("Trigonometric tag used by {} is currently unused", def);
         func_name                = func_name + ll::detail::math_suffix(tri->arg()->type());
-        auto libdevice_func_name = "__nv_" + func_name;
+        auto libdevice_func_name = libdevice(func_name, tri);
         declare("{} @{}({}) nounwind willreturn memory(none)", type, libdevice_func_name, type);
         uses_libdevice = true;
         bb.assign(name, "call {} @{}({} {})", type, libdevice_func_name, type, arg);
@@ -1530,7 +1542,7 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         }
         if (func_name.empty()) fe::throwf("Exponential tag used by {} is currently unused", def);
         func_name                = func_name + ll::detail::math_suffix(exp->arg()->type());
-        auto libdevice_func_name = "__nv_" + func_name;
+        auto libdevice_func_name = libdevice(func_name, exp);
         declare("{} @{}({}) nounwind willreturn memory(none)", type, libdevice_func_name, type);
         uses_libdevice = true;
         bb.assign(name, "call {} @{}({} {})", type, libdevice_func_name, type, arg);

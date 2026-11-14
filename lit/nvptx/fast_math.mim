@@ -1,0 +1,9 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: cp %S/../gpu/tile_reduce_fused_online.mim %{s:stem}.mim
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %{s:stem}.mim -p nvptx -X nvptx:no-embed
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+
+// An F32 `exp` whose mode allows approximate functions calls libdevice's fast variant, one `ex2.approx` of `x · log2 e`.
+
+// CHECK: declare float @__nv_fast_expf(float)
+// CHECK-NOT: @__nv_expf

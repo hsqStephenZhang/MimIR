@@ -166,3 +166,4 @@ D6 (覆盖面) 与上面并行；动态形状依赖 assert 语义
   差分测试把 “ping-pong 只有一个消费者”从 lowering 的晚期拒绝变成规则：Group 层的块按实际长度裁剪后再数 warpgroup（`lit/error/tile_pingpong_clipped.mim`）。
 - **D4 第一步**：`bench/tune/tune.py` 枚举模板的调度参数，以 elaboration（规则）剪枝、实测排序。softmax 4096² 找到 0.0314 ms（手选 0.0385），addmm 确认手选最优。
   搜索暴露了规则还缺的一类：资源可行性。超过 1024 个 work-item 的 work-group 由 outline 分轮次执行，正确但慢，大 grid 下崩溃（已记录、未修），暂按代价剪掉。
+- **D7 第一步**：nvptx 后端对 `afn` 模式的 F32 超越函数改调 `__nv_fast_*`，softmax 4096² 0.0314 → 0.0259 ms，cross_entropy 1.168 → 0.984 ms（`lit/nvptx/fast_math.mim`）。
