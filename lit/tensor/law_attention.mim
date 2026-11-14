@@ -47,13 +47,13 @@ lam merge (a b: Acc): Acc =
     let c2 = scaled (m2, m);
     (m, add (mul (l1, c1), mul (l2, c2)), ‹n: N; add (mul (o1#n, c1), mul (o2#n, c2))›);
 
-lam rows {R C: Nat} (t: Tensor 3 (H, R, C) F): Tensor 2 (H, R) «C; F» =
-    generate (H, R) (λ (i: «2; I64»): «C; F» =
-        ‹c: C; get (t, (core.bitcast (Idx H) (i#0₂), core.bitcast (Idx R) (i#1₂), c))›);
+// The rows of `t` as one `«C; F»` element each, a view of the same buffer.
+lam rows {R C: Nat} (t: Tensor 3 (H, R, C) F): Tensor 3 (H, R, 1) «C; F» = as_vectors @(3, (H, R, C), F) (C, (H, R, 1)) t;
+lam row_map (a: Idx 3) (o: «3; affine.Index»): «3; affine.Index» = (o#0₃, o#a, affine.lit 0);
 
 lam attn (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F) =
     law.of_map_reduce_merging ((H, M), (H, M, S)) (step, (ninf, 0:F, ‹N; 0:F›), merge) (proj_map @(3, 2) (0, 1))
-        (proj_map @(3, 2) (0, 1), proj_map @(3, 2) (0, 2), proj_map @(3, 2) (0, 2)) (rows q, rows k, rows v);
+        (row_map 1₃, row_map 2₃, row_map 2₃) (rows q, rows k, rows v);
 
 extern fun fa_denote (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
     return (law.denote (attn (buf q, buf k, buf v)));

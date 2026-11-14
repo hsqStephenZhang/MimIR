@@ -120,7 +120,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   其一已修：`World::extract1` 取元素类型时没有 zonk，类型若仍是已求解的隐式参数的 Hole，arity 被当成 1（`lit/tensor/generic_pair_merge.mim`）。
   其二已修：Hole 求解之后，同一个张量类型曾一份是嵌套的 `«ext; «2; F32»»`、另一份是融合的 `«ext, 2; F32»`，`Tensor` nom 按包裹的类型哈希，两份不相等。根源是 `ext` 是绑定变量的投影，类型 `«?r; Nat»` 里的 `?r` 已求解为 1，但 `Shape::rank` 读 arity 时没有 zonk，秩未知，`World::seq` 就不融合；现在 `Shape::rank` zonk arity。
   于是元组累加器的定律可用：`lit/gpu/law_run_merge.mim` 用 `of_map_reduce_merging` 建在线 `(max, sum)` 的定律，work-item 归约用它担保的 `merge`，在 GPU 上执行正确。这是 FlashAttention 在线 softmax 的前提。
-- 注意力作为一个定律（`lit/tensor/law_attention.mim`）：循环 `(h, i, j)`，每行的累加器 `(max, sum, out: «N; F»)`，输入是 `q`、`k`、`v` 的行（元素类型 `«K; F»`/`«N; F»`，现在用 `generate` 造出），`merge` 是在线 softmax 的合并，由 `of_map_reduce_merging` 担保。
+- 注意力作为一个定律（`lit/tensor/law_attention.mim`）：循环 `(h, i, j)`，每行的累加器 `(max, sum, out: «N; F»)`，输入是 `q`、`k`、`v` 的行（元素类型 `«K; F»`/`«N; F»`，用 `as_vectors` 把最后一维看成一个元素，是同一块内存的视图，比原先用 `generate` 复制少一半分配；`buffer.vectorize` 声明的对齐改为整除行字节数的最大 2 的幂，`«3; F32»` 这样的行才是合法的 LLVM 对齐），`merge` 是在线 softmax 的合并，由 `of_map_reduce_merging` 担保。
   于是 FlashAttention 的 KV 分块就是有序切分引理，split-KV（flash-decoding）就是合并切分引理：`denote`、`serial_red` 分块、3 段 `red_par` 都等于 softmax 注意力。
   两条朴素调度经 `law.run` 在 GPU 上执行正确（`lit/gpu/law_attention.mim`、`lit/nvptx/law_attention.mim`）：每行一个 work-item 按序折叠 KV 块（2 组 × 5 项），以及每行一个 work-group、其 work-item 各折一段 KV 再用定律的 `merge` 合并（10 组 × 3 项）。把 `merge` 里第二段的缩放去掉的变异在 CPU 的 `red_par` 和 GPU 的 split-KV 中都被测出。
   这一版逐个 KV 位置做点积，不用张量核，只证明语义与调度；性能要等矩阵形式的块（行块 × KV 块的 `mma`）进入解释器。

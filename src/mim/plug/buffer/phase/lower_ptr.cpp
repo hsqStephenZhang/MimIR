@@ -39,7 +39,9 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         auto [r, s, T] = vectorize_ax->callee()->as<App>()->callee()->as<App>()->args<3>();
         T              = rewrite(T);
         auto vectors   = w.call<mem::Ptr>(Defs{w.arr(c, w.arr(n, T)), w.lit_nat_0()});
-        auto bytes     = w.call(core::nat::mul, Defs{n, core::op(core::trait::size, T)});
+        const Def* bytes = w.call(core::nat::mul, Defs{n, core::op(core::trait::size, T)});
+        // A run at a multiple of its size is aligned to the largest power of two dividing it, as for `«3; F32»`.
+        if (auto b = Lit::isa(bytes)) bytes = w.lit_nat(*b & (~*b + 1));
         return w.call<mem::align>(Defs{w.call<core::bitcast>(vectors, rewrite(vectorize_ax->arg())), bytes});
     } else if (auto write_ax = Axm::isa<buffer::write>(app)) {
         auto [mem, buf, idx, val] = write_ax->args<4>();
