@@ -16,8 +16,8 @@
 #include <mim/plug/math/math.h>
 #include <mim/plug/mem/mem.h>
 
-#include "mim/plug/tensor/tensor.h"
 #include "mim/plug/tensor/phase/panel_layout.h"
+#include "mim/plug/tensor/tensor.h"
 
 namespace mim::plug::tensor {
 
