@@ -118,7 +118,8 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   `lit/gpu/law_run_items.mim`（行求和，4 组 × 4 项，共享内存合并）与 `lit/gpu/law_run_lanes.mim`（64×64 GEMM，每项 4 条 lane，warp shuffle）都在 GPU 上执行正确；去掉绑定的变异被测出。
 - 用 `of_map_reduce_merging` 建一个累加器是二元组（在线 `(max, sum)`）的定律时，碰到两个 core 问题。
   其一已修：`World::extract1` 取元素类型时没有 zonk，类型若仍是已求解的隐式参数的 Hole，arity 被当成 1（`lit/tensor/generic_pair_merge.mim`）。
-  其二未修：Hole 求解之后，同一个张量类型可能一份是嵌套的 `«ext; «2; F32»»`、另一份是融合的 `«ext, 2; F32»`，`Tensor` nom 按包裹的类型哈希，两份不相等。`Zonker::lookup` 的自映射捷径会把旧的嵌套形式留下，直接去掉这条捷径会让 zonk 不终止。所以元组累加器的定律暂不可用，这挡住了 FlashAttention 的在线 softmax，是下一个要解决的问题。
+  其二已修：Hole 求解之后，同一个张量类型曾一份是嵌套的 `«ext; «2; F32»»`、另一份是融合的 `«ext, 2; F32»`，`Tensor` nom 按包裹的类型哈希，两份不相等。根源是 `ext` 是绑定变量的投影，类型 `«?r; Nat»` 里的 `?r` 已求解为 1，但 `Shape::rank` 读 arity 时没有 zonk，秩未知，`World::seq` 就不融合；现在 `Shape::rank` zonk arity。
+  于是元组累加器的定律可用：`lit/gpu/law_run_merge.mim` 用 `of_map_reduce_merging` 建在线 `(max, sum)` 的定律，work-item 归约用它担保的 `merge`，在 GPU 上执行正确。这是 FlashAttention 在线 softmax 的前提。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
