@@ -13,6 +13,7 @@ extern "C" int64_t* law_ordered(int64_t*, int64_t*);
 extern "C" int64_t* law_sched1(int64_t*, int64_t*);
 extern "C" int64_t* law_sched2(int64_t*, int64_t*);
 extern "C" int64_t* law_req2(int64_t*, int64_t*);
+extern "C" int64_t* law_run(int64_t*, int64_t*);
 
 int main() {
     // The emitted module is not instrumented, so sentinels past each input expose an out-of-bounds read.
@@ -41,7 +42,8 @@ int main() {
              Case{law_ordered,         "ordered red_par"},
              Case{ law_sched1,        "schedule par/red"},
              Case{ law_sched2, "schedule group/item/red"},
-             Case{   law_req2,      "req group/item/red"}
+             Case{   law_req2,      "req group/item/red"},
+             Case{    law_run,      "run capped par/red"}
     }) {
         auto got = f(a, b);
         for (int i = 0; i != 20; ++i)

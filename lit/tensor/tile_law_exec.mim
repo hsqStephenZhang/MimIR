@@ -49,3 +49,5 @@ extern fun law_req2 (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I6
     return (law.req (gemm (a, b), (),
         serial_group ((4, 2, 0), 0, 0, group_item ((1, 1, 0), 1, item_red ((0, 0, 2), 1, 0, item_done ()))),
         default_control));
+extern fun law_run (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.run (gemm (a, b), serial_par ((2, 0, 0), 0, serial_red ((0, 0, 2), 0, 0, serial_done ())), default_control));

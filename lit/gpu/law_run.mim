@@ -1,0 +1,42 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - -VVVV 2> %t.log | %FileCheck %s
+// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/law_run_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A plain chain runs as the law's meaning: work-groups, a peeled reduction split and work-items outline into one launch.
+// A chain that vectorizes is no longer plain, so TileFuse realizes it.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+lam gemm (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (20, 16) F32) =
+    law.of_map_reduce ((16, 16), (16, 16, 20)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+
+extern fun law_plain (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (20, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.run (gemm (a, b),
+        serial_group ((8, 8, 0), 0, 0, group_red ((0, 0, 8), 1, 0, group_item ((2, 2, 0), 0, item_done ()))),
+        default_control));
+extern fun law_fused (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (20, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.run (gemm (a, b),
+        serial_group ((8, 8, 0), 0, 0, group_item ((2, 2, 0), 0, item_vec ((1, 0, 0), item_done ()))), default_control));
+
+// LOG-NOT: tile_fuse {{.*}} L2 red
+// LOG-DAG: L1 par tiles=‹2; 2› tail=cap inputs=2 fused=0 yielded=0 bind=2
+// LOG-DAG: L0 par tiles=‹2; 8› tail=cap inputs=2 fused=0 yielded=0 bind=1
+// LOG-DAG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items, 4 device buffers, 4 arguments
+// LOG-DAG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items, 3 device buffers, 3 arguments
+
+// CHECK-COUNT-2: gpu.launch
