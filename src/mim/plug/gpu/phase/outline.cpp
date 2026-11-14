@@ -19,6 +19,22 @@ std::optional<u64> trip_count(const Def* args) {
     return *e;
 }
 
+// A work-group loop from 0 by 1 to a count known only at run time: its end.
+const Def* runtime_count(const Def* args) {
+    auto [begin, end, step, _] = args->projs<4>();
+    if (Lit::isa(begin) != 0 || Lit::isa(step) != 1 || Lit::isa(end)) return nullptr;
+    return end;
+}
+
+// Whether values of `type` are types: `*`, or arrays and tuples of them.
+bool is_kind(const Def* type) {
+    if (type->isa<Type>()) return true;
+    if (auto arr = type->isa<Arr>()) return is_kind(arr->body());
+    if (auto sigma = type->isa<Sigma>())
+        return sigma->num_ops() != 0 && std::ranges::all_of(sigma->ops(), [](const Def* op) { return is_kind(op); });
+    return false;
+}
+
 const App* bound_loop(const Def* def, bind id) {
     if (auto loop = Axm::isa<affine::For>(def))
         if (auto bound = Axm::isa<gpu::bind>(loop->uncurry_args<3>()[0]); bound && bound.id() == id)
@@ -59,6 +75,22 @@ size_t mem_index(const Def* acc) {
 
 } // namespace
 
+// One runtime extent can reach a kernel through two binders, so pointer types may differ in its spelling only.
+// Like the pointers crossing into the kernel, such a pointer is cast; its extents are equal at run time.
+const Def* Outline::coerce(const Def* new_type, const Def* new_val) {
+    auto& w = new_world();
+    if (new_val->type() == new_type) return new_val;
+    if (auto to = Axm::isa<mem::Ptr>(new_type))
+        if (auto from = Axm::isa<mem::Ptr>(new_val->type()); from && from->arg(2, 1) == to->arg(2, 1))
+            return w.call<core::bitcast>(new_type, new_val);
+    if (auto sigma = new_type->isa_imm<Sigma>(); sigma && new_val->type()->isa<Sigma>()) {
+        auto n = sigma->num_ops();
+        if (new_val->type()->num_ops() == n)
+            return w.tuple(new_type, DefVec(n, [&](size_t i) { return coerce(sigma->op(i), new_val->proj(n, i)); }));
+    }
+    return Super::coerce(new_type, new_val);
+}
+
 /// The maximal subterms of a loop body that are not closed but free of every var the body binds.
 void Outline::captures(const Def* def, const Vars& outer, DefSet& seen, DefVec& pieces) {
     if (auto [_, ins] = seen.emplace(def); !ins) return;
@@ -66,7 +98,8 @@ void Outline::captures(const Def* def, const Vars& outer, DefSet& seen, DefVec& 
     bool captured = true;
     for (auto var : def->free_vars())
         captured &= outer.contains(var);
-    if (!captured) {
+    // A function or a type is rebuilt inside the kernel from what it captures, e.g. a tile body over a runtime extent.
+    if (!captured || def->type()->isa<Pi>() || is_kind(def->type())) {
         for (auto op : def->ops())
             if (op) captures(op, outer, seen, pieces);
         return;
@@ -259,7 +292,8 @@ const Def* Outline::outline(const App* app) {
     auto body                    = Axm::isa<gpu::bind>(annotated)->arg()->isa_mut<Lam>();
     if (!body) app->blame("gpu.outline requires a lambda loop body").bail();
     auto n_groups = trip_count(args);
-    if (!n_groups) app->blame("gpu.outline requires a literal work-group count").bail();
+    auto dynamic  = n_groups ? nullptr : runtime_count(args);
+    if (!n_groups && !dynamic) app->blame("gpu.outline requires a work-group loop from 0 by 1").bail();
     DefSet seen;
     u64 n_items = std::min<u64>(item_count(body->body(), seen).value_or(1), Max_Items);
     if (n_items > 1024) app->blame("gpu.outline: {} work-items exceed a work-group", n_items).bail();
@@ -337,25 +371,42 @@ const Def* Outline::outline(const App* app) {
     }
     auto n_args  = kernel_args.size();
     auto arg_tys = DefVec(n_args, [&](size_t i) { return kernel_args[i]->type(); });
+    auto device  = std::vector<bool>(n_args, false);
+    for (size_t i = 0, p = 0; i != n_args; ++i)
+        if (p != dev_ptrs.size() && kernel_args[i] == dev_ptrs[p]) device[i] = true, ++p;
+    // A pointer whose type names a host value, as a runtime extent's array does, crosses as a byte pointer.
+    auto erased = std::vector<bool>(n_args, false);
+    for (size_t i = 0; i != n_args; ++i) {
+        if (arg_tys[i]->is_closed()) continue;
+        auto ptr = Axm::isa<mem::Ptr>(arg_tys[i]);
+        if (!ptr)
+            pieces[i]->blame("gpu.outline cannot pass `{}` of type `{}` to a kernel", pieces[i], arg_tys[i]).bail();
+        arg_tys[i]     = w.call<mem::Ptr>(Defs{w.type_i8(), ptr->arg(2, 1)});
+        kernel_args[i] = w.call<core::bitcast>(arg_tys[i], kernel_args[i]);
+        erased[i]      = true;
+    }
 
-    log().d("gpu.outline {}: {} groups × {} items, {} device buffers, {} arguments", body, *n_groups, n_items,
-            dev_ptrs.size(), n_args);
-    auto kernel = w.mut_con(Defs{global_ty, shared_ty, const_ty, local_ty, w.type_idx(*n_groups), w.type_idx(n_items),
-                                 w.sigma(Defs{}), w.sigma(arg_tys), w.cn({global_ty, shared_ty, const_ty, local_ty})})
+    log().d("gpu.outline {}: {} groups × {} items, {} device buffers, {} arguments", body,
+            n_groups ? std::to_string(*n_groups) : "runtime", n_items, dev_ptrs.size(), n_args);
+    // A count known only at run time numbers its work-groups by `Idx 0`, all 64-bit values.
+    auto kernel = w.mut_con(Defs{global_ty, shared_ty, const_ty, local_ty, w.type_idx(n_groups ? *n_groups : 0),
+                                 w.type_idx(n_items), w.sigma(Defs{}), w.sigma(arg_tys),
+                                 w.cn({global_ty, shared_ty, const_ty, local_ty})})
                       ->set("tileKernel");
     auto [k_global, k_shared, k_const, k_local, group_id, item_id, k_smem, k_args, k_ret] = kernel->vars<9>();
-    auto group_i64 = *n_groups == 1 ? w.lit_i64(0) : w.call(core::conv::u, w.lit_nat_0(), group_id);
+    auto group_i64 = n_groups == 1 ? w.lit_i64(0) : w.call(core::conv::u, w.lit_nat_0(), group_id);
     auto item_i64  = n_items == 1 ? w.lit_i64(0) : w.call(core::conv::u, w.lit_nat_0(), item_id);
 
     push();
-    for (size_t i = 0, p = 0; i != pieces.size(); ++i) {
+    for (size_t i = 0; i != pieces.size(); ++i) {
+        if (erased[i]) continue;
         auto arg = k_args->proj(n_args, i);
-        if (p != dev_ptrs.size() && kernel_args[i] == dev_ptrs[p]) {
-            arg = w.call<core::bitcast>(rewrite(pieces[i]->type()), arg);
-            ++p;
-        }
+        if (device[i]) arg = w.call<core::bitcast>(rewrite(pieces[i]->type()), arg);
         map(pieces[i], arg);
     }
+    // An erased pointer's type names other arguments, so it retypes once they are mapped.
+    for (size_t i = 0; i != pieces.size(); ++i)
+        if (erased[i]) map(pieces[i], w.call<core::bitcast>(rewrite(pieces[i]->type()), k_args->proj(n_args, i)));
     // Components come before the tuples they split off, so a whole tuple rebuilds from kernel arguments.
     for (auto split : splits_) {
         auto n = split->num_projs();
@@ -382,8 +433,8 @@ const Def* Outline::outline(const App* app) {
     pop();
 
     auto launch = w.app(w.annex<gpu::launch>(), Defs{w.lit_nat(n_args), w.tuple(arg_tys)});
-    launch      = w.app(
-        launch, Defs{w.lit_nat(*n_groups), w.lit_nat(n_items), w.annex<gpu::default_stream>(), w.lit_ff(), w.tuple()});
+    launch = w.app(launch, Defs{n_groups ? w.lit_nat(*n_groups) : w.call<core::bitcast>(w.type_nat(), rewrite(dynamic)),
+                                w.lit_nat(n_items), w.annex<gpu::default_stream>(), w.lit_ff(), w.tuple()});
     launch = w.app(launch, kernel);
     launch = w.app(launch, w.tuple(kernel_args));
 

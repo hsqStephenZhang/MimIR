@@ -744,6 +744,8 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
 
         emit_unsafe(mem);
         auto n_groups = emit(n_groups_def);
+        // A grid size known only at run time is a 64-bit `Nat`; `cuLaunchKernel` takes 32 bits.
+        if (!Lit::isa(n_groups_def)) n_groups = bb.assign(name + "_grid", "trunc i64 {} to i32", n_groups);
         auto n_items  = emit(n_items_def);
         auto stream   = emit(stream_def);
         auto kernel   = emit(kernel_def);

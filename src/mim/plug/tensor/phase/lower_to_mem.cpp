@@ -1740,10 +1740,20 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         auto lanes  = plan.bind == 2 ? lane_count(region_body(app->arg()).first) : u64(1);
         u64 total   = 1;
         auto counts = fe::Vector<u64>(*rank, 1);
+        // A work-group level over extents known only at run time caps its last tiles and counts them at run time.
+        auto runtime = DefVec(*rank, nullptr);
+        auto dynamic = false;
+        for (size_t d = 0; d != *rank; ++d)
+            if (!whole[d] && !sizes[d]) {
+                if (plan.bind != 1 || !cap) app->blame("a bound tensor.tiled level requires literal extents").bail();
+                auto extent = rewrite(shape->proj(*rank, d));
+                runtime[d]  = w.call(core::nat::div, Defs{w.call(core::nat::add, Defs{extent, w.lit_nat(steps[d] - 1)}),
+                                                          w.lit_nat(steps[d])});
+                dynamic     = true;
+            }
         for (size_t d = 0; d != *rank; ++d) {
             if (sizes[d] == 0) return w.app(exit, acc);
-            if (whole[d] || (sizes[d] && *sizes[d] == steps[d])) continue;
-            if (!sizes[d]) app->blame("a bound tensor.tiled level requires literal extents").bail();
+            if (whole[d] || (sizes[d] && *sizes[d] == steps[d]) || runtime[d]) continue;
             if (*sizes[d] % steps[d] && !cap) app->blame("a bound tensor.tiled level cannot peel its tail").bail();
             counts[d] = (*sizes[d] + steps[d] - 1) / steps[d];
             total *= counts[d];
@@ -1785,7 +1795,19 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             }
         auto extra    = special ? u64(1) : u64(0);
         auto launched = ctas ? ctas : total * lanes * parts + extra;
-        auto loop     = w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(launched), w.lit_i64(1), acc});
+        if (dynamic && (ctas || cluster || special || lanes > 1))
+            app->blame("a work-group level over runtime extents runs no clusters, persistent or specialized groups")
+                .bail();
+        // The count of each dim's tiles, at run time where its extent is.
+        auto count_of  = [&](size_t d) { return runtime[d] ? runtime[d] : w.lit_nat(counts[d]); };
+        const Def* end = w.lit_i64(launched);
+        if (dynamic) {
+            const Def* product = w.lit_nat(1);
+            for (size_t d = 0; d != *rank; ++d)
+                product = w.call(core::nat::mul, Defs{product, count_of(d)});
+            end = w.call<core::bitcast>(w.type_i64(), product);
+        }
+        auto loop                  = w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), end, w.lit_i64(1), acc});
         auto [index, state, yield] = body->vars<3>();
         const Def* linear          = w.call<core::bitcast>(w.type_nat(), index);
         if (parts > 1) linear = w.call(core::nat::div, Defs{linear, w.lit_nat(parts)});
@@ -1850,9 +1872,26 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         // edge, and stores only the rows and columns inside.
         auto padded = false;
         for (size_t d = 0; d != *rank; ++d)
-            padded |= plan.bind == 1 && sizes[d] && *sizes[d] % steps[d] && fills_with_tma(app->arg());
+            padded
+                |= plan.bind == 1 && (runtime[d] || (sizes[d] && *sizes[d] % steps[d])) && fills_with_tma(app->arg());
         auto padding = fe::Restore(padded_, padded_ || padded);
-        for (size_t d = 0; d != *rank; ++d) {
+        if (dynamic) {
+            // Mixed radix over the tile counts, innermost dim last; a runtime extent's last tile is capped.
+            const Def* inner = w.lit_nat(1);
+            for (size_t d = *rank; d-- != 0;) {
+                if (whole[d] || (!runtime[d] && counts[d] == 1)) {
+                    offsets[d] = w.lit_nat_0();
+                    extents[d] = whole[d] ? shape->proj(*rank, d) : old.lit_nat(steps[d]);
+                    continue;
+                }
+                auto quotient = w.call(core::nat::div, Defs{linear, inner});
+                auto tile     = w.call(core::nat::rem, Defs{quotient, count_of(d)});
+                offsets[d]    = w.call(core::nat::mul, Defs{tile, w.lit_nat(steps[d])});
+                extents[d]    = (runtime[d] || *sizes[d] % steps[d]) && !padded ? nullptr : old.lit_nat(steps[d]);
+                inner         = w.call(core::nat::mul, Defs{inner, count_of(d)});
+            }
+        }
+        for (size_t d = 0; d != *rank && !dynamic; ++d) {
             if (counts[d] == 1) {
                 // A one-tile bound region depends on its binder in every dim, so nothing it stages floats out.
                 // The binder is 0 there, and scaling it by the step keeps the offset a known multiple of the step.

@@ -394,7 +394,7 @@ protected:
     /// Converts the *new* @p new_val into a value of the *new* @p new_type, where a checking position demands it.
     /// Both are matched leaf by leaf: tuples are exploded and reassembled, Pi%s are η-wrapped, and
     /// information-free components are dropped or filled in with their sole inhabitant.
-    const Def* coerce(const Def* new_type, const Def* new_val);
+    virtual const Def* coerce(const Def* new_type, const Def* new_val);
     /// Does coerce() explode and reassemble values of @p type?
     static bool splittable(const Def* type) {
         return (type->isa<Sigma>() || type->isa_imm<Arr>()) && type->num_tprojs() != 1;

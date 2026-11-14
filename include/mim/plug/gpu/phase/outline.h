@@ -14,6 +14,7 @@ public:
 
 private:
     const Def* rewrite_imm_App(const App*) final;
+    const Def* coerce(const Def* new_type, const Def* new_val) final;
     const Def* outline(const App*);
     void captures(const Def*, const Vars&, DefSet&, DefVec&);
 
