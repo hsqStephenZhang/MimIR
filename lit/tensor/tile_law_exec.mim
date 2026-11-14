@@ -38,3 +38,14 @@ extern fun law_split (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I
     return (law.red_par (gemm_merging (a, b), 2, 2));
 extern fun law_ordered (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
     return (law.red_par (gemm (a, b), 2, 2));
+
+// A schedule's meaning, by the split lemmas, and the request that TileFuse realizes with the same levels.
+extern fun law_sched1 (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.schedule (gemm (a, b), serial_par ((2, 0, 0), 1, serial_red ((0, 0, 2), 1, 0, serial_done ()))));
+extern fun law_sched2 (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.schedule (gemm (a, b),
+        serial_group ((4, 2, 0), 0, 0, group_item ((1, 1, 0), 1, item_red ((0, 0, 2), 1, 0, item_done ())))));
+extern fun law_req2 (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.req (gemm (a, b), (),
+        serial_group ((4, 2, 0), 0, 0, group_item ((1, 1, 0), 1, item_red ((0, 0, 2), 1, 0, item_done ()))),
+        default_control));

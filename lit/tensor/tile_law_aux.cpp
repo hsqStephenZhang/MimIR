@@ -10,13 +10,17 @@ extern "C" int64_t* law_par(int64_t*, int64_t*);
 extern "C" int64_t* law_red(int64_t*, int64_t*);
 extern "C" int64_t* law_split(int64_t*, int64_t*);
 extern "C" int64_t* law_ordered(int64_t*, int64_t*);
+extern "C" int64_t* law_sched1(int64_t*, int64_t*);
+extern "C" int64_t* law_sched2(int64_t*, int64_t*);
+extern "C" int64_t* law_req2(int64_t*, int64_t*);
 
 int main() {
-    int64_t a[15], b[12], want[20];
-    for (int i = 0; i != 15; ++i)
-        a[i] = 3 * i - 7;
-    for (int i = 0; i != 12; ++i)
-        b[i] = -2 * i + 5;
+    // The emitted module is not instrumented, so sentinels past each input expose an out-of-bounds read.
+    int64_t a[20], b[16], want[20];
+    for (int i = 0; i != 20; ++i)
+        a[i] = i < 15 ? 3 * i - 7 : 1000;
+    for (int i = 0; i != 16; ++i)
+        b[i] = i < 12 ? -2 * i + 5 : 1000;
     for (int m = 0; m != 5; ++m)
         for (int n = 0; n != 4; ++n) {
             want[m * 4 + n] = 0;
@@ -29,12 +33,15 @@ int main() {
         const char* what;
     };
     for (auto [f, what] : {
-             Case{ law_denote,          "denote"},
-             Case{    law_req,             "req"},
-             Case{    law_par,             "par"},
-             Case{    law_red,             "red"},
-             Case{  law_split,         "red_par"},
-             Case{law_ordered, "ordered red_par"}
+             Case{ law_denote,                  "denote"},
+             Case{    law_req,                     "req"},
+             Case{    law_par,                     "par"},
+             Case{    law_red,                     "red"},
+             Case{  law_split,                 "red_par"},
+             Case{law_ordered,         "ordered red_par"},
+             Case{ law_sched1,        "schedule par/red"},
+             Case{ law_sched2, "schedule group/item/red"},
+             Case{   law_req2,      "req group/item/red"}
     }) {
         auto got = f(a, b);
         for (int i = 0; i != 20; ++i)

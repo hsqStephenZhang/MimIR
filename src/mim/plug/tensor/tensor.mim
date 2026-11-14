@@ -3171,9 +3171,12 @@ anx lam tf_reduce {Acc Out I: *} (K ks tail: Nat) (init: Acc) (ins: I)
 ///
 pub mod law
     /// A structural record, like `Tileable`, so its dependent fields check against the tuple the constructor builds.
-    anx lam Law (r: Nat, s: «r; Nat», T: *): □ =
-        [n ro inputs: Nat, extents: «n; Nat», Acc Kind: *, root: Tensor r s T,
-         par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T];
+    /// The loop count `n`, the accumulator `Acc` and the contraction `Kind` are parameters: they index level types, and a
+    /// later field's type may not depend on an earlier type-valued field.
+    anx lam Law (r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *): * =
+        [ro inputs: Nat, extents: «n; Nat», root: Tensor r s T,
+         par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T,
+         schedule: TileLevels (n, Acc, Kind) → Tensor r s T];
 
     /// The root of `map_reduce`'s arguments and its law.
     /// `par ts` concatenates the root's tiles of `ts`; `red (loop, ks)` folds reduction loop `loop` in whole blocks of `ks`
@@ -3181,6 +3184,9 @@ pub mod law
     /// `red_par (loop, parts)` folds `parts` stretches of loop `loop` each from the seed, independently, and merges them
     /// with `merge`; it needs the seed to be `merge`'s identity and `merge` to be associative, which the caller vouches
     /// for. An `ordered` law has no such merge, so its `red_par` folds in order.
+    /// `schedule levels` is the meaning of a schedule: every parallel level (`Par`, `Group`, `Item`, `Warp`, `Warpgroup`)
+    /// splits the output into tiles and concatenates them, every reduction level (`Red`, `RedItems`, `Lanes`, `RedTma`,
+    /// `RedWs`) folds its loop's blocks in order, and a leaf (`Done`, `Mma`, `Wgmma`) folds its block into the tile.
     lam build {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
@@ -3188,7 +3194,8 @@ pub mod law
         (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»)
-        (merge: [To, To] → To, ordered: Bool): Law (Ro, So, To) =
+        (merge: [To, To] → To, ordered: Bool)
+        : Law (Ro, So, To, Rn, To, root_contraction (map_reduce (So, Sr) (f, init) map_out maps is)) =
         let make = λ (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro So To =
             map_reduce (So, Sr) (f, init) map_out maps xs;
         let root = make is;
@@ -3221,7 +3228,86 @@ pub mod law
                     (zip (acc, part (core.idx2nat j)), part 0)#(core.idx2nat j == 0))
                 (seed, ‹j: parts; j›);
             (tile_of_post @(To, To, Ro) @So (root, zero, So, all), red (loop, chunk))#ordered;
-        (Rn, Ro, nis, Sr, To, root_contraction root, root, par, red, red_par);
+
+        // The interpreter of a schedule maps each level to a step over a block of the loops: its origin `lo`, the
+        // output tile's extent and the loops' extents, the inputs and the tile's accumulator.
+        let Step = [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»,
+                    acc: Tensor Ro ext To] → Tensor Ro ext To;
+        let at   = λ (d: Idx Rn): Idx Ro = core.idx 0 Ro (core.select (core.idx2nat d < Ro, core.idx2nat d, 0));
+        let leaf = λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»,
+                      acc: Tensor Ro ext To): Tensor Ro ext To =
+            let off = ‹d: Ro; lo#(core.idx 0 Rn (core.idx2nat d))›;
+            map_reduce_acc (ext, size) (f, acc) (tile_shift @(Rn, Ro) map_out (lo, off))
+                ‹i: nis; tile_shift @(Rn, Ris#i) (maps#i) (lo, ‹Ris#i; 0›)› xs;
+        let split_par = λ (sizes: «Rn; Nat», k: Step): Step =
+            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»,
+               acc: Tensor Ro ext To): Tensor Ro ext To =
+                let ts = ‹d: Ro; let z = sizes#(core.idx 0 Rn (core.idx2nat d)); (z, ext#d)#(z == 0)›;
+                tiled (ext, ts, 0) (xs, acc)
+                    (λ (off ext2: «Ro; Nat») (ins: [«i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», Tensor Ro ext To])
+                        : Tensor Ro ext2 To =
+                        let (xs2, acc2) = ins;
+                        k (‹d: Rn; lo#d + (0, off#(at d))#(core.idx2nat d < Ro)›, ext2,
+                           ‹d: Rn; (size#d, ext2#(at d))#(core.idx2nat d < Ro)›, xs2,
+                           slice @(To, Ro) ext (off, ‹Ro; 1›, ext2) acc2));
+        let split_red = λ (sizes: «Rn; Nat», k: Step): Step =
+            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»,
+               acc: Tensor Ro ext To): Tensor Ro ext To =
+                let loop = vec.fold.r @(Nat, Idx Rn) @Rn
+                    (λ (d: Idx Rn, x: Nat): Nat = (x, core.idx2nat d)#(core.bit2.and 0 (sizes#d != 0, Ro <= core.idx2nat d)))
+                    (‹d: Rn; d›, Rn);
+                let ks   = vec.fold.r @(Nat, Idx Rn) @Rn
+                    (λ (d: Idx Rn, x: Nat): Nat = (x, sizes#d)#(core.idx2nat d == loop)) (‹d: Rn; d›, 0);
+                let K    = size#(core.idx 0 Rn (core.select (loop < Rn, loop, 0)));
+                let unit = core.select (ks == 0, 1, ks);
+                (tile_fold ((K + unit - 1) / unit, unit) acc xs
+                    (λ (a: Tensor Ro ext To, k0: Nat) (xs2: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro ext To =
+                        k (‹d: Rn; lo#d + (0, k0)#(core.idx2nat d == loop)›, ext,
+                           ‹d: Rn; (size#d, core.select (k0 + unit < K, unit, K - k0))#(core.idx2nat d == loop)›, xs2, a)),
+                 k (lo, ext, size, xs, acc))#(loop == Rn);
+        lam wg_step {M: *, g t: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: WarpgroupLevels (Rn, To, M, g, t))@(core.pe.is_closed l): Tensor Ro ext To =
+            match l with
+                | 0 => leaf (lo, ext, size, xs, acc)
+                | 1 (sizes, _, _, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 2 _ => leaf (lo, ext, size, xs, acc)
+                | 3 (sizes, _, _, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 4 (sizes, _, _, _, _, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc);
+        lam warp_step {M: *, b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: WarpLevels (Rn, To, M, b))@(core.pe.is_closed l): Tensor Ro ext To =
+            match l with
+                | 0 => leaf (lo, ext, size, xs, acc)
+                | 1 (sizes, _, _, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = warp_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 2 _ => leaf (lo, ext, size, xs, acc);
+        lam item_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
+            match l with
+                | 0 => leaf (lo, ext, size, xs, acc)
+                | 1 (sizes, _, rest) => split_par (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 2 (sizes, _, _, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 3 (_, rest) => item_step (lo, ext, size, xs, acc, rest)
+                | 4 (sizes, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc);
+        lam group_step {M: *, g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): Tensor Ro ext To =
+            match l with
+                | 0 => leaf (lo, ext, size, xs, acc)
+                | 1 (sizes, _, rest) => split_par (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 2 (sizes, _, rest) => split_par (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 3 (sizes, _, _, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 4 (sizes, _, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 5 (_, rest) => group_step (lo, ext, size, xs, acc, rest)
+                | 6 (sizes: «Rn; Nat», _: Nat, rest: WarpLevels (Rn, To, M, within (g, sizes))) =>
+                    split_par (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = warp_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 7 (sizes: «Rn; Nat», _: Nat, rest: WarpgroupLevels (Rn, To, M, g, sizes)) =>
+                    split_par (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc);
+        lam tile_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
+            match l with
+                | 0 => leaf (lo, ext, size, xs, acc)
+                | 1 (sizes, _, rest) => split_par (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = tile_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 2 (sizes: «Rn; Nat», _ _: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split_par (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 3 (sizes, _, _, rest) => split_red (sizes, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: Tensor Ro ext To): Tensor Ro ext To = tile_step (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 4 (_, rest) => tile_step (lo, ext, size, xs, acc, rest)
+                | 5 (_, _, _, rest) => tile_step (lo, ext, size, xs, acc, rest)
+                | 6 (_, rest) => tile_step (lo, ext, size, xs, acc, rest);
+        let schedule = λ (levels: TileLevels (Rn, To, root_contraction root)): Tensor Ro So To =
+            tile_step (‹Rn; 0›, So, Sr, is, tile_of_init @(To, To, Ro) @So (root, zero, So), levels);
+        (Ro, nis, Sr, root, par, red, red_par, schedule);
 
     anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -3229,7 +3315,7 @@ pub mod law
         (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
         (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
-        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Law (Ro, So, To) =
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
         build (So, Sr) (f, init) map_out maps is (λ (uv: «2; To»): To = uv#0₂, tt);
     /// A law whose reduction may also split out of order, merged by `merge`.
     anx lam of_map_reduce_merging {nis: Nat} {To: *, Ro Rn: Nat}
@@ -3238,22 +3324,28 @@ pub mod law
         (f: Fn [To, «i: nis; Tis#i»] → To, init: To, merge: [To, To] → To)
         (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
-        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Law (Ro, So, To) =
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
         build (So, Sr) (f, init) map_out maps is (merge, ff);
 
     /// Field access by position: a record behind a type function does not carry its field names to `#`.
     /// The meaning of a law: its root.
-    anx lam denote {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T)): Tensor r s T = l#6₁₀;
-    anx lam par {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), ts: «r; Nat»): Tensor r s T = (l#7₁₀) ts;
-    anx lam red {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), loop ks: Nat): Tensor r s T = (l#8₁₀) (loop, ks);
-    anx lam red_par {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), loop parts: Nat): Tensor r s T = (l#9₁₀) (loop, parts);
+    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₈;
+    anx lam par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), ts: «r; Nat»): Tensor r s T =
+        (l#4₈) ts;
+    anx lam red {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop ks: Nat): Tensor r s T =
+        (l#5₈) (loop, ks);
+    anx lam red_par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop parts: Nat)
+        : Tensor r s T = (l#6₈) (loop, parts);
+    /// The meaning of a schedule over the law, by the split lemmas, which a realized request must agree with.
+    anx lam schedule {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *}
+        (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Tensor r s T = (l#7₈) levels;
 
     /// A tile request whose levels are indexed by the law's facts and checked by them; once the law is literal the cast is
     /// between two instances of one level type.
-    anx lam req {r: Nat, s: «r; Nat», T: *, M K: *}
-        (l: Law (r, s, T), members: M, levels: TileLevels (l#0₁₀, l#4₁₀, l#5₁₀), control: K): Tensor r s T =
-        let root = l#6₁₀;
-        check.report (check.verdict (l#1₁₀, l#2₁₀, l#3₁₀, levels),
+    anx lam req {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, M K: *}
+        (l: Law (r, s, T, n, Acc, Kind), members: M, levels: TileLevels (n, Acc, Kind), control: K): Tensor r s T =
+        let root = l#3₈;
+        check.report (check.verdict (l#0₈, l#1₈, l#2₈, levels),
             tile_req (root, members, core.bitcast (TileLevels (root_loops root, root_acc root, root_contraction root)) levels,
                       control));
 end

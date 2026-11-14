@@ -104,7 +104,13 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 - 第三条切分引理：`of_map_reduce_merging` 带用户许可的 `merge`，定律的 `red_par (loop, parts)` 把归约维切成 `parts` 段，各段独立从初值折叠，再逐元素 `merge`，最后做 epilogue。
   前提是初值是 `merge` 的单位元、`merge` 可结合，由许可者担保；不带 `merge` 的定律（“有序”）的 `red_par` 退回按序折叠。这是第 4 步“合并统一为幺半群”的入口：split-k、work-item、lane 归约都是不同作用域上的 `red_par`。
 - `law.req` 以定律的字段为层级类型的索引，并用定律的事实（不经反射）调用 `check.verdict`，经 `check.report` 在调用处报错。
+- 第 3 步的语义部分：`law.schedule (l, levels)` 是层级链的参考解释器，与 `TileFuse` 接受同一个 `TileLevels` 值。
+  解释器逐级递归（`tile_step`/`group_step`/`item_step`/`warp_step`/`wg_step`），每一级只落到三条切分引理之一：并行类（`Par`、`Group`、`Item`、`Warp`、`Warpgroup`）是 `split_par`，按块拼接并把块的偏移与长度传给下一级；
+  归约类（`Red`、`RedItems`、`Lanes`、`RedTma`、`RedWs`）是 `split_red`，用 `tile_fold` 按原顺序折叠，尾块的长度截到剩余部分；`Done`、`Mma`、`Wgmma` 在块上做 `map_reduce_acc`；`Vec`、`Cluster`、`Persistent` 不改变语义，直接跳过。
+  于是任何一条合法的调度都有一个由定律给出的含义，`TileFuse` 的实现可以逐条与它比较。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
+  `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
+  生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
   `lit/error/law_req_rule.mim`（规则用定律的事实）、`law_req_kind.mim`（收缩种类不符是类型错误）。
 
 实现中碰到的 MimIR 限制，决定了现在的形式：
