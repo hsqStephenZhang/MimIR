@@ -5,6 +5,9 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:tile-ref=1 %s -p ll -X ll:o=%t.ref.ll
 // RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_aux.cpp %t.ref.ll -o %t.ref -Wno-override-module
 // RUN: %t.ref
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.off.ll 2> %t.off.log
+// RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_aux.cpp %t.off.ll -o %t.off -Wno-override-module
+// RUN: %t.off
 
 // The tile-and-fuse driver tiles each requested root and fuses the members of its group into the tiles.
 

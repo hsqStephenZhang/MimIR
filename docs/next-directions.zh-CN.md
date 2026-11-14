@@ -174,5 +174,6 @@ D6 (覆盖面) 与上面并行；动态形状依赖 assert 语义
   2. 内层 bound 层（item、warpgroup）看到的是被截断的运行时尾块长度，需要按常量上界（外层步长）切分并屏蔽越界；TMA 填充把尾块按整块算，所以 TMA 路径越过了这一步；
   3. `gpu.outline` 需要运行时 grid（kernel 的 group 下标用 `Idx 0`、launch 截断为 i32，原型可行），
      并且要在 kernel 内重建捕获了运行时形状的函数与类型：形状依赖 `m` 的 tile 体不再是闭项，变成带自由变量的函数值；
-  4. 重建时 RWPhase 对依赖类型（`«m; *»`）的 coerce 失败，与 `bench/validate` 记录的 “cannot coerce `TileLevels_…`” 同类。
-  所以动态形状的第一件事是修 core 里 RWPhase 对依赖类型、递归 nom 的重建，然后才是 2、3。
+  4. 重建时 RWPhase 对依赖类型（`«m; *»`）的 coerce 失败。
+  “cannot coerce `TileLevels_…`” 查明不是 nom 比较的问题，而是类型索引 `root_loops op` 在 `op` 被改写后不再归约；已修（`DropTileRequests`）。
+  第 4 条很可能是同一类：类型里的形状表达式依赖被改写的值，下一步按这个方向查，然后才是 2、3。

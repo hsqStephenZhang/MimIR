@@ -121,9 +121,8 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
     }
     auto a_read   = w.app(maps[0], fn->var());
     auto direct_a = batch == 0 && ranks->rr == 1 && (*nr)[0] == 2 && a_read == w.tuple({vars[0], vars[2]});
-    auto in_place = [&](size_t i) {
-        return (*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var();
-    };
+    auto in_place
+        = [&](size_t i) { return (*nr)[i] == 2 && reads[i]->as<Lam>()->body() == reads[i]->as<Lam>()->has_var(); };
     if (batch == 0) {
         // A copied by blis_operand is already row-major (M, K) and needs no second pack.
         auto pack_a  = !direct_a && in_place(0);
@@ -146,9 +145,9 @@ ProducerTile blis_group(const Def* producer, const Def* tile, const Def* params)
                          {mr.To, types[0], types[1], mr.nps, mr.Tps, mr.Rps, mr.Sps, w.lit_nat(batch), mr.Ris});
     builder      = w.app(builder, {mr.Sis, w.tuple(DefVec(batch, [&](size_t d) { return w.lit_nat((*shape)[d]); }))});
     // group_blis_batch_impl copies each batch's A into a row-major (M, K) operand, which needs no second pack.
-    builder      = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
-                                   w.lit_nat(nc), w.lit_nat(kc), w.lit_ff()});
-    builder      = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps, w.tuple(reads)});
+    builder = w.app(builder, {w.lit_nat(m), w.lit_nat(k), w.lit_nat(n), w.lit_nat(mr_tile), w.lit_nat(nr_tile),
+                              w.lit_nat(nc), w.lit_nat(kc), w.lit_ff()});
+    builder = w.app(builder, {mr.comb, mr.init, mr.post, mr.post_maps, w.tuple(reads)});
     return {w.app(builder, app->arg()), {}};
 }
 
@@ -495,6 +494,7 @@ void GroupDefault::start() {
         if (mode == 2) TileGroup(world(), Annex::base<tile_group>()).run();
         return TileFuse(world(), Annex::base<tile_fuse>()).run();
     }
+    DropTileRequests(world(), "tensor.drop_tile_requests").run();
     if (driver().is_loaded("gpu")) return;
     if (!driver().arg_nat("tensor", "group").value_or(1)) return;
     Phases stages;
