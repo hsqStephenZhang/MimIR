@@ -3173,19 +3173,22 @@ pub mod law
     /// A structural record, like `Tileable`, so its dependent fields check against the tuple the constructor builds.
     anx lam Law (r: Nat, s: «r; Nat», T: *): □ =
         [n ro inputs: Nat, extents: «n; Nat», Acc Kind: *, root: Tensor r s T,
-         par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T];
+         par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T];
 
-    /// `map_reduce`'s arguments make the root and its law at once.
+    /// The root of `map_reduce`'s arguments and its law.
     /// `par ts` concatenates the root's tiles of `ts`; `red (loop, ks)` folds reduction loop `loop` in whole blocks of `ks`
-    /// in order from the accumulator's tile, then the peeled last block, then the epilogue: both are the root by the split
-    /// lemmas.
-    anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
+    /// in order from the accumulator's tile, then the peeled last block, then the epilogue.
+    /// `red_par (loop, parts)` folds `parts` stretches of loop `loop` each from the seed, independently, and merges them
+    /// with `merge`; it needs the seed to be `merge`'s identity and `merge` to be associative, which the caller vouches
+    /// for. An `ordered` law has no such merge, so its `red_par` folds in order.
+    lam build {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
         (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
         (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
-        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Law (Ro, So, To) =
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»)
+        (merge: [To, To] → To, ordered: Bool): Law (Ro, So, To) =
         let make = λ (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro So To =
             map_reduce (So, Sr) (f, init) map_out maps xs;
         let root = make is;
@@ -3203,20 +3206,54 @@ pub mod law
                     let (k0, k) = tf_tail (K, ks);
                     tile_of_partial @(To, To, Ro) @So (root, zero, So, loop, k0, k, acc))
                 (λ (acc: Tensor Ro So To): Tensor Ro So To = tile_of_post @(To, To, Ro) @So (root, zero, So, acc));
-        (Rn, Ro, nis, Sr, To, root_contraction root, root, par, red);
+        fun merged (_: To, uv: «2; To»)@tt: To = return (merge uv);
+        let zip  = λ (x y: Tensor Ro So To): Tensor Ro So To =
+            map_reduce (So, So) (merged, init) (affine.id @Ro) (affine.id @Ro, affine.id @Ro) (x, y);
+        let red_par = λ (loop parts: Nat): Tensor Ro So To =
+            let K     = Sr#(core.idx 0 Rn loop);
+            let chunk = (K + parts - 1) / parts;
+            let seed  = tile_of_init @(To, To, Ro) @So (root, zero, So);
+            let part  = λ (j: Nat): Tensor Ro So To =
+                let k0 = core.select (j * chunk < K, j * chunk, K);
+                tile_of_partial @(To, To, Ro) @So (root, zero, So, loop, k0, core.select (k0 + chunk < K, chunk, K - k0), seed);
+            let all   = vec.fold.l @(Tensor Ro So To, Idx parts) @parts
+                (λ (acc: Tensor Ro So To, j: Idx parts): Tensor Ro So To =
+                    (zip (acc, part (core.idx2nat j)), part 0)#(core.idx2nat j == 0))
+                (seed, ‹j: parts; j›);
+            (tile_of_post @(To, To, Ro) @So (root, zero, So, all), red (loop, chunk))#ordered;
+        (Rn, Ro, nis, Sr, To, root_contraction root, root, par, red, red_par);
+
+    anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Law (Ro, So, To) =
+        build (So, Sr) (f, init) map_out maps is (λ (uv: «2; To»): To = uv#0₂, tt);
+    /// A law whose reduction may also split out of order, merged by `merge`.
+    anx lam of_map_reduce_merging {nis: Nat} {To: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To, merge: [To, To] → To)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Law (Ro, So, To) =
+        build (So, Sr) (f, init) map_out maps is (merge, ff);
 
     /// Field access by position: a record behind a type function does not carry its field names to `#`.
     /// The meaning of a law: its root.
-    anx lam denote {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T)): Tensor r s T = l#6₉;
-    anx lam par {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), ts: «r; Nat»): Tensor r s T = (l#7₉) ts;
-    anx lam red {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), loop ks: Nat): Tensor r s T = (l#8₉) (loop, ks);
+    anx lam denote {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T)): Tensor r s T = l#6₁₀;
+    anx lam par {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), ts: «r; Nat»): Tensor r s T = (l#7₁₀) ts;
+    anx lam red {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), loop ks: Nat): Tensor r s T = (l#8₁₀) (loop, ks);
+    anx lam red_par {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), loop parts: Nat): Tensor r s T = (l#9₁₀) (loop, parts);
 
     /// A tile request whose levels are indexed by the law's facts and checked by them; once the law is literal the cast is
     /// between two instances of one level type.
     anx lam req {r: Nat, s: «r; Nat», T: *, M K: *}
-        (l: Law (r, s, T), members: M, levels: TileLevels (l#0₉, l#4₉, l#5₉), control: K): Tensor r s T =
-        let root = l#6₉;
-        check.report (check.verdict (l#1₉, l#2₉, l#3₉, levels),
+        (l: Law (r, s, T), members: M, levels: TileLevels (l#0₁₀, l#4₁₀, l#5₁₀), control: K): Tensor r s T =
+        let root = l#6₁₀;
+        check.report (check.verdict (l#1₁₀, l#2₁₀, l#3₁₀, levels),
             tile_req (root, members, core.bitcast (TileLevels (root_loops root, root_acc root, root_contraction root)) levels,
                       control));
 end

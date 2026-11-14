@@ -101,8 +101,10 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 
 - `law.of_map_reduce` 以 `map_reduce` 的参数同时构造根与定律；定律是结构化记录 `Law (r, s, T)`，字段为循环数、并行维数、输入个数、长度、累加器、收缩种类、根，
   以及两个切分：构造子在根的输入仍在作用域时把它们做成闭包，`par ts` 拼接根的各块，`red (loop, ks)` 按原顺序折叠整块、再折叠剥离的尾块、最后做 epilogue。
+- 第三条切分引理：`of_map_reduce_merging` 带用户许可的 `merge`，定律的 `red_par (loop, parts)` 把归约维切成 `parts` 段，各段独立从初值折叠，再逐元素 `merge`，最后做 epilogue。
+  前提是初值是 `merge` 的单位元、`merge` 可结合，由许可者担保；不带 `merge` 的定律（“有序”）的 `red_par` 退回按序折叠。这是第 4 步“合并统一为幺半群”的入口：split-k、work-item、lane 归约都是不同作用域上的 `red_par`。
 - `law.req` 以定律的字段为层级类型的索引，并用定律的事实（不经反射）调用 `check.verdict`，经 `check.report` 在调用处报错。
-- `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red` 都等于参考结果，即两条切分引理在这个实例上成立；
+- `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `lit/error/law_req_rule.mim`（规则用定律的事实）、`law_req_kind.mim`（收缩种类不符是类型错误）。
 
 实现中碰到的 MimIR 限制，决定了现在的形式：
@@ -112,7 +114,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 | `nom Law` 带类型值字段 `I: *` 与 `ins: I` | 依赖 sigma 的后续字段不能用前面字段的值代换 | 输入不进记录，切分在构造子里做成闭包（与 `Tileable` 的 `retile` 同理） |
 | `Law` 以 `I` 为参数 | 参数含依赖数组类型时，类型级 lam 在泛型构造子里实例化不完整 | 同上 |
 | 结构化 `Law (r, s, T)` 上按名取字段 `l#root` | 字段名不经类型函数传到 `#` | 按位置取，模块给出具名的访问函数 |
-| `law.req` 把层级交给 `tile_req` | 结构相同的两个递归 nom 实例不被视为同一类型 | 经 `core.bitcast` 转换，TileFuse 与 `tile_req` 的 normalizer 剥掉它 |
+| `law.req` 把层级交给 `tile_req` | 层级经过 RWPhase 重建后成为结构相同、指针不同的 nom 实例，`bitcast` 不能归约掉 | 经 `core.bitcast` 转换，TileFuse 剥掉它；`tile_req` 的 normalizer 见到它就跳过（定律已用自己的事实检查过） |
 | `check.report` 在 `law.req` 的定义体里 | normalizer 在定义时就看到未定的判定 | 判定含自由变量时不归约 |
 
 前三条与 D6 的阻塞同源：依赖类型的实例化与比较。它们是继续推进第 3 步（TileFuse 在定律上解释调度）之前最值得在 core 里修的地方。

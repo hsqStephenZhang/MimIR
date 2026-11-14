@@ -28,3 +28,13 @@ extern fun law_par (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64
     return (law.par (gemm (a, b), (2, 3)));
 extern fun law_red (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
     return (law.red (gemm (a, b), 2, 2));
+
+// With `merge` an add, the stretches of the reduction fold apart and merge; without one they fold in order.
+lam add (uv: «2; I64»): I64 = core.wrap.add 0 uv;
+lam gemm_merging (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64) =
+    law.of_map_reduce_merging ((5, 4), (5, 4, 3)) (mac, 0I64, add) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+extern fun law_split (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.red_par (gemm_merging (a, b), 2, 2));
+extern fun law_ordered (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.red_par (gemm (a, b), 2, 2));

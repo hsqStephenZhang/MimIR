@@ -1,12 +1,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+
 #include <initializer_list>
 
 extern "C" int64_t* law_denote(int64_t*, int64_t*);
 extern "C" int64_t* law_req(int64_t*, int64_t*);
 extern "C" int64_t* law_par(int64_t*, int64_t*);
 extern "C" int64_t* law_red(int64_t*, int64_t*);
+extern "C" int64_t* law_split(int64_t*, int64_t*);
+extern "C" int64_t* law_ordered(int64_t*, int64_t*);
 
 int main() {
     int64_t a[15], b[12], want[20];
@@ -26,10 +29,12 @@ int main() {
         const char* what;
     };
     for (auto [f, what] : {
-             Case{law_denote, "denote"},
-             Case{   law_req,    "req"},
-             Case{   law_par,    "par"},
-             Case{   law_red,    "red"}
+             Case{ law_denote,          "denote"},
+             Case{    law_req,             "req"},
+             Case{    law_par,             "par"},
+             Case{    law_red,             "red"},
+             Case{  law_split,         "red_par"},
+             Case{law_ordered, "ordered red_par"}
     }) {
         auto got = f(a, b);
         for (int i = 0; i != 20; ++i)
