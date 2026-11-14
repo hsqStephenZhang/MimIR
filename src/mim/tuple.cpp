@@ -20,7 +20,7 @@ bool Shape::is_dim() const {
     return t->zonk_mut()->isa<Nat>(); // only a Hole needs the zonk
 }
 
-std::optional<nat_t> Shape::rank() const { return def_ ? Lit::isa(def_->arity()) : std::nullopt; }
+std::optional<nat_t> Shape::rank() const { return def_ ? Lit::isa(def_->arity()->zonk()) : std::nullopt; }
 
 const Def* Shape::front() const {
     if (!def_ || is_dim()) return def_; // an unset mutable Seq has no shape yet
