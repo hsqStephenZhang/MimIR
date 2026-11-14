@@ -35,10 +35,10 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         auto [mem2, val]     = w.call<mem::load>(Defs{mem, element_ptr})->projs<2>();
         return w.tuple({mem2, val});
     } else if (auto vectorize_ax = Axm::isa<buffer::vectorize>(app)) {
-        auto [n, c]    = vectorize_ax->callee()->as<App>()->args<2>([this](const Def* d) { return rewrite(d); });
-        auto [r, s, T] = vectorize_ax->callee()->as<App>()->callee()->as<App>()->args<3>();
-        T              = rewrite(T);
-        auto vectors   = w.call<mem::Ptr>(Defs{w.arr(c, w.arr(n, T)), w.lit_nat_0()});
+        auto [n, c]      = vectorize_ax->callee()->as<App>()->args<2>([this](const Def* d) { return rewrite(d); });
+        auto [r, s, T]   = vectorize_ax->callee()->as<App>()->callee()->as<App>()->args<3>();
+        T                = rewrite(T);
+        auto vectors     = w.call<mem::Ptr>(Defs{w.arr(c, w.arr(n, T)), w.lit_nat_0()});
         const Def* bytes = w.call(core::nat::mul, Defs{n, core::op(core::trait::size, T)});
         // A run at a multiple of its size is aligned to the largest power of two dividing it, as for `«3; F32»`.
         if (auto b = Lit::isa(bytes)) bytes = w.lit_nat(*b & (~*b + 1));
