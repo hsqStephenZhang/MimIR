@@ -6,6 +6,7 @@
 #include <fe/restore.h>
 #include <fe/vector.h>
 
+#include <mim/check.h>
 #include <mim/driver.h>
 #include <mim/lam.h>
 #include <mim/rewrite.h>
@@ -350,6 +351,18 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         log().w("{} has a zero-sized output, skipping GPU lowering", app);
         return Super::rewrite_imm_App(app);
     }
+
+    // A tensor-valued seed (`map_reduce_acc`) has no one-thread-per-output kernel; the host lowering takes it.
+    if (!Check::test_alpha(mr.init->type(), mr.To)) {
+        log().w("{} accumulates into a tensor, skipping GPU lowering", app);
+        return Super::rewrite_imm_App(app);
+    }
+    // A kernel is closed: a map_reduce whose maps or shapes use an enclosing loop's variables stays on the host.
+    for (auto part : {mr.Sr, mr.So, mr.map_out, mr.maps, mr.post_maps, mr.comb, mr.post, mr.init})
+        if (!part->is_closed()) {
+            log().w("{} depends on its enclosing code, skipping GPU lowering", app);
+            return Super::rewrite_imm_App(app);
+        }
 
     auto comb_lam = mr.comb->isa_mut<Lam>();
     auto post_lam = mr.post->isa_mut<Lam>();

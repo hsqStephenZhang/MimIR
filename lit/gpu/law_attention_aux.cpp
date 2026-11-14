@@ -9,11 +9,9 @@ struct Acc {
     float m, l, o[N];
 };
 
-#ifndef LAW_RUN_ONLY
 extern "C" Acc* fa_denote(float*, float*, float*);
 extern "C" Acc* fa_blocks(float*, float*, float*);
 extern "C" Acc* fa_split(float*, float*, float*);
-#endif
 extern "C" Acc* fa_rows(float*, float*, float*);
 extern "C" Acc* fa_items(float*, float*, float*);
 
@@ -50,11 +48,9 @@ int main() {
     };
     int failures = 0;
     auto cases   = {
-#ifndef LAW_RUN_ONLY
         Case{fa_denote,         "denote"},
         Case{fa_blocks,      "kv blocks"},
         Case{ fa_split,       "split kv"},
-#endif
         Case{  fa_rows,           "rows"},
         Case{ fa_items, "split kv items"},
     };

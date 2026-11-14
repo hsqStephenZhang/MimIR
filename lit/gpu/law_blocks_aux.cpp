@@ -7,10 +7,8 @@
 
 constexpr int H = 2, L = 128, D = 64;
 
-#ifndef WARPS_ONLY
 extern "C" float* attn_whole(float*, float*, float*);
 extern "C" float* attn_serial(float*, float*, float*);
-#endif
 extern "C" float* attn_warps(float*, float*, float*);
 
 int main() {
@@ -45,10 +43,8 @@ int main() {
     };
     int failures = 0;
     auto cases   = {
-#ifndef WARPS_ONLY
         Case{ attn_whole, "meaning"},
         Case{attn_serial,  "serial"},
-#endif
         Case{ attn_warps,   "warps"},
     };
     for (auto [f, what] : cases) {

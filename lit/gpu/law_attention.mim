@@ -1,7 +1,7 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o /dev/null -VVVV 2> %t.log
 // RUN: %FileCheck %s < %t.log
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
-// RUN: clang++ -O1 -DLAW_RUN_ONLY %S/law_attention_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: clang++ -O1 %S/law_attention_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 
 // The attention law's row schedule (a work-item per row folds KV blocks in order) and its split-KV schedule (a
@@ -56,6 +56,12 @@ lam attn (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N
     law.of_map_reduce_merging ((H, M), (H, M, S)) (step, (ninf, 0:F, ‹N; 0:F›), merge) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 1), proj_map @(3, 2) (0, 2), proj_map @(3, 2) (0, 2)) (rows q, rows k, rows v);
 
+extern fun fa_denote (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.denote (attn (buf q, buf k, buf v)));
+extern fun fa_blocks (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.schedule (attn (buf q, buf k, buf v), serial_par ((1, 2, 0), 0, serial_red ((0, 0, 3), 1, 0, serial_done ()))));
+extern fun fa_split (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.red_par (attn (buf q, buf k, buf v), 2, 3));
 extern fun fa_rows (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
     return (law.run (attn (buf q, buf k, buf v),
         serial_group ((1, 2, 0), 0, 0, group_item ((1, 1, 0), 0, item_red ((0, 0, 3), 1, 0, item_done ()))), default_control));

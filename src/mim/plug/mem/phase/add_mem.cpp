@@ -110,7 +110,9 @@ const Def* AddMem::rewrite_imm_Pi(const Pi* pi) {
     if (preserving_) return new_pi;
 
     // Only continuations are mem-extended; a pi that already threads memory is left alone.
-    if (Pi::isa_cn(pi) && !has_leading_mem(pi)) {
+    // A loop head in a kernel threads the kernel's memory after its index, not as its leading parameter.
+    auto threads = std::ranges::any_of(pi->doms(), [](const Def* dom) { return Axm::isa<mem::M>(dom); });
+    if (Pi::isa_cn(pi) && !has_leading_mem(pi) && !threads) {
         auto& w  = new_world();
         auto mem = w.call<mem::M>(0);
         auto dom = new_pi->dom();

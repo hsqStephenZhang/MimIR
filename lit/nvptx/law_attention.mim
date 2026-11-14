@@ -1,7 +1,7 @@
 // RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
 // RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
-// RUN: %if system-linux && cuda %{ clang++ -O1 -DLAW_RUN_ONLY %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
 // RUN: %if system-linux && cuda %{ %t %}
 
 // The attention law's row and split-KV schedules run on the device.

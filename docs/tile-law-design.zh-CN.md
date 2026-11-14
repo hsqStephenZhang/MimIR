@@ -127,7 +127,10 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   记下的限制：
   - 在 `math.mode.fast` 下，种子里的 `-inf` 经 `sub`/`fmax` 成为 poison（`S = 1` 时 LLVM 直接折叠），所以这里用 `math.mode.none`；现有的 `sdpa_online_inputs` 同样让 `-inf` 经过给定模式的 `sub`，值得复查。
   - 已修：组块不整除时（如 `M = 5`、组块 2），内层绑定层的 extent 是运行时值，`lower_to_mem` 原先拒绝——`TileFuse` 同样如此，并非只有解释器。现在绑定的 `tiled` 按 `nat_upper` 给出的上界启动，超出运行时 extent 的块跳过（`lit/gpu/tile_items_capped.mim`，两条路径都在 GPU 上执行正确）；注意力的行调度改回不整除的组块 `(1, 2)`。
-  - 带 gpu 插件时，没有调度的注意力根（`denote`、`red_par` 的合并）在 GPU 降级中报内存空间不符（`core.M 0` 对 `core.M 1`），与定律无关，尚未查。
+  - 已修：带 gpu 插件时，留在主机上的代码（没有调度的注意力根、块定律的串行调度）编译失败，原因有三：
+    `gpu.lower_btensor_map_reduce` 把以张量为初值的 `map_reduce_acc` 也当成一线程一输出的 kernel；它也把嵌在主机循环里、映射或形状用到外层循环变量的 `map_reduce` 搬成 kernel，kernel 不闭合；
+    `mem.AddMem` 只看续延的首个参数是否是内存，于是给 kernel 里 `[I64, mem.M 1, acc]` 形状的循环头又加了一个 `mem.M 0`。
+    现在前两种 `map_reduce` 留在主机上，已带内存参数的续延不再加内存。`lit/gpu/law_attention.mim`、`law_blocks.mim` 的主机与设备情形都在加载 gpu 插件时执行正确。
 - 块定律（`law.of_blocks`、`law.blocks_run`）：元素级定律的叶子是逐个位置的 `map_reduce_acc`，达不到张量核的性能；块定律把实现交给用户的块：累加器是一族 tile `A ext`（注意力取 `attn_warp` 的结构体数组 `(max, sum, O)`），`init`、`step`（一个块的行 × 一个块的 key）、`finish` 由用户给出，`denote` 是每个调度都必须等于的含义。
   `step` 与 `finish` 和 `merge` 一样是被担保的义务，由差分测试检查：`lit/tensor/law_blocks.mim` 在 CPU 上比较含义、串行调度与 work-group × warp 调度和 softmax 注意力；`lit/gpu`、`lit/nvptx/law_blocks.mim` 在 GPU 上执行 warp 调度（TF32 `mma`、`cp.async` 双缓冲的 K/V 面板）。把并行块的偏移去掉的变异在三处都被测出。
   解释器分两段：并行段的每个块从 `init` 开始，到第一条归约层或叶子时折叠 `step`，最后 `finish`；warp 层绑定为 warp 拥有的区域（`tensor.bind 5`），未切分的维取根的字面 extent。

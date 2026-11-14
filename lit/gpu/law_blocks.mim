@@ -1,13 +1,13 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o /dev/null -VVVV 2> %t.log
 // RUN: %FileCheck %s < %t.log
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
-// RUN: clang++ -O1 -DWARPS_ONLY %S/law_blocks_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: clang++ -O1 %S/law_blocks_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 
 // FA2 as a block law: attention's meaning is one block of keys per head, and its realization steps the
 // (max, sum, out) tiles of a block of rows over a block of keys.
 // Its schedule of work-groups of 64 rows, a warp per 16 rows keeping the tiles in registers, and key blocks of 32 staged
-// in shared memory outlines into one launch.
+// in shared memory outlines into one launch; the meaning and the serial schedule run on the host beside it.
 // The head is a loop of its own, so a work-group's warps stage the same K/V panels.
 
 plugin tensor;
@@ -105,6 +105,10 @@ lam whole (xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F]): Te
 lam attention (q k v: Tensor 2 (HL, D) F) =
     law.of_blocks ((H, L, D), (H, L, D, L)) Acc (init, step, finish, whole (q, k, v)) (q, k, v);
 
+extern fun attn_whole (q k v: tensor.Tensor 2 (HL, D) F): tensor.Tensor 3 (H, L, D) F =
+    return (law.blocks_denote (attention (buf q, buf k, buf v)));
+extern fun attn_serial (q k v: tensor.Tensor 2 (HL, D) F): tensor.Tensor 3 (H, L, D) F =
+    return (law.blocks_run (attention (buf q, buf k, buf v), serial_par ((1, 16, 0, 0), 1, serial_red ((0, 0, 0, bk), 1, 0, serial_done ()))));
 extern fun attn_warps (q k v: tensor.Tensor 2 (HL, D) F): tensor.Tensor 3 (H, L, D) F =
     return (law.blocks_run (attention (buf q, buf k, buf v),
         serial_group ((1, bm, 0, 0), 1, 0, group_warp ((1, 16, 0, 0), 1, warp_red ((0, 0, 0, bk), 1, 0, warp_done ())))));
