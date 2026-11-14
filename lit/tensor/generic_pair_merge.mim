@@ -1,0 +1,27 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A generic lambda's nested function applies its `[To, To] → To` parameter once `To` is a pair: the extracts reach the pair through the solved Hole of the implicit.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let ML   = [F32, F32];
+
+lam merge (a b: ML): ML =
+    let (m1, l1) = a;
+    let (m2, l2) = b;
+    (math.extrema.fmax fast (m1, m2), math.arith.add fast (l1, l2));
+
+lam zipper {To: *} (merge: [To, To] → To, init: To) (x y: Tensor 1 16 To): Tensor 1 16 To =
+    fun merged (_: To, uv: [To, To]): To = return (merge (uv#0₂, uv#1₂));
+    map_reduce (16, 16) (merged, init) (affine.id @1) (affine.id @1, affine.id @1) (x, y);
+
+extern fun z (x y: Tensor 1 16 ML): Tensor 1 16 ML = return (zipper (merge, (0.0:F32, 0.0:F32)) (buf x, buf y));
+
+// CHECK: extern con z

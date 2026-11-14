@@ -693,7 +693,7 @@ const Def* World::extract_fused(const Def* d, Shape index) {
     // An index reaching past `d`'s own shape continues through the element type - `«2; [Nat, Bool]»` is rank 1,
     // yet `t#(i, j)` is still `t#i#j`. Split it at the boundary, so each Extract matches the shape it indexes.
     auto ri = index.rank();
-    auto rt = own_rank(d->unfold_type());
+    auto rt = own_rank(d->unfold_type()->zonk());
     if (ri && rt && *ri > *rt && !is_frozen()) return extract(extract_fused(d, index.take(*rt)), *index.drop(*rt));
 
     // `d#is ← val` then `#is` -> `val`; cf. the same rule in World::extract1
@@ -721,6 +721,8 @@ const Def* World::extract1(const Def* d, const Def* index) {
     auto lidx     = Lit::isa(index);
     auto type     = d->unfold_type();
     if (!type) d->blame("`Level` has no type and hence no elements to extract").bail();
+    // A rewritten `d` may still carry the solved Hole of an implicit as its type.
+    type = type->zonk();
 
     if (is_folded_axis(type, index, size)) return d;
 
@@ -805,6 +807,7 @@ const Def* World::insert(const Def* d, const Def* index_, const Def* val) {
     val = val->zonk();
 
     auto type  = d->unfold_type();
+    if (type) type = type->zonk();
     auto index = check_index(index_->zonk());
 
     // `d#(i, j, k) ← val` stays *fused* unless the outermost write rebuilds an aggregate on the spot.
