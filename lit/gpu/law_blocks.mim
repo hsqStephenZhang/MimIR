@@ -1,0 +1,112 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o /dev/null -VVVV 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 -DWARPS_ONLY %S/law_blocks_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// FA2 as a block law: attention's meaning is one block of keys per head, and its realization steps the
+// (max, sum, out) tiles of a block of rows over a block of keys.
+// Its schedule of work-groups of 64 rows, a warp per 16 rows keeping the tiles in registers, and key blocks of 32 staged
+// in shared memory outlines into one launch.
+// The head is a loop of its own, so a work-group's warps stage the same K/V panels.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F    = math.F32;
+let mode = math.mode.fast;
+let H    = 2;
+let L    = 128;
+let D    = 64;
+let bm   = 64;
+let bk   = 32;
+
+fun mac (acc: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.arith.add mode (acc, math.arith.mul mode (x, y)));
+fun fmax (acc: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.extrema.fmax mode (acc, x));
+fun fsum (acc: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.arith.add mode (acc, x));
+fun maxed (_: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.extrema.fmax mode (x, math.arith.mul mode (y, 0.125:F)));
+fun rescale (_: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.exp.exp mode (math.arith.sub mode (x, y)));
+fun probs (_: F, sm: [F, F])@tt: F =
+    let (s, m) = sm;
+    return (math.exp.exp mode (math.arith.sub mode (math.arith.mul mode (s, 0.125:F), m)));
+fun summed (_: F, lcr: [F, F, F])@tt: F =
+    let (l, c, r) = lcr;
+    return (math.arith.add mode (math.arith.mul mode (l, c), r));
+fun scaled (_: F, oc: [F, F])@tt: F =
+    let (o, c) = oc;
+    return (math.arith.mul mode (o, c));
+fun divided (_: F, ol: [F, F])@tt: F =
+    let (o, l) = ol;
+    return (math.arith.div mode (o, l));
+
+let HL = core.nat.mul (H, L);
+
+lam Acc (ext: «3; Nat»): * = [Tensor 1 (ext#1₃) F, Tensor 1 (ext#1₃) F, Tensor 2 (ext#1₃, D) F];
+
+lam init (ext: «3; Nat»): Acc ext =
+    (splat (ext#1₃, math.neg_inf math.f32), splat (ext#1₃, 0:F), splat ((ext#1₃, D), 0:F));
+
+// One block of keys `ko .. ko + width` for the rows `i .. i + rows` of head `h`.
+lam step (lo: «4; Nat», ext: «3; Nat», size: «4; Nat», xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F], acc: Acc ext): Acc ext =
+    let (q, k, v) = xs;
+    let rows  = ext#1₃;
+    let head  = core.nat.mul (lo#0₄, L);
+    let row0  = core.nat.add (head, lo#1₄);
+    let ko    = lo#3₄;
+    let width = size#3₄;
+    let (m, l, o) = acc;
+    let qt = slice @(F, 2) (HL, D) ((row0, 0), (1, 1), (rows, D)) q;
+    let kt = stage @(F, 2, 0) (width, D) ((), (), (0₂, 1₂), 0:F) 0 (slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (width, D)) k);
+    let vt = stage @(F, 2, 0) (width, D) ((), (), (0₂, 1₂), 0:F) 0 (slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (width, D)) v);
+    let s = map_reduce ((rows, width), (rows, width, D)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (1, 2)) (qt, kt);
+    let mx = map_reduce (rows, (rows, width)) (fmax, math.neg_inf math.f32) (proj_map @(2, 1) 0)
+        (proj_map @(2, 2) (0, 1),) (map_reduce @2 @(F, 2, 2) ((rows, width), (rows, width)) @((F, F), (1, 2), (rows, (rows, width))) (maxed, ⊥:F) (proj_map @(2, 2) (0, 1))
+            (proj_map @(2, 1) 0, proj_map @(2, 2) (0, 1)) (m, s));
+    let c = map_reduce (rows, rows) (rescale, ⊥:F) (proj_map @(1, 1) 0) (proj_map @(1, 1) 0, proj_map @(1, 1) 0) (m, mx);
+    let p = map_reduce @2 @(F, 2, 2) ((rows, width), (rows, width)) @((F, F), (2, 1), ((rows, width), rows)) (probs, ⊥:F) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (s, mx);
+    let r = map_reduce (rows, (rows, width)) (fsum, 0.0:F) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1),) p;
+    let l = map_reduce (rows, rows) (summed, ⊥:F) (proj_map @(1, 1) 0)
+        (proj_map @(1, 1) 0, proj_map @(1, 1) 0, proj_map @(1, 1) 0) (l, c, r);
+    let o = map_reduce @2 @(F, 2, 2) ((rows, D), (rows, D)) @((F, F), (2, 1), ((rows, D), rows)) (scaled, ⊥:F) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, c);
+    let o = map_reduce_acc ((rows, D), (rows, D, width)) (mac, o) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (p, vt);
+    (mx, l, o);
+
+lam finish (lo: «4; Nat», ext: «3; Nat», acc: Acc ext): Tensor 3 ext F =
+    let (_, l, o) = acc;
+    let rows = ext#1₃;
+    map_reduce @2 @(F, 3, 3) (ext, ext) @((F, F), (2, 1), ((rows, D), rows)) (divided, ⊥:F)
+        (proj_map @(3, 3) (0, 1, 2)) (proj_map @(3, 2) (1, 2), proj_map @(3, 1) 1) (o, l);
+
+// The meaning: each head's rows take all of its keys as one block.
+lam whole (xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F]): Tensor 3 (H, L, D) F =
+    tiled ((H, L, D), (1, L, D), 1) xs
+        (λ (off ext: «3; Nat») (xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F]): Tensor 3 ext F =
+            let lo = (off#0₃, 0, 0, 0);
+            finish (lo, ext, step (lo, ext, (1, ext#1₃, D, L), xs, init ext)));
+
+lam attention (q k v: Tensor 2 (HL, D) F) =
+    law.of_blocks ((H, L, D), (H, L, D, L)) Acc (init, step, finish, whole (q, k, v)) (q, k, v);
+
+extern fun attn_warps (q k v: tensor.Tensor 2 (HL, D) F): tensor.Tensor 3 (H, L, D) F =
+    return (law.blocks_run (attention (buf q, buf k, buf v),
+        serial_group ((1, bm, 0, 0), 1, 0, group_warp ((1, 16, 0, 0), 1, warp_red ((0, 0, 0, bk), 1, 0, warp_done ())))));
+
+// CHECK: gpu.outline tileGroups{{.*}}: 4 groups × 128 items

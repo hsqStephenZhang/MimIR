@@ -3406,6 +3406,115 @@ pub mod law
             (tile_req (root, (), core.bitcast (TileLevels (root_loops root, root_acc root, root_contraction root)) levels,
                        control),
              (l#7₈) levels)#(plain levels));
+
+    /// A law realized by blocks: the user steps an accumulator tile `A ext` over a block of the loops and finishes it.
+    /// `denote` is the meaning that every schedule must equal; `step` and `finish` are vouched for, like a merge.
+    anx lam Blocks (r: Nat, s: «r; Nat», T: *, n: Nat): * =
+        [ro inputs: Nat, extents: «n; Nat», denote: Tensor r s T, schedule: TileLevels (n, T, NoMma) → Tensor r s T];
+    anx lam of_blocks {nis: Nat} {T: *, Ro Rn: Nat} (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»} (A: «Ro; Nat» → *)
+        (init: [ext: «Ro; Nat»] → A ext,
+         step: [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: A ext] → A ext,
+         finish: [lo: «Rn; Nat», ext: «Ro; Nat», acc: A ext] → Tensor Ro ext T, denote: Tensor Ro So T)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Blocks (Ro, So, T, Rn) =
+        let Xs  = «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»;
+        let Par = [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs] → Tensor Ro ext T;
+        let Red = [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext] → A ext;
+        let at  = λ (d: Idx Rn): Idx Ro = core.idx 0 Ro (core.select (core.idx2nat d < Ro, core.idx2nat d, 0));
+        let par = λ (sizes: «Rn; Nat», tail scope: Nat, k: Par): Par =
+            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T =
+                // An untiled dimension takes the root's extent, a literal bound of the tile's own.
+                let ts   = ‹d: Ro; let z = sizes#(core.idx 0 Rn (core.idx2nat d)); (z, So#d)#(z == 0)›;
+                let body = λ (off ext2: «Ro; Nat») (xs2: Xs): Tensor Ro ext2 T =
+                    k (‹d: Rn; lo#d + (0, off#(at d))#(core.idx2nat d < Ro)›, ext2, ‹d: Rn; (size#d, ext2#(at d))#(core.idx2nat d < Ro)›, xs2);
+                tiled (ext, ts, tail) xs ((bind scope body, body)#(scope == 0));
+        let red = λ (sizes: «Rn; Nat», tail: Nat, k: Red): Red =
+            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext =
+                let loop  = vec.fold.r @(Nat, Idx Rn) @Rn
+                    (λ (d: Idx Rn, x: Nat): Nat = (x, core.idx2nat d)#(core.bit2.and 0 (sizes#d != 0, Ro <= core.idx2nat d)))
+                    (‹d: Rn; d›, Rn);
+                let ks    = vec.fold.r @(Nat, Idx Rn) @Rn
+                    (λ (d: Idx Rn, x: Nat): Nat = (x, sizes#d)#(core.idx2nat d == loop)) (‹d: Rn; d›, 0);
+                let K     = size#(core.idx 0 Rn (core.select (loop < Rn, loop, 0)));
+                let unit  = core.select (ks == 0, 1, ks);
+                let block = λ (a: A ext, k0 n: Nat, xs2: Xs): A ext =
+                    k (‹d: Rn; lo#d + (0, k0)#(core.idx2nat d == loop)›, ext, ‹d: Rn; (size#d, n)#(core.idx2nat d == loop)›, xs2, a);
+                let peel  = tail == 1;
+                // A peeled split's full blocks are exactly `unit` wide, so a step may stage them by a literal shape.
+                let full  = tile_fold (core.select (peel, K / unit, (K + unit - 1) / unit), unit) acc xs
+                    (λ (a: A ext, k0: Nat) (xs2: Xs): A ext = block (a, k0, core.select (peel, unit, core.select (k0 + unit < K, unit, K - k0)), xs2));
+                let split = (full, block (full, K / unit * unit, K % unit, xs))#(core.bit2.and 0 (peel, K % unit != 0));
+                (split, k (lo, ext, size, xs, acc))#(loop == Rn);
+        // A tile's reduction starts from `init` and ends in `finish`; a parallel level below a reduction keeps its meaning.
+        let reduce = λ (k: Red): Par =
+            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = finish (lo, ext, k (lo, ext, size, xs, init ext));
+        lam warp_red {b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: WarpLevels (Rn, T, NoMma, b))@(core.pe.is_closed l): A ext =
+            match l with
+                | 1 (sizes, tl, _, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = warp_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 0 => step (lo, ext, size, xs, acc)
+                | 2 _ => step (lo, ext, size, xs, acc);
+        lam item_red (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: ItemLevels (Rn, T, NoMma))@(core.pe.is_closed l): A ext =
+            match l with
+                | 0 => step (lo, ext, size, xs, acc)
+                | 1 (_, _, rest) => item_red (lo, ext, size, xs, acc, rest)
+                | 2 (sizes, tl, _, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 3 (_, rest) => item_red (lo, ext, size, xs, acc, rest)
+                | 4 (sizes, tl, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc);
+        lam group_red {g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: GroupLevels (Rn, T, NoMma, g))@(core.pe.is_closed l): A ext =
+            match l with
+                | 0 => step (lo, ext, size, xs, acc)
+                | 1 (_, _, rest) => group_red (lo, ext, size, xs, acc, rest)
+                | 2 (_, _, rest) => item_red (lo, ext, size, xs, acc, rest)
+                | 3 (sizes, tl, _, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 4 (sizes, tl, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 5 (_, rest) => group_red (lo, ext, size, xs, acc, rest)
+                | 6 (sizes: «Rn; Nat», _: Nat, rest: WarpLevels (Rn, T, NoMma, within (g, sizes))) => warp_red (lo, ext, size, xs, acc, rest)
+                | 7 _ => step (lo, ext, size, xs, acc);
+        lam tile_red (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: TileLevels (Rn, T, NoMma))@(core.pe.is_closed l): A ext =
+            match l with
+                | 0 => step (lo, ext, size, xs, acc)
+                | 1 (_, _, rest) => tile_red (lo, ext, size, xs, acc, rest)
+                | 2 (sizes: «Rn; Nat», _ _: Nat, rest: GroupLevels (Rn, T, NoMma, sizes)) => group_red (lo, ext, size, xs, acc, rest)
+                | 3 (sizes, tl, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = tile_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 4 (_, rest) => tile_red (lo, ext, size, xs, acc, rest)
+                | 5 (_, _, _, rest) => tile_red (lo, ext, size, xs, acc, rest)
+                | 6 (_, rest) => tile_red (lo, ext, size, xs, acc, rest);
+        // A warp level owns its rows (`tensor.bind 5`): its region keeps the user's tiles in the warp's registers.
+        lam warp_par {b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: WarpLevels (Rn, T, NoMma, b))@(core.pe.is_closed l): Tensor Ro ext T =
+            reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = warp_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
+        lam item_par (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: ItemLevels (Rn, T, NoMma))@(core.pe.is_closed l): Tensor Ro ext T =
+            match l with
+                | 1 (sizes, tl, rest) => par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = item_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
+                | 3 (_, rest) => item_par (lo, ext, size, xs, rest)
+                | 0 => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
+                | 2 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
+                | 4 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
+        lam group_par {g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: GroupLevels (Rn, T, NoMma, g))@(core.pe.is_closed l): Tensor Ro ext T =
+            match l with
+                | 1 (sizes, tl, rest) => par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = group_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
+                | 2 (sizes, tl, rest) => par (sizes, tl, 2, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = item_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
+                | 5 (_, rest) => group_par (lo, ext, size, xs, rest)
+                | 6 (sizes: «Rn; Nat», tl: Nat, rest: WarpLevels (Rn, T, NoMma, within (g, sizes))) =>
+                    par (sizes, tl, 5, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = warp_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
+                | 0 => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
+                | 3 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
+                | 4 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
+                | 7 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
+        lam tile_par (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: TileLevels (Rn, T, NoMma))@(core.pe.is_closed l): Tensor Ro ext T =
+            match l with
+                | 1 (sizes, tl, rest) => par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = tile_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
+                | 2 (sizes: «Rn; Nat», tl _: Nat, rest: GroupLevels (Rn, T, NoMma, sizes)) =>
+                    par (sizes, tl, 1, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = group_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
+                | 4 (_, rest) => tile_par (lo, ext, size, xs, rest)
+                | 5 (_, _, _, rest) => tile_par (lo, ext, size, xs, rest)
+                | 6 (_, rest) => tile_par (lo, ext, size, xs, rest)
+                | 0 => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = tile_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
+                | 3 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = tile_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
+        (Ro, nis, Sr, denote, λ (levels: TileLevels (Rn, T, NoMma)): Tensor Ro So T = tile_par (‹Rn; 0›, So, Sr, is, levels));
+    anx lam blocks_denote {r: Nat, s: «r; Nat», T: *, n: Nat} (l: Blocks (r, s, T, n)): Tensor r s T = l#3₅;
+    /// Runs `levels` by the law's blocks, after checking them against the law's facts.
+    anx lam blocks_run {r: Nat, s: «r; Nat», T: *, n: Nat} (l: Blocks (r, s, T, n), levels: TileLevels (n, T, NoMma)): Tensor r s T =
+        check.report (check.verdict (l#0₅, l#1₅, l#2₅, levels), (l#4₅) levels);
 end
 
 anx lam TileBox (r: Nat): * = [off ext: «r; Nat»];

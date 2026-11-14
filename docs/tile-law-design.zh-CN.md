@@ -128,6 +128,11 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   - 在 `math.mode.fast` 下，种子里的 `-inf` 经 `sub`/`fmax` 成为 poison（`S = 1` 时 LLVM 直接折叠），所以这里用 `math.mode.none`；现有的 `sdpa_online_inputs` 同样让 `-inf` 经过给定模式的 `sub`，值得复查。
   - 已修：组块不整除时（如 `M = 5`、组块 2），内层绑定层的 extent 是运行时值，`lower_to_mem` 原先拒绝——`TileFuse` 同样如此，并非只有解释器。现在绑定的 `tiled` 按 `nat_upper` 给出的上界启动，超出运行时 extent 的块跳过（`lit/gpu/tile_items_capped.mim`，两条路径都在 GPU 上执行正确）；注意力的行调度改回不整除的组块 `(1, 2)`。
   - 带 gpu 插件时，没有调度的注意力根（`denote`、`red_par` 的合并）在 GPU 降级中报内存空间不符（`core.M 0` 对 `core.M 1`），与定律无关，尚未查。
+- 块定律（`law.of_blocks`、`law.blocks_run`）：元素级定律的叶子是逐个位置的 `map_reduce_acc`，达不到张量核的性能；块定律把实现交给用户的块：累加器是一族 tile `A ext`（注意力取 `attn_warp` 的结构体数组 `(max, sum, O)`），`init`、`step`（一个块的行 × 一个块的 key）、`finish` 由用户给出，`denote` 是每个调度都必须等于的含义。
+  `step` 与 `finish` 和 `merge` 一样是被担保的义务，由差分测试检查：`lit/tensor/law_blocks.mim` 在 CPU 上比较含义、串行调度与 work-group × warp 调度和 softmax 注意力；`lit/gpu`、`lit/nvptx/law_blocks.mim` 在 GPU 上执行 warp 调度（TF32 `mma`、`cp.async` 双缓冲的 K/V 面板）。把并行块的偏移去掉的变异在三处都被测出。
+  解释器分两段：并行段的每个块从 `init` 开始，到第一条归约层或叶子时折叠 `step`，最后 `finish`；warp 层绑定为 warp 拥有的区域（`tensor.bind 5`），未切分的维取根的字面 extent。
+  性能：`bench/gpu_attn/attn_law.mim` 与 TileFuse 的 `attn_warp` 生成同样的程序，RTX PRO 6000 上 32 × 1024 到 128 × 2048 的时间相同（0.086–1.04 ms）。
+  为此 `lower_to_mem` 的 warp 翻译与 `store_warp` 接受带前导单位维的 tile（head 作为单独的循环时 tile 是 `(1, 16, D)`），这样 head 与 warp 偏移无关，面板仍可协作装载。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；

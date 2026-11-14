@@ -279,3 +279,17 @@ B 面板由区域自动选 wgmma 布局（K 为 K-major，V 为 MN-major），�
 - 规格改为先求 S 的行最大值再与旧最大值比较，并以 2 为底：0.197 / 0.203；
 - ll 后端给 `llvm.maxnum/minnum` 带上 fast-math 标志，LLVM 才能折叠行归约里每个元素的 `fmax (-inf, x)`：0.180；
 - 融合给 S 的每个消费者各造了一份 Q 的融合映射，两份 S 各自发了一组 wgmma；`warp_term` 对 α 等价的 `map_reduce` 复用同一翻译：0.126。
+
+## 块定律版本（`attn_law.mim`，RTX PRO 6000，2026-11-14）
+
+注意力写成一个块定律（`law.of_blocks`）：含义是每个 head 的行一次取完全部 key，实现是 `attn_warp` 的那个块步骤；
+调度是层级链 `serial_group ((1, BM, 0, 0)) → group_warp ((1, 16, 0, 0)) → warp_red ((0, 0, 0, BK))`，由 `law.blocks_run` 解释成与 `attn_warp` 相同的结构。
+head 是单独的一个循环，块内各 warp 读的 K/V 面板与 warp 偏移无关，所以仍由整个 work-group 协作装载并双缓冲。
+BM = 64，BK = 32，D = 64，结果都正确：
+
+| BH × L | `attn_warp` | `attn_law` |
+|---|---:|---:|
+| 32 × 1024 | 0.086 | 0.086 |
+| 32 × 2048 | 0.295 | 0.293 |
+| 128 × 1024 | 0.284 | 0.284 |
+| 128 × 2048 | 1.046 | 1.042 |

@@ -2964,9 +2964,10 @@ const Def* LowerToMem::warp_element(const btensor::MapRedPost& mr,
                  || (value->isa<Extract>() && Axm::isa<tensor::tile_fold>(value->as<Extract>()->tuple()));
     if (resident && j) {
         auto term = warp_term(value);
-        if (dims->size() == 2 && (*dims)[0] == 0 && (*dims)[1] == 1)
+        auto lead = warp_lead_;
+        if (dims->size() == 2 && (*dims)[0] == lead && (*dims)[1] == lead + 1)
             return old.extract(old.extract(old.extract(term, lane), j), reg);
-        if (dims->size() == 1 && (*dims)[0] == 0)
+        if (dims->size() == 1 && (*dims)[0] == lead)
             return old.extract(
                 old.extract(term, lane),
                 old.call<core::idx>(old.lit_nat_0(), old.lit_nat(2),
@@ -3030,10 +3031,16 @@ const Def* LowerToMem::warp_term(const Def* def) {
         if (!extent) def->blame("a warp-owned region needs literal extents, not `{}`", shape).bail();
         return *extent;
     };
-    if (dim(mr.So, *ro, 0) != (group_rows_ ? 64u : 16u))
+    // A pointwise tile's leading unit dimensions, as a tile of one head has, leave the warp's rows as they are.
+    u64 lead = 0;
+    while (*rn == *ro && *ro - lead > 1 && dim(mr.So, *ro, lead) == 1)
+        ++lead;
+    auto own     = *ro - lead;
+    auto leading = fe::Restore(warp_lead_, lead);
+    if (dim(mr.So, *ro, lead) != (group_rows_ ? 64u : 16u))
         def->blame("a warp-owned region holds 16 rows, a warpgroup-owned 64, not `{}`", mr.So).bail();
-    auto nt = *ro == 2 ? dim(mr.So, 2, 1) / 8 : 0;
-    if (*ro == 2 && dim(mr.So, 2, 1) % 8) def->blame("a warp-owned tile's columns are a multiple of 8").bail();
+    auto nt = own == 2 ? dim(mr.So, *ro, lead + 1) / 8 : 0;
+    if (own == 2 && dim(mr.So, *ro, lead + 1) % 8) def->blame("a warp-owned tile's columns are a multiple of 8").bail();
     auto inputs = app->arg()->proj(2, 0);
     auto scope  = fe::Restore(mr_inputs_, inputs);
     auto posts  = fe::Restore(mr_posts_, app->arg()->proj(2, 1));
@@ -3051,21 +3058,22 @@ const Def* LowerToMem::warp_term(const Def* def) {
     const Def* term = nullptr;
     if (*rn == *ro) {
         // Pointwise: each position combines its inputs at its own coordinates.
-        auto pos    = *ro == 2 ? old.sigma({I(32), I(nt), I(4)}) : old.sigma({I(32), I(2)});
+        auto pos    = own == 2 ? old.sigma({I(32), I(nt), I(4)}) : old.sigma({I(32), I(2)});
         auto g      = old.mut_lam(old.pi(pos, T));
-        auto lane   = g->var(*ro + 1, 0);
-        auto j      = *ro == 2 ? g->var(3, 1) : nullptr;
-        auto reg    = g->var(*ro + 1, *ro);
-        auto coords = DefVec();
-        if (*ro == 2) {
+        auto lane   = g->var(own + 1, 0);
+        auto j      = own == 2 ? g->var(3, 1) : nullptr;
+        auto reg    = g->var(own + 1, own);
+        auto coords = DefVec(lead, [&](size_t) { return old.lit_nat_0(); });
+        if (own == 2) {
             auto [r, c] = old.app(old.app(old.annex(tensor::warp::c_pos), old.lit_nat(nt)), {lane, j, reg})->projs<2>();
-            coords      = {owned_row(nat(r)), nat(c)};
+            coords.push_back(owned_row(nat(r)));
+            coords.push_back(nat(c));
         } else {
-            coords = {owned_row(nat(old.app(old.annex(tensor::warp::r_pos), {lane, reg})))};
+            coords.push_back(owned_row(nat(old.app(old.annex(tensor::warp::r_pos), {lane, reg}))));
         }
         auto ins = old.tuple(DefVec(*nis, [&](size_t k) { return warp_element(mr, k, coords, lane, j, reg); }));
         g->set(true, post(call(mr.comb, old.tuple({mr.init, ins})), coords, lane, j, reg));
-        term = *ro == 2 ? old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), T), g)
+        term = own == 2 ? old.app(old.app(old.app(old.annex(tensor::warp::c_gen), old.lit_nat(nt)), T), g)
                         : old.app(old.app(old.annex(tensor::warp::r_gen), T), g);
     } else if (*ro == 1 && *rn == 2) {
         // A reduction over the columns: the warp's row reduction of the combined elements.
@@ -3513,8 +3521,14 @@ const Def* LowerToMem::store_warp(const Def* root, const Destination& destinatio
         }));
     };
     auto nat = [&](const Def* x) { return w.call<core::idx2nat>(x); };
-    if (rank == 2) {
-        auto cols = Lit::as(destination.extent->proj(2, 1));
+    // A destination's leading unit dimensions, as a tile of one head has, take coordinate 0.
+    auto lead = rank > 2 ? rank - 2 : u64(0);
+    auto with = [&](DefVec coords) {
+        coords.insert(coords.begin(), lead, w.lit_nat_0());
+        return at(coords);
+    };
+    if (rank >= 2) {
+        auto cols = Lit::as(destination.extent->proj(rank, rank - 1));
         auto nt   = cols / 8;
         for (u64 j = 0; j != nt; ++j)
             for (u64 reg = 0; reg != 4; ++reg) {
@@ -3522,7 +3536,8 @@ const Def* LowerToMem::store_warp(const Def* root, const Destination& destinatio
                 auto [r, c] = w.app(w.app(w.annex(tensor::warp::c_pos), w.lit_nat(nt)), {lane, jj, rr})->projs<2>();
                 auto elem   = w.extract(w.extract(w.extract(value, lane), jj), rr);
                 auto row    = group_rows_ ? w.call(core::nat::add, Defs{rewrite(group_rows_), nat(r)}) : nat(r);
-                mem = buffer::op_write(mem, destination.buffer, *Shape(at({row, nat(c)})).fold(destination.shape), elem)
+                mem = buffer::op_write(mem, destination.buffer, *Shape(with({row, nat(c)})).fold(destination.shape),
+                                       elem)
                           ->proj(2, 0);
             }
     } else {

@@ -267,6 +267,7 @@ private:
     bool padded_ = false;
     /// In a warpgroup-owned region, the old-world first row of the warp's 16, `16 · warp_rank`.
     const Def* group_rows_ = nullptr;
+    u64 warp_lead_         = 0; ///< Leading unit dimensions of the warp tile a pointwise translation reads at.
     /// The old-world row of a warp's position @p row in its owned region.
     const Def* owned_row(const Def* row);
     const Def* wgmma_lane(const App*);
