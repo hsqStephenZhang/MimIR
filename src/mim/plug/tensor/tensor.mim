@@ -3664,7 +3664,9 @@ priv anx lam sdpa_online_inputs (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N
     let add = math.arith.add mode;
     let mul = math.arith.mul mode;
     let sub = math.arith.sub mode;
-    let maximum = math.extrema.fmax mode;
+    // The running maximum starts at -inf, which `ninf` would make poison.
+    let infs = core.nat.sub (mode, core.nat.mul (core.nat.rem (core.nat.div (mode, 2), 2), 2));
+    let maximum = math.extrema.fmax infs;
     let R: Ring = (F, 0:F, add, mul);
     tiled ((H, M, N), (1, bm, N), 1) (q, k, v, mask)
         (λ (off ext: «3; Nat»)
@@ -3692,7 +3694,7 @@ priv anx lam sdpa_online_inputs (mode: Nat, masked: Bool, bm bk: Nat) {H M S K N
                 let next_max = binary maximum @(1, rows)
                     (old_max, reduce (maximum, math.neg_inf math.f32) @2 1₂ @(rows, width) scores);
                 let correction = binary (λ (x y: F): F =
-                    (math.exp.exp mode (sub (x, y)), 1.0:F)#(math.cmp.e math.mode.none (y, math.neg_inf math.f32)))
+                    (math.exp.exp infs (math.arith.sub infs (x, y)), 1.0:F)#(math.cmp.e math.mode.none (y, math.neg_inf math.f32)))
                     @(1, rows) (old_max, next_max);
                 let p = binary_ax (λ (x y: F): F =
                     (math.exp.exp mode (sub (x, y)), 0:F)#(math.cmp.e math.mode.none (y, math.neg_inf math.f32)))

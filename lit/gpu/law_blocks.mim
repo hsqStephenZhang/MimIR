@@ -19,6 +19,8 @@ use tensor;
 
 let F    = math.F32;
 let mode = math.mode.fast;
+// The running maximum starts at -inf, which `ninf` would make poison.
+let infs = core.nat.sub (mode, math.mode.ninf);
 let H    = 2;
 let L    = 128;
 let D    = 64;
@@ -30,16 +32,16 @@ fun mac (acc: F, xy: [F, F])@tt: F =
     return (math.arith.add mode (acc, math.arith.mul mode (x, y)));
 fun fmax (acc: F, xs: [F])@tt: F =
     let (x) = xs;
-    return (math.extrema.fmax mode (acc, x));
+    return (math.extrema.fmax infs (acc, x));
 fun fsum (acc: F, xs: [F])@tt: F =
     let (x) = xs;
     return (math.arith.add mode (acc, x));
 fun maxed (_: F, xy: [F, F])@tt: F =
     let (x, y) = xy;
-    return (math.extrema.fmax mode (x, math.arith.mul mode (y, 0.125:F)));
+    return (math.extrema.fmax infs (x, math.arith.mul mode (y, 0.125:F)));
 fun rescale (_: F, xy: [F, F])@tt: F =
     let (x, y) = xy;
-    return (math.exp.exp mode (math.arith.sub mode (x, y)));
+    return (math.exp.exp infs (math.arith.sub infs (x, y)));
 fun probs (_: F, sm: [F, F])@tt: F =
     let (s, m) = sm;
     return (math.exp.exp mode (math.arith.sub mode (math.arith.mul mode (s, 0.125:F), m)));

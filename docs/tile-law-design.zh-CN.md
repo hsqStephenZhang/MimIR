@@ -125,7 +125,9 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   两条朴素调度经 `law.run` 在 GPU 上执行正确（`lit/gpu/law_attention.mim`、`lit/nvptx/law_attention.mim`）：每行一个 work-item 按序折叠 KV 块（2 组 × 5 项），以及每行一个 work-group、其 work-item 各折一段 KV 再用定律的 `merge` 合并（10 组 × 3 项）。把 `merge` 里第二段的缩放去掉的变异在 CPU 的 `red_par` 和 GPU 的 split-KV 中都被测出。
   这一版逐个 KV 位置做点积，不用张量核，只证明语义与调度；性能要等矩阵形式的块（行块 × KV 块的 `mma`）进入解释器。
   记下的限制：
-  - 在 `math.mode.fast` 下，种子里的 `-inf` 经 `sub`/`fmax` 成为 poison（`S = 1` 时 LLVM 直接折叠），所以这里用 `math.mode.none`；现有的 `sdpa_online_inputs` 同样让 `-inf` 经过给定模式的 `sub`，值得复查。
+  - 在 `math.mode.fast` 下，种子里的 `-inf` 经 `sub`/`fmax` 成为 poison（`S = 1` 时 LLVM 直接折叠），所以这里用 `math.mode.none`。
+    已修其余各处：`sdpa_online_inputs` 与 `attn_*`、`law_blocks`、`attention_fold`、`warpgroup_owned` 里碰到 `-inf` 种子的运算（运行最大值的 `fmax`、修正项的 `sub`/`exp`）改用去掉 `ninf` 的模式，其余运算仍用 `fast`。
+    这些程序的 `-inf` 都在循环里，LLVM 看不到常量，所以原先没有算错（单个 KV 块的情形在 CPU 与 GPU 上也正确），但这是未定义行为；去掉 `ninf` 后 `attn_warp` 的时间不变（同一时刻 0.328 对 0.328 ms，32 × 2048）。
   - 已修：组块不整除时（如 `M = 5`、组块 2），内层绑定层的 extent 是运行时值，`lower_to_mem` 原先拒绝——`TileFuse` 同样如此，并非只有解释器。现在绑定的 `tiled` 按 `nat_upper` 给出的上界启动，超出运行时 extent 的块跳过（`lit/gpu/tile_items_capped.mim`，两条路径都在 GPU 上执行正确）；注意力的行调度改回不整除的组块 `(1, 2)`。
   - 已修：带 gpu 插件时，留在主机上的代码（没有调度的注意力根、块定律的串行调度）编译失败，原因有三：
     `gpu.lower_btensor_map_reduce` 把以张量为初值的 `map_reduce_acc` 也当成一线程一输出的 kernel；它也把嵌在主机循环里、映射或形状用到外层循环变量的 `map_reduce` 搬成 kernel，kernel 不闭合；
