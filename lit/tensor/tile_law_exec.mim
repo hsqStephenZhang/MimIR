@@ -1,0 +1,30 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 -fsanitize=address %S/tile_law_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A tile law seals a root with its facts; a request's levels are typed by them, and splitting the parallel loops or a
+// reduction loop in order realizes the root.
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+fun mac (acc: I64, xy: [I64, I64])@tt: I64 =
+    let (x, y) = xy;
+    return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
+
+lam gemm (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64) =
+    law.of_map_reduce ((5, 4), (5, 4, 3)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+
+extern fun law_denote (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.denote (gemm (a, b)));
+extern fun law_req (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.req (gemm (a, b), (), serial_par ((2, 0, 0), 1, serial_red ((0, 0, 2), 1, 0, serial_done ())),
+                     default_control));
+extern fun law_par (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.par (gemm (a, b), (2, 3)));
+extern fun law_red (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.red (gemm (a, b), 2, 2));

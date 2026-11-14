@@ -1,0 +1,22 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: law_req_rule.mim:21:{{.*}}error: a parallel level cannot tile a reduction loop
+
+// A law's request is checked by the law's own facts, where it is written.
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+fun mac (acc: I64, xy: [I64, I64])@tt: I64 =
+    let (x, y) = xy;
+    return (core.wrap.add 0 (acc, core.wrap.mul 0 (x, y)));
+
+lam gemm (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64) =
+    law.of_map_reduce ((5, 4), (5, 4, 3)) (mac, 0I64) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+
+extern fun law_req (a: tensor.Tensor 2 (5, 3) I64, b: tensor.Tensor 2 (3, 4) I64): tensor.Tensor 2 (5, 4) I64 =
+    return (law.req (gemm (a, b), (), serial_par ((2, 0, 2), 1, serial_done ()),
+                     default_control));

@@ -188,3 +188,4 @@ D6 (覆盖面) 与上面并行；动态形状依赖 assert 语义
   错一位的 swizzle 与不 swizzle 的布局都被判为不一致（`lit/tensor/layout_f2.mim`）。fragment 布局（m16n8k8、m16n8k16）的双射与 ldmatrix 一致性此前已有穷举检查。
 - **D2 第二步**：`cp.async` ring 的协议也写成可执行模型 `cp_ring_safe blocks depth waits`：逐步跟踪每个缓冲装的块与填它的 group，检查计算时缓冲装着自己的块、group 已完成、重填的是另一个缓冲；
   `pipeline_plan.pending` 给出允许在途的 group 数（`depth − 2`），lower_to_mem 由此取值。多留一个 group 在途或单缓冲都被抓出（`lit/tensor/cp_ring_protocol.mim`）。
+- **TileLaw（2026-11-14）**：设计见 `docs/tile-law-design.zh-CN.md`；原型 `tensor.law` 已能构造定律、以其事实为层级类型索引并检查规则、在 CPU 上执行两条切分引理。

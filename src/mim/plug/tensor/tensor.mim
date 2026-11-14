@@ -2601,6 +2601,8 @@ pub mod check
     /// The target's compute capability `-X nvptx:sm` names, as `2 · cc + a` for an architecture-specific `sm_<cc>a`, or
     /// 0 when none is named and the backend picks the device's later.
     axm target: [] → Nat, normalize_check;
+    /// `value`, or the error the verdict names once it is literal.
+    axm report: {T: *} → [«3; Nat», T] → T, normalize_check;
 
     anx let messages = ("",
         "a parallel level cannot tile a reduction loop",
@@ -2771,9 +2773,12 @@ pub mod check
             | 5 (size, _, cut, rest) => or_else (needs 90 ff 18, tile_ok (ro, nis, block, a, b, size, cut, persistent, rest))
             | 6 (_, rest) => tile_ok (ro, nis, block, a, b, cluster, split, tt, rest);
 
+    /// The verdict of a chain over a root with `ro` parallel loops, `nis` inputs and loop `extents`.
+    anx lam verdict {n: Nat, Acc Kind: *} (ro nis: Nat, extents: «n; Nat», l: TileLevels (n, Acc, Kind)): Verdict =
+        tile_ok (ro, nis, extents, ff, ff, 0, 0, ff, l);
     anx lam levels {T: *, r: Nat, s: «r; Nat»}
         (op: Tensor r s T, l: TileLevels (root_loops op, root_acc op, root_contraction op)): Verdict =
-        tile_ok (parallel op, inputs op, extents op, ff, ff, 0, 0, ff, l);
+        verdict (parallel op, inputs op, extents op, l);
 end
 axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *}
             → [op: Tensor r s T, members: M,
@@ -3153,6 +3158,68 @@ anx lam tf_reduce {Acc Out I: *} (K ks tail: Nat) (init: Acc) (ins: I)
     let blocks = ((K + (ks - 1)) / ks, K / ks)#(tail == 1);
     let acc    = tile_fold (blocks, ks) init ins step;
     post ((acc, last acc)#(tail == 1));
+
+///
+/// ### law
+///
+/// A tile law seals a root with the facts its schedule is typed and checked by, as `docs/tile-law-design.zh-CN.md` lays
+/// out: its loops `n`, of which the first `ro` are parallel, their `extents`, its `inputs`, its accumulator `Acc` and its
+/// contraction `Kind`.
+/// The facts are fields, set by the constructor that builds the root, so nothing recomputes them from a rewritten op.
+/// The splits are fields too: the constructor builds them while the root's inputs are in scope, so each one rebuilds the
+/// root inside its regions from the inputs the regions receive.
+///
+pub mod law
+    /// A structural record, like `Tileable`, so its dependent fields check against the tuple the constructor builds.
+    anx lam Law (r: Nat, s: «r; Nat», T: *): □ =
+        [n ro inputs: Nat, extents: «n; Nat», Acc Kind: *, root: Tensor r s T,
+         par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T];
+
+    /// `map_reduce`'s arguments make the root and its law at once.
+    /// `par ts` concatenates the root's tiles of `ts`; `red (loop, ks)` folds reduction loop `loop` in whole blocks of `ks`
+    /// in order from the accumulator's tile, then the peeled last block, then the epilogue: both are the root by the split
+    /// lemmas.
+    anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Law (Ro, So, To) =
+        let make = λ (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro So To =
+            map_reduce (So, Sr) (f, init) map_out maps xs;
+        let root = make is;
+        let zero = ‹Ro; 0›;
+        let par  = λ (ts: «Ro; Nat»): Tensor Ro So To =
+            tiled (So, ts, 0) is
+                (λ (off ext: «Ro; Nat») (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro ext To =
+                    tile_of (make xs, off, ext));
+        let red  = λ (loop ks: Nat): Tensor Ro So To =
+            let K = Sr#(core.idx 0 Rn loop);
+            tf_reduce (K, ks, 1) (tile_of_init @(To, To, Ro) @So (root, zero, So)) is
+                (λ (acc: Tensor Ro So To, k0: Nat) (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro So To =
+                    tile_of_partial @(To, To, Ro) @So (make xs, zero, So, loop, k0, tf_chunk (K, ks, 1, k0), acc))
+                (λ (acc: Tensor Ro So To): Tensor Ro So To =
+                    let (k0, k) = tf_tail (K, ks);
+                    tile_of_partial @(To, To, Ro) @So (root, zero, So, loop, k0, k, acc))
+                (λ (acc: Tensor Ro So To): Tensor Ro So To = tile_of_post @(To, To, Ro) @So (root, zero, So, acc));
+        (Rn, Ro, nis, Sr, To, root_contraction root, root, par, red);
+
+    /// Field access by position: a record behind a type function does not carry its field names to `#`.
+    /// The meaning of a law: its root.
+    anx lam denote {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T)): Tensor r s T = l#6₉;
+    anx lam par {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), ts: «r; Nat»): Tensor r s T = (l#7₉) ts;
+    anx lam red {r: Nat, s: «r; Nat», T: *} (l: Law (r, s, T), loop ks: Nat): Tensor r s T = (l#8₉) (loop, ks);
+
+    /// A tile request whose levels are indexed by the law's facts and checked by them; once the law is literal the cast is
+    /// between two instances of one level type.
+    anx lam req {r: Nat, s: «r; Nat», T: *, M K: *}
+        (l: Law (r, s, T), members: M, levels: TileLevels (l#0₉, l#4₉, l#5₉), control: K): Tensor r s T =
+        let root = l#6₉;
+        check.report (check.verdict (l#1₉, l#2₉, l#3₉, levels),
+            tile_req (root, members, core.bitcast (TileLevels (root_loops root, root_acc root, root_contraction root)) levels,
+                      control));
+end
 
 anx lam TileBox (r: Nat): * = [off ext: «r; Nat»];
 axm tiled_n: {n g: Nat, Ts: «n; *», rs: «n; Nat»}

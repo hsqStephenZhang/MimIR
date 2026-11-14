@@ -853,9 +853,31 @@ const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     return nullptr;
 }
 
+// The error a literal, nonzero verdict names, its message's `{}` filled with the verdict's values.
+void report_verdict(const Def* where, const Def* verdict) {
+    auto code = Lit::isa(verdict->proj(3, 0));
+    if (!code || !*code) return;
+    auto& w       = where->world();
+    auto messages = w.annex(check::messages);
+    auto text     = tuple2str(messages->proj(messages->num_projs(), *code));
+    for (size_t i = 1; i != 3; ++i)
+        if (auto at = text.find("{}"); at != std::string::npos) {
+            auto value = Lit::isa(verdict->proj(3, i));
+            text.replace(at, 2, value ? std::to_string(*value) : "?");
+        }
+    where->blame("{}", text).bail();
+}
+
 template<check id>
 const Def* normalize_check(const Def*, const Def*, const Def* op) {
     auto& w = op->world();
+    if constexpr (id == check::report) {
+        auto [verdict, value] = op->projs<2>();
+        // Inside a definition the verdict waits for its arguments; a closed one that is still not literal is undecided.
+        if (!verdict->is_closed()) return nullptr;
+        report_verdict(value, verdict);
+        return value;
+    }
     if constexpr (id == check::target) {
         auto sm = arg_value(w.driver().args("nvptx"), "sm");
         if (!sm) return w.lit_nat_0();
@@ -889,20 +911,13 @@ const Def* normalize_check(const Def*, const Def*, const Def* op) {
 const Def* normalize_tile_req(const Def*, const Def* callee, const Def* arg) {
     auto& w                       = arg->world();
     auto [op, members, levels, _] = arg->projs<4>();
-    auto [T, r, s, M, K]          = callee->as<App>()->args<5>();
-    auto entry                    = fe::lookup(w.annexes().flags2entry(), flags_t(check::levels));
+    // A law's request casts its levels from the law's level type and has checked them by the law's facts.
+    if (Axm::isa<core::bitcast>(levels)) return nullptr;
+    auto [T, r, s, M, K] = callee->as<App>()->args<5>();
+    auto entry           = fe::lookup(w.annexes().flags2entry(), flags_t(check::levels));
     if (!entry) return nullptr;
-    auto verdict = w.app(w.app(entry->def, {T, r, s}), {op, levels});
-    auto code    = Lit::isa(verdict->proj(3, 0));
-    if (!code || !*code) return nullptr;
-    auto messages = w.annex(check::messages);
-    auto text     = tuple2str(messages->proj(messages->num_projs(), *code));
-    for (size_t i = 1; i != 3; ++i)
-        if (auto at = text.find("{}"); at != std::string::npos) {
-            auto value = Lit::isa(verdict->proj(3, i));
-            text.replace(at, 2, value ? std::to_string(*value) : "?");
-        }
-    levels->blame("{}", text).bail();
+    report_verdict(levels, w.app(w.app(entry->def, {T, r, s}), {op, levels}));
+    return nullptr;
 }
 
 const Def* normalize_within(const Def*, const Def*, const Def* arg) {

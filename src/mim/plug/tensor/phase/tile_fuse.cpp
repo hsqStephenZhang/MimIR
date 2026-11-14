@@ -181,6 +181,8 @@ struct LevelSpec {
 std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
     enum { Serial, Group, Item, Warp, Warpgroup } scope = Serial;
     std::vector<LevelSpec> specs;
+    // A law's request casts its levels from the law's level type to the root's, two instances of one structure.
+    if (auto cast = Axm::isa<core::bitcast>(levels)) levels = cast->arg();
     for (auto cur = levels;;) {
         // The chain's noms are newtypes over variants: a `Name` wraps the case's `Inj`.
         if (auto name = cur->isa<Name>()) cur = name->op();
