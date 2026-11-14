@@ -4023,7 +4023,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 waited      = w.app(w.annex<gpu::mbar_wait_at>(),
                                     {loop_mem, bar_at(w.call(core::nat::rem, Defs{iteration, depth})), i32(parity)});
             } else {
-                waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat(ring.size() - 2)), loop_mem);
+                auto pending = w.app(w.annex(tensor::pipeline_plan::pending), w.lit_nat(ring.size()));
+                waited       = w.app(w.app(w.annex<gpu::async_wait_group>(), pending), loop_mem);
                 // `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it first.
                 if (fragments && fragments->group) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
             }

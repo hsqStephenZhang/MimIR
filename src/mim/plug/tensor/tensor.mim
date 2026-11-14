@@ -322,6 +322,35 @@ pub anx lam ring_block (iteration slot blocks: Nat): Nat =
 pub anx lam refill_block (iteration depth blocks: Nat): Nat = ring_block (iteration, depth - 1, blocks);
 pub anx lam rotated_source (slot depth: Nat): Nat = (slot + 1) % depth;
 ///
+/// A `cp.async` ring of `depth` buffers: the prologue fills blocks `0 .. depth - 2`, one commit group each; step `i` waits
+/// until at most `pending depth` groups are in flight, synchronizes, refills the buffer freed last step with block
+/// `refill_block (i, depth, blocks)` as one more group, computes block `i` from the first buffer and rotates the buffers.
+pub anx lam pending (depth: Nat): Nat = depth - 2;
+/// Runs that protocol for `blocks` blocks with `waits` groups left in flight: every step computes from a buffer holding
+/// its own block, filled by a completed group, while the refill goes to another buffer.
+pub anx lam cp_ring_safe (blocks: Nat) (depth: Nat) (waits: Nat): Bool =
+    let start = (‹s: depth; core.idx2nat s›,
+                 ‹s: depth; core.select (core.idx2nat s + 1 < depth, core.idx2nat s, blocks)›,
+                 ‹s: depth; core.idx2nat s›,
+                 depth - 1, depth >= 2);
+    let (_, _, _, _, ok) = vec.fold.l @([«depth; Nat», «depth; Nat», «depth; Nat», Nat, Bool], Idx blocks) @blocks
+        (λ (st: [«depth; Nat», «depth; Nat», «depth; Nat», Nat, Bool], step: Idx blocks)
+            : [«depth; Nat», «depth; Nat», «depth; Nat», Nat, Bool] =
+            let (ring, block, group, groups, ok) = st;
+            let i     = core.idx2nat step;
+            let at    = λ (k: Nat): Idx depth = core.idx 0 depth (k % depth);
+            let first = ring#(at 0);
+            let free  = ring#(at (depth - 1));
+            let ready = core.bit2.and 0 (block#(at first) == i, group#(at first) + waits < groups);
+            let next  = ring_block (i, depth - 1, blocks);
+            (‹s: depth; ring#(at (core.idx2nat s + 1))›,
+             ‹b: depth; core.select (core.idx2nat b == free, next, block#b)›,
+             ‹b: depth; core.select (core.idx2nat b == free, groups, group#b)›,
+             groups + 1,
+             core.bit2.and 0 (ok, core.bit2.and 0 (ready, free != first))))
+        (start, ‹b: blocks; b›);
+    ok;
+///
 /// A TMA ring's mbarrier protocol: fill `f` lands in slot `f % depth`, its consumer waits on that slot's full barrier for
 /// the phase of parity `(f / depth) % 2`, and its producer waits on the slot's empty barrier for the phase of parity
 /// `(f / depth + 1) % 2`; a fresh barrier's phase before its first counts as completed, so the first round passes.

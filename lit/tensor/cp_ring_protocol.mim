@@ -1,0 +1,16 @@
+// RUN: %mim %s
+
+// The cp.async ring computes every block from its own buffer once its group completed; one more group in flight breaks it.
+
+plugin tensor;
+plugin refly;
+
+use tensor.pipeline_plan;
+
+let _ = refly.struc.e (cp_ring_safe 1 2 (pending 2), tt);
+let _ = refly.struc.e (cp_ring_safe 8 2 (pending 2), tt);
+let _ = refly.struc.e (cp_ring_safe 8 3 (pending 3), tt);
+let _ = refly.struc.e (cp_ring_safe 12 4 (pending 4), tt);
+let _ = refly.struc.e (cp_ring_safe 3 4 (pending 4), tt);
+let _ = refly.struc.e (cp_ring_safe 8 3 2, ff);
+let _ = refly.struc.e (cp_ring_safe 8 1 0, ff);
