@@ -1838,6 +1838,26 @@ const Def* TileFuse::rewrite_imm_App(const App* app) {
     return RWPhase::rewrite_imm_App(app);
 }
 
+// A request without members on a plain `map_reduce` runs as its law's meaning, which the law interpreter realizes.
+const Def* TileFuse::run_as_law(const Def* op, const Def* levels, const Def* control) {
+    auto root = Axm::isa<map_reduce_post>(op);
+    auto mr   = btensor::MapRedPost::of(root->callee()->as<App>());
+    auto rk   = mr.ranks();
+    if (!rk || rk->nps != 0 || !is_identity_post(mr.post) || mr.init_type != mr.To) return nullptr;
+    auto& w = op->world();
+    if (!Check::alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), w.tuple({mr.Rn, w.lit_nat_0()})))) return nullptr;
+    auto law = w.app(w.annex(tensor::law::of_map_reduce), mr.nis);
+    law      = w.app(law, {mr.To, mr.Ro, mr.Rn});
+    law      = w.app(law, {mr.So, mr.Sr});
+    law      = w.app(law, {mr.Tis, mr.Ris, mr.Sis});
+    law      = w.app(law, {mr.comb, mr.init});
+    law      = w.app(law, mr.map_out);
+    law      = w.app(law, mr.maps);
+    law      = w.app(law, root->arg()->proj(2, 0));
+    log().d("tensor.tile_fuse runs {} as its law", op);
+    return w.implicit_app(w.annex(tensor::law::run), {law, levels, control});
+}
+
 const Def* TileFuse::realize(const App* request, const DefSet& outside) {
     auto [op, members, levels, control] = request->args<4>();
     auto parsed                         = tile_levels(levels);
@@ -1849,6 +1869,8 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
     for (auto& level : level_list)
         if (level.pipeline == 0) level.pipeline = driver().arg_nat("tensor", "pipeline").value_or(1);
     auto group = members_of(members);
+    if (group.empty() && driver().arg_nat("tensor", "tile-law").value_or(0))
+        if (auto law = run_as_law(op, levels, control)) return law;
     DefSet in_group(group.begin(), group.end());
     Levels realizer(log(), request, in_group, outside, driver().arg_nat("tensor", "strict").value_or(0));
     if (auto root = graph::map_reduce(op))

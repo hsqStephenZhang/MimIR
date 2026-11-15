@@ -13,6 +13,7 @@ private:
     void start() override;
     const Def* rewrite_imm_App(const App*) override;
     const Def* realize(const App* request, const DefSet& outside);
+    const Def* run_as_law(const Def* op, const Def* levels, const Def* control);
 
     DefMap<const Def*> replacements_;
 };
