@@ -965,6 +965,9 @@ const Def* LowerToMem::lower_generate(const App* app) {
         queue.push(app->arg());
         while (!queue.empty()) {
             auto def = queue.pop();
+            // A staged box is the work-group's fill, also where a producer computed in this fill only takes it as
+            // input.
+            if (Axm::isa<tensor::stage>(def)) return true;
             if (Axm::isa<tensor::get>(def) || Axm::isa<tensor::get_fused>(def)) {
                 // A read through a view reads the fill behind it.
                 auto source = def->as<App>()->arg(2, 0);
@@ -972,8 +975,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
                     source = Axm::peel<tensor::buf>(source);
                     more   = false;
                     if (Axm::isa<tensor::slice>(source) || Axm::isa<tensor::slice_box>(source)
-                        || Axm::isa<tensor::stage>(source) || Axm::isa<tensor::placed>(source)
-                        || Axm::isa<tensor::as_vectors>(source))
+                        || Axm::isa<tensor::placed>(source) || Axm::isa<tensor::as_vectors>(source))
                         source = source->as<App>()->arg(), more = true;
                     else if (Axm::isa<tensor::tile_of>(source))
                         source = source->as<App>()->arg(3, 0), more = true;

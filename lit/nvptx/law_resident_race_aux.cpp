@@ -5,7 +5,10 @@
 extern "C" float* rows(float*);
 
 int main() {
-    constexpr int nrows = 64, cols = 256;
+#ifndef COLS
+#    define COLS 256
+#endif
+    constexpr int nrows = 64, cols = COLS;
     static float x[nrows * cols];
     for (int i = 0; i != nrows * cols; ++i)
         x[i] = float(i % 113) / 37.0f - 1.5f;
