@@ -171,6 +171,10 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   块级同理：`law.blocks_rolling` 从块的统计量（新的行最大值）、修正（`exp (m - mx)` 作用于和与输出 tile）、块的累加（行和与 `P·V` 的 `map_reduce_acc`）推出块定律的步；累加器保持使用者的扁平元组，由 `split`/`join` 看成统计量与其余部分（嵌套的元组累加器让 warp 区域的累加器落到设备堆上，大尺寸时越界）。
   `bench/gpu_attn/attn_roll.mim` 与手写步的 `attn_law.mim` 生成同样的 kernel（TF32 `mma`、`cp.async` 双缓冲），H200 上 32 × 1024 到 128 × 2048 的时间相同（0.092–1.274 ms）。
   一并改了：用担保的 `merge` 建的定律（无序）在 work-item/lane 归约里把它显式交给 `merge_with`（`TileMerge` 0），有序定律仍由 lowering 识别组合子。
+- 第 4 步（流量模型，2026-11-15）：定律多了一个字段 `traffic: TileLevels → Nat`，按 Welder 的算法在 Mim 里数一个调度经过全局内存的字节：第一条把输出切成块的层级（`Par`/`Group`，穿过 `Cluster`/`Persistent`）给出块，每个块读每个输入经映射成像的盒子（`affine.image`），乘元素大小与块数，再加一次输出。
+  `law.traffic (l, levels)` 在 PE 时归约成字面量；`law.best (l, candidates)` 在一组候选层级链里取流量最小的，同样在 PE 时选定，可以直接交给 `law.run`。
+  `lit/tensor/law_traffic.mim`：64³ F32 GEMM，16 × 16 块 147456 字节、32 × 32 块 81920、整块 49152，`best` 取 32 × 32。
+  模型只数第一层的块，不看更内层的暂存与复用，也不含计算量；融合的生产者按它在消费者里的槽数（物化的大小）。它是决定调度的默认依据，不是性能预测。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；

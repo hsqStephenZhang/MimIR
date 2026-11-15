@@ -3265,7 +3265,7 @@ pub mod law
     anx lam Law (r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *): * =
         [ro inputs: Nat, extents: «n; Nat», root: Tensor r s T,
          par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T,
-         schedule: TileLevels (n, Acc, Kind) → Tensor r s T];
+         schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat];
 
     /// The root of `map_reduce`'s arguments and its law.
     /// `par ts` concatenates the root's tiles of `ts`; `red (loop, ks)` folds reduction loop `loop` in whole blocks of `ks`
@@ -3716,7 +3716,30 @@ pub mod law
                     tile_step (lo, ext, size, xs, acc, fresh, (pan#0₂, (g#0₇, g#1₇, g#2₇, g#3₇, g#4₇, g#5₇, ctas)), rest);
         let schedule = λ (levels: TileLevels (Rn, To, root_contraction root)): Tensor Ro So To =
             tile_step (‹Rn; 0›, So, Sr, phys, splat (So, init), tt, none, levels);
-        (Ro, nis, Sr, root, par, red, red_par, schedule);
+        // The tiles of the first level that splits the output into blocks, the whole loops if none does.
+        lam blocks_of {M: *} (l: TileLevels (Rn, To, M))@(core.pe.is_closed l): «Rn; Nat» =
+            match l with
+                | 0 => ‹Rn; 0›
+                | 1 (sizes, _, _) => sizes
+                | 2 (sizes: «Rn; Nat», _ _: Nat, _: GroupLevels (Rn, To, M, sizes)) => sizes
+                | 3 (_, _, _, _) => ‹Rn; 0›
+                | 4 (_, _) => ‹Rn; 0›
+                | 5 (_, _, _, rest) => blocks_of rest
+                | 6 (_, rest) => blocks_of rest;
+        // The bytes a schedule moves through global memory, as Welder counts them: every block reads the box of each
+        // input that its loops' block images, and the output is written once.
+        let traffic = λ (levels: TileLevels (Rn, To, root_contraction root)): Nat =
+            let ts    = blocks_of levels;
+            let size  = ‹d: Rn; let t = ts#d; let e = Sr#d;
+                (e, core.select (t < e, t, e))#(core.bit2.and 0 (core.idx2nat d < Ro, t != 0))›;
+            let count = vec.fold.r @(Nat, Idx Rn) @Rn (λ (d: Idx Rn, x: Nat): Nat =
+                (x, core.nat.mul (x, (Sr#d + size#d - 1) / size#d))#(core.idx2nat d < Ro)) (‹d: Rn; d›, 1);
+            let reads = ‹i: nis; let box = (affine.image @(Rn, Ris#i) (maps#i) (‹Rn; 0›, size, Sis#i))#1₄;
+                vec.fold.r @(Nat, Nat) @(Ris#i) (λ (e x: Nat): Nat = core.nat.mul (e, x)) (box, core.trait.size (Tis#i))›;
+            let block = vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (reads, 0);
+            let out   = vec.fold.r @(Nat, Nat) @Ro (λ (e x: Nat): Nat = core.nat.mul (e, x)) (So, core.trait.size To);
+            core.nat.add (core.nat.mul (count, block), out);
+        (Ro, nis, Sr, root, par, red, red_par, schedule, traffic);
 
     anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -3821,30 +3844,39 @@ pub mod law
 
     /// Field access by position: a record behind a type function does not carry its field names to `#`.
     /// The meaning of a law: its root.
-    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₈;
+    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₉;
+    /// The bytes `levels` would move through global memory, and of `c` candidate schedules the one that moves the fewest.
+    anx lam traffic {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Nat =
+        (l#8₉) levels;
+    anx lam best {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, c: Nat}
+        (l: Law (r, s, T, n, Acc, Kind), candidates: «c; TileLevels (n, Acc, Kind)»): TileLevels (n, Acc, Kind) =
+        let costs = ‹j: c; (l#8₉) (candidates#j)›;
+        let pick  = vec.fold.l @(Nat, Idx c) @c (λ (x: Nat, j: Idx c): Nat =
+            (x, core.idx2nat j)#(costs#j < costs#(core.idx 0 c x))) (0, ‹j: c; j›);
+        candidates#(core.idx 0 c pick);
     anx lam par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), ts: «r; Nat»): Tensor r s T =
-        (l#4₈) ts;
+        (l#4₉) ts;
     anx lam red {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop ks: Nat): Tensor r s T =
-        (l#5₈) (loop, ks);
+        (l#5₉) (loop, ks);
     anx lam red_par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop parts: Nat)
-        : Tensor r s T = (l#6₈) (loop, parts);
+        : Tensor r s T = (l#6₉) (loop, parts);
     /// The meaning of a schedule over the law, by the split lemmas, which a realized request must agree with.
     anx lam schedule {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *}
-        (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Tensor r s T = (l#7₈) levels;
+        (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Tensor r s T = (l#7₉) levels;
 
     /// A tile request whose levels are indexed by the law's facts and checked by them; once the law is literal the cast is
     /// between two instances of one level type.
     anx lam req {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, M K: *}
         (l: Law (r, s, T, n, Acc, Kind), members: M, levels: TileLevels (n, Acc, Kind), control: K): Tensor r s T =
-        let root = l#3₈;
-        check.report (check.verdict (l#0₈, l#1₈, l#2₈, levels),
+        let root = l#3₉;
+        check.report (check.verdict (l#0₉, l#1₉, l#2₉, levels),
             tile_req (root, members, core.bitcast (TileLevels (root_loops root, root_acc root, root_contraction root)) levels,
                       control));
 
     /// A request without members that runs as the law's meaning of its chain, after checking the chain by the law's facts.
     anx lam run {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, K: *}
         (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind), _: K): Tensor r s T =
-        check.report (check.verdict (l#0₈, l#1₈, l#2₈, levels), (l#7₈) levels);
+        check.report (check.verdict (l#0₉, l#1₉, l#2₉, levels), (l#7₉) levels);
 
     /// A law realized by blocks: the user steps an accumulator tile `A ext` over a block of the loops and finishes it.
     /// `denote` is the meaning that every schedule must equal; `step` and `finish` are vouched for, like a merge.

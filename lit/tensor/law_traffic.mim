@@ -1,0 +1,45 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -o - | %FileCheck %s
+
+// A law counts the bytes a schedule moves through global memory, as Welder does: each block reads the box of every
+// input its loops image, and the output is written once.
+// For a 64 × 64 × 64 F32 product, blocks of 16 × 16 read 16 × 64 of each operand, 16 blocks of 8 KiB, plus 16 KiB out;
+// blocks of 32 × 32 halve that, and the whole product reads each operand once.
+// `law.best` picks the candidate that moves the fewest bytes.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+lam gemm (a: tensor.Tensor 2 (64, 64) F32, b: tensor.Tensor 2 (64, 64) F32) =
+    law.of_map_reduce ((64, 64), (64, 64, 64)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+
+let small = serial_par ((16, 16, 0), 0, serial_done ());
+let large = serial_group ((32, 32, 0), 0, 0, group_item ((4, 4, 0), 0, item_done ()));
+let whole = serial_done ();
+
+extern fun traffic_small (a b: tensor.Tensor 2 (64, 64) F32): Nat = return (law.traffic (gemm (a, b), small));
+extern fun traffic_large (a b: tensor.Tensor 2 (64, 64) F32): Nat = return (law.traffic (gemm (a, b), large));
+extern fun traffic_whole (a b: tensor.Tensor 2 (64, 64) F32): Nat = return (law.traffic (gemm (a, b), whole));
+extern fun traffic_best (a b: tensor.Tensor 2 (64, 64) F32): Nat =
+    let l = gemm (a, b);
+    return (law.traffic (l, law.best (l, (small, large))));
+
+// CHECK-LABEL: extern con traffic_best
+// CHECK: (_{{[0-9]+}}, 81920)
+// CHECK-LABEL: extern con traffic_large
+// CHECK: (_{{[0-9]+}}, 81920)
+// CHECK-LABEL: extern con traffic_small
+// CHECK: (_{{[0-9]+}}, 147456)
+// CHECK-LABEL: extern con traffic_whole
+// CHECK: (_{{[0-9]+}}, 49152)
