@@ -209,6 +209,11 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 - 第 5 项（2026-11-15）：`law.traffic` 加了容量约束——work-group 暂存的共享内存（第一个 work-group 层常驻的盒子，加其中第一个归约层的面板乘环的深度；warp 与 warpgroup 的暂存不计）超过 H200 的 227 KB 时流量记为无穷，`law.best` 因而不会选它（`lit/tensor/law_traffic.mim`：1024³ 的 GEMM，256 × 256 整 K 提升的候选不计容量时流量最小，现在被跳过）。
   `law.run` 的 `control` 明确为不用：定律的构造已经决定融合什么，融合与否含义相同；在融合与不融合的实现之间由 `control` 选择，要等第 4 项的 `Source`（`plain` 与 `produced`）之后才有对象可选。
   TileSight（tile-ai 的解析式性能模型）的研读建议把代价从字节改成时间（按资源的 II 下界、波与尾块）、加派发顺序的 L2 复用，留待第 4 项之后。
+- 第 4 项第一步（2026-11-15）：输入不再是位置上的特例。`build` 原来的 `slot`、`phys`、`unfold`、`restage`、`pmerge`、`split`、`K` 与 `is` 换成每个输入的来源 `Src (P) = [phys, whole, producer, merge, split, K, fused]`，物理值的类型 `Ps: «nis; *»` 作为显式参数（不把类型字段放进记录：那样按 pack 下标在“普通 / 融合”之间选择时两支类型不同，会得到并类型）。
+  `build` 内部的 `member i` 是 `srcs#i#6`，成员分支按 pack 下标取该来源的 `producer`、`merge`、`split`、`K`，不再在算出来的位置上取下标；普通构造子传 `plain_srcs`，`fused`/`fused_shared` 在融合槽传生产者（物理值是生产者的输入）。
+  验收：9 个用例（`tile_law_exec`、`law_fuse`、`law_roll`、`law_traffic`、两个 softmax 基准、`gpu/law_fuse`、`law_resident_merge`、`law_promote`）重构前后生成的代码去掉 gid 后逐字相同。
+  core 前提：`Check` 把元组逐元素 coerce 进依赖元素的 `Arr`（`lit/dep_record_pack.mim`）；带类型字段的来源记录在泛型函数里可用，已用探针验证（数值正确）。
+  `fused` 与 `fused_shared` 现在只差物理值与 `producer` 两个字段，但让 `fuse` 走 `fused_shared`（`share = ‹npp; 0›`）仍报 “expected a shape”，根因在 `shared_producer` 的展开，仍未查清，两个构造子暂时保留。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
