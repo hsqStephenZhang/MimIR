@@ -1,0 +1,18 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A tuple of records with a type field fills an Arr of dependent records component by component: each record
+// instantiates its own type field, so the generic `sum` reads both through one signature.
+
+plugin core;
+plugin vec;
+
+lam Box (R: *): □ = [P: *, phys: P, get: P → R];
+lam boxed (x: Nat): Box Nat = (Nat, x, λ (p: Nat): Nat = p);
+lam doubled (x: Nat): Box Nat = ([Nat, Nat], (x, x), λ (p: [Nat, Nat]): Nat = core.nat.add p);
+lam sum {n: Nat} (bs: «n; Box Nat»): Nat =
+    vec.fold.r @(Nat, Nat) @n (λ (e x: Nat): Nat = core.nat.add (e, x)) (‹i: n; (bs#i#2₃) (bs#i#1₃)›, 0);
+
+extern fun total (): Nat = return (sum @2 (boxed 3, doubled 4));
+
+// CHECK-LABEL: extern fun total
+// CHECK: return 11;

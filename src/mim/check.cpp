@@ -158,6 +158,16 @@ const Def* Check::coerce_(const Def* type, const Def* val) {
         return w.tuple(new_ops);
     }
 
+    // A tuple fills an Arr of dependent elements component by component, as each instantiates its element on its own.
+    if (auto arr = type->isa<Arr>(); arr && val_ty->isa<Sigma>() && !arr->shape().is_fused()) {
+        if (auto n = Lit::isa(arr->arity()); n && Lit::isa(val_ty->arity()) == n) {
+            auto new_ops = DefVec(*n);
+            for (size_t i = 0; i != *n; ++i)
+                if (!(new_ops[i] = coerce_(w.peel(arr, w.lit_idx(*n, i)), val->proj(*n, i)))) return fail();
+            return w.tuple(new_ops);
+        }
+    }
+
     // A dynamic Extract's type joins its components' types, which may only agree once each is coerced on its own.
     if (auto extract = val->isa<Extract>();
         extract && val_ty->isa<Join>() && !type->isa<Join>() && !Hole::isa_unset(type)) {
