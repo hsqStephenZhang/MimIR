@@ -64,3 +64,15 @@ ncu（`softmax_fused`）：DRAM 200 MB（x 读三遍 50 MB × 3 + 写 50 MB）�
 | `rowsum.mim`（树形 combine） | | 0.286 ms | 0.286 ms |
 
 ncu（`softmax_resident`）：DRAM 100 MB、89% 峰值带宽，barrier stall 8%（串行 combine 时 61%），long scoreboard 31%，38 寄存器，24.6 KB 静态 shared。到此 softmax 在这块卡上就是带宽上限。
+
+## 定律版本（H200 NVL，2026-11-15）
+
+`softmax_resident_law.mim` 是 `softmax_resident.mim` 的定律版本：`(max, sum)` 经 `law.fuse_merging` 融合进归一化的定律，work-group 层提升 `x` 与融合的槽，由解释器实现。nsys kernel 平均时间。
+
+| 程序 | kernel |
+|---|---:|
+| `softmax_resident`（`TileFuse` 成员） | 29.4 µs |
+| `softmax_resident_law`（每行 64 段归约，共享内存合并） | 37.5 µs |
+| 同上，不切分（每元素一个 work-item） | 228 µs |
+
+差距主要来自生产者从全局内存再读一遍 `x`（`TileFuse` 的折叠读暂存的行）。

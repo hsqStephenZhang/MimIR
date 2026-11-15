@@ -154,7 +154,15 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   读生产者的地方取它需要的盒子 `tile_of (生产者, 盒子)`：被提升的面板在装载时算出生产者（张量核的情形，与 `TileFuse` 的成员相同），未提升的叶子算它读的那一块（重算）。
   `lit/gpu/law_fuse.mim`：TF32 `mma` 链与 SIMT 链的定律版本和 `TileFuse` 成员版本都在 H200 上执行正确，各一个 kernel、4 个设备缓冲；1024³ 的 dequant GEMM 与 `TileFuse` 持平（SIMT `g3` 0.0821 对 0.0825 ms，TF32 0.0617 对 0.0615 ms，`bench/gpu_tiling/law_dqf_{g3,tc}.mim`）。
   一路修的 core 问题：`gpu.outline` 把闭合的区域输入映射到 kernel 参数时没有把 kernel 的变量绑进作用域，映射落进根作用域，同一模块里另一个函数的主机代码用到同一个闭合值时被改写成 kernel 参数（两个函数共享闭合输入时外部函数不闭合）；`core.pe.is_closed` 把未求解的 Hole 当作闭合，构造子在隐式参数还没推断完时就展开。
-  限制：一次融合一个逐点生产者（嵌套的生产者、多个成员留待后续）；归约生产者是第 3 步。
+  限制：一次融合一个生产者（嵌套的生产者、多个成员留待后续）。
+- 成员融合第 2 步（驻留，2026-11-15）：`law.fuse` 的生产者参数就是 `map_reduce` 的参数，归约生产者也可以融合；`law.fuse_merging` 还带生产者的 `merge`。
+  work-group 层提升融合的槽时，它的盒子驻留在共享内存里，由 work-item 合作算出：叶子里整块 `stage` 的源是两次合作填充的 `generate`——先把盒子 × `C` 段归约（`C` 约为 work-item 数除以盒子大小，整除 K 时才切分）各自从种子折叠成部分结果，再用 `merge` 把每个元素的 `C` 个部分结果合起来；没有 `merge` 时每个元素由一个 work-item 整个归约。
+  这样做而不是像 `TileFuse` 那样在 work-group 层插入绑定到 work-item 的折叠，是因为解释器的叶子在 work-item 区域里，而绑定的折叠必须直接嵌在 work-group 层下（`lower_to_mem` 的规定）；合作填充在 work-item 区域里也是 work-group 统一的。
+  `lit/gpu/law_resident.mim`（逐元素）与 `law_resident_merge.mim`（4 行 × 4 段，部分结果 `«4, 4, 2»` 与合并后的 `«4, 2»` 都在共享内存）在 GPU 上执行正确。
+  12 × 1024 × 1024 的在线 softmax（`bench/gpu_fusion/softmax_resident_law.mim`）在 H200 上 37.5 µs，`TileFuse` 的 `softmax_resident` 29.4 µs；不切分时 228 µs。
+  修的 core 问题：合作填充里每个元素的计算原先按 work-group 统一的作用域分配，一元素的临时 tile 落进同一个共享槽，各 work-item 竞争写它；现在元素的计算按私有作用域分配。区域输入检查把 `splat` 当作读外层张量，它其实只构造张量。
+  仍差的 27% 主要是流量：生产者从全局内存再读一遍 `x`，而 `TileFuse` 的折叠读暂存的行。让生产者读消费者暂存的视图（别名）试过但撤回了：把视图交给生产者需要在部分实例化时按符号下标取异构元组，`Check`/`extract` 给出并类型或折叠错的 arity（另记：`World::extract1` 对 arity 1 的依赖 `Arr` 也按单元素折叠，返回值的类型仍是 `Arr`，这是同一类问题）。
+  yields（成员同时被区域外使用时由融合的 kernel 交回）还没有做：需要多输出的定律。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
