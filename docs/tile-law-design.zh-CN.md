@@ -217,6 +217,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   验收：9 个用例（`tile_law_exec`、`law_fuse`、`law_roll`、`law_traffic`、两个 softmax 基准、`gpu/law_fuse`、`law_resident_merge`、`law_promote`）重构前后生成的代码去掉 gid 后逐字相同。
   core 前提：`Check` 把元组逐元素 coerce 进依赖元素的 `Arr`（`lit/dep_record_pack.mim`）；带类型字段的来源记录在泛型函数里可用，已用探针验证（数值正确）。
   `fused` 与 `fused_shared` 现在只差物理值与 `producer` 两个字段，但让 `fuse` 走 `fused_shared`（`share = ‹npp; 0›`）仍报 “expected a shape”，根因在 `shared_producer` 的展开，仍未查清，两个构造子暂时保留。
+  评审第六轮推测它与 `17cce8fc5`（可变 `Arr` 的 size 1 轴不折叠）有关；检验：在合并版上恢复旧的折叠行为，`law_resident` 报的仍是同一个 “expected a shape”，所以不是它。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
