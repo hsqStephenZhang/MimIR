@@ -3801,6 +3801,37 @@ pub mod law
                 | 4 (_, _) => ‹Rn; 0›
                 | 5 (_, _, _, rest) => blocks_of rest
                 | 6 (_, rest) => blocks_of rest;
+        // The bytes of the boxes of the inputs `promote` sets for a block of `size` (0 for a whole loop), `depth` times each.
+        lam staged (promote depth: Nat, size: «Rn; Nat»): Nat =
+            let clip = ‹d: Rn; let t = size#d; let e = Sr#d; (e, core.select (t < e, t, e))#(t != 0)›;
+            let each = ‹i: nis; let box = (affine.image @(Rn, Ris#i) (maps#i) (‹Rn; 0›, clip, Sis#i))#1₄;
+                let bytes = vec.fold.r @(Nat, Nat) @(Ris#i) (λ (e y: Nat): Nat = core.nat.mul (e, y)) (box, core.trait.size (Tis#i));
+                (0, core.nat.mul (bytes, depth))#(bit_of promote i)›;
+            vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (each, 0);
+        // The shared memory a work-group stages: the boxes its level keeps resident and the panels of its first reduction
+        // level, one per ring slot; staging by warps and warpgroups is not counted.
+        lam group_shared {M: *, g: «Rn; Nat»} (block: «Rn; Nat», l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): Nat =
+            match l with
+                | 0 => 0
+                | 1 (_, _, rest) => group_shared (block, rest)
+                | 2 (_, _, _) => 0
+                | 3 (sizes, _, promote, pipeline, _) =>
+                    staged (promote, core.select (pipeline == 0, check.depth (), pipeline),
+                            ‹d: Rn; (block#d, sizes#d)#(Ro <= core.idx2nat d)›)
+                | 4 (_, _, _, rest) => group_shared (block, rest)
+                | 5 (_, rest) => group_shared (block, rest)
+                | 6 (_, _, _) => 0
+                | 7 (_, _, _) => 0;
+        lam shared_of {M: *} (l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Nat =
+            match l with
+                | 0 => 0
+                | 1 (_, _, rest) => shared_of rest
+                | 2 (sizes: «Rn; Nat», _ promote: Nat, rest: GroupLevels (Rn, To, M, sizes)) =>
+                    core.nat.add (staged (promote, 1, sizes), group_shared (sizes, rest))
+                | 3 (_, _, _, rest) => shared_of rest
+                | 4 (_, rest) => shared_of rest
+                | 5 (_, _, _, rest) => shared_of rest
+                | 6 (_, rest) => shared_of rest;
         // The bytes a schedule moves through global memory, as Welder counts them: every block reads the box of each
         // input that its loops' block images, and the output is written once.
         let traffic = λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat =
@@ -3813,7 +3844,8 @@ pub mod law
                 vec.fold.r @(Nat, Nat) @(Ris#i) (λ (e x: Nat): Nat = core.nat.mul (e, x)) (box, core.trait.size (Tis#i))›;
             let block = vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (reads, 0);
             let out   = vec.fold.r @(Nat, Nat) @Ro (λ (e x: Nat): Nat = core.nat.mul (e, x)) (So, core.trait.size To);
-            core.nat.add (core.nat.mul (count, block), out);
+            // A work-group staging more than an H200's 227 KB cannot run, so its schedule moves no finite traffic.
+            (core.nat.add (core.nat.mul (count, block), out), 4611686018427387904)#(232448 < shared_of levels);
         // A law with a merge of its own vouches for it; an ordered one permits what its combiner does.
         (Ro, nis, Sr, root, par, red, red_par, schedule, traffic, (3, check.combiner root)#ordered);
 
@@ -4066,6 +4098,7 @@ pub mod law
                       control));
 
     /// A request without members that runs as the law's meaning of its chain, after checking the chain by the law's facts.
+    /// The control is unused: the law's construction already decides what it fuses, and fused or not means the same.
     anx lam run {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, K: *}
         (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind), _: K): Tensor r s T =
         check.report (check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, levels), (l#7₁₀) levels);

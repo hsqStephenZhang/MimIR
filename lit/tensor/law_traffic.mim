@@ -6,6 +6,7 @@
 // blocks of 32 × 32 halve that, and the whole product reads each operand once.
 // `law.best` picks the legal candidate that moves the fewest bytes: a parallel level that tiles the reduction loop moves
 // less, but its verdict rules it out.
+// A work-group that stages more shared memory than an H200 offers moves no finite traffic, so `best` passes it over.
 
 plugin tensor;
 plugin core;
@@ -25,10 +26,16 @@ lam gemm (a: tensor.Tensor 2 (64, 64) F32, b: tensor.Tensor 2 (64, 64) F32) =
     law.of_map_reduce ((64, 64), (64, 64, 64)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
 
+lam gemm_big (a: tensor.Tensor 2 (1024, 1024) F32, b: tensor.Tensor 2 (1024, 1024) F32) =
+    law.of_map_reduce ((1024, 1024), (1024, 1024, 1024)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+
 let small = serial_par ((16, 16, 0), 0, serial_done ());
 let large = serial_group ((32, 32, 0), 0, 0, group_item ((4, 4, 0), 0, item_done ()));
 let whole = serial_done ();
 let bad   = serial_par ((64, 64, 32), 0, serial_done ());
+let huge  = serial_group ((256, 256, 0), 0, 3, group_item ((16, 16, 0), 0, item_done ()));
+let tile  = serial_group ((64, 64, 0), 0, 0, group_item ((4, 4, 0), 0, item_done ()));
 
 extern fun traffic_small (a b: tensor.Tensor 2 (64, 64) F32): Nat = return (law.traffic (gemm (a, b), small));
 extern fun traffic_large (a b: tensor.Tensor 2 (64, 64) F32): Nat = return (law.traffic (gemm (a, b), large));
@@ -37,6 +44,11 @@ extern fun traffic_whole (a b: tensor.Tensor 2 (64, 64) F32): Nat = return (law.
 extern fun traffic_best (a b: tensor.Tensor 2 (64, 64) F32): Nat =
     let l = gemm (a, b);
     return (law.traffic (l, law.best (l, (small, large))));
+extern fun traffic_huge (a b: tensor.Tensor 2 (1024, 1024) F32): Nat = return (law.traffic (gemm_big (a, b), huge));
+extern fun traffic_tile (a b: tensor.Tensor 2 (1024, 1024) F32): Nat = return (law.traffic (gemm_big (a, b), tile));
+extern fun traffic_fits (a b: tensor.Tensor 2 (1024, 1024) F32): Nat =
+    let l = gemm_big (a, b);
+    return (law.traffic (l, law.best (l, (huge, tile))));
 extern fun traffic_legal (a b: tensor.Tensor 2 (64, 64) F32): Nat =
     let l = gemm (a, b);
     return (law.traffic (l, law.best (l, (small, bad, large))));
@@ -45,11 +57,17 @@ extern fun traffic_legal (a b: tensor.Tensor 2 (64, 64) F32): Nat =
 // CHECK: (_{{[0-9]+}}, 49152)
 // CHECK-LABEL: extern con traffic_best
 // CHECK: (_{{[0-9]+}}, 81920)
+// CHECK-LABEL: extern con traffic_fits
+// CHECK: (_{{[0-9]+}}, 138412032)
+// CHECK-LABEL: extern con traffic_huge
+// CHECK: (_{{[0-9]+}}, 4611686018427387904)
 // CHECK-LABEL: extern con traffic_large
 // CHECK: (_{{[0-9]+}}, 81920)
 // CHECK-LABEL: extern con traffic_legal
 // CHECK: (_{{[0-9]+}}, 81920)
 // CHECK-LABEL: extern con traffic_small
 // CHECK: (_{{[0-9]+}}, 147456)
+// CHECK-LABEL: extern con traffic_tile
+// CHECK: (_{{[0-9]+}}, 138412032)
 // CHECK-LABEL: extern con traffic_whole
 // CHECK: (_{{[0-9]+}}, 49152)

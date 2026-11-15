@@ -206,6 +206,9 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   把路由时的层级改成也提升成员的槽（`law.promote_member`，`TileFuse` 正是这样把归约成员切到 work-item 上），再在 `C` 为 1 而有合并时按整除 K 的 2 的幂切分，成员与部分结果都进了共享内存（`[4 x [4 x [2 x float]]]`），仍对。
   剩下的 `malloc` 是每块一个元素的部分结果（8 字节）：每个 work-item 循环处理 4 块，`heap2stack` 不转换循环里的分配（`in_loop`），而 LLVM 后端把 `mem.slot` 的 `alloca` 发在原地而不是入口块，在循环里转换会让栈逐次增长。
   64 × 256 的情形每个 work-item 恰一块、没有这层循环，所以没有 `malloc`。要去掉守卫，得先让后端把定长 `slot` 发到入口块、并让 `heap2stack` 证明缓冲不跨迭代存活；在此之前守卫保留。
+- 第 5 项（2026-11-15）：`law.traffic` 加了容量约束——work-group 暂存的共享内存（第一个 work-group 层常驻的盒子，加其中第一个归约层的面板乘环的深度；warp 与 warpgroup 的暂存不计）超过 H200 的 227 KB 时流量记为无穷，`law.best` 因而不会选它（`lit/tensor/law_traffic.mim`：1024³ 的 GEMM，256 × 256 整 K 提升的候选不计容量时流量最小，现在被跳过）。
+  `law.run` 的 `control` 明确为不用：定律的构造已经决定融合什么，融合与否含义相同；在融合与不融合的实现之间由 `control` 选择，要等第 4 项的 `Source`（`plain` 与 `produced`）之后才有对象可选。
+  TileSight（tile-ai 的解析式性能模型）的研读建议把代价从字节改成时间（按资源的 II 下界、波与尾块）、加派发顺序的 L2 复用，留待第 4 项之后。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
