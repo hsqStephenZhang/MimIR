@@ -965,8 +965,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
         queue.push(app->arg());
         while (!queue.empty()) {
             auto def = queue.pop();
-            // A staged box is the work-group's fill, also where a producer computed in this fill only takes it as
-            // input.
+            // A staged box is a fill even where it only feeds a producer computed here.
             if (Axm::isa<tensor::stage>(def)) return true;
             if (Axm::isa<tensor::get>(def) || Axm::isa<tensor::get_fused>(def)) {
                 // A read through a view reads the fill behind it.
