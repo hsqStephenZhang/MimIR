@@ -7,7 +7,8 @@
 // A promoting reduction level runs as the law's meaning: each block stages the promoted inputs' boxes into panels as wide
 // as the next parallel level's tiles, and the leaf reads them through the panels.
 // Inside a work-group the panels are placed by the layout search, and a reduction of the work-items stages the
-// work-group's block, which all its work-items fill and read; TileFuse realizes the same chains alike.
+// work-group's block, which all its work-items fill and read; a work-group level's own promotion keeps its inputs' boxes
+// resident whole. TileFuse realizes the same chains alike.
 
 plugin tensor;
 plugin core;
@@ -40,6 +41,10 @@ extern fun pro_items_run (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (2
 extern fun pro_items_req (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (20, 16) F32): tensor.Tensor 2 (16, 16) F32 =
     return (law.req (gemm (a, b), (), serial_group ((8, 8, 0), 1, 0, group_item ((2, 2, 0), 1, item_red ((0, 0, 4), 1, 3, item_vec ((1, 0, 0), item_done ())))), default_control));
 
+extern fun pro_resident_run (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (20, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.run (gemm (a, b), serial_group ((8, 8, 0), 1, 3, group_item ((2, 2, 0), 1, item_done ())), default_control));
+extern fun pro_resident_req (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (20, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.req (gemm (a, b), (), serial_group ((8, 8, 0), 1, 3, group_item ((2, 2, 0), 1, item_done ())), default_control));
 // LOG-COUNT-4: panel (4, 4, 2) stored as 4, 2, 4 split=1 perm=1, 2, 0 swizzle=none
 
 // CHECK-DAG: gpu.slot_shared

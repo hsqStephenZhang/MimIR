@@ -847,6 +847,14 @@ const Def* contraction_type(const App* root) { return contraction_input(root); }
 const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     auto& w = op->world();
     if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) {
+        // A generic root, as a law's type names before its combiner and maps are known, has no kind yet.
+        auto mr    = btensor::MapRedPost::of(root->callee()->as<App>());
+        auto ranks = mr.ranks();
+        if (!ranks || !mr.comb->isa_mut<Lam>() || !mr.comb->is_closed() || !mr.To->is_closed() || !mr.Tis->is_closed()
+            || !mr.map_out->isa<Lam>())
+            return nullptr;
+        for (u64 i = 0; i != ranks->nis; ++i)
+            if (!mr.maps->proj(ranks->nis, i)->isa<Lam>()) return nullptr;
         auto T = contraction_input(root);
         if (!T) return w.annex<NoMma>();
         return T == w.annex<math::F32>() ? w.annex<Tf32Mma>() : w.annex<HalfMma>();
@@ -889,6 +897,7 @@ const Def* normalize_check(const Def*, const Def*, const Def* op) {
         if (text.empty() || !std::ranges::all_of(text, [](char c) { return std::isdigit(c); })) return w.lit_nat_0();
         return w.lit_nat(2 * std::stoull(text) + (specific ? 1 : 0));
     }
+    if constexpr (id == check::depth) return w.lit_nat(w.driver().arg_nat("tensor", "pipeline").value_or(1));
     if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) {
         auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
         if (auto ranks = mr.ranks()) {

@@ -138,6 +138,14 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   解释器分两段：并行段的每个块从 `init` 开始，到第一条归约层或叶子时折叠 `step`，最后 `finish`；warp 层绑定为 warp 拥有的区域（`tensor.bind 5`），未切分的维取根的字面 extent。
   性能：`bench/gpu_attn/attn_law.mim` 与 TileFuse 的 `attn_warp` 生成同样的程序，RTX PRO 6000 上 32 × 1024 到 128 × 2048 的时间相同（0.086–1.04 ms）。
   为此 `lower_to_mem` 的 warp 翻译与 `store_warp` 接受带前导单位维的 tile（head 作为单独的循环时 tile 是 `(1, 16, D)`），这样 head 与 warp 偏移无关，面板仍可协作装载。
+- 第 3 步完成（2026-11-15）：`TileFuse` 的全部层级都由解释器实现，`law.run` 不再退回 `TileFuse`（`plain` 已删除）。逐项：
+  - `Vec`：并行维为 1 的那一维成为向量循环；最后一个归约循环按其大小切成 `(K / f, f)` 并展开内层，与 `split_reduction` 相同。
+  - 提升（`promote`）：归约层为每个块生成计划，被提升的输入把块的盒子（`affine.image`，由单位斜率驱动的维直接取那个循环的块大小，区域专门化后是字面量）`stage` 成面板，面板维与宽度由单位盒的像在 Mim 里探测（与 `panel_axis` 相同的规则），叶子经面板读映射读取；work-group 内 work-item 或 warp 的归约放宽为整个 work-group 的块（work-group 范围的面板），work-group 层自己的提升把输入的盒子整块驻留。
+  - 面板布局：存储形状、最内连续维、向量宽度、work-item 的读法与张量核模式这些事实由 Mim 算出，交给公理 `tensor.panel_layout`；它的 normalizer 只调用原来的 bank 冲突搜索（`panel::choose`/`mma`/`wgmma`），是一个 oracle，结果是 `layout_expr` 项，由已有的 F₂ 判定检查。
+  - `pipeline`（深度为 0 时取 `check.depth`，即 `-X tensor:pipeline`）、`RedTma`（`fill_tma`）、`Mma`/`Wgmma`（`tensor.mma`）、`RedWs`（`specialize`）、`Cluster`、`Persistent`：与 `TileFuse` 相同的标注，包在相同的位置。
+  - 修了 `root_contraction` 的 normalizer：泛型的根（组合子还是参数、映射还不是 lam）原先被判成 `NoMma`，所以定律的收缩种类永远是 `NoMma`，带 `Mma`/`Wgmma` 层级的链对定律不能通过类型检查；现在它在这些事实已知前保持不规约。
+  验证：`bench/gpu_tiling` 的 GEMM 逐个对比（RTX PRO 6000，`law_*.mim` 是 `gemm_*.mim` 的定律版本）——SIMT 的 `tiled`、`g3`、`g3_128` 与 `TileFuse` 持平，`g2`/`g2cap`/`g2s` 更快，TF32 与 16 位 `mma`（含 `pipeline=2`）持平；七个 Hopper 链（`wgmma`、TMA、cluster、cluster split、persistent、warp 特化）只能按 sm_90a 编译，两条路径的设备 IR 中 `wgmma`、TMA、mbarrier 与描述符的每一行在去掉名字后完全相同。
+  `lit/{tensor,gpu,nvptx}/law_{vec,promote,mma,wgmma_*}.mim` 用与对应 `tile_*` 测试相同的检查覆盖这些层级；带融合成员的请求仍经 `law.req` 由 `TileFuse` 实现，成员融合是计划中留在 C++ 的图分析。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；

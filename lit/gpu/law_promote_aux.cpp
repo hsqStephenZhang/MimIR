@@ -9,6 +9,8 @@ extern "C" float* pro_group_run(float*, float*);
 extern "C" float* pro_group_req(float*, float*);
 extern "C" float* pro_items_run(float*, float*);
 extern "C" float* pro_items_req(float*, float*);
+extern "C" float* pro_resident_run(float*, float*);
+extern "C" float* pro_resident_req(float*, float*);
 
 int main() {
     constexpr int m = 16, k = 20, n = 16;
@@ -17,7 +19,8 @@ int main() {
         a[i] = float(i % 7) - 3.0f;
     for (int i = 0; i != k * n; ++i)
         b[i] = float(i % 5) * 0.5f - 1.0f;
-    for (auto f : {pro_serial_run, pro_serial_req, pro_group_run, pro_group_req, pro_items_run, pro_items_req}) {
+    for (auto f : {pro_serial_run, pro_serial_req, pro_group_run, pro_group_req, pro_items_run, pro_items_req,
+                   pro_resident_run, pro_resident_req}) {
         auto c = f(a, b);
         for (int i = 0; i != m; ++i)
             for (int j = 0; j != n; ++j) {

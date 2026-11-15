@@ -535,3 +535,25 @@ tensor map 由 `gpu.buf_tensor_map` 描述，lower_to_mem 把它建在区域外�
 - 8192 上 persistent 比非 persistent 的特化版快 10%，也比最快的非特化版快 3%，达到 cuBLAS 的 85%。
 - 4096 只有 512 个 tile，每个 work-group 约 4 轮，能重叠的写回结果太少；128×128 的非特化版靠每 SM 两个块，仍快 4%。
 - 128×128 的 persistent 不划算：4 级时每 SM 只剩一个块，2 级时环太浅。
+
+## 定律解释器对 TileFuse（RTX PRO 6000，2026-11-15）
+
+`law_*.mim` 是 `gemm_*.mim` 的定律版本：同一条层级链经 `law.run (law.of_map_reduce …)` 由 Mim 里的解释器实现，`krun.sh` 计时（中位数，ms）：
+
+| 链 | TileFuse | 定律 |
+|---|---:|---:|
+| `tiled` | 0.2089 | 0.2085 |
+| `tiled_g2` | 0.1905 | 0.1542 |
+| `tiled_g2cap` | 0.1905 | 0.1539 |
+| `tiled_g2s` | 0.2735 | 0.2400 |
+| `tiled_g3` | 0.0867 | 0.0864 |
+| `tiled_g3_128` | 0.1568 | 0.1546 |
+| `tiled_tc` | 0.0575 | 0.0575 |
+| `tiled_tc`，`pipeline=2` | 0.0430 | 0.0430 |
+| `tiled_tc8` | 0.0713 | 0.0712 |
+| `tiled_h16`（F16） | 0.0349 | 0.0348 |
+| `tiled_bf16` | 0.0349 | 0.0349 |
+
+两边选出的面板布局相同时时间相同；`g2` 系列的定律版本更快，没有布局时更快（0.111 ms），说明这几个形状上布局搜索的选择不如默认布局。
+`tiled_g3_128w` 两边都约 227 ms，是两条路径共有的异常。
+`wg` 系列（`wgmma`、TMA、cluster、persistent、warp 特化）在这台 sm_120 机器上只能编译，两边设备 IR 中相关的每一行相同。
