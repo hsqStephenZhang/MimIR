@@ -973,7 +973,7 @@ const Def* normalize_check(const Def*, const Def*, const Def* op) {
                 case check::combiner: {
                     // A generic combiner or seed may still turn out to form a law.
                     auto lam = mr.comb->isa_mut<Lam>();
-                    if (!lam || !lam->is_set() || !mr.init->is_closed()) return nullptr;
+                    if (!lam || !lam->is_set() || !mr.comb->is_closed() || !mr.init->is_closed()) return nullptr;
                     auto law = reduction_law(mr);
                     if (!law) return w.lit_nat_0();
                     return w.lit_nat(Check::test_alpha(mr.init, law->identity) ? 1 : 2);

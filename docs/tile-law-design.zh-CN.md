@@ -171,10 +171,11 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   注意力由此从部件得到：统计量是行的运行最大值，每个 key 贡献权重与加权的值，修正是 `exp (m - m')`；`lit/{tensor,gpu}/law_roll.mim` 的含义、KV 分块、split-KV 与两条 GPU 调度都等于 softmax 注意力，把修正换成 1 的变异被测出。
   块级同理：`law.blocks_rolling` 从块的统计量（新的行最大值）、修正（`exp (m - mx)` 作用于和与输出 tile）、块的累加（行和与 `P·V` 的 `map_reduce_acc`）推出块定律的步；累加器保持使用者的扁平元组，由 `split`/`join` 看成统计量与其余部分（嵌套的元组累加器让 warp 区域的累加器落到设备堆上，大尺寸时越界）。
   `bench/gpu_attn/attn_roll.mim` 与手写步的 `attn_law.mim` 生成同样的 kernel（TF32 `mma`、`cp.async` 双缓冲），H200 上 32 × 1024 到 128 × 2048 的时间相同（0.092–1.274 ms）。
-  一并改了：用担保的 `merge` 建的定律（无序）在 work-item/lane 归约里把它显式交给 `merge_with`（`TileMerge` 0），有序定律仍由 lowering 识别组合子。
+  一并改了：用担保的 `merge` 建的定律（无序）在 work-item 归约里把它显式交给 `merge_with`（`TileMerge` 0），有序定律仍由 lowering 识别组合子；lane 归约总由 lowering 识别组合子，所以只接受识别出的组合子。
 - 定律的组合子义务（2026-11-15，评审第 1 条）：评审复现了两种静默算错——有序定律切内层归约循环，以及把不可结合、种子不是单位元的组合子切到 work-item。
   现在 `TileFuse` 的组合子识别（`reduction_law`）移进插件库，经 `check.combiner` 反射成根的事实；定律多一个字段记录组合子允许的事（担保的合并、种子是单位元的可结合组合子、种子不是单位元、都不是），`law.run`/`law.req` 的 `check.law_verdict` 与 `law.red`/`law.red_par` 据此报错。
   `lit/error/law_ordered_inner.mim`、`law_items_combiner.mim`、`law_red_inner.mim` 是三个复现。
+  评审修复后又指出：担保的合并只承诺结合律与单位元，切内层归约循环还要交换律，所以内层循环只对识别出的组合子放行（担保的不可交换合并，如序列拼接，原先会静默算错）；`law.schedule` 也走同样的检查；`check.combiner` 在组合子含外层变量时保持不规约。
 - 第 4 步（流量模型，2026-11-15）：定律多了一个字段 `traffic: TileLevels → Nat`，按 Welder 的算法在 Mim 里数一个调度经过全局内存的字节：第一条把输出切成块的层级（`Par`/`Group`，穿过 `Cluster`/`Persistent`）给出块，每个块读每个输入经映射成像的盒子（`affine.image`），乘元素大小与块数，再加一次输出。
   `law.traffic (l, levels)` 在 PE 时归约成字面量；`law.best (l, candidates)` 在一组候选层级链里取流量最小的，同样在 PE 时选定，可以直接交给 `law.run`。
   `lit/tensor/law_traffic.mim`：64³ F32 GEMM，16 × 16 块 147456 字节、32 × 32 块 81920、整块 49152，`best` 取 32 × 32。

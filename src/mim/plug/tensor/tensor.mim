@@ -2782,10 +2782,11 @@ pub mod check
 
     /// What a law's combiner permits, `law`: 0 nothing, 1 a recognized reassociable combiner whose identity is the seed,
     /// 2 one whose seed is not its identity, 3 a merge the law vouches for.
-    /// A level that tiles a reduction loop inside another folds its elements out of order, and a split over work-items
-    /// or lanes merges partials, which only these permit.
+    /// A level that tiles a reduction loop inside another folds its elements out of order, which needs a commutative
+    /// combiner and so a recognized one; a vouched merge is only associative with the seed as identity.
+    /// A split over work-items merges partials in order, which a vouched merge permits too; a lane split needs a recognized one.
     lam inner {n: Nat} (ro: Nat, sizes: «n; Nat»): Bool = any ‹d: n; both (sizes#d != 0, ro < core.idx2nat d)›;
-    lam ordered {n: Nat} (ro law: Nat, sizes: «n; Nat»): Verdict = fail (both (inner (ro, sizes), law == 0), 20);
+    lam ordered {n: Nat} (ro law: Nat, sizes: «n; Nat»): Verdict = fail (both (inner (ro, sizes), both (law != 1, law != 2)), 20);
     lam merged {Acc: *} (law: Nat, mg: TileMerge Acc): Verdict =
         match mg with | 0 => fail (both (law != 1, law != 3), 21) | 1 _ => ok;
     lam wg_law {n: Nat, Acc Mma: *, g t: «n; Nat»} (ro law: Nat, l: WarpgroupLevels (n, Acc, Mma, g, t))@(core.pe.is_closed l): Verdict =
@@ -3915,14 +3916,15 @@ pub mod law
         (l#4₁₀) ts;
     /// Blocks of a reduction loop inside another fold out of order, which only a law's combiner or merge permits.
     lam outer {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop: Nat): «3; Nat» =
-        ((0, 0, 0), (20, 0, 0))#(core.bit2.and 0 (l#0₁₀ < loop, l#9₁₀ == 0));
+        ((0, 0, 0), (20, 0, 0))#(core.bit2.and 0 (l#0₁₀ < loop, core.bit2.and 0 (l#9₁₀ != 1, l#9₁₀ != 2)));
     anx lam red {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop ks: Nat): Tensor r s T =
         check.report (outer (l, loop), (l#5₁₀) (loop, ks));
     anx lam red_par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop parts: Nat)
         : Tensor r s T = check.report (outer (l, loop), (l#6₁₀) (loop, parts));
     /// The meaning of a schedule over the law, by the split lemmas, which a realized request must agree with.
     anx lam schedule {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *}
-        (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Tensor r s T = (l#7₁₀) levels;
+        (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Tensor r s T =
+        check.report (check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, levels), (l#7₁₀) levels);
 
     /// A tile request whose levels are indexed by the law's facts and checked by them; once the law is literal the cast is
     /// between two instances of one level type.

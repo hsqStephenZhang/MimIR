@@ -1,0 +1,22 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: law_merge_inner.mim:22:{{.*}}error: an ordered reduction level can only tile the outermost reduction loop
+
+// A vouched merge is only associative with the seed as its identity; blocks of an inner reduction loop would also need
+// it to commute, which only a recognized combiner promises.
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+fun push (acc: I64, xs: [I64])@tt: I64 = return (core.wrap.add 0 (core.wrap.mul 0 (acc, 10I64), xs#0₁));
+lam append (u v: I64): I64 = core.wrap.add 0 (core.wrap.mul 0 (u, 10I64), v);
+
+lam l (x: tensor.Tensor 3 (2, 3, 4) I64) =
+    law.of_map_reduce_merging @1 (2, (2, 3, 4)) (push, 0I64, append) (proj_map @(3, 1) 0) (affine.id @3,) (buf x,);
+
+extern fun outer (x: tensor.Tensor 3 (2, 3, 4) I64): tensor.Tensor 1 2 I64 = return (law.red_par (l x, 1, 3));
+
+extern fun inner (x: tensor.Tensor 3 (2, 3, 4) I64): tensor.Tensor 1 2 I64 =
+    return (law.run (l x, serial_red ((0, 0, 2), 0, 0, serial_done ()), default_control));

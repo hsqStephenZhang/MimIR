@@ -965,8 +965,21 @@ const Def* LowerToMem::lower_generate(const App* app) {
         queue.push(app->arg());
         while (!queue.empty()) {
             auto def = queue.pop();
-            if (auto get = Axm::isa<tensor::get>(def))
-                if (Axm::isa<tensor::generate>(Axm::peel<tensor::buf>(get->arg(2, 0)))) return true;
+            if (Axm::isa<tensor::get>(def) || Axm::isa<tensor::get_fused>(def)) {
+                // A read through a view reads the fill behind it.
+                auto source = def->as<App>()->arg(2, 0);
+                for (bool more = true; more;) {
+                    source = Axm::peel<tensor::buf>(source);
+                    more   = false;
+                    if (Axm::isa<tensor::slice>(source) || Axm::isa<tensor::slice_box>(source)
+                        || Axm::isa<tensor::stage>(source) || Axm::isa<tensor::placed>(source)
+                        || Axm::isa<tensor::as_vectors>(source))
+                        source = source->as<App>()->arg(), more = true;
+                    else if (Axm::isa<tensor::tile_of>(source))
+                        source = source->as<App>()->arg(3, 0), more = true;
+                }
+                if (Axm::isa<tensor::generate>(source)) return true;
+            }
             if (def->isa<Var>() || def->isa<Axm>()) continue;
             for (auto op : def->deps())
                 if (op) queue.push(op);
