@@ -3668,7 +3668,8 @@ pub mod law
                          | 2 (sizes: «Rn; Nat», _ _: Nat, _: GroupLevels (Rn, To, M, sizes)) => sizes
                          | 3 (_, _, _, rest) => next_tile rest | 4 (_, rest) => next_tile rest
                          | 5 (_, _, _, rest) => next_tile rest | 6 (_, rest) => next_tile rest;
-        let merge_of = λ (m: TileMerge To): [Bool, [To, To] → To] = match m with | 0 => (ff, merge) | 1 explicit => (tt, explicit);
+        // A law with a vouched merge hands it to a split over work-items or lanes; an ordered one leaves the merge to lowering.
+        let merge_of = λ (m: TileMerge To): [Bool, [To, To] → To] = match m with | 0 => ((tt, ff)#ordered, merge) | 1 explicit => (tt, explicit);
         lam wg_step {M: *, g t: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: WarpgroupLevels (Rn, To, M, g, t))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
                 | 0 => leaf (lo, ext, size, xs, acc, fresh, pan)
@@ -3794,6 +3795,29 @@ pub mod law
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
         build (So, Sr) (f, init) map_out maps is (merge, ff, nis) (is, (λ (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)» = xs))
             (λ (u _: Tis#(core.idx 0 nis nis)): Tis#(core.idx 0 nis nis) = u, ff, 0);
+    /// A rolling reduction: each element contributes `f (xs, r)` against the running statistic `r` its fold has seen.
+    /// When an element moves the statistic to `r'`, the contributions so far are corrected by `scale (ratio (r, r'), ·)`,
+    /// so the law folds `(r, a)` in order and merges two partials by correcting both to the merged statistic.
+    /// The caller vouches that `scale` distributes over `plus`, that `scale (ratio (r, r'), f (xs, r)) = f (xs, r')`, and
+    /// that ratios compose, as online softmax and attention's output do with `ratio (m, m') = exp (m - m')`.
+    anx lam of_rolling {nis: Nat} {R A W: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (stat: [R, «i: nis; Tis#i»] → R, r0: R, rmerge: [R, R] → R)
+        (f: [«i: nis; Tis#i», R] → A, a0: A, plus: [A, A] → A, ratio: [R, R] → W, scale: [W, A] → A)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
+        fun step (acc: [R, A], xs: «i: nis; Tis#i»)@tt: [R, A] =
+            let (r, a) = acc;
+            let next   = stat (r, xs);
+            return (next, plus (scale (ratio (r, next), a), f (xs, next)));
+        lam merge (u v: [R, A]): [R, A] =
+            let (r1, a1) = u;
+            let (r2, a2) = v;
+            let r        = rmerge (r1, r2);
+            (r, plus (scale (ratio (r1, r), a1), scale (ratio (r2, r), a2)));
+        of_map_reduce_merging @nis @([R, A], Ro, Rn) (So, Sr) @(Tis, Ris, Sis) (step, (r0, a0), merge) map_out maps is;
 
     /// Field access by position: a record behind a type function does not carry its field names to `#`.
     /// The meaning of a law: its root.
@@ -3926,6 +3950,24 @@ pub mod law
                 | 0 => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = tile_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
                 | 3 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = tile_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
         (Ro, nis, Sr, denote, λ (levels: TileLevels (Rn, T, NoMma)): Tensor Ro So T = tile_par (‹Rn; 0›, So, Sr, is, levels));
+    /// A block law whose blocks roll a statistic, as `of_rolling` does per element: a block moves the statistic to
+    /// `r'`, the accumulated tiles are corrected by `scale (ratio (r, r'))`, and the block accumulates into them against `r'`.
+    /// The accumulator `A` stays the caller's flat tuple of tiles; `split` and `join` view it as the statistic and the rest.
+    anx lam blocks_rolling {nis: Nat} {T: *, Ro Rn: Nat} (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»} (A Rt At Wt: «Ro; Nat» → *)
+        (split: [ext: «Ro; Nat», acc: A ext] → [Rt ext, At ext], join: [ext: «Ro; Nat», r: Rt ext, a: At ext] → A ext)
+        (init: [ext: «Ro; Nat»] → A ext,
+         stat: [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», r: Rt ext] → Rt ext,
+         ratio: [ext: «Ro; Nat», r r2: Rt ext] → Wt ext,
+         scale: [ext: «Ro; Nat», w: Wt ext, a: At ext] → At ext,
+         accumulate: [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», r: Rt ext, a: At ext] → At ext,
+         finish: [lo: «Rn; Nat», ext: «Ro; Nat», acc: A ext] → Tensor Ro ext T, denote: Tensor Ro So T)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Blocks (Ro, So, T, Rn) =
+        let step = λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», acc: A ext): A ext =
+            let (r, a) = split (ext, acc);
+            let next   = stat (lo, ext, size, xs, r);
+            join (ext, next, accumulate (lo, ext, size, xs, next, scale (ext, ratio (ext, r, next), a)));
+        of_blocks @nis @(T, Ro, Rn) (So, Sr) @(Tis, Ris, Sis) A (init, step, finish, denote) is;
     anx lam blocks_denote {r: Nat, s: «r; Nat», T: *, n: Nat} (l: Blocks (r, s, T, n)): Tensor r s T = l#3₅;
     /// Runs `levels` by the law's blocks, after checking them against the law's facts.
     anx lam blocks_run {r: Nat, s: «r; Nat», T: *, n: Nat} (l: Blocks (r, s, T, n), levels: TileLevels (n, T, NoMma)): Tensor r s T =

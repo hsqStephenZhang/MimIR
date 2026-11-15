@@ -1,0 +1,68 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o /dev/null -VVVV 2> %t.log
+// RUN: %FileCheck %s < %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/law_attention_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Attention as a rolling law on the GPU: the law derives the online step and merge from the running max and each key's
+// contribution, and the two schedules that run as its meaning (a work-item per row folding KV blocks in order, and a
+// work-group per row whose work-items' partials merge by the derived merge) both outline into one launch.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+plugin vec;
+
+use tensor;
+
+let F     = math.F32;
+let mode  = math.mode.none;
+let add   = math.arith.add mode;
+let mul   = math.arith.mul mode;
+let sub   = math.arith.sub mode;
+let ninf  = math.neg_inf math.f32;
+let H = 2;
+let M = 5;
+let S = 7;
+let K = 3;
+let N = 4;
+let Acc = [F, [F, «N; F»]];
+let LO  = [F, «N; F»];
+lam scaled (x y: F): F = (math.exp.exp mode (sub (x, y)), 0:F)#(math.cmp.e math.mode.none (y, ninf));
+lam score (xs: [«K; F», «K; F», «N; F»]): F =
+    let (qr, kr, _) = xs;
+    mul (0.5:F, vec.fold.l @(F, Idx K) @K (λ (a: F, d: Idx K): F = add (a, mul (qr#d, kr#d))) (0:F, ‹d: K; d›));
+// The running max is the statistic; each key contributes its weight and its weighted value against it.
+lam stat (m: F, xs: [«K; F», «K; F», «N; F»]): F = math.extrema.fmax mode (m, score xs);
+lam contribution (xs: [«K; F», «K; F», «N; F»], m: F): LO =
+    let (_, _, vr) = xs;
+    let p = scaled (score xs, m);
+    (p, ‹n: N; mul (p, vr#n)›);
+lam plus (a b: LO): LO = (add (a#0₂, b#0₂), ‹n: N; add (a#1₂#n, b#1₂#n)›);
+lam scale (c: F, a: LO): LO = (mul (a#0₂, c), ‹n: N; mul (a#1₂#n, c)›);
+// The rows of `t` as one `«C; F»` element each, a view of the same buffer.
+lam rows {R C: Nat} (t: Tensor 3 (H, R, C) F): Tensor 3 (H, R, 1) «C; F» = as_vectors @(3, (H, R, C), F) (C, (H, R, 1)) t;
+lam row_map (a: Idx 3) (o: «3; affine.Index»): «3; affine.Index» = (o#0₃, o#a, affine.lit 0);
+
+lam attn (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F) =
+    law.of_rolling ((H, M), (H, M, S)) (stat, ninf, math.extrema.fmax mode) (contribution, (0:F, ‹N; 0:F›), plus, scaled, scale)
+        (proj_map @(3, 2) (0, 1))
+        (row_map 1₃, row_map 2₃, row_map 2₃) (rows q, rows k, rows v);
+
+extern fun fa_denote (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.denote (attn (buf q, buf k, buf v)));
+extern fun fa_blocks (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.schedule (attn (buf q, buf k, buf v), serial_par ((1, 2, 0), 0, serial_red ((0, 0, 3), 1, 0, serial_done ()))));
+extern fun fa_split (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.red_par (attn (buf q, buf k, buf v), 2, 3));
+extern fun fa_rows (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.run (attn (buf q, buf k, buf v),
+        serial_group ((1, 2, 0), 0, 0, group_item ((1, 1, 0), 0, item_red ((0, 0, 3), 1, 0, item_done ()))), default_control));
+extern fun fa_items (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
+    return (law.run (attn (buf q, buf k, buf v),
+        serial_group ((1, 1, 0), 0, 0, group_red_items ((0, 0, 2), 1, group_done ())), default_control));
+
+// CHECK-NOT: tensor.tile_fuse {{.*}} red
+// CHECK-DAG: gpu.outline tileGroups{{.*}}: 6 groups × 2 items
+// CHECK-DAG: gpu.outline tileGroups{{.*}}: 10 groups × 3 items

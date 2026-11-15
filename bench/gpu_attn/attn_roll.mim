@@ -1,0 +1,125 @@
+// FA2-structured attention as a rolling block law: the law derives attn_warp's step from the rows' running maximum,
+// the correction `exp (m - m')` and the block's accumulation.
+// Query blocks of BM rows are bound to work-groups, 16 rows to each warp, which folds key blocks of BK.
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F    = math.F32;
+let mode = math.mode.fast;
+// The running maximum starts at -inf, which `ninf` would make poison.
+let infs = core.nat.sub (mode, math.mode.ninf);
+let H    = HH;
+let L    = LL;
+let D    = 64;
+let bm   = BM;
+let bk   = BK;
+
+fun mac (acc: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.arith.add mode (acc, math.arith.mul mode (x, y)));
+fun fmax (acc: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.extrema.fmax infs (acc, x));
+fun fsum (acc: F, xs: [F])@tt: F =
+    let (x) = xs;
+    return (math.arith.add mode (acc, x));
+fun maxed (_: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.extrema.fmax infs (x, math.arith.mul mode (y, SCALE:F)));
+fun rescale (_: F, xy: [F, F])@tt: F =
+    let (x, y) = xy;
+    return (math.exp.exp infs (math.arith.sub infs (x, y)));
+fun probs (_: F, sm: [F, F])@tt: F =
+    let (s, m) = sm;
+    return (math.exp.exp mode (math.arith.sub mode (math.arith.mul mode (s, SCALE:F), m)));
+fun summed (_: F, lcr: [F, F, F])@tt: F =
+    let (l, c, r) = lcr;
+    return (math.arith.add mode (math.arith.mul mode (l, c), r));
+fun added (_: F, lr: [F, F])@tt: F =
+    let (l, r) = lr;
+    return (math.arith.add mode (l, r));
+fun scaled (_: F, oc: [F, F])@tt: F =
+    let (o, c) = oc;
+    return (math.arith.mul mode (o, c));
+fun divided (_: F, ol: [F, F])@tt: F =
+    let (o, l) = ol;
+    return (math.arith.div mode (o, l));
+
+let HL = core.nat.mul (H, L);
+
+lam Max (ext: «3; Nat»): * = Tensor 1 (ext#1₃) F;
+lam LO (ext: «3; Nat»): * = [Tensor 1 (ext#1₃) F, Tensor 2 (ext#1₃, D) F];
+lam Acc (ext: «3; Nat»): * = [Tensor 1 (ext#1₃) F, Tensor 1 (ext#1₃) F, Tensor 2 (ext#1₃, D) F];
+lam split (ext: «3; Nat», acc: Acc ext): [Max ext, LO ext] = let (m, l, o) = acc; (m, (l, o));
+lam join (ext: «3; Nat», m: Max ext, a: LO ext): Acc ext = let (l, o) = a; (m, l, o);
+lam init (ext: «3; Nat»): Acc ext = (splat (ext#1₃, math.neg_inf math.f32), splat (ext#1₃, 0:F), splat ((ext#1₃, D), 0:F));
+// The block of keys `ko .. ko + width` for the rows `i .. i + rows` of head `h`: its query rows, staged keys and values.
+lam tiles (lo: «4; Nat», ext: «3; Nat», size: «4; Nat», xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F])@tt =
+    let (q, k, v) = xs;
+    let rows  = ext#1₃;
+    let head  = core.nat.mul (lo#0₄, L);
+    let row0  = core.nat.add (head, lo#1₄);
+    let ko    = lo#3₄;
+    let width = size#3₄;
+    let qt = slice @(F, 2) (HL, D) ((row0, 0), (1, 1), (rows, D)) q;
+    let kt = stage @(F, 2, 0) (width, D) ((), (), (0₂, 1₂), 0:F) 0 (slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (width, D)) k);
+    let vt = stage @(F, 2, 0) (width, D) ((), (), (0₂, 1₂), 0:F) 0 (slice @(F, 2) (HL, D) ((core.nat.add (head, ko), 0), (1, 1), (width, D)) v);
+    let s = map_reduce ((rows, width), (rows, width, D)) (mac, 0.0:F) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (1, 2)) (qt, kt);
+    (s, vt);
+// The statistic: the rows' running maximum of the scaled scores.
+lam stat (lo: «4; Nat», ext: «3; Nat», size: «4; Nat», xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F], m: Max ext): Max ext =
+    let rows  = ext#1₃;
+    let width = size#3₄;
+    let (s, _) = tiles (lo, ext, size, xs);
+    map_reduce (rows, (rows, width)) (fmax, math.neg_inf math.f32) (proj_map @(2, 1) 0)
+        (proj_map @(2, 2) (0, 1),) (map_reduce @2 @(F, 2, 2) ((rows, width), (rows, width)) @((F, F), (1, 2), (rows, (rows, width))) (maxed, ⊥:F) (proj_map @(2, 2) (0, 1))
+            (proj_map @(2, 1) 0, proj_map @(2, 2) (0, 1)) (m, s));
+// A moved maximum corrects the sum and the output rows by `exp (m - m')`.
+lam ratio (ext: «3; Nat», m m2: Max ext): Max ext =
+    map_reduce (ext#1₃, ext#1₃) (rescale, ⊥:F) (proj_map @(1, 1) 0) (proj_map @(1, 1) 0, proj_map @(1, 1) 0) (m, m2);
+lam scale (ext: «3; Nat», c: Max ext, a: LO ext): LO ext =
+    let rows   = ext#1₃;
+    let (l, o) = a;
+    (map_reduce @2 @(F, 1, 1) (rows, rows) @((F, F), (1, 1), (rows, rows)) (scaled, ⊥:F) (proj_map @(1, 1) 0)
+        (proj_map @(1, 1) 0, proj_map @(1, 1) 0) (l, c),
+     map_reduce @2 @(F, 2, 2) ((rows, D), (rows, D)) @((F, F), (2, 1), ((rows, D), rows)) (scaled, ⊥:F) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (o, c));
+// The block's weights against the new maximum accumulate into the corrected sum and output rows.
+lam accumulate (lo: «4; Nat», ext: «3; Nat», size: «4; Nat», xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F], m: Max ext, a: LO ext): LO ext =
+    let rows   = ext#1₃;
+    let width  = size#3₄;
+    let (l, o) = a;
+    let (s, vt) = tiles (lo, ext, size, xs);
+    let p = map_reduce @2 @(F, 2, 2) ((rows, width), (rows, width)) @((F, F), (2, 1), ((rows, width), rows)) (probs, ⊥:F) (proj_map @(2, 2) (0, 1))
+        (proj_map @(2, 2) (0, 1), proj_map @(2, 1) 0) (s, m);
+    let r = map_reduce (rows, (rows, width)) (fsum, 0.0:F) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1),) p;
+    (map_reduce (rows, rows) (added, ⊥:F) (proj_map @(1, 1) 0) (proj_map @(1, 1) 0, proj_map @(1, 1) 0) (l, r),
+     map_reduce_acc ((rows, D), (rows, D, width)) (mac, o) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (p, vt));
+lam finish (lo: «4; Nat», ext: «3; Nat», acc: Acc ext): Tensor 3 ext F =
+    let (_, l, o) = acc;
+    let rows = ext#1₃;
+    map_reduce @2 @(F, 3, 3) (ext, ext) @((F, F), (2, 1), ((rows, D), rows)) (divided, ⊥:F)
+        (proj_map @(3, 3) (0, 1, 2)) (proj_map @(3, 2) (1, 2), proj_map @(3, 1) 1) (o, l);
+
+// The meaning: each head's rows take all of its keys as one block.
+lam whole (xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F]): Tensor 3 (H, L, D) F =
+    tiled ((H, L, D), (1, L, D), 1) xs
+        (λ (off ext: «3; Nat») (xs: [Tensor 2 (HL, D) F, Tensor 2 (HL, D) F, Tensor 2 (HL, D) F]): Tensor 3 ext F =
+            let lo = (off#0₃, 0, 0, 0);
+            let size = (1, ext#1₃, D, L);
+            let (m, a) = split (ext, init ext);
+            let m2 = stat (lo, ext, size, xs, m);
+            finish (lo, ext, join (ext, m2, accumulate (lo, ext, size, xs, m2, scale (ext, ratio (ext, m, m2), a)))));
+
+lam attention (q k v: Tensor 2 (HL, D) F) =
+    law.blocks_rolling ((H, L, D), (H, L, D, L)) (Acc, Max, LO, Max) (split, join) (init, stat, ratio, scale, accumulate, finish, whole (q, k, v)) (q, k, v);
+
+extern fun attn (q k v: tensor.Tensor 2 (HL, D) F): tensor.Tensor 3 (H, L, D) F =
+    return (law.blocks_run (attention (buf q, buf k, buf v),
+        serial_group ((1, bm, 0, 0), 1, 0, group_warp ((1, 16, 0, 0), 1, warp_red ((0, 0, 0, bk), 1, 0, warp_done ())))));
