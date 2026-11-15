@@ -184,7 +184,15 @@ const Def* Rewriter::rewrite_imm_Tuple(const Tuple* d) {
     return world().tuple(new_type, new_ops);
 }
 
-const Def* Rewriter::rewrite_mut_Lam(Lam* d) { return rewrite_stub(d, world().mut_lam(rewrite(d->type())->as<Pi>())); }
+const Def* Rewriter::rewrite_mut_Lam(Lam* d) {
+    // A dependent type may name an enclosing binder whose rewrite reaches d again, so settle those first.
+    if (d->type()->isa_mut()) {
+        for (auto var : d->type()->free_vars())
+            rewrite(var);
+        if (auto new_def = lookup(d)) return new_def;
+    }
+    return rewrite_stub(d, world().mut_lam(rewrite(d->type())->as<Pi>()));
+}
 const Def* Rewriter::rewrite_mut_Rule(Rule* d) {
     return rewrite_stub(d, world().mut_rule(rewrite(d->type())->as<Reform>()));
 }
