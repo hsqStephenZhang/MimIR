@@ -137,6 +137,14 @@ add_custom_target(test-roundtrip
     USES_TERMINAL
 )
 
+# The requests a law expresses also run through TileFuse's per-level recursion, while both realize `tile_req`.
+add_custom_target(test-tile-fuse
+    COMMAND ${MIM_LIT_COMMAND} --param tile_law=0
+    DEPENDS mim mim_all_plugins mim_lit_tests
+    COMMAND_EXPAND_LISTS
+    USES_TERMINAL
+)
+
 set(MIM_CTEST_COMMAND
     ${CMAKE_CTEST_COMMAND}
     --test-dir "${CMAKE_BINARY_DIR}"
@@ -160,6 +168,7 @@ endif()
 add_custom_target(test-all
     COMMAND ${MIM_CTEST_COMMAND}
     COMMAND ${MIM_LIT_COMMAND}
+    COMMAND ${MIM_LIT_COMMAND} --param tile_law=0
     ${MIM_ROUNDTRIP_COMMANDS}
     DEPENDS
         ${MIM_TEST_TARGETS}

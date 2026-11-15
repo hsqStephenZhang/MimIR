@@ -31,7 +31,19 @@ if roundtrip:
     config.available_features.add('roundtrip')
 
 # `--param mim=<executable>` substitutes another compiler, e.g. a wrapper that adds flags to select a reference path.
-config.substitutions.append(('%mim', lit_config.params.get('mim', config.mim)))
+mim = lit_config.params.get('mim', config.mim)
+# `--param tile_law=0` realizes every `tile_req` by TileFuse's per-level recursion instead of a law where one expresses it.
+tile_law = lit_config.params.get('tile_law')
+if tile_law is not None:
+    # A wrapper keeps `%mim` one executable path, as the scripts that run it expect.
+    wrapper = os.path.join(config.my_obj_root, f'mim-tile-law-{tile_law}')
+    with open(wrapper, 'w') as script:
+        script.write(f'#!/bin/sh\nexec "{mim}" -X tensor:tile-law={tile_law} "$@"\n')
+    os.chmod(wrapper, 0o755)
+    mim = wrapper
+    if tile_law == '0':
+        config.available_features.add('tile-fuse-path')
+config.substitutions.append(('%mim', mim))
 config.substitutions.append(('%FileCheck', '"{}"'.format(config.filecheck)))
 # Parent of the plugin directory, so that a test can spell a plugin as the path `mim/<plugin>`.
 # os.path.join would mix in a backslash on Windows, which the external bash then swallows as an escape.

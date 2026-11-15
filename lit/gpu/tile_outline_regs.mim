@@ -1,5 +1,5 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - -VVVV 2> %t.log | %FileCheck %s
-// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: %FileCheck %s --check-prefixes=LOG,%if tile-fuse-path %{TFLOG%} %else %{LAWLOG%} < %t.log
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
 // RUN: clang++ -O1 %S/tile_outline_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
@@ -28,7 +28,10 @@ extern fun gemm16 (a b: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16) 
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
     return (tile_req (root, (), levels, default_control));
 
-// LOG: tensor.tile_fuse runs {{.*}} as its law
+// TFLOG-DAG: L2 promote input 0 axis 0 panel 2 group-wide
+// TFLOG-DAG: L2 promote input 1 axis 1 panel 2 group-wide
+// TFLOG-DAG: L1 par tiles=‹2; 2› tail=peel inputs=2 fused=0 yielded=0 bind=2
+// LAWLOG: tensor.tile_fuse runs {{.*}} as its law
 // LOG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items
 
 // CHECK-DAG: gpu.launch

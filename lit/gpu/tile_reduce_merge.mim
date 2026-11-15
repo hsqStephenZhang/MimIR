@@ -1,5 +1,5 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - -VVVV 2> %t.log | %FileCheck %s
-// RUN: %FileCheck %s --check-prefix=LOG < %t.log
+// RUN: %FileCheck %s --check-prefixes=LOG,%if tile-fuse-path %{TFLOG%} %else %{LAWLOG%} < %t.log
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
 // RUN: clang++ -O1 %S/tile_reduce_merge_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
@@ -38,7 +38,8 @@ extern fun online16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 ML =
     let ml = map_reduce (16, (16, 16)) (step, (math.neg_inf math.f32, 0.0:F32)) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1)) (buf x);
     return (tile_req (ml, (), levels, default_control));
 
-// LOG: tensor.tile_fuse runs {{.*}} as its law
+// TFLOG: L1 red loop=1 ks=4 tail=peel inputs=1 fused=0 tail_fused=0 bind=2
+// LAWLOG: tensor.tile_fuse runs {{.*}} as its law
 // LOG: gpu.outline tileGroups{{.*}}: 4 groups × 4 items
 
 // CHECK-DAG: gpu.launch
