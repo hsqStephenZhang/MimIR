@@ -114,6 +114,10 @@ TEST_CASE("World: extract at an Arr's own index generalizes heterogeneous Apps")
     auto arr = w.mut_arr(w.type())->set_shape(w.lit_nat(2));
     auto j   = arr->var();
     CHECK(w.extract(a, j)->type() == w.type_idx(w.extract(w.tuple({w.lit_nat(4), w.lit_nat(8)}), j)));
+
+    // A runtime index keeps the join, as its generalization would have a dynamic shape.
+    auto k = w.axm(w.type_idx(2));
+    CHECK(w.extract(a, k)->type()->isa<Join>());
 }
 
 TEST_CASE("Annex") {

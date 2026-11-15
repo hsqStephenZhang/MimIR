@@ -697,8 +697,8 @@ const Def* World::generalize(Defs ops, const Def* index) {
             = generalize(DefVec(ops.size(), [&](size_t i) { return ops[i]->zonk()->as<App>()->callee(); }), index);
         auto arg = generalize(DefVec(ops.size(), [&](size_t i) { return ops[i]->zonk()->as<App>()->arg(); }), index);
         if (!callee || !arg) return nullptr;
-        if (auto pi = callee->type()->zonk()->isa<Pi>(); pi && !pi->is_implicit() && Check::coerce(pi->dom(), arg))
-            return app(callee, arg);
+        if (auto pi = callee->type()->zonk()->isa<Pi>(); pi && !pi->is_implicit())
+            if (auto coerced = Check::coerce(pi->dom(), arg)) return app(callee, coerced);
         return nullptr;
     }
 
@@ -818,6 +818,7 @@ const Def* World::extract1(const Def* d, const Def* index) {
             }
             if (!extents.empty()) elem_t = this->arr(extract(tuple(extents), index), body);
         }
+        // An index mentioning an Arr's or Pack's Var is literal in each instance, which keeps the type static.
         if (!elem_t && sigma->isa_imm() && sigma->num_ops() != 0 && indexed_symbolically(index)
             && std::ranges::all_of(sigma->ops(), [](const Def* op) { return op->zonk()->isa<App>(); }))
             elem_t = generalize(sigma->ops(), index);

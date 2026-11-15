@@ -186,14 +186,14 @@ const Def* Rewriter::rewrite_imm_Tuple(const Tuple* d) {
 
 const Def* Rewriter::rewrite_mut_Lam(Lam* d) {
     // A dependent type may name an enclosing binder whose rewrite reaches d again, so settle those first.
-    // Only a Lam is re-entered this way in practice; settling every mutable eagerly would bypass subclasses' own Var
-    // maps.
     if (d->type()->isa_mut()) {
         for (auto var : d->type()->free_vars())
             rewrite(var);
         if (auto new_def = lookup(d)) return new_def;
     }
-    return rewrite_stub(d, world().mut_lam(rewrite(d->type())->as<Pi>()));
+    auto pi = rewrite(d->type())->as<Pi>();
+    assert(pi->is_set() && "a rewrite entered at a dependent Pi re-entered a Lam of that type");
+    return rewrite_stub(d, world().mut_lam(pi));
 }
 const Def* Rewriter::rewrite_mut_Rule(Rule* d) {
     return rewrite_stub(d, world().mut_rule(rewrite(d->type())->as<Reform>()));
