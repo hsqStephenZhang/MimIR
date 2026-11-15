@@ -174,6 +174,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   不切分的路径（每个 work-item 归约整行）由 `lit/nvptx/law_resident_shared_each.mim`（64 × 288，`288 % 64 ≠ 0`）覆盖，20 次运行都正确。
   `reads_fill` 原先只认“`get` 的源剥到 `stage`”，而成员的元素是 `get (tile_of (map_reduce … (stage …)))`，`stage` 只是生产者的输入，这条规则命中不到；现在可达的 `stage` 都算读了合作填充。
   追踪确认：两种路径下读暂存盒子的填充都已在批次之外（前后各有屏障），所以屏障数不变；这条规则是对日后把这类填充放进批次的调度的保护。
+  合并 `fused` 与 `fused_shared` 的再次排查（2026-11-15）：现在 `ps2` 的选择本身已无问题（`share` 在消费者参数之前、`build` 的 `kinds` 之后），失败只出现在不共享（`share = ‹npp; 0›`）时调用 `shared_producer`：用户调用细化期间 `shared_producer` 的体被展开，其中 `map_reduce` 规范化出的 `map_reduce_post` 的隐式 `Ris` 是未定的 Hole、`Sis` 是 `Sq`，进而 `«Sq#m; T»` 折叠错。把 `core.pe.is_closed` 改成连类型一并深查 Hole（含已解未 zonk 的）不起作用，说明 Hole 不是经过滤器的实参进来的，根因仍未查清。
   未做：比较折叠不成字面量时用 `if_static` 退回不别名（现在会在 lowering 报错而不是算错）；填充离开批次时的断言；`is_folded_axis` 的单元测试（需要构造带未定 Hole 的依赖 `Arr`）。
 - 成员融合第 3 步（归约融合，2026-11-15）：归约生产者融进同一归约循环的消费者，靠的是滚动更新，现在由定律推出，不再手写。
   `law.of_rolling` 取一个运行统计量（`stat`、种子、`rmerge`）、每个元素相对统计量的贡献（`f`、种子、`plus`）和修正（`ratio`、它在贡献上的作用 `scale`），
