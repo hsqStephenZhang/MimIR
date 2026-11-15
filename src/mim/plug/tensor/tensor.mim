@@ -3909,14 +3909,18 @@ pub mod law
     /// Field access by position: a record behind a type function does not carry its field names to `#`.
     /// The meaning of a law: its root.
     anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₁₀;
-    /// The bytes `levels` would move through global memory, and of `c` candidate schedules the one that moves the fewest.
+    /// The bytes `levels` would move through global memory, and of `c` candidate schedules the legal one that moves the
+    /// fewest.
     anx lam traffic {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Nat =
         (l#8₁₀) levels;
     anx lam best {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, c: Nat}
         (l: Law (r, s, T, n, Acc, Kind), candidates: «c; TileLevels (n, Acc, Kind)»): TileLevels (n, Acc, Kind) =
         let costs = ‹j: c; (l#8₁₀) (candidates#j)›;
+        let bad   = ‹j: c; (0, 1)#((check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, candidates#j))#0₃ != 0)›;
+        lam better (j x: Idx c): Bool =
+            core.bit2.or 0 (bad#j < bad#x, core.bit2.and 0 (bad#j == bad#x, costs#j < costs#x));
         let pick  = vec.fold.l @(Nat, Idx c) @c (λ (x: Nat, j: Idx c): Nat =
-            (x, core.idx2nat j)#(costs#j < costs#(core.idx 0 c x))) (0, ‹j: c; j›);
+            (x, core.idx2nat j)#(better (j, core.idx 0 c x))) (0, ‹j: c; j›);
         candidates#(core.idx 0 c pick);
     anx lam par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), ts: «r; Nat»): Tensor r s T =
         (l#4₁₀) ts;
