@@ -107,6 +107,15 @@ TEST_CASE("World: dependent projection with a mutable op") {
     CHECK(w.extract(a, 3, 2) == w.extract(a, 3, 2));
 }
 
+TEST_CASE("World: extract at an Arr's own index generalizes heterogeneous Apps") {
+    Driver driver;
+    World& w = driver.world();
+    auto a   = w.axm(w.sigma({w.type_idx(4), w.type_idx(8)}));
+    auto arr = w.mut_arr(w.type())->set_shape(w.lit_nat(2));
+    auto j   = arr->var();
+    CHECK(w.extract(a, j)->type() == w.type_idx(w.extract(w.tuple({w.lit_nat(4), w.lit_nat(8)}), j)));
+}
+
 TEST_CASE("Annex") {
     SUBCASE("mangle") {
         CHECK(Annex::demangle(*Annex::mangle("test")) == "test");
@@ -322,6 +331,21 @@ TEST_CASE("Check: alpha") {
         check(l_0, l_1, false, false);
 
         check(l_1, l_1, true, true);
+    }
+
+    SUBCASE("one binder against two copies") {
+        auto lxx = w.mut_lam(pi);
+        lxx->set(false, lxx->var());
+        auto lyy = w.mut_lam(pi);
+        lyy->set(false, lyy->var());
+        auto lvv = w.mut_lam(pi);
+        lvv->set(false, lvv->var());
+        auto l_0 = w.lam(pi, false, w.lit_nat_0());
+
+        // A third op keeps the shared one from folding into a Pack.
+        CHECK(Check::test_alpha(w.tuple({lxx, lxx, l_0}), w.tuple({lyy, lvv, l_0})));
+        CHECK(Check::test_alpha(w.tuple({lyy, lvv, l_0}), w.tuple({lxx, lxx, l_0})));
+        CHECK_FALSE(Check::test_alpha(w.tuple({lxx, lxx, l_0}), w.tuple({lyy, l_0, l_0})));
     }
 
     SUBCASE("a shared Hole under a binder") {

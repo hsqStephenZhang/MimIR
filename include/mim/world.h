@@ -784,7 +784,9 @@ private:
     bool is_folded_axis(const Def* type, const Def* index, const Def* size);
     const Def* extract1(const Def* d, const Def* i); ///< World::extract for a *scalar* @p i.
     const Def* extract_fused(const Def* d, Shape i); ///< World::extract for an @p i that no longer folds.
-    const Def* inhabitant_(const Def* type);         ///< World::inhabitant for an aggregate or Single @p type.
+    /// The least general Def whose instance at each literal @p index is the matching one of @p ops, or `nullptr`.
+    const Def* generalize(Defs ops, const Def* index);
+    const Def* inhabitant_(const Def* type); ///< World::inhabitant for an aggregate or Single @p type.
 
     /// @name Put into Sea of Nodes
     ///@{

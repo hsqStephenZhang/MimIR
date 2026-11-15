@@ -186,6 +186,8 @@ const Def* Rewriter::rewrite_imm_Tuple(const Tuple* d) {
 
 const Def* Rewriter::rewrite_mut_Lam(Lam* d) {
     // A dependent type may name an enclosing binder whose rewrite reaches d again, so settle those first.
+    // Only a Lam is re-entered this way in practice; settling every mutable eagerly would bypass subclasses' own Var
+    // maps.
     if (d->type()->isa_mut()) {
         for (auto var : d->type()->free_vars())
             rewrite(var);

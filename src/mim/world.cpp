@@ -686,6 +686,37 @@ const Def* World::type_indices(Shape shape) {
     return res->set_body(type_idx(extract(*shape, res->var())))->zonk_mut();
 }
 
+const Def* World::generalize(Defs ops, const Def* index) {
+    auto first = ops.front()->zonk();
+    if (std::ranges::all_of(ops, [&](const Def* op) { return Check::alpha<Check::T>(op->zonk(), first); }))
+        return first;
+    if (std::ranges::any_of(ops, [](const Def* op) { return op->zonk()->isa_mut(); })) return nullptr;
+
+    if (std::ranges::all_of(ops, [](const Def* op) { return op->zonk()->isa<App>(); })) {
+        auto callee
+            = generalize(DefVec(ops.size(), [&](size_t i) { return ops[i]->zonk()->as<App>()->callee(); }), index);
+        auto arg = generalize(DefVec(ops.size(), [&](size_t i) { return ops[i]->zonk()->as<App>()->arg(); }), index);
+        if (!callee || !arg) return nullptr;
+        if (auto pi = callee->type()->zonk()->isa<Pi>(); pi && !pi->is_implicit() && Check::coerce(pi->dom(), arg))
+            return app(callee, arg);
+        return nullptr;
+    }
+
+    auto tuple_ = ops.front()->zonk()->isa<Tuple>();
+    if (tuple_ && std::ranges::all_of(ops, [&](const Def* op) {
+            auto t = op->zonk()->isa<Tuple>();
+            return t && t->num_ops() == tuple_->num_ops();
+        })) {
+        auto elems = DefVec(tuple_->num_ops());
+        for (size_t k = 0, e = elems.size(); k != e; ++k)
+            if (!(elems[k] = generalize(DefVec(ops.size(), [&](size_t i) { return ops[i]->zonk()->op(k); }), index)))
+                return nullptr;
+        return tuple(elems);
+    }
+
+    return extract(tuple(DefVec(ops.size(), [&](size_t i) { return ops[i]->zonk(); })), index);
+}
+
 /// Builds `d#index` for a multi-dimensional @p index that does not fold any further.
 const Def* World::extract_fused(const Def* d, Shape index) {
     if (index.is_dim()) return extract1(d, *index);
@@ -787,6 +818,9 @@ const Def* World::extract1(const Def* d, const Def* index) {
             }
             if (!extents.empty()) elem_t = this->arr(extract(tuple(extents), index), body);
         }
+        if (!elem_t && sigma->isa_imm() && sigma->num_ops() != 0 && indexed_symbolically(index)
+            && std::ranges::all_of(sigma->ops(), [](const Def* op) { return op->zonk()->isa<App>(); }))
+            elem_t = generalize(sigma->ops(), index);
         if (!elem_t) elem_t = join(sigma->ops());
     }
 
