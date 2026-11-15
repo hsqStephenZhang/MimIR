@@ -28,9 +28,7 @@ extern fun gemm16 (a b: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16) 
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
     return (tile_req (root, (), levels, default_control));
 
-// LOG-DAG: L2 vec vdim=0
-// LOG-DAG: L1 par tiles=‹2; 2› tail=cap inputs=2 fused=0 yielded=0 bind=2
-// LOG-DAG: L0 par tiles=‹2; 8› tail=cap inputs=2 fused=0 yielded=0 bind=1
+// LOG: tensor.tile_fuse runs {{.*}} as its law
 // LOG: gpu.outline tileGroups{{.*}}: 4 groups × 16 items, 3 device buffers, 3 arguments
 
 // CHECK: gpu.launch

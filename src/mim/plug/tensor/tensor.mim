@@ -3389,6 +3389,7 @@ pub mod law
                 let place = core.bit2.and 0 (L#0₁₁, core.bit2.or 0 (L#4₁₁ != 2, wg#0₂));
                 // A resident member's elements are spread over the work-group's work-items; with a merge, so are
                 // `C` chunks of each element's reduction, whose partials a second fill merges.
+                // A fused producer is a `map_reduce`, whose epilogue is the identity.
                 let T     = Tis#i;
                 let r     = Ris#i;
                 let r1    = core.nat.add (r, 1);
@@ -3410,11 +3411,10 @@ pub mod law
                 let at_of = λ (c: «r; I64», j: Nat): «d: r1; Idx (PS#d)» =
                     ‹d: r1; let k = core.idx2nat d;
                         core.idx 0 (PS#d) (core.select (k < r, core.bitcast Nat (c#(core.idx 0 r k)), j))›;
-                let fin   = λ (c: «r; I64», v: T): T =
-                    get @(r, ‹r; 1›, T) (tile_of_post @(T, T, r) @(Sis#i) (xs#i, one c, ‹r; 1›, splat (‹r; 1›, v)), ‹r; 0₁›);
                 let joint = generate @(T, r) E (λ (c: «r; I64»): T =
-                    fin (c, tile_fold @T (core.nat.sub (C, 1), 1) (get @(r1, PS, T) (parts, at_of (c, 0))) @(Tensor r1 PS T) parts
-                        (λ (acc: T, j: Nat) (ps: Tensor r1 PS T): T = m (acc, get @(r1, PS, T) (ps, at_of (c, core.nat.add (j, 1)))))));
+                    vec.fold.l @(T, Idx C) @C (λ (acc: T, j: Idx C): T =
+                        (m (acc, get @(r1, PS, T) (parts, at_of (c, core.idx2nat j))), acc)#(core.idx2nat j == 0))
+                        (get @(r1, PS, T) (parts, at_of (c, 0)), ‹j: C; j›));
                 let held  = (each, joint)#(1 < C);
                 let whole = stage @(Tis#i, Ris#i, 0) (q#4₆) ((), (), ‹d: Ris#i; d›, ⊥:(Tis#i)) 0 ((box, held)#(member i));
                 (((core.bitcast Input (xs#i), core.bitcast Input box)#(member i), core.bitcast Input whole)#(q#0₆),

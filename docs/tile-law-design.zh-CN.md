@@ -175,10 +175,12 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   `law.traffic (l, levels)` 在 PE 时归约成字面量；`law.best (l, candidates)` 在一组候选层级链里取流量最小的，同样在 PE 时选定，可以直接交给 `law.run`。
   `lit/tensor/law_traffic.mim`：64³ F32 GEMM，16 × 16 块 147456 字节、32 × 32 块 81920、整块 49152，`best` 取 32 × 32。
   模型只数第一层的块，不看更内层的暂存与复用，也不含计算量；融合的生产者按它在消费者里的槽数（物化的大小）。它是决定调度的默认依据，不是性能预测。
-- 第 5 步（去掉 `TileFuse` 的逐级递归）的现状（2026-11-15）：`-X tensor:tile-law=1` 让没有成员、根是普通 `map_reduce`（无 epilogue、规范调度）的 `tile_req` 改由 `law.run (law.of_map_reduce (根的各部分), levels, control)` 实现。
-  把它设为默认跑全部 86 个用 `tile_req` 的 lit 测试：75 个通过；4 个只差 `TileFuse` 自己的日志检查（`tile_outline`、`tile_outline_shared`、`tile_reduce`、`tile_reduce_merge`）；
-  `tile_reduction_contracts` 说明定律的检查缺一条规则（有序归约层只能切最外层的归约循环）；`tile_panel_tail`（work-group 批次嵌套）、`attention_fold` 与 `group_tile_req_mma`（张量秩不是字面量）是解释器路径上的 lowering 缺口；`tile_symbolic_strict` 超时。
-  带成员的请求（多个、嵌套、yields、epilogue）仍只能由 `TileFuse` 实现，所以逐级递归现在还删不掉；默认仍走 `TileFuse`。
+- 第 5 步（去掉 `TileFuse` 的逐级递归）的现状（2026-11-15）：`tile_req` 默认先试着按定律实现（`-X tensor:tile-law=0` 关掉）。
+  根是普通 `map_reduce`（无 epilogue、标量种子、规范调度、形状与层级大小都是字面量）的请求，没有成员时由 `law.run (law.of_map_reduce (根的各部分), levels, control)` 实现，只有一个根直接读的成员时由 `law.fuse`/`law.fuse_merging`（成员带 `merge_with`）实现。
+  仍交给逐级递归的：形状或层级大小是符号的；work-item/lane 归约没有显式合并（要靠 `TileFuse` 识别组合子是否可结合、种子是否单位元，`tile_reduction_contracts` 的诊断）或有序层切了内层归约循环；成员在请求外也被使用（yields）；多个或嵌套成员；work-group 链里的归约成员（`TileFuse` 把它切到 work-item 上；定律的驻留成员按元素在私有缓冲里算，每个元素一次设备 `malloc`，而 `heap2stack` 不转换循环里的分配）。
+  这样默认打开后全部 lit 通过：86 个用 `tile_req` 的测试文件里 31 个至少有一个请求走定律；只检查 `TileFuse` 日志的 7 个测试改为检查走了定律，`tile_group_chain` 放宽成它说明的性质（中间结果被释放，ASan 查泄漏），因为定律路径每个乘积多一个 64 × 64 的缓冲。
+  一路修的：`lower_to_mem` 在打开 work-group 批次前先实现计算出的累加器（剥离的尾块之前的整块折叠，原先嵌套打开批次）；`law.req` 交给 `tile_req` 的层级带 `core.bitcast`，路由时剥掉；驻留成员的合并改用展开的 `vec.fold`（二元组累加器的 `tile_fold` 走了按 tensor 字段的乘积折叠），去掉了恒等的 epilogue。
+  所以逐级递归还删不掉：上面那几类要先在定律里有对应物（组合子性质的检查、yields、多成员、按 work-item 切分的驻留归约）。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；

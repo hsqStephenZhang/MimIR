@@ -1263,8 +1263,10 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         return value;
     }
     auto initial = tensor_init(old_mr);
-    auto batch   = fe::Restore<std::optional<Batch>>(batch_, open_batch(destination ? destination->mem : nullptr));
-    auto args    = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
+    // A computed accumulator, such as the full blocks' fold before a peeled tail, fills panels of its own first.
+    if (initial && !splat_scalar(initial->outs)) rewrite(initial->outs);
+    auto batch = fe::Restore<std::optional<Batch>>(batch_, open_batch(destination ? destination->mem : nullptr));
+    auto args  = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
     auto [is, post_is] = args->projs<2>();
 
     auto mr = btensor::MapRedPost::decode(

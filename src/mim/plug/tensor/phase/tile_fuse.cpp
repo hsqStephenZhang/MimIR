@@ -1839,21 +1839,76 @@ const Def* TileFuse::rewrite_imm_App(const App* app) {
 }
 
 // A request without members on a plain `map_reduce` runs as its law's meaning, which the law interpreter realizes.
-const Def* TileFuse::run_as_law(const Def* op, const Def* levels, const Def* control) {
+namespace {
+
+/// The parts of a plain `map_reduce` a law is built from: no epilogue, a scalar seed, the canonical schedule and
+/// literal shapes, which the interpreter decides its panels from.
+std::optional<btensor::MapRedPost> plain_parts(const Def* op) {
     auto root = Axm::isa<map_reduce_post>(op);
-    auto mr   = btensor::MapRedPost::of(root->callee()->as<App>());
-    auto rk   = mr.ranks();
-    if (!rk || rk->nps != 0 || !is_identity_post(mr.post) || mr.init_type != mr.To) return nullptr;
+    if (!root) return {};
+    auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
+    auto rk = mr.ranks();
+    if (!rk || rk->nps != 0 || !is_identity_post(mr.post) || mr.init_type != mr.To) return {};
+    if (!lit_projs(mr.So, rk->ro) || !lit_projs(mr.Sr, rk->nloops())) return {};
+    for (u64 i = 0; i != rk->nis; ++i)
+        if (auto r = Lit::isa(mr.Ris->proj(rk->nis, i)); !r || !lit_projs(mr.Sis->proj(rk->nis, i), *r)) return {};
     auto& w = op->world();
-    if (!Check::alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), w.tuple({mr.Rn, w.lit_nat_0()})))) return nullptr;
-    auto law = w.app(w.annex(tensor::law::of_map_reduce), mr.nis);
-    law      = w.app(law, {mr.To, mr.Ro, mr.Rn});
-    law      = w.app(law, {mr.So, mr.Sr});
-    law      = w.app(law, {mr.Tis, mr.Ris, mr.Sis});
-    law      = w.app(law, {mr.comb, mr.init});
-    law      = w.app(law, mr.map_out);
-    law      = w.app(law, mr.maps);
-    law      = w.app(law, root->arg()->proj(2, 0));
+    if (!Check::alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), w.tuple({mr.Rn, w.lit_nat_0()})))) return {};
+    return mr;
+}
+
+/// @p law applied to the arguments `map_reduce` takes, after its count of inputs.
+const Def* map_reduce_args(const Def* law, const btensor::MapRedPost& mr, const Def* inputs) {
+    auto& w = law->world();
+    law     = w.app(law, mr.nis);
+    law     = w.app(law, {mr.To, mr.Ro, mr.Rn});
+    law     = w.app(law, {mr.So, mr.Sr});
+    law     = w.app(law, {mr.Tis, mr.Ris, mr.Sis});
+    law     = w.app(law, {mr.comb, mr.init});
+    law     = w.app(law, mr.map_out);
+    law     = w.app(law, mr.maps);
+    return w.app(law, inputs);
+}
+
+} // namespace
+
+// A request on a plain `map_reduce` runs as its law's meaning, which the law interpreter realizes; a single member that
+// the root reads directly is fused into the law.
+const Def* TileFuse::run_as_law(const Def* op, const DefVec& group, const Def* levels, const Def* control) {
+    auto mr = plain_parts(op);
+    if (!mr || group.size() > 1) return nullptr;
+    auto& w     = op->world();
+    auto inputs = Axm::as<map_reduce_post>(op)->arg()->proj(2, 0);
+    auto nis    = Lit::as(mr->nis);
+    const Def* law;
+    if (group.empty()) {
+        law = map_reduce_args(w.annex(tensor::law::of_map_reduce), *mr, inputs);
+    } else {
+        auto member = group.front();
+        auto slot   = nis;
+        for (u64 i = 0; i != nis; ++i)
+            if (inputs->proj(nis, i) == member) slot = i;
+        const Def* merge = nullptr;
+        auto source      = member;
+        if (auto marked = Axm::isa<merge_with>(member)) {
+            merge  = marked->callee()->as<App>()->arg();
+            source = marked->arg();
+        }
+        auto pr = plain_parts(source);
+        if (slot == nis || !pr || pr->init_type != pr->To) return nullptr;
+        law = w.app(w.annex(merge ? tensor::law::fuse_merging : tensor::law::fuse), w.lit_nat(slot));
+        law = w.app(law, pr->nis);
+        law = w.app(law, {pr->To, pr->Ro, pr->Rn});
+        law = w.app(law, {pr->So, pr->Sr});
+        law = w.app(law, {pr->Tis, pr->Ris, pr->Sis});
+        law = w.app(law, merge ? w.tuple({pr->comb, pr->init, merge}) : w.tuple({pr->comb, pr->init}));
+        law = w.app(law, pr->map_out);
+        law = w.app(law, pr->maps);
+        law = w.app(law, Axm::as<map_reduce_post>(source)->arg()->proj(2, 0));
+        law = map_reduce_args(law, *mr, inputs);
+    }
+    // `law.req` casts its levels to the root's level type, which the interpreter matches through.
+    if (auto cast = Axm::isa<core::bitcast>(levels)) levels = cast->arg();
     log().d("tensor.tile_fuse runs {} as its law", op);
     return w.implicit_app(w.annex(tensor::law::run), {law, levels, control});
 }
@@ -1869,8 +1924,36 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
     for (auto& level : level_list)
         if (level.pipeline == 0) level.pipeline = driver().arg_nat("tensor", "pipeline").value_or(1);
     auto group = members_of(members);
-    if (group.empty() && driver().arg_nat("tensor", "tile-law").value_or(0))
-        if (auto law = run_as_law(op, levels, control)) return law;
+    // The law interpreter takes literal tile sizes only.
+    // A split over work-items or lanes relies on the combiner TileFuse recognizes, unless the request names its merge,
+    // and so does a level that tiles a reduction loop inside another, which reorders the combines.
+    auto unsafe = std::ranges::any_of(level_list, [](const LevelSpec& level) {
+        auto n = Lit::isa(level.sizes->arity());
+        return !n || !lit_projs(level.sizes, *n);
+    });
+    if (auto root = unsafe ? nullptr : graph::map_reduce(op))
+        if (auto rk = btensor::MapRedPost::of(root->callee()->as<App>()).ranks())
+            unsafe = std::ranges::any_of(level_list, [&](const LevelSpec& level) {
+                if (level.kind != 1) return false;
+                if ((level.bind == 2 || level.bind == 4) && !level.merge) return true;
+                for (u64 d = rk->ro + 1; d < rk->nloops(); ++d)
+                    if (Lit::isa(level.sizes->proj(rk->nloops(), d)) != 0) return true;
+                return false;
+            });
+    // A member used outside is handed back by the per-level recursion, which a law cannot yet.
+    unsafe |= std::ranges::any_of(group, [&](const Def* member) { return outside.contains(member); });
+    // A reduction member of a work-group is split over its work-items by the per-level recursion; a law's resident
+    // member computes each element in a private buffer per element instead.
+    auto grouped = std::ranges::any_of(level_list, [](const LevelSpec& level) { return level.bind == 1; });
+    unsafe |= grouped && std::ranges::any_of(group, [](const Def* member) {
+                  auto source = member;
+                  if (auto marked = Axm::isa<merge_with>(member)) source = marked->arg();
+                  auto root = graph::map_reduce(source);
+                  auto rk   = root ? btensor::MapRedPost::of(root->callee()->as<App>()).ranks() : std::nullopt;
+                  return !rk || rk->rr != 0;
+              });
+    if (!unsafe && driver().arg_nat("tensor", "tile-law").value_or(1))
+        if (auto law = run_as_law(op, group, levels, control)) return law;
     DefSet in_group(group.begin(), group.end());
     Levels realizer(log(), request, in_group, outside, driver().arg_nat("tensor", "strict").value_or(0));
     if (auto root = graph::map_reduce(op))
