@@ -164,6 +164,17 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   修的 core 问题：合作填充里每个元素的计算原先按 work-group 统一的作用域分配，一元素的临时 tile 落进同一个共享槽，各 work-item 竞争写它；现在元素的计算按私有作用域分配。区域输入检查把 `splat` 当作读外层张量，它其实只构造张量。
   仍差的 27% 主要是流量：生产者从全局内存再读一遍 `x`，而 `TileFuse` 的折叠读暂存的行。让生产者读消费者暂存的视图（别名）试过但撤回了：把视图交给生产者需要在部分实例化时按符号下标取异构元组，`Check`/`extract` 给出并类型或折叠错的 arity（另记：`World::extract1` 对 arity 1 的依赖 `Arr` 也按单元素折叠，返回值的类型仍是 `Arr`，这是同一类问题）。
   yields（成员同时被区域外使用时由融合的 kernel 交回）还没有做：需要多输出的定律。
+  别名（2026-11-15）：`law.fuse_shared … ps share …` 声明生产者的输入 `m` 就是消费者的输入 `share#m`，含义按构造读它（不是待担保的义务）。
+  `build` 多了钩子 `restage`：`values_of` 先算出各输入的暂存视图（是否整块暂存、盒子的原点与大小、暂存的盒子），成员的生产者由 `restage` 重建；`fused_shared` 的 `restage` 调 `shared_producer`，在消费者整块暂存了共享输入、且生产者为成员盒子读的范围落在暂存盒子里时，让生产者经平移到盒子原点的映射读暂存的盒子。
+  范围检查用 `affine.image` 的 `cap`（与符号原点无关的范围上界），比较才可判定；`lower_to_mem` 中读暂存盒子的合作填充也离开批次。
+  `bench/gpu_fusion/softmax_resident_shared.mim` 在 H200 上 27.0 µs（原 37.6 µs，`TileFuse` 29.4 µs），`lit/nvptx/law_resident_shared.mim` 20 次运行都正确。
+  一路修的 core 问题：arity 1 的可变（依赖）`Arr` 上取元素不再折叠成值本身（`World::is_folded_axis`）——折叠后元素的类型还是那个 `Arr`，`npp = 1` 时 `gmaps#m` 不能当函数用。
+  仍有的限制：共享与不共享在同一个 `fused` 里实现时（`(ps#m, is#j)#shared`），不共享的分支在 `npp = 1` 且隐式参数未定时仍会把 `Spp#m` 折叠错，所以分成了 `fused` 与 `fused_shared` 两个构造子。
+  评审第五轮后补的：`bitcast` 不查类型，所以 `fused_shared` 检查共享输入的秩、形状与元素大小和生产者声明的一致，并拒绝 `share` 指向融合的槽（消息 23、24，`lit/error/law_shared_{shape,slot}.mim`）；对共享的 `m`，`ps#m` 被忽略。
+  不切分的路径（每个 work-item 归约整行）由 `lit/nvptx/law_resident_shared_each.mim`（64 × 288，`288 % 64 ≠ 0`）覆盖，20 次运行都正确。
+  `reads_fill` 原先只认“`get` 的源剥到 `stage`”，而成员的元素是 `get (tile_of (map_reduce … (stage …)))`，`stage` 只是生产者的输入，这条规则命中不到；现在可达的 `stage` 都算读了合作填充。
+  追踪确认：两种路径下读暂存盒子的填充都已在批次之外（前后各有屏障），所以屏障数不变；这条规则是对日后把这类填充放进批次的调度的保护。
+  未做：比较折叠不成字面量时用 `if_static` 退回不别名（现在会在 lowering 报错而不是算错）；填充离开批次时的断言；`is_folded_axis` 的单元测试（需要构造带未定 Hole 的依赖 `Arr`）。
 - 成员融合第 3 步（归约融合，2026-11-15）：归约生产者融进同一归约循环的消费者，靠的是滚动更新，现在由定律推出，不再手写。
   `law.of_rolling` 取一个运行统计量（`stat`、种子、`rmerge`）、每个元素相对统计量的贡献（`f`、种子、`plus`）和修正（`ratio`、它在贡献上的作用 `scale`），
   推出逐元素的步 `(r', plus (scale (ratio (r, r'), a), f (xs, r')))` 与合并 `(rmerge, 两边都修正到合并后的统计量再 plus)`，再交给 `of_map_reduce_merging`。
@@ -205,6 +216,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 | `law.req` 把层级交给 `tile_req` | 层级经过 RWPhase 重建后成为结构相同、指针不同的 nom 实例，`bitcast` 不能归约掉 | 经 `core.bitcast` 转换，TileFuse 剥掉它；`tile_req` 的 normalizer 见到它就跳过（定律已用自己的事实检查过） |
 | `check.report` 在 `law.req` 的定义体里 | normalizer 在定义时就看到未定的判定 | 判定含自由变量时不归约 |
 | 叶子里用计算出的面板计划 `boxed (…)` | 与 `Law` 以 `I` 为参数同源：代换把计划里嵌套的可变 pack 复制成多份，`alpha` 不能把同一个绑定子配给两份 | 叶子是带过滤器 `@(core.pe.is_closed (slot, Ris))` 的具名 `lam`，泛型时不展开，实例化后秩是字面量才展开 |
+| 生产者读消费者暂存的视图（别名） | 已做到（2026-11-15）：按 pack 自己的绑定子取下标的类型现在由 `World::generalize` 推出（不再是并类型）；`share` 放在消费者参数之前，实例化 `is` 时它已是字面量 | `law.fuse_shared` 与 `fused_shared`；同一构造子里兼顾不共享的分支仍受 arity 1 依赖 `Arr` 的折叠所限 |
 | 物理输入是 `«nis - 1 + npp; …»`，按下标拼接 | `npp` 先成为字面量时，异构元组按非字面量下标取出的类型是并 `T ∪ U`，`bitcast` 推断的源类型不再匹配 | 穿过二元组 `(消费者的输入, 生产者的输入)`，只按 pack 自己的绑定子取下标 |
 
 前三条与 D6 的阻塞同源：依赖类型的实例化与比较。它们是继续推进第 3 步（TileFuse 在定律上解释调度）之前最值得在 core 里修的地方。

@@ -74,6 +74,8 @@ ncu（`softmax_resident`）：DRAM 100 MB、89% 峰值带宽，barrier stall 8%�
 | `softmax_resident`（`TileFuse` 成员） | 29.4 µs |
 | `softmax_resident_law`（每行 64 段归约，共享内存合并） | 37.4 µs |
 | 同上，不切分（每元素一个 work-item） | 228 µs |
+| `softmax_resident_shared`（`law.fuse_shared`，生产者读消费者暂存的行） | **27.0 µs** |
 
 差距主要来自生产者从全局内存再读一遍 `x`（`TileFuse` 的折叠读暂存的行）。
+`softmax_resident_shared.mim` 用 `law.fuse_shared` 声明生产者的输入就是消费者的 `x`（含义按构造读它），生产者的分段归约改读 work-group 为消费者暂存的行：37.6 → 27.0 µs，比 `TileFuse` 的 29.4 µs 快 8%（2026-11-15，nsys 21 次平均）。
 2026-11-15 更正：最初的 37.5 µs 出自有数据竞争的 kernel——合并部分结果的填充与写部分结果的填充同在一个 work-group 批次里，批次只在最后放一道屏障，多次运行大多算错。现在读另一次填充的合作填充离开批次，前后各有屏障；12 次运行全部正确，37.4 µs。
