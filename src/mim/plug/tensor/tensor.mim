@@ -3370,18 +3370,21 @@ pub mod law
     /// Per input, whether a work-group stages its box whole, the box's origin and extent, and the staged box.
     lam Views {nis: Nat} (Ris: «i: nis; Nat», Tis: «nis; *»): * =
         [«nis; Bool», «j: nis; «Ris#j; Nat»», e: «j: nis; «Ris#j; Nat»», «j: nis; Tensor (Ris#j) (e#j) (Tis#j)»];
-    /// One input of a law beside its physical value's type `P`: the value the levels thread, the input it means, the input
-    /// a block reads given the work-group's staged views, and, for a fused producer, its merge, whether its reduction may
-    /// split, its last loop's extent and that it is fused.
+    /// One input of a law beside its physical value's type `P`: the value the levels thread, the input it means, its box at
+    /// `off` of `ext`, the input a block reads given the work-group's staged views, and, for a fused producer, its merge,
+    /// whether its reduction may split, its last loop's extent and that it is fused.
     lam Src {nis: Nat} (Ris: «i: nis; Nat», Tis: «nis; *») (P: *) (r: Nat, s: «r; Nat», T: *): * =
-        [phys: P, whole: P → Tensor r s T, producer: [P, Views @nis (Ris, Tis)] → Tensor r s T,
+        [phys: P, whole: P → Tensor r s T, tile: [P, off ext: «r; Nat»] → Tensor r ext T,
+         producer: [P, Views @nis (Ris, Tis)] → Tensor r s T,
          merge: [T, T] → T, split: Bool, K: Nat, fused: Bool];
     /// Inputs that a law reads as they are.
     lam plain_srcs {nis: Nat} {Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»», Tis: «nis; *»}
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»)
         : «i: nis; Src @nis (Ris, Tis) (Tensor (Ris#i) (Sis#i) (Tis#i)) (Ris#i, Sis#i, Tis#i)» =
         ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i);
-            (is#i, λ (p: X): X = p, λ (p: X, _: Views @nis (Ris, Tis)): X = p, λ (u _: Tis#i): Tis#i = u, ff, 0, ff)›;
+            (is#i, λ (p: X): X = p,
+             λ (p: X, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) = slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) p,
+             λ (p: X, _: Views @nis (Ris, Tis)): X = p, λ (u _: Tis#i): Tis#i = u, ff, 0, ff)›;
     lam build {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
@@ -3396,8 +3399,8 @@ pub mod law
         let make = λ (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro So To =
             map_reduce (So, Sr) (f, init) map_out maps xs;
         let Phys   = «i: nis; Ps#i»;
-        let phys   = ‹i: nis; srcs#i#0₇›;
-        let unfold = λ (xs: Phys): «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)» = ‹i: nis; (srcs#i#1₇) (xs#i)›;
+        let phys   = ‹i: nis; srcs#i#0₈›;
+        let unfold = λ (xs: Phys): «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)» = ‹i: nis; (srcs#i#1₈) (xs#i)›;
         let is     = unfold phys;
         let root   = make is;
         let zero = ‹Ro; 0›;
@@ -3460,7 +3463,7 @@ pub mod law
         lam bit_of (mask: Nat) (i: Idx nis): Bool =
             core.nat.rem (vec.fold.r @(Nat, Nat) @(core.idx2nat i) (λ (_: Nat, x: Nat): Nat = x / 2) (‹core.idx2nat i; 0›, mask), 2) == 1;
         // The fused input is a producer whose reads compute the tile they need, so it never materializes whole.
-        lam member (i: Idx nis): Bool = srcs#i#6₇;
+        lam member (i: Idx nis): Bool = srcs#i#7₈;
         lam ris_of (pan: Pan): «nis; Nat» = ‹i: nis; (Ris#i, core.nat.add (Ris#i, 1))#(split_of pan i)›;
         lam sis_of (pan: Pan): «i: nis; «(ris_of pan)#i; Nat»» =
             ‹i: nis; let q = pan#i#0₂;
@@ -3488,11 +3491,10 @@ pub mod law
             let staged   = ‹j: nis; core.bitcast (Tensor (Ris#j) (exts#j) (Tis#j))
                 (stage @(Tis#j, Ris#j, 0) (exts#j) ((), (), ‹d: Ris#j; d›, ⊥:(Tis#j)) 0
                     (slice @(Tis#j, Ris#j) (Sis#j) (offs#j, ‹Ris#j; 1›, exts#j) (xs#j)))›;
-            let producer = ‹i: nis; (srcs#i#2₇) (ys#i, (whole_of, offs, exts, staged))›;
+            let producer = ‹i: nis; (srcs#i#3₈) (ys#i, (whole_of, offs, exts, staged))›;
             ‹i: nis; let q = pan#i#0₂;
                 let Input = Tensor ((ris_of pan)#i) ((sis_of pan)#i) (Tis#i);
-                let box   = (slice @(Tis#i, Ris#i) (Sis#i) (q#3₆, ‹Ris#i; 1›, q#4₆) (xs#i),
-                             tile_of @(Tis#i, Ris#i) @(Sis#i) (xs#i, q#3₆, q#4₆))#(member i);
+                let box   = (srcs#i#2₈) (ys#i, q#3₆, q#4₆);
                 let stg   = stage @(Tis#i, Ris#i, 1) (q#4₆) (q#1₆, q#2₆, q#5₆, ⊥:(Tis#i)) 0 box;
                 let L     = pan#i#1₂;
                 let r1    = core.nat.add (Ris#i, 1);
@@ -3515,11 +3517,11 @@ pub mod law
                     get @(r, ‹r; 1›, T) (tile_of @(T, r) @(Sis#i) (producer#i, one c, ‹r; 1›), ‹r; 0₁›));
                 let n     = vec.fold.r @(Nat, Nat) @r (λ (e x: Nat): Nat = core.nat.mul (e, x)) (E, 1);
                 let C     = core.select (n < items, items / core.select (n == 0, 1, n), 1);
-                let K     = srcs#i#5₇;
-                let C     = core.select (core.bit2.and 0 (srcs#i#4₇, K % C == 0), C, 1);
+                let K     = srcs#i#6₈;
+                let C     = core.select (core.bit2.and 0 (srcs#i#5₈, K % C == 0), C, 1);
                 let unit  = K / C;
                 let PS    = ‹d: r1; let k = core.idx2nat d; core.select (k < r, E#(core.idx 0 r k), C)›;
-                let m     = λ (u v: T): T = (srcs#i#3₇) (u, v);
+                let m     = λ (u v: T): T = (srcs#i#4₈) (u, v);
                 let parts = generate @(T, r1) PS (λ (c: «r1; I64»): T =
                     let o    = ‹d: r; core.nat.add ((q#3₆)#d, core.bitcast Nat (c#(core.idx 0 r1 (core.idx2nat d))))›;
                     let k0   = core.nat.mul (core.bitcast Nat (c#(core.idx 0 r1 r)), unit);
@@ -3634,7 +3636,7 @@ pub mod law
                 core.nat.mul (x, core.select (t == 0, 1, ((g#1₇)#k + t - 1) / t))) (‹d: Ro; core.idx2nat d›, 1);
         // Stuck while the ranks are generic, so its body is checked once for every plan.
         lam leaf_at (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
-                     acc: Tensor Ro ext To, items: Nat, pan: Pan)@(core.pe.is_closed (‹i: nis; srcs#i#6₇›, Ris)): Tensor Ro ext To =
+                     acc: Tensor Ro ext To, items: Nat, pan: Pan)@(core.pe.is_closed (‹i: nis; srcs#i#7₈›, Ris)): Tensor Ro ext To =
             let off = ‹d: Ro; lo#(core.idx 0 Rn (core.idx2nat d))›;
             map_reduce_post @(nis, 0) @(To, To, Ro, Rn, SchedT) (ext, size, mk_sched (Rn, 0))
                 @(Tis, ris_of pan, sis_of pan, (), (), ()) (f, outs_default @(To, Ro) ext acc, id @To)
@@ -3645,7 +3647,7 @@ pub mod law
         // A vector level runs its one parallel loop of size 1 as the vector loop and splits the last reduction loop by
         // its size into an unrolled inner loop, as `tile_fuse`'s `vector` does; without that loop it changes nothing.
         lam vec_at (sizes lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
-                    acc: Tensor Ro ext To, cx: Cx, pan: Pan)@(core.pe.is_closed (‹i: nis; srcs#i#6₇›, Ris)): Tensor Ro ext To =
+                    acc: Tensor Ro ext To, cx: Cx, pan: Pan)@(core.pe.is_closed (‹i: nis; srcs#i#7₈›, Ris)): Tensor Ro ext To =
             let vdim   = vec.fold.r @(Nat, Idx Rn) @Rn
                 (λ (d: Idx Rn, x: Nat): Nat = (x, core.idx2nat d)#(core.bit2.and 0 (sizes#d == 1, core.idx2nat d < Ro))) (‹d: Rn; d›, Rn);
             let last   = core.nat.sub (Rn, 1);
@@ -3977,7 +3979,9 @@ pub mod law
         let Ps   = ‹i: nis; (Tensor (Ris#i) (Sis#i) (Tis#i), PT)#(core.icmp.e (i, at))›;
         let srcs = ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i); let T = Tis#i; let fused = core.icmp.e (i, at);
             let whole = λ (p: Ps#i): X = (core.bitcast X p, core.bitcast X (pv (core.bitcast PT p)))#fused;
-            ((core.bitcast (Ps#i) (is#i), core.bitcast (Ps#i) ps)#fused, whole, λ (p: Ps#i, _: Views @nis (Ris, Tis)): X = whole p,
+            let tile  = λ (p: Ps#i, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) =
+                (slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) (core.bitcast X p), tile_of @(Tis#i, Ris#i) @(Sis#i) (whole p, off, ext))#fused;
+            ((core.bitcast (Ps#i) (is#i), core.bitcast (Ps#i) ps)#fused, whole, tile, λ (p: Ps#i, _: Views @nis (Ris, Tis)): X = whole p,
              λ (u v: T): T = (u, core.bitcast T (gmerge (core.bitcast Tp u, core.bitcast Tp v)))#fused,
              core.bit2.and 0 (fused, core.bit2.and 0 (split, Rnp == core.nat.add (Rp, 1))), (0, K)#fused, fused)›;
         build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps srcs is;
@@ -4022,7 +4026,9 @@ pub mod law
             let staged = λ (p: Ps#i, vs: Views @nis (Ris, Tis)): X =
                 (core.bitcast X p, core.bitcast X (shared_producer slot @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit) gout
                     gmaps share @nis @(Ris, Sis, Tis) (core.bitcast PT p, vs)))#fused;
-            ((core.bitcast (Ps#i) (is#i), core.bitcast (Ps#i) ps2)#fused, whole, staged,
+            let tile  = λ (p: Ps#i, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) =
+                (slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) (core.bitcast X p), tile_of @(Tis#i, Ris#i) @(Sis#i) (whole p, off, ext))#fused;
+            ((core.bitcast (Ps#i) (is#i), core.bitcast (Ps#i) ps2)#fused, whole, tile, staged,
              λ (u v: T): T = (u, core.bitcast T (gmerge (core.bitcast Tp u, core.bitcast Tp v)))#fused,
              core.bit2.and 0 (fused, core.bit2.and 0 (split, Rnp == core.nat.add (Rp, 1))), (0, K)#fused, fused)›;
         check.report (verdict, build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps srcs is);
