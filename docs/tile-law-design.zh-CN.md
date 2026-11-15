@@ -202,6 +202,10 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   驻留成员每个元素一次的设备 `malloc`（2026-11-15 的调查）：元素的一元素 tile 由 `lower_map_reduce` 分配，`heap2stack` 只转换不逃逸的分配，而逃逸分析把它钉成 ⊤；是哪一处 `escape` 钉住它还没有查清。
   已知的只是两条修法无效并已撤回：给元素计算一个在填充循环外绑定的私有池（这块缓冲不走 `allocate` 的池路径）；让逃逸分析把直接风格调用的参数按 SCCP 流进被调的续延（缓冲交给降低后的归约循环的续延使用，读写与释放都在别的续延里，但这样改后它仍是 ⊤）。
   要消掉它，要么把一元素的归约降低成标量循环（不经缓冲），要么让 lowering 在 work-group 统一的位置把计算的 `map_reduce` 按输出分给 work-item（合作计算，直接写进面板）。
+  去掉 work-group 链里归约成员的守卫的试验（2026-11-15，已撤回）：去掉后命中守卫的是 `gpu/tile_resident`、`tile_reduce_fused`、`tile_reduce_fused_online`，走定律都算对，但 `tile_resident` 与 `tile_reduce_fused_online` 的 `promote` 只提升了 `x`，成员的盒子落在每个 work-item 的私有缓冲（`[4 x [2 x float]]`，设备 `malloc`）。
+  把路由时的层级改成也提升成员的槽（`law.promote_member`，`TileFuse` 正是这样把归约成员切到 work-item 上），再在 `C` 为 1 而有合并时按整除 K 的 2 的幂切分，成员与部分结果都进了共享内存（`[4 x [4 x [2 x float]]]`），仍对。
+  剩下的 `malloc` 是每块一个元素的部分结果（8 字节）：每个 work-item 循环处理 4 块，`heap2stack` 不转换循环里的分配（`in_loop`），而 LLVM 后端把 `mem.slot` 的 `alloca` 发在原地而不是入口块，在循环里转换会让栈逐次增长。
+  64 × 256 的情形每个 work-item 恰一块、没有这层循环，所以没有 `malloc`。要去掉守卫，得先让后端把定长 `slot` 发到入口块、并让 `heap2stack` 证明缓冲不跨迭代存活；在此之前守卫保留。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
