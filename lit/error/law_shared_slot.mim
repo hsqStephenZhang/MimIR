@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: law_shared_slot.mim:41:{{.*}}error: shared producer input 0 names the fused slot 1
+// CHECK: law_shared_slot.mim:44:{{.*}}error: shared producer input 0 names the fused slot 1
 
 // A producer input cannot be the fused slot itself, which holds the producer's own placeholder.
 

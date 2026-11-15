@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: law_shared_shape.mim:42:{{.*}}error: shared producer input 0 differs from the consumer's input 0 in rank, shape or element size
+// CHECK: law_shared_shape.mim:45:{{.*}}error: shared producer input 0 differs from the consumer's input 0 in rank, shape or element size
 
 // The producer reads 64 × 128, so it cannot be the consumer's 64 × 256 input, which its meaning would reinterpret.
 

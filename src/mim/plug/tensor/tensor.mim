@@ -3322,25 +3322,26 @@ end
 ///
 pub mod law
     /// A structural record, like `Tileable`, so its dependent fields check against the tuple the constructor builds.
-    /// The loop count `n`, the accumulator `Acc` and the contraction `Kind` are parameters: they index level types, and a
-    /// later field's type may not depend on an earlier type-valued field.
+    /// The loop count `n`, the accumulator `Acc` and the contraction `Kind` are parameters: they index level types.
     anx lam Law (r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *): * =
         [ro inputs: Nat, extents: «n; Nat», root: Tensor r s T,
          par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T,
          schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat, combining: Nat,
-         shared: TileLevels (n, Acc, Kind) → Nat];
-    lam ro_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#0₁₁;
-    lam inputs_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#1₁₁;
-    lam extents_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): «n; Nat» = l#2₁₁;
-    lam root_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₁₁;
-    lam par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): «r; Nat» → Tensor r s T = l#4₁₁;
-    lam red_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): [Nat, Nat] → Tensor r s T = l#5₁₁;
-    lam red_par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): [Nat, Nat] → Tensor r s T = l#6₁₁;
+         shared: TileLevels (n, Acc, Kind) → Nat, checked: «3; Nat»];
+    lam ro_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#0₁₂;
+    lam inputs_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#1₁₂;
+    lam extents_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): «n; Nat» = l#2₁₂;
+    lam root_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₁₂;
+    lam par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): «r; Nat» → Tensor r s T = l#4₁₂;
+    lam red_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): [Nat, Nat] → Tensor r s T = l#5₁₂;
+    lam red_par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): [Nat, Nat] → Tensor r s T = l#6₁₂;
     lam schedule_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind))
-        : TileLevels (n, Acc, Kind) → Tensor r s T = l#7₁₁;
-    lam traffic_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): TileLevels (n, Acc, Kind) → Nat = l#8₁₁;
-    lam combining_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#9₁₁;
-    lam shared_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): TileLevels (n, Acc, Kind) → Nat = l#10₁₁;
+        : TileLevels (n, Acc, Kind) → Tensor r s T = l#7₁₂;
+    lam traffic_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): TileLevels (n, Acc, Kind) → Nat = l#8₁₂;
+    lam combining_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#9₁₂;
+    lam shared_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): TileLevels (n, Acc, Kind) → Nat = l#10₁₂;
+    /// The verdict of the law's constructor on its own arguments.
+    lam checked_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): «3; Nat» = l#11₁₂;
     /// A work-group's shared memory on the target `check.target` names, an H200's when it names none.
     lam capacity (target: Nat): Nat =
         let cc = target / 2;
@@ -3352,7 +3353,8 @@ pub mod law
     /// The law's verdict on `levels`, and whether the shared memory they stage fits a work-group.
     lam verdict_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind))
         : «3; Nat» =
-        let v     = check.law_verdict (ro_of l, inputs_of l, extents_of l, combining_of l, levels);
+        let c     = checked_of l;
+        let v     = (c, check.law_verdict (ro_of l, inputs_of l, extents_of l, combining_of l, levels))#(c#0₃ == 0);
         let bytes = (shared_of l) levels;
         let cap   = capacity (check.target ());
         (v, ((0, 0, 0), (25, bytes, cap))#(cap < bytes))#(v#0₃ == 0);
@@ -3392,7 +3394,7 @@ pub mod law
         (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (merge: [To, To] → To, ordered: Bool)
-        (Ps: «nis; *») (srcs: «i: nis; Src @nis (Ris, Tis) (Ps#i) (Ris#i, Sis#i, Tis#i)»)
+        (Ps: «nis; *») (srcs: «i: nis; Src @nis (Ris, Tis) (Ps#i) (Ris#i, Sis#i, Tis#i)», checked: «3; Nat»)
         // A fused root's inputs hide its producer, so the consumer's own inputs fix the contraction kind.
         (kinds: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»)
         : Law (Ro, So, To, Rn, To, root_contraction (map_reduce (So, Sr) (f, init) map_out maps kinds)) =
@@ -3911,7 +3913,8 @@ pub mod law
             core.nat.add (core.nat.mul (count, block), out);
         // A law with a merge of its own vouches for it; an ordered one permits what its combiner does.
         (Ro, nis, Sr, root, par, red, red_par, schedule, traffic, (3, check.combiner root)#ordered,
-         λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat = staged_of levels);
+         λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat = staged_of levels,
+         checked);
 
     anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -3921,7 +3924,7 @@ pub mod law
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
         build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt)
-            ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is) is;
+            ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is, (0, 0, 0)) is;
     /// The producer `map_reduce (Sp, Srp) (g, ginit) gout gmaps ps` that a fused member computes, reading a shared input
     /// from the box a work-group stages whole, through its maps shifted to the box's origin.
     /// It does so only where the producer's reads for the member's box stay in the staged box.
@@ -3984,7 +3987,7 @@ pub mod law
             ((core.bitcast (Ps#i) (is#i), core.bitcast (Ps#i) ps)#fused, whole, tile, λ (p: Ps#i, _: Views @nis (Ris, Tis)): X = whole p,
              λ (u v: T): T = (u, core.bitcast T (gmerge (core.bitcast Tp u, core.bitcast Tp v)))#fused,
              core.bit2.and 0 (fused, core.bit2.and 0 (split, Rnp == core.nat.add (Rp, 1))), (0, K)#fused, fused)›;
-        build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps srcs is;
+        build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, (0, 0, 0)) is;
     priv anx lam fused_shared (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
         (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
         (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp, gmerge: [Tp, Tp] → Tp, split: Bool)
@@ -4031,7 +4034,7 @@ pub mod law
             ((core.bitcast (Ps#i) (is#i), core.bitcast (Ps#i) ps2)#fused, whole, tile, staged,
              λ (u v: T): T = (u, core.bitcast T (gmerge (core.bitcast Tp u, core.bitcast Tp v)))#fused,
              core.bit2.and 0 (fused, core.bit2.and 0 (split, Rnp == core.nat.add (Rp, 1))), (0, K)#fused, fused)›;
-        check.report (verdict, build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps srcs is);
+        build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, verdict) is;
     /// The law of a consumer whose input `slot` is the producer `map_reduce (Sp, Srp) (g, ginit) gout gmaps ps`.
     /// Its meaning reads the producer at the slot, whatever `is` holds there, and each block computes the box of it it
     /// reads from the producer's inputs, which the law threads beside the consumer's.
@@ -4092,7 +4095,7 @@ pub mod law
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
         build (So, Sr) (f, init) map_out maps (merge, ff)
-            ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is) is;
+            ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is, (0, 0, 0)) is;
     /// A rolling reduction: each element contributes `f (xs, r)` against the running statistic `r` its fold has seen.
     /// When an element moves the statistic to `r'`, the contributions so far are corrected by `scale (ratio (r, r'), ·)`,
     /// so the law folds `(r, a)` in order and merges two partials by correcting both to the merged statistic.
@@ -4121,7 +4124,7 @@ pub mod law
 
     /// Field access by position: a record behind a type function does not carry its field names to `#`.
     /// The meaning of a law: its root.
-    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = root_of l;
+    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = check.report (checked_of l, root_of l);
     /// The bytes `levels` would move through global memory, and of `c` candidate schedules the legal one that moves the
     /// fewest.
     anx lam traffic {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Nat =
@@ -4136,10 +4139,11 @@ pub mod law
             (x, core.idx2nat j)#(better (j, core.idx 0 c x))) (0, ‹j: c; j›);
         candidates#(core.idx 0 c pick);
     anx lam par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), ts: «r; Nat»): Tensor r s T =
-        (par_of l) ts;
+        check.report (checked_of l, (par_of l) ts);
     /// Blocks of a reduction loop inside another fold out of order, which only a law's combiner or merge permits.
     lam outer {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop: Nat): «3; Nat» =
-        ((0, 0, 0), (20, 0, 0))#(core.bit2.and 0 (ro_of l < loop, combining_of l == 0));
+        let c = checked_of l;
+        (c, ((0, 0, 0), (20, 0, 0))#(core.bit2.and 0 (ro_of l < loop, combining_of l == 0)))#(c#0₃ == 0);
     anx lam red {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop ks: Nat): Tensor r s T =
         check.report (outer (l, loop), (red_of l) (loop, ks));
     anx lam red_par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop parts: Nat)
