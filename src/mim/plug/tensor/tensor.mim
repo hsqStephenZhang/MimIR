@@ -2634,7 +2634,8 @@ pub mod check
         "a work-item reduction needs a vouched or explicit merge, or a recognized reassociable combiner whose identity is the seed",
         "a lane reduction needs a recognized reassociable combiner whose identity is the seed",
         "shared producer input {} differs from the consumer's input {} in rank, shape or element size",
-        "shared producer input {} names the fused slot {}");
+        "shared producer input {} names the fused slot {}",
+        "a work-group stages {} bytes of shared memory, more than the target's {}");
 
     lam any {n: Nat} (p: «n; Bool»): Bool = vec.fold.r @(Bool, Bool) @n (core.bit2.or 0) (p, ff);
     lam count {n: Nat} (p: «n; Bool»): Nat = vec.fold.r @(Nat, Nat) @n core.nat.add (‹d: n; (0, 1)#(p#d)›, 0);
@@ -3326,7 +3327,35 @@ pub mod law
     anx lam Law (r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *): * =
         [ro inputs: Nat, extents: «n; Nat», root: Tensor r s T,
          par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T,
-         schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat, combining: Nat];
+         schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat, combining: Nat,
+         shared: TileLevels (n, Acc, Kind) → Nat];
+    lam ro_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#0₁₁;
+    lam inputs_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#1₁₁;
+    lam extents_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): «n; Nat» = l#2₁₁;
+    lam root_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₁₁;
+    lam par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): «r; Nat» → Tensor r s T = l#4₁₁;
+    lam red_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): [Nat, Nat] → Tensor r s T = l#5₁₁;
+    lam red_par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): [Nat, Nat] → Tensor r s T = l#6₁₁;
+    lam schedule_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind))
+        : TileLevels (n, Acc, Kind) → Tensor r s T = l#7₁₁;
+    lam traffic_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): TileLevels (n, Acc, Kind) → Nat = l#8₁₁;
+    lam combining_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Nat = l#9₁₁;
+    lam shared_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): TileLevels (n, Acc, Kind) → Nat = l#10₁₁;
+    /// A work-group's shared memory on the target `check.target` names, an H200's when it names none.
+    lam capacity (target: Nat): Nat =
+        let cc = target / 2;
+        let c  = (4294967296, 101376)#(cc == 120);
+        let c  = (c, 232448)#(core.bit2.or 0 (cc == 90, cc == 100));
+        let c  = (c, 101376)#(core.bit2.or 0 (cc == 86, cc == 89));
+        let c  = (c, 166912)#(cc == 80);
+        (c, 232448)#(target == 0);
+    /// The law's verdict on `levels`, and whether the shared memory they stage fits a work-group.
+    lam verdict_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind))
+        : «3; Nat» =
+        let v     = check.law_verdict (ro_of l, inputs_of l, extents_of l, combining_of l, levels);
+        let bytes = (shared_of l) levels;
+        let cap   = capacity (check.target ());
+        (v, ((0, 0, 0), (25, bytes, cap))#(cap < bytes))#(v#0₃ == 0);
 
     /// The root of `map_reduce`'s arguments and its law.
     /// `par ts` concatenates the root's tiles of `ts`; `red (loop, ks)` folds reduction loop `loop` in whole blocks of `ks`
@@ -3821,30 +3850,50 @@ pub mod law
                 let bytes = vec.fold.r @(Nat, Nat) @(Ris#i) (λ (e y: Nat): Nat = core.nat.mul (e, y)) (box, core.trait.size (Tis#i));
                 (0, core.nat.mul (bytes, depth))#(bit_of promote i)›;
             vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (each, 0);
-        // The shared memory a work-group stages: the boxes its level keeps resident and the panels of its first reduction
-        // level, one per ring slot; staging by warps and warpgroups is not counted.
+        // The shared memory a work-group stages: the boxes its level keeps resident and the panels of the first reduction
+        // inside it, one per ring slot, which cover the work-group's block also below its work-items, warps and warpgroups.
+        lam ring (pipeline: Nat): Nat = core.select (pipeline == 0, check.depth (), pipeline);
+        lam panels (block sizes: «Rn; Nat», promote pipeline: Nat): Nat =
+            staged (promote, ring pipeline, ‹d: Rn; (block#d, sizes#d)#(Ro <= core.idx2nat d)›);
+        lam item_shared {M: *} (block: «Rn; Nat», l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): Nat =
+            match l with
+                | 0 => 0
+                | 1 (_, _, rest) => item_shared (block, rest)
+                | 2 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
+                | 3 (_, rest) => item_shared (block, rest)
+                | 4 (_, _, rest) => item_shared (block, rest);
+        lam warp_shared {M: *, b: «Rn; Nat»} (block: «Rn; Nat», l: WarpLevels (Rn, To, M, b))@(core.pe.is_closed l): Nat =
+            match l with
+                | 0 => 0
+                | 1 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
+                | 2 (_, _, _) => 0;
+        lam wg_shared {M: *, g t: «Rn; Nat»} (block: «Rn; Nat», l: WarpgroupLevels (Rn, To, M, g, t))@(core.pe.is_closed l): Nat =
+            match l with
+                | 0 => 0
+                | 1 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
+                | 2 (_, _, _) => 0
+                | 3 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
+                | 4 (sizes, _, promote, pipeline, _, _, _) => panels (block, sizes, promote, pipeline);
         lam group_shared {M: *, g: «Rn; Nat»} (block: «Rn; Nat», l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): Nat =
             match l with
                 | 0 => 0
                 | 1 (_, _, rest) => group_shared (block, rest)
-                | 2 (_, _, _) => 0
-                | 3 (sizes, _, promote, pipeline, _) =>
-                    staged (promote, core.select (pipeline == 0, check.depth (), pipeline),
-                            ‹d: Rn; (block#d, sizes#d)#(Ro <= core.idx2nat d)›)
+                | 2 (_, _, rest) => item_shared (block, rest)
+                | 3 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
                 | 4 (_, _, _, rest) => group_shared (block, rest)
                 | 5 (_, rest) => group_shared (block, rest)
-                | 6 (_, _, _) => 0
-                | 7 (_, _, _) => 0;
-        lam shared_of {M: *} (l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Nat =
+                | 6 (_, _, rest) => warp_shared (block, rest)
+                | 7 (_, _, rest) => wg_shared (block, rest);
+        lam staged_of {M: *} (l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Nat =
             match l with
                 | 0 => 0
-                | 1 (_, _, rest) => shared_of rest
+                | 1 (_, _, rest) => staged_of rest
                 | 2 (sizes: «Rn; Nat», _ promote: Nat, rest: GroupLevels (Rn, To, M, sizes)) =>
                     core.nat.add (staged (promote, 1, sizes), group_shared (sizes, rest))
-                | 3 (_, _, _, rest) => shared_of rest
-                | 4 (_, rest) => shared_of rest
-                | 5 (_, _, _, rest) => shared_of rest
-                | 6 (_, rest) => shared_of rest;
+                | 3 (_, _, _, rest) => staged_of rest
+                | 4 (_, rest) => staged_of rest
+                | 5 (_, _, _, rest) => staged_of rest
+                | 6 (_, rest) => staged_of rest;
         // The bytes a schedule moves through global memory, as Welder counts them: every block reads the box of each
         // input that its loops' block images, and the output is written once.
         let traffic = λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat =
@@ -3857,10 +3906,10 @@ pub mod law
                 vec.fold.r @(Nat, Nat) @(Ris#i) (λ (e x: Nat): Nat = core.nat.mul (e, x)) (box, core.trait.size (Tis#i))›;
             let block = vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (reads, 0);
             let out   = vec.fold.r @(Nat, Nat) @Ro (λ (e x: Nat): Nat = core.nat.mul (e, x)) (So, core.trait.size To);
-            // A work-group staging more than an H200's 227 KB cannot run, so its schedule moves no finite traffic.
-            (core.nat.add (core.nat.mul (count, block), out), 4611686018427387904)#(232448 < shared_of levels);
+            core.nat.add (core.nat.mul (count, block), out);
         // A law with a merge of its own vouches for it; an ordered one permits what its combiner does.
-        (Ro, nis, Sr, root, par, red, red_par, schedule, traffic, (3, check.combiner root)#ordered);
+        (Ro, nis, Sr, root, par, red, red_par, schedule, traffic, (3, check.combiner root)#ordered,
+         λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat = staged_of levels);
 
     anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -4066,40 +4115,40 @@ pub mod law
 
     /// Field access by position: a record behind a type function does not carry its field names to `#`.
     /// The meaning of a law: its root.
-    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₁₀;
+    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = root_of l;
     /// The bytes `levels` would move through global memory, and of `c` candidate schedules the legal one that moves the
     /// fewest.
     anx lam traffic {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Nat =
-        (l#8₁₀) levels;
+        (traffic_of l) levels;
     anx lam best {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, c: Nat}
         (l: Law (r, s, T, n, Acc, Kind), candidates: «c; TileLevels (n, Acc, Kind)»): TileLevels (n, Acc, Kind) =
-        let costs = ‹j: c; (l#8₁₀) (candidates#j)›;
-        let bad   = ‹j: c; (0, 1)#((check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, candidates#j))#0₃ != 0)›;
+        let costs = ‹j: c; (traffic_of l) (candidates#j)›;
+        let bad   = ‹j: c; (0, 1)#((verdict_of (l, candidates#j))#0₃ != 0)›;
         lam better (j x: Idx c): Bool =
             core.bit2.or 0 (bad#j < bad#x, core.bit2.and 0 (bad#j == bad#x, costs#j < costs#x));
         let pick  = vec.fold.l @(Nat, Idx c) @c (λ (x: Nat, j: Idx c): Nat =
             (x, core.idx2nat j)#(better (j, core.idx 0 c x))) (0, ‹j: c; j›);
         candidates#(core.idx 0 c pick);
     anx lam par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), ts: «r; Nat»): Tensor r s T =
-        (l#4₁₀) ts;
+        (par_of l) ts;
     /// Blocks of a reduction loop inside another fold out of order, which only a law's combiner or merge permits.
     lam outer {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop: Nat): «3; Nat» =
-        ((0, 0, 0), (20, 0, 0))#(core.bit2.and 0 (l#0₁₀ < loop, l#9₁₀ == 0));
+        ((0, 0, 0), (20, 0, 0))#(core.bit2.and 0 (ro_of l < loop, combining_of l == 0));
     anx lam red {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop ks: Nat): Tensor r s T =
-        check.report (outer (l, loop), (l#5₁₀) (loop, ks));
+        check.report (outer (l, loop), (red_of l) (loop, ks));
     anx lam red_par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop parts: Nat)
-        : Tensor r s T = check.report (outer (l, loop), (l#6₁₀) (loop, parts));
+        : Tensor r s T = check.report (outer (l, loop), (red_par_of l) (loop, parts));
     /// The meaning of a schedule over the law, by the split lemmas, which a realized request must agree with.
     anx lam schedule {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *}
         (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Tensor r s T =
-        check.report (check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, levels), (l#7₁₀) levels);
+        check.report (verdict_of (l, levels), (schedule_of l) levels);
 
     /// A tile request whose levels are indexed by the law's facts and checked by them; once the law is literal the cast is
     /// between two instances of one level type.
     anx lam req {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, M K: *}
         (l: Law (r, s, T, n, Acc, Kind), members: M, levels: TileLevels (n, Acc, Kind), control: K): Tensor r s T =
-        let root = l#3₁₀;
-        check.report (check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, levels),
+        let root = root_of l;
+        check.report (verdict_of (l, levels),
             tile_req (root, members, core.bitcast (TileLevels (root_loops root, root_acc root, root_contraction root)) levels,
                       control));
 
@@ -4107,7 +4156,7 @@ pub mod law
     /// The control is unused: the law's construction already decides what it fuses, and fused or not means the same.
     anx lam run {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, K: *}
         (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind), _: K): Tensor r s T =
-        check.report (check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, levels), (l#7₁₀) levels);
+        check.report (verdict_of (l, levels), (schedule_of l) levels);
 
     /// A law realized by blocks: the user steps an accumulator tile `A ext` over a block of the loops and finishes it.
     /// `denote` is the meaning that every schedule must equal; `step` and `finish` are vouched for, like a merge.

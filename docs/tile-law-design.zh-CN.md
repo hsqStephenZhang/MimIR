@@ -206,7 +206,10 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   把路由时的层级改成也提升成员的槽（`law.promote_member`，`TileFuse` 正是这样把归约成员切到 work-item 上），再在 `C` 为 1 而有合并时按整除 K 的 2 的幂切分，成员与部分结果都进了共享内存（`[4 x [4 x [2 x float]]]`），仍对。
   剩下的 `malloc` 是每块一个元素的部分结果（8 字节）：每个 work-item 循环处理 4 块，`heap2stack` 不转换循环里的分配（`in_loop`），而 LLVM 后端把 `mem.slot` 的 `alloca` 发在原地而不是入口块，在循环里转换会让栈逐次增长。
   64 × 256 的情形每个 work-item 恰一块、没有这层循环，所以没有 `malloc`。要去掉守卫，得先让后端把定长 `slot` 发到入口块、并让 `heap2stack` 证明缓冲不跨迭代存活；在此之前守卫保留。
-- 第 5 项（2026-11-15）：`law.traffic` 加了容量约束——work-group 暂存的共享内存（第一个 work-group 层常驻的盒子，加其中第一个归约层的面板乘环的深度；warp 与 warpgroup 的暂存不计）超过 H200 的 227 KB 时流量记为无穷，`law.best` 因而不会选它（`lit/tensor/law_traffic.mim`：1024³ 的 GEMM，256 × 256 整 K 提升的候选不计容量时流量最小，现在被跳过）。
+- 第 5 项（2026-11-15）：容量是合法性而不是代价（评审第六轮）。`Law` 加了字段 `shared`：work-group 暂存的共享内存，即第一个 work-group 层常驻的盒子，加其中第一个归约层的面板（在 work-item、warp、warpgroup 之下也覆盖 work-group 的块）乘环的深度。
+  `verdict_of` 在 `check.law_verdict` 之外加一条规则（消息 25）：超过目标的上限即报错，上限按 `check.target ()` 取（sm_80 163 KB，sm_86/89/120 99 KB，sm_90/100 227 KB，未指明时按 H200）；`law.run`、`law.req`、`law.schedule` 与 `law.best` 都用它，所以 `best` 不会选放不下的调度，`run` 对它报错（`lit/error/law_capacity.mim`）。
+  `law.traffic` 仍是纯字节数；1024³ 的 GEMM 里整 K 提升的 256 × 256 候选流量最小（37.7 MB），但被规则排除（`lit/tensor/law_traffic.mim`）。仍未计入：`RedItems` 的部分累加器、驻留的融合成员、布局的填充。
+  `Law` 的字段改由具名访问函数取（`ro_of` 等），加字段只动访问函数。
   `law.run` 的 `control` 明确为不用：定律的构造已经决定融合什么，融合与否含义相同；在融合与不融合的实现之间由 `control` 选择，要等第 4 项的 `Source`（`plain` 与 `produced`）之后才有对象可选。
   TileSight（tile-ai 的解析式性能模型）的研读建议把代价从字节改成时间（按资源的 II 下界、波与尾块）、加派发顺序的 L2 复用，留待第 4 项之后。
 - 第 4 项第一步（2026-11-15）：输入不再是位置上的特例。`build` 原来的 `slot`、`phys`、`unfold`、`restage`、`pmerge`、`split`、`K` 与 `is` 换成每个输入的来源 `Src (P) = [phys, whole, producer, merge, split, K, fused]`，物理值的类型 `Ps: «nis; *»` 作为显式参数（不把类型字段放进记录：那样按 pack 下标在“普通 / 融合”之间选择时两支类型不同，会得到并类型）。

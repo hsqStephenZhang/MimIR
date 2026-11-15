@@ -6,7 +6,8 @@
 // blocks of 32 × 32 halve that, and the whole product reads each operand once.
 // `law.best` picks the legal candidate that moves the fewest bytes: a parallel level that tiles the reduction loop moves
 // less, but its verdict rules it out.
-// A work-group that stages more shared memory than an H200 offers moves no finite traffic, so `best` passes it over.
+// A work-group that stages more shared memory than the target offers is illegal, so `best` passes it over although
+// it moves the fewest bytes.
 
 plugin tensor;
 plugin core;
@@ -60,7 +61,7 @@ extern fun traffic_legal (a b: tensor.Tensor 2 (64, 64) F32): Nat =
 // CHECK-LABEL: extern con traffic_fits
 // CHECK: (_{{[0-9]+}}, 138412032)
 // CHECK-LABEL: extern con traffic_huge
-// CHECK: (_{{[0-9]+}}, 4611686018427387904)
+// CHECK: (_{{[0-9]+}}, 37748736)
 // CHECK-LABEL: extern con traffic_large
 // CHECK: (_{{[0-9]+}}, 81920)
 // CHECK-LABEL: extern con traffic_legal

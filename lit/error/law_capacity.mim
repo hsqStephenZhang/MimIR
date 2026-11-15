@@ -1,0 +1,24 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: law_capacity.mim:24:{{.*}}error: a work-group stages 2097152 bytes of shared memory, more than the target's 232448
+
+// A 256 × 256 work-group that keeps both operands' whole rows of 1024 resident stages 2 MiB, more than an H200 offers.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+extern fun gemm (a b: tensor.Tensor 2 (1024, 1024) F32): tensor.Tensor 2 (1024, 1024) F32 =
+    let l = law.of_map_reduce ((1024, 1024), (1024, 1024, 1024)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+    let huge = serial_group ((256, 256, 0), 0, 3, group_item ((16, 16, 0), 0, item_done ()));
+    return (law.run (l, huge, default_control));
