@@ -961,6 +961,8 @@ const Def* LowerToMem::lower_generate(const App* app) {
     auto [sources, captures] = capture_producers(app->arg());
     auto compute             = [&](Defs iters, const Def* input, const Def* m) -> std::pair<const Def*, const Def*> {
         auto nested = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
+        // One work-item computes each element of a cooperative fill, so what it allocates is its own.
+        auto private_scope = fe::Restore(uniform_, false);
         push();
         if (!sources.empty()) bind_new(param_of(input)->has_var());
         for (size_t i = 0; i != sources.size(); ++i)

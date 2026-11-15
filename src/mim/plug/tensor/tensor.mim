@@ -3385,7 +3385,11 @@ pub mod law
                               tc_layout.mma @r1 (L#1₁₁, L#2₁₁, bytes))#(L#4₁₁ == 1), wg#1₂)#(L#4₁₁ == 2);
                 let put   = placed @(Tis#i, r1) @(stage_shape @(Ris#i, 1) (q#4₆) (q#1₆, q#2₆, q#5₆)) (L#1₁₁, lay) stg;
                 let place = core.bit2.and 0 (L#0₁₁, core.bit2.or 0 (L#4₁₁ != 2, wg#0₂));
-                let whole = stage @(Tis#i, Ris#i, 0) (q#4₆) ((), (), ‹d: Ris#i; d›, ⊥:(Tis#i)) 0 box;
+                // A resident member's elements are spread over the work-group, each a reduction of its own.
+                let each  = generate @(Tis#i, Ris#i) (q#4₆) (λ (at: «Ris#i; I64»): Tis#i =
+                    let o = ‹d: Ris#i; core.nat.add ((q#3₆)#d, core.bitcast Nat (at#d))›;
+                    get @(Ris#i, ‹Ris#i; 1›, Tis#i) (tile_of @(Tis#i, Ris#i) @(Sis#i) (xs#i, o, ‹Ris#i; 1›), ‹Ris#i; 0₁›));
+                let whole = stage @(Tis#i, Ris#i, 0) (q#4₆) ((), (), ‹d: Ris#i; d›, ⊥:(Tis#i)) 0 ((box, each)#(member i));
                 (((core.bitcast Input (xs#i), core.bitcast Input box)#(member i), core.bitcast Input whole)#(q#0₆),
                  core.bitcast Input ((stg, put)#place))#(split_of pan i)›;
         // The input axis among its last two that the next parallel level's tile drives with unit slope from one loop
@@ -3688,13 +3692,14 @@ pub mod law
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
         build (So, Sr) (f, init) map_out maps is (λ (uv: «2; To»): To = uv#0₂, tt, nis) (is, (λ (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)» = xs));
-    /// The law of a consumer whose input `slot` is the pointwise producer `map_reduce (Sp, Sp) (g, ginit) id gmaps ps`.
+    /// The law of a consumer whose input `slot` is the producer `map_reduce (Sp, Srp) (g, ginit) gout gmaps ps`.
     /// Its meaning reads the producer at the slot, whatever `is` holds there, and each block computes the box of it it
     /// reads from the producer's inputs, which the law threads beside the consumer's.
-    anx lam fuse (slot: Nat) {npp: Nat} {Tp: *, Rp: Nat}
-        (Sp: «Rp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
+    anx lam fuse (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
+        (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
         (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp)
-        (gmaps: «m: npp; («Rp; affine.Index» → «Rpp#m; affine.Index»)»)
+        (gout: «Rnp; affine.Index» → «Rp; affine.Index»)
+        (gmaps: «m: npp; («Rnp; affine.Index» → «Rpp#m; affine.Index»)»)
         (ps: «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)»)
         {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -3709,7 +3714,7 @@ pub mod law
         let Phys   = [«i: nis; Ks#i», «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)»];
         let kept   = ‹i: nis; (core.bitcast (Ks#i) (is#i), core.bitcast (Ks#i) ())#(core.icmp.e (i, at))›;
         let unfold = λ (xs: Phys): «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)» =
-            let pv = map_reduce @npp @(Tp, Rp, Rp) (Sp, Sp) @(Tpp, Rpp, Spp) (g, ginit) (affine.id @Rp) gmaps (xs#1₂);
+            let pv = map_reduce @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit) gout gmaps (xs#1₂);
             ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i); (core.bitcast X (xs#0₂#i), core.bitcast X pv)#(core.icmp.e (i, at))›;
         build (So, Sr) (f, init) map_out maps (unfold (kept, ps)) (λ (uv: «2; To»): To = uv#0₂, tt, slot) @Phys ((kept, ps), unfold);
     /// A law whose reduction may also split out of order, merged by `merge`.

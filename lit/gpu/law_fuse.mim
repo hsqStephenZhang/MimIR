@@ -33,7 +33,7 @@ lam weights (w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32) =
     map_reduce ((16, 16), (16, 16)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1)) (proj_map @(2, 2) (0, 1), column) (buf w, buf s);
 
 lam gemm (a: tensor.Tensor 2 (16, 16) F32, w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32) =
-    law.fuse 1 (16, 16) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1), column) (buf w, buf s)
+    law.fuse 1 ((16, 16), (16, 16)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1)) (proj_map @(2, 2) (0, 1), column) (buf w, buf s)
         ((16, 16), (16, 16, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, weights (w, s));
 

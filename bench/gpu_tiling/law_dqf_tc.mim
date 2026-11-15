@@ -25,7 +25,7 @@ let levels = serial_group ((128, 128, 0), 1, 0, group_warp ((64, 32, 0), 1, warp
 extern fun gemm1024 (a: tensor.Tensor 2 (1024, 1024) F32, w: tensor.Tensor 2 (1024, 1024) I8, s: tensor.Tensor 2 (1, 1024) F32): tensor.Tensor 2 (1024, 1024) F32 =
     let wd = map_reduce ((1024, 1024), (1024, 1024)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1))
         (proj_map @(2, 2) (0, 1), column) (buf w, buf s);
-    let l = law.fuse 1 (1024, 1024) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1), column) (buf w, buf s)
+    let l = law.fuse 1 ((1024, 1024), (1024, 1024)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1)) (proj_map @(2, 2) (0, 1), column) (buf w, buf s)
         ((1024, 1024), (1024, 1024, 1024)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, wd);
     return (law.run (l, levels, default_control));
