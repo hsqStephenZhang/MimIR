@@ -168,8 +168,9 @@ void check_region_inputs(const Def* function, const Def* region) {
     DefSet bound;
     if (auto var = outer->has_var()) bound.insert(var);
     if (auto var = inner->has_var()) bound.insert(var);
+    // A splat reads no tensor: it only builds one, whatever its shape depends on.
     auto check = [&](const Def* operation, const Def* input) {
-        if (tensor_input_type(input->type()) && !input->is_closed()
+        if (tensor_input_type(input->type()) && !input->is_closed() && !Axm::isa<tensor::splat>(input)
             && !std::ranges::any_of(input->free_vars(), [&](auto var) { return bound.contains(var); }))
             operation
                 ->blame("tensor region operation {} reads outer tensor input {}; pass it explicitly",
