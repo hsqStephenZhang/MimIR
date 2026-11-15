@@ -1,0 +1,58 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o %t.gpu
+// RUN: %FileCheck %s < %t.gpu
+// RUN: %FileCheck %s --check-prefix=LAUNCH < %t.gpu
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/law_fuse_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// The dequantized weights are fused into the product's law: a block that stages them computes their box while it fills
+// the panel, and a leaf that reads them unstaged computes the box it reads, so they never materialize whole.
+// TileFuse realizes the same chains alike.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+fun dequant (_: F32, ws: [I8, F32])@tt: F32 =
+    let (w, s) = ws;
+    return (math.arith.mul fast (math.conv.s2f math.f32 w, s));
+
+lam column (o: «2; affine.Index»): «2; affine.Index» = (affine.lit 0, o#1_2);
+
+lam weights (w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32) =
+    map_reduce ((16, 16), (16, 16)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1)) (proj_map @(2, 2) (0, 1), column) (buf w, buf s);
+
+lam gemm (a: tensor.Tensor 2 (16, 16) F32, w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32) =
+    law.fuse 1 (16, 16) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1), column) (buf w, buf s)
+        ((16, 16), (16, 16, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, weights (w, s));
+
+let mma  = serial_group ((16, 16, 0), 1, 0, group_warp ((16, 8, 0), 1, warp_red ((0, 0, 8), 1, 3, warp_mma (16, 8, 8))));
+let simt = serial_group ((8, 8, 0), 1, 0, group_red ((0, 0, 4), 1, 3, group_item ((2, 2, 0), 0, item_done ())));
+let item = serial_group ((8, 8, 0), 1, 0, group_item ((2, 2, 0), 0, item_done ()));
+
+extern fun mma_run (a: tensor.Tensor 2 (16, 16) F32, w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.run (gemm (a, w, s), mma, default_control));
+extern fun mma_req (a: tensor.Tensor 2 (16, 16) F32, w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.req (gemm (a, w, s), weights (w, s), mma, default_control));
+extern fun simt_run (a: tensor.Tensor 2 (16, 16) F32, w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.run (gemm (a, w, s), simt, default_control));
+extern fun simt_req (a: tensor.Tensor 2 (16, 16) F32, w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.req (gemm (a, w, s), weights (w, s), simt, default_control));
+extern fun item_run (a: tensor.Tensor 2 (16, 16) F32, w: tensor.Tensor 2 (16, 16) I8, s: tensor.Tensor 2 (1, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (law.run (gemm (a, w, s), item, default_control));
+
+// CHECK-DAG: math.conv.s2f
+// CHECK-DAG: gpu.mma_tf32
+// LAUNCH-COUNT-5: gpu.launch
+// LAUNCH-NOT: gpu.launch

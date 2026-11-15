@@ -9,7 +9,7 @@ f=$1; shift
 n=$(basename $f .mim)
 src=$B/$f
 if [ -n "$N" ] && [ "$N" != 1024 ]; then n=${n}_$N; sed "s/1024/$N/g" $B/$f > $n.mim; src=$n.mim; fi
-$R/${MIM_BUILD:-build-h200}/bin/mim -p opt -p gpu -X tensor:tile-fuse=1 $src -p nvptx -o - -X 'nvptx:Xopt=-passes="default<O2>,function(nvvm-reflect)"' "$@" > $n.log 2>&1 || { echo "$n: mim failed"; tail -3 $n.log; exit 1; }
+$R/${MIM_BUILD:-build-h200}/bin/mim -p opt -p gpu -X tensor:tile-fuse=1 $src -p nvptx -o - "$@" > $n.log 2>&1 || { echo "$n: mim failed"; tail -3 $n.log; exit 1; }
 k=$(grep -oE 'c"(tileKernel|kernel)_[0-9]*' $n.ll | head -1 | cut -c3-)
 read g i smem <<< $(grep -o 'cuLaunchKernel_ptsz(ptr %[^,]*, i32 [0-9]*, i32 1, i32 1, i32 [0-9]*, i32 1, i32 1, i32 [0-9]*' $n.ll | head -1 | sed -E 's/.*i32 ([0-9]+), i32 1, i32 1, i32 ([0-9]+), i32 1, i32 1, i32 ([0-9]+)/\1 \2 \3/')
 regs=$(cuobjdump -res-usage ${n}_dev.cubin 2>/dev/null | grep -o 'REG:[0-9]*' | head -1)

@@ -45,7 +45,7 @@ extern fun pro_resident_run (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2
     return (law.run (gemm (a, b), serial_group ((8, 8, 0), 1, 3, group_item ((2, 2, 0), 1, item_done ())), default_control));
 extern fun pro_resident_req (a: tensor.Tensor 2 (16, 20) F32, b: tensor.Tensor 2 (20, 16) F32): tensor.Tensor 2 (16, 16) F32 =
     return (law.req (gemm (a, b), (), serial_group ((8, 8, 0), 1, 3, group_item ((2, 2, 0), 1, item_done ())), default_control));
-// LOG-COUNT-4: panel (4, 4, 2) stored as 4, 2, 4 split=1 perm=1, 2, 0 swizzle=none
+// LOG-COUNT-3: panel (4, 4, 2) stored as 4, 2, 4 split=1 perm=1, 2, 0 swizzle=none
 
 // CHECK-DAG: gpu.slot_shared
 // CHECK-DAG: gpu.sync_work_items

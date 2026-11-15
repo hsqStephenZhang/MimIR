@@ -147,7 +147,14 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   - `pipeline`（深度为 0 时取 `check.depth`，即 `-X tensor:pipeline`）、`RedTma`（`fill_tma`）、`Mma`/`Wgmma`（`tensor.mma`）、`RedWs`（`specialize`）、`Cluster`、`Persistent`：与 `TileFuse` 相同的标注，包在相同的位置。
   - 修了 `root_contraction` 的 normalizer：泛型的根（组合子还是参数、映射还不是 lam）原先被判成 `NoMma`，所以定律的收缩种类永远是 `NoMma`，带 `Mma`/`Wgmma` 层级的链对定律不能通过类型检查；现在它在这些事实已知前保持不规约。
   验证：`bench/gpu_tiling` 的 GEMM 逐个对比（RTX PRO 6000，`law_*.mim` 是 `gemm_*.mim` 的定律版本）——SIMT 的 `tiled`、`g3`、`g3_128` 与 `TileFuse` 持平，`g2`/`g2cap`/`g2s` 更快，TF32 与 16 位 `mma`（含 `pipeline=2`）持平；七个 Hopper 链（`wgmma`、TMA、cluster、cluster split、persistent、warp 特化）的设备 IR 中 `wgmma`、TMA、mbarrier 与描述符的每一行在去掉名字后完全相同，在 H200 NVL 上实测结果正确、时间持平（`bench/gpu_tiling/RESULTS.zh-CN.md`）。
-  `lit/{tensor,gpu,nvptx}/law_{vec,promote,mma,wgmma_*}.mim` 用与对应 `tile_*` 测试相同的检查覆盖这些层级；带融合成员的请求仍经 `law.req` 由 `TileFuse` 实现，成员融合是计划中留在 C++ 的图分析。
+  `lit/{tensor,gpu,nvptx}/law_{vec,promote,mma,wgmma_*}.mim` 用与对应 `tile_*` 测试相同的检查覆盖这些层级。
+- 成员融合第 1 步（2026-11-15）：逐点生产者的融合是定律的复合 `law.fuse slot (Sp) (g, ginit) gmaps ps (消费者的参数)`。
+  含义是消费者读生产者 `map_reduce (Sp, Sp) (g, ginit) id gmaps ps`，与 `is` 在 `slot` 处放的是什么无关，所以融合不改变含义，只改变实现。
+  定律的构造子 `build` 不再假定穿过各级的就是根的输入：它带一个物理输入 `phys: P` 与 `unfold: P → 逻辑输入`。普通定律取 `is` 与恒等；`law.fuse` 穿过 `(消费者的输入，slot 处换成 (), 生产者的输入)`，`unfold` 在叶子与面板里用穿过的生产者输入重建生产者。
+  读生产者的地方取它需要的盒子 `tile_of (生产者, 盒子)`：被提升的面板在装载时算出生产者（张量核的情形，与 `TileFuse` 的成员相同），未提升的叶子算它读的那一块（重算）。
+  `lit/gpu/law_fuse.mim`：TF32 `mma` 链与 SIMT 链的定律版本和 `TileFuse` 成员版本都在 H200 上执行正确，各一个 kernel、4 个设备缓冲；1024³ 的 dequant GEMM 与 `TileFuse` 持平（SIMT `g3` 0.0821 对 0.0825 ms，TF32 0.0617 对 0.0615 ms，`bench/gpu_tiling/law_dqf_{g3,tc}.mim`）。
+  一路修的 core 问题：`gpu.outline` 把闭合的区域输入映射到 kernel 参数时没有把 kernel 的变量绑进作用域，映射落进根作用域，同一模块里另一个函数的主机代码用到同一个闭合值时被改写成 kernel 参数（两个函数共享闭合输入时外部函数不闭合）；`core.pe.is_closed` 把未求解的 Hole 当作闭合，构造子在隐式参数还没推断完时就展开。
+  限制：一次融合一个逐点生产者（嵌套的生产者、多个成员留待后续）；归约生产者是第 3 步。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
@@ -162,5 +169,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 | 结构化 `Law (r, s, T)` 上按名取字段 `l#root` | 字段名不经类型函数传到 `#` | 按位置取，模块给出具名的访问函数 |
 | `law.req` 把层级交给 `tile_req` | 层级经过 RWPhase 重建后成为结构相同、指针不同的 nom 实例，`bitcast` 不能归约掉 | 经 `core.bitcast` 转换，TileFuse 剥掉它；`tile_req` 的 normalizer 见到它就跳过（定律已用自己的事实检查过） |
 | `check.report` 在 `law.req` 的定义体里 | normalizer 在定义时就看到未定的判定 | 判定含自由变量时不归约 |
+| 叶子里用计算出的面板计划 `boxed (…)` | 与 `Law` 以 `I` 为参数同源：代换把计划里嵌套的可变 pack 复制成多份，`alpha` 不能把同一个绑定子配给两份 | 叶子是带过滤器 `@(core.pe.is_closed (slot, Ris))` 的具名 `lam`，泛型时不展开，实例化后秩是字面量才展开 |
+| 物理输入是 `«nis - 1 + npp; …»`，按下标拼接 | `npp` 先成为字面量时，异构元组按非字面量下标取出的类型是并 `T ∪ U`，`bitcast` 推断的源类型不再匹配 | 穿过二元组 `(消费者的输入, 生产者的输入)`，只按 pack 自己的绑定子取下标 |
 
 前三条与 D6 的阻塞同源：依赖类型的实例化与比较。它们是继续推进第 3 步（TileFuse 在定律上解释调度）之前最值得在 core 里修的地方。

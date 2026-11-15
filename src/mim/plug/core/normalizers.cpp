@@ -1010,6 +1010,8 @@ const Def* normalize_pe(const Def* type, const Def*, const Def* arg) {
 
     if constexpr (id == pe::is_closed) {
         if (Axm::isa(pe::hlt, arg)) return world.lit_ff();
+        // An unresolved Hole may still turn out to hold a free variable.
+        if (std::ranges::any_of(arg->zonk()->local_muts(), [](Def* mut) { return mut->isa<Hole>(); })) return {};
         if (arg->is_closed()) return world.lit_tt();
     }
 

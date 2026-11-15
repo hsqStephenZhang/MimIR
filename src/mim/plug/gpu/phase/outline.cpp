@@ -347,7 +347,9 @@ const Def* Outline::outline(const App* app) {
     auto group_i64 = *n_groups == 1 ? w.lit_i64(0) : w.call(core::conv::u, w.lit_nat_0(), group_id);
     auto item_i64  = n_items == 1 ? w.lit_i64(0) : w.call(core::conv::u, w.lit_nat_0(), item_id);
 
+    // A closed piece maps to a kernel argument only inside the kernel.
     push();
+    bind_new(kernel->has_var());
     for (size_t i = 0, p = 0; i != pieces.size(); ++i) {
         auto arg = k_args->proj(n_args, i);
         if (p != dev_ptrs.size() && kernel_args[i] == dev_ptrs[p]) {

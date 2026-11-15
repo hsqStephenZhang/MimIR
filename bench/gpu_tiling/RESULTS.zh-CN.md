@@ -329,6 +329,17 @@ FP32 SIMT kernel 在 3、4 级下仍然正确，速度与 2 级相当。
 - `gemm_dqf_g3`（SIMT 版的融合写法）结果正确，但很慢（约 16 ms）。原因是 group 级把 s 的列切片复制进 scratch 槽位后，item 累加器的分配落进了 `mslot` 的回调，逃逸分析判它逃逸，累加器因此留在设备堆上。
 - W' 由两层逐元素算子合成时，work-group 级会留下一块设备堆分配；`mem.free_locals` 现在把它的 `free` 放到 kernel 出口转换（`gpu.global_mem`）之前的 generic 内存上。
 
+### 定律版本（H200 NVL，2026-11-15）
+
+`law_dqf_{g3,tc}.mim` 是 `gemm_dqf_{g3,tc}.mim` 的定律版本：W' 经 `law.fuse` 融合进乘积的定律，由解释器实现。1024³，`krun_dq.sh`，同一时段测量，单位 ms（中位数）。
+
+| 调度 | `TileFuse` 成员 | `law.fuse` |
+|---|---:|---:|
+| SIMT `g3` | 0.0825 | 0.0821 |
+| TF32 tensor core，无流水 | 0.0615 | 0.0617 |
+
+同一时段 `gemm_dq_g3`（dequant 写进 combiner）为 0.134 ms；`gemm_dqf_g3` 在 A100 上记录的约 16 ms 的问题在 H200 上已不复现。
+
 ## 16 位 tensor core GEMM（H200 NVL，2026-11-13）
 
 新原语：`gpu.mma_f16`/`gpu.mma_bf16`（`mma.sync.m16n8k16`，F32 累加）与 `gpu.ldmatrix_b16`（16 位元素，可选 `.trans`）；

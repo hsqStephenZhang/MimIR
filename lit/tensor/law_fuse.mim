@@ -1,0 +1,48 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 -fsanitize=address %S/law_fuse_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// The dequantized weights read the I8 weights five rows down and are fused into the product's law.
+// Its meaning, a chain that stages the weights' panels and one that reads them unstaged agree with TileFuse's member and
+// with the product of the dequantized weights.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+fun dequant (_: F32, ws: [I8, F32])@tt: F32 =
+    let (w, s) = ws;
+    return (math.arith.mul fast (math.conv.s2f math.f32 w, s));
+
+lam column (o: «2; affine.Index»): «2; affine.Index» = (affine.lit 0, o#1_2);
+lam shifted (o: «2; affine.Index»): «2; affine.Index» = (affine.op.add (o#0_2, affine.lit 5), o#1_2);
+
+lam weights (w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32) =
+    map_reduce ((16, 32), (16, 32)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1)) (shifted, column) (buf w, buf s);
+
+lam gemm (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32) =
+    law.fuse 1 (16, 32) (dequant, 0.0:F32) (shifted, column) (buf w, buf s)
+        ((32, 32), (32, 32, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, weights (w, s));
+
+let staged   = serial_par ((8, 8, 0), 0, serial_red ((0, 0, 4), 1, 2, serial_par ((2, 4, 0), 0, serial_done ())));
+let unstaged = serial_par ((8, 8, 0), 0, serial_red ((0, 0, 4), 1, 0, serial_done ()));
+
+extern fun fuse_denote (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32): tensor.Tensor 2 (32, 32) F32 =
+    return (law.denote (gemm (a, w, s)));
+extern fun fuse_staged (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32): tensor.Tensor 2 (32, 32) F32 =
+    return (law.run (gemm (a, w, s), staged, default_control));
+extern fun fuse_unstaged (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32): tensor.Tensor 2 (32, 32) F32 =
+    return (law.run (gemm (a, w, s), unstaged, default_control));
+extern fun fuse_req (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32): tensor.Tensor 2 (32, 32) F32 =
+    return (law.req (gemm (a, w, s), weights (w, s), staged, default_control));
