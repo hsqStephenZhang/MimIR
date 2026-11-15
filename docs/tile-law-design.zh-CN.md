@@ -187,6 +187,9 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   这样默认打开后全部 lit 通过：86 个用 `tile_req` 的测试文件里 31 个至少有一个请求走定律；只检查 `TileFuse` 日志的 7 个测试改为检查走了定律，`tile_group_chain` 放宽成它说明的性质（中间结果被释放，ASan 查泄漏），因为定律路径每个乘积多一个 64 × 64 的缓冲。
   一路修的：`lower_to_mem` 在打开 work-group 批次前先实现计算出的累加器（剥离的尾块之前的整块折叠，原先嵌套打开批次）；`law.req` 交给 `tile_req` 的层级带 `core.bitcast`，路由时剥掉；驻留成员的合并改用展开的 `vec.fold`（二元组累加器的 `tile_fold` 走了按 tensor 字段的乘积折叠），去掉了恒等的 epilogue。
   所以逐级递归还删不掉：上面那几类要先在定律里有对应物（组合子性质的检查、yields、多成员、按 work-item 切分的驻留归约）。
+  驻留成员每个元素一次的设备 `malloc`（2026-11-15 的调查）：元素的一元素 tile 由 `lower_map_reduce` 分配，`heap2stack` 只转换不逃逸的分配，而逃逸分析把它钉成 ⊤——缓冲交给降低后的归约循环（直接风格调用的续延）使用，读写与释放都在别的续延里。
+  试过两条路都没有收效并已撤回：给元素计算一个在填充循环外绑定的私有池（这块缓冲不走 `allocate` 的池路径）；让逃逸分析把直接风格调用的参数按 SCCP 流进被调的续延（对这个情形无效，钉住它的 `escape` 来自内存链的另一处，数据流尚未理清）。
+  要消掉它，要么把一元素的归约降低成标量循环（不经缓冲），要么让 lowering 在 work-group 统一的位置把计算的 `map_reduce` 按输出分给 work-item（合作计算，直接写进面板）。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
