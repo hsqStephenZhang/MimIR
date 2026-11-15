@@ -183,12 +183,12 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   模型只数第一层的块，不看更内层的暂存与复用，也不含计算量；融合的生产者按它在消费者里的槽数（物化的大小）。它是决定调度的默认依据，不是性能预测。
 - 第 5 步（去掉 `TileFuse` 的逐级递归）的现状（2026-11-15）：`tile_req` 默认先试着按定律实现（`-X tensor:tile-law=0` 关掉）。
   根是普通 `map_reduce`（无 epilogue、标量种子、规范调度、形状与层级大小都是字面量）的请求，没有成员时由 `law.run (law.of_map_reduce (根的各部分), levels, control)` 实现，只有一个根直接读的成员时由 `law.fuse`/`law.fuse_merging`（成员带 `merge_with`）实现。
-  仍交给逐级递归的：形状或层级大小是符号的；work-item/lane 归约没有显式合并（要靠 `TileFuse` 识别组合子是否可结合、种子是否单位元，`tile_reduction_contracts` 的诊断）或有序层切了内层归约循环；成员在请求外也被使用（yields）；多个或嵌套成员；work-group 链里的归约成员（`TileFuse` 把它切到 work-item 上；定律的驻留成员按元素在私有缓冲里算，每个元素一次设备 `malloc`，而 `heap2stack` 不转换循环里的分配）。
+  仍交给逐级递归的：形状或层级大小是符号的；work-item/lane 归约没有显式合并（要靠 `TileFuse` 识别组合子是否可结合、种子是否单位元，`tile_reduction_contracts` 的诊断）或有序层切了内层归约循环；成员在请求外也被使用（yields）；多个或嵌套成员；work-group 链里的归约成员（`TileFuse` 把它切到 work-item 上；定律的驻留成员按元素在私有缓冲里算，每个元素一次设备 `malloc`，见下面的调查）。
   这样默认打开后全部 lit 通过：86 个用 `tile_req` 的测试文件里 31 个至少有一个请求走定律；只检查 `TileFuse` 日志的 7 个测试改为检查走了定律，`tile_group_chain` 放宽成它说明的性质（中间结果被释放，ASan 查泄漏），因为定律路径每个乘积多一个 64 × 64 的缓冲。
   一路修的：`lower_to_mem` 在打开 work-group 批次前先实现计算出的累加器（剥离的尾块之前的整块折叠，原先嵌套打开批次）；`law.req` 交给 `tile_req` 的层级带 `core.bitcast`，路由时剥掉；驻留成员的合并改用展开的 `vec.fold`（二元组累加器的 `tile_fold` 走了按 tensor 字段的乘积折叠），去掉了恒等的 epilogue。
   所以逐级递归还删不掉：上面那几类要先在定律里有对应物（组合子性质的检查、yields、多成员、按 work-item 切分的驻留归约）。
-  驻留成员每个元素一次的设备 `malloc`（2026-11-15 的调查）：元素的一元素 tile 由 `lower_map_reduce` 分配，`heap2stack` 只转换不逃逸的分配，而逃逸分析把它钉成 ⊤——缓冲交给降低后的归约循环（直接风格调用的续延）使用，读写与释放都在别的续延里。
-  试过两条路都没有收效并已撤回：给元素计算一个在填充循环外绑定的私有池（这块缓冲不走 `allocate` 的池路径）；让逃逸分析把直接风格调用的参数按 SCCP 流进被调的续延（对这个情形无效，钉住它的 `escape` 来自内存链的另一处，数据流尚未理清）。
+  驻留成员每个元素一次的设备 `malloc`（2026-11-15 的调查）：元素的一元素 tile 由 `lower_map_reduce` 分配，`heap2stack` 只转换不逃逸的分配，而逃逸分析把它钉成 ⊤；是哪一处 `escape` 钉住它还没有查清。
+  已知的只是两条修法无效并已撤回：给元素计算一个在填充循环外绑定的私有池（这块缓冲不走 `allocate` 的池路径）；让逃逸分析把直接风格调用的参数按 SCCP 流进被调的续延（缓冲交给降低后的归约循环的续延使用，读写与释放都在别的续延里，但这样改后它仍是 ⊤）。
   要消掉它，要么把一元素的归约降低成标量循环（不经缓冲），要么让 lowering 在 work-group 统一的位置把计算的 `map_reduce` 按输出分给 work-item（合作计算，直接写进面板）。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；

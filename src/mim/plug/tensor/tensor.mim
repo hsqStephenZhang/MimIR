@@ -2508,6 +2508,8 @@ anx lam group_red_pipelined {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n;
     (GroupLevels (n, Acc, Mma, g))#Red (sizes, peeled tail, promote, pipeline, rest);
 anx lam group_red_items {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
     (GroupLevels (n, Acc, Mma, g))#RedItems (sizes, peeled tail, (TileMerge Acc)#Combiner, rest);
+/// Work-items merge their partials with `merge` along a butterfly tree, so the caller vouches that it is a commutative
+/// monoid with the seed as its identity, of which the step is a homomorphism.
 anx lam group_red_merge {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail: Nat, merge: [Acc, Acc] → Acc, rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
     (GroupLevels (n, Acc, Mma, g))#RedItems (sizes, peeled tail, (TileMerge Acc)#Merge merge, rest);
 anx lam group_vec {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
@@ -2892,7 +2894,8 @@ axm persistent: {T: *} → [ctas: Nat] → T → T;
 axm mma: {T: *} → [n: Nat, shape: «n; Nat»] → T → T;
 ///
 /// `merge_with merge step` explicitly permits a bound reduction's partial accumulators to use `merge`.
-/// Its accumulator type is checked, but its algebraic laws are not inferred.
+/// Its accumulator type is checked, but its laws are vouched for: a commutative monoid with the seed as its identity,
+/// of which the step is a homomorphism, as the partials merge in any order and grouping.
 axm merge_with: {T Acc: *} → [merge: [Acc, Acc] → Acc] → T → T;
 ///
 /// Fuses exactly the group's members; parallel levels yield members that have users outside the group,
@@ -3882,6 +3885,8 @@ pub mod law
     /// so the law folds `(r, a)` in order and merges two partials by correcting both to the merged statistic.
     /// The caller vouches that `scale` distributes over `plus`, that `scale (ratio (r, r'), f (xs, r)) = f (xs, r')`, and
     /// that ratios compose, as online softmax and attention's output do with `ratio (m, m') = exp (m - m')`.
+    /// The derived merge is vouched for as `merge` is, so `rmerge` and `plus` must each be a commutative monoid with
+    /// `r0` and `a0` as identities, and `stat` a homomorphism into `rmerge`.
     anx lam of_rolling {nis: Nat} {R A W: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
@@ -4048,6 +4053,7 @@ pub mod law
     /// A block law whose blocks roll a statistic, as `of_rolling` does per element: a block moves the statistic to
     /// `r'`, the accumulated tiles are corrected by `scale (ratio (r, r'))`, and the block accumulates into them against `r'`.
     /// The accumulator `A` stays the caller's flat tuple of tiles; `split` and `join` view it as the statistic and the rest.
+    /// Its blocks fold in order, so it vouches for no merge.
     anx lam blocks_rolling {nis: Nat} {T: *, Ro Rn: Nat} (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»} (A Rt At Wt: «Ro; Nat» → *)
         (split: [ext: «Ro; Nat», acc: A ext] → [Rt ext, At ext], join: [ext: «Ro; Nat», r: Rt ext, a: At ext] → A ext)
