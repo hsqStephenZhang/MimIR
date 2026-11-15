@@ -146,7 +146,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
     SIMT 面板的布局是一个按 bank 冲突建模的搜索（约 550 个候选、每个模拟数个 warp 的共享内存访问），按实测的 PE 速度（约 2 µs 一次迭代）每个面板要几分钟，所以它留作 oracle：公理 `tensor.panel_layout` 的 normalizer 调用原来的 `panel::choose`，结果是 `layout_expr` 项，由已有的 F₂ 判定检查。
   - `pipeline`（深度为 0 时取 `check.depth`，即 `-X tensor:pipeline`）、`RedTma`（`fill_tma`）、`Mma`/`Wgmma`（`tensor.mma`）、`RedWs`（`specialize`）、`Cluster`、`Persistent`：与 `TileFuse` 相同的标注，包在相同的位置。
   - 修了 `root_contraction` 的 normalizer：泛型的根（组合子还是参数、映射还不是 lam）原先被判成 `NoMma`，所以定律的收缩种类永远是 `NoMma`，带 `Mma`/`Wgmma` 层级的链对定律不能通过类型检查；现在它在这些事实已知前保持不规约。
-  验证：`bench/gpu_tiling` 的 GEMM 逐个对比（RTX PRO 6000，`law_*.mim` 是 `gemm_*.mim` 的定律版本）——SIMT 的 `tiled`、`g3`、`g3_128` 与 `TileFuse` 持平，`g2`/`g2cap`/`g2s` 更快，TF32 与 16 位 `mma`（含 `pipeline=2`）持平；七个 Hopper 链（`wgmma`、TMA、cluster、cluster split、persistent、warp 特化）只能按 sm_90a 编译，两条路径的设备 IR 中 `wgmma`、TMA、mbarrier 与描述符的每一行在去掉名字后完全相同。
+  验证：`bench/gpu_tiling` 的 GEMM 逐个对比（RTX PRO 6000，`law_*.mim` 是 `gemm_*.mim` 的定律版本）——SIMT 的 `tiled`、`g3`、`g3_128` 与 `TileFuse` 持平，`g2`/`g2cap`/`g2s` 更快，TF32 与 16 位 `mma`（含 `pipeline=2`）持平；七个 Hopper 链（`wgmma`、TMA、cluster、cluster split、persistent、warp 特化）的设备 IR 中 `wgmma`、TMA、mbarrier 与描述符的每一行在去掉名字后完全相同，在 H200 NVL 上实测结果正确、时间持平（`bench/gpu_tiling/RESULTS.zh-CN.md`）。
   `lit/{tensor,gpu,nvptx}/law_{vec,promote,mma,wgmma_*}.mim` 用与对应 `tile_*` 测试相同的检查覆盖这些层级；带融合成员的请求仍经 `law.req` 由 `TileFuse` 实现，成员融合是计划中留在 C++ 的图分析。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；

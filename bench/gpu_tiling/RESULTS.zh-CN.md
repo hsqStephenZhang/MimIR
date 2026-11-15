@@ -557,3 +557,19 @@ tensor map 由 `gpu.buf_tensor_map` 描述，lower_to_mem 把它建在区域外�
 两边选出的面板布局相同时时间相同；`g2` 系列的定律版本更快，没有布局时更快（0.111 ms），说明这几个形状上布局搜索的选择不如默认布局。
 `tiled_g3_128w` 两边都约 227 ms，是两条路径共有的异常。
 `wg` 系列（`wgmma`、TMA、cluster、persistent、warp 特化）在这台 sm_120 机器上只能编译，两边设备 IR 中相关的每一行相同。
+
+### Hopper 链在 H200 NVL 上实测（2026-11-15）
+
+`gemm_tiled_wg*.mim`（`CL = 2`、`PIPE = 3`）与它们的定律版本，sm_90a，`wg`/`wg_nn` 用 `krun.sh`（`TY=f16f32t`/`f16f32`，中位数），其余用 `krun_e2e.sh`（nsys），单位 ms，结果全部正确：
+
+| 链 | TileFuse | 定律 |
+|---|---:|---:|
+| `wg` | 0.0202 | 0.0204 |
+| `wg_nn` | 0.0216 | 0.0217 |
+| `wg_tma` | 0.0127 | 0.0127 |
+| `wg_cluster` | 0.0236 | 0.0237 |
+| `wg_split` | 0.0139 | 0.0139 |
+| `wg_ws` | 0.0179 | 0.0180 |
+| `wg_persistent` | 0.0179 | 0.0179 |
+
+`lit/nvptx/law_wgmma_*.mim` 与 `tile_wgmma*.mim` 在这台机器上也都在设备上执行通过（`cuda-sm90` 由 `nvidia-smi` 的计算能力 9.0 打开）。
