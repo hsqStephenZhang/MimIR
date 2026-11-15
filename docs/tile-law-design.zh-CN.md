@@ -175,7 +175,8 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 - 定律的组合子义务（2026-11-15，评审第 1 条）：评审复现了两种静默算错——有序定律切内层归约循环，以及把不可结合、种子不是单位元的组合子切到 work-item。
   现在 `TileFuse` 的组合子识别（`reduction_law`）移进插件库，经 `check.combiner` 反射成根的事实；定律多一个字段记录组合子允许的事（担保的合并、种子是单位元的可结合组合子、种子不是单位元、都不是），`law.run`/`law.req` 的 `check.law_verdict` 与 `law.red`/`law.red_par` 据此报错。
   `lit/error/law_ordered_inner.mim`、`law_items_combiner.mim`、`law_red_inner.mim` 是三个复现。
-  评审修复后又指出：担保的合并只承诺结合律与单位元，切内层归约循环还要交换律，所以内层循环只对识别出的组合子放行（担保的不可交换合并，如序列拼接，原先会静默算错）；`law.schedule` 也走同样的检查；`check.combiner` 在组合子含外层变量时保持不规约。
+  评审修复后又指出：担保的合并若只承诺结合律与单位元，切内层归约循环（重排元素）与 work-item 的合并树（蝶形配对，`r8_plan`）都会让不可交换的合并静默算错。
+  所以担保的合同改为：`merge` 是以种子为单位元的可交换幺半群，组合子把一个元素折进来等于与它从种子的折叠做 `merge`（现有的担保合并——加法、在线 softmax、滚动律——都满足）；在此合同下内层循环与 work-item 切分都放行。`law.schedule` 也走同样的检查；`check.combiner` 在组合子含外层变量时保持不规约。
 - 第 4 步（流量模型，2026-11-15）：定律多了一个字段 `traffic: TileLevels → Nat`，按 Welder 的算法在 Mim 里数一个调度经过全局内存的字节：第一条把输出切成块的层级（`Par`/`Group`，穿过 `Cluster`/`Persistent`）给出块，每个块读每个输入经映射成像的盒子（`affine.image`），乘元素大小与块数，再加一次输出。
   `law.traffic (l, levels)` 在 PE 时归约成字面量；`law.best (l, candidates)` 在一组候选层级链里取流量最小的，同样在 PE 时选定，可以直接交给 `law.run`。
   `lit/tensor/law_traffic.mim`：64³ F32 GEMM，16 × 16 块 147456 字节、32 × 32 块 81920、整块 49152，`best` 取 32 × 32。
