@@ -649,8 +649,10 @@ void Fuse::start() {
     auto classes = std::vector<DefVec>();
     for (auto def : view.operations()) {
         if (!is_mr(def)) continue;
-        auto same
-            = std::ranges::find_if(classes, [&](const DefVec& c) { return Check::alpha<Check::T>(c.front(), def); });
+        // α-equivalence pairs free Vars structurally, so the representative must also be in scope at the copy.
+        auto same = std::ranges::find_if(classes, [&](const DefVec& c) {
+            return Check::alpha<Check::T>(c.front(), def) && c.front()->free_vars().subset_of(def->free_vars());
+        });
         if (same == classes.end())
             classes.push_back({def});
         else
