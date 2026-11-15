@@ -737,9 +737,10 @@ const Def* World::extract_fused(const Def* d, Shape index) {
 /// `d#index ← val` replaces all of it.
 bool World::is_folded_axis(const Def* type, const Def* index, const Def* size) {
     if (Lit::isa(size) == 1) {
-        // A *mutable* Sigma may be a genuine 1-tuple and still needs a real Extract/Insert; TODO mutable Arr?
+        // A *mutable* Sigma may be a genuine 1-tuple and still needs a real Extract/Insert.
+        // A *mutable* Arr's element type depends on the index, so folding would keep the Arr as the element's type.
         auto sigma = type->isa_mut<Sigma>();
-        if (!sigma || sigma->num_ops() != 1) return true;
+        if ((!sigma || sigma->num_ops() != 1) && !type->isa_mut<Arr>()) return true;
     }
 
     if (!Check::alpha(type->arity(), size)) index->blame("index does not fit within arity `{}`", type->arity()).bail();
