@@ -2597,6 +2597,8 @@ pub mod check
     /// A rule takes a block of 0 as unknown and lets it pass; `tile_fuse` checks it once it is literal.
     axm parallel: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Nat, normalize_check;
     axm inputs: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Nat, normalize_check;
+    /// Whether the root's combiner is a recognized reassociable operation: 0 if not, 1 if its seed is the identity, 2 if not.
+    axm combiner: {T: *, r: Nat} → {s: «r; Nat»} → Tensor r s T → Nat, normalize_check;
     axm extents: {T: *, r: Nat} → {s: «r; Nat»} → [op: Tensor r s T] → «root_loops op; Nat», normalize_check;
     /// The target's compute capability `-X nvptx:sm` names, as `2 · cc + a` for an architecture-specific `sm_<cc>a`, or
     /// 0 when none is named and the backend picks the device's later.
@@ -2625,7 +2627,10 @@ pub mod check
         "warpgroup ping-pong alternates two consumers, not {}",
         "a warpgroup level runs wgmma, which needs sm_90a, not sm_{}",
         "TMA and clusters need sm_90 or newer, not sm_{}",
-        "a warp's mma needs sm_80 or newer, not sm_{}");
+        "a warp's mma needs sm_80 or newer, not sm_{}",
+        "an ordered reduction level can only tile the outermost reduction loop",
+        "a work-item reduction needs a vouched or explicit merge, or a recognized reassociable combiner whose identity is the seed",
+        "a lane reduction needs a recognized reassociable combiner whose identity is the seed");
 
     lam any {n: Nat} (p: «n; Bool»): Bool = vec.fold.r @(Bool, Bool) @n (core.bit2.or 0) (p, ff);
     lam count {n: Nat} (p: «n; Bool»): Nat = vec.fold.r @(Nat, Nat) @n core.nat.add (‹d: n; (0, 1)#(p#d)›, 0);
@@ -2774,6 +2779,57 @@ pub mod check
             | 4 (sizes, rest) => or_else (vector (ro, sizes), tile_ok (ro, nis, block, a, b, cluster, split, persistent, rest))
             | 5 (size, _, cut, rest) => or_else (needs 90 ff 18, tile_ok (ro, nis, block, a, b, size, cut, persistent, rest))
             | 6 (_, rest) => tile_ok (ro, nis, block, a, b, cluster, split, tt, rest);
+
+    /// What a law's combiner permits, `law`: 0 nothing, 1 a recognized reassociable combiner whose identity is the seed,
+    /// 2 one whose seed is not its identity, 3 a merge the law vouches for.
+    /// A level that tiles a reduction loop inside another folds its elements out of order, and a split over work-items
+    /// or lanes merges partials, which only these permit.
+    lam inner {n: Nat} (ro: Nat, sizes: «n; Nat»): Bool = any ‹d: n; both (sizes#d != 0, ro < core.idx2nat d)›;
+    lam ordered {n: Nat} (ro law: Nat, sizes: «n; Nat»): Verdict = fail (both (inner (ro, sizes), law == 0), 20);
+    lam merged {Acc: *} (law: Nat, mg: TileMerge Acc): Verdict =
+        match mg with | 0 => fail (both (law != 1, law != 3), 21) | 1 _ => ok;
+    lam wg_law {n: Nat, Acc Mma: *, g t: «n; Nat»} (ro law: Nat, l: WarpgroupLevels (n, Acc, Mma, g, t))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), wg_law (ro, law, rest))
+            | 2 (_, _, _) => ok
+            | 3 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), wg_law (ro, law, rest))
+            | 4 (sizes, _, _, _, _, _, rest) => or_else (ordered (ro, law, sizes), wg_law (ro, law, rest));
+    lam warp_law {n: Nat, Acc Mma: *, w: «n; Nat»} (ro law: Nat, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), warp_law (ro, law, rest))
+            | 2 (_, _, _) => ok;
+    lam item_law {n: Nat, Acc Mma: *} (ro law: Nat, l: ItemLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (_, _, rest) => item_law (ro, law, rest)
+            | 2 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), item_law (ro, law, rest))
+            | 3 (_, rest) => item_law (ro, law, rest)
+            | 4 (sizes, _, rest) => or_else (ordered (ro, law, sizes), or_else (fail (law != 1, 22), item_law (ro, law, rest)));
+    lam group_law {n: Nat, Acc Mma: *, g: «n; Nat»} (ro law: Nat, l: GroupLevels (n, Acc, Mma, g))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (_, _, rest) => group_law (ro, law, rest)
+            | 2 (_, _, rest) => item_law (ro, law, rest)
+            | 3 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), group_law (ro, law, rest))
+            | 4 (sizes, _, mg, rest) => or_else (ordered (ro, law, sizes), or_else (merged @Acc (law, mg), group_law (ro, law, rest)))
+            | 5 (_, rest) => group_law (ro, law, rest)
+            | 6 (sizes: «n; Nat», _: Nat, rest: WarpLevels (n, Acc, Mma, within (g, sizes))) => warp_law (ro, law, rest)
+            | 7 (sizes: «n; Nat», _: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, sizes)) => wg_law (ro, law, rest);
+    lam tile_law {n: Nat, Acc Mma: *} (ro law: Nat, l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
+        match l with
+            | 0 => ok
+            | 1 (_, _, rest) => tile_law (ro, law, rest)
+            | 2 (sizes: «n; Nat», _ _: Nat, rest: GroupLevels (n, Acc, Mma, sizes)) => group_law (ro, law, rest)
+            | 3 (sizes, _, _, rest) => or_else (ordered (ro, law, sizes), tile_law (ro, law, rest))
+            | 4 (_, rest) => tile_law (ro, law, rest)
+            | 5 (_, _, _, rest) => tile_law (ro, law, rest)
+            | 6 (_, rest) => tile_law (ro, law, rest);
+    anx lam combining {n: Nat, Acc Kind: *} (ro law: Nat, l: TileLevels (n, Acc, Kind)): Verdict = tile_law (ro, law, l);
+    /// The verdict of a chain on a law: its root's rules and what its combiner permits.
+    anx lam law_verdict {n: Nat, Acc Kind: *} (ro nis: Nat, extents: «n; Nat», law: Nat, l: TileLevels (n, Acc, Kind)): Verdict =
+        or_else (tile_ok (ro, nis, extents, ff, ff, 0, 0, ff, l), tile_law (ro, law, l));
 
     /// The verdict of a chain over a root with `ro` parallel loops, `nis` inputs and loop `extents`.
     anx lam verdict {n: Nat, Acc Kind: *} (ro nis: Nat, extents: «n; Nat», l: TileLevels (n, Acc, Kind)): Verdict =
@@ -3265,7 +3321,7 @@ pub mod law
     anx lam Law (r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *): * =
         [ro inputs: Nat, extents: «n; Nat», root: Tensor r s T,
          par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T,
-         schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat];
+         schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat, combining: Nat];
 
     /// The root of `map_reduce`'s arguments and its law.
     /// `par ts` concatenates the root's tiles of `ts`; `red (loop, ks)` folds reduction loop `loop` in whole blocks of `ks`
@@ -3739,7 +3795,8 @@ pub mod law
             let block = vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (reads, 0);
             let out   = vec.fold.r @(Nat, Nat) @Ro (λ (e x: Nat): Nat = core.nat.mul (e, x)) (So, core.trait.size To);
             core.nat.add (core.nat.mul (count, block), out);
-        (Ro, nis, Sr, root, par, red, red_par, schedule, traffic);
+        // A law with a merge of its own vouches for it; an ordered one permits what its combiner does.
+        (Ro, nis, Sr, root, par, red, red_par, schedule, traffic, (3, check.combiner root)#ordered);
 
     anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -3844,39 +3901,42 @@ pub mod law
 
     /// Field access by position: a record behind a type function does not carry its field names to `#`.
     /// The meaning of a law: its root.
-    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₉;
+    anx lam denote {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind)): Tensor r s T = l#3₁₀;
     /// The bytes `levels` would move through global memory, and of `c` candidate schedules the one that moves the fewest.
     anx lam traffic {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Nat =
-        (l#8₉) levels;
+        (l#8₁₀) levels;
     anx lam best {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, c: Nat}
         (l: Law (r, s, T, n, Acc, Kind), candidates: «c; TileLevels (n, Acc, Kind)»): TileLevels (n, Acc, Kind) =
-        let costs = ‹j: c; (l#8₉) (candidates#j)›;
+        let costs = ‹j: c; (l#8₁₀) (candidates#j)›;
         let pick  = vec.fold.l @(Nat, Idx c) @c (λ (x: Nat, j: Idx c): Nat =
             (x, core.idx2nat j)#(costs#j < costs#(core.idx 0 c x))) (0, ‹j: c; j›);
         candidates#(core.idx 0 c pick);
     anx lam par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), ts: «r; Nat»): Tensor r s T =
-        (l#4₉) ts;
+        (l#4₁₀) ts;
+    /// Blocks of a reduction loop inside another fold out of order, which only a law's combiner or merge permits.
+    lam outer {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop: Nat): «3; Nat» =
+        ((0, 0, 0), (20, 0, 0))#(core.bit2.and 0 (l#0₁₀ < loop, l#9₁₀ == 0));
     anx lam red {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop ks: Nat): Tensor r s T =
-        (l#5₉) (loop, ks);
+        check.report (outer (l, loop), (l#5₁₀) (loop, ks));
     anx lam red_par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), loop parts: Nat)
-        : Tensor r s T = (l#6₉) (loop, parts);
+        : Tensor r s T = check.report (outer (l, loop), (l#6₁₀) (loop, parts));
     /// The meaning of a schedule over the law, by the split lemmas, which a realized request must agree with.
     anx lam schedule {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *}
-        (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Tensor r s T = (l#7₉) levels;
+        (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Tensor r s T = (l#7₁₀) levels;
 
     /// A tile request whose levels are indexed by the law's facts and checked by them; once the law is literal the cast is
     /// between two instances of one level type.
     anx lam req {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, M K: *}
         (l: Law (r, s, T, n, Acc, Kind), members: M, levels: TileLevels (n, Acc, Kind), control: K): Tensor r s T =
-        let root = l#3₉;
-        check.report (check.verdict (l#0₉, l#1₉, l#2₉, levels),
+        let root = l#3₁₀;
+        check.report (check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, levels),
             tile_req (root, members, core.bitcast (TileLevels (root_loops root, root_acc root, root_contraction root)) levels,
                       control));
 
     /// A request without members that runs as the law's meaning of its chain, after checking the chain by the law's facts.
     anx lam run {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, K: *}
         (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind), _: K): Tensor r s T =
-        check.report (check.verdict (l#0₉, l#1₉, l#2₉, levels), (l#7₉) levels);
+        check.report (check.law_verdict (l#0₁₀, l#1₁₀, l#2₁₀, l#9₁₀, levels), (l#7₁₀) levels);
 
     /// A law realized by blocks: the user steps an accumulator tile `A ext` over a block of the loops and finishes it.
     /// `denote` is the meaning that every schedule must equal; `step` and `finish` are vouched for, like a merge.

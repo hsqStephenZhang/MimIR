@@ -1,0 +1,18 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: law_ordered_inner.mim:18:{{.*}}error: an ordered reduction level can only tile the outermost reduction loop
+
+// Horner's step is no reassociable combiner, so an ordered law folds its loops in order: tiling the inner reduction
+// loop would fold each block of it across the outer one and change the result.
+
+plugin tensor;
+plugin core;
+plugin affine;
+
+use tensor;
+
+fun horner (acc: I64, xs: [I64])@tt: I64 = return (core.wrap.add 0 (core.wrap.mul 0 (acc, 3I64), xs#0₁));
+
+lam l (x: tensor.Tensor 3 (2, 3, 4) I64) =
+    law.of_map_reduce @1 (2, (2, 3, 4)) (horner, 0I64) (proj_map @(3, 1) 0) (affine.id @3,) (buf x,);
+
+extern fun inner (x: tensor.Tensor 3 (2, 3, 4) I64): tensor.Tensor 1 2 I64 = return (law.run (l x, serial_red ((0, 0, 2), 0, 0, serial_done ()), default_control));

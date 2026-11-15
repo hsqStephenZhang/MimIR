@@ -159,7 +159,8 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   work-group 层提升融合的槽时，它的盒子驻留在共享内存里，由 work-item 合作算出：叶子里整块 `stage` 的源是两次合作填充的 `generate`——先把盒子 × `C` 段归约（`C` 约为 work-item 数除以盒子大小，整除 K 时才切分）各自从种子折叠成部分结果，再用 `merge` 把每个元素的 `C` 个部分结果合起来；没有 `merge` 时每个元素由一个 work-item 整个归约。
   这样做而不是像 `TileFuse` 那样在 work-group 层插入绑定到 work-item 的折叠，是因为解释器的叶子在 work-item 区域里，而绑定的折叠必须直接嵌在 work-group 层下（`lower_to_mem` 的规定）；合作填充在 work-item 区域里也是 work-group 统一的。
   `lit/gpu/law_resident.mim`（逐元素）与 `law_resident_merge.mim`（4 行 × 4 段，部分结果 `«4, 4, 2»` 与合并后的 `«4, 2»` 都在共享内存）在 GPU 上执行正确。
-  12 × 1024 × 1024 的在线 softmax（`bench/gpu_fusion/softmax_resident_law.mim`）在 H200 上 37.5 µs，`TileFuse` 的 `softmax_resident` 29.4 µs；不切分时 228 µs。
+  12 × 1024 × 1024 的在线 softmax（`bench/gpu_fusion/softmax_resident_law.mim`）在 H200 上 37.4 µs，`TileFuse` 的 `softmax_resident` 29.4 µs；不切分时 228 µs。
+  更正：最初测得的 37.5 µs 出自有数据竞争的 kernel（合并部分结果的填充与写部分结果的填充同在一个 work-group 批次里，批次只在最后放一道屏障）；`lit/gpu/law_resident_merge.mim` 规模太小没有测出来。现在 `lower_to_mem` 让读另一次填充的合作填充离开批次，两次填充前后各有屏障，结果正确且时间不变。
   修的 core 问题：合作填充里每个元素的计算原先按 work-group 统一的作用域分配，一元素的临时 tile 落进同一个共享槽，各 work-item 竞争写它；现在元素的计算按私有作用域分配。区域输入检查把 `splat` 当作读外层张量，它其实只构造张量。
   仍差的 27% 主要是流量：生产者从全局内存再读一遍 `x`，而 `TileFuse` 的折叠读暂存的行。让生产者读消费者暂存的视图（别名）试过但撤回了：把视图交给生产者需要在部分实例化时按符号下标取异构元组，`Check`/`extract` 给出并类型或折叠错的 arity（另记：`World::extract1` 对 arity 1 的依赖 `Arr` 也按单元素折叠，返回值的类型仍是 `Arr`，这是同一类问题）。
   yields（成员同时被区域外使用时由融合的 kernel 交回）还没有做：需要多输出的定律。
@@ -171,6 +172,9 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   块级同理：`law.blocks_rolling` 从块的统计量（新的行最大值）、修正（`exp (m - mx)` 作用于和与输出 tile）、块的累加（行和与 `P·V` 的 `map_reduce_acc`）推出块定律的步；累加器保持使用者的扁平元组，由 `split`/`join` 看成统计量与其余部分（嵌套的元组累加器让 warp 区域的累加器落到设备堆上，大尺寸时越界）。
   `bench/gpu_attn/attn_roll.mim` 与手写步的 `attn_law.mim` 生成同样的 kernel（TF32 `mma`、`cp.async` 双缓冲），H200 上 32 × 1024 到 128 × 2048 的时间相同（0.092–1.274 ms）。
   一并改了：用担保的 `merge` 建的定律（无序）在 work-item/lane 归约里把它显式交给 `merge_with`（`TileMerge` 0），有序定律仍由 lowering 识别组合子。
+- 定律的组合子义务（2026-11-15，评审第 1 条）：评审复现了两种静默算错——有序定律切内层归约循环，以及把不可结合、种子不是单位元的组合子切到 work-item。
+  现在 `TileFuse` 的组合子识别（`reduction_law`）移进插件库，经 `check.combiner` 反射成根的事实；定律多一个字段记录组合子允许的事（担保的合并、种子是单位元的可结合组合子、种子不是单位元、都不是），`law.run`/`law.req` 的 `check.law_verdict` 与 `law.red`/`law.red_par` 据此报错。
+  `lit/error/law_ordered_inner.mim`、`law_items_combiner.mim`、`law_red_inner.mim` 是三个复现。
 - 第 4 步（流量模型，2026-11-15）：定律多了一个字段 `traffic: TileLevels → Nat`，按 Welder 的算法在 Mim 里数一个调度经过全局内存的字节：第一条把输出切成块的层级（`Par`/`Group`，穿过 `Cluster`/`Persistent`）给出块，每个块读每个输入经映射成像的盒子（`affine.image`），乘元素大小与块数，再加一次输出。
   `law.traffic (l, levels)` 在 PE 时归约成字面量；`law.best (l, candidates)` 在一组候选层级链里取流量最小的，同样在 PE 时选定，可以直接交给 `law.run`。
   `lit/tensor/law_traffic.mim`：64³ F32 GEMM，16 × 16 块 147456 字节、32 × 32 块 81920、整块 49152，`best` 取 32 × 32。

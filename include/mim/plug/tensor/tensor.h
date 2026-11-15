@@ -227,6 +227,13 @@ std::optional<u64> nat_upper(const Def* x);
 
 /// The value @p lam returns, also when it hands its mapped element to a local continuation that returns the result.
 const Def* returned(Lam* lam);
+/// The operation a combiner `λ (acc, x). op (acc, x)` applies, if its other operand never reads the accumulator.
+const Def* combiner_app(const Def* comb);
+/// A reduction whose combiner is a reassociable operation, with that operation's identity.
+struct ReductionLaw {
+    const Def* identity;
+};
+std::optional<ReductionLaw> reduction_law(const btensor::MapRedPost& mr);
 /// Whether `x ≤ bound` follows from the structure of @p x: alpha-equal, a literal upper bound, or a `min` with @p
 /// bound.
 bool nat_bounded_by(const Def* x, const Def* bound);

@@ -958,6 +958,24 @@ const Def* LowerToMem::lower_generate(const App* app) {
     auto [br, bs, bT] = Axm::isa<buffer::Buf>(out_ty)->args<3>();
     auto result_ty    = w.sigma({w.call<mem::M>(0), out_ty});
     if (bounded) storage_shapes_[app] = storage;
+    // A fill that reads another fill cannot share its batch, which publishes both behind one barrier; outside a batch
+    // each cooperative fill is fenced on both sides.
+    auto reads_fill = [&] {
+        auto queue = fe::BFSWorklist<DefSet>();
+        queue.push(app->arg());
+        while (!queue.empty()) {
+            auto def = queue.pop();
+            if (auto get = Axm::isa<tensor::get>(def))
+                if (Axm::isa<tensor::generate>(Axm::peel<tensor::buf>(get->arg(2, 0)))) return true;
+            if (def->isa<Var>() || def->isa<Axm>()) continue;
+            for (auto op : def->deps())
+                if (op) queue.push(op);
+        }
+        return false;
+    };
+    // Only a dependent fill leaves the batch; restoring it otherwise would drop the token this fill's panels advance.
+    auto outside = std::optional<fe::Restore<std::optional<Batch>>>();
+    if (batch_ && uniform_ && reads_fill()) outside.emplace(batch_, std::nullopt);
     auto [sources, captures] = capture_producers(app->arg());
     auto compute             = [&](Defs iters, const Def* input, const Def* m) -> std::pair<const Def*, const Def*> {
         auto nested = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);

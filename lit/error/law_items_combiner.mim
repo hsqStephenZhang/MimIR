@@ -1,0 +1,21 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: law_items_combiner.mim:21:{{.*}}error: a work-item reduction needs a vouched or explicit merge, or a recognized reassociable combiner whose identity is the seed
+
+// Subtraction is no reassociable combiner and 1 is no identity, so the work-items' partials of an ordered law cannot be
+// merged.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+fun sub (acc: math.F32, xs: [math.F32])@tt: math.F32 =
+    let (x) = xs;
+    return (math.arith.sub math.mode.none (acc, x));
+
+lam l (x: tensor.Tensor 2 (16, 16) math.F32) =
+    law.of_map_reduce @1 (16, (16, 16)) (sub, 1.0:math.F32) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1),) (buf x,);
+
+extern fun items (x: tensor.Tensor 2 (16, 16) math.F32): tensor.Tensor 1 16 math.F32 = return (law.run (l x, serial_group ((4, 0), 1, 0, group_red_items ((0, 4), 1, group_done ())), default_control));
