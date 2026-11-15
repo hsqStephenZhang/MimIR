@@ -141,7 +141,9 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 - 第 3 步完成（2026-11-15）：`TileFuse` 的全部层级都由解释器实现，`law.run` 不再退回 `TileFuse`（`plain` 已删除）。逐项：
   - `Vec`：并行维为 1 的那一维成为向量循环；最后一个归约循环按其大小切成 `(K / f, f)` 并展开内层，与 `split_reduction` 相同。
   - 提升（`promote`）：归约层为每个块生成计划，被提升的输入把块的盒子（`affine.image`，由单位斜率驱动的维直接取那个循环的块大小，区域专门化后是字面量）`stage` 成面板，面板维与宽度由单位盒的像在 Mim 里探测（与 `panel_axis` 相同的规则），叶子经面板读映射读取；work-group 内 work-item 或 warp 的归约放宽为整个 work-group 的块（work-group 范围的面板），work-group 层自己的提升把输入的盒子整块驻留。
-  - 面板布局：存储形状、最内连续维、向量宽度、work-item 的读法与张量核模式这些事实由 Mim 算出，交给公理 `tensor.panel_layout`；它的 normalizer 只调用原来的 bank 冲突搜索（`panel::choose`/`mma`/`wgmma`），是一个 oracle，结果是 `layout_expr` 项，由已有的 F₂ 判定检查。
+  - 面板布局：存储形状、最内连续维、向量宽度、work-item 的读法与张量核模式这些事实由 Mim 算出。
+    张量核操作数的布局是确定的规则，在 Mim 里（`tensor.tc_layout.mma`/`wgmma`）：连续维放最内并填充末维，或把唯一的行维排成 128 字节段的行并按段 swizzle；七个 Hopper 链的设备 IR 与 `TileFuse` 的逐行相同。
+    SIMT 面板的布局是一个按 bank 冲突建模的搜索（约 550 个候选、每个模拟数个 warp 的共享内存访问），按实测的 PE 速度（约 2 µs 一次迭代）每个面板要几分钟，所以它留作 oracle：公理 `tensor.panel_layout` 的 normalizer 调用原来的 `panel::choose`，结果是 `layout_expr` 项，由已有的 F₂ 判定检查。
   - `pipeline`（深度为 0 时取 `check.depth`，即 `-X tensor:pipeline`）、`RedTma`（`fill_tma`）、`Mma`/`Wgmma`（`tensor.mma`）、`RedWs`（`specialize`）、`Cluster`、`Persistent`：与 `TileFuse` 相同的标注，包在相同的位置。
   - 修了 `root_contraction` 的 normalizer：泛型的根（组合子还是参数、映射还不是 lam）原先被判成 `NoMma`，所以定律的收缩种类永远是 `NoMma`，带 `Mma`/`Wgmma` 层级的链对定律不能通过类型检查；现在它在这些事实已知前保持不规约。
   验证：`bench/gpu_tiling` 的 GEMM 逐个对比（RTX PRO 6000，`law_*.mim` 是 `gemm_*.mim` 的定律版本）——SIMT 的 `tiled`、`g3`、`g3_128` 与 `TileFuse` 持平，`g2`/`g2cap`/`g2s` 更快，TF32 与 16 位 `mma`（含 `pipeline=2`）持平；七个 Hopper 链（`wgmma`、TMA、cluster、cluster split、persistent、warp 特化）只能按 sm_90a 编译，两条路径的设备 IR 中 `wgmma`、TMA、mbarrier 与描述符的每一行在去掉名字后完全相同。

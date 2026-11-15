@@ -3189,6 +3189,66 @@ axm panel_layout: {n m: Nat}
                 → layout_expr.Expr (n, storage), normalize_panel_layout;
 
 ///
+/// ### Tensor-core panel layouts
+///
+/// The fixed layouts of a tensor core's operand panels, as `tile_fuse`'s `panel::mma` and `panel::wgmma` build them.
+/// The SIMT panels' layout is a search over bank conflicts, too costly to evaluate by partial evaluation, which stays the
+/// oracle `panel_layout`.
+///
+pub mod tc_layout
+    /// The dims of `0 .. m` sorted by `key`, ties by index.
+    lam sorted {m: Nat} (key: «m; Nat»): «m; Idx m» =
+        let rank = ‹d: m; vec.fold.r @(Nat, Idx m) @m (λ (e: Idx m, x: Nat): Nat =
+            (x, core.nat.add (x, 1))#(core.bit2.or 0 (key#e < key#d, core.bit2.and 0 (key#e == key#d, core.idx2nat e < core.idx2nat d))))
+            (‹e: m; e›, 0)›;
+        ‹p: m; core.idx 0 m (vec.fold.r @(Nat, Idx m) @m (λ (d: Idx m, x: Nat): Nat = (x, core.idx2nat d)#(rank#d == core.idx2nat p))
+            (‹d: m; d›, 0))›;
+    /// The layout term of `perm` over the pre-split dims and `split`, padded to `physical`.
+    lam term {n: Nat} (logical: «n; Nat», split: Nat, perm: «n + 1; Idx (n + 1)», physical: «n; Nat», width: Nat, swizzled: Bool)
+        : layout_expr.Expr (n, logical) =
+        let (w, g, c) = ((1, 1, 1), (width, 8, 8))#swizzled;
+        let base      = layout_expr.shape @n @logical (layout_expr.make @n (logical, split, perm, ‹n; 0›, w, g, 0, c, swizzled));
+        layout_expr.make @n (logical, split, perm, ‹p: n; core.nat.sub (physical#p, base#p)›, w, g, 0, c, swizzled);
+    /// A warp's mma operand: the contiguous dim innermost, the last physical dim padded so ldmatrix's rows hit distinct
+    /// banks.
+    pub lam mma {n: Nat} (dims: «n; Nat», inner bytes: Nat): layout_expr.Expr (n, dims) =
+        let order = sorted @n ‹d: n; (0, 1)#(core.idx2nat d == inner)›;
+        let perm  = ‹q: n + 1; let e = core.idx2nat q;
+            core.idx 0 (n + 1) ((((core.idx2nat (order#(core.idx 0 n (core.nat.sub (e, 1)))), n)#(e == 2)), core.idx2nat (order#(core.idx 0 n e)))#(e < 2))›;
+        let shape = ‹p: n; dims#(order#p)›;
+        let last  = shape#(core.idx 0 n (core.nat.sub (n, 1)));
+        let pad   = core.select (core.bit2.and 0 (bytes == 2, last * 2 % 32 == 0), 8,
+                    core.select (core.bit2.and 0 (bytes == 4, core.bit2.and 0 (last <= 32, last / 4 % 2 == 0)), 4,
+                    core.select (core.bit2.and 0 (bytes == 4, core.bit2.and 0 (32 < last, last % 32 == 0)), 8, 0)));
+        term @n (dims, 1, perm, ‹p: n; (shape#p, core.nat.add (shape#p, pad))#(core.idx2nat p == core.nat.sub (n, 1))›, 1, ff);
+    /// A wgmma operand: its one dim of more than one element as the rows of 128-byte segments of the contiguous dim,
+    /// swizzled by the segment; `(ff, _)` when the panel has no such shape.
+    pub lam wgmma {n: Nat} (dims: «n; Nat», inner bytes: Nat, k_major: Bool): [Bool, layout_expr.Expr (n, dims)] =
+        let atom  = 128 / core.select (bytes == 0, 1, bytes);
+        let rows  = vec.fold.r @(Nat, Idx n) @n (λ (d: Idx n, x: Nat): Nat =
+            (x, core.nat.add (x, 1))#(core.bit2.and 0 (core.idx2nat d != inner, dims#d != 1))) (‹d: n; d›, 0);
+        let width = dims#(core.idx 0 n inner);
+        let ok    = core.bit2.and 0 (rows == 1, (core.bit2.and 0 (inner == core.nat.sub (n, 1), width % atom == 0), width == atom)#k_major);
+        let one   = width == atom;
+        // K-major: rows, then units, then the contiguous dim.
+        let kkey  = ‹d: n; ((1, 0)#(dims#d != 1), 2)#(core.idx2nat d == inner)›;
+        let korder = sorted @n kkey;
+        let kperm = ‹q: n + 1; let e = core.idx2nat q;
+            core.idx 0 (n + 1) ((((core.idx2nat (korder#(core.idx 0 n (core.nat.sub (e, 1)))), n)#(e == 2)), core.idx2nat (korder#(core.idx 0 n e)))#(e < 2))›;
+        let kshape = ‹p: n; dims#(korder#p)›;
+        // MN-major: the contiguous dim split into atoms, whose quotient leads unless it is one atom.
+        let m1    = n + 1;
+        let mkey  = ‹e: m1; let i = core.idx2nat e;
+            ((((1, 2)#(dims#(core.idx 0 n i) == 1), (0, 3)#one)#(i == core.nat.sub (n, 1))), 4)#(i == n)›;
+        let mperm = sorted @m1 mkey;
+        let pre   = ‹e: m1; let i = core.idx2nat e; ((dims#(core.idx 0 n i), width / atom)#(i == core.nat.sub (n, 1)), atom)#(i == n)›;
+        let perm1 = ‹p: m1; pre#(mperm#p)›;
+        let mshape = ‹p: n; ((perm1#(core.idx 0 m1 (core.nat.add (core.idx2nat p, 1))), perm1#(core.idx 0 m1 1) * perm1#(core.idx 0 m1 2))#(core.idx2nat p == 1),
+                             perm1#(core.idx 0 m1 0))#(core.idx2nat p == 0)›;
+        let chunk = 16 / core.select (bytes == 0, 1, bytes);
+        (ok, (term @n (dims, atom, mperm, mshape, chunk, tt), term @n (dims, 1, kperm, kshape, chunk, tt))#k_major);
+end
+///
 /// ### law
 ///
 /// A tile law seals a root with the facts its schedule is typed and checked by, as `docs/tile-law-design.zh-CN.md` lays
@@ -3312,11 +3372,15 @@ pub mod law
                 let stg   = stage @(Tis#i, Ris#i, 1) (q#4₆) (q#1₆, q#2₆, q#5₆, ⊥:(Tis#i)) 0 box;
                 let L     = pan#i#1₂;
                 let r1    = core.nat.add (Ris#i, 1);
-                let lay   = panel_layout @(r1, Rn) (L#1₁₁, L#2₁₁, L#3₁₁, core.trait.size (Tis#i), L#4₁₁, L#5₁₁, L#6₁₁, L#7₁₁,
-                                                    L#8₁₁, L#9₁₁, L#10₁₁);
+                let bytes = core.trait.size (Tis#i);
+                // A tensor core's operand takes the layout its fragments read; a SIMT panel's comes from the search.
+                let wg    = tc_layout.wgmma @r1 (L#1₁₁, L#2₁₁, bytes, L#5₁₁);
+                let lay   = ((panel_layout @(r1, Rn) (L#1₁₁, L#2₁₁, L#3₁₁, bytes, 0, L#5₁₁, L#6₁₁, L#7₁₁, L#8₁₁, L#9₁₁, L#10₁₁),
+                              tc_layout.mma @r1 (L#1₁₁, L#2₁₁, bytes))#(L#4₁₁ == 1), wg#1₂)#(L#4₁₁ == 2);
                 let put   = placed @(Tis#i, r1) @(stage_shape @(Ris#i, 1) (q#4₆) (q#1₆, q#2₆, q#5₆)) (L#1₁₁, lay) stg;
+                let place = core.bit2.and 0 (L#0₁₁, core.bit2.or 0 (L#4₁₁ != 2, wg#0₂));
                 let whole = stage @(Tis#i, Ris#i, 0) (q#4₆) ((), (), ‹d: Ris#i; d›, ⊥:(Tis#i)) 0 box;
-                ((core.bitcast Input (xs#i), core.bitcast Input whole)#(q#0₆), core.bitcast Input ((stg, put)#(L#0₁₁)))#(split_of pan i)›;
+                ((core.bitcast Input (xs#i), core.bitcast Input whole)#(q#0₆), core.bitcast Input ((stg, put)#place))#(split_of pan i)›;
         // The input axis among its last two that the next parallel level's tile drives with unit slope from one loop
         // and no other loop drives, found by imaging unit boxes, as `tile_fuse`'s `panel_axis` finds it.
         lam panel_of {r: Nat} (m: «Rn; affine.Index» → «r; affine.Index», s: «r; Nat», tiles: «Rn; Nat»): «3; Nat» =
