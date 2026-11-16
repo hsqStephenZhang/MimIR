@@ -229,6 +229,8 @@ std::optional<u64> nat_upper(const Def* x);
 const Def* returned(Lam* lam);
 /// The operation a combiner `λ (acc, x). op (acc, x)` applies, if its other operand never reads the accumulator.
 const Def* combiner_app(const Def* comb);
+/// The error a literal, nonzero @p verdict names, its message's `{}` filled with the verdict's values.
+std::optional<std::string> verdict_text(const Def* verdict);
 /// `law.post_over` applied to @p acc, or its epilogue over @p acc whole where it stays: its accumulator never became a
 /// region.
 const Def* post_over_whole(const App* callee, const Def* acc);

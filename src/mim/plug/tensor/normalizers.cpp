@@ -989,11 +989,10 @@ const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     return nullptr;
 }
 
-// The error a literal, nonzero verdict names, its message's `{}` filled with the verdict's values.
-void report_verdict(const Def* where, const Def* verdict) {
+std::optional<std::string> verdict_text(const Def* verdict) {
     auto code = Lit::isa(verdict->proj(3, 0));
-    if (!code || !*code) return;
-    auto& w       = where->world();
+    if (!code || !*code) return {};
+    auto& w       = verdict->world();
     auto messages = w.annex(check::messages);
     auto text     = tuple2str(messages->proj(messages->num_projs(), *code));
     for (size_t i = 1; i != 3; ++i)
@@ -1001,7 +1000,11 @@ void report_verdict(const Def* where, const Def* verdict) {
             auto value = Lit::isa(verdict->proj(3, i));
             text.replace(at, 2, value ? std::to_string(*value) : "?");
         }
-    where->blame("{}", text).bail();
+    return text;
+}
+
+void report_verdict(const Def* where, const Def* verdict) {
+    if (auto text = verdict_text(verdict)) where->blame("{}", *text).bail();
 }
 
 template<check id>

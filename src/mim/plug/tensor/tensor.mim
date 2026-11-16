@@ -3389,6 +3389,9 @@ pub mod law
         let bytes = (shared_of l) levels;
         let cap   = capacity (check.target ());
         (v, ((0, 0, 0), (25, bytes, cap))#(cap < bytes))#(v#0₃ == 0);
+    /// `verdict_of`, for a tile request that reports an unrealized request instead of failing.
+    anx lam verdict_on {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P), levels: TileLevels (n, Acc, Kind))
+        : «3; Nat» = verdict_of (l, levels);
 
     /// The root of `map_reduce`'s arguments and its law.
     /// `par ts` concatenates the root's tiles of `ts`; `red (loop, ks)` folds reduction loop `loop` in whole blocks of `ks`

@@ -1857,15 +1857,19 @@ const Def* law_of(const Def* op, const DefSet& group, const Def* merge, DefSet& 
 
 // A request on a plain `map_reduce` runs as its law's meaning, which the law interpreter realizes; its members are laws
 // fused as the sources of whatever reads them, so several and nested members fuse alike.
-const Def* TileFuse::run_as_law(const Def* op, const DefVec& group, const Def* levels, const Def* control) {
-    auto& w = op->world();
-    // A law fuses every member, so a control that decides otherwise is left to the per-level recursion.
-    if (!group.empty() && !Check::alpha<Check::T>(control, w.annex<tensor::default_control>())) return nullptr;
+const Def*
+TileFuse::run_as_law(const App* request, const Def* op, const DefVec& group, const Def* levels, const Def* control) {
+    auto& w   = op->world();
     auto used = DefSet();
     auto law  = law_of(op, DefSet(group.begin(), group.end()), nullptr, used, true);
     if (!law || used.size() != group.size()) return nullptr;
     // `law.req` casts its levels to the root's level type, which the interpreter matches through.
     if (auto cast = Axm::isa<core::bitcast>(levels)) levels = cast->arg();
+    // A chain the law's rules reject leaves the request unrealized, as the per-level recursion does.
+    if (auto text = verdict_text(w.implicit_app(w.annex(tensor::law::verdict_on), {law, levels}))) {
+        report_tile_request(request, *text);
+        return op;
+    }
     log().d("tensor.tile_fuse runs {} as its law", op);
     return w.implicit_app(w.annex(tensor::law::run), {law, levels, control});
 }
@@ -1886,20 +1890,8 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
         auto n = Lit::isa(level.sizes->arity());
         return !n || !lit_projs(level.sizes, *n);
     });
-    // A split over work-items or lanes, or of a reduction loop inside another, needs a combiner the law's rules accept;
-    // with any other the per-level recursion leaves the request unrealized with its diagnosis.
     if (auto root = unsafe ? nullptr : graph::map_reduce(op)) {
-        auto mr         = btensor::MapRedPost::of(root->callee()->as<App>());
-        auto law        = reduction_law(mr);
-        auto recognized = law && Check::test_alpha(mr.init, law->identity);
-        if (auto rk = mr.ranks(); rk && !recognized)
-            unsafe = std::ranges::any_of(level_list, [&](const LevelSpec& level) {
-                if (level.kind != 1) return false;
-                if ((level.bind == 2 || level.bind == 4) && !level.merge) return true;
-                for (u64 d = rk->ro + 1; d < rk->nloops(); ++d)
-                    if (Lit::isa(level.sizes->proj(rk->nloops(), d)) != 0) return true;
-                return false;
-            });
+        auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
         // A capped partial tile has a runtime extent, which the law's vector level cannot split.
         if (auto rk = mr.ranks()) {
             auto block  = std::vector<std::optional<u64>>(rk->ro);
@@ -1932,8 +1924,35 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
                   auto rk   = root ? btensor::MapRedPost::of(root->callee()->as<App>()).ranks() : std::nullopt;
                   return !rk || rk->rr != 0;
               });
-    if (!unsafe && driver().arg_nat("tensor", "tile-law").value_or(1))
-        if (auto law = run_as_law(op, group, levels, control)) return law;
+    // A law fuses its members everywhere or not at all, so it follows a control only where that decides each member
+    // alike on every level, whatever the query's role and tile size, and yields none.
+    auto fused = std::optional<DefVec>(group);
+    if (!Check::alpha<Check::T>(control, op->world().annex<tensor::default_control>())) {
+        auto& w = op->world();
+        fused   = DefVec();
+        for (auto member : group) {
+            auto source  = Axm::isa<merge_with>(member) ? Axm::as<merge_with>(member)->arg() : member;
+            auto root    = graph::map_reduce(source);
+            auto rk      = root ? btensor::MapRedPost::of(root->callee()->as<App>()).ranks() : std::nullopt;
+            auto reduces = !rk || rk->rr != 0;
+            auto choice  = std::optional<bool>();
+            for (u64 l = 0; l != level_list.size() && fused; ++l)
+                for (u64 role : {0, 1, 2})
+                    for (u64 bytes : {u64(0), u64(1) << 20}) {
+                        auto query    = w.tuple({w.lit_nat(l), w.lit_nat(level_list[l].kind), w.lit_nat(role),
+                                                 w.lit_bool(reduces), w.lit_bool(outside.contains(member)), w.lit_tt(),
+                                                 w.lit_nat(bytes)});
+                        auto decision = w.app(control, query);
+                        auto fuse = Lit::isa<bool>(decision->proj(2, 0)), yield = Lit::isa<bool>(decision->proj(2, 1));
+                        if (!fuse || !yield || *yield || (choice && *choice != *fuse)) fused.reset();
+                        if (fused) choice = fuse;
+                    }
+            if (!fused) break;
+            if (choice.value_or(false)) fused->push_back(member);
+        }
+    }
+    if (!unsafe && fused && driver().arg_nat("tensor", "tile-law").value_or(1))
+        if (auto law = run_as_law(request, op, *fused, levels, control)) return law;
     DefSet in_group(group.begin(), group.end());
     Levels realizer(log(), request, in_group, outside, driver().arg_nat("tensor", "strict").value_or(0));
     if (auto root = graph::map_reduce(op))

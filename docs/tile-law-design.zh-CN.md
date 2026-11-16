@@ -95,6 +95,22 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 
 每一步用 D3 的差分验证与完整 lit 验收。
 
+### 驻留的子调度（方案，2026-11-16）
+
+现状：work-group 层把驻留成员的盒子整块暂存，盒子里的元素在叶子里用 `generate` 描述，即每个 work-item 区域里的 `each`（逐元素组合，不切分）或 `parts` 加 `joint`（切成 `C` 段，一次填充写部分和，另一次合并）。
+这是对“内层定律在盒子上按某条 work-group 子链运行”的手工特化：`each` 相当于每个 work-item 一个元素，`parts`/`joint` 相当于 `group_red_items` 的合并树。
+
+要做的是让盒子由内层定律自己的 `group_step` 在给定的子链上算出，分三步，前两步不改变生成的代码：
+
+1. 驻留视图从叶子提到 work-group 层，用设备 IR 逐字比较验收。
+   不能放进上下文 `Cx` 沿链传：盒子是张量，`tiled` 的区域体不能读外层张量（`check_region_inputs`），只能作为区域输入穿过每一层；而区域输入是类型固定的 `Phys`，盒子的形状又随块大小变化，所以要先给 `Phys` 留出盒子的位置。
+2. `Law` 加一个字段：给定物理输入、盒子的起点与长度和一条 `GroupLevels` 子链，返回盒子；子链的类型以 work-group 的块大小为索引，先在一个二十行的实例上确认符号的块大小能通过类型检查。
+3. 视图的来源换成这个字段，子链先取与现状等价的两条：不切分时每个 work-item 一个元素，可切分（`splits`）时 `group_red_items`；之后 `each`/`parts`/`joint` 整段删掉，`Input` 的 `merge`、`split`、`K` 也不再需要。
+
+第 3 步对应退回统计里“work-group 里的归约成员”（12 次）：`TileFuse` 正是用 work-item 上的合并树实现它们。
+在 sm_120 上读设备 IR 可以看到差距的来源：`softmax_resident`（`TileFuse`，20.6 µs）的部分和放在 shared 里，用 11 次 `shfl.sync.bfly` 按蝴蝶树合并；`softmax_resident_law`（55.9 µs）与 `_shared`（38.9 µs）的部分和由 `joint` 的 `vec.fold` 串行折叠 64 段，4 行只有 4 个线程在合并，其余 252 个在等。
+所以在合并树进入定律之前放开 `realize` 对这 12 个请求的守卫会让它们变慢；`softmax_resident_law` 追上 `TileFuse` 是第 3 步的验收标准。
+
 ## 7. 原型进展（2026-11-14）
 
 `tensor.law`（`tensor.mim`）完成了第 1 步和第 2 步的一部分：
