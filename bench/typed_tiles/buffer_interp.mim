@@ -1,6 +1,7 @@
 // A schedule's levels interpreted at the buffer level: every parallel level is a loop over its tiles, bound to the
 // unit its level names, and a leaf is a `btensor.map_reduce` that writes its tile of the destination in place.
-// It reads the same `tensor.TileLevels` chain as `law.run`; reduction, vector and promoting levels are not interpreted.
+// A reduction level folds its loop's blocks in order: the first from the seed, the others into the destination.
+// It reads the same `tensor.TileLevels` chain as `law.run`; vector and promoting levels are not interpreted.
 plugin core;
 plugin mem;
 plugin affine;
@@ -21,6 +22,7 @@ let rem = core.nat.rem;
 let `-  = core.nat.sub;
 let `<  = core.ncmp.l;
 let `!= = core.ncmp.ne;
+let `<= = core.ncmp.le;
 
 lam Step (X: *): * = Cn [I64, [mem.M 0, X], Cn [mem.M 0, X]];
 // `n` steps of `body` over a memory and a value; `bound` binds the loop to an execution unit.
@@ -43,16 +45,19 @@ lam run_buffers {nis: Nat} {To: *, Ro Rn: Nat} (So: «Ro; Nat», Sr: «Rn; Nat»
     (m: mem.M 0, dst: buffer.Buf (Ro, So, To), is: «i: nis; buffer.Buf (Ris#i, Sis#i, Tis#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
     let D     = buffer.Buf (Ro, So, To);
-    let Block = [lo: «Rn; Nat», size: «Rn; Nat», m: mem.M 0, dst: D] → [mem.M 0, D];
+    // `seeded` tells whether the block's tile of the destination is still unwritten.
+    let Block = [lo: «Rn; Nat», size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D] → [mem.M 0, D];
     let at    = λ (lo: «Rn; Nat») (o: «Rn; affine.Index»): «Rn; affine.Index» = ‹d: Rn; affine.op.add (o#d, affine.lit (lo#d))›;
-    let leaf  = λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] =
-        btensor.map_reduce @nis @(To, Ro, Rn) (So, size) @(Tis, Ris, Sis) (f, init)
-            (λ (o: «Rn; affine.Index»): «Ro; affine.Index» = map_out (at lo o))
-            ‹i: nis; λ (o: «Rn; affine.Index»): «Ris#i; affine.Index» = (maps#i) (at lo o)›
-            (m, dst, is);
+    let leaf  = λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] =
+        let out  = λ (o: «Rn; affine.Index»): «Ro; affine.Index» = map_out (at lo o);
+        let ins  = ‹i: nis; λ (o: «Rn; affine.Index»): «Ris#i; affine.Index» = (maps#i) (at lo o)›;
+        let Held = [«Ro; Nat», «Rn; affine.Index» → «Ro; affine.Index», D];
+        (btensor.map_reduce_post @(nis, 0) @(To, To, Ro, Rn, btensor.SchedT) (So, size, btensor.mk_sched (Rn, 0))
+            @(Tis, Ris, Sis, (), (), ()) @Held (f, (So, out, dst), btensor.id @To) out (ins, ()) (m, dst, is, ()),
+         btensor.map_reduce @nis @(To, Ro, Rn) (So, size) @(Tis, Ris, Sis) (f, init) out ins (m, dst, is))#seeded;
     // The tiles of the parallel loops, in row-major order; a loop `sizes` leaves at 0 is one tile.
     let split = λ (bound: Step D → Step D) (sizes: «Rn; Nat», k: Block): Block =
-        λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] =
+        λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] =
             let par    = λ (d: Idx Rn): Bool = core.idx2nat d < Ro;
             let ts     = ‹d: Rn; (size#d, (size#d, sizes#d)#(sizes#d != 0))#(par d)›;
             let counts = ‹d: Rn; (1, div (add (size#d, ts#d - 1), ts#d))#(par d)›;
@@ -63,34 +68,55 @@ lam run_buffers {nis: Nat} {To: *, Ro Rn: Nat} (So: «Ro; Nat», Sr: «Rn; Nat»
                 let rest = ‹d: Rn; size#d - off#d›;
                 // A tile of a loop its size divides is whole, which keeps the extent a literal.
                 let ext  = ‹d: Rn; (core.select (rest#d < ts#d, rest#d, ts#d), ts#d)#(core.ncmp.e (rem (size#d, ts#d), 0))›;
-                k (‹d: Rn; add (lo#d, off#d)›, ‹d: Rn; (size#d, ext#d)#(par d)›, m, dst));
-    lam item_step {M: *} (lo size: «Rn; Nat», m: mem.M 0, dst: D, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
+                k (‹d: Rn; add (lo#d, off#d)›, ‹d: Rn; (size#d, ext#d)#(par d)›, seeded, m, dst));
+    // The blocks of the first reduction loop `sizes` splits, in order.
+    let fold  = λ (sizes: «Rn; Nat», k: Block): Block =
+        λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] =
+            let loop  = vec.fold.r @(Nat, Idx Rn) @Rn
+                (λ (d: Idx Rn, x: Nat): Nat = (x, core.idx2nat d)#(core.bit2.and 0 (sizes#d != 0, Ro <= core.idx2nat d)))
+                (‹d: Rn; d›, Rn);
+            let ax    = core.idx 0 Rn (core.select (loop < Rn, loop, 0));
+            let K     = size#ax;
+            let ks    = core.select (sizes#ax != 0, sizes#ax, 1);
+            let count = div (add (K, ks - 1), ks);
+            let block = λ (j: Nat, seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] =
+                let k0   = mul (j, ks);
+                let rest = K - k0;
+                let n    = (core.select (rest < ks, rest, ks), ks)#(core.ncmp.e (rem (K, ks), 0));
+                k (‹d: Rn; add (lo#d, (0, k0)#(core.icmp.e (d, ax)))›, ‹d: Rn; (size#d, n)#(core.icmp.e (d, ax))›, seeded, m, dst);
+            let from  = (0, 1)#seeded;
+            let run   = (λ (): [mem.M 0, D] =
+                let (m, dst) = ((m, dst), block (0, tt, m, dst))#seeded;
+                steps (unbound @D) (count - from) (m, dst) (λ (j: Nat, m: mem.M 0, dst: D): [mem.M 0, D] = block (add (j, from), ff, m, dst)),
+                         λ (): [mem.M 0, D] = k (lo, size, seeded, m, dst))#(core.ncmp.e (loop, Rn));
+            run ();
+    lam item_step {M: *} (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
         match l with
-            | 0 => leaf (lo, size, m, dst)
-            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, m, dst, rest)) (lo, size, m, dst)
-            | 2 (_, _, _, _, _) => leaf (lo, size, m, dst)
-            | 3 (_, _) => leaf (lo, size, m, dst)
-            | 4 (_, _, _) => leaf (lo, size, m, dst);
-    lam group_step {M: *, g: «Rn; Nat»} (lo size: «Rn; Nat», m: mem.M 0, dst: D, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): [mem.M 0, D] =
+            | 0 => leaf (lo, size, seeded, m, dst)
+            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, seeded, m, dst, rest)) (lo, size, seeded, m, dst)
+            | 2 (sizes, _, _, _, rest) => fold (sizes, λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, seeded, m, dst, rest)) (lo, size, seeded, m, dst)
+            | 3 (_, _) => leaf (lo, size, seeded, m, dst)
+            | 4 (_, _, _) => leaf (lo, size, seeded, m, dst);
+    lam group_step {M: *, g: «Rn; Nat»} (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): [mem.M 0, D] =
         match l with
-            | 0 => leaf (lo, size, m, dst)
-            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, m, dst, rest)) (lo, size, m, dst)
-            | 2 (sizes, _, rest) => split (gpu.bind.item @(Step D)) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, m, dst, rest)) (lo, size, m, dst)
-            | 3 (_, _, _, _, _) => leaf (lo, size, m, dst)
-            | 4 (_, _, _, _) => leaf (lo, size, m, dst)
-            | 5 (_, _) => leaf (lo, size, m, dst)
-            | 6 (sizes: «Rn; Nat», _: Nat, _: WarpLevels (Rn, To, M, within (g, sizes))) => leaf (lo, size, m, dst)
-            | 7 (sizes: «Rn; Nat», _: Nat, _: WarpgroupLevels (Rn, To, M, g, sizes)) => leaf (lo, size, m, dst);
-    lam tile_step {M: *} (lo size: «Rn; Nat», m: mem.M 0, dst: D, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
+            | 0 => leaf (lo, size, seeded, m, dst)
+            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, seeded, m, dst, rest)) (lo, size, seeded, m, dst)
+            | 2 (sizes, _, rest) => split (gpu.bind.item @(Step D)) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, seeded, m, dst, rest)) (lo, size, seeded, m, dst)
+            | 3 (sizes, _, _, _, rest) => fold (sizes, λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, seeded, m, dst, rest)) (lo, size, seeded, m, dst)
+            | 4 (_, _, _, _) => leaf (lo, size, seeded, m, dst)
+            | 5 (_, _) => leaf (lo, size, seeded, m, dst)
+            | 6 (sizes: «Rn; Nat», _: Nat, _: WarpLevels (Rn, To, M, within (g, sizes))) => leaf (lo, size, seeded, m, dst)
+            | 7 (sizes: «Rn; Nat», _: Nat, _: WarpgroupLevels (Rn, To, M, g, sizes)) => leaf (lo, size, seeded, m, dst);
+    lam tile_step {M: *} (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
         match l with
-            | 0 => leaf (lo, size, m, dst)
-            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = tile_step (lo, size, m, dst, rest)) (lo, size, m, dst)
-            | 2 (sizes: «Rn; Nat», _ _: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split (gpu.bind.group @(Step D)) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, m, dst, rest)) (lo, size, m, dst)
-            | 3 (_, _, _, _) => leaf (lo, size, m, dst)
-            | 4 (_, _) => leaf (lo, size, m, dst)
-            | 5 (_, _, _, _) => leaf (lo, size, m, dst)
-            | 6 (_, _) => leaf (lo, size, m, dst);
-    tile_step (‹Rn; 0›, Sr, m, dst, levels);
+            | 0 => leaf (lo, size, seeded, m, dst)
+            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] = tile_step (lo, size, seeded, m, dst, rest)) (lo, size, seeded, m, dst)
+            | 2 (sizes: «Rn; Nat», _ _: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split (gpu.bind.group @(Step D)) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, seeded, m, dst, rest)) (lo, size, seeded, m, dst)
+            | 3 (sizes, _, _, rest) => fold (sizes, λ (lo size: «Rn; Nat», seeded: Bool, m: mem.M 0, dst: D): [mem.M 0, D] = tile_step (lo, size, seeded, m, dst, rest)) (lo, size, seeded, m, dst)
+            | 4 (_, _) => leaf (lo, size, seeded, m, dst)
+            | 5 (_, _, _, _) => leaf (lo, size, seeded, m, dst)
+            | 6 (_, _) => leaf (lo, size, seeded, m, dst);
+    tile_step (‹Rn; 0›, Sr, tt, m, dst, levels);
 
 let F32 = math.F32;
 let C   = buffer.Buf (2, (16, 16), F32);
@@ -103,5 +129,5 @@ extern fun gemm16 (m: mem.M 0, a b: C): [mem.M 0, C] =
     let (m, c) = buffer.alloc (2, (16, 16), F32) m;
     return (run_buffers ((16, 16), (16, 16, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1))
-        (serial_group @(3, F32, NoMma) ((8, 8, 0), 0, 0, group_item ((4, 4, 0), 0, item_done ())))
+        (serial_group @(3, F32, NoMma) ((8, 8, 0), 0, 0, group_item ((4, 4, 0), 0, item_red ((0, 0, 4), 0, 0, item_done ()))))
         (m, c, (a, b)));
