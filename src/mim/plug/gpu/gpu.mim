@@ -681,17 +681,24 @@ lam fill_panel {g: Nat, r: Nat, s: «r; Nat», T: *}
 /// Panel `i` is filled from the token the fills before it left, the fold of their steps.
 /// The implicit arguments form one group: applied one after another, a literal `n` would index `fills` before its type is known.
 /// For the same reason the panels are only indexed by a pack's own binder, never by a function's parameter.
+/// Each fill is named once: a pack makes its element anew at every extraction, and two copies of a fill would use
+/// one token twice.
+/// So a step keeps its panel in a slot of one erased type, cast back once all are filled.
 anx lam superstep {g n: Nat, rs: «n; Nat», ss: «i: n; «rs#i; Nat»», Ts: «n; *», R: *}
     (start: mem.M 0,
      fills: «i: n; [mem.M 0, buffer.Buf (rs#i, ss#i, Ts#i)] → [mem.M 0, buffer.Buf (rs#i, ss#i, Ts#i)]»,
      read: [mem.M 0, «i: n; buffer.Buf (rs#i, ss#i, Ts#i)»] → [mem.M 0, R]): [mem.M 0, R] =
     let W      = GM (g, 0, GroupPhase#Writing);
-    let steps  = ‹i: n; λ (t: W): W = (fill_panel @(g, rs#i, ss#i, Ts#i) (t, fills#i))#0₂›;
-    let before = λ (k: Nat): W =
-        vec.fold.l @(W, W → W) @k (λ (t: W, f: W → W): W = f t)
-            (enter_write (group_enter @g start), ‹j: k; steps#(core.idx 0 n (core.idx2nat j))›);
-    let seen   = sync_publish (before n);
-    let views  = ‹i: n; view (publish_view (seen, (fill_panel @(g, rs#i, ss#i, Ts#i) (before (core.idx2nat i), fills#i))#1₂))›;
+    let Filled = λ (i: Idx n): * = SharedBuf (g, 0, Vis#Unpublished, rs#i, ss#i, Ts#i);
+    let Slot   = SharedBuf (g, 0, Vis#Unpublished, 0, (), []);
+    let S      = [W, «n; Slot»];
+    let steps  = ‹i: n; λ (st: S): S =
+        let (t, p) = fill_panel @(g, rs#i, ss#i, Ts#i) (st#0₂, fills#i);
+        (t, ‹j: n; ((st#1₂)#j, core.bitcast Slot p)#(core.icmp.e (j, i))›)›;
+    let (t, slots) = vec.fold.l @(S, S → S) @n (λ (st: S, f: S → S): S = f st)
+        ((enter_write (group_enter @g start), ‹n; ⊥:Slot›), steps);
+    let seen   = sync_publish t;
+    let views  = ‹i: n; view (publish_view (seen, core.bitcast (Filled i) (slots#i)))›;
     let (t, r) = read_phase (seen, λ (m: mem.M 0): [mem.M 0, R] = read (m, views));
     (leave_reading t, r);
 /// Each lane merges its value with that of the lane `width / 2` away, then `width / 4`, down to 1, after which each of
