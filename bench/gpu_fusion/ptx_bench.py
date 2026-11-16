@@ -35,6 +35,8 @@ def specs(torch):
     return {
         "gemm_levels_law": ([(1024, 1024)] * 2, (1024, 1024), gemm),
         "gemm_levels_buffers": ([(1024, 1024)] * 2, (1024, 1024), gemm),
+        "gemm_staged_law": ([(1024, 1024)] * 2, (1024, 1024), gemm),
+        "gemm_staged_buffers": ([(1024, 1024)] * 2, (1024, 1024), gemm),
         "attn_warps": ([(256, 64)] * 3, (2, 128, 64), attention),
         "rowsum": ([SHAPE], (12, 1024), rowsum),
         "softmax_resident": ([SHAPE], SHAPE, softmax),
@@ -108,6 +110,7 @@ def run(args):
         in_shapes, out_shape, ref = table[name]
         gen = torch.Generator(device=dev).manual_seed(42)
         inputs = [torch.randn(s, device=dev, generator=gen) for s in in_shapes]
+        pristine = [x.clone() for x in inputs]
         expect = ref(*inputs)
         mod, fn = C.c_void_p(), C.c_void_p()
         drv.check(drv.lib.cuModuleLoadData(C.byref(mod), (work / "kernel.ptx").read_bytes() + b"\0"), "load")
@@ -122,6 +125,9 @@ def run(args):
         for perm in itertools.permutations(range(len(bufs))):
             ptrs = (C.c_ulonglong * len(bufs))(*[bufs[i].data_ptr() for i in perm])
             params = (C.c_void_p * 1)(C.cast(ptrs, C.c_void_p))
+            # A wrong order makes the kernel write into an input, so every try starts from the original inputs.
+            for x, saved in zip(inputs, pristine):
+                x.copy_(saved)
             out.fill_(float("nan"))
             drv.check(drv.lib.cuLaunchKernel(fn, info["groups"], 1, 1, info["items"], 1, 1, info["smem"], stream,
                                              params, None), "launch")
