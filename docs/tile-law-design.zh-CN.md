@@ -220,8 +220,10 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   评审第六轮推测它与 `17cce8fc5`（可变 `Arr` 的 size 1 轴不折叠）有关；检验：在合并版上恢复旧的折叠行为，`law_resident` 报的仍是同一个 “expected a shape”，所以不是它。
 - 第 4 项第二步（2026-11-15，部分）：`Src` 加了 `tile`（给定物理值与盒子取该输入的盒子），`values_of` 中未驻留成员的盒子由它给出，生成的代码不变（10 个用例逐字相同）。
   构造子对自己参数的判定（如 `fuse_shared` 的形状检查）放进 `Law` 的字段 `checked`，由 `verdict_of`、`denote`、`par`、`red`、`red_par` 报出，所以错误出现在使用定律的地方；`check.report` 只作用在 `*` 中的张量上。
-  未完成：让定律本身成为来源（`Law` 加 `phys`、`mean`、`tile` 等字段、`law.fuse_law` 接受生产者定律而得到嵌套）。两种写法都卡在 core 的统一上：
-  `P` 作为记录的类型字段时 `Law` 落进 `□`，传给 `law.run` 时依赖记录与未定的隐式参数不能统一；`P` 作为类型参数时，`tile` 字段的依赖类型 `[P, off ext: «r; Nat»] → Tensor r ext T` 在期望一侧是 `ext: «?; Nat»`（`r` 仍是 Hole），而值一侧 `Ro` 已是字面量、命名的绑定子使 `ext` 成为可变的 `[Nat, Nat] as ext`，二者不能统一（`tile_law_exec`、`law_fuse` 失败，`law_traffic` 与 softmax 通过，取决于隐式参数推出的先后）。
+  定律本身成为来源（2026-11-15）：`Law` 加类型参数 `P`（物理输入的类型）与字段 `phys`、`mean`、`tile`、`merge`、`ordered`；`tile` 对 `(off, ext)` 调一次解释器的 `leaf`，在整段归约上算出根的这个盒子。
+  `law.fuse_law slot pl …` 在融合槽放生产者定律 `pl`：消费者穿过 `pl` 的物理输入，块读它需要的盒子时由 `pl` 自己的 `tile` 算出，于是 `pl` 若也融合了生产者，就得到嵌套。
+  `lit/tensor/law_nested.mim`：行和读 GEMM 的行，GEMM 又融合了反量化的权重；`denote` 与每块 8 行的调度都对，且调度里没有 32 × 32 的乘积（4096 字节）的分配。
+  先前以为这一步卡在 core 的统一上，是误判：那次新增了 `anx` 却只把 `tensor.mim` 复制进构建目录而没重建插件，生成的公理编号错位，C++ 引用的 `law.run` 成了 `law.req`。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；

@@ -1,0 +1,55 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 -fsanitize=address %S/law_nested_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+// RUN: %FileCheck %s --input-file=%t.ll
+
+// A law fused into another: each row block of the sums reads the product's rows as the product's law computes them,
+// which in turn dequantizes the weights per block, so neither the product nor the weights materialize whole.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+fun dequant (_: F32, ws: [I8, F32])@tt: F32 =
+    let (w, s) = ws;
+    return (math.arith.mul fast (math.conv.s2f math.f32 w, s));
+
+lam column (o: «2; affine.Index»): «2; affine.Index» = (affine.lit 0, o#1_2);
+lam shifted (o: «2; affine.Index»): «2; affine.Index» = (affine.op.add (o#0_2, affine.lit 5), o#1_2);
+
+lam weights (w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32) =
+    map_reduce ((16, 32), (16, 32)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1)) (shifted, column) (buf w, buf s);
+
+lam gemm (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32) =
+    law.fuse 1 ((16, 32), (16, 32)) (dequant, 0.0:F32) (proj_map @(2, 2) (0, 1)) (shifted, column) (buf w, buf s)
+        ((32, 32), (32, 32, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, weights (w, s));
+
+fun add (acc: F32, xs: [F32])@tt: F32 =
+    let (x) = xs;
+    return (math.arith.add fast (acc, x));
+
+lam sums (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32) =
+    let pl = gemm (a, w, s);
+    law.fuse_law 0 pl (32, (32, 32)) (add, 0.0:F32) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1)) (law.denote pl);
+
+let rows = serial_par ((8, 0), 0, serial_done ());
+
+extern fun nested_denote (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32): tensor.Tensor 1 32 F32 =
+    return (law.denote (sums (a, w, s)));
+extern fun nested_rows (a: tensor.Tensor 2 (32, 16) F32, w: tensor.Tensor 2 (21, 32) I8, s: tensor.Tensor 2 (1, 32) F32): tensor.Tensor 1 32 F32 =
+    return (law.run (sums (a, w, s), rows, default_control));
+
+// CHECK-LABEL: define {{.*}}@nested_rows
+// CHECK-NOT: @malloc(i64 4096)
+// CHECK: {{^}}}
