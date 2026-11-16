@@ -3328,27 +3328,25 @@ pub mod law
         [ro inputs: Nat, extents: «n; Nat», root: Tensor r s T,
          par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T,
          schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat, combining: Nat,
-         shared: TileLevels (n, Acc, Kind) → Nat, phys: P, mean: P → Tensor r s T, tile: [P, off ext: «r; Nat»] → Tensor r ext T, merge: [T, T] → T, ordered: Bool, checked: «3; Nat»];
-    lam ro_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#0₁₇;
-    lam inputs_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#1₁₇;
-    lam extents_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «n; Nat» = l#2₁₇;
-    lam root_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Tensor r s T = l#3₁₇;
-    lam par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «r; Nat» → Tensor r s T = l#4₁₇;
-    lam red_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Nat, Nat] → Tensor r s T = l#5₁₇;
-    lam red_par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Nat, Nat] → Tensor r s T = l#6₁₇;
+         shared: TileLevels (n, Acc, Kind) → Nat, phys: P, mean: P → Tensor r s T, merge: [T, T] → T, ordered: Bool, checked: «3; Nat»];
+    lam ro_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#0₁₆;
+    lam inputs_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#1₁₆;
+    lam extents_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «n; Nat» = l#2₁₆;
+    lam root_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Tensor r s T = l#3₁₆;
+    lam par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «r; Nat» → Tensor r s T = l#4₁₆;
+    lam red_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Nat, Nat] → Tensor r s T = l#5₁₆;
+    lam red_par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Nat, Nat] → Tensor r s T = l#6₁₆;
     lam schedule_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P))
-        : TileLevels (n, Acc, Kind) → Tensor r s T = l#7₁₇;
-    lam traffic_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#8₁₇;
-    lam combining_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#9₁₇;
-    lam shared_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#10₁₇;
-    lam phys_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P = l#11₁₇;
-    lam mean_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P → Tensor r s T = l#12₁₇;
-    lam tile_fn {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P))
-        : [P, off ext: «r; Nat»] → Tensor r ext T = l#13₁₇;
-    lam merge_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [T, T] → T = l#14₁₇;
-    lam ordered_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Bool = l#15₁₇;
+        : TileLevels (n, Acc, Kind) → Tensor r s T = l#7₁₆;
+    lam traffic_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#8₁₆;
+    lam combining_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#9₁₆;
+    lam shared_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#10₁₆;
+    lam phys_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P = l#11₁₆;
+    lam mean_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P → Tensor r s T = l#12₁₆;
+    lam merge_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [T, T] → T = l#13₁₆;
+    lam ordered_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Bool = l#14₁₆;
     /// The verdict of the law's constructor on its own arguments.
-    lam checked_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «3; Nat» = l#16₁₇;
+    lam checked_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «3; Nat» = l#15₁₆;
     /// A work-group's shared memory on the target `check.target` names, an H200's when it names none.
     lam capacity (target: Nat): Nat =
         let cc = target / 2;
@@ -3919,14 +3917,9 @@ pub mod law
             let out   = vec.fold.r @(Nat, Nat) @Ro (λ (e x: Nat): Nat = core.nat.mul (e, x)) (So, core.trait.size To);
             core.nat.add (core.nat.mul (count, block), out);
         // A law with a merge of its own vouches for it; an ordered one permits what its combiner does.
-        // A block of the root computes the box at `off` of `ext` over the whole reduction, as the interpreter's leaf does.
-        let tile = λ (ys: Phys, off ext: «Ro; Nat»): Tensor Ro ext To =
-            let lo   = ‹d: Rn; (0, off#(core.idx 0 Ro (core.idx2nat d)))#(core.idx2nat d < Ro)›;
-            let size = ‹d: Rn; (Sr#d, ext#(core.idx 0 Ro (core.idx2nat d)))#(core.idx2nat d < Ro)›;
-            leaf (lo, ext, size, ys, splat (ext, init), tt, none);
         (Ro, nis, Sr, root, par, red, red_par, schedule, traffic, (3, check.combiner root)#ordered,
          λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat = staged_of levels,
-         phys, λ (ys: Phys): Tensor Ro So To = make (unfold ys), tile, merge, ordered, checked);
+         phys, λ (ys: Phys): Tensor Ro So To = make (unfold ys), merge, ordered, checked);
 
     anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -3973,33 +3966,6 @@ pub mod law
         let qs    = ‹m: npp; let X = Tensor (Rpp#m) (Sq#m) (Tpp#m);
             (core.bitcast X (ps#m), core.bitcast X (staged#(src m)))#(aliased m)›;
         map_reduce @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Sq) (g, ginit) gout qmaps qs;
-    priv anx lam fused (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
-        (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
-        (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp, gmerge: [Tp, Tp] → Tp, split: Bool)
-        (gout: «Rnp; affine.Index» → «Rp; affine.Index»)
-        (gmaps: «m: npp; («Rnp; affine.Index» → «Rpp#m; affine.Index»)»)
-        (ps: «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)»)
-        {nis: Nat} {To: *, Ro Rn: Nat}
-        (So: «Ro; Nat», Sr: «Rn; Nat»)
-        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
-        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
-        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
-        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
-        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
-        let at   = core.idx 0 nis slot;
-        let PT   = «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)»;
-        let pv   = λ (p: PT): Tensor Rp Sp Tp = map_reduce @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit) gout gmaps p;
-        let K    = Srp#(core.idx 0 Rnp (core.nat.sub (Rnp, 1)));
-        // The slot threads the producer's inputs instead of the producer, so the region never takes the producer whole.
-        let Ps   = ‹i: nis; (Tensor (Ris#i) (Sis#i) (Tis#i), PT)#(core.icmp.e (i, at))›;
-        let srcs = ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i); let T = Tis#i; let fused = core.icmp.e (i, at);
-            let whole = λ (p: Ps#i): X = (core.bitcast X p, core.bitcast X (pv (core.bitcast PT p)))#fused;
-            let tile  = λ (p: Ps#i, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) =
-                (slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) (core.bitcast X p), tile_of @(Tis#i, Ris#i) @(Sis#i) (whole p, off, ext))#fused;
-            ((core.bitcast (Ps#i) (is#i), core.bitcast (Ps#i) ps)#fused, whole, tile, λ (p: Ps#i, _: Views @nis (Ris, Tis)): X = whole p,
-             λ (u v: T): T = (u, core.bitcast T (gmerge (core.bitcast Tp u, core.bitcast Tp v)))#fused,
-             core.bit2.and 0 (fused, core.bit2.and 0 (split, Rnp == core.nat.add (Rp, 1))), (0, K)#fused, fused)›;
-        build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, (0, 0, 0)) is;
     priv anx lam fused_shared (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
         (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
         (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp, gmerge: [Tp, Tp] → Tp, split: Bool)
@@ -4047,58 +4013,20 @@ pub mod law
              λ (u v: T): T = (u, core.bitcast T (gmerge (core.bitcast Tp u, core.bitcast Tp v)))#fused,
              core.bit2.and 0 (fused, core.bit2.and 0 (split, Rnp == core.nat.add (Rp, 1))), (0, K)#fused, fused)›;
         build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, verdict) is;
-    /// The law of a consumer whose input `slot` is the producer `map_reduce (Sp, Srp) (g, ginit) gout gmaps ps`.
-    /// Its meaning reads the producer at the slot, whatever `is` holds there, and each block computes the box of it it
-    /// reads from the producer's inputs, which the law threads beside the consumer's.
-    anx lam fuse (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
-        (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
-        (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp)
-        (gout: «Rnp; affine.Index» → «Rp; affine.Index»)
-        (gmaps: «m: npp; («Rnp; affine.Index» → «Rpp#m; affine.Index»)»)
-        (ps: «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)»)
-        {nis: Nat} {To: *, Ro Rn: Nat}
+    /// A law whose reduction may also split out of order, merged by `merge`, a commutative monoid with the seed as its
+    /// identity, as the caller vouches.
+    anx lam of_map_reduce_merging {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
-        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To, merge: [To, To] → To)
         (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
-        fused slot @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit, λ (u _: Tp): Tp = u, ff) gout gmaps ps @nis @(To, Ro, Rn) (So, Sr) @(Tis, Ris, Sis) (f, init) map_out maps is;
-    /// A fused producer whose reduction may also split out of order, merged by `gmerge`, vouched for like `merge`.
-    anx lam fuse_merging (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
-        (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
-        (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp, gmerge: [Tp, Tp] → Tp)
-        (gout: «Rnp; affine.Index» → «Rp; affine.Index»)
-        (gmaps: «m: npp; («Rnp; affine.Index» → «Rpp#m; affine.Index»)»)
-        (ps: «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)»)
-        {nis: Nat} {To: *, Ro Rn: Nat}
-        (So: «Ro; Nat», Sr: «Rn; Nat»)
-        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
-        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
-        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
-        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
-        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
-        fused slot @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit, gmerge, tt) gout gmaps ps @nis @(To, Ro, Rn) (So, Sr) @(Tis, Ris, Sis) (f, init) map_out maps is;
-    /// A merging fused producer whose input `m` is the consumer's input `share#m`, or `ps#m` where `share#m` is out of
-    /// the consumer's inputs.
-    /// The meaning reads that input, so a block may let the producer read the box a work-group stages for the consumer;
-    /// `ps#m` is then ignored, and the consumer's input must have the rank, shape and element size it declares.
-    anx lam fuse_shared (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
-        (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
-        (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp, gmerge: [Tp, Tp] → Tp)
-        (gout: «Rnp; affine.Index» → «Rp; affine.Index»)
-        (gmaps: «m: npp; («Rnp; affine.Index» → «Rpp#m; affine.Index»)»)
-        (ps: «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)») (share: «npp; Nat»)
-        {nis: Nat} {To: *, Ro Rn: Nat}
-        (So: «Ro; Nat», Sr: «Rn; Nat»)
-        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
-        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
-        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
-        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
-        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
-        fused_shared slot @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit, gmerge, tt) gout gmaps ps ‹m: npp; core.nat.add (share#m, 1)› @nis @(To, Ro, Rn) (So, Sr) @(Tis, Ris, Sis) (f, init) map_out maps is;
+        build (So, Sr) (f, init) map_out maps (merge, ff)
+            ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is, (0, 0, 0)) is;
     /// The law of a consumer whose input `slot` is the root of the law `pl`, which may itself fuse producers.
-    /// The consumer threads `pl`'s physical inputs, and a block reads the box it needs as `pl` computes that box.
+    /// The consumer threads `pl`'s physical inputs, and a block reads the box it needs of `pl`'s meaning, whose elements
+    /// compose with the producers `pl` fuses.
     anx lam fuse_law (slot: Nat) {Rp: Nat, Sp: «Rp; Nat», Tp: *, Rnp: Nat, Accp Kindp PT: *}
         (pl: Law (Rp, Sp, Tp, Rnp, Accp, Kindp, PT))
         {nis: Nat} {To: *, Ro Rn: Nat}
@@ -4117,24 +4045,64 @@ pub mod law
             let whole = λ (p: Ps#i): X = (core.bitcast X p, core.bitcast X ((mean_of pl) (core.bitcast PT p)))#fused;
             let tile  = λ (p: Ps#i, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) =
                 (slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) (core.bitcast X p),
-                 core.bitcast (Tensor (Ris#i) ext (Tis#i))
-                    ((tile_fn pl) (core.bitcast PT p, core.bitcast «Rp; Nat» off, core.bitcast «Rp; Nat» ext)))#fused;
+                 tile_of @(Tis#i, Ris#i) @(Sis#i) (whole p, off, ext))#fused;
             ((core.bitcast (Ps#i) (is#i), core.bitcast (Ps#i) (phys_of pl))#fused, whole, tile,
              λ (p: Ps#i, _: Views @nis (Ris, Tis)): X = whole p,
              λ (u v: T): T = (u, core.bitcast T ((merge_of pl) (core.bitcast Tp u, core.bitcast Tp v)))#fused,
              core.bit2.and 0 (fused, split), (0, K)#fused, fused)›;
         build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, checked_of pl) is;
-    /// A law whose reduction may also split out of order, merged by `merge`, a commutative monoid with the seed as its
-    /// identity, as the caller vouches.
-    anx lam of_map_reduce_merging {nis: Nat} {To: *, Ro Rn: Nat}
+    /// The law of a consumer whose input `slot` is the producer `map_reduce (Sp, Srp) (g, ginit) gout gmaps ps`.
+    /// Its meaning reads the producer at the slot, whatever `is` holds there, and each block computes the box of it it
+    /// reads from the producer's inputs, which the law threads beside the consumer's.
+    anx lam fuse (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
+        (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
+        (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp)
+        (gout: «Rnp; affine.Index» → «Rp; affine.Index»)
+        (gmaps: «m: npp; («Rnp; affine.Index» → «Rpp#m; affine.Index»)»)
+        (ps: «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)»)
+        {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
-        (f: Fn [To, «i: nis; Tis#i»] → To, init: To, merge: [To, To] → To)
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
         (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
-        build (So, Sr) (f, init) map_out maps (merge, ff)
-            ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is, (0, 0, 0)) is;
+        fuse_law slot (of_map_reduce @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit) gout gmaps ps)
+            @nis @(To, Ro, Rn) (So, Sr) @(Tis, Ris, Sis) (f, init) map_out maps is;
+    /// A fused producer whose reduction may also split out of order, merged by `gmerge`, vouched for like `merge`.
+    anx lam fuse_merging (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
+        (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
+        (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp, gmerge: [Tp, Tp] → Tp)
+        (gout: «Rnp; affine.Index» → «Rp; affine.Index»)
+        (gmaps: «m: npp; («Rnp; affine.Index» → «Rpp#m; affine.Index»)»)
+        (ps: «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)»)
+        {nis: Nat} {To: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
+        fuse_law slot (of_map_reduce_merging @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit, gmerge) gout gmaps ps)
+            @nis @(To, Ro, Rn) (So, Sr) @(Tis, Ris, Sis) (f, init) map_out maps is;
+    /// A merging fused producer whose input `m` is the consumer's input `share#m`, or `ps#m` where `share#m` is out of
+    /// the consumer's inputs.
+    /// The meaning reads that input, so a block may let the producer read the box a work-group stages for the consumer;
+    /// `ps#m` is then ignored, and the consumer's input must have the rank, shape and element size it declares.
+    anx lam fuse_shared (slot: Nat) {npp: Nat} {Tp: *, Rp Rnp: Nat}
+        (Sp: «Rp; Nat», Srp: «Rnp; Nat») {Tpp: «npp; *», Rpp: «m: npp; Nat», Spp: «m: npp; «Rpp#m; Nat»»}
+        (g: Fn [Tp, «m: npp; Tpp#m»] → Tp, ginit: Tp, gmerge: [Tp, Tp] → Tp)
+        (gout: «Rnp; affine.Index» → «Rp; affine.Index»)
+        (gmaps: «m: npp; («Rnp; affine.Index» → «Rpp#m; affine.Index»)»)
+        (ps: «m: npp; Tensor (Rpp#m) (Spp#m) (Tpp#m)») (share: «npp; Nat»)
+        {nis: Nat} {To: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
+        fused_shared slot @npp @(Tp, Rp, Rnp) (Sp, Srp) @(Tpp, Rpp, Spp) (g, ginit, gmerge, tt) gout gmaps ps ‹m: npp; core.nat.add (share#m, 1)› @nis @(To, Ro, Rn) (So, Sr) @(Tis, Ris, Sis) (f, init) map_out maps is;
     /// A rolling reduction: each element contributes `f (xs, r)` against the running statistic `r` its fold has seen.
     /// When an element moves the statistic to `r'`, the contributions so far are corrected by `scale (ratio (r, r'), ·)`,
     /// so the law folds `(r, a)` in order and merges two partials by correcting both to the merged statistic.
