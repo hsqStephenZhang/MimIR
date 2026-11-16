@@ -4025,18 +4025,18 @@ pub mod law
         build (So, Sr) (f, init) map_out maps (merge, ff)
             ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is, (0, 0, 0)) is;
     /// An input of a law that `of_sources` takes: its physical value of type `P`, the input it means, and, for a fused
-    /// producer, its merge, whether its reduction may split, its last loop's extent and that it is fused.
+    /// producer, its merge, whether its reduction may split, its last loop's extent, that it is fused and its law's verdict.
     lam Input (P: *) (r: Nat, s: «r; Nat», T: *): * =
-        [phys: P, whole: P → Tensor r s T, merge: [T, T] → T, split: Bool, K: Nat, fused: Bool];
+        [phys: P, whole: P → Tensor r s T, merge: [T, T] → T, split: Bool, K: Nat, fused: Bool, checked: «3; Nat»];
     /// An input a law reads as it is.
     anx lam source {r: Nat, s: «r; Nat», T: *} (x: Tensor r s T): Input (Tensor r s T) (r, s, T) =
-        (x, λ (p: Tensor r s T): Tensor r s T = p, λ (u _: T): T = u, ff, 0, ff);
+        (x, λ (p: Tensor r s T): Tensor r s T = p, λ (u _: T): T = u, ff, 0, ff, (0, 0, 0));
     /// The root of the law `pl` as an input of another: the consumer threads `pl`'s physical inputs, and a block reads
     /// the box it needs of `pl`'s meaning, whose elements compose with the producers `pl` fuses.
     anx lam as_source {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (pl: Law (r, s, T, n, Acc, Kind, P)): Input P (r, s, T) =
         // Only a vouched merge combines the partials of a split; a recognized combiner leaves `merge_of pl` a placeholder.
         (phys_of pl, mean_of pl, merge_of pl, core.bit2.and 0 (combining_of pl == 3, n == core.nat.add (r, 1)),
-         (extents_of pl)#(core.idx 0 n (core.nat.sub (n, 1))), tt);
+         (extents_of pl)#(core.idx 0 n (core.nat.sub (n, 1))), tt, checked_of pl);
     /// The law of a root over `nis` inputs, each read as it is (`source`) or another law's root (`as_source`), so a root
     /// may fuse several producers, each of which may fuse its own.
     /// `kinds` are the root's inputs as tensors, which fix its contraction kind.
@@ -4048,11 +4048,13 @@ pub mod law
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (Ps: «nis; *») (ins: «i: nis; Input (Ps#i) (Ris#i, Sis#i, Tis#i)»)
         (kinds: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
-        let srcs = ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i); let (phys, whole, merge, split, K, fused) = ins#i;
+        let srcs = ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i); let (phys, whole, merge, split, K, fused, _) = ins#i;
             let tile = λ (p: Ps#i, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) =
                 (slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) (whole p), tile_of @(Tis#i, Ris#i) @(Sis#i) (whole p, off, ext))#fused;
             (phys, whole, tile, λ (p: Ps#i, _: Views @nis (Ris, Tis)): X = whole p, merge, split, K, fused)›;
-        build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, (0, 0, 0)) kinds;
+        let checks  = ‹i: nis; let (_, _, _, _, _, _, c) = ins#i; c›;
+        let checked = vec.fold.l @(«3; Nat», «3; Nat») @nis (λ (v c: «3; Nat»): «3; Nat» = (v, c)#(v#0₃ == 0)) ((0, 0, 0), checks);
+        build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, checked) kinds;
     /// The law of a consumer whose input `slot` is the root of the law `pl`, which may itself fuse producers.
     /// The consumer threads `pl`'s physical inputs, and a block reads the box it needs of `pl`'s meaning, whose elements
     /// compose with the producers `pl` fuses.

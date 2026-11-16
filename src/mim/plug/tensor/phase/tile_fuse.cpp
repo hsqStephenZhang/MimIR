@@ -1816,6 +1816,8 @@ const Def* law_of(const Def* op, const DefSet& group, const Def* merge, DefSet& 
             ins[i] = w.implicit_app(w.annex(tensor::law::source), input);
             continue;
         }
+        // A law recomputes a member wherever it is read, so one read twice stays with the per-level recursion.
+        if (!used.insert(input).second) return nullptr;
         const Def* vouched = nullptr;
         auto source        = input;
         if (auto marked = Axm::isa<merge_with>(input)) {
@@ -1824,7 +1826,6 @@ const Def* law_of(const Def* op, const DefSet& group, const Def* merge, DefSet& 
         }
         auto inner = law_of(source, group, vouched, used);
         if (!inner) return nullptr;
-        used.insert(input);
         ins[i] = w.implicit_app(w.annex(tensor::law::as_source), inner);
         fused  = true;
     }
@@ -1835,7 +1836,7 @@ const Def* law_of(const Def* op, const DefSet& group, const Def* merge, DefSet& 
     // A root that fuses producers is ordered; a merge of its own would not cover its producers' splits.
     if (merge) return nullptr;
     auto law = map_reduce_head(w.annex(tensor::law::of_sources), *mr, nullptr);
-    law      = w.app(law, w.tuple(DefVec(nis, [&](size_t i) { return ins[i]->type()->proj(6, 0); })));
+    law      = w.app(law, w.tuple(DefVec(nis, [&](size_t i) { return ins[i]->type()->proj(7, 0); })));
     law      = w.app(law, w.tuple(ins));
     return w.app(law, inputs);
 }
