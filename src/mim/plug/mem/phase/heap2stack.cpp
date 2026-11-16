@@ -31,10 +31,11 @@ bool in_loop(const Nest::Node* node) {
 
 } // namespace
 
-Heap2Stack::Heap2Stack(World& world, flags_t annex)
+Heap2Stack::Heap2Stack(World& world, flags_t annex, bool loops)
     : RWPhase(world, annex, &escape_)
     , escape_(world)
-    , max_(driver().arg_nat("mem", "heap2stack").value_or(1024)) {}
+    , max_(driver().arg_nat("mem", "heap2stack").value_or(1024))
+    , loops_(loops) {}
 
 bool Heap2Stack::analyze() {
     if (max_ == 0) return false;
@@ -50,7 +51,7 @@ bool Heap2Stack::analyze() {
             if (Lit::isa(addr_space) == 0 && num_elems(pointee)) allocs.emplace_back(op);
         }
         if (allocs.empty()) continue;
-        if (!lam->is_closed()) {
+        if (!loops_ && !lam->is_closed()) {
             if (!nest) nest.emplace(old_world());
             if (in_loop((*nest)[lam])) continue;
         }

@@ -102,6 +102,7 @@ extern lam _default_compile (): compile.Phase =
 
         // prepare codegen
         optimize,
+        mem.heap2stack_loops,
         compile.dispatch_normalize,
         compile.ret_wrap,
         mem.free_locals,

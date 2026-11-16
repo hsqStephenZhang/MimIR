@@ -8,11 +8,12 @@ namespace mim::plug::mem::phase {
 ///
 /// The slot's continuation receives the remainder of the alloc's home.
 /// Only allocations of at most `-X mem:heap2stack=<n>` elements in address space 0 qualify; `0` disables this phase.
-/// A slot lives until its function returns, so an alloc in a loop of its function stays on the heap.
-/// A `mem.free` of a converted alloc is dropped.
+/// A slot lives until its function returns, so an alloc in a loop of its function stays on the heap unless @p loops.
+/// With @p loops, as `mem.heap2stack_loops` after the last `mem.seo`, the ll backend gives each slot one static
+/// entry-block stack slot that the iterations reuse. A `mem.free` of a converted alloc is dropped.
 class Heap2Stack : public RWPhase {
 public:
-    Heap2Stack(World&, flags_t annex);
+    Heap2Stack(World&, flags_t annex, bool loops = false);
 
 private:
     bool analyze() final;
@@ -23,9 +24,17 @@ private:
 
     EscapeAnalysis escape_;
     const nat_t max_;
+    const bool loops_;
     /// Old tail ↦ the allocs on its chain to turn into slots, in program order.
     DefMap<fe::Vector<const App*>> slots_;
     DefSet converted_;
+};
+
+/// `Heap2Stack` that also turns allocations in loops into slots.
+class Heap2StackLoops : public Heap2Stack {
+public:
+    Heap2StackLoops(World& world, flags_t annex)
+        : Heap2Stack(world, annex, true) {}
 };
 
 } // namespace mim::plug::mem::phase
