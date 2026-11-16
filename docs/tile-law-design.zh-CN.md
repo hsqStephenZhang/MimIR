@@ -223,6 +223,8 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   定律本身成为来源（2026-11-15）：`Law` 加类型参数 `P`（物理输入的类型）与字段 `phys`、`mean`、`tile`、`merge`、`ordered`；`tile` 对 `(off, ext)` 调一次解释器的 `leaf`，在整段归约上算出根的这个盒子。
   `law.fuse_law slot pl …` 在融合槽放生产者定律 `pl`：消费者穿过 `pl` 的物理输入，块读它需要的盒子时由 `pl` 自己的 `tile` 算出，于是 `pl` 若也融合了生产者，就得到嵌套。
   `lit/tensor/law_nested.mim`：行和读 GEMM 的行，GEMM 又融合了反量化的权重；`denote` 与每块 8 行的调度都对，且调度里没有 32 × 32 的乘积（4096 字节）的分配。
+  驻留路径（`each`/`parts`）对 `fuse_law` 的成员仍读 `tile_of (mean_of pl, …)`：`tile_of` 的规范化把嵌套的 `map_reduce` 组合成逐元素的计算，内层不会被整个算出（`lit/nvptx/law_resident_nested.mim`：平方 ← 行平方和 ← 归一化，每个元素边算平方边累加，没有一行平方的缓冲）。
+  改用内层定律的 `tile`（解释器的 `leaf`）反而先把成员的盒子物化（每元素 1152 字节），所以没有这样做；`tile` 只用于未驻留的块，那里两种写法生成同样的代码。
   先前以为这一步卡在 core 的统一上，是误判：那次新增了 `anx` 却只把 `tensor.mim` 复制进构建目录而没重建插件，生成的公理编号错位，C++ 引用的 `law.run` 成了 `law.req`。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；

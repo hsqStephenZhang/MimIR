@@ -1,0 +1,43 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p nvptx
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/law_resident_nested_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// Rows divided by their sums of squares, where the sums are a law that fuses the squares and is itself fused, resident
+// in each work-group.
+// 288 columns do not split into the work-items' chunks, so each work-item computes a whole row's sum, squaring the row
+// on the way: the element of the fused law composes with the squares it fuses, so no row of squares is ever stored.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun square (_: F32, xs: [F32])@tt: F32 =
+    let (x) = xs;
+    return (math.arith.mul fast (x, x));
+fun add (acc: F32, xs: [F32])@tt: F32 =
+    let (x) = xs;
+    return (math.arith.add fast (acc, x));
+fun divide (_: F32, xs: [F32, F32])@tt: F32 =
+    let (x, s) = xs;
+    return (math.arith.div fast (x, s));
+
+let levels = serial_group ((4, 0), 1, 3, group_item ((1, 4), 1, item_done ()));
+
+extern fun rows (x: tensor.Tensor 2 (64, 288) F32): tensor.Tensor 2 (64, 288) F32 =
+    let x  = buf x;
+    let sq = map_reduce ((64, 288), (64, 288)) (square, 0.0:F32) (affine.id @2) (affine.id @2,) x;
+    let pl = law.fuse 0 ((64, 288), (64, 288)) (square, 0.0:F32) (affine.id @2) (affine.id @2,) x
+        (64, (64, 288)) (add, 0.0:F32) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1)) sq;
+    let ss = map_reduce (64, (64, 288)) (add, 0.0:F32) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1)) sq;
+    let l  = law.fuse_law 1 pl ((64, 288), (64, 288)) (divide, ⊥:F32) (affine.id @2) (affine.id @2, proj_map @(2, 1) 0) (x, ss);
+    return (law.run (l, levels, default_control));
+
+// CHECK-NOT: @malloc(i64 1152)
