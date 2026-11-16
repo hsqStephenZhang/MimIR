@@ -996,7 +996,7 @@ void report_verdict(const Def* where, const Def* verdict) {
 }
 
 template<check id>
-const Def* normalize_check(const Def*, const Def*, const Def* op) {
+const Def* normalize_check([[maybe_unused]] const Def* type, const Def*, const Def* op) {
     auto& w = op->world();
     if constexpr (id == check::report) {
         auto [verdict, value] = op->projs<2>();
@@ -1016,6 +1016,17 @@ const Def* normalize_check(const Def*, const Def*, const Def* op) {
         return w.lit_nat(2 * std::stoull(text) + (specific ? 1 : 0));
     }
     if constexpr (id == check::depth) return w.lit_nat(w.driver().arg_nat("tensor", "pipeline").value_or(1));
+    if constexpr (id == check::merge) {
+        auto lam = op->isa_mut<Lam>();
+        if (!lam || !lam->is_set() || !op->is_closed()) return nullptr;
+        auto mr = btensor::MapRedPost{};
+        mr.comb = op;
+        mr.To   = type->as<Pi>()->codom();
+        if (!reduction_law(mr)) return nullptr;
+        // A recognized combiner applies a reassociable binary operation, which merges two partials as it is.
+        auto fn = combiner_app(op)->as<App>()->callee();
+        return fn->is_closed() && fn->type() == type ? fn : nullptr;
+    }
     if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) {
         auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
         if (auto ranks = mr.ranks()) {
