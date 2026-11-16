@@ -247,6 +247,53 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   生成的代码不带 ASan 插桩，所以输入后面放了非零哨兵，块越界读会改变结果（把尾块长度改成整块的变异由此被测出）；
   `lit/error/law_req_rule.mim`（规则用定律的事实）、`law_req_kind.mim`（收缩种类不符是类型错误）。
 
+## 8. 类型索引与写在 Mim 里的协议（2026-11-16）
+
+### 8.1 解释器的类型索引
+
+`build_post` 里的解释器原先靠 PE 时的数据区分"现在在哪、手里的东西是谁的"；现在这些是类型索引，写错在插件验证时报错，生成的代码不变（`lit/gpu` 的 88 个程序输出逐字相同）。
+
+- 执行单元：`nom At (u)`，`Step u = [lo, ext, size, xs, acc, grp, stp, pan, here: At u] → …`；`split_par u (…, scope, …, k: Step (inner_unit (u, scope)))`，`split_bound u (…, k: Step u)`。
+  五个解释函数各自固定单元（0 串行、1 work-group、2 work-item、3 warp、6 warpgroup）。原先 scope 编号与续延是两个互不相关的参数。
+- 累加器：`nom Acc (u) (lo) (ext) = | Seed: «(u, lo)» | Held: [«(u, lo)», Tensor Ro ext To]`，取代 `acc` 张量加 `fresh` 标记。
+  种子状态下没有张量，所以不会有"标成种子却带着折过的累加器"而被并行切分静默丢掉。
+- 面板计划：`nom Plan (ou) (grp) (stp) = [who: «(ou, grp, stp)», planned: Pan]`，所有者是 `grp` 处的 work-group（`ou = shared_unit u` 为 0 时是串行代码），生命周期是 `stp` 处的暂存归约块。
+  只有 `split_par` 进入 work-group 和带 `promote` 的 `split_bound` 能产生另一个所有者或生命周期的计划。
+- `Gx` 的执行单元与 work-group 原点两个槽位不再读（恒为 0），改从类型取。
+
+局限：索引加在整个计划上而不是每个输入；它保证的是计划、累加器与上下文配对一致，不保证叶子读的范围落在面板的盒子里（那是仿射包含）；`stage` 的结果仍是裸 `Tensor`。
+`bench/typed_tiles/` 是同一思路在解释器之外的外壳：tile 带所有者实例、生命周期、存储空间、可见性，所有者与生命周期用区域的绑定变量（`off`、`k`）索引，所以 tile 逃不出它的 work-group 或归约步。
+
+### 8.2 协议骨架
+
+`lower_to_mem` 里一部分同步协议改由 `gpu.mim` 的 Mim 函数给出，C++ 只提供闭包（填充体、一步的计算、合并函数）：
+
+| 协议 | Mim | 用在 |
+|---|---|---|
+| 同步面板的超步：进入、逐个协作填充、发布、读、离开 | `gpu.superstep` | 批（`close_batch`） |
+| 环：序言、每步等待/同步/补填/计算/轮转、收尾 | `gpu.ring_fold`，拷贝的跟踪方式是参数 `RingSync` | `lower_tile_fold`、`warp_fold` |
+| `cp.async` 提交组 | `gpu.async_ring` | 同上 |
+| 每槽一个 mbarrier | `gpu.mbar_ring` | 不被 cluster、persistent、特化 warp 共享的 TMA 环 |
+| work-item 归约的合并轮次，令牌与面板的类型数超步 | `gpu.merge_rounds` | `lower_bound_fold` |
+| lane 的 shuffle 合并 | `gpu.lane_merge` | `lower_lane_fold`、work-item 归约的 warp 内预合并 |
+
+验证：同步超步、`cp.async` 环、合并轮次、lane 合并的生成结果与原先结构相同或在 GPU 上执行正确，各有一个使 GPU 执行测试失败的变异；`warp_fold` 的环在 RTX 3090 上执行正确（`bench/gpu_fusion/attn_warps.mim`）；TMA 环没有可用的硬件，只比较了 sm_90a 设备 IR（行数与操作集合相同，PTX 指令集合相同）。
+`warp_fold` 的环原先结束时不等最后一组拷贝，现在等。
+仍在 C++ 里的：特化 warp（`RedWs`）与 ping-pong、cluster 共享与拆分、persistent、批之外的协作填充、区域本身（`lower_tiled`）、`gpu.outline`。
+
+环的状态在 Mim 里是嵌套元组（每槽一组面板），`affine.lower_for` 之后留下聚合类型的 phi，NVPTX 推断不出共享内存地址空间，叶子的读退化成通用 `ld`（RTX 3090 上慢 17–31%）；所以流水线在 `lower_for` 之后补了两次 `compile.scalarize`，之后与 C++ 版本的 PTX 读写类别相同、计时持平。
+
+### 8.3 写这些时碰到的限制
+
+| 现象 | 做法 |
+|---|---|
+| 带参数的 `nom`，其索引若不出现在载荷里，不参与类型相等（`nom P (n: Nat) = | Mk` 时 `P 2` 可传给要 `P 1` 的函数） | 像 `Tensor` 一样放单例见证 `«(…)»` |
+| 异构元组按非字面量下标取元素得到并类型 | 隐式参数写成一组一次给全；只用 pack 自己的绑定子做下标；顺序线程化令牌时折叠同类型的 `W → W` 步 |
+| 布尔索引的依赖类型不能分情况消去（两个 lambda 按 `f` 选择得到并类型） | "是否种子"用和类型，在 PE 时 `match` |
+| 类型里的超步编号每轮加一，`e - 1 + 1` 与 `e` 在泛型下不相等 | `core.bitcast` 到声明的类型，`e` 为字面量后消去 |
+| 柯里化 `lam` 上的过滤器只管最后一组参数，递归会耗尽 PE 燃料 | 递归函数只用一组参数 |
+| 柯里化参数里的组绑定 `(a b: T)` 是一个 `«2; T»` 参数 | 每个参数各写一个括号 |
+
 实现中碰到的 MimIR 限制，决定了现在的形式：
 
 | 想要的写法 | 问题 | 现在的做法 |

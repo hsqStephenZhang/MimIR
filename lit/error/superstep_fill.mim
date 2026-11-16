@@ -1,0 +1,19 @@
+// RUN: not %mim %s -o - 2>&1 | %FileCheck %s
+
+// A superstep's fills are typed by the panels they fill, so a fill for another panel is rejected.
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin gpu;
+
+let B4  = buffer.Buf (1, 4, I32);
+let B23 = buffer.Buf (2, (2, 3), I32);
+
+lam fill_a (m: mem.M 0, b: B4): [mem.M 0, B4] = buffer.write (1, 4, I32) (m, b, 0₄, 7I32);
+
+extern lam swapped (m: mem.M 0): [mem.M 0, I32] =
+    gpu.superstep @(0, 2, (1, 2), (4, (2, 3)), (I32, I32), I32) (m, (fill_a, fill_a),
+        λ (m: mem.M 0, (a: B4, _: B23)): [mem.M 0, I32] = buffer.read (1, 4, I32) (m, a, 0₄));
+
+// CHECK: error: {{.*}}not assignable

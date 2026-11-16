@@ -1,0 +1,72 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// The work-group protocols written in Mim unfold into one chain of phase tokens that `check_sync` accepts:
+// a superstep fills its panels one after another behind one barrier, merge rounds count the supersteps in their
+// types, and the lanes' merge halves the shuffle distance down to 1.
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin math;
+plugin gpu;
+plugin compile;
+
+let B4  = buffer.Buf (1, 4, I32);
+let B23 = buffer.Buf (2, (2, 3), I32);
+
+lam fill_a (m: mem.M 0, b: B4): [mem.M 0, B4] = buffer.write (1, 4, I32) (m, b, 0₄, 7I32);
+lam fill_b (m: mem.M 0, b: B23): [mem.M 0, B23] = buffer.write (2, (2, 3), I32) (m, b, (1₂, 2₃), 5I32);
+lam bump (m: mem.M 0, b: B4): mem.M 0 =
+    let (m, x) = buffer.read (1, 4, I32) (m, b, 0₄);
+    let (m, _) = buffer.write (1, 4, I32) (m, b, 0₄, core.wrap.add 0 (x, 1I32));
+    m;
+lam get (m: mem.M 0, b: B4): [mem.M 0, I32] = buffer.read (1, 4, I32) (m, b, 0₄);
+
+extern lam two_panels (m: mem.M 0): [mem.M 0, I32] =
+    gpu.superstep @(0, 2, (1, 2), (4, (2, 3)), (I32, I32), I32) (m, (fill_a, fill_b),
+        λ (m: mem.M 0, (a: B4, b: B23)): [mem.M 0, I32] =
+            let (m, x) = buffer.read (1, 4, I32) (m, a, 0₄);
+            let (m, y) = buffer.read (2, (2, 3), I32) (m, b, (1₂, 2₃));
+            (m, core.wrap.add 0 (x, y)));
+
+extern lam two_rounds (m: mem.M 0): [mem.M 0, I32] =
+    gpu.merge_rounds @(1, 2, 1, 4, I32, I32) (m, fill_a, (bump, bump), get);
+extern lam no_round (m: mem.M 0): [mem.M 0, I32] = gpu.merge_rounds @(2, 0, 1, 4, I32, I32) (m, fill_a, (), get);
+
+extern lam four_lanes (x: math.F32): math.F32 =
+    gpu.lane_merge @1 (4, λ (u v: math.F32): math.F32 = math.arith.add 0 (u, v)) x;
+
+extern lam _compile (): compile.Phase = compile.phases ff (compile.named "gpu.check_sync", compile.cleanup);
+
+// CHECK-LABEL: four_lanes
+// CHECK: gpu.shfl_xor ({{.*}}, 2I32)
+// CHECK: gpu.shfl_xor ({{.*}}, 1I32)
+// CHECK-NOT: gpu.shfl_xor
+
+// CHECK-LABEL: no_round
+// CHECK: gpu.coop_fill @ (2, 0)
+// CHECK: gpu.sync_publish @ (2, 0)
+// CHECK-NOT: gpu.claim
+// CHECK: gpu.read_phase @ (2, 0)
+// CHECK: gpu.sync_reclaim @ (2, 0)
+// CHECK: gpu.group_leave @ (2, 1)
+
+// CHECK-LABEL: two_panels
+// CHECK: gpu.enter_write
+// CHECK: gpu.coop_fill {{.*}} @ (1, 4, I32) ({{.*}}, fill_a)
+// CHECK: gpu.coop_fill {{.*}} @ (2, (2, 3), I32) ({{.*}}, fill_b)
+// CHECK: gpu.sync_publish
+// CHECK-NOT: gpu.sync_publish
+// CHECK-DAG: gpu.publish_view {{.*}} @ (1, 4, I32)
+// CHECK-DAG: gpu.publish_view {{.*}} @ (2, (2, 3), I32)
+// CHECK: gpu.read_phase
+// CHECK: gpu.leave_reading
+
+// CHECK-LABEL: two_rounds
+// CHECK: gpu.sync_publish @ (1, 0)
+// CHECK: gpu.owned_update @ (1, 0)
+// CHECK: gpu.sync_carry @ (1, 0)
+// CHECK: gpu.owned_update @ ‹2; 1›
+// CHECK: gpu.sync_carry @ ‹2; 1›
+// CHECK: gpu.read_phase @ (1, 2)
+// CHECK: gpu.group_leave @ (1, 3)
