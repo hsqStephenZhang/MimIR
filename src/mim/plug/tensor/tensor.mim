@@ -3446,6 +3446,9 @@ pub mod law
         let Phys   = «i: nis; Ps#i»;
         let phys   = ‹i: nis; srcs#i#0₈›;
         let unfold = λ (xs: Phys): «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)» = ‹i: nis; (srcs#i#1₈) (xs#i)›;
+        // A box a work-group keeps resident passes down as a region input, an empty tuple, which needs no buffer, if none.
+        let Re     = «i: nis; [Bool, «Ris#i; Nat»]»;
+        let Res    = λ (re: Re): * = «i: nis; ([], Tensor (Ris#i) (re#i#1₂) (Tis#i))#(re#i#0₂)»;
         let is     = unfold phys;
         let root   = make is;
         let zero = ‹Ro; 0›;
@@ -3496,7 +3499,7 @@ pub mod law
         let Cx   = [Pan, Gx];
         let none = (‹i: nis; ((ff, 0, 1, ‹Ris#i; 0›, ‹Ris#i; 0›, ‹d: Ris#i; d›), unplaced (Ris#i))›,
                     (‹Rn; 0›, ‹Rn; 0›, ‹Rn; 0›, ‹Rn; 0›, 0, (0, 0, 0), 0));
-        let Step = [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
+        let Step = [lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re,
                     acc: Tensor Ro ext To, fresh: Bool, pan: Cx] → Tensor Ro ext To;
         lam enter (scope: Nat, sizes lo size: «Rn; Nat», cx: Cx): Cx =
             let (p, g) = cx;
@@ -3680,18 +3683,18 @@ pub mod law
                 let t = (g#3₇)#k;
                 core.nat.mul (x, core.select (t == 0, 1, ((g#1₇)#k + t - 1) / t))) (‹d: Ro; core.idx2nat d›, 1);
         // Stuck while the ranks are generic, so its body is checked once for every plan.
-        lam leaf_at (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
+        lam leaf_at (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re,
                      acc: Tensor Ro ext To, items: Nat, pan: Pan)@(core.pe.is_closed (‹i: nis; srcs#i#7₈›, Ris)): Tensor Ro ext To =
             let off = ‹d: Ro; lo#(core.idx 0 Rn (core.idx2nat d))›;
             map_reduce_post @(nis, 0) @(To, To, Ro, Rn, SchedT) (ext, size, mk_sched (Rn, 0))
                 @(Tis, ris_of pan, sis_of pan, (), (), ()) (f, outs_default @(To, Ro) ext acc, id @To)
                 (tile_shift @(Rn, Ro) map_out (lo, off)) (reads_of (lo, pan), ()) (values_of (unfold xs, xs, items, pan), ());
-        let leaf = λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
+        let leaf = λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re,
                       acc: Tensor Ro ext To, _: Bool, cx: Cx): Tensor Ro ext To =
-            leaf_at (lo, ext, size, xs, acc, items_of (cx#1₂), boxed (lo, size, cx#0₂));
+            leaf_at (lo, ext, size, xs, re, res, acc, items_of (cx#1₂), boxed (lo, size, cx#0₂));
         // A vector level runs its one parallel loop of size 1 as the vector loop and splits the last reduction loop by
         // its size into an unrolled inner loop, as `tile_fuse`'s `vector` does; without that loop it changes nothing.
-        lam vec_at (sizes lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
+        lam vec_at (sizes lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re,
                     acc: Tensor Ro ext To, cx: Cx, pan: Pan)@(core.pe.is_closed (‹i: nis; srcs#i#7₈›, Ris)): Tensor Ro ext To =
             let vdim   = vec.fold.r @(Nat, Idx Rn) @Rn
                 (λ (d: Idx Rn, x: Nat): Nat = (x, core.idx2nat d)#(core.bit2.and 0 (sizes#d == 1, core.idx2nat d < Ro))) (‹d: Rn; d›, Rn);
@@ -3715,11 +3718,11 @@ pub mod law
                 @(Tis, ris_of pan, sis_of pan, (), (), ()) (f, outs_default @(To, Ro) ext acc, id @To)
                 (λ (o: «Rs; affine.Index»): «Ro; affine.Index» = out (split o))
                 (‹i: nis; λ (o: «Rs; affine.Index»): «(ris_of pan)#i; affine.Index» = (ins#i) (split o)›, ()) (vals, ());
-            ((whole, unrolled)#(core.bit2.and 0 (1 < factor, core.nat.rem (K, core.select (factor == 0, 1, factor)) == 0)), leaf (lo, ext, size, xs, acc, ff, cx))
+            ((whole, unrolled)#(core.bit2.and 0 (1 < factor, core.nat.rem (K, core.select (factor == 0, 1, factor)) == 0)), leaf (lo, ext, size, xs, re, res, acc, ff, cx))
                 #(vdim == Rn);
-        let leaf_vec = λ (sizes: «Rn; Nat», lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
+        let leaf_vec = λ (sizes: «Rn; Nat», lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re,
                           acc: Tensor Ro ext To, cx: Cx): Tensor Ro ext To =
-            vec_at (sizes, lo, ext, size, xs, acc, cx, boxed (lo, size, cx#0₂));
+            vec_at (sizes, lo, ext, size, xs, re, res, acc, cx, boxed (lo, size, cx#0₂));
         // A work-group region runs in its cluster and persistently as the levels above it ask; a warpgroup region whose
         // reduction is specialized runs one more warpgroup, the producer, as `tile_fuse` wraps them.
         lam wrap {T: *} (scope: Nat, sp: [Bool, Nat], g: Gx) (b: T): T =
@@ -3729,31 +3732,32 @@ pub mod law
             let p1 = (c1, persistent @T ctas c1)#(core.bit2.and 0 (scope == 1, ctas != 0));
             (bind @T scope p1, b)#(scope == 0);
         let split_par = λ (sizes: «Rn; Nat», tail scope: Nat, sp: [Bool, Nat], gp: Nat, k: Step): Step =
-            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
+            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re,
                acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To =
                 let ts   = ‹d: Ro; let z = sizes#(core.idx 0 Rn (core.idx2nat d)); (z, ext#d)#(z == 0)›;
-                let inner = λ (off ext2: «Ro; Nat», xs2: Phys, acc2: Tensor Ro ext To)
+                let inner = λ (off ext2: «Ro; Nat», xs2: Phys, res2: Res re, acc2: Tensor Ro ext To)
                     : Tensor Ro ext2 To =
                     let lo2   = ‹d: Rn; lo#d + (0, off#(at d))#(core.idx2nat d < Ro)›;
                     let size2 = ‹d: Rn; (size#d, ext2#(at d))#(core.idx2nat d < Ro)›;
                     let cx    = enter (scope, sizes, lo2, size2, pan);
-                    k (lo2, ext2, size2, xs2, slice @(To, Ro) ext (off, ‹Ro; 1›, ext2) acc2, ff,
+                    k (lo2, ext2, size2, xs2, re, res2, slice @(To, Ro) ext (off, ‹Ro; 1›, ext2) acc2, ff,
                        ((cx#0₂, plan_whole (gp, lo2, size2, cx#0₂))#(gp != 0), cx#1₂));
-                let carried = λ (off ext2: «Ro; Nat») (ins: [Phys, Tensor Ro ext To])
+                let carried = λ (off ext2: «Ro; Nat») (ins: [[Phys, Res re], Tensor Ro ext To])
                     : Tensor Ro ext2 To =
-                    let (xs2, acc2) = ins;
-                    inner (off, ext2, xs2, acc2);
+                    let ((xs2, res2), acc2) = ins;
+                    inner (off, ext2, xs2, res2, acc2);
                 // A fresh accumulator is still the seed, which each tile rebuilds rather than reads as a region input.
-                let seeded = λ (off ext2: «Ro; Nat») (xs2: Phys): Tensor Ro ext2 To =
+                let seeded = λ (off ext2: «Ro; Nat») (xr: [Phys, Res re]): Tensor Ro ext2 To =
+                    let (xs2, res2) = xr;
                     let lo2   = ‹d: Rn; lo#d + (0, off#(at d))#(core.idx2nat d < Ro)›;
                     let size2 = ‹d: Rn; (size#d, ext2#(at d))#(core.idx2nat d < Ro)›;
                     let cx    = enter (scope, sizes, lo2, size2, pan);
-                    k (lo2, ext2, size2, xs2, splat (ext2, init), tt, ((cx#0₂, plan_whole (gp, lo2, size2, cx#0₂))#(gp != 0), cx#1₂));
-                (tiled (ext, ts, tail) (xs, acc) (wrap (scope, sp, pan#1₂) carried),
-                 tiled (ext, ts, tail) xs (wrap (scope, sp, pan#1₂) seeded))#fresh;
+                    k (lo2, ext2, size2, xs2, re, res2, splat (ext2, init), tt, ((cx#0₂, plan_whole (gp, lo2, size2, cx#0₂))#(gp != 0), cx#1₂));
+                (tiled (ext, ts, tail) ((xs, res), acc) (wrap (scope, sp, pan#1₂) carried),
+                 tiled (ext, ts, tail) (xs, res) (wrap (scope, sp, pan#1₂) seeded))#fresh;
         let split_bound = λ (sizes: «Rn; Nat», tail level: Nat, mg: [Bool, [To, To] → To], promote: Nat, tiles: «Rn; Nat»,
                              shared mma: Bool, depth: Nat, tma: Bool, k: Step): Step =
-            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
+            λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re,
                acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To =
                 let loop  = vec.fold.r @(Nat, Idx Rn) @Rn
                     (λ (d: Idx Rn, x: Nat): Nat = (x, core.idx2nat d)#(core.bit2.and 0 (sizes#d != 0, Ro <= core.idx2nat d)))
@@ -3762,7 +3766,7 @@ pub mod law
                     (λ (d: Idx Rn, x: Nat): Nat = (x, sizes#d)#(core.idx2nat d == loop)) (‹d: Rn; d›, 0);
                 let K     = size#(core.idx 0 Rn (core.select (loop < Rn, loop, 0)));
                 let unit  = core.select (ks == 0, 1, ks);
-                let block = λ (a: Tensor Ro ext To, k0 n: Nat, xs2: Phys): Tensor Ro ext To =
+                let block = λ (a: Tensor Ro ext To, k0 n: Nat, xs2: Phys, res2: Res re): Tensor Ro ext To =
                     let blo   = ‹d: Rn; lo#d + (0, k0)#(core.idx2nat d == loop)›;
                     let bsize = ‹d: Rn; (size#d, n)#(core.idx2nat d == loop)›;
                     let (p, g) = pan;
@@ -3773,25 +3777,26 @@ pub mod law
                     let plo   = (blo, ‹d: Rn; ((g#0₇)#d, blo#d)#(Ro <= core.idx2nat d)›)#wide;
                     let psize = (bsize, ‹d: Rn; ((g#1₇)#d, bsize#d)#(Ro <= core.idx2nat d)›)#wide;
                     let mode  = (0, (1, 2)#(g#4₇ == 6))#mma;
-                    k (blo, ext, bsize, xs2, a, ff, ((p, plan (promote, width, shared, plo, psize, g, mode, p))#(promote != 0), g));
+                    k (blo, ext, bsize, xs2, re, res2, a, ff, ((p, plan (promote, width, shared, plo, psize, g, mode, p))#(promote != 0), g));
                 let peel  = tail == 1;
                 let (explicit, m) = mg;
-                let Body  = Phys → Tensor Ro ext To;
+                let Body  = [Phys, Res re] → Tensor Ro ext To;
                 // Only a seed accumulator may be bound: each work-item or lane folds its own copy and their partials merge.
                 let bound = core.bit2.and 0 (fresh, level != 0);
                 let step  = λ (a: Tensor Ro ext To, k0: Nat): Body =
                     // A peeled split's full blocks, and all blocks of a loop they divide, are exactly `unit` wide, which
                     // keeps a staged panel's shape literal.
-                    let body   = λ (xs2: Phys): Tensor Ro ext To =
-                        block (a, k0, core.select (core.bit2.or 0 (peel, K % unit == 0), unit, core.select (k0 + unit < K, unit, K - k0)), xs2);
+                    let body   = λ (xr: [Phys, Res re]): Tensor Ro ext To =
+                        let (xs2, res2) = xr;
+                        block (a, k0, core.select (core.bit2.or 0 (peel, K % unit == 0), unit, core.select (k0 + unit < K, unit, K - k0)), xs2, res2);
                     let filled = (body, fill_tma @Body body)#tma;
                     let ring   = core.select (depth == 0, check.depth (), depth);
                     let piped  = (filled, pipeline @Body ring filled)#(1 < ring);
                     let marked = (piped, merge_with @(Body, To) m piped)#explicit;
                     (marked, bind level marked)#bound;
-                let full  = tile_fold (core.select (peel, K / unit, (K + unit - 1) / unit), unit) acc xs step;
-                let split = (full, block (full, K / unit * unit, K % unit, xs))#(core.bit2.and 0 (peel, K % unit != 0));
-                (split, k (lo, ext, size, xs, acc, fresh, pan))#(loop == Rn);
+                let full  = tile_fold (core.select (peel, K / unit, (K + unit - 1) / unit), unit) acc (xs, res) step;
+                let split = (full, block (full, K / unit * unit, K % unit, xs, res))#(core.bit2.and 0 (peel, K % unit != 0));
+                (split, k (lo, ext, size, xs, re, res, acc, fresh, pan))#(loop == Rn);
         let split_red = λ (sizes: «Rn; Nat», tail: Nat, k: Step): Step = split_bound (sizes, tail, 0, (ff, merge), 0, ‹Rn; 0›, ff, ff, 0, ff, k);
         let split_pro = λ (sizes: «Rn; Nat», tail promote: Nat, tiles: «Rn; Nat», shared mma: Bool, depth: Nat, tma: Bool, k: Step): Step =
             split_bound (sizes, tail, 0, (ff, merge), promote, tiles, shared, mma, depth, tma, k);
@@ -3834,52 +3839,52 @@ pub mod law
                          | 5 (_, _, _, rest) => next_tile rest | 6 (_, rest) => next_tile rest;
         // A law with a vouched merge hands it to a split over work-items or lanes; an ordered one leaves the merge to lowering.
         let merge_of = λ (m: TileMerge To): [Bool, [To, To] → To] = match m with | 0 => ((tt, ff)#ordered, merge) | 1 explicit => (tt, explicit);
-        lam wg_step {M: *, g t: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: WarpgroupLevels (Rn, To, M, g, t))@(core.pe.is_closed l): Tensor Ro ext To =
+        lam wg_step {M: *, g t: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: WarpgroupLevels (Rn, To, M, g, t))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc, fresh, pan)
-                | 1 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_wg rest, tt, mma_wg rest, pl, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 2 (shape, _, _) => mma @(Tensor Ro ext To) (Rn, shape) (leaf (lo, ext, size, xs, acc, fresh, pan))
-                | 3 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_wg rest, tt, mma_wg rest, pl, tt, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 4 (sizes, tl, pr, pl, _, _, rest) => split_pro (sizes, tl, pr, next_wg rest, tt, mma_wg rest, pl, tt, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan);
-        lam warp_step {M: *, b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: WarpLevels (Rn, To, M, b))@(core.pe.is_closed l): Tensor Ro ext To =
+                | 0 => leaf (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 1 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_wg rest, tt, mma_wg rest, pl, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = wg_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 2 (shape, _, _) => mma @(Tensor Ro ext To) (Rn, shape) (leaf (lo, ext, size, xs, re, res, acc, fresh, pan))
+                | 3 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_wg rest, tt, mma_wg rest, pl, tt, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = wg_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 4 (sizes, tl, pr, pl, _, _, rest) => split_pro (sizes, tl, pr, next_wg rest, tt, mma_wg rest, pl, tt, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = wg_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan);
+        lam warp_step {M: *, b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: WarpLevels (Rn, To, M, b))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc, fresh, pan)
-                | 1 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_warp rest, tt, mma_warp rest, pl, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = warp_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 2 (shape, _, _) => mma @(Tensor Ro ext To) (Rn, shape) (leaf (lo, ext, size, xs, acc, fresh, pan));
-        lam item_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
+                | 0 => leaf (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 1 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_warp rest, tt, mma_warp rest, pl, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = warp_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 2 (shape, _, _) => mma @(Tensor Ro ext To) (Rn, shape) (leaf (lo, ext, size, xs, re, res, acc, fresh, pan));
+        lam item_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc, fresh, pan)
-                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 2 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_item rest, tt, ff, pl, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 3 (sizes, _) => leaf_vec (sizes, lo, ext, size, xs, acc, pan)
-                | 4 (sizes, tl, rest) => split_bound (sizes, tl, 4, (ff, merge), 0, zero, ff, ff, 0, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan);
-        lam group_step {M: *, g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): Tensor Ro ext To =
+                | 0 => leaf (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = item_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 2 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_item rest, tt, ff, pl, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = item_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 3 (sizes, _) => leaf_vec (sizes, lo, ext, size, xs, re, res, acc, pan)
+                | 4 (sizes, tl, rest) => split_bound (sizes, tl, 4, (ff, merge), 0, zero, ff, ff, 0, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = item_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan);
+        lam group_step {M: *, g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc, fresh, pan)
-                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 2 (sizes, tl, rest) => split_par (sizes, tl, 2, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = item_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 3 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_group rest, tt, mma_group rest, pl, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 4 (sizes, tl, mg, rest) => split_bound (sizes, tl, 2, merge_of mg, 0, zero, ff, ff, 0, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 5 (sizes, _) => leaf_vec (sizes, lo, ext, size, xs, acc, pan)
+                | 0 => leaf (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = group_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 2 (sizes, tl, rest) => split_par (sizes, tl, 2, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = item_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 3 (sizes, tl, pr, pl, rest) => split_pro (sizes, tl, pr, next_group rest, tt, mma_group rest, pl, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = group_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 4 (sizes, tl, mg, rest) => split_bound (sizes, tl, 2, merge_of mg, 0, zero, ff, ff, 0, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = group_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 5 (sizes, _) => leaf_vec (sizes, lo, ext, size, xs, re, res, acc, pan)
                 | 6 (sizes: «Rn; Nat», tl: Nat, rest: WarpLevels (Rn, To, M, within (g, sizes))) =>
-                    split_par (sizes, tl, 3, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = warp_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
+                    split_par (sizes, tl, 3, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = warp_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
                 | 7 (sizes: «Rn; Nat», tl: Nat, rest: WarpgroupLevels (Rn, To, M, g, sizes)) =>
-                    split_par (sizes, tl, 6, ws_wg rest, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = wg_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan);
-        lam tile_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
+                    split_par (sizes, tl, 6, ws_wg rest, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = wg_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan);
+        lam tile_step {M: *} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Tensor Ro ext To =
             match l with
-                | 0 => leaf (lo, ext, size, xs, acc, fresh, pan)
-                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = tile_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 2 (sizes: «Rn; Nat», tl gp: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split_par (sizes, tl, 1, (ff, 0), gp, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = group_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 3 (sizes, tl, pr, rest) => split_pro (sizes, tl, pr, next_tile rest, ff, ff, 0, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = tile_step (lo, ext, size, xs, acc, fresh, pan, rest)) (lo, ext, size, xs, acc, fresh, pan)
-                | 4 (sizes, _) => leaf_vec (sizes, lo, ext, size, xs, acc, pan)
+                | 0 => leaf (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 1 (sizes, tl, rest) => split_par (sizes, tl, 0, (ff, 0), 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = tile_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 2 (sizes: «Rn; Nat», tl gp: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split_par (sizes, tl, 1, (ff, 0), gp, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = group_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 3 (sizes, tl, pr, rest) => split_pro (sizes, tl, pr, next_tile rest, ff, ff, 0, ff, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys, re: Re, res: Res re, acc: Tensor Ro ext To, fresh: Bool, pan: Cx): Tensor Ro ext To = tile_step (lo, ext, size, xs, re, res, acc, fresh, pan, rest)) (lo, ext, size, xs, re, res, acc, fresh, pan)
+                | 4 (sizes, _) => leaf_vec (sizes, lo, ext, size, xs, re, res, acc, pan)
                 | 5 (sz, mc, sp, rest) =>
                     let g = pan#1₂;
-                    tile_step (lo, ext, size, xs, acc, fresh, (pan#0₂, (g#0₇, g#1₇, g#2₇, g#3₇, g#4₇, (sz, mc, sp), g#6₇)), rest)
+                    tile_step (lo, ext, size, xs, re, res, acc, fresh, (pan#0₂, (g#0₇, g#1₇, g#2₇, g#3₇, g#4₇, (sz, mc, sp), g#6₇)), rest)
                 | 6 (ctas, rest) =>
                     let g = pan#1₂;
-                    tile_step (lo, ext, size, xs, acc, fresh, (pan#0₂, (g#0₇, g#1₇, g#2₇, g#3₇, g#4₇, g#5₇, ctas)), rest);
+                    tile_step (lo, ext, size, xs, re, res, acc, fresh, (pan#0₂, (g#0₇, g#1₇, g#2₇, g#3₇, g#4₇, g#5₇, ctas)), rest);
         let schedule = λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Tensor Ro So Tp =
-            finish (tile_step (‹Rn; 0›, So, Sr, phys, splat (So, init), tt, none, levels));
+            finish (tile_step (‹Rn; 0›, So, Sr, phys, ‹i: nis; (ff, ‹Ris#i; 0›)›, ‹i: nis; ()›, splat (So, init), tt, none, levels));
         // The tiles of the first level that splits the output into blocks, the whole loops if none does.
         lam blocks_of {M: *} (l: TileLevels (Rn, To, M))@(core.pe.is_closed l): «Rn; Nat» =
             match l with
