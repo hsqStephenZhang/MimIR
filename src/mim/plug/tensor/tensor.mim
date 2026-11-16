@@ -3351,28 +3351,33 @@ pub mod law
         [ro inputs: Nat, extents: «n; Nat», root: Tensor r s T,
          par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T,
          schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat, combining: Nat,
-         shared: TileLevels (n, Acc, Kind) → Nat, phys: P, mean: P → Tensor r s T, merge: [Acc, Acc] → Acc, ordered: Bool, checked: «3; Nat», splits: Bool];
-    lam ro_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#0₁₇;
-    lam inputs_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#1₁₇;
-    lam extents_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «n; Nat» = l#2₁₇;
-    lam root_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Tensor r s T = l#3₁₇;
-    lam par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «r; Nat» → Tensor r s T = l#4₁₇;
-    lam red_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Nat, Nat] → Tensor r s T = l#5₁₇;
-    lam red_par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Nat, Nat] → Tensor r s T = l#6₁₇;
+         shared: TileLevels (n, Acc, Kind) → Nat, phys: P, mean: P → Tensor r s T, merge: [Acc, Acc] → Acc, ordered: Bool, checked: «3; Nat», splits: Bool,
+         boxed: {g: «n; Nat»} → [phys: P, off ext: «r; Nat», chain: GroupLevels (n, Acc, Kind, g)] → Tensor r ext Acc];
+    lam ro_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#0₁₈;
+    lam inputs_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#1₁₈;
+    lam extents_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «n; Nat» = l#2₁₈;
+    lam root_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Tensor r s T = l#3₁₈;
+    lam par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «r; Nat» → Tensor r s T = l#4₁₈;
+    lam red_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Nat, Nat] → Tensor r s T = l#5₁₈;
+    lam red_par_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Nat, Nat] → Tensor r s T = l#6₁₈;
     lam schedule_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P))
-        : TileLevels (n, Acc, Kind) → Tensor r s T = l#7₁₇;
-    lam traffic_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#8₁₇;
-    lam combining_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#9₁₇;
-    lam shared_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#10₁₇;
-    lam phys_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P = l#11₁₇;
-    lam mean_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P → Tensor r s T = l#12₁₇;
-    lam merge_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Acc, Acc] → Acc = l#13₁₇;
-    lam ordered_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Bool = l#14₁₇;
+        : TileLevels (n, Acc, Kind) → Tensor r s T = l#7₁₈;
+    lam traffic_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#8₁₈;
+    lam combining_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#9₁₈;
+    lam shared_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#10₁₈;
+    lam phys_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P = l#11₁₈;
+    lam mean_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P → Tensor r s T = l#12₁₈;
+    lam merge_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Acc, Acc] → Acc = l#13₁₈;
+    lam ordered_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Bool = l#14₁₈;
     /// The verdict of the law's constructor on its own arguments.
-    lam checked_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «3; Nat» = l#15₁₇;
+    lam checked_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «3; Nat» = l#15₁₈;
     /// Whether a consumer may split the law's reduction as a member: `merge` combines its partials, which read its inputs
     /// directly, and no epilogue finishes them.
-    lam splits_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Bool = l#16₁₇;
+    lam splits_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Bool = l#16₁₈;
+    /// The accumulator of the law's root over the box `(off, ext)` as a work-group computes it by `chain`, its own
+    /// sub-schedule, the box being the work-group's block.
+    lam boxed_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P))
+        : {g: «n; Nat»} → [phys: P, off ext: «r; Nat», chain: GroupLevels (n, Acc, Kind, g)] → Tensor r ext Acc = l#17₁₈;
     /// A work-group's shared memory on the target `check.target` names, an H200's when it names none.
     lam capacity (target: Nat): Nat =
         let cc = target / 2;
@@ -3960,6 +3965,11 @@ pub mod law
             let out   = vec.fold.r @(Nat, Nat) @Ro (λ (e x: Nat): Nat = core.nat.mul (e, x)) (So, core.trait.size Tp);
             core.nat.add (core.nat.mul (count, block), out);
         // A law with a merge of its own vouches for it; an ordered one permits what its combiner does.
+        let boxed = λ {g: «Rn; Nat»} (ys: Phys, off ext2: «Ro; Nat», chain: GroupLevels (Rn, To, root_contraction (make kinds), g))
+            : Tensor Ro ext2 To =
+            let lo   = ‹d: Rn; (0, off#(core.idx 0 Ro (core.idx2nat d)))#(core.idx2nat d < Ro)›;
+            let size = ‹d: Rn; (Sr#d, ext2#(core.idx 0 Ro (core.idx2nat d)))#(core.idx2nat d < Ro)›;
+            group_step (lo, ext2, size, ys, ‹i: nis; (ff, ‹Ris#i; 0›)›, ‹i: nis; ()›, splat (ext2, init), tt, enter (1, size, lo, size, none), chain);
         // A recognized combiner whose seed is its identity merges partials by its own operation.
         let combining = (3, check.combiner root)#ordered;
         let fuses     = vec.fold.r @(Bool, Bool) @nis (core.bit2.or 0) (‹i: nis; srcs#i#7₈›, ff);
@@ -3967,7 +3977,7 @@ pub mod law
         (Ro, nis, Sr, posted (is, post_is), par, red, red_par, schedule, traffic, combining,
          λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat = staged_of levels,
          phys, λ (ys: Phys): Tensor Ro So Tp = posted (unfold ys, post_is),
-         (merge, check.merge f)#(core.bit2.and 0 (splits, combining == 1)), ordered, checked, splits);
+         (merge, check.merge f)#(core.bit2.and 0 (splits, combining == 1)), ordered, checked, splits, boxed);
     /// `build_post` with the neutral epilogue.
     lam build {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
