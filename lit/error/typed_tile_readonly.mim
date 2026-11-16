@@ -1,0 +1,147 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: {{.*}}not assignable
+
+// A work-item takes a published panel as a tile of its own to write.
+// The combinators are those of `lit/gpu/typed_tiles.mim`.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+plugin gpu;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+// Execution units and memory spaces.
+let Grid   = 0;
+let Block  = 1;
+let Thread = 4;
+let Shared = 3;
+let Reg    = 5;
+
+// A data tile: who owns it (unit and the origin of that unit's tile), until when it lives (0: as long as its owner,
+// k + 1: the reduction step at k), where it lives, and what may be done with it.
+// `Filling`: only its owner's cooperative fill writes it; `Seen`: published, so every unit inside its owner reads it
+// and none writes it; `Mine`: its owner alone reads and writes it.
+// These are the phases `gpu.SharedBuf` goes through after lowering, so a schedule and its barriers share one vocabulary.
+// The singleton witness keeps the indices in the type, as `Tensor`'s does.
+let Filling = gpu.Vis#Unpublished;
+let Seen    = gpu.Vis#Published;
+let Mine    = gpu.Vis#Owned;
+nom Tile (r: Nat) (unit: Nat) (at: «r; Nat») (life: Nat) (space: Nat) (cap: gpu.Vis) (r2: Nat) (s: «r2; Nat») (T: *) =
+    [who: «(r, unit, at, life, space, cap)», data: Tensor r2 s T];
+lam tile {r2: Nat, s: «r2; Nat», T: *} (r: Nat) (unit: Nat) (at: «r; Nat») (life: Nat) (space: Nat) (cap: gpu.Vis) (x: Tensor r2 s T)
+    : Tile r unit at life space cap r2 s T = (‹(r, unit, at, life, space, cap)›, x) inj Tile r unit at life space cap r2 s T;
+// The last axis in runs of `n` elements, each read as one vector; whose it is and what may be done with it stay.
+lam vectors {T: *, r rx: Nat} {u life space: Nat, at: «r; Nat», cap: gpu.Vis} {s: «rx; Nat»} (n: Nat, c: «rx; Nat»)
+    (p: Tile r u at life space cap rx s T): Tile r u at life space cap rx c «n; T» =
+    tile r u at life space cap (as_vectors @(rx, s, T) (n, c) (p#data));
+// An execution context: the running unit, its tile's origin, its work-group's, and the reduction step it is in.
+nom Ctx (r: Nat) (unit: Nat) (at: «r; Nat») (block: «r; Nat») (step: Nat) = [here: «(r, unit, at, block, step)», pad: []];
+lam ctx (r: Nat) (unit: Nat) (at: «r; Nat») (block: «r; Nat») (step: Nat): Ctx r unit at block step =
+    (‹(r, unit, at, block, step)›, ()) inj Ctx r unit at block step;
+
+lam grid (r: Nat): Ctx r Grid ‹r; 0› ‹r; 0› 0 = ctx r Grid ‹r; 0› ‹r; 0› 0;
+
+// Grid → blocks: each work-group computes a tile it owns in shared memory; the grid concatenates them.
+lam blocks {T: *, r: Nat} (s ts: «r; Nat») {I: *} (_: Ctx r Grid ‹r; 0› ‹r; 0› 0) (ins: I)
+    (body: [off ext: «r; Nat»] → Ctx r Block off off 0 → I → Tile r Block off 0 Shared Mine r ext T)
+    : Tensor r s T =
+    tiled (s, ts, 0) ins (bind 1 (λ (off ext: «r; Nat») (xs: I): Tensor r ext T =
+        (body (off, ext) (ctx r Block off off 0) xs)#data));
+
+// A work-group's accumulator before any step.
+lam seed {T: *, r: Nat} {b: «r; Nat»} (s: «r; Nat») (_: Ctx r Block b b 0) (init: T): Tile r Block b 0 Shared Mine r s T =
+    tile r Block b 0 Shared Mine (splat (s, init));
+
+// Time: a work-group folds `n` blocks of `ks` of a reduction loop in order.
+// The step at `k` runs in a context of its own, so what it stages cannot outlive it: the accumulator's type has no `k`.
+lam steps {T: *, r: Nat} {b: «r; Nat»} {s: «r; Nat»} {I: *} (n ks: Nat) (_: Ctx r Block b b 0)
+    (acc: Tile r Block b 0 Shared Mine r s T) (ins: I)
+    (step: [k: Nat] → Ctx r Block b b (core.nat.add (k, 1)) → Tile r Block b 0 Shared Mine r s T → I → Tile r Block b 0 Shared Mine r s T)
+    : Tile r Block b 0 Shared Mine r s T =
+    tile r Block b 0 Shared Mine
+        (tile_fold (n, ks) (acc#data) ins (λ (a: Tensor r s T, k: Nat) (xs: I): Tensor r s T =
+            (step k (ctx r Block b b (core.nat.add (k, 1))) (tile r Block b 0 Shared Mine a) xs)#data));
+
+// Space: block → threads, with two panels the work-group stages for the current step (or for good, at step 0).
+// `fill` runs in the block's context: it cannot see a thread's offset, so the panels are uniform over the work-group.
+// The panels reach `body` published; each thread gets its part of the accumulator to own.
+lam threads {T: *, r: Nat} {b: «r; Nat», e: Nat} (s ts: «r; Nat») {I: *}
+    {Ta Tb: *, ra rb: Nat, sa: «ra; Nat», sb: «rb; Nat»}
+    (cx: Ctx r Block b b e) (acc: Tile r Block b 0 Shared Mine r s T) (ins: I)
+    (fill: I → [Tile r Block b e Shared Filling ra sa Ta, Tile r Block b e Shared Filling rb sb Tb])
+    (body: [off ext: «r; Nat»] → Ctx r Thread off b e
+         → [Tile r Block b e Shared Seen ra sa Ta, Tile r Block b e Shared Seen rb sb Tb]
+         → Tile r Thread off 0 Reg Mine r ext T
+         → Tile r Thread off 0 Reg Mine r ext T)
+    : Tile r Block b 0 Shared Mine r s T =
+    tile r Block b 0 Shared Mine
+        (tiled (s, ts, 0) (ins, acc#data) (bind 2 (λ (off ext: «r; Nat») (xa: [I, Tensor r s T]): Tensor r ext T =
+            let (xs, a) = xa;
+            let (pa, pb) = fill xs;
+            let seen = (tile r Block b e Shared Seen (pa#data), tile r Block b e Shared Seen (pb#data));
+            (body (off, ext) (ctx r Thread off b e) seen
+                (tile r Thread off 0 Reg Mine (slice @(T, r) s (off, ‹r; 1›, ext) a)))#data)));
+
+// A work-group stages a box whole in its shared memory; nobody has seen it yet.
+lam resident {T: *, r rx: Nat} {b: «r; Nat», e: Nat} {s: «rx; Nat»} (_: Ctx r Block b b e) (box: Tensor rx s T)
+    : Tile r Block b e Shared Filling rx s T =
+    tile r Block b e Shared Filling (core.bitcast (Tensor rx s T) (stage @(T, rx, 0) s ((), (), ‹d: rx; d›, ⊥:T) 0 box));
+
+// Any unit inside work-group `b` reads what `b` published for the step it is in.
+lam read {T: *, r rx: Nat} {u: Nat, at b: «r; Nat», e: Nat} {s: «rx; Nat»} (_: Ctx r u at b e)
+    (p: Tile r Block b e Shared Seen rx s T): Tensor rx s T = p#data;
+
+// A thread's own tile in its registers, and what it computes into one.
+lam own {T: *, r rx: Nat} {at b: «r; Nat», e: Nat} {s: «rx; Nat»} (_: Ctx r Thread at b e)
+    (p: Tile r Thread at 0 Reg Mine rx s T): Tensor rx s T = p#data;
+lam mine {T: *, r rx: Nat} {at b: «r; Nat», e: Nat} {s: «rx; Nat»} (_: Ctx r Thread at b e) (x: Tensor rx s T)
+    : Tile r Thread at 0 Reg Mine rx s T = tile r Thread at 0 Reg Mine x;
+
+// Time split over units: one thread per block of the reduction loop folds its block from the seed in registers of its
+// own, and the work-group merges the partials.
+// It takes the seed, not an accumulator tile, so a partly folded accumulator cannot be handed out; `merge` is the
+// caller's permission to reorder.
+lam steps_par {T: *, r: Nat} {b: «r; Nat»} {I: *} (s: «r; Nat») (n ks: Nat) (_: Ctx r Block b b 0)
+    (init: T) (merge: [T, T] → T) (ins: I)
+    (step: [k: Nat] → Ctx r Thread ‹r; k› b (core.nat.add (k, 1)) → Tile r Thread ‹r; k› 0 Reg Mine r s T → I
+         → Tile r Thread ‹r; k› 0 Reg Mine r s T)
+    : Tile r Block b 0 Shared Mine r s T =
+    tile r Block b 0 Shared Mine
+        (tile_fold (n, ks) (splat (s, init)) ins (λ (a: Tensor r s T, k: Nat): I → Tensor r s T =
+            bind 2 (merge_with @(I → Tensor r s T, T) merge (λ (xs: I): Tensor r s T =
+                (step k (ctx r Thread ‹r; k› b (core.nat.add (k, 1))) (tile r Thread ‹r; k› 0 Reg Mine a) xs)#data))));
+
+let AB = [tensor.Tensor 2 (16, 16) F32, tensor.Tensor 2 (16, 16) F32];
+extern fun gemm16 (a b: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16) F32 =
+    return (blocks ((16, 16), (8, 8)) (grid 2) (buf a, buf b)
+        (λ (g ge: «2; Nat») (bc: Ctx 2 Block g g 0) (xs: AB): Tile 2 Block g 0 Shared Mine 2 ge F32 =
+            let (gi, gj) = g;
+            let (gm, gn) = ge;
+            steps (2, 8) bc (seed ge bc 0.0:F32) xs
+                (λ (k: Nat) (sc: Ctx 2 Block g g (core.nat.add (k, 1))) (acc: Tile 2 Block g 0 Shared Mine 2 ge F32) (ys: AB)
+                    : Tile 2 Block g 0 Shared Mine 2 ge F32 =
+                    threads (ge, (4, 4)) sc acc ys
+                        (λ (zs: AB) =
+                            let (p, q) = zs;
+                            (resident sc (slice @(F32, 2) (16, 16) ((gi, k), (1, 1), (gm, 8)) p),
+                             resident sc (slice @(F32, 2) (16, 16) ((k, gj), (1, 1), (8, gn)) q)))
+                        (λ (t te: «2; Nat») (tc: Ctx 2 Thread t g (core.nat.add (k, 1)))
+                           (ps: [Tile 2 Block g (core.nat.add (k, 1)) Shared Seen 2 (gm, 8) F32,
+                                 Tile 2 Block g (core.nat.add (k, 1)) Shared Seen 2 (8, gn) F32])
+                           (part: Tile 2 Thread t 0 Reg Mine 2 te F32): Tile 2 Thread t 0 Reg Mine 2 te F32 =
+                            let (ti, tj) = t;
+                            let (tm, tn) = te;
+                            let (pa, pb) = ps;
+                            mine tc (map_reduce_acc (te, (tm, tn, 8)) (mac, own tc part) (proj_map @(3, 2) (0, 1))
+                                (λ (i _ l: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.lit ti), l),
+                                 λ (_ j l: affine.Index): «2; affine.Index» = (l, affine.op.add (j, affine.lit tj)))
+                                (own tc pa, read tc pb))))));

@@ -263,6 +263,12 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 
 局限：索引加在整个计划上而不是每个输入；它保证的是计划、累加器与上下文配对一致，不保证叶子读的范围落在面板的盒子里（那是仿射包含）；`stage` 的结果仍是裸 `Tensor`。
 `bench/typed_tiles/` 是同一思路在解释器之外的外壳：tile 带所有者实例、生命周期、存储空间、可见性，所有者与生命周期用区域的绑定变量（`off`、`k`）索引，所以 tile 逃不出它的 work-group 或归约步。
+数据 tile 的类型参照了两处：Mojo 的 `TileTensor`（`max/kernels/src/layout`）把可变性、布局、访问引擎、地址空间和生命周期的来源都放在类型参数里，`vectorize` 是改变类型的视图；cubek 的 `Tile<N, Sc>`（`cubek-matmul/src/multi_level/tile`）把执行单元放在类型里，而"整块暂存区 / 只读的共享 tile / 每单元的寄存器 tile / 张量核片段"是值层面的枚举，配错在展开时 `panic`。
+据此外壳的 `Tile r unit at life space cap r2 s T` 把原先的可见性布尔值换成访问能力 `cap: gpu.Vis`：`Unpublished` 只有所有者的协作填充能写，`Published` 所有者内部的单元都能读而无人能写，`Owned` 只有所有者读写。
+它直接用降低之后 `gpu.SharedBuf` 的那个 `Vis` 类型，所以调度层与同步层说同一套词；work-group 的累加器是 `Owned`，work-item 只能拿到切给自己的那一块（也是 `Owned`，但属于它自己），面板在填充函数里是 `Unpublished`、到了 work-item 手里是 `Published`。
+`vectors (n, c)` 是保留全部索引的向量视图（`tensor.as_vectors`）。
+新增的两个反例：work-item 直接读 work-group 独占的累加器、把已发布的面板当成自己的可写 tile（`lit/error/typed_tile_{exclusive,readonly}.mim`）。
+布局（`placed` 的 `layout_expr`）、张量核片段与环的槽位还不在这个类型里；解释器里 `stage` 的结果也仍是裸 `Tensor`。
 
 ### 8.2 协议骨架
 
