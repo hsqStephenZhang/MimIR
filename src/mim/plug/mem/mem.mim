@@ -155,6 +155,7 @@ axm heap2stack: compile.Phase;
 /// `heap2stack` that also turns allocations in loops into slots, each of which the ll backend places in its function's
 /// entry block, so the iterations reuse it.
 /// It runs after the last `mem.seo`, which does not track a slot allocated anew in every iteration.
+/// `-X mem:heap2stack-loops=0` disables it.
 ///
 axm heap2stack_loops: compile.Phase;
 ///

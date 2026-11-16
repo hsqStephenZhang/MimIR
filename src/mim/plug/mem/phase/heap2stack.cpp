@@ -38,7 +38,7 @@ Heap2Stack::Heap2Stack(World& world, flags_t annex, bool loops)
     , loops_(loops) {}
 
 bool Heap2Stack::analyze() {
-    if (max_ == 0) return false;
+    if (max_ == 0 || (loops_ && driver().arg_nat("mem", "heap2stack-loops").value_or(1) == 0)) return false;
     if (RWPhase::analyze()) return true;
 
     auto nest = std::optional<const Nest>();

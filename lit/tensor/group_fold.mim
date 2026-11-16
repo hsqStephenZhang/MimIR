@@ -21,7 +21,9 @@ extern fun aligned (a: tensor.Tensor 2 (8, 256) F32, b: tensor.Tensor 2 (256, 32
 // LOG-NOT: tensor destination fallback
 // LOG: finish phase `tensor.lower_to_mem`
 // IR-LABEL: define {{.*}} @aligned(
-// IR-COUNT-4: call {{.*}}ptr @malloc(
+// The accumulator tile each loop iteration allocates is a stack slot in the entry block.
+// IR: alloca [8 x <32 x float>]
+// IR-COUNT-3: call {{.*}}ptr @malloc(
 // IR-NOT: @malloc(
 // IR-NOT: @calloc(
 // IR-NOT: @llvm.memcpy
