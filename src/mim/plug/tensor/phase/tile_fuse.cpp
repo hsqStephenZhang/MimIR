@@ -1869,14 +1869,17 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
         if (level.pipeline == 0) level.pipeline = driver().arg_nat("tensor", "pipeline").value_or(1);
     auto group = members_of(members);
     // The law interpreter takes literal tile sizes only.
-    // A split over work-items or lanes relies on the combiner TileFuse recognizes, unless the request names its merge,
-    // and so does a level that tiles a reduction loop inside another, which reorders the combines.
     auto unsafe = std::ranges::any_of(level_list, [](const LevelSpec& level) {
         auto n = Lit::isa(level.sizes->arity());
         return !n || !lit_projs(level.sizes, *n);
     });
-    if (auto root = unsafe ? nullptr : graph::map_reduce(op))
-        if (auto rk = btensor::MapRedPost::of(root->callee()->as<App>()).ranks())
+    // A split over work-items or lanes, or of a reduction loop inside another, needs a combiner the law's rules accept;
+    // with any other the per-level recursion leaves the request unrealized with its diagnosis.
+    if (auto root = unsafe ? nullptr : graph::map_reduce(op)) {
+        auto mr         = btensor::MapRedPost::of(root->callee()->as<App>());
+        auto law        = reduction_law(mr);
+        auto recognized = law && Check::test_alpha(mr.init, law->identity);
+        if (auto rk = mr.ranks(); rk && !recognized)
             unsafe = std::ranges::any_of(level_list, [&](const LevelSpec& level) {
                 if (level.kind != 1) return false;
                 if ((level.bind == 2 || level.bind == 4) && !level.merge) return true;
@@ -1884,6 +1887,7 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
                     if (Lit::isa(level.sizes->proj(rk->nloops(), d)) != 0) return true;
                 return false;
             });
+    }
     // A member used outside is handed back by the per-level recursion, which a law cannot yet.
     unsafe |= std::ranges::any_of(group, [&](const Def* member) { return outside.contains(member); });
     // A reduction member of a work-group is split over its work-items by the per-level recursion; a law's resident

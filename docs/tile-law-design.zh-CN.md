@@ -230,6 +230,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   起初让 `source`/`as_source` 直接返回带 `Views` 的 `Src`，它们的隐式 `nis`/`Ris`/`Tis` 只出现在 `Views` 里而推不出来，所以把面向用户的记录与解释器内部的记录分开。
   `tile_req` 的定律路由一般化（2026-11-16）：`TileFuse::run_as_law` 由递归的 `law_of` 构造定律——根的输入是组成员就先给成员造定律再 `as_source`，否则 `source`，有成员时用 `of_sources`，所以多个与嵌套的成员都交给定律；所有成员都须被用到。
   定律融合每个成员，所以只有 `control` 在结构上等于 `default_control` 时才这样做；`lit/tensor/tile_fuse_exec.mim` 里 `control = never` 的请求仍由逐级递归实现（`fused=0`）。仍交给递归的：被组外使用的成员（yields）、根自己带担保合并又融合了成员、work-group 链里的归约成员、符号的形状或层级。
+  work-item/lane 归约没有显式合并、或切了内层归约循环的请求，组合子能被识别且种子是其单位元时（与 `check.combiner` 同一个 `reduction_law`）也交给定律；否则仍交给递归，由它留下请求并给出合约诊断（`tile_reduction_contracts`），而不是让定律的规则报错。
   先前以为这一步卡在 core 的统一上，是误判：那次新增了 `anx` 却只把 `tensor.mim` 复制进构建目录而没重建插件，生成的公理编号错位，C++ 引用的 `law.run` 成了 `law.req`。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
