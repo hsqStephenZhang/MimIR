@@ -225,6 +225,9 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   `law.fuse`/`law.fuse_merging` 现在就是 `fuse_law slot (of_map_reduce[_merging] 生产者 …)`，私有的 `fused` 删了；生成的代码与原来逐字相同（`law_fuse`、两个 softmax 基准、驻留的 GPU 用例等 11 个）。
   起初给 `Law` 加了按解释器的 `leaf` 算盒子的字段 `tile`，结果比 `tile_of` 差：`tile_of` 的规范化把嵌套的 `map_reduce` 组合成逐元素的计算，而 `leaf` 先把成员的盒子物化（驻留时每元素一行平方，`law_fuse` 里整块反量化的权重），所以删了；按内层自己的子调度算盒子留待以后。
   驻留路径同样读 `tile_of (mean_of pl, …)`，内层不会被整个算出（`lit/nvptx/law_resident_nested.mim`：平方 ← 行平方和 ← 归一化，没有一行平方的缓冲）。
+  多成员（2026-11-16）：`law.of_sources … Ps ins kinds` 按输入构造定律，每个输入是 `law.source x`（原样读）或 `law.as_source pl`（另一个定律的根），记录 `Input (P) = [phys, whole, merge, split, K, fused]` 不依赖消费者，`of_sources` 在内部补出 `Src` 的 `tile`（`slice` 或 `tile_of (whole p, …)`）与 `producer`。
+  `nis` 是字面量时调用者写输入的元组，由 `Check` 的逐元素 coerce 填进依赖元素的 `Arr`；`lit/tensor/law_sources.mim`：GEMM 的两个输入各是一个融合的逐点定律，`denote` 与两种调度都对，调度里两个生产者都没有整块物化。
+  起初让 `source`/`as_source` 直接返回带 `Views` 的 `Src`，它们的隐式 `nis`/`Ris`/`Tis` 只出现在 `Views` 里而推不出来，所以把面向用户的记录与解释器内部的记录分开。
   先前以为这一步卡在 core 的统一上，是误判：那次新增了 `anx` 却只把 `tensor.mim` 复制进构建目录而没重建插件，生成的公理编号错位，C++ 引用的 `law.run` 成了 `law.req`。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
