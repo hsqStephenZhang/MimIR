@@ -1788,56 +1788,69 @@ std::optional<btensor::MapRedPost> plain_parts(const Def* op) {
     return mr;
 }
 
-/// @p law applied to the arguments `map_reduce` takes, after its count of inputs.
-const Def* map_reduce_args(const Def* law, const btensor::MapRedPost& mr, const Def* inputs) {
+/// @p law applied to the arguments `map_reduce` takes up to its maps, with @p merge beside the combiner if any.
+const Def* map_reduce_head(const Def* law, const btensor::MapRedPost& mr, const Def* merge) {
     auto& w = law->world();
     law     = w.app(law, mr.nis);
     law     = w.app(law, {mr.To, mr.Ro, mr.Rn});
     law     = w.app(law, {mr.So, mr.Sr});
     law     = w.app(law, {mr.Tis, mr.Ris, mr.Sis});
-    law     = w.app(law, {mr.comb, mr.init});
+    law     = w.app(law, merge ? w.tuple({mr.comb, mr.init, merge}) : w.tuple({mr.comb, mr.init}));
     law     = w.app(law, mr.map_out);
-    law     = w.app(law, mr.maps);
+    return w.app(law, mr.maps);
+}
+
+/// The law of the plain `map_reduce` @p op, whose inputs in @p group are laws of their own fused as its sources, so
+/// members nest; @p merge is what a `merge_with` vouches for. The members it fuses go into @p used.
+const Def* law_of(const Def* op, const DefSet& group, const Def* merge, DefSet& used) {
+    auto mr = plain_parts(op);
+    if (!mr) return nullptr;
+    auto& w     = op->world();
+    auto inputs = Axm::as<map_reduce_post>(op)->arg()->proj(2, 0);
+    auto nis    = Lit::as(mr->nis);
+    auto ins    = DefVec(nis);
+    bool fused  = false;
+    for (u64 i = 0; i != nis; ++i) {
+        auto input = inputs->proj(nis, i);
+        if (!group.contains(input)) {
+            ins[i] = w.implicit_app(w.annex(tensor::law::source), input);
+            continue;
+        }
+        const Def* vouched = nullptr;
+        auto source        = input;
+        if (auto marked = Axm::isa<merge_with>(input)) {
+            vouched = marked->callee()->as<App>()->arg();
+            source  = marked->arg();
+        }
+        auto inner = law_of(source, group, vouched, used);
+        if (!inner) return nullptr;
+        used.insert(input);
+        ins[i] = w.implicit_app(w.annex(tensor::law::as_source), inner);
+        fused  = true;
+    }
+    if (!fused)
+        return w.app(map_reduce_head(w.annex(merge ? tensor::law::of_map_reduce_merging : tensor::law::of_map_reduce),
+                                     *mr, merge),
+                     inputs);
+    // A root that fuses producers is ordered; a merge of its own would not cover its producers' splits.
+    if (merge) return nullptr;
+    auto law = map_reduce_head(w.annex(tensor::law::of_sources), *mr, nullptr);
+    law      = w.app(law, w.tuple(DefVec(nis, [&](size_t i) { return ins[i]->type()->proj(6, 0); })));
+    law      = w.app(law, w.tuple(ins));
     return w.app(law, inputs);
 }
 
 } // namespace
 
-// A request on a plain `map_reduce` runs as its law's meaning, which the law interpreter realizes; a single member that
-// the root reads directly is fused into the law.
+// A request on a plain `map_reduce` runs as its law's meaning, which the law interpreter realizes; its members are laws
+// fused as the sources of whatever reads them, so several and nested members fuse alike.
 const Def* TileFuse::run_as_law(const Def* op, const DefVec& group, const Def* levels, const Def* control) {
-    auto mr = plain_parts(op);
-    if (!mr || group.size() > 1) return nullptr;
-    auto& w     = op->world();
-    auto inputs = Axm::as<map_reduce_post>(op)->arg()->proj(2, 0);
-    auto nis    = Lit::as(mr->nis);
-    const Def* law;
-    if (group.empty()) {
-        law = map_reduce_args(w.annex(tensor::law::of_map_reduce), *mr, inputs);
-    } else {
-        auto member = group.front();
-        auto slot   = nis;
-        for (u64 i = 0; i != nis; ++i)
-            if (inputs->proj(nis, i) == member) slot = i;
-        const Def* merge = nullptr;
-        auto source      = member;
-        if (auto marked = Axm::isa<merge_with>(member)) {
-            merge  = marked->callee()->as<App>()->arg();
-            source = marked->arg();
-        }
-        auto pr = plain_parts(source);
-        if (slot == nis || !pr || pr->init_type != pr->To) return nullptr;
-        law = w.app(w.annex(merge ? tensor::law::fuse_merging : tensor::law::fuse), w.lit_nat(slot));
-        law = w.app(law, pr->nis);
-        law = w.app(law, {pr->To, pr->Ro, pr->Rn});
-        law = w.app(law, {pr->So, pr->Sr});
-        law = w.app(law, {pr->Tis, pr->Ris, pr->Sis});
-        law = w.app(law, merge ? w.tuple({pr->comb, pr->init, merge}) : w.tuple({pr->comb, pr->init}));
-        law = w.app(law, pr->map_out);
-        law = w.app(law, pr->maps);
-        law = w.app(law, Axm::as<map_reduce_post>(source)->arg()->proj(2, 0));
-        law = map_reduce_args(law, *mr, inputs);
-    }
+    auto& w = op->world();
+    // A law fuses every member, so a control that decides otherwise is left to the per-level recursion.
+    if (!group.empty() && !Check::alpha<Check::T>(control, w.annex<tensor::default_control>())) return nullptr;
+    auto used = DefSet();
+    auto law  = law_of(op, DefSet(group.begin(), group.end()), nullptr, used);
+    if (!law || used.size() != group.size()) return nullptr;
     // `law.req` casts its levels to the root's level type, which the interpreter matches through.
     if (auto cast = Axm::isa<core::bitcast>(levels)) levels = cast->arg();
     log().d("tensor.tile_fuse runs {} as its law", op);
