@@ -694,6 +694,29 @@ anx lam superstep {g n: Nat, rs: «n; Nat», ss: «i: n; «rs#i; Nat»», Ts: «
     let views  = ‹i: n; view (publish_view (seen, (fill_panel @(g, rs#i, ss#i, Ts#i) (before (core.idx2nat i), fills#i))#1₂))›;
     let (t, r) = read_phase (seen, λ (m: mem.M 0): [mem.M 0, R] = read (m, views));
     (leave_reading t, r);
+/// A work-group fills a panel together, updates it in place in `k` rounds with a barrier behind each, and runs `read`
+/// while the panel is read; `rounds#j` rewrites only elements no other work-item touches in that round.
+/// Round `e` leaves the token and the panel of superstep `e`, so their types count the rounds.
+/// The casts are between equal types once `e` is a literal: the step from `e - 1` yields superstep `e - 1 + 1`.
+anx lam merge_rounds {g k r: Nat, s: «r; Nat», T R: *}
+    (start: mem.M 0, fill: [mem.M 0, buffer.Buf (r, s, T)] → [mem.M 0, buffer.Buf (r, s, T)],
+     rounds: «k; [mem.M 0, buffer.Buf (r, s, T)] → mem.M 0»,
+     read: [mem.M 0, buffer.Buf (r, s, T)] → [mem.M 0, R]): [mem.M 0, R] =
+    let Seen   = λ (e: Nat): * = [GM (g, e, GroupPhase#Reading), SharedBuf (g, e, Vis#Published, r, s, T)];
+    let (t, p) = fill_panel @(g, r, s, T) (enter_write (group_enter @g start), fill);
+    let t      = sync_publish t;
+    let first  = (t, publish_view (t, p));
+    lam after (e: Nat)@(core.pe.is_closed e): Seen e =
+        (λ (): Seen e = core.bitcast (Seen e) first,
+         λ (): Seen e =
+            let (t, p) = after (e - 1);
+            let u      = enter_update t;
+            let (u, o) = owned_update (u, claim (u, p), rounds#(core.idx 0 k (e - 1)));
+            let (t, p) = sync_carry (u, o);
+            core.bitcast (Seen e) (enter_read t, p))#(e != 0) ();
+    let (t, p) = after k;
+    let (t, x) = read_phase (t, λ (m: mem.M 0): [mem.M 0, R] = read (m, view p));
+    (group_leave (sync_reclaim t), x);
 /// A work-group folds `count` blocks into `acc`, each read from panels `P` that asynchronous copies fill ahead into a
 /// ring of `depth` slots.
 /// The prologue fills blocks `0 .. depth - 2`, one commit group each; step `i` waits until at most `pending` groups are

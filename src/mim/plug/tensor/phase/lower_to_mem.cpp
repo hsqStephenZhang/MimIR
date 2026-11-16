@@ -4415,14 +4415,10 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         std::tie(start, rbuf) = buffer::op_alloc(r, literal_storage, el, shared_mem(start))->projs<2>();
         transient(r, literal_storage, el, rbuf);
     }
-    // One superstep writes the partials and each merge round claims them for one more.
-    auto g     = w.lit_nat(batches_++);
-    u64 epoch  = 0;
-    auto panel = [&](auto axiom) { return w.app(w.app(axiom, {g, w.lit_nat(epoch)}), {w.lit_nat(prank), pshape, el}); };
+    // `gpu.merge_rounds` is the protocol: one superstep writes the partials and each merge round claims them for one
+    // more.
+    auto g = w.lit_nat(batches_++);
     if (entered_++) app->blame("a work-item bound reduction cannot run inside a work-group batch").bail();
-    const Def* token     = w.app(w.app(w.annex<gpu::enter_write>(), {g, w.lit_nat(epoch)}),
-                                 w.app(w.app(w.annex<gpu::group_enter>(), g), start));
-    auto fresh           = w.app(panel(w.annex<gpu::shared_panel>()), token);
     auto state           = w.sigma({w.call<mem::M>(0), buffer::type_buf(w.lit_nat(prank), pshape, el)});
     auto fill            = w.mut_lam(w.pi(state, state))->set("boundFoldFill");
     auto [fm, fb]        = fill->var()->projs<2>();
@@ -4504,10 +4500,6 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         auto wm = buffer::op_write(rm, run_partials, btensor::folded_idx(pshape, at), value)->proj(2, 0);
         cur->app(true, exit, wm);
     }
-    auto [filled, partials]
-        = w.app(panel(w.annex<gpu::coop_fill>()), w.tuple({fresh->proj(2, 0), fresh->proj(2, 1), fill}))->projs<2>();
-    token                = w.app(w.app(w.annex<gpu::sync_publish>(), {g, w.lit_nat(epoch)}), filled);
-    const Def* published = w.app(panel(w.annex<gpu::publish_view>()), w.tuple({token, partials}));
     // The merged tile lands in the destination at its origin, or in a work-group buffer of its own.
     auto target = [&](const DefVec& coords) {
         if (!destination) return btensor::folded_idx(literal_storage, coords);
@@ -4544,10 +4536,11 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         from->set(first, w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(trip), w.lit_i64(1), mem}));
         return body;
     };
-    auto combine                     = w.mut_lam(w.pi(acc_ty, w.sigma({acc_ty, w.sigma()})))->set("boundCombine");
-    auto [run_combine, combine_call] = btensor::ds_splice(combine->var(), acc_ty, "boundCombineRun");
+    auto combine                     = w.mut_lam(w.pi(state, w.sigma({acc_ty, w.sigma()})))->set("boundCombine");
+    auto [combine_mem, merged]       = combine->vars<2>();
+    auto [run_combine, combine_call] = btensor::ds_splice(combine_mem, acc_ty, "boundCombineRun");
     combine->set(true, w.tuple({combine_call, w.tuple()}));
-    auto view_of = [&](const Def* buf) { return w.app(panel(w.annex<gpu::view>()), buf); };
+    DefVec merges;
     // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each barrier.
     if (Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(parts)))) {
         auto rounds = w.app(w.annex(tensor::r8_plan::rounds), {w.lit_nat(parts), w.lit_nat(elems)});
@@ -4575,23 +4568,17 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
             auto [m2, b]       = buffer::op_read(m1, parts, partial_at(other, coords))->projs<2>();
             auto merged        = w.app(op, w.tuple({a, b}));
             qbody->app(true, qyield, buffer::op_write(m2, parts, partial_at(i, coords), merged)->proj(2, 0));
-            token        = w.app(w.app(w.annex<gpu::enter_update>(), {g, w.lit_nat(epoch)}), token);
-            auto owned   = w.app(panel(w.annex<gpu::claim>()), w.tuple({token, published}));
-            auto updated = w.app(panel(w.annex<gpu::owned_update>()), w.tuple({token, owned, merge_round}));
-            auto carried = w.app(panel(w.annex<gpu::sync_carry>()), updated);
-            ++epoch;
-            token     = w.app(w.app(w.annex<gpu::enter_read>(), {g, w.lit_nat(epoch)}), carried->proj(2, 0));
-            published = carried->proj(2, 1);
+            merges.push_back(merge_round);
         }
         // One work-item per tile element publishes the first partial.
-        auto citems = item_loop(run_combine, true, elems, combine->var(), run_combine->ret_var(), "boundCombineItems");
+        auto citems = item_loop(run_combine, true, elems, combine_mem, run_combine->ret_var(), "boundCombineItems");
         auto [j, jmem, jyield] = citems->vars<3>();
         auto coords            = coords_of(j);
-        auto [pmem, pval] = buffer::op_read(jmem, view_of(published), partial_at(w.lit_i64(0), coords))->projs<2>();
+        auto [pmem, pval]      = buffer::op_read(jmem, merged, partial_at(w.lit_i64(0), coords))->projs<2>();
         citems->app(true, jyield, buffer::op_write(pmem, rbuf, target(coords), pval)->proj(2, 0));
     } else {
         // One work-item per tile element merges that element's partials in order.
-        auto citems = item_loop(run_combine, true, elems, combine->var(), run_combine->ret_var(), "boundCombineItems");
+        auto citems = item_loop(run_combine, true, elems, combine_mem, run_combine->ret_var(), "boundCombineItems");
         auto [j, jmem, jyield] = citems->vars<3>();
         auto coords            = coords_of(j);
         auto write             = w.mut_con({acc_ty, el})->set("boundCombineWrite");
@@ -4602,14 +4589,12 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         citems->set(true, tcall);
         auto [t, tacc, tyield] = tbody->vars<3>();
         auto [tmem, tval]      = tacc->projs<2>();
-        auto [pmem, pval]      = buffer::op_read(tmem, view_of(published), partial_at(t, coords))->projs<2>();
+        auto [pmem, pval]      = buffer::op_read(tmem, merged, partial_at(t, coords))->projs<2>();
         tbody->app(true, tyield, w.tuple({pmem, w.app(op, w.tuple({tval, pval}))}));
     }
-    auto at = w.lit_nat(epoch);
-    auto read
-        = w.app(w.app(w.app(w.annex<gpu::read_phase>(), {g, at}), w.sigma()), w.tuple({token, combine}))->proj(2, 0);
-    auto reclaimed = w.app(w.app(w.annex<gpu::sync_reclaim>(), {g, at}), read);
-    auto out_mem   = w.app(w.app(w.annex<gpu::group_leave>(), {g, w.lit_nat(epoch + 1)}), reclaimed);
+    auto protocol
+        = w.app(w.annex<gpu::merge_rounds>(), {g, w.lit_nat(merges.size()), w.lit_nat(prank), pshape, el, w.sigma()});
+    auto out_mem = w.app(protocol, {start, fill, w.tuple(merges), combine})->proj(2, 0);
     --entered_;
     // The result buffer must depend on the merge's memory.
     auto [result_run, result_call]
