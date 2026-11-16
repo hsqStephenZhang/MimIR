@@ -286,6 +286,11 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 `bench/typed_tiles/gemm_buffers.mim` 是不经过 `lower_to_mem` 的可行性检查：16³ GEMM 整个写在缓冲区层，循环是函数（`steps` 加 `gpu.bind.*`），work-group 的协议是 `gpu.superstep`，填充与叶子是普通的缓冲区读写；它走流水线的后半段（`check_sync`、`erase_phases`、`gpu.outline`、nvptx），outline 成 4 组 × 4 项的一个 kernel，在 GPU 上执行正确（`driver_gemm.cpp`）。
 它的填充和叶子是标量的（没有向量读写，没有寄存器块），那部分仍是 `lower_to_mem` 与 `btensor.lower_map_reduce` 的工作；要让解释器直接产出缓冲区层，叶子与填充应当是缓冲区上的 `btensor.map_reduce_post`，还没有做。
 
+`bench/typed_tiles/gemm_buffers_mr.mim` 把上面程序的叶子换成缓冲区上的 `btensor.map_reduce`、填充换成向量视图（`buffer.vectorize`）上的协作循环：PTX 与定律版本的全局读、共享写、`fma` 数相同，只剩叶子读面板是标量。
+`bench/typed_tiles/buffer_interp.mim` 是缓冲区层解释器的原型：`run_buffers` 取 `map_reduce` 的参数、目标缓冲区和同一条 `TileLevels` 链，并行类层级（`Par`、`Group`、`Item`）是按 tile 的循环并绑定到层级指明的单元，叶子是把自己那块 tile 就地写进目标缓冲区的 `btensor.map_reduce`；归约、向量与提升层级还不解释（当作叶子）。
+在缓冲区层并行切分不需要累加器和拼接：目标缓冲区一路传下去，各叶子写互不相交的块。
+1024³、链 `serial_group ((64, 64, 0), …, group_item ((4, 4, 0), …, item_done ()))`，GTX 1650 SUPER：`run_buffers` 6.40 ms，`law.run` 经 `lower_to_mem` 8.61 ms，结果都正确（`bench/gpu_fusion/gemm_levels_{buffers,law}.mim`，`ptx_bench.py`）；后者为每个 work-group 的结果另分配缓冲区再拷回。
+
 ### 8.3 写这些时碰到的限制
 
 | 现象 | 做法 |

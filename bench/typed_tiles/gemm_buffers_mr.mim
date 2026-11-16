@@ -1,0 +1,72 @@
+// 16³ GEMM at the buffer level whose fills copy vectors and whose leaf is a `btensor.map_reduce`:
+// 2 × 2 work-groups of 8 × 8, each keeping its boxes of A and B resident in shared memory, and 2 × 2 work-items of 4 × 4.
+plugin core;
+plugin mem;
+plugin affine;
+plugin cps;
+plugin buffer;
+plugin math;
+plugin btensor;
+plugin gpu;
+
+let F32 = math.F32;
+let add = core.nat.add;
+let mul = core.nat.mul;
+let div = core.nat.div;
+let rem = core.nat.rem;
+let C   = buffer.Buf (2, (16, 16), F32);
+let PA  = buffer.Buf (2, (8, 16), F32);
+let PB  = buffer.Buf (2, (16, 8), F32);
+
+// `n` steps of `body` over a memory and a value; `bound` binds the loop to an execution unit.
+lam steps {X: *} (bound: Cn [I64, [mem.M 0, X], Cn [mem.M 0, X]] → Cn [I64, [mem.M 0, X], Cn [mem.M 0, X]])
+    (n: I64) (m: mem.M 0, x: X) (body: [Nat, mem.M 0, X] → [mem.M 0, X]): [mem.M 0, X] =
+    fun run (s: [mem.M 0, X]): [mem.M 0, X] =
+        affine.For @(0, 2, (mem.M 0, X)) (bound step) return (0I64, n, 1I64, s)
+        where
+            con step (i: I64, s: [mem.M 0, X], yield: Cn [mem.M 0, X]) = yield (body (core.bitcast Nat i, s#0₂, s#1₂));
+        end;
+    cps.cps2ds run (m, x);
+lam Step (X: *): * = Cn [I64, [mem.M 0, X], Cn [mem.M 0, X]];
+lam plain {X: *} (k: Step X): Step X = k;
+lam groups {X: *} = steps @X (gpu.bind.group @(Step X));
+lam items {X: *} = steps @X (gpu.bind.item @(Step X));
+lam chained {X: *} = steps @X (gpu.bind.chained @(Step X));
+lam serial {X: *} = steps @X (plain @X);
+
+let V4  = «4; F32»;
+
+fun mac (m: mem.M 0, acc: F32, xy: [F32, F32])@tt: [mem.M 0, F32] =
+    let (x, y) = xy;
+    return (m, math.arith.add math.mode.fast (acc, math.arith.mul math.mode.fast (x, y)));
+
+extern fun gemm16 (m: mem.M 0, a b: C): [mem.M 0, C] =
+    let (m, c) = buffer.alloc (2, (16, 16), F32) m;
+    let av = buffer.vectorize (2, (16, 16), F32) (4, (16, 4)) a;
+    let bv = buffer.vectorize (2, (16, 16), F32) (4, (16, 4)) b;
+    return (groups 4I64 (m, c) (λ (g: Nat, m: mem.M 0, c: C): [mem.M 0, C] =
+        let (gi, gj) = (mul (div (g, 2), 8), mul (rem (g, 2), 8));
+        items 4I64 (m, c) (λ (t: Nat, m: mem.M 0, c: C): [mem.M 0, C] =
+            let (ti, tj) = (mul (div (t, 2), 4), mul (rem (t, 2), 4));
+            gpu.superstep @(0, 2, (2, 2), ((8, 16), (16, 8)), (F32, F32), C) (m,
+                (λ (m: mem.M 0, pa: PA): [mem.M 0, PA] =
+                    let pv = buffer.vectorize (2, (8, 16), F32) (4, (8, 4)) pa;
+                    let (m, _) = chained 32I64 (m, pv) (λ (e: Nat, m: mem.M 0, pv: buffer.Buf (2, (8, 4), V4)): [mem.M 0, buffer.Buf (2, (8, 4), V4)] =
+                        let (i, k) = (div (e, 4), rem (e, 4));
+                        let (m, v) = buffer.read (2, (16, 4), V4) (m, av, (core.idx 0 16 (add (gi, i)), core.idx 0 4 k));
+                        buffer.write (2, (8, 4), V4) (m, pv, (core.idx 0 8 i, core.idx 0 4 k), v));
+                    (m, pa),
+                 λ (m: mem.M 0, pb: PB): [mem.M 0, PB] =
+                    let pv = buffer.vectorize (2, (16, 8), F32) (4, (16, 2)) pb;
+                    let (m, _) = chained 32I64 (m, pv) (λ (e: Nat, m: mem.M 0, pv: buffer.Buf (2, (16, 2), V4)): [mem.M 0, buffer.Buf (2, (16, 2), V4)] =
+                        let (k, j) = (div (e, 2), rem (e, 2));
+                        let (m, v) = buffer.read (2, (16, 4), V4) (m, bv, (core.idx 0 16 k, core.idx 0 4 (add (div (gj, 4), j))));
+                        buffer.write (2, (16, 2), V4) (m, pv, (core.idx 0 16 k, core.idx 0 2 j), v));
+                    (m, pb)),
+                λ (m: mem.M 0, (pa: PA, pb: PB)): [mem.M 0, C] =
+                    btensor.map_reduce ((16, 16), (4, 4, 16)) (mac, 0.0:F32)
+                        (λ (i j _: affine.Index): «2; affine.Index» =
+                            (affine.op.add (i, affine.lit (add (gi, ti))), affine.op.add (j, affine.lit (add (gj, tj)))))
+                        (λ (i _ k: affine.Index): «2; affine.Index» = (affine.op.add (i, affine.lit ti), k),
+                         λ (_ j k: affine.Index): «2; affine.Index» = (k, affine.op.add (j, affine.lit tj)))
+                        (m, c, (pa, pb))))));

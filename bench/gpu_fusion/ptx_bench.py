@@ -29,7 +29,12 @@ def specs(torch):
         q, k, v = (x.reshape(2, 128, 64) for x in (q, k, v))
         return torch.softmax(q @ k.transpose(1, 2) * 0.125, -1) @ v
 
+    def gemm(a, b):
+        return a @ b
+
     return {
+        "gemm_levels_law": ([(1024, 1024)] * 2, (1024, 1024), gemm),
+        "gemm_levels_buffers": ([(1024, 1024)] * 2, (1024, 1024), gemm),
         "attn_warps": ([(256, 64)] * 3, (2, 128, 64), attention),
         "rowsum": ([SHAPE], (12, 1024), rowsum),
         "softmax_resident": ([SHAPE], SHAPE, softmax),
@@ -121,7 +126,7 @@ def run(args):
             drv.check(drv.lib.cuLaunchKernel(fn, info["groups"], 1, 1, info["items"], 1, 1, info["smem"], stream,
                                              params, None), "launch")
             torch.cuda.synchronize()
-            if torch.allclose(out, expect, rtol=1e-3, atol=1e-3 if name.startswith("attn") else 1e-5):
+            if torch.allclose(out, expect, rtol=1e-3, atol=1e-3 if name.startswith(("attn", "gemm")) else 1e-5):
                 order = perm
                 break
         if order is None:

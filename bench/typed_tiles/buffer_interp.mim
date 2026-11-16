@@ -1,0 +1,107 @@
+// A schedule's levels interpreted at the buffer level: every parallel level is a loop over its tiles, bound to the
+// unit its level names, and a leaf is a `btensor.map_reduce` that writes its tile of the destination in place.
+// It reads the same `tensor.TileLevels` chain as `law.run`; reduction, vector and promoting levels are not interpreted.
+plugin core;
+plugin mem;
+plugin affine;
+plugin cps;
+plugin vec;
+plugin buffer;
+plugin math;
+plugin btensor;
+plugin tensor;
+plugin gpu;
+
+use tensor;
+
+let add = core.nat.add;
+let mul = core.nat.mul;
+let div = core.nat.div;
+let rem = core.nat.rem;
+let `-  = core.nat.sub;
+let `<  = core.ncmp.l;
+let `!= = core.ncmp.ne;
+
+lam Step (X: *): * = Cn [I64, [mem.M 0, X], Cn [mem.M 0, X]];
+// `n` steps of `body` over a memory and a value; `bound` binds the loop to an execution unit.
+lam steps {X: *} (bound: Step X → Step X) (n: Nat) (m: mem.M 0, x: X) (body: [Nat, mem.M 0, X] → [mem.M 0, X])
+    : [mem.M 0, X] =
+    fun run (s: [mem.M 0, X]): [mem.M 0, X] =
+        affine.For @(0, 2, (mem.M 0, X)) (bound step) return (0I64, core.bitcast I64 n, 1I64, s)
+        where
+            con step (i: I64, s: [mem.M 0, X], yield: Cn [mem.M 0, X]) = yield (body (core.bitcast Nat i, s#0₂, s#1₂));
+        end;
+    cps.cps2ds run (m, x);
+lam unbound {X: *} (k: Step X): Step X = k;
+
+lam run_buffers {nis: Nat} {To: *, Ro Rn: Nat} (So: «Ro; Nat», Sr: «Rn; Nat»)
+    {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+    (f: Fn [mem.M 0, To, «i: nis; Tis#i»] → [mem.M 0, To], init: To)
+    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+    (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+    {K: *} (levels: TileLevels (Rn, To, K))
+    (m: mem.M 0, dst: buffer.Buf (Ro, So, To), is: «i: nis; buffer.Buf (Ris#i, Sis#i, Tis#i)»)
+    : [mem.M 0, buffer.Buf (Ro, So, To)] =
+    let D     = buffer.Buf (Ro, So, To);
+    let Block = [lo: «Rn; Nat», size: «Rn; Nat», m: mem.M 0, dst: D] → [mem.M 0, D];
+    let at    = λ (lo: «Rn; Nat») (o: «Rn; affine.Index»): «Rn; affine.Index» = ‹d: Rn; affine.op.add (o#d, affine.lit (lo#d))›;
+    let leaf  = λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] =
+        btensor.map_reduce @nis @(To, Ro, Rn) (So, size) @(Tis, Ris, Sis) (f, init)
+            (λ (o: «Rn; affine.Index»): «Ro; affine.Index» = map_out (at lo o))
+            ‹i: nis; λ (o: «Rn; affine.Index»): «Ris#i; affine.Index» = (maps#i) (at lo o)›
+            (m, dst, is);
+    // The tiles of the parallel loops, in row-major order; a loop `sizes` leaves at 0 is one tile.
+    let split = λ (bound: Step D → Step D) (sizes: «Rn; Nat», k: Block): Block =
+        λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] =
+            let par    = λ (d: Idx Rn): Bool = core.idx2nat d < Ro;
+            let ts     = ‹d: Rn; (size#d, (size#d, sizes#d)#(sizes#d != 0))#(par d)›;
+            let counts = ‹d: Rn; (1, div (add (size#d, ts#d - 1), ts#d))#(par d)›;
+            let after  = λ (d: Nat): Nat = vec.fold.r @(Nat, Idx Rn) @Rn
+                (λ (e: Idx Rn, x: Nat): Nat = (x, mul (x, counts#e))#(d < core.idx2nat e)) (‹e: Rn; e›, 1);
+            steps bound (mul (counts#(core.idx 0 Rn 0), after 0)) (m, dst) (λ (t: Nat, m: mem.M 0, dst: D): [mem.M 0, D] =
+                let off  = ‹d: Rn; mul (rem (div (t, after (core.idx2nat d)), counts#d), ts#d)›;
+                let rest = ‹d: Rn; size#d - off#d›;
+                // A tile of a loop its size divides is whole, which keeps the extent a literal.
+                let ext  = ‹d: Rn; (core.select (rest#d < ts#d, rest#d, ts#d), ts#d)#(core.ncmp.e (rem (size#d, ts#d), 0))›;
+                k (‹d: Rn; add (lo#d, off#d)›, ‹d: Rn; (size#d, ext#d)#(par d)›, m, dst));
+    lam item_step {M: *} (lo size: «Rn; Nat», m: mem.M 0, dst: D, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
+        match l with
+            | 0 => leaf (lo, size, m, dst)
+            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, m, dst, rest)) (lo, size, m, dst)
+            | 2 (_, _, _, _, _) => leaf (lo, size, m, dst)
+            | 3 (_, _) => leaf (lo, size, m, dst)
+            | 4 (_, _, _) => leaf (lo, size, m, dst);
+    lam group_step {M: *, g: «Rn; Nat»} (lo size: «Rn; Nat», m: mem.M 0, dst: D, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): [mem.M 0, D] =
+        match l with
+            | 0 => leaf (lo, size, m, dst)
+            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, m, dst, rest)) (lo, size, m, dst)
+            | 2 (sizes, _, rest) => split (gpu.bind.item @(Step D)) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, m, dst, rest)) (lo, size, m, dst)
+            | 3 (_, _, _, _, _) => leaf (lo, size, m, dst)
+            | 4 (_, _, _, _) => leaf (lo, size, m, dst)
+            | 5 (_, _) => leaf (lo, size, m, dst)
+            | 6 (sizes: «Rn; Nat», _: Nat, _: WarpLevels (Rn, To, M, within (g, sizes))) => leaf (lo, size, m, dst)
+            | 7 (sizes: «Rn; Nat», _: Nat, _: WarpgroupLevels (Rn, To, M, g, sizes)) => leaf (lo, size, m, dst);
+    lam tile_step {M: *} (lo size: «Rn; Nat», m: mem.M 0, dst: D, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
+        match l with
+            | 0 => leaf (lo, size, m, dst)
+            | 1 (sizes, _, rest) => split (unbound @D) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = tile_step (lo, size, m, dst, rest)) (lo, size, m, dst)
+            | 2 (sizes: «Rn; Nat», _ _: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split (gpu.bind.group @(Step D)) (sizes, λ (lo size: «Rn; Nat», m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, m, dst, rest)) (lo, size, m, dst)
+            | 3 (_, _, _, _) => leaf (lo, size, m, dst)
+            | 4 (_, _) => leaf (lo, size, m, dst)
+            | 5 (_, _, _, _) => leaf (lo, size, m, dst)
+            | 6 (_, _) => leaf (lo, size, m, dst);
+    tile_step (‹Rn; 0›, Sr, m, dst, levels);
+
+let F32 = math.F32;
+let C   = buffer.Buf (2, (16, 16), F32);
+
+fun mac (m: mem.M 0, acc: F32, xy: [F32, F32])@tt: [mem.M 0, F32] =
+    let (x, y) = xy;
+    return (m, math.arith.add math.mode.fast (acc, math.arith.mul math.mode.fast (x, y)));
+
+extern fun gemm16 (m: mem.M 0, a b: C): [mem.M 0, C] =
+    let (m, c) = buffer.alloc (2, (16, 16), F32) m;
+    return (run_buffers ((16, 16), (16, 16, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1))
+        (serial_group @(3, F32, NoMma) ((8, 8, 0), 0, 0, group_item ((4, 4, 0), 0, item_done ())))
+        (m, c, (a, b)));
