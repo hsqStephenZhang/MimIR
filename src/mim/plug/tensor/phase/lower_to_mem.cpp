@@ -29,8 +29,6 @@ namespace mim::plug::tensor::phase {
 
 namespace {
 
-const Def* group_phase(World& w, nat_t phase) { return w.inj(w.annex<gpu::GroupPhase>(), phase, w.tuple()); }
-
 /// Does `t` (recursively through immutable sigmas) contain a Pi?
 bool contains_pi(const Def* t) {
     if (t->isa<Pi>()) return true;
@@ -546,18 +544,26 @@ std::optional<LowerToMem::Batch> LowerToMem::open_batch(const Def* start) {
 // Publishes the batch's panels behind one barrier; @p consume computes `[mem, result]` while they are read.
 const Def*
 LowerToMem::close_batch(const Def* mem, const Def* result, const std::function<const Def*(const Def*)>& consume) {
-    if (!batch_ || !batch_->token) return consume(mem);
-    auto& w        = new_world();
-    auto g         = w.lit_nat(batch_->group);
-    auto e         = w.lit_nat_0();
-    auto published = w.app(w.app(w.annex<gpu::sync_publish>(), {g, e}), batch_->token);
-    batch_->published->set(published);
-    auto M      = w.call<mem::M>(0);
-    auto reader = w.mut_lam(w.pi(M, w.sigma({M, result})))->set("batchRead");
-    reader->set(true, consume(reader->var()));
+    if (!batch_ || batch_->panels.empty()) return consume(mem);
+    auto& w = new_world();
+    auto M  = w.call<mem::M>(0);
+    auto n  = batch_->panels.size();
+    DefVec rs, ss, Ts, fills, views;
+    for (const auto& panel : batch_->panels) {
+        rs.push_back(panel.r), ss.push_back(panel.s), Ts.push_back(panel.T), fills.push_back(panel.fill);
+        views.push_back(buffer::type_buf(panel.r, panel.s, panel.T));
+    }
+    auto reader  = w.mut_lam(w.pi(w.sigma({M, w.sigma(views)}), w.sigma({M, result})))->set("batchRead");
+    auto [m, vs] = reader->vars<2>();
+    reader->set(true, consume(m));
+    // The consumer keys its panels' layouts by these holes, so they resolve only once it is built.
+    for (size_t i = 0; i != n; ++i)
+        batch_->panels[i].view->set(vs->proj(n, i));
     --entered_;
-    auto read = w.app(w.app(w.app(w.annex<gpu::read_phase>(), {g, e}), result), w.tuple({published, reader}));
-    return w.tuple({w.app(w.app(w.annex<gpu::leave_reading>(), {g, e}), read->proj(2, 0)), read->proj(2, 1)});
+    // `gpu.superstep` is the protocol: enter, fill each panel, publish, read, leave.
+    auto step = w.app(w.annex<gpu::superstep>(),
+                      {w.lit_nat(batch_->group), w.lit_nat(n), w.tuple(rs), w.tuple(ss), w.tuple(Ts), result});
+    return w.app(step, {batch_->start, w.tuple(fills), reader});
 }
 
 // A work-group's uniform buffers live in shared memory.
@@ -1035,17 +1041,10 @@ const Def* LowerToMem::lower_generate(const App* app) {
     const Def* filled = nullptr;
     if (batch_ && uniform_ && !target && !probe_fill_ && !async_fill_) {
         // The panel joins its consumer's batch: filled cooperatively without a barrier, read once the batch publishes.
-        auto g = w.lit_nat(batch_->group);
-        auto e = w.lit_nat_0();
-        if (!batch_->token) {
+        if (batch_->panels.empty()) {
             if (entered_++) app->blame("a work-group batch cannot open while another is open").bail();
-            batch_->token
-                = w.app(w.app(w.annex<gpu::enter_write>(), {g, e}),
-                        w.app(w.app(w.annex<gpu::group_enter>(), g), batch_->start ? batch_->start : fresh_mem()));
-            batch_->published
-                = w.mut_hole(w.app(w.annex<gpu::GM>(), {g, e, group_phase(w, gpu::GroupPhase_ctor::Reading)}));
+            if (!batch_->start) batch_->start = fresh_mem();
         }
-        auto panel    = w.app(w.app(w.app(w.annex<gpu::shared_panel>(), {g, e}), {br, bs, bT}), batch_->token);
         auto fill     = w.mut_lam(w.pi(result_ty, result_ty))->set("panelFill");
         auto [fm, fb] = fill->var()->projs<2>();
         auto chained  = [&w](const Def* body) {
@@ -1054,12 +1053,9 @@ const Def* LowerToMem::lower_generate(const App* app) {
         fill->set(true,
                   btensor::build_pointwise(result_ty, fm, fb, w.tuple(captures), s_out, rn, "generate", compute,
                                            bounded ? storage : nullptr, chained, inner ? *inner : size_t(-1), write));
-        auto filling      = w.app(w.app(w.annex<gpu::coop_fill>(), {g, e}), {br, bs, bT});
-        auto [token, buf] = w.app(filling, w.tuple({panel->proj(2, 0), panel->proj(2, 1), fill}))->projs<2>();
-        batch_->token     = token;
-        auto publish      = w.app(w.app(w.annex<gpu::publish_view>(), {g, e}), {br, bs, bT});
-        auto view         = w.app(w.app(w.annex<gpu::view>(), {g, e}), {br, bs, bT});
-        filled            = w.app(view, w.app(publish, w.tuple({batch_->published, buf})));
+        auto view = w.mut_hole(out_ty);
+        batch_->panels.push_back({br, bs, bT, fill, view});
+        filled = view;
     }
     if (!filled) {
         auto [am, dst] = target ? *target : allocate(br, bs, bT);
@@ -3901,7 +3897,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         pop();
         return at;
     };
-    // Fills block @p block's panels into @p targets after @p at and commits them as one group.
+    // Starts the copies of block @p block's panels into @p targets after @p at.
     auto fill_block = [&](const Def* at, const Def* block, const DefVec& targets) {
         auto future = old.mut_lam(parameter->type()->as<Pi>());
         if (auto size = Lit::isa(stride)) multiples_[future->var(2, 1)] = *size;
@@ -3919,7 +3915,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             at = filled_mem_;
         }
         pop();
-        return w.app(w.annex<gpu::async_commit>(), at);
+        return at;
     };
     tma         = tma && panels != 0;
     specialized = tma && producer_ && fragments && fragments->group;
@@ -3977,10 +3973,73 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         second      = w.call(core::bit2::and_, w.lit_nat(2), Defs{second, first_round});
         mem         = w.app(w.annex<gpu::arrive_named_if>(), {mem, w.lit_i32(1), w.lit_i32(256), second});
     }
+    if (panels != 0 && !tma) {
+        // `gpu.ring_fold` is the `cp.async` ring's protocol; what a block's fill and step compute comes from here.
+        auto M       = w.call<mem::M>(0);
+        auto slot_ty = w.sigma(DefVec(panels, [&](size_t j) { return ring[0][j]->type(); }));
+        auto acc_ty  = buffer->type();
+        auto closure = [&](Lam* fun, const std::function<const Def*()>& body) {
+            auto pending      = fe::Restore(pending_, {});
+            auto nested_batch = fe::Restore<std::optional<Batch>>(batch_, std::nullopt);
+            auto memo         = fe::Restore(fresh_memo_, {});
+            auto cache        = fe::Restore(realizations_, realizations_);
+            auto nested       = fe::Restore<std::vector<std::array<const Def*, 4>>*>(transients_, nullptr);
+            push();
+            bind_new(fun->has_var());
+            fun->app(true, fun->ret_var(), body());
+            fun->set(true, wrap_fresh_mem(fun->body()));
+            pop();
+        };
+        auto fill = w.mut_fun(w.sigma({M, w.type_nat(), slot_ty}), M)->set("ringFill");
+        closure(fill, [&] {
+            auto [at, block, slot] = fill->var(2, 0)->projs<3>();
+            auto targets           = DefVec(panels, [&](size_t j) { return slot->proj(panels, j); });
+            for (size_t j = 0; j != panels; ++j)
+                forward_layouts(ring[0][j], targets[j]);
+            return fill_block(at, block, targets);
+        });
+        auto fold_step = w.mut_fun(w.sigma({M, acc_ty, w.type_nat(), slot_ty}), w.sigma({M, acc_ty}))->set("ringStep");
+        closure(fold_step, [&]() -> const Def* {
+            auto [at, acc, iteration, slot] = fold_step->var(2, 0)->projs<4>();
+            bind_old(parameter->has_var());
+            map(accumulator, acc);
+            if (fragments) fragments_[acc] = *fragments;
+            if (bounded) storage_shapes_[accumulator] = storage;
+            map(offset, w.call(core::nat::mul, Defs{iteration, rewrite(stride)}));
+            for (size_t j = 0; j != panels; ++j) {
+                map(stages[j], slot->proj(panels, j));
+                forward_layouts(ring[0][j], slot->proj(panels, j));
+            }
+            prepare_realizations(root);
+            if (inplace) return lower_into(root, {at, acc, storage, rewrite(zero), extent});
+            if (!bounded) {
+                auto value = make_buffer(root, w.lit_nat(rank), rewrite(shape));
+                plain(value);
+                return w.tuple({copy_buffer(at, acc, value, rewrite(shape), cooperative()), acc});
+            }
+            auto value  = make_buffer(root, w.lit_nat(rank), extent);
+            auto source = fe::lookup(storage_shapes_, root);
+            plain(value);
+            return w.tuple({copy_box(at, acc, storage, value, source ? source : extent, extent, cooperative()), acc});
+        });
+        auto depth  = w.lit_nat(ring.size());
+        auto refill = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringRefill");
+        refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),
+                                {refill->var(), depth, w.lit_nat(*literal_count)}));
+        auto slots = DefVec(ring.size(), [&](size_t s) { return w.tuple(ring[s]); });
+        auto fold  = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
+        fold = w.app(fold,
+                     {w.app(w.annex(tensor::pipeline_plan::pending), depth), w.lit_bool(fragments && fragments->group),
+                      w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
+        fold = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
+        if (bounded) storage_shapes_[app] = storage;
+        auto [out_mem, out] = fold->projs<2>();
+        if (fragments) fragments_[out] = *fragments;
+        return scalar_result(app, out_mem, out);
+    }
     // The producer fills each block in its own step, as far ahead as the empty slots let it.
     for (u64 s = 0; !specialized && s + 1 < ring.size(); ++s)
-        mem = tma ? fill_tma(mem, shifted(w.lit_nat(s)), ring[s], w.lit_nat(s))
-                  : fill_block(mem, w.lit_nat(s), ring[s]);
+        mem = fill_tma(mem, shifted(w.lit_nat(s)), ring[s], w.lit_nat(s));
     auto state = DefVec{mem, buffer};
     for (auto& buffers : ring)
         state.insert(state.end(), buffers.begin(), buffers.end());
@@ -3992,10 +4051,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         auto done    = w.mut_con(start->type())->set("tileFoldDone");
         auto settled = w.app(w.annex<gpu::async_wait>(), done->var(width, 0));
         // The last `depth - 1` fills refill blocks no step reads; they land before the panels go away.
-        for (u64 k = *literal_count; tma && !specialized && k + 1 < *literal_count + ring.size(); ++k)
+        for (u64 k = *literal_count; !specialized && k + 1 < *literal_count + ring.size(); ++k)
             settled = w.app(w.annex<gpu::mbar_wait_at>(),
                             {settled, bar_at(w.lit_nat(k % ring.size())), w.lit_i32(k / ring.size() % 2)});
-        if (tma && cluster_) settled = w.app(w.annex<gpu::sync_cluster>(), settled);
+        if (cluster_) settled = w.app(w.annex<gpu::sync_cluster>(), settled);
         auto result = done->var(width, 1);
         if (specialized)
             std::tie(settled, result)
@@ -4089,18 +4148,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                     forward_layouts(ring[0][j], at_stage(s, j));
             }
             // The current block's group is the oldest: the younger `depth - 2` may still be pending.
-            const Def* waited;
-            if (tma) {
-                auto depth  = w.lit_nat(ring.size());
-                auto parity = w.app(w.app(w.annex(tensor::pipeline_plan::full_parity), iteration), depth);
-                waited      = w.app(w.annex<gpu::mbar_wait_at>(),
-                                    {loop_mem, bar_at(w.call(core::nat::rem, Defs{iteration, depth})), i32(parity)});
-            } else {
-                auto pending = w.app(w.annex(tensor::pipeline_plan::pending), w.lit_nat(ring.size()));
-                waited       = w.app(w.app(w.annex<gpu::async_wait_group>(), pending), loop_mem);
-                // `wgmma` reads the panels through the async proxy, so each filler publishes its writes to it first.
-                if (fragments && fragments->group) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
-            }
+            auto depth  = w.lit_nat(ring.size());
+            auto parity = w.app(w.app(w.annex(tensor::pipeline_plan::full_parity), iteration), depth);
+            auto waited = w.app(w.annex<gpu::mbar_wait_at>(),
+                                {loop_mem, bar_at(w.call(core::nat::rem, Defs{iteration, depth})), i32(parity)});
             // A cluster's work-groups refill each other's slots, so all of them must have read a slot before its
             // refill.
             loop_mem = w.app(w.annex<gpu::fence>(), waited);
@@ -4121,7 +4172,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                                       {iteration, w.lit_nat(ring.size()), w.lit_nat(*literal_count)}));
             auto free = DefVec(panels, [&](size_t j) { return at_stage(ring.size() - 1, j); });
             auto fill = w.call(core::nat::add, Defs{iteration, w.lit_nat(ring.size() - 1)});
-            loop_mem  = tma ? fill_tma(loop_mem, next, free, fill) : fill_block(loop_mem, next, free);
+            loop_mem  = fill_tma(loop_mem, next, free, fill);
         }
         prepare_realizations(root);
         const Def* update;

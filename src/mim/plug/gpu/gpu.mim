@@ -10,6 +10,9 @@ plugin core;
 plugin mem;
 plugin buffer;
 plugin math;
+plugin vec;
+plugin cps;
+plugin affine;
 import compile;
 
 use core.ops.n;
@@ -667,6 +670,60 @@ axm sync_carry: {g e: Nat} → {r: Nat, s: «r; Nat», T: *}
 /// Runs `body` on the memory while the published panels are read.
 axm read_phase: {g e: Nat} → {R: *}
               → [GM (g, e, GroupPhase#Reading), body: mem.M 0 → [mem.M 0, R]] → [GM (g, e, GroupPhase#Reading), R];
+/// A work-group fills one more panel of the superstep it is writing.
+lam fill_panel {g: Nat, r: Nat, s: «r; Nat», T: *}
+    (t: GM (g, 0, GroupPhase#Writing), fill: [mem.M 0, buffer.Buf (r, s, T)] → [mem.M 0, buffer.Buf (r, s, T)])
+    : [GM (g, 0, GroupPhase#Writing), SharedBuf (g, 0, Vis#Unpublished, r, s, T)] =
+    let (t, p) = shared_panel @(g, 0) @(r, s, T) t;
+    coop_fill (t, p, fill);
+/// One superstep of construct `g` from `start`: its work-items fill the `n` panels together, publish them behind one
+/// barrier and run `read` while the panels are read.
+/// Panel `i` is filled from the token the fills before it left, the fold of their steps.
+/// The implicit arguments form one group: applied one after another, a literal `n` would index `fills` before its type is known.
+/// For the same reason the panels are only indexed by a pack's own binder, never by a function's parameter.
+anx lam superstep {g n: Nat, rs: «n; Nat», ss: «i: n; «rs#i; Nat»», Ts: «n; *», R: *}
+    (start: mem.M 0,
+     fills: «i: n; [mem.M 0, buffer.Buf (rs#i, ss#i, Ts#i)] → [mem.M 0, buffer.Buf (rs#i, ss#i, Ts#i)]»,
+     read: [mem.M 0, «i: n; buffer.Buf (rs#i, ss#i, Ts#i)»] → [mem.M 0, R]): [mem.M 0, R] =
+    let W      = GM (g, 0, GroupPhase#Writing);
+    let steps  = ‹i: n; λ (t: W): W = (fill_panel @(g, rs#i, ss#i, Ts#i) (t, fills#i))#0₂›;
+    let before = λ (k: Nat): W =
+        vec.fold.l @(W, W → W) @k (λ (t: W, f: W → W): W = f t)
+            (enter_write (group_enter @g start), ‹j: k; steps#(core.idx 0 n (core.idx2nat j))›);
+    let seen   = sync_publish (before n);
+    let views  = ‹i: n; view (publish_view (seen, (fill_panel @(g, rs#i, ss#i, Ts#i) (before (core.idx2nat i), fills#i))#1₂))›;
+    let (t, r) = read_phase (seen, λ (m: mem.M 0): [mem.M 0, R] = read (m, views));
+    (leave_reading t, r);
+/// A work-group folds `count` blocks into `acc`, each read from panels `P` that asynchronous copies fill ahead into a
+/// ring of `depth` slots.
+/// The prologue fills blocks `0 .. depth - 2`, one commit group each; step `i` waits until at most `pending` groups are
+/// in flight, synchronizes, refills the slot freed last step with block `refill i` as one more group, computes block
+/// `i` from the first slot and rotates the slots; the last groups land before the panels go away.
+/// With `proxy` the panels are read through the async proxy, so each filler first publishes its writes to it.
+/// `fill (mem, block, slot)` starts the copies of `block`'s panels into `slot`.
+anx lam ring_fold {A P: *, depth: Nat} (pending: Nat, proxy: Bool, count: I64, refill: Nat → Nat)
+    (start: mem.M 0, acc: A, ring: «depth; P»)
+    (fill: Fn [mem.M 0, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A]): [mem.M 0, A] =
+    let S      = [mem.M 0, A, «depth; P»];
+    let ahead  = depth - 1;
+    let primed = vec.fold.l @(mem.M 0, Idx ahead) @ahead
+        (λ (m: mem.M 0, s: Idx ahead): mem.M 0 =
+            async_commit (cps.cps2ds fill (m, core.idx2nat s, ring#(core.idx 0 depth (core.idx2nat s)))))
+        (start, ‹s: ahead; s›);
+    fun run (init: S): [mem.M 0, A] =
+        affine.For @(0, 3, (mem.M 0, A, «depth; P»)) ring_step ring_done (0I64, count, 1I64, init)
+        where
+            con ring_step (i: I64, st: S, yield: Cn S) =
+                let (m, a, slots) = st;
+                let block  = core.bitcast Nat i;
+                let waited = async_wait_group pending m;
+                let synced = fence ((waited, fence_proxy_async waited)#proxy);
+                let filled = async_commit (cps.cps2ds fill (synced, refill block, slots#(core.idx 0 depth ahead)));
+                let (m, a) = cps.cps2ds step (filled, a, block, slots#(core.idx 0 depth 0));
+                yield (m, a, ‹s: depth; slots#(core.idx 0 depth ((core.idx2nat s + 1) % depth))›);
+            con ring_done (st: S) = return (async_wait st#0₃, st#1₃);
+        end;
+    cps.cps2ds run (primed, acc, ring);
 /// Rejects a token or an unpublished, owned or claimed panel used other than exactly once, a panel or token outside the
 /// function that made it, and a construct entered twice.
 axm check_sync: compile.Phase;

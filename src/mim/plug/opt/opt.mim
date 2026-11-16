@@ -70,6 +70,9 @@ extern lam _default_compile (): compile.Phase =
         compile.named "affine.lower_index",
         compile.named "cps.conv",
         compile.named "affine.lower_for",
+        // A loop's state may nest tuples; a pointer inside an aggregate hides its address space from the backend.
+        compile.scalarize,
+        compile.scalarize,
         // Pinned direct-style callbacks can only thread their local allocations after these ABI conversions.
         compile.cond "tensor" mem.resolve_fresh,
         compile.named "math.lower_exp",
