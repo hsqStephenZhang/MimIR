@@ -2573,8 +2573,9 @@ const Def* LowerToMem::wgmma_desc(const Def* buffer, const Def* index) {
     return w.app(w.annex<gpu::wgmma_desc>(), {addr, w.lit_i64(mn ? lbo : 16), w.lit_i64(1024), w.lit_i64(1)});
 }
 
-// One warp's tensor-core block: A's fragments by ldmatrix from its row-major panel, B's by scalar loads, and the
-// accumulator, an SSA value of fragments, updated per instruction; F32 inputs use m16n8k8, 16-bit ones m16n8k16.
+// One warp's tensor-core block: A's fragments by ldmatrix from its row-major panel, B's by a transposed ldmatrix or
+// scalar loads, and the accumulator, an SSA value of fragments, updated per instruction; F32 inputs use m16n8k8, 16-bit
+// ones m16n8k16.
 const Def* LowerToMem::lower_mma(const App* app, const Destination& destination, const Fragments& fragments) {
     auto& w     = new_world();
     auto root   = app->arg()->as<App>();
@@ -2694,21 +2695,96 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
                 if (!narrow) a[mi] = rounded(a[mi], 4);
             }
             auto b = DefVec(ns);
-            for (u64 ni = 0; ni != ns; ++ni) {
-                if (narrow) {
-                    auto regs = DefVec(2, [&](size_t reg) {
-                        return w.tuple(DefVec(2, [&](size_t h) {
-                            return read(w.tuple({lane, w.lit_idx(2, reg), w.lit_idx(2, h)}), mma_m16n8k16::l_b, ni, ks);
-                        }));
-                    });
-                    b[ni]     = w.tuple(regs);
-                } else {
-                    auto half = DefVec(2, [&](size_t h) {
-                        return read(w.tuple({lane, w.lit_idx(2, h)}), mma_m16n8k8_tf32::l_b, ni, ks);
-                    });
-                    b[ni]     = rounded(w.tuple(half), 2);
+            // A 16-bit B panel whose n runs of 8 are contiguous and aligned gives two tiles' fragments per transposed
+            // `ldmatrix`, its lanes addressing k rows as A's address m rows.
+            // A 16-bit B panel gives two n tiles' fragments per ldmatrix where the caps of its map's images show n and
+            // k each driving one dim and its layout keeps the innermost of them in runs of 8: transposed if that is
+            // n's.
+            enum class Runs { none, n, k };
+            auto runs = [&] {
+                auto r = Lit::isa(rewrite(old_mr.Ris->proj(2, 1)));
+                if (!narrow || ns % 2 || !r) return Runs::none;
+                auto buffer  = is->proj(2, 1);
+                auto shape   = rewrite(old_mr.Sis->proj(2, 1));
+                auto storage = fe::lookup(storage_shapes_, old_is->proj(2, 1));
+                auto image
+                    = w.app(w.app(w.annex<affine::image>(), {nat(3), nat(*r)}), rewrite(old_mr.maps->proj(2, 1)));
+                auto driven = [&](u64 loop) -> std::optional<u64> {
+                    auto ext  = w.tuple(DefVec(3, [&](size_t d) { return nat(d == loop ? 8 : 1); }));
+                    auto caps = w.app(image, {w.pack(3, nat(0)), ext, shape})->proj(4, 2);
+                    auto dim  = std::optional<u64>();
+                    for (u64 d = 0; d != *r; ++d) {
+                        auto cap = Lit::isa(caps->proj(*r, d));
+                        if (!cap || (*cap != 1 && dim)) return {};
+                        if (*cap != 1) dim = d;
+                    }
+                    return dim;
+                };
+                auto rows   = storage ? storage : shape;
+                auto rank   = rows->num_projs();
+                auto layout = fe::lookup(layouts_, buffer);
+                // The physical dim a logical dim's runs of 8 land in, unchanged.
+                auto lands = [&](u64 dim) -> std::optional<u64> {
+                    auto at = std::optional<u64>();
+                    for (u64 j : {1, 7, 8}) {
+                        auto point = DefVec(*r, [&](size_t d) { return w.lit_i64(d == dim ? j : 0); });
+                        auto phys  = layout ? layout_coords(layout, logical_shapes_[buffer], point) : point;
+                        for (u64 d = 0; d != phys.size(); ++d) {
+                            auto x = Lit::isa(phys[d]);
+                            if (!x || (*x != 0 && (*x != j || (at && *at != d)))) return {};
+                            if (*x != 0) at = d;
+                        }
+                    }
+                    return at;
+                };
+                auto n = driven(1), k = driven(2);
+                auto last = Lit::isa(rows->proj(rank, rank - 1));
+                if (!n || !k || *n == *k || !last || *last % 8) return Runs::none;
+                if (lands(*n) == rank - 1) return Runs::n;
+                if (lands(*k) == rank - 1) return Runs::k;
+                return Runs::none;
+            };
+            if (auto along = runs(); along != Runs::none) {
+                for (u64 ni = 0; ni != ns; ni += 2) {
+                    auto trans        = along == Runs::n;
+                    auto [row, col]   = trans ? fragment_coords(w, mma_m16n8k16::panel_a_addr, lane)
+                                              : fragment_coords(w, mma_m16n8k16::panel_b_addr, lane);
+                    auto [n_at, k_at] = trans ? std::pair{col, row} : std::pair{row, col};
+                    auto [buffer, storage, physical, r]
+                        = coords(1, nat(0), add(nat(ni * 8), n_at), add(nat(ks * kt), k_at));
+                    auto sizes   = DefVec(storage->projs(r));
+                    sizes.back() = w.call(core::nat::div, Defs{sizes.back(), nat(8)});
+                    auto at      = DefVec(physical->projs(r));
+                    auto last    = w.call<core::idx2nat>(at.back());
+                    at.back()
+                        = w.call<core::idx>(w.lit_nat_0(), sizes.back(), w.call(core::nat::div, Defs{last, nat(8)}));
+                    auto vectors      = buffer::op_vectorize(nat(8), buffer);
+                    auto index        = *Shape(w.tuple(at)).fold(w.tuple(sizes));
+                    auto [vr, vs, vT] = Axm::as<buffer::Buf>(vectors->type())->args<3>();
+                    const Def* regs;
+                    std::tie(mem, regs) = w.app(w.app(w.app(w.annex<gpu::buf_ldmatrix_b16>(), T), {vr, vs}),
+                                                {nat(4), w.lit_bool(trans), mem, vectors, index})
+                                              ->projs<2>();
+                    b[ni]               = w.tuple({regs->proj(4, 0), regs->proj(4, 1)});
+                    b[ni + 1]           = w.tuple({regs->proj(4, 2), regs->proj(4, 3)});
                 }
-            }
+            } else
+                for (u64 ni = 0; ni != ns; ++ni) {
+                    if (narrow) {
+                        auto regs = DefVec(2, [&](size_t reg) {
+                            return w.tuple(DefVec(2, [&](size_t h) {
+                                return read(w.tuple({lane, w.lit_idx(2, reg), w.lit_idx(2, h)}), mma_m16n8k16::l_b, ni,
+                                            ks);
+                            }));
+                        });
+                        b[ni]     = w.tuple(regs);
+                    } else {
+                        auto half = DefVec(2, [&](size_t h) {
+                            return read(w.tuple({lane, w.lit_idx(2, h)}), mma_m16n8k8_tf32::l_b, ni, ks);
+                        });
+                        b[ni]     = rounded(w.tuple(half), 2);
+                    }
+                }
             auto instr = !narrow           ? w.annex<gpu::mma_tf32>()
                        : math::isa_bf16(T) ? w.annex<gpu::mma_bf16>()
                                            : w.annex<gpu::mma_f16>();

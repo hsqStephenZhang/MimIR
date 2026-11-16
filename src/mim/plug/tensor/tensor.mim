@@ -461,6 +461,11 @@ pub anx lam l_b (lane: Idx 32, reg: Idx 2, h: Idx 2): [Idx 16, Idx 8] =
 pub anx lam panel_a_addr (lane: Idx 32): [Idx 16, Idx 16] =
     let l = core.idx2nat lane;
     (core.idx 0 16 (l % 16), core.idx 0 16 (8 * (l / 16)));
+/// A k-contiguous B panel uses lane `l` for n row `l % 8 + 8 * (l / 16)` at k offset `8 * (l / 8 % 2)`; `ldmatrix_b16 4`
+/// then yields `l_b` for two n tiles.
+pub anx lam panel_b_addr (lane: Idx 32): [Idx 16, Idx 16] =
+    let l = core.idx2nat lane;
+    (core.idx 0 16 (l % 8 + 8 * (l / 16)), core.idx 0 16 (8 * (l / 8 % 2)));
 
 lam a_at {T: *} (a: «32; «4, 2; T»», row col: Idx 16): T =
     let r = core.idx2nat row;
