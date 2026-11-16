@@ -268,7 +268,12 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 它直接用降低之后 `gpu.SharedBuf` 的那个 `Vis` 类型，所以调度层与同步层说同一套词；work-group 的累加器是 `Owned`，work-item 只能拿到切给自己的那一块（也是 `Owned`，但属于它自己），面板在填充函数里是 `Unpublished`、到了 work-item 手里是 `Published`。
 `vectors (n, c)` 是保留全部索引的向量视图（`tensor.as_vectors`）。
 新增的两个反例：work-item 直接读 work-group 独占的累加器、把已发布的面板当成自己的可写 tile（`lit/error/typed_tile_{exclusive,readonly}.mim`）。
-布局（`placed` 的 `layout_expr`）、张量核片段与环的槽位还不在这个类型里；解释器里 `stage` 的结果也仍是裸 `Tensor`。
+布局也进了类型（借 Mojo 的 `LayoutType`）：`Tile … r2 s lay T` 里 `s` 是逻辑形状，`lay#d` 是存在位置 `d` 的逻辑轴，承载的张量是 `Tensor r2 (stored (s, lay)) T`。
+`resident_as lay` 按这个置换暂存一个盒子；`read` 给出按存储形状的张量，`stored_at p c` 由类型算出逻辑坐标 `c` 的存储坐标，叶子的读映射经它写，不必记面板是怎么摆的；`vectors n` 沿存储的最后一维取向量，逻辑上缩短的是存在那里的那条轴，不整除时报错（`require`）。
+正例的 A 面板改成列主序（k 主序）暂存，在 GPU 上执行正确；反例：列主序的面板被当作行主序交出去、向量宽度不整除（`lit/error/typed_tile_{layout,vectors}.mim`）。
+限制：仿射下标没有范围类型，所以绕过 `stored_at` 直接用逻辑坐标去读一个形状碰巧相容的面板不会被拒绝；布局只是轴的置换，`placed` 的 `layout_expr`（分块、swizzle、填充）还不在类型里。
+`rows` 与 `stored` 带过滤器，布局是字面量之前保持不展开：每次展开都新造一个带绑定子的 pack，两处的类型就不相等了。
+张量核片段与环的槽位还不在这个类型里；解释器里 `stage` 的结果也仍是裸 `Tensor`。
 
 ### 8.2 协议骨架
 
