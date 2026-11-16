@@ -120,6 +120,51 @@ TEST_CASE("World: extract at an Arr's own index generalizes heterogeneous Apps")
     CHECK(w.extract(a, k)->type()->isa<Join>());
 }
 
+TEST_CASE("World: an extract from a mutable Arr of arity 1 keeps its axis") {
+    Driver driver;
+    World& w = driver.world();
+    auto f   = w.axm(w.pi(w.type_idx(1), w.type_nat()));
+    auto arr = w.mut_arr(w.type())->set_shape(w.lit_nat(1));
+    arr->set_body(w.type_idx(w.app(f, arr->var())));
+    auto a = w.axm(arr);
+    auto x = w.extract(a, w.lit_idx(1, 0));
+    // Folding the axis would give the element the Arr itself as its type.
+    CHECK(x != a);
+    CHECK(x->type() == w.type_idx(w.app(f, w.lit_idx(1, 0))));
+}
+
+TEST_CASE("Check: a tuple fills an Arr of dependent elements element by element") {
+    Driver driver;
+    World& w   = driver.world();
+    auto sizes = w.tuple({w.lit_nat(4), w.lit_nat(8)});
+    auto arr   = w.mut_arr(w.type())->set_shape(w.lit_nat(2));
+    arr->set_body(w.type_idx(w.extract(sizes, arr->var())));
+    auto x = w.axm(w.type_idx(4)), y = w.axm(w.type_idx(8));
+    auto coerced = Check::coerce(arr, w.tuple({x, y}));
+    REQUIRE(coerced);
+    CHECK(coerced->proj(2, 0) == x);
+    CHECK(coerced->proj(2, 1) == y);
+    CHECK_FALSE(Check::coerce(arr, w.tuple({y, x})));
+}
+
+TEST_CASE("Rewriter: a Lam whose dependent type names an enclosing binder") {
+    Driver driver;
+    World& w = driver.world();
+    auto l   = w.mut_lam(w.pi(w.type_nat(), w.type_nat()));
+    auto x   = l->var();
+    auto pi  = w.mut_pi(w.type())->set(w.type_idx(x), w.type_nat());
+    auto k   = w.mut_lam(pi);
+    k->set(false, x);
+    l->set(true, w.app(k, w.bot(w.type_idx(x))));
+    // Entering at k rewrites x first, whose binder's body reaches k again before k's type is set.
+    auto target = w.inherit();
+    auto rw     = Rewriter(*target);
+    auto nk     = rw.rewrite(k)->isa_mut<Lam>();
+    REQUIRE(nk);
+    CHECK(nk->type()->is_set());
+    CHECK(&nk->world() == target.get());
+}
+
 TEST_CASE("Annex") {
     SUBCASE("mangle") {
         CHECK(Annex::demangle(*Annex::mangle("test")) == "test");
