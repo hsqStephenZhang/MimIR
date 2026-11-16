@@ -4002,8 +4002,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         second      = w.call(core::bit2::and_, w.lit_nat(2), Defs{second, first_round});
         mem         = w.app(w.annex<gpu::arrive_named_if>(), {mem, w.lit_i32(1), w.lit_i32(256), second});
     }
-    if (panels != 0 && !tma) {
-        // `gpu.ring_fold` is the `cp.async` ring's protocol; what a block's fill and step compute comes from here.
+    // A ring no cluster, persistent work-group or specialized warp shares is `gpu.ring_fold`'s protocol, its copies
+    // tracked by `cp.async` groups or by the slots' mbarriers; what a block's fill and step compute comes from here.
+    if (panels != 0 && (!tma || (!specialized && !cluster_ && !tile_round_))) {
         auto M       = w.call<mem::M>(0);
         auto slot_ty = w.sigma(DefVec(panels, [&](size_t j) { return ring[0][j]->type(); }));
         auto acc_ty  = buffer->type();
@@ -4025,7 +4026,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             auto targets                = DefVec(panels, [&](size_t j) { return slot->proj(panels, j); });
             for (size_t j = 0; j != panels; ++j)
                 forward_layouts(ring[0][j], targets[j]);
-            return fill_block(at, block, targets);
+            return tma ? fill_tma(at, block, targets, nth) : fill_block(at, block, targets);
         });
         auto fold_step = w.mut_fun(w.sigma({M, acc_ty, w.type_nat(), slot_ty}), w.sigma({M, acc_ty}))->set("ringStep");
         closure(fold_step, [&]() -> const Def* {
@@ -4057,10 +4058,17 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                                 {refill->var(), depth, w.lit_nat(*literal_count)}));
         auto slots = DefVec(ring.size(), [&](size_t s) { return w.tuple(ring[s]); });
         auto fold  = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
-        auto sync  = w.app(w.annex<gpu::async_ring>(), {w.app(w.annex(tensor::pipeline_plan::pending), depth),
-                                                        w.lit_bool(fragments && fragments->group)});
-        fold       = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
-        fold       = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
+        const Def* sync;
+        if (tma) {
+            auto parity = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringParity");
+            parity->set(true, w.app(w.app(w.annex(tensor::pipeline_plan::full_parity), parity->var()), depth));
+            sync = w.app(w.app(w.annex<gpu::mbar_ring>(), depth), {bars, w.lit_nat(*literal_count), parity});
+        } else {
+            sync = w.app(w.annex<gpu::async_ring>(), {w.app(w.annex(tensor::pipeline_plan::pending), depth),
+                                                      w.lit_bool(fragments && fragments->group)});
+        }
+        fold = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
+        fold = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
         if (bounded) storage_shapes_[app] = storage;
         auto [out_mem, out] = fold->projs<2>();
         if (fragments) fragments_[out] = *fragments;

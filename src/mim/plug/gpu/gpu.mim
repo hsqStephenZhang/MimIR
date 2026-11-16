@@ -736,6 +736,17 @@ anx lam async_ring (pending: Nat, proxy: Bool): RingSync =
         let waited = async_wait_group pending m;
         (waited, fence_proxy_async waited)#proxy,
      async_commit, async_wait);
+/// mbarriers, one per slot in `bars`: the ring's fill `n` completes the phase of parity `parity n` of slot `n % depth`,
+/// which the step that reads it waits for; the fills beyond the `blocks` steps are waited for at the end.
+/// A fill arrives on its slot's mbarrier by itself, so nothing commits it.
+anx lam mbar_ring {depth: Nat} (bars: buffer.Buf (1, depth, I64), blocks: Nat, parity: Nat → Nat): RingSync =
+    let landed = λ (m: mem.M 0, n: Nat): mem.M 0 =
+        mbar_wait_at (m, buf_addr (bars, core.idx 0 depth (n % depth)), core.idx 0 0x100000000 (parity n));
+    (landed, λ (m: mem.M 0): mem.M 0 = m,
+     λ (m: mem.M 0): mem.M 0 =
+        vec.fold.l @(mem.M 0, Idx (depth - 1)) @(depth - 1)
+            (λ (m: mem.M 0, k: Idx (depth - 1)): mem.M 0 = landed (m, blocks + core.idx2nat k))
+            (async_wait m, ‹k: depth - 1; k›));
 /// A work-group folds `count` blocks into `acc`, each read from panels `P` that asynchronous copies fill ahead into a
 /// ring of `depth` slots.
 /// The prologue fills blocks `0 .. depth - 2`; step `i` waits for its block, synchronizes, refills the slot freed last
