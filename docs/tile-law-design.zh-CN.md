@@ -95,6 +95,12 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 
 每一步用 D3 的差分验证与完整 lit 验收。
 
+### 符号形状（方案，2026-11-16）
+
+退回统计里的“符号形状”分开数：张量形状是符号的 27 次，层级大小是符号的 2 次。
+`plain_parts` 要求字面量形状，是因为 work-group 暂存的面板要字面量的存储（`stage_shape`、`placed` 及其布局搜索）；`tiled` 区域本身接受运行时的长度，`TileFuse` 对符号形状用封顶的存储。
+所以分两步：先对没有暂存面板的链（只有 par/red 层，`promote` 为 0）放开形状的字面量要求；再让暂存的面板取 `affine.image` 的 cap（字面量上界）作存储。
+
 ### 驻留的子调度（方案，2026-11-16）
 
 现状：work-group 层把驻留成员的盒子整块暂存，盒子里的元素在叶子里用 `generate` 描述，即每个 work-item 区域里的 `each`（逐元素组合，不切分）或 `parts` 加 `joint`（切成 `C` 段，一次填充写部分和，另一次合并）。
@@ -103,8 +109,11 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 要做的是让盒子由内层定律自己的 `group_step` 在给定的子链上算出，分三步，前两步不改变生成的代码：
 
 1. 驻留视图从叶子提到 work-group 层，用设备 IR 逐字比较验收。
+   区域输入的槽已经接好（`5cf873d86`）：步多了 `re: «i: nis; [Bool, «Ris#i; Nat»]»` 与 `res: Res re`，没有驻留盒子的输入在 `res` 里是空元组，不占缓冲；`split_par`、`split_bound` 的区域输入是 `(xs, res)`，生成的代码与之前相同。
+   最初用长度为 0 的 `splat` 作空盒子，缓冲化拒绝零长度的张量，所以换成按标志选择的类型。
    不能放进上下文 `Cx` 沿链传：盒子是张量，`tiled` 的区域体不能读外层张量（`check_region_inputs`），只能作为区域输入穿过每一层；而区域输入是类型固定的 `Phys`，盒子的形状又随块大小变化，所以要先给 `Phys` 留出盒子的位置。
-2. `Law` 加一个字段：给定物理输入、盒子的起点与长度和一条 `GroupLevels` 子链，返回盒子；子链的类型以 work-group 的块大小为索引，先在一个二十行的实例上确认符号的块大小能通过类型检查。
+2. `Law` 加一个字段：给定物理输入、盒子的起点与长度和一条 `GroupLevels` 子链，返回盒子；子链的类型以 work-group 的块大小为索引，所以字段对块大小多态，`{M: *, g: «n; Nat»} → GroupLevels (n, Acc, M, g) → …`。
+   记录里放这种带隐式参数的函数字段、在使用处用 `@g` 实例化，已在一个小例子上通过类型检查并正确求值（2026-11-16）。
 3. 视图的来源换成这个字段，子链先取与现状等价的两条：不切分时每个 work-item 一个元素，可切分（`splits`）时 `group_red_items`；之后 `each`/`parts`/`joint` 整段删掉，`Input` 的 `merge`、`split`、`K` 也不再需要。
 
 第 3 步对应退回统计里“work-group 里的归约成员”（12 次）：`TileFuse` 正是用 work-item 上的合并树实现它们。
@@ -256,6 +265,9 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   `Law` 多了字段 `splits`：作为成员能否被切分，即合并担保过、或组合子被识别且根直接读输入（融合了源的根，其元素由 `tile_of` 组合，`tile_of_partial` 拆不开），且 epilogue 是恒等的；`as_source`/`fuse_law` 只看它。
   `check.merge` 起初以根张量为参数，选择条件未定时那一支被区域的输入检查拦下；改成以组合子为参数，并显式给出柯里计数 2，否则 `[T, T] → T` 也计入柯里化，只在应用到两个部分和时才规范化。
   还留在图里的 `post_over`（累加器从未成为区域）由 `TileFuse` 与 `lower_tensor` 改写成整块的 `post_tile`；`realize` 的封顶判断沿层级链带着当前块长，内外两层都整除根而内层不整除外层块时也算封顶（`tile_fuse_levels_exec` 的 `cap_inner`）。
+  被组外使用的成员（yields，2026-11-16）：定律把它当作普通输入先整块算一次，根与组外的使用者都读它，而不是像 `TileFuse` 那样从各块里交回；`tile_fuse_yield_axes` 的指数仍只算一次。
+  现有的 GPU 基准与 `lit/gpu` 用例都没有交回的成员，所以这一步不改变它们；`bench/gpu_fusion/softmax.mim` 在 `tile-fuse=2` 下有交回的指数，但 `TileFuse` 在那里不生成 GPU kernel，两种做法没有可比的 GPU 数字。
+  编译时间基线（Release，sm_120 主机，编译到设备代码，三次取中位数）：GEMM 的 SIMT、mma、wgmma 链走定律约 6.5 s，走 `TileFuse` 约 5.8–6.0 s，多 0.6–0.7 s（约 11%）；两个 softmax 驻留版本两条路径相当（5.8–6.5 s）。
   放开之后暴露出解释器原有的一处限制：封顶的并行层里面再有 vec 层时，生成的 `map_reduce` 有运行时长度，向量化的判定定不下来；这种请求先交给递归。
   先前以为这一步卡在 core 的统一上，是误判：那次新增了 `anx` 却只把 `tensor.mim` 复制进构建目录而没重建插件，生成的公理编号错位，C++ 引用的 `law.run` 成了 `law.req`。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
@@ -274,7 +286,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 | `check.report` 在 `law.req` 的定义体里 | normalizer 在定义时就看到未定的判定 | 判定含自由变量时不归约 |
 | 叶子里用计算出的面板计划 `boxed (…)` | 与 `Law` 以 `I` 为参数同源：代换把计划里嵌套的可变 pack 复制成多份，`alpha` 不能把同一个绑定子配给两份 | 叶子是带过滤器 `@(core.pe.is_closed (slot, Ris))` 的具名 `lam`，泛型时不展开，实例化后秩是字面量才展开 |
 | 生产者读消费者暂存的视图（别名） | 已做到（2026-11-15）：按 pack 自己的绑定子取下标的类型现在由 `World::generalize` 推出（不再是并类型）；`share` 放在消费者参数之前，实例化 `is` 时它已是字面量 | `law.fuse_shared` 与 `fused_shared`；同一构造子里兼顾不共享的分支仍受 arity 1 依赖 `Arr` 的折叠所限 |
-| 在 `vec.fold` 的体里写 `(ins#i)#6₇`，`ins: «i: nis; Input (Ps#i) …»`、`i: Idx nis` | 报 “index does not fit within arity 1”，位置指向无关的定义；原因未查 | 先用 pack 解构出 `‹i: nis; let (…, c) = ins#i; c›`，再折叠 |
+| 在 `vec.fold` 的体里写 `(ins#i)#6₇`，`ins: «i: nis; Input (Ps#i) …»`、`i: Idx nis` | 报 “index does not fit within arity 1”，位置指向无关的定义；根因：`vec.fold` 的下标在异构记录元组上取出的是 `Join` 类型（XFAIL 用例 `lit/bug/fold_join_proj.mim`） | 先用 pack 解构出 `‹i: nis; let (…, c) = ins#i; c›`，再折叠 |
 | 物理输入是 `«nis - 1 + npp; …»`，按下标拼接 | `npp` 先成为字面量时，异构元组按非字面量下标取出的类型是并 `T ∪ U`，`bitcast` 推断的源类型不再匹配 | 穿过二元组 `(消费者的输入, 生产者的输入)`，只按 pack 自己的绑定子取下标 |
 
 前三条与 D6 的阻塞同源：依赖类型的实例化与比较。它们是继续推进第 3 步（TileFuse 在定律上解释调度）之前最值得在 core 里修的地方。

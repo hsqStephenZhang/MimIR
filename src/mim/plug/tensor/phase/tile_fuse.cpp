@@ -1912,8 +1912,6 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
             }
         }
     }
-    // A member used outside is handed back by the per-level recursion, which a law cannot yet.
-    unsafe |= std::ranges::any_of(group, [&](const Def* member) { return outside.contains(member); });
     // A reduction member of a work-group is split over its work-items by the per-level recursion; a law's resident
     // member computes each element in a private buffer per element instead.
     auto grouped = std::ranges::any_of(level_list, [](const LevelSpec& level) { return level.bind == 1; });
@@ -1951,6 +1949,8 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
             if (choice.value_or(false)) fused->push_back(member);
         }
     }
+    // A law computes a member used outside once, whole, so both its consumer here and its users outside read it.
+    if (fused) std::erase_if(*fused, [&](const Def* member) { return outside.contains(member); });
     if (!unsafe && fused && driver().arg_nat("tensor", "tile-law").value_or(1))
         if (auto law = run_as_law(request, op, *fused, levels, control)) return law;
     DefSet in_group(group.begin(), group.end());
