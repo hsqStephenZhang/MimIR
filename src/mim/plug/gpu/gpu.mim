@@ -726,21 +726,31 @@ anx lam merge_rounds {g k r: Nat, s: «r; Nat», T R: *}
     let (t, p) = after k;
     let (t, x) = read_phase (t, λ (m: mem.M 0): [mem.M 0, R] = read (m, view p));
     (group_leave (sync_reclaim t), x);
+/// How a ring tracks its asynchronous copies: `await (mem, i)` returns once block `i`'s panels have landed, `commit`
+/// closes the copies one fill started and `settle` waits for all that are still in flight.
+let RingSync = [await: [mem.M 0, Nat] → mem.M 0, commit: mem.M 0 → mem.M 0, settle: mem.M 0 → mem.M 0];
+/// `cp.async` commit groups: a fill is one group and a step waits until at most `pending` are in flight.
+/// With `proxy` the panels are read through the async proxy, so each filler first publishes its writes to it.
+anx lam async_ring (pending: Nat, proxy: Bool): RingSync =
+    (λ (m: mem.M 0, _: Nat): mem.M 0 =
+        let waited = async_wait_group pending m;
+        (waited, fence_proxy_async waited)#proxy,
+     async_commit, async_wait);
 /// A work-group folds `count` blocks into `acc`, each read from panels `P` that asynchronous copies fill ahead into a
 /// ring of `depth` slots.
-/// The prologue fills blocks `0 .. depth - 2`, one commit group each; step `i` waits until at most `pending` groups are
-/// in flight, synchronizes, refills the slot freed last step with block `refill i` as one more group, computes block
-/// `i` from the first slot and rotates the slots; the last groups land before the panels go away.
-/// With `proxy` the panels are read through the async proxy, so each filler first publishes its writes to it.
-/// `fill (mem, block, slot)` starts the copies of `block`'s panels into `slot`.
-anx lam ring_fold {A P: *, depth: Nat} (pending: Nat, proxy: Bool, count: I64, refill: Nat → Nat)
+/// The prologue fills blocks `0 .. depth - 2`; step `i` waits for its block, synchronizes, refills the slot freed last
+/// step with block `refill i`, computes block `i` from the first slot and rotates the slots; the last copies land
+/// before the panels go away.
+/// `fill (mem, block, n, slot)` starts the copies of `block`'s panels into `slot` as the ring's `n`-th fill.
+anx lam ring_fold {A P: *, depth: Nat} (sync: RingSync, count: I64, refill: Nat → Nat)
     (start: mem.M 0, acc: A, ring: «depth; P»)
-    (fill: Fn [mem.M 0, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A]): [mem.M 0, A] =
+    (fill: Fn [mem.M 0, Nat, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A]): [mem.M 0, A] =
     let S      = [mem.M 0, A, «depth; P»];
     let ahead  = depth - 1;
+    let (await, commit, settle) = sync;
     let primed = vec.fold.l @(mem.M 0, Idx ahead) @ahead
         (λ (m: mem.M 0, s: Idx ahead): mem.M 0 =
-            async_commit (cps.cps2ds fill (m, core.idx2nat s, ring#(core.idx 0 depth (core.idx2nat s)))))
+            commit (cps.cps2ds fill (m, core.idx2nat s, core.idx2nat s, ring#(core.idx 0 depth (core.idx2nat s)))))
         (start, ‹s: ahead; s›);
     fun run (init: S): [mem.M 0, A] =
         affine.For @(0, 3, (mem.M 0, A, «depth; P»)) ring_step ring_done (0I64, count, 1I64, init)
@@ -748,12 +758,11 @@ anx lam ring_fold {A P: *, depth: Nat} (pending: Nat, proxy: Bool, count: I64, r
             con ring_step (i: I64, st: S, yield: Cn S) =
                 let (m, a, slots) = st;
                 let block  = core.bitcast Nat i;
-                let waited = async_wait_group pending m;
-                let synced = fence ((waited, fence_proxy_async waited)#proxy);
-                let filled = async_commit (cps.cps2ds fill (synced, refill block, slots#(core.idx 0 depth ahead)));
+                let synced = fence (await (m, block));
+                let filled = commit (cps.cps2ds fill (synced, refill block, block + ahead, slots#(core.idx 0 depth ahead)));
                 let (m, a) = cps.cps2ds step (filled, a, block, slots#(core.idx 0 depth 0));
                 yield (m, a, ‹s: depth; slots#(core.idx 0 depth ((core.idx2nat s + 1) % depth))›);
-            con ring_done (st: S) = return (async_wait st#0₃, st#1₃);
+            con ring_done (st: S) = return (settle st#0₃, st#1₃);
         end;
     cps.cps2ds run (primed, acc, ring);
 /// Rejects a token or an unpublished, owned or claimed panel used other than exactly once, a panel or token outside the

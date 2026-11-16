@@ -3514,10 +3514,10 @@ const Def* LowerToMem::warp_fold(const App* app) {
             fun->set(true, wrap_fresh_mem(fun->body()));
             pop();
         };
-        auto fill = w.mut_fun(w.sigma({M, w.type_nat(), slot_ty}), M)->set("ringFill");
+        auto fill = w.mut_fun(w.sigma({M, w.type_nat(), w.type_nat(), slot_ty}), M)->set("ringFill");
         closure(fill, [&] {
-            auto [at, block, slot] = fill->var(2, 0)->projs<3>();
-            auto targets           = DefVec(panels, [&](size_t j) { return slot->proj(panels, j); });
+            auto [at, block, nth, slot] = fill->var(2, 0)->projs<4>();
+            auto targets                = DefVec(panels, [&](size_t j) { return slot->proj(panels, j); });
             for (size_t j = 0; j != panels; ++j)
                 forward_layouts(ring[0][j], targets[j]);
             return fill_block(at, block, targets);
@@ -3534,8 +3534,8 @@ const Def* LowerToMem::warp_fold(const App* app) {
         refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),
                                 {refill->var(), depth, w.lit_nat(*literal_count)}));
         auto fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
-        fold      = w.app(fold, {w.lit_nat_0(), w.lit_bool(group_rows_ != nullptr),
-                                 w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
+        auto sync = w.app(w.annex<gpu::async_ring>(), {w.lit_nat_0(), w.lit_bool(group_rows_ != nullptr)});
+        fold      = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
         fold      = w.app(w.app(fold, {mem, w.tuple({first, kept}), w.tuple({w.tuple(ring[0]), w.tuple(ring[1])})}),
                           {fill, ring_step});
         folded    = fold->proj(2, 1)->proj(2, 0);
@@ -4019,10 +4019,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             fun->set(true, wrap_fresh_mem(fun->body()));
             pop();
         };
-        auto fill = w.mut_fun(w.sigma({M, w.type_nat(), slot_ty}), M)->set("ringFill");
+        auto fill = w.mut_fun(w.sigma({M, w.type_nat(), w.type_nat(), slot_ty}), M)->set("ringFill");
         closure(fill, [&] {
-            auto [at, block, slot] = fill->var(2, 0)->projs<3>();
-            auto targets           = DefVec(panels, [&](size_t j) { return slot->proj(panels, j); });
+            auto [at, block, nth, slot] = fill->var(2, 0)->projs<4>();
+            auto targets                = DefVec(panels, [&](size_t j) { return slot->proj(panels, j); });
             for (size_t j = 0; j != panels; ++j)
                 forward_layouts(ring[0][j], targets[j]);
             return fill_block(at, block, targets);
@@ -4057,10 +4057,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                                 {refill->var(), depth, w.lit_nat(*literal_count)}));
         auto slots = DefVec(ring.size(), [&](size_t s) { return w.tuple(ring[s]); });
         auto fold  = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
-        fold = w.app(fold,
-                     {w.app(w.annex(tensor::pipeline_plan::pending), depth), w.lit_bool(fragments && fragments->group),
-                      w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
-        fold = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
+        auto sync  = w.app(w.annex<gpu::async_ring>(), {w.app(w.annex(tensor::pipeline_plan::pending), depth),
+                                                        w.lit_bool(fragments && fragments->group)});
+        fold       = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
+        fold       = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
         if (bounded) storage_shapes_[app] = storage;
         auto [out_mem, out] = fold->projs<2>();
         if (fragments) fragments_[out] = *fragments;
