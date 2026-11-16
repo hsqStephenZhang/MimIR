@@ -231,6 +231,12 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   `tile_req` 的定律路由一般化（2026-11-16）：`TileFuse::run_as_law` 由递归的 `law_of` 构造定律——根的输入是组成员就先给成员造定律再 `as_source`，否则 `source`，有成员时用 `of_sources`，所以多个与嵌套的成员都交给定律；所有成员都须被用到。
   定律融合每个成员，所以只有 `control` 在结构上等于 `default_control` 时才这样做；`lit/tensor/tile_fuse_exec.mim` 里 `control = never` 的请求仍由逐级递归实现（`fused=0`）。仍交给递归的：被组外使用的成员（yields）、根自己带担保合并又融合了成员、work-group 链里的归约成员、符号的形状或层级。
   work-item/lane 归约没有显式合并、或切了内层归约循环的请求，组合子能被识别且种子是其单位元时（与 `check.combiner` 同一个 `reduction_law`）也交给定律；否则仍交给递归，由它留下请求并给出合约诊断（`tile_reduction_contracts`），而不是让定律的规则报错。
+  `of_sources` 现在把每个 `Input` 带的内层判定（`checked`）取第一个非零的，参数判定失败的内层定律经 `as_source` 融合后外层照样报错（`lit/error/law_sources_checked.mim`）；同一个成员被读两次时定律会算两遍，所以整个请求交给递归。
+  带 epilogue 的根（2026-11-16）：`Law` 的 `T` 是 epilogue 之后的元素类型，`Acc` 是累加器类型，`merge` 作用在 `Acc` 上；`build_post`、`law.of_map_reduce_post`、`law.of_sources_post` 多带 `(post, post_maps, post_is)`，原来的构造子是它们带恒等 epilogue 的特例。
+  调度的结果交给公理 `law.post_over`，它的规范化是一条交换律：逐点的 epilogue 与分块交换，所以它推进 `tiled` 区域的体（epilogue 输入作为区域输入显式穿过），停在归约折叠之外，即每个 tile 的归约结束处；恒等 epilogue 直接消去；封顶的尾块长度是运行时值，这时不推进，在整个结果上做一次（`lit/tensor/law_post.mim`：GEMM 加偏置、累加器为二元组的行和，除了输出只有每个 tile 的累加器）。
+  只有根可以带 epilogue：成员的切分会把 epilogue 用在部分和上，`as_source`/`fuse_law` 的类型因此要求 `Acc = T`。
+  统计 lit 里各请求退回递归的原因时，带 epilogue 是第一位（36 次），其后是符号形状（27）、yields（13）、work-group 里的归约成员（12）。
+  放开之后暴露出解释器原有的一处限制：封顶的并行层里面再有 vec 层时，生成的 `map_reduce` 有运行时长度，向量化的判定定不下来；这种请求先交给递归。
   先前以为这一步卡在 core 的统一上，是误判：那次新增了 `anx` 却只把 `tensor.mim` 复制进构建目录而没重建插件，生成的公理编号错位，C++ 引用的 `law.run` 成了 `law.req`。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；
   `law.schedule` 对 `serial_par`/`serial_red` 和 `serial_group`/`group_item`/`item_red` 两条链的结果等于参考结果，同一条链经 `law.req` 由 `TileFuse` 实现，结果也相同；
@@ -248,6 +254,7 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 | `check.report` 在 `law.req` 的定义体里 | normalizer 在定义时就看到未定的判定 | 判定含自由变量时不归约 |
 | 叶子里用计算出的面板计划 `boxed (…)` | 与 `Law` 以 `I` 为参数同源：代换把计划里嵌套的可变 pack 复制成多份，`alpha` 不能把同一个绑定子配给两份 | 叶子是带过滤器 `@(core.pe.is_closed (slot, Ris))` 的具名 `lam`，泛型时不展开，实例化后秩是字面量才展开 |
 | 生产者读消费者暂存的视图（别名） | 已做到（2026-11-15）：按 pack 自己的绑定子取下标的类型现在由 `World::generalize` 推出（不再是并类型）；`share` 放在消费者参数之前，实例化 `is` 时它已是字面量 | `law.fuse_shared` 与 `fused_shared`；同一构造子里兼顾不共享的分支仍受 arity 1 依赖 `Arr` 的折叠所限 |
+| 在 `vec.fold` 的体里写 `(ins#i)#6₇`，`ins: «i: nis; Input (Ps#i) …»`、`i: Idx nis` | 报 “index does not fit within arity 1”，位置指向无关的定义；原因未查 | 先用 pack 解构出 `‹i: nis; let (…, c) = ins#i; c›`，再折叠 |
 | 物理输入是 `«nis - 1 + npp; …»`，按下标拼接 | `npp` 先成为字面量时，异构元组按非字面量下标取出的类型是并 `T ∪ U`，`bitcast` 推断的源类型不再匹配 | 穿过二元组 `(消费者的输入, 生产者的输入)`，只按 pack 自己的绑定子取下标 |
 
 前三条与 D6 的阻塞同源：依赖类型的实例化与比较。它们是继续推进第 3 步（TileFuse 在定律上解释调度）之前最值得在 core 里修的地方。

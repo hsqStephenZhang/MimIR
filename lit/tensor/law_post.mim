@@ -1,0 +1,70 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: clang++ -O1 -fsanitize=address %S/law_post_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+// RUN: %FileCheck %s --check-prefix=%if tile-fuse-path %{TF%} %else %{LAW%} < %t.log
+
+// Roots with an epilogue: a product plus a bias, and row sums with counts finished into one integer.
+// The epilogue finishes each tile where its reduction ends, and a tile request on such a root runs as its law.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let Acc  = [I64, I64];
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+fun biased (c: F32, b: F32)@tt: F32 = return (math.arith.add fast (c, b));
+
+fun step (acc: Acc, xs: [I64])@tt: Acc =
+    let (sum, count) = acc;
+    let (x)          = xs;
+    return (core.wrap.add 0 (sum, x), core.wrap.add 0 (count, 1I64));
+fun total (acc: Acc, _: [])@tt: I64 = return (core.wrap.add 0 (acc#0₂, acc#1₂));
+
+lam gemm (x: tensor.Tensor 2 (32, 16) F32, y: tensor.Tensor 2 (16, 32) F32, bias: tensor.Tensor 1 32 F32) =
+    law.of_map_reduce_post ((32, 32), (32, 32, 16)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf x, buf y)
+        @(F32, 1, F32, 1, 32) (biased, proj_map @(2, 1) 1, buf bias);
+
+lam rows (x: tensor.Tensor 2 (16, 16) I64) =
+    law.of_map_reduce_post (16, (16, 16)) (step, (0I64, 0I64)) (proj_map @(2, 1) 0) (affine.id @2,) (buf x)
+        @(I64, 0, (), (), ()) (total, (), ());
+
+let staged   = serial_par ((8, 8, 0), 0, serial_red ((0, 0, 4), 1, 3, serial_par ((2, 4, 0), 0, serial_done ())));
+let unstaged = serial_par ((8, 8, 0), 0, serial_red ((0, 0, 4), 1, 0, serial_done ()));
+let chunked  = serial_par ((4, 0), 0, serial_red ((0, 4), 1, 0, serial_done ()));
+
+extern fun post_denote (x: tensor.Tensor 2 (32, 16) F32, y: tensor.Tensor 2 (16, 32) F32, bias: tensor.Tensor 1 32 F32)
+    : tensor.Tensor 2 (32, 32) F32 =
+    return (law.denote (gemm (x, y, bias)));
+extern fun post_staged (x: tensor.Tensor 2 (32, 16) F32, y: tensor.Tensor 2 (16, 32) F32, bias: tensor.Tensor 1 32 F32)
+    : tensor.Tensor 2 (32, 32) F32 =
+    return (law.run (gemm (x, y, bias), staged, default_control));
+extern fun post_unstaged (x: tensor.Tensor 2 (32, 16) F32, y: tensor.Tensor 2 (16, 32) F32, bias: tensor.Tensor 1 32 F32)
+    : tensor.Tensor 2 (32, 32) F32 =
+    return (law.run (gemm (x, y, bias), unstaged, default_control));
+extern fun post_req (x: tensor.Tensor 2 (32, 16) F32, y: tensor.Tensor 2 (16, 32) F32, bias: tensor.Tensor 1 32 F32)
+    : tensor.Tensor 2 (32, 32) F32 =
+    let root = map_reduce_post @(2, 1) @(F32, F32, 2, 3, SchedT)
+        ((32, 32), (32, 32, 16), mk_sched (3, 0)) @((F32, F32), (2, 2), ((32, 16), (16, 32)), F32, 1, 32)
+        (mac, 0.0:F32, biased) (proj_map @(3, 2) (0, 1))
+        ((proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)), proj_map @(2, 1) 1) ((buf x, buf y), buf bias);
+    return (tile_req (root, (), staged, default_control));
+
+extern fun rows_run (x: tensor.Tensor 2 (16, 16) I64): tensor.Tensor 1 16 I64 =
+    return (law.run (rows x, chunked, default_control));
+extern fun rows_req (x: tensor.Tensor 2 (16, 16) I64): tensor.Tensor 1 16 I64 =
+    let root = map_reduce_post @(1, 0) @(Acc, I64, 1, 2, SchedT)
+        (16, (16, 16), mk_sched (2, 0)) @(I64, 2, (16, 16), (), (), ())
+        (step, (0I64, 0I64), total) (proj_map @(2, 1) 0) (affine.id @2, ()) ((buf x), ());
+    return (tile_req (root, (), chunked, default_control));
+
+// LAW-COUNT-2: tensor.tile_fuse runs {{.*}} as its law
+// TF-NOT: as its law

@@ -1,5 +1,5 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
-// RUN: %FileCheck %s < %t.log
+// RUN: %FileCheck %s --check-prefixes=CHECK,%if tile-fuse-path %{TF%} %else %{LAW%} < %t.log
 // RUN: not grep "copies accumulator" %t.log
 // RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_levels_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
@@ -104,7 +104,8 @@ extern fun packed_ab (m: Nat, a: tensor.Tensor 2 (m, 7) I64, b: tensor.Tensor 2 
 // CHECK-DAG: L2 par tiles=(1, 4) tail=peel inputs={{[0-9]+}} fused=1 yielded=0
 // CHECK-DAG: L2 par tiles=(1, 4) tail=peel inputs=3 fused=0 yielded=0
 // CHECK-DAG: L3 vec vdim=1
-// CHECK-DAG: L1 promote input 1 axis 1 panel 4
+// TF-DAG: L1 promote input 1 axis 1 panel 4
+// LAW-DAG: tensor.tile_fuse runs {{.*}} as its law
 // CHECK-DAG: L3 vec vdim=0 split=3
 // CHECK-DAG: L1 promote input 0 axis 0 panel 2
 // CHECK-DAG: L1 promote input 1 axis 1 panel 2

@@ -1772,14 +1772,15 @@ const Def* TileFuse::rewrite_imm_App(const App* app) {
 // A request without members on a plain `map_reduce` runs as its law's meaning, which the law interpreter realizes.
 namespace {
 
-/// The parts of a plain `map_reduce` a law is built from: no epilogue, a scalar seed, the canonical schedule and
-/// literal shapes, which the interpreter decides its panels from.
-std::optional<btensor::MapRedPost> plain_parts(const Def* op) {
+/// The parts of a plain `map_reduce` a law is built from: a scalar seed, the canonical schedule and literal shapes,
+/// which the interpreter decides its panels from, and no epilogue unless @p finished.
+std::optional<btensor::MapRedPost> plain_parts(const Def* op, bool finished) {
     auto root = Axm::isa<map_reduce_post>(op);
     if (!root) return {};
     auto mr = btensor::MapRedPost::of(root->callee()->as<App>());
     auto rk = mr.ranks();
-    if (!rk || rk->nps != 0 || !is_identity_post(mr.post) || mr.init_type != mr.To) return {};
+    if (!rk || mr.init_type != mr.To) return {};
+    if (!finished && (rk->nps != 0 || !is_identity_post(mr.post))) return {};
     if (!lit_projs(mr.So, rk->ro) || !lit_projs(mr.Sr, rk->nloops())) return {};
     for (u64 i = 0; i != rk->nis; ++i)
         if (auto r = Lit::isa(mr.Ris->proj(rk->nis, i)); !r || !lit_projs(mr.Sis->proj(rk->nis, i), *r)) return {};
@@ -1802,8 +1803,9 @@ const Def* map_reduce_head(const Def* law, const btensor::MapRedPost& mr, const 
 
 /// The law of the plain `map_reduce` @p op, whose inputs in @p group are laws of their own fused as its sources, so
 /// members nest; @p merge is what a `merge_with` vouches for. The members it fuses go into @p used.
-const Def* law_of(const Def* op, const DefSet& group, const Def* merge, DefSet& used) {
-    auto mr = plain_parts(op);
+/// Only the @p root may have an epilogue, which a member's split would apply to its partials.
+const Def* law_of(const Def* op, const DefSet& group, const Def* merge, DefSet& used, bool root = false) {
+    auto mr = plain_parts(op, root && !merge);
     if (!mr) return nullptr;
     auto& w     = op->world();
     auto inputs = Axm::as<map_reduce_post>(op)->arg()->proj(2, 0);
@@ -1829,16 +1831,26 @@ const Def* law_of(const Def* op, const DefSet& group, const Def* merge, DefSet& 
         ins[i] = w.implicit_app(w.annex(tensor::law::as_source), inner);
         fused  = true;
     }
-    if (!fused)
-        return w.app(map_reduce_head(w.annex(merge ? tensor::law::of_map_reduce_merging : tensor::law::of_map_reduce),
-                                     *mr, merge),
-                     inputs);
+    auto finished = Lit::as(mr->nps) != 0 || !is_identity_post(mr->post);
+    auto finish   = [&](const Def* law) {
+        if (!finished) return law;
+        auto posts = Axm::as<map_reduce_post>(op)->arg()->proj(2, 1);
+        law        = w.app(law, {mr->Tp, mr->nps, mr->Tps, mr->Rps, mr->Sps});
+        return w.app(law, {mr->post, mr->post_maps, posts});
+    };
+    if (!fused) {
+        auto ctor = merge    ? tensor::law::of_map_reduce_merging
+                  : finished ? tensor::law::of_map_reduce_post
+                             : tensor::law::of_map_reduce;
+        return finish(w.app(map_reduce_head(w.annex(ctor), *mr, merge), inputs));
+    }
     // A root that fuses producers is ordered; a merge of its own would not cover its producers' splits.
     if (merge) return nullptr;
-    auto law = map_reduce_head(w.annex(tensor::law::of_sources), *mr, nullptr);
-    law      = w.app(law, w.tuple(DefVec(nis, [&](size_t i) { return ins[i]->type()->proj(7, 0); })));
-    law      = w.app(law, w.tuple(ins));
-    return w.app(law, inputs);
+    auto law
+        = map_reduce_head(w.annex(finished ? tensor::law::of_sources_post : tensor::law::of_sources), *mr, nullptr);
+    law = w.app(law, w.tuple(DefVec(nis, [&](size_t i) { return ins[i]->type()->proj(7, 0); })));
+    law = w.app(law, w.tuple(ins));
+    return finish(w.app(law, inputs));
 }
 
 } // namespace
@@ -1850,7 +1862,7 @@ const Def* TileFuse::run_as_law(const Def* op, const DefVec& group, const Def* l
     // A law fuses every member, so a control that decides otherwise is left to the per-level recursion.
     if (!group.empty() && !Check::alpha<Check::T>(control, w.annex<tensor::default_control>())) return nullptr;
     auto used = DefSet();
-    auto law  = law_of(op, DefSet(group.begin(), group.end()), nullptr, used);
+    auto law  = law_of(op, DefSet(group.begin(), group.end()), nullptr, used, true);
     if (!law || used.size() != group.size()) return nullptr;
     // `law.req` casts its levels to the root's level type, which the interpreter matches through.
     if (auto cast = Axm::isa<core::bitcast>(levels)) levels = cast->arg();
@@ -1888,6 +1900,19 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
                     if (Lit::isa(level.sizes->proj(rk->nloops(), d)) != 0) return true;
                 return false;
             });
+        // A capped partial tile has a runtime extent, which the law's vector level cannot split.
+        if (auto rk = mr.ranks()) {
+            bool capped = false;
+            for (auto& level : level_list) {
+                unsafe |= capped && level.kind == 2 && level.bind == 0;
+                if (level.kind != 0 || level.tail != 0) continue;
+                for (u64 d = 0; d != rk->ro; ++d) {
+                    auto t = Lit::isa(level.sizes->proj(rk->nloops(), d));
+                    auto e = Lit::isa(mr.So->proj(rk->ro, d));
+                    capped |= t && *t != 0 && (!e || *e % *t != 0);
+                }
+            }
+        }
     }
     // A member used outside is handed back by the per-level recursion, which a law cannot yet.
     unsafe |= std::ranges::any_of(group, [&](const Def* member) { return outside.contains(member); });

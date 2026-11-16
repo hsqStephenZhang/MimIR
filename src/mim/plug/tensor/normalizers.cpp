@@ -627,6 +627,58 @@ const Def* normalize_tile_of_post(const Def*, const Def* callee, const Def* arg)
 
 namespace {
 
+/// @p annotated, a region body under its annotations, with the body replaced by @p body and the annotations retyped.
+const Def* rewrap(const Def* annotated, const Def* body) {
+    if (!Axm::isa<tensor::bind>(annotated) && !Axm::isa<tensor::persistent>(annotated)
+        && !Axm::isa<tensor::cluster>(annotated) && !Axm::isa<tensor::specialize>(annotated))
+        return body;
+    auto& w     = annotated->world();
+    auto app    = annotated->as<App>();
+    auto inner  = rewrap(app->arg(), body);
+    auto marker = app->callee()->as<App>();
+    auto axm    = marker->callee()->as<App>()->callee();
+    return w.app(w.app(w.app(axm, inner->type()), marker->arg()), inner);
+}
+
+} // namespace
+
+template<law>
+const Def* normalize_post_over(const Def*, const Def* callee, const Def* acc) {
+    auto& w                                   = acc->world();
+    auto c                                    = callee->as<App>();
+    auto implicits                            = c->callee()->as<App>()->arg();
+    auto [off, ext, post, post_maps, post_is] = c->arg()->projs<5>();
+    // Until the epilogue and the accumulator's operation are known, the accumulator may still become a region.
+    if (!Lit::isa(implicits->proj(7, 3)) || !post->isa_mut<Lam>() || !App::uncurry_callee(acc)->isa<Axm>())
+        return nullptr;
+    if (Lit::as(implicits->proj(7, 3)) == 0 && identity_post(post)
+        && acc->type() == type_tensor(implicits->proj(7, 2), ext, implicits->proj(7, 1)))
+        return acc;
+    auto exact = [&](const Def* shapes) {
+        auto [s, ts, tail] = shapes->projs<3>();
+        auto r             = Lit::isa(implicits->proj(7, 2));
+        if (!r || Lit::isa(tail) == 1) return r.has_value();
+        for (u64 d = 0; d != *r; ++d) {
+            auto e = Lit::isa(s->proj(*r, d)), t = Lit::isa(ts->proj(*r, d));
+            if (!e || !t || *t == 0 || *e % *t != 0) return false;
+        }
+        return true;
+    };
+    // A capped tile has a runtime extent, which the epilogue's own loops cannot take.
+    if (auto region = Axm::isa<tensor::tiled>(acc); region && exact(region->uncurry_args<5>()[1])) {
+        auto [_, shapes, input_type, inputs, annotated] = region->uncurry_args<5>();
+        auto body = w.app(w.app(w.annex(tensor::law::post_body), implicits), {off, post, post_maps});
+        body      = w.app(w.app(body, input_type), region_body(annotated).first);
+        auto both = w.tuple({inputs, post_is});
+        auto out  = w.app(w.app(w.annex<tensor::tiled>(), {implicits->proj(7, 1), implicits->proj(7, 2)}), shapes);
+        out       = w.app(w.app(out, both->type()), both);
+        return w.app(out, rewrap(annotated, body));
+    }
+    return w.app(w.app(w.app(w.annex<post_tile>(), implicits), c->arg()), acc);
+}
+
+namespace {
+
 bool nests_region(const Def* body) {
     DefVec pending{body};
     DefSet seen{body};

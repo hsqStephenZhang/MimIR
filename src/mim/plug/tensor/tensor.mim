@@ -3321,6 +3321,22 @@ end
 /// root inside its regions from the inputs the regions receive.
 ///
 pub mod law
+    /// `post_tile` of the tile `(off, ext)`; over a `tiled` region it finishes each of the region's tiles instead, since
+    /// a pointwise epilogue commutes with tiling, so it runs where a tile's reduction ends.
+    axm post_over: {To Tp: *, ro nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+                 → [off ext: «ro; Nat», post: Fn [To, «j: nps; Tps#j»] → Tp,
+                    post_maps: «j: nps; «ro; affine.Index» → «Rps#j; affine.Index»»,
+                    post_is: «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)»]
+                 → Tensor ro ext To → Tensor ro ext Tp, normalize_post_over;
+    /// The body of a region whose tiles `post_over` finishes, reading the epilogue inputs beside the region's own.
+    anx lam post_body {To Tp: *, ro nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+        (off: «ro; Nat», post: Fn [To, «j: nps; Tps#j»] → Tp,
+         post_maps: «j: nps; «ro; affine.Index» → «Rps#j; affine.Index»»)
+        {I: *} (body: [o e: «ro; Nat»] → I → Tensor ro e To)
+        : [o e: «ro; Nat»] → [I, «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)»] → Tensor ro e Tp =
+        λ (o e: «ro; Nat») (xs: [I, «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)»]): Tensor ro e Tp =
+            let (ins, pis) = xs;
+            post_over @(To, Tp, ro, nps, Tps, Rps, Sps) (‹d: ro; core.nat.add (off#d, o#d)›, e, post, post_maps, pis) (body (o, e) ins);
     /// A structural record, like `Tileable`, so its dependent fields check against the tuple the constructor builds.
     /// The loop count `n`, the accumulator `Acc` and the contraction `Kind` are parameters: they index level types.
     /// So is the physical inputs' type `P`, which a law fused into another hands over to the consumer's region.
@@ -3328,7 +3344,7 @@ pub mod law
         [ro inputs: Nat, extents: «n; Nat», root: Tensor r s T,
          par: «r; Nat» → Tensor r s T, red: [loop ks: Nat] → Tensor r s T, red_par: [loop parts: Nat] → Tensor r s T,
          schedule: TileLevels (n, Acc, Kind) → Tensor r s T, traffic: TileLevels (n, Acc, Kind) → Nat, combining: Nat,
-         shared: TileLevels (n, Acc, Kind) → Nat, phys: P, mean: P → Tensor r s T, merge: [T, T] → T, ordered: Bool, checked: «3; Nat»];
+         shared: TileLevels (n, Acc, Kind) → Nat, phys: P, mean: P → Tensor r s T, merge: [Acc, Acc] → Acc, ordered: Bool, checked: «3; Nat»];
     lam ro_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#0₁₆;
     lam inputs_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Nat = l#1₁₆;
     lam extents_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «n; Nat» = l#2₁₆;
@@ -3343,7 +3359,7 @@ pub mod law
     lam shared_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): TileLevels (n, Acc, Kind) → Nat = l#10₁₆;
     lam phys_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P = l#11₁₆;
     lam mean_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): P → Tensor r s T = l#12₁₆;
-    lam merge_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [T, T] → T = l#13₁₆;
+    lam merge_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): [Acc, Acc] → Acc = l#13₁₆;
     lam ordered_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): Bool = l#14₁₆;
     /// The verdict of the law's constructor on its own arguments.
     lam checked_of {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (l: Law (r, s, T, n, Acc, Kind, P)): «3; Nat» = l#15₁₆;
@@ -3392,7 +3408,7 @@ pub mod law
             (is#i, λ (p: X): X = p,
              λ (p: X, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) = slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) p,
              λ (p: X, _: Views @nis (Ris, Tis)): X = p, λ (u _: Tis#i): Tis#i = u, ff, 0, ff)›;
-    lam build {nis: Nat} {To: *, Ro Rn: Nat}
+    lam build_post {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
         (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
@@ -3402,20 +3418,29 @@ pub mod law
         (Ps: «nis; *») (srcs: «i: nis; Src @nis (Ris, Tis) (Ps#i) (Ris#i, Sis#i, Tis#i)», checked: «3; Nat»)
         // A fused root's inputs hide its producer, so the consumer's own inputs fix the contraction kind.
         (kinds: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»)
-        : Law (Ro, So, To, Rn, To, root_contraction (map_reduce (So, Sr) (f, init) map_out maps kinds), «i: nis; Ps#i») =
+        {Tp: *, nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+        (post: Fn [To, «j: nps; Tps#j»] → Tp, post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»»,
+         post_is: «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)»)
+        : Law (Ro, So, Tp, Rn, To, root_contraction (map_reduce (So, Sr) (f, init) map_out maps kinds), «i: nis; Ps#i») =
         let make = λ (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro So To =
             map_reduce (So, Sr) (f, init) map_out maps xs;
+        let PIs    = «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)»;
+        let posted = λ (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», pis: PIs): Tensor Ro So Tp =
+            map_reduce_post @(nis, nps) @(To, Tp, Ro, Rn, SchedT) (So, Sr, mk_sched (Rn, 0))
+                @(Tis, Ris, Sis, Tps, Rps, Sps) @To (f, init, post) map_out (maps, post_maps) (xs, pis);
+        let finish = λ (acc: Tensor Ro So To): Tensor Ro So Tp =
+            post_over @(To, Tp, Ro, nps, Tps, Rps, Sps) (‹Ro; 0›, So, post, post_maps, post_is) acc;
         let Phys   = «i: nis; Ps#i»;
         let phys   = ‹i: nis; srcs#i#0₈›;
         let unfold = λ (xs: Phys): «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)» = ‹i: nis; (srcs#i#1₈) (xs#i)›;
         let is     = unfold phys;
         let root   = make is;
         let zero = ‹Ro; 0›;
-        let par  = λ (ts: «Ro; Nat»): Tensor Ro So To =
-            tiled (So, ts, 0) is
-                (λ (off ext: «Ro; Nat») (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro ext To =
-                    tile_of (make xs, off, ext));
-        let red  = λ (loop ks: Nat): Tensor Ro So To =
+        let par  = λ (ts: «Ro; Nat»): Tensor Ro So Tp =
+            tiled (So, ts, 0) (is, post_is)
+                (λ (off ext: «Ro; Nat») (xs: [«i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», PIs]): Tensor Ro ext Tp =
+                    tile_of (posted xs, off, ext));
+        let red  = λ (loop ks: Nat): Tensor Ro So Tp =
             let K = Sr#(core.idx 0 Rn loop);
             tf_reduce (K, ks, 1) (tile_of_init @(To, To, Ro) @So (root, zero, So)) is
                 (λ (acc: Tensor Ro So To, k0: Nat) (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»): Tensor Ro So To =
@@ -3423,11 +3448,11 @@ pub mod law
                 (λ (acc: Tensor Ro So To): Tensor Ro So To =
                     let (k0, k) = tf_tail (K, ks);
                     tile_of_partial @(To, To, Ro) @So (root, zero, So, loop, k0, k, acc))
-                (λ (acc: Tensor Ro So To): Tensor Ro So To = tile_of_post @(To, To, Ro) @So (root, zero, So, acc));
+                finish;
         fun merged (_: To, uv: «2; To»)@tt: To = return (merge (uv#0₂, uv#1₂));
         let zip  = λ (x y: Tensor Ro So To): Tensor Ro So To =
             map_reduce (So, So) (merged, init) (affine.id @Ro) (affine.id @Ro, affine.id @Ro) (x, y);
-        let red_par = λ (loop parts: Nat): Tensor Ro So To =
+        let red_par = λ (loop parts: Nat): Tensor Ro So Tp =
             let K     = Sr#(core.idx 0 Rn loop);
             let chunk = (K + parts - 1) / parts;
             let seed  = tile_of_init @(To, To, Ro) @So (root, zero, So);
@@ -3438,7 +3463,7 @@ pub mod law
                 (λ (acc: Tensor Ro So To, j: Idx parts): Tensor Ro So To =
                     (zip (acc, part (core.idx2nat j)), part 0)#(core.idx2nat j == 0))
                 (seed, ‹j: parts; j›);
-            (tile_of_post @(To, To, Ro) @So (root, zero, So, all), red (loop, chunk))#ordered;
+            (finish all, red (loop, chunk))#ordered;
 
         // The interpreter of a schedule maps each level to a step over a block of the loops: its origin `lo`, the
         // output tile's extent and the loops' extents, the inputs and the tile's accumulator.
@@ -3840,8 +3865,8 @@ pub mod law
                 | 6 (ctas, rest) =>
                     let g = pan#1₂;
                     tile_step (lo, ext, size, xs, acc, fresh, (pan#0₂, (g#0₇, g#1₇, g#2₇, g#3₇, g#4₇, g#5₇, ctas)), rest);
-        let schedule = λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Tensor Ro So To =
-            tile_step (‹Rn; 0›, So, Sr, phys, splat (So, init), tt, none, levels);
+        let schedule = λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Tensor Ro So Tp =
+            finish (tile_step (‹Rn; 0›, So, Sr, phys, splat (So, init), tt, none, levels));
         // The tiles of the first level that splits the output into blocks, the whole loops if none does.
         lam blocks_of {M: *} (l: TileLevels (Rn, To, M))@(core.pe.is_closed l): «Rn; Nat» =
             match l with
@@ -3914,12 +3939,25 @@ pub mod law
             let reads = ‹i: nis; let box = (affine.image @(Rn, Ris#i) (maps#i) (‹Rn; 0›, size, Sis#i))#1₄;
                 vec.fold.r @(Nat, Nat) @(Ris#i) (λ (e x: Nat): Nat = core.nat.mul (e, x)) (box, core.trait.size (Tis#i))›;
             let block = vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (reads, 0);
-            let out   = vec.fold.r @(Nat, Nat) @Ro (λ (e x: Nat): Nat = core.nat.mul (e, x)) (So, core.trait.size To);
+            let out   = vec.fold.r @(Nat, Nat) @Ro (λ (e x: Nat): Nat = core.nat.mul (e, x)) (So, core.trait.size Tp);
             core.nat.add (core.nat.mul (count, block), out);
         // A law with a merge of its own vouches for it; an ordered one permits what its combiner does.
-        (Ro, nis, Sr, root, par, red, red_par, schedule, traffic, (3, check.combiner root)#ordered,
+        (Ro, nis, Sr, posted (is, post_is), par, red, red_par, schedule, traffic, (3, check.combiner root)#ordered,
          λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat = staged_of levels,
-         phys, λ (ys: Phys): Tensor Ro So To = make (unfold ys), merge, ordered, checked);
+         phys, λ (ys: Phys): Tensor Ro So Tp = posted (unfold ys, post_is), merge, ordered, checked);
+    /// `build_post` with the neutral epilogue.
+    lam build {nis: Nat} {To: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (merge: [To, To] → To, ordered: Bool)
+        (Ps: «nis; *») (srcs: «i: nis; Src @nis (Ris, Tis) (Ps#i) (Ris#i, Sis#i, Tis#i)», checked: «3; Nat»)
+        (kinds: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»)
+        : Law (Ro, So, To, Rn, To, root_contraction (map_reduce (So, Sr) (f, init) map_out maps kinds), «i: nis; Ps#i») =
+        build_post (So, Sr) (f, init) map_out maps (merge, ordered) Ps (srcs, checked) kinds
+            @(To, 0, (), (), ()) (id @To, (), ());
 
     anx lam of_map_reduce {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -3930,6 +3968,20 @@ pub mod law
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
         build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt)
             ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is, (0, 0, 0)) is;
+    /// The law of a `map_reduce_post` with the neutral schedule, whose epilogue finishes each tile where its reduction ends.
+    anx lam of_map_reduce_post {nis: Nat} {To: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»)
+        {Tp: *, nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+        (post: Fn [To, «j: nps; Tps#j»] → Tp, post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»»,
+         post_is: «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)») =
+        build_post (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt)
+            ‹i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)› (plain_srcs @nis @(Ris, Sis, Tis) is, (0, 0, 0)) is
+            @(Tp, nps, Tps, Rps, Sps) (post, post_maps, post_is);
     /// The producer `map_reduce (Sp, Srp) (g, ginit) gout gmaps ps` that a fused member computes, reading a shared input
     /// from the box a work-group stages whole, through its maps shifted to the box's origin.
     /// It does so only where the producer's reads for the member's box stay in the staged box.
@@ -4033,13 +4085,33 @@ pub mod law
         (x, λ (p: Tensor r s T): Tensor r s T = p, λ (u _: T): T = u, ff, 0, ff, (0, 0, 0));
     /// The root of the law `pl` as an input of another: the consumer threads `pl`'s physical inputs, and a block reads
     /// the box it needs of `pl`'s meaning, whose elements compose with the producers `pl` fuses.
-    anx lam as_source {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind P: *} (pl: Law (r, s, T, n, Acc, Kind, P)): Input P (r, s, T) =
+    anx lam as_source {r: Nat, s: «r; Nat», T: *, n: Nat, Kind P: *} (pl: Law (r, s, T, n, T, Kind, P)): Input P (r, s, T) =
         // Only a vouched merge combines the partials of a split; a recognized combiner leaves `merge_of pl` a placeholder.
         (phys_of pl, mean_of pl, merge_of pl, core.bit2.and 0 (combining_of pl == 3, n == core.nat.add (r, 1)),
          (extents_of pl)#(core.idx 0 n (core.nat.sub (n, 1))), tt, checked_of pl);
     /// The law of a root over `nis` inputs, each read as it is (`source`) or another law's root (`as_source`), so a root
     /// may fuse several producers, each of which may fuse its own.
     /// `kinds` are the root's inputs as tensors, which fix its contraction kind.
+    anx lam of_sources_post {nis: Nat} {To: *, Ro Rn: Nat}
+        (So: «Ro; Nat», Sr: «Rn; Nat»)
+        {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
+        (f: Fn [To, «i: nis; Tis#i»] → To, init: To)
+        (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+        (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
+        (Ps: «nis; *») (ins: «i: nis; Input (Ps#i) (Ris#i, Sis#i, Tis#i)»)
+        (kinds: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)»)
+        {Tp: *, nps: Nat, Tps: «nps; *», Rps: «nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+        (post: Fn [To, «j: nps; Tps#j»] → Tp, post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»»,
+         post_is: «j: nps; Tensor (Rps#j) (Sps#j) (Tps#j)») =
+        let srcs = ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i); let (phys, whole, merge, split, K, fused, _) = ins#i;
+            let tile = λ (p: Ps#i, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) =
+                (slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) (whole p), tile_of @(Tis#i, Ris#i) @(Sis#i) (whole p, off, ext))#fused;
+            (phys, whole, tile, λ (p: Ps#i, _: Views @nis (Ris, Tis)): X = whole p, merge, split, K, fused)›;
+        let checks  = ‹i: nis; let (_, _, _, _, _, _, c) = ins#i; c›;
+        let checked = vec.fold.l @(«3; Nat», «3; Nat») @nis (λ (v c: «3; Nat»): «3; Nat» = (v, c)#(v#0₃ == 0)) ((0, 0, 0), checks);
+        build_post (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, checked) kinds
+            @(Tp, nps, Tps, Rps, Sps) (post, post_maps, post_is);
+    /// `of_sources_post` with the neutral epilogue.
     anx lam of_sources {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
@@ -4048,18 +4120,12 @@ pub mod law
         (maps: «i: nis; («Rn; affine.Index» → «Ris#i; affine.Index»)»)
         (Ps: «nis; *») (ins: «i: nis; Input (Ps#i) (Ris#i, Sis#i, Tis#i)»)
         (kinds: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
-        let srcs = ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i); let (phys, whole, merge, split, K, fused, _) = ins#i;
-            let tile = λ (p: Ps#i, off ext: «Ris#i; Nat»): Tensor (Ris#i) ext (Tis#i) =
-                (slice @(Tis#i, Ris#i) (Sis#i) (off, ‹Ris#i; 1›, ext) (whole p), tile_of @(Tis#i, Ris#i) @(Sis#i) (whole p, off, ext))#fused;
-            (phys, whole, tile, λ (p: Ps#i, _: Views @nis (Ris, Tis)): X = whole p, merge, split, K, fused)›;
-        let checks  = ‹i: nis; let (_, _, _, _, _, _, c) = ins#i; c›;
-        let checked = vec.fold.l @(«3; Nat», «3; Nat») @nis (λ (v c: «3; Nat»): «3; Nat» = (v, c)#(v#0₃ == 0)) ((0, 0, 0), checks);
-        build (So, Sr) (f, init) map_out maps (λ (uv: «2; To»): To = uv#0₂, tt) Ps (srcs, checked) kinds;
+        of_sources_post (So, Sr) (f, init) map_out maps Ps ins kinds @(To, 0, (), (), ()) (id @To, (), ());
     /// The law of a consumer whose input `slot` is the root of the law `pl`, which may itself fuse producers.
     /// The consumer threads `pl`'s physical inputs, and a block reads the box it needs of `pl`'s meaning, whose elements
     /// compose with the producers `pl` fuses.
-    anx lam fuse_law (slot: Nat) {Rp: Nat, Sp: «Rp; Nat», Tp: *, Rnp: Nat, Accp Kindp PT: *}
-        (pl: Law (Rp, Sp, Tp, Rnp, Accp, Kindp, PT))
+    anx lam fuse_law (slot: Nat) {Rp: Nat, Sp: «Rp; Nat», Tp: *, Rnp: Nat, Kindp PT: *}
+        (pl: Law (Rp, Sp, Tp, Rnp, Tp, Kindp, PT))
         {nis: Nat} {To: *, Ro Rn: Nat}
         (So: «Ro; Nat», Sr: «Rn; Nat»)
         {Tis: «nis; *», Ris: «i: nis; Nat», Sis: «i: nis; «Ris#i; Nat»»}
