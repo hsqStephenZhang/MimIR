@@ -283,6 +283,9 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 
 环的状态在 Mim 里是嵌套元组（每槽一组面板），`affine.lower_for` 之后留下聚合类型的 phi，NVPTX 推断不出共享内存地址空间，叶子的读退化成通用 `ld`（RTX 3090 上慢 17–31%）；所以流水线在 `lower_for` 之后补了两次 `compile.scalarize`，之后与 C++ 版本的 PTX 读写类别相同、计时持平。
 
+`bench/typed_tiles/gemm_buffers.mim` 是不经过 `lower_to_mem` 的可行性检查：16³ GEMM 整个写在缓冲区层，循环是函数（`steps` 加 `gpu.bind.*`），work-group 的协议是 `gpu.superstep`，填充与叶子是普通的缓冲区读写；它走流水线的后半段（`check_sync`、`erase_phases`、`gpu.outline`、nvptx），outline 成 4 组 × 4 项的一个 kernel，在 GPU 上执行正确（`driver_gemm.cpp`）。
+它的填充和叶子是标量的（没有向量读写，没有寄存器块），那部分仍是 `lower_to_mem` 与 `btensor.lower_map_reduce` 的工作；要让解释器直接产出缓冲区层，叶子与填充应当是缓冲区上的 `btensor.map_reduce_post`，还没有做。
+
 ### 8.3 写这些时碰到的限制
 
 | 现象 | 做法 |

@@ -1,0 +1,60 @@
+// 16³ GEMM written at the buffer level with loops as functions and the work-group protocol from `gpu.superstep`:
+// 2 × 2 work-groups of 8 × 8, each keeping its boxes of A and B resident in shared memory, and 2 × 2 work-items of 4 × 4.
+plugin core;
+plugin mem;
+plugin affine;
+plugin cps;
+plugin buffer;
+plugin math;
+plugin gpu;
+
+let F32 = math.F32;
+let add = core.nat.add;
+let mul = core.nat.mul;
+let div = core.nat.div;
+let rem = core.nat.rem;
+let C   = buffer.Buf (2, (16, 16), F32);
+let PA  = buffer.Buf (2, (8, 16), F32);
+let PB  = buffer.Buf (2, (16, 8), F32);
+
+// `n` steps of `body` over a memory and a value; `bound` binds the loop to an execution unit.
+lam steps {X: *} (bound: Cn [I64, [mem.M 0, X], Cn [mem.M 0, X]] → Cn [I64, [mem.M 0, X], Cn [mem.M 0, X]])
+    (n: I64) (m: mem.M 0, x: X) (body: [Nat, mem.M 0, X] → [mem.M 0, X]): [mem.M 0, X] =
+    fun run (s: [mem.M 0, X]): [mem.M 0, X] =
+        affine.For @(0, 2, (mem.M 0, X)) (bound step) return (0I64, n, 1I64, s)
+        where
+            con step (i: I64, s: [mem.M 0, X], yield: Cn [mem.M 0, X]) = yield (body (core.bitcast Nat i, s#0₂, s#1₂));
+        end;
+    cps.cps2ds run (m, x);
+lam Step (X: *): * = Cn [I64, [mem.M 0, X], Cn [mem.M 0, X]];
+lam plain {X: *} (k: Step X): Step X = k;
+lam groups {X: *} = steps @X (gpu.bind.group @(Step X));
+lam items {X: *} = steps @X (gpu.bind.item @(Step X));
+lam chained {X: *} = steps @X (gpu.bind.chained @(Step X));
+lam serial {X: *} = steps @X (plain @X);
+
+extern fun gemm16 (m: mem.M 0, a b: C): [mem.M 0, C] =
+    let (m, c) = buffer.alloc (2, (16, 16), F32) m;
+    return (groups 4I64 (m, c) (λ (g: Nat, m: mem.M 0, c: C): [mem.M 0, C] =
+        let (gi, gj) = (mul (div (g, 2), 8), mul (rem (g, 2), 8));
+        items 4I64 (m, c) (λ (t: Nat, m: mem.M 0, c: C): [mem.M 0, C] =
+            let (ti, tj) = (mul (div (t, 2), 4), mul (rem (t, 2), 4));
+            gpu.superstep @(0, 2, (2, 2), ((8, 16), (16, 8)), (F32, F32), C) (m,
+                (λ (m: mem.M 0, pa: PA): [mem.M 0, PA] =
+                    chained 128I64 (m, pa) (λ (e: Nat, m: mem.M 0, pa: PA): [mem.M 0, PA] =
+                        let (i, k) = (div (e, 16), rem (e, 16));
+                        let (m, v) = buffer.read (2, (16, 16), F32) (m, a, (core.idx 0 16 (add (gi, i)), core.idx 0 16 k));
+                        buffer.write (2, (8, 16), F32) (m, pa, (core.idx 0 8 i, core.idx 0 16 k), v)),
+                 λ (m: mem.M 0, pb: PB): [mem.M 0, PB] =
+                    chained 128I64 (m, pb) (λ (e: Nat, m: mem.M 0, pb: PB): [mem.M 0, PB] =
+                        let (k, j) = (div (e, 8), rem (e, 8));
+                        let (m, v) = buffer.read (2, (16, 16), F32) (m, b, (core.idx 0 16 k, core.idx 0 16 (add (gj, j))));
+                        buffer.write (2, (16, 8), F32) (m, pb, (core.idx 0 16 k, core.idx 0 8 j), v))),
+                λ (m: mem.M 0, (pa: PA, pb: PB)): [mem.M 0, C] =
+                    serial 16I64 (m, c) (λ (o: Nat, m: mem.M 0, c: C): [mem.M 0, C] =
+                        let (i, j) = (add (ti, div (o, 4)), add (tj, rem (o, 4)));
+                        let (m, s) = serial 16I64 (m, 0.0:F32) (λ (k: Nat, m: mem.M 0, s: F32): [mem.M 0, F32] =
+                            let (m, x) = buffer.read (2, (8, 16), F32) (m, pa, (core.idx 0 8 i, core.idx 0 16 k));
+                            let (m, y) = buffer.read (2, (16, 8), F32) (m, pb, (core.idx 0 16 k, core.idx 0 8 j));
+                            (m, math.arith.add math.mode.fast (s, math.arith.mul math.mode.fast (x, y))));
+                        buffer.write (2, (16, 16), F32) (m, c, (core.idx 0 16 (add (gi, i)), core.idx 0 16 (add (gj, j))), s))))));
