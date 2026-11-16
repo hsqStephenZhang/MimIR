@@ -642,6 +642,14 @@ const Def* rewrap(const Def* annotated, const Def* body) {
 
 } // namespace
 
+const Def* post_over_whole(const App* callee, const Def* acc) {
+    auto& w    = acc->world();
+    auto value = w.app(callee, acc);
+    if (!Axm::isa(tensor::law::post_over, value)) return value;
+    auto head = w.app(w.annex<post_tile>(), callee->callee()->as<App>()->arg());
+    return w.app(w.app(head, callee->arg()), acc);
+}
+
 template<law>
 const Def* normalize_post_over(const Def*, const Def* callee, const Def* acc) {
     auto& w                                   = acc->world();

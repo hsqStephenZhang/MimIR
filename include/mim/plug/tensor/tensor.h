@@ -229,6 +229,9 @@ std::optional<u64> nat_upper(const Def* x);
 const Def* returned(Lam* lam);
 /// The operation a combiner `λ (acc, x). op (acc, x)` applies, if its other operand never reads the accumulator.
 const Def* combiner_app(const Def* comb);
+/// `law.post_over` applied to @p acc, or its epilogue over @p acc whole where it stays: its accumulator never became a
+/// region.
+const Def* post_over_whole(const App* callee, const Def* acc);
 /// A reduction whose combiner is a reassociable operation, with that operation's identity.
 struct ReductionLaw {
     const Def* identity;

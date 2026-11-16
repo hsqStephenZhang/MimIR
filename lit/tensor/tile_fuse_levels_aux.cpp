@@ -11,6 +11,7 @@ extern "C" int64_t* outer_m(int64_t, int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* outer7(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap_m(int64_t, int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap7(int64_t*, int64_t*, int64_t*);
+extern "C" int64_t* cap_inner(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* cap_n7(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* promoted(int64_t*, int64_t*, int64_t*);
 extern "C" int64_t* whole_m(int64_t, int64_t*, int64_t*, int64_t*);
@@ -62,6 +63,7 @@ int main() {
     check("nested7", 5, 7, false, 0, nested7, nullptr);
     check("outer7", 5, 7, false, 0, outer7, nullptr);
     check("cap7", 5, 7, false, 0, cap7, nullptr);
+    check("cap_inner", 48, 7, false, 0, cap_inner, nullptr);
     check("cap_n7", 5, 7, false, 0, cap_n7, nullptr);
     check("promoted", 5, 7, false, 0, promoted, nullptr);
     for (int64_t n = 0; n != 10; ++n) {

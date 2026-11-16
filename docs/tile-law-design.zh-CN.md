@@ -236,6 +236,10 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
   调度的结果交给公理 `law.post_over`，它的规范化是一条交换律：逐点的 epilogue 与分块交换，所以它推进 `tiled` 区域的体（epilogue 输入作为区域输入显式穿过），停在归约折叠之外，即每个 tile 的归约结束处；恒等 epilogue 直接消去；封顶的尾块长度是运行时值，这时不推进，在整个结果上做一次（`lit/tensor/law_post.mim`：GEMM 加偏置、累加器为二元组的行和，除了输出只有每个 tile 的累加器）。
   只有根可以带 epilogue：成员的切分会把 epilogue 用在部分和上，`as_source`/`fuse_law` 的类型因此要求 `Acc = T`。
   统计 lit 里各请求退回递归的原因时，带 epilogue 是第一位（36 次），其后是符号形状（27）、yields（13）、work-group 里的归约成员（12）。
+  已识别组合子的真合并（2026-11-16）：`check.merge f` 在组合子 `f` 被识别时规范化成它的二元运算本身，所以普通求和作为驻留成员时也能切到 work-item 上，像担保的合并一样（`lit/gpu/law_resident_sum.mim`）。
+  `Law` 多了字段 `splits`：作为成员能否被切分，即合并担保过、或组合子被识别且根直接读输入（融合了源的根，其元素由 `tile_of` 组合，`tile_of_partial` 拆不开），且 epilogue 是恒等的；`as_source`/`fuse_law` 只看它。
+  `check.merge` 起初以根张量为参数，选择条件未定时那一支被区域的输入检查拦下；改成以组合子为参数，并显式给出柯里计数 2，否则 `[T, T] → T` 也计入柯里化，只在应用到两个部分和时才规范化。
+  还留在图里的 `post_over`（累加器从未成为区域）由 `TileFuse` 与 `lower_tensor` 改写成整块的 `post_tile`；`realize` 的封顶判断沿层级链带着当前块长，内外两层都整除根而内层不整除外层块时也算封顶（`tile_fuse_levels_exec` 的 `cap_inner`）。
   放开之后暴露出解释器原有的一处限制：封顶的并行层里面再有 vec 层时，生成的 `map_reduce` 有运行时长度，向量化的判定定不下来；这种请求先交给递归。
   先前以为这一步卡在 core 的统一上，是误判：那次新增了 `anx` 却只把 `tensor.mim` 复制进构建目录而没重建插件，生成的公理编号错位，C++ 引用的 `law.run` 成了 `law.req`。
 - `lit/tensor/tile_law_exec.mim` 在 CPU（ASan）上执行：`denote`、`req`（TileFuse 实现）、`par`、`red`、`red_par`（加法合并）、不带合并的 `red_par` 都等于参考结果，即三条切分引理在这个实例上成立；换成错误的 `merge`（取第一个参数）时 `red_par` 被测出错误；

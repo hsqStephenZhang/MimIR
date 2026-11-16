@@ -1766,6 +1766,8 @@ void TileFuse::start() {
 
 const Def* TileFuse::rewrite_imm_App(const App* app) {
     if (auto replacement = fe::lookup(replacements_, app)) return rewrite(replacement);
+    if (Axm::isa(tensor::law::post_over, app))
+        return post_over_whole(rewrite(app->callee())->as<App>(), rewrite(app->arg()));
     return RWPhase::rewrite_imm_App(app);
 }
 
@@ -1902,14 +1904,18 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
             });
         // A capped partial tile has a runtime extent, which the law's vector level cannot split.
         if (auto rk = mr.ranks()) {
+            auto block  = std::vector<std::optional<u64>>(rk->ro);
             bool capped = false;
+            for (u64 d = 0; d != rk->ro; ++d)
+                block[d] = Lit::isa(mr.So->proj(rk->ro, d));
             for (auto& level : level_list) {
                 unsafe |= capped && level.kind == 2 && level.bind == 0;
-                if (level.kind != 0 || level.tail != 0) continue;
+                if (level.kind != 0) continue;
                 for (u64 d = 0; d != rk->ro; ++d) {
                     auto t = Lit::isa(level.sizes->proj(rk->nloops(), d));
-                    auto e = Lit::isa(mr.So->proj(rk->ro, d));
-                    capped |= t && *t != 0 && (!e || *e % *t != 0);
+                    if (!t || *t == 0) continue;
+                    capped |= level.tail == 0 && (!block[d] || *block[d] % *t != 0);
+                    if (block[d] && *t < *block[d]) block[d] = t;
                 }
             }
         }
