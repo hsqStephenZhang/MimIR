@@ -869,7 +869,8 @@ std::optional<ReductionLaw> reduction_law(const btensor::MapRedPost& mr) {
     auto& w   = mr.comb->world();
     auto idx  = Idx::isa(mr.To);
     auto size = idx ? Lit::isa(idx) : std::nullopt;
-    if (auto wrap = Axm::isa<core::wrap>(op)) {
+    // Reassociating a sum that must not wrap may overflow a partial sum that the original order does not.
+    if (auto wrap = Axm::isa<core::wrap>(op); wrap && Lit::isa(wrap->uncurry_args<3>()[0]) == 0) {
         if (wrap.id() == core::wrap::add) return ReductionLaw{w.lit(mr.To, 0)};
         if (wrap.id() == core::wrap::mul && size) return ReductionLaw{w.lit_idx_mod(*size, 1)};
     }

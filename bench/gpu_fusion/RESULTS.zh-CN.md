@@ -79,3 +79,18 @@ ncu（`softmax_resident`）：DRAM 100 MB、89% 峰值带宽，barrier stall 8%�
 差距主要来自生产者从全局内存再读一遍 `x`（`TileFuse` 的折叠读暂存的行）。
 `softmax_resident_shared.mim` 用 `law.fuse_shared` 声明生产者的输入就是消费者的 `x`（含义按构造读它），生产者的分段归约改读 work-group 为消费者暂存的行：37.6 → 27.0 µs，比 `TileFuse` 的 29.4 µs 快 8%（2026-11-15，nsys 21 次平均）。
 2026-11-15 更正：最初的 37.5 µs 出自有数据竞争的 kernel——合并部分结果的填充与写部分结果的填充同在一个 work-group 批次里，批次只在最后放一道屏障，多次运行大多算错。现在读另一次填充的合作填充离开批次，前后各有屏障；12 次运行全部正确，37.4 µs。
+
+## RTX PRO 6000（sm_120，2026-11-16）
+
+nsys kernel 平均（21 次）；PyTorch 为 CUDA event 中位数。输入 48 MB，小于 128 MB 的 L2，所以两边都是 L2 热的数字。
+
+| 程序 | kernel | PyTorch |
+|---|---:|---:|
+| `softmax_resident`（`TileFuse` 成员；`tile-law=0` 时 kernel 相同） | **20.6 µs** | 22.7 µs（`torch.softmax`） |
+| `softmax_fused_online` | 24.0 µs | |
+| `softmax_resident_law`（`law.fuse_merging`） | 55.9 µs | |
+| `softmax_resident_shared`（`law.fuse_shared`） | 38.9 µs | |
+| `rowsum` | **9.9 µs** | 17.3 µs（`x.sum(-1)`） |
+
+- 在 H200 上 `softmax_resident_shared`（27.0 µs）比 `TileFuse`（29.4 µs）快；这里反过来慢了 89%，两个定律版本都比 `TileFuse` 慢，原因还没查。
+- `gemm_epilogue.mim` 现在编译不过（`tile_req` 的参数类型对不上，两条路径都一样），是这个基准文件落后于 `tile_req` 的签名，与定律无关。

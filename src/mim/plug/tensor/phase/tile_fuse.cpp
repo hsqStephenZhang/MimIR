@@ -1766,8 +1766,6 @@ void TileFuse::start() {
 
 const Def* TileFuse::rewrite_imm_App(const App* app) {
     if (auto replacement = fe::lookup(replacements_, app)) return rewrite(replacement);
-    if (Axm::isa(tensor::law::post_over, app))
-        return post_over_whole(rewrite(app->callee())->as<App>(), rewrite(app->arg()));
     return RWPhase::rewrite_imm_App(app);
 }
 
@@ -1914,8 +1912,10 @@ const Def* TileFuse::realize(const App* request, const DefSet& outside) {
                 for (u64 d = 0; d != rk->ro; ++d) {
                     auto t = Lit::isa(level.sizes->proj(rk->nloops(), d));
                     if (!t || *t == 0) continue;
-                    capped |= level.tail == 0 && (!block[d] || *block[d] % *t != 0);
-                    if (block[d] && *t < *block[d]) block[d] = t;
+                    auto exact = block[d] && *block[d] % *t == 0;
+                    capped |= level.tail == 0 && !exact;
+                    // A peeled remainder is shorter than the tile, so the block below is not known to be the tile.
+                    block[d] = !exact && level.tail == 1 ? std::nullopt : block[d] && *t < *block[d] ? t : block[d];
                 }
             }
         }

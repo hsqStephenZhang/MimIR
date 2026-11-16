@@ -685,6 +685,8 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     if (Axm::isa<tensor::mma>(app) || Axm::isa<tensor::pipeline>(app) || Axm::isa<tensor::fill_tma>(app))
         return rewrite(app->arg());
     if (Axm::isa<tensor::prepack>(app)) return lower_prepack(app);
+    // By bufferization every region exists, so an epilogue still waiting for one finishes its accumulator whole.
+    if (Axm::isa(tensor::law::post_over, app)) return rewrite(post_over_whole(app->callee()->as<App>(), app->arg()));
     if (Axm::isa<tensor::group_req>(app)) {
         report_group_request(app, "request reached bufferization without realization");
         return rewrite(app->arg(5, 0));
