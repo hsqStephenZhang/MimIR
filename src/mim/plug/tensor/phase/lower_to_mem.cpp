@@ -4333,11 +4333,8 @@ const Def* LowerToMem::lower_lane_fold(const App* app,
             coords[d] = w.lit_i64(rest % dims[d]);
         auto index         = btensor::folded_idx(literal_storage, coords);
         auto [read, value] = buffer::op_read(merged, out, index)->projs<2>();
-        for (auto mask = *n / 2; mask != 0; mask /= 2) {
-            auto other = w.app(w.annex<gpu::shfl_xor>(), w.tuple({value, w.lit_i32(u32(mask))}));
-            value      = w.app(op, w.tuple({value, other}));
-        }
-        merged = buffer::op_write(read, out, index, value)->proj(2, 0);
+        value              = w.app(w.app(w.app(w.annex<gpu::lane_merge>(), w.lit_nat_1()), {w.lit_nat(*n), op}), value);
+        merged             = buffer::op_write(read, out, index, value)->proj(2, 0);
     }
     // The result buffer must depend on the shuffles' memory.
     auto [result_run, result_call]
@@ -4468,12 +4465,6 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
             if (type->proj(*n, i) != f32) return false;
         return true;
     };
-    auto shuffled = [&](const Def* value, u64 mask) -> const Def* {
-        auto lane = [&](const Def* x) { return w.app(w.annex<gpu::shfl_xor>(), w.tuple({x, w.lit_i32(u32(mask))})); };
-        if (value->type() == f32) return lane(value);
-        auto k = Lit::as(value->type()->arity());
-        return w.tuple(DefVec(k, [&](size_t i) { return lane(value->proj(k, i)); }));
-    };
     auto warps = Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(*n))) && *n % 32 == 0 && lanewise(el);
     auto parts = warps ? *n / 32 : *n;
     {
@@ -4486,9 +4477,9 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
             = buffer::op_read(acc, update->proj(2, 1), btensor::folded_idx(literal_storage, iters))->projs<2>();
         auto slot = index;
         if (warps) {
-            for (u64 mask = 16; mask != 0; mask /= 2)
-                value = w.app(op, w.tuple({value, shuffled(value, mask)}));
-            slot = w.call(core::shr::l, Defs{index, w.lit_i64(5)});
+            auto k = el == f32 ? w.lit_nat_1() : el->arity();
+            value  = w.app(w.app(w.app(w.annex<gpu::lane_merge>(), k), {w.lit_nat(32), op}), value);
+            slot   = w.call(core::shr::l, Defs{index, w.lit_i64(5)});
         }
         auto at = DefVec(iters.begin(), iters.end());
         if (rank) {

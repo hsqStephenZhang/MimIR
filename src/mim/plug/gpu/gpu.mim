@@ -694,6 +694,15 @@ anx lam superstep {g n: Nat, rs: «n; Nat», ss: «i: n; «rs#i; Nat»», Ts: «
     let views  = ‹i: n; view (publish_view (seen, (fill_panel @(g, rs#i, ss#i, Ts#i) (before (core.idx2nat i), fills#i))#1₂))›;
     let (t, r) = read_phase (seen, λ (m: mem.M 0): [mem.M 0, R] = read (m, views));
     (leave_reading t, r);
+/// Each lane merges its value with that of the lane `width / 2` away, then `width / 4`, down to 1, after which each of
+/// `width` adjacent lanes holds the merge of all of them; `op` is commutative and `width` a power of two.
+anx lam lane_merge {k: Nat} (width: Nat, op: [«k; math.F32», «k; math.F32»] → «k; math.F32») (value: «k; math.F32»)
+    : «k; math.F32» =
+    lam halve (mask: Nat, v: «k; math.F32»)@(core.pe.is_closed mask): «k; math.F32» =
+        (λ (): «k; math.F32» = v,
+         λ (): «k; math.F32» =
+            halve (mask / 2, op (v, ‹i: k; shfl_xor (v#i, core.idx 0 0x100000000 mask)›)))#(mask != 0) ();
+    halve (width / 2, value);
 /// A work-group fills a panel together, updates it in place in `k` rounds with a barrier behind each, and runs `read`
 /// while the panel is read; `rounds#j` rewrites only elements no other work-item touches in that round.
 /// Round `e` leaves the token and the panel of superstep `e`, so their types count the rounds.
