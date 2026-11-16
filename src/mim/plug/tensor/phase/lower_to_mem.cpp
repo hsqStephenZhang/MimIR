@@ -3469,49 +3469,21 @@ const Def* LowerToMem::warp_fold(const App* app) {
             at = filled_mem_;
         }
         pop();
-        return w.app(w.annex<gpu::async_commit>(), at);
+        return at;
     };
-    if (panels != 0) mem = fill_block(mem, w.lit_nat_0(), ring[0]);
     auto proxied = fe::Restore(proxied_, proxied_ || (panels != 0 && group_rows_));
-    auto rings   = DefVec();
-    for (auto& buffers : ring)
-        rings.insert(rings.end(), buffers.begin(), buffers.end());
-    auto state             = w.tuple({mem, first, w.tuple(carried_values), w.tuple(rings)});
-    auto [run, call]       = btensor::ds_splice(state, state->type(), "warpFold");
-    auto [loop, loop_call] = affine::counting_for(w.call<core::bitcast>(w.type_i64(), rewrite(count)), run->var(2, 0),
-                                                  run->ret_var(), w.sym("warpFoldStep"));
-    auto [index, carried, yield]              = loop->vars<3>();
-    auto [loop_entry, locals, kept, rotating] = carried->projs<4>();
-    const Def* loop_mem                       = loop_entry;
-    auto at_stage = [&](u64 s, size_t j) { return rotating->proj(2 * panels, s * panels + j); };
-    {
-        auto pending = fe::Restore(pending_, {});
-        auto memo    = fe::Restore(fresh_memo_, {});
-        auto cache   = fe::Restore(realizations_, realizations_);
-        auto terms   = fe::Restore(warp_terms_, warp_terms_);
-        push();
-        bind_old(parameter->has_var());
-        map(offset, w.call(core::nat::mul, Defs{w.call<core::bitcast>(w.type_nat(), index), rewrite(stride)}));
+    // One step of the fold at block `iteration`: the warp's terms from the carried ones and, if staged, a slot's
+    // panels.
+    auto fold_step = [&](const Def* iteration, const Def* locals, const Def* kept, const Def* slot) {
+        map(offset, w.call(core::nat::mul, Defs{iteration, rewrite(stride)}));
         auto proxy = old.mut_lam(old.pi(local, old.type_nat()));
         bind_old(proxy->has_var());
         map(proxy->var(), locals);
         for (size_t i = 0; i != proxies.size(); ++i)
             map(proxies[i]->var(), kept->proj(proxies.size(), i));
-        if (panels != 0) {
-            for (size_t j = 0; j != panels; ++j) {
-                map(stages[j], at_stage(0, j));
-                forward_layouts(ring[0][j], at_stage(0, j));
-                forward_layouts(ring[0][j], at_stage(1, j));
-            }
-            // Every lane's copies of this block are done and every warp read the previous one, which the next fills.
-            // A warpgroup's `wgmma` reads the panels through the async proxy, so each filler publishes its writes to
-            // it.
-            auto waited = w.app(w.app(w.annex<gpu::async_wait_group>(), w.lit_nat_0()), loop_mem);
-            if (group_rows_) waited = w.app(w.annex<gpu::fence_proxy_async>(), waited);
-            loop_mem  = w.app(w.annex<gpu::fence>(), waited);
-            auto next = w.app(w.annex(tensor::pipeline_plan::refill_block),
-                              {w.call<core::bitcast>(w.type_nat(), index), w.lit_nat(2), w.lit_nat(*literal_count)});
-            loop_mem  = fill_block(loop_mem, next, DefVec(panels, [&](size_t j) { return at_stage(1, j); }));
+        for (size_t j = 0; j != panels; ++j) {
+            map(stages[j], slot->proj(panels, j));
+            forward_layouts(ring[0][j], slot->proj(panels, j));
         }
         for (size_t i = 0; i != n; ++i)
             warp_terms_[accumulator->proj(n, i)] = lanes(proxy->var(n, i));
@@ -3522,19 +3494,76 @@ const Def* LowerToMem::warp_fold(const App* app) {
             if (!lam || !lam->is_set() || Pi::isa_cn(lam->type())) break;
             root = lam->reduce(call->arg()).back();
         }
-        auto next = w.tuple(DefVec(n, [&](size_t i) { return w.extract(rewrite(warp_term(root->proj(n, i))), lane); }));
-        auto rotated = DefVec();
-        for (u64 s = 0; s != ring.size(); ++s)
+        return w.tuple(DefVec(n, [&](size_t i) { return w.extract(rewrite(warp_term(root->proj(n, i))), lane); }));
+    };
+    const Def* folded;
+    if (panels != 0) {
+        // `gpu.ring_fold` is the protocol of the two-slot `cp.async` ring; a block's fill and step come from here.
+        auto M       = w.call<mem::M>(0);
+        auto slot_ty = w.sigma(DefVec(panels, [&](size_t j) { return ring[0][j]->type(); }));
+        auto kept    = w.tuple(carried_values);
+        auto acc_ty  = w.sigma({first->type(), kept->type()});
+        auto closure = [&](Lam* fun, const std::function<const Def*()>& body) {
+            auto pending = fe::Restore(pending_, {});
+            auto memo    = fe::Restore(fresh_memo_, {});
+            auto cache   = fe::Restore(realizations_, realizations_);
+            auto terms   = fe::Restore(warp_terms_, warp_terms_);
+            push();
+            bind_new(fun->has_var());
+            fun->app(true, fun->ret_var(), body());
+            fun->set(true, wrap_fresh_mem(fun->body()));
+            pop();
+        };
+        auto fill = w.mut_fun(w.sigma({M, w.type_nat(), slot_ty}), M)->set("ringFill");
+        closure(fill, [&] {
+            auto [at, block, slot] = fill->var(2, 0)->projs<3>();
+            auto targets           = DefVec(panels, [&](size_t j) { return slot->proj(panels, j); });
             for (size_t j = 0; j != panels; ++j)
-                rotated.push_back(at_stage(1 - s, j));
-        loop->app(true, yield, w.tuple({loop_mem, next, kept, w.tuple(rotated)}));
-        loop->set(true, wrap_fresh_mem(loop->body()));
-        pop();
+                forward_layouts(ring[0][j], targets[j]);
+            return fill_block(at, block, targets);
+        });
+        auto ring_step = w.mut_fun(w.sigma({M, acc_ty, w.type_nat(), slot_ty}), w.sigma({M, acc_ty}))->set("ringStep");
+        closure(ring_step, [&]() -> const Def* {
+            auto [at, acc, iteration, slot] = ring_step->var(2, 0)->projs<4>();
+            bind_old(parameter->has_var());
+            auto next = fold_step(iteration, acc->proj(2, 0), acc->proj(2, 1), slot);
+            return w.tuple({at, w.tuple({next, acc->proj(2, 1)})});
+        });
+        auto depth  = w.lit_nat(2);
+        auto refill = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringRefill");
+        refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),
+                                {refill->var(), depth, w.lit_nat(*literal_count)}));
+        auto fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
+        fold      = w.app(fold, {w.lit_nat_0(), w.lit_bool(group_rows_ != nullptr),
+                                 w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
+        fold      = w.app(w.app(fold, {mem, w.tuple({first, kept}), w.tuple({w.tuple(ring[0]), w.tuple(ring[1])})}),
+                          {fill, ring_step});
+        folded    = fold->proj(2, 1)->proj(2, 0);
+    } else {
+        auto state                    = w.tuple({mem, first, w.tuple(carried_values)});
+        auto [run, call]              = btensor::ds_splice(state, state->type(), "warpFold");
+        auto [loop, loop_call]        = affine::counting_for(w.call<core::bitcast>(w.type_i64(), rewrite(count)),
+                                                             run->var(2, 0), run->ret_var(), w.sym("warpFoldStep"));
+        auto [index, carried, yield]  = loop->vars<3>();
+        auto [loop_mem, locals, kept] = carried->projs<3>();
+        {
+            auto pending = fe::Restore(pending_, {});
+            auto memo    = fe::Restore(fresh_memo_, {});
+            auto cache   = fe::Restore(realizations_, realizations_);
+            auto terms   = fe::Restore(warp_terms_, warp_terms_);
+            push();
+            bind_old(parameter->has_var());
+            auto next = fold_step(w.call<core::bitcast>(w.type_nat(), index), locals, kept, nullptr);
+            loop->app(true, yield, w.tuple({loop_mem, next, kept}));
+            loop->set(true, wrap_fresh_mem(loop->body()));
+            pop();
+        }
+        run->set(true, loop_call);
+        folded = call->proj(3, 1);
     }
-    run->set(true, loop_call);
     auto result = old.mut_lam(old.pi(local, old.type_nat()));
     bind_old(result->has_var());
-    map(result->var(), call->proj(4, 1));
+    map(result->var(), folded);
     return warp_terms_[app] = old.tuple(DefVec(n, [&](size_t i) { return lanes(result->var(n, i)); }));
 }
 
