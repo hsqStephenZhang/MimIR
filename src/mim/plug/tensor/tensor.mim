@@ -4110,7 +4110,8 @@ pub mod law
         (is: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)») =
         let at    = core.idx 0 nis slot;
         let K     = (extents_of pl)#(core.idx 0 Rnp (core.nat.sub (Rnp, 1)));
-        let split = core.bit2.and 0 (core.bit2.or 0 (combining_of pl == 1, combining_of pl == 3), Rnp == core.nat.add (Rp, 1));
+        // Only a vouched merge combines the partials of a split; a recognized combiner leaves `merge_of pl` a placeholder.
+        let split = core.bit2.and 0 (combining_of pl == 3, Rnp == core.nat.add (Rp, 1));
         let Ps    = ‹i: nis; (Tensor (Ris#i) (Sis#i) (Tis#i), PT)#(core.icmp.e (i, at))›;
         let srcs  = ‹i: nis; let X = Tensor (Ris#i) (Sis#i) (Tis#i); let T = Tis#i; let fused = core.icmp.e (i, at);
             let whole = λ (p: Ps#i): X = (core.bitcast X p, core.bitcast X ((mean_of pl) (core.bitcast PT p)))#fused;
