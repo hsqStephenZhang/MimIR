@@ -635,3 +635,48 @@ B 的 `LDS.U16`+`PRMT` 变成 4 条 `LDSM.16.MT88.4`；同一配置 4096³ F16 �
 - 16 位在 n ≥ 2048 时 128×256、16 个 warp 最好；BK=64 加 3 级流水超过 99 KB 的 shared 上限，编译不过。
 - FP32 SIMT 上 work-item 8×4、BK=8 最好，比原来的 4×4、BK=16 快 15%；SIMT 上流水仍然没有收益。
 - 定律与 `TileFuse`（`-X tensor:tile-law=0`）在原有的 90 组里差别都在 2% 以内，只有 4096³ 的 `g3_128` 定律慢 5%（115 对 108 个寄存器）。
+
+## 对 cuBLAS 与 PyTorch 的基线（H200 NVL，2026-11-17）
+
+机器：H200 NVL（sm_90a），PyTorch 2.12.0+cu130，LLVM 23.1.5，分支 `feat/gpu-tiling-refactor`。
+此前各节拿我们的 nsys kernel 时间去比 PyTorch 的 CUDA event 时间；event 时间含调度，小尺寸上差得很多（1024³ 的 F16 GEMM：event 13.7 µs，kernel 6.0 µs）。
+这一节两边都用 nsys 的 kernel 平均时间：PyTorch 用 `torch_kern.py`（每个算子跑 30 次，一次调用的各 kernel 相加），我们的用完整 host 程序。
+`torch_all.py` 是 event 中位数的版本，列在下面只作对照。
+
+### F16 GEMM（F32 累加），ms
+
+| n | cuBLAS kernel（event） | cuBLAS 用的 kernel | 我们最好的 | 调度 | 比例 |
+|---|---:|---|---:|---|---:|
+| 1024 | 0.0060（0.0137） | `nvjet_sm90_hsh_128x64_64x8_1x2` | 0.0093 | 128×64，`wg_red_ws`，8 级 | 65% |
+| 2048 | 0.0257（0.0342） | `nvjet_sm90_hsh_256x128_64x4_1x2 coopA` | 0.0302 | 128×128，`wg_red_tma`，3 级 | 85% |
+| 4096 | 0.1976（0.2039） | 同上 | 0.2250 | 同上 | 88% |
+| 8192 | 1.692（1.911） | `nvjet_sm90_hsh_320x128_64x3_1x2 coopB` | 2.064 | 同上 | 82% |
+
+- cuBLAS 的 kernel 名给出了它的配置：瓦片、k 块 64 × 级数、cluster 形状。每个尺寸都用 1×2 的 cluster，输出是 F16（我们的基准写 F32）。
+- 1024 上原来的 128×128 瓦片是 0.0126（48%）：只有 64 个 work-group，填不满 132 个 SM；换成 128×64 后各配置为 0.0093–0.0109。
+- 2048、4096 上扫过 128×64、128×128、128×256、256×64、256×128，`wg_red_tma` 与 `wg_red_ws`，3–8 级，没有比 128×128 的 `wg_red_tma` 3 级更快的；256×128 的生产者 warp 版是 0.0353、0.2533。
+- 我们的 cluster 共享面板反而慢一倍（1024、128×64、4 级：0.0192 对 0.0096），而 cuBLAS 处处用它；这是眼下最明显的一处差距，原因还没有查。
+- 其它精度只有 event 时间：FP32 0.0698 / 0.3869 / 2.970 / 23.74，TF32 0.0230 / 0.0618 / 0.3892 / 3.429，BF16 0.0133 / 0.0337 / 0.1975 / 1.797。
+
+### softmax、行求和（12×1024×1024，FP32），µs
+
+| 算子 | PyTorch kernel（event） | 我们 | 比例 |
+|---|---:|---:|---:|
+| softmax | 30.3（34.4） | 26.9（`softmax_resident_shared`）、29.6（`softmax_resident`）、35.4（`softmax_fused_online`） | 113% / 102% / 86% |
+| 行求和 | 16.5（21.8） | 14.0（`rowsum`） | 118% |
+
+`softmax_resident` 在这个分支上一度是 56 µs：交接分支把 kernel 指针的对齐从 `llvm.ptrmask` 改成 align 假设（LLVM 21/22 在前者上崩溃），LLVM 23 下后者不让访存加宽。
+现在后端按 `llc` 的版本选择（`-X nvptx:ptrmask=<0|1>` 可覆盖），29.6 µs 与主工作区 `feat/gpu-tiling` 的 29.4 µs 一致。
+
+### attention（H=12，D=64），µs
+
+| L | 精度 | PyTorch 两次 matmul 加 softmax | 其中 | `F.scaled_dot_product_attention` | 我们 |
+|---|---|---:|---|---:|---:|
+| 512 | FP32 | 54.9 | GEMM 21.2 + 20.5，softmax 7.2，缩放 6.0 | 76.9 | 1195（`attn.mim`，6 个 kernel：503、296、296、77、12、11） |
+| 512 | F16 | 20.4 | GEMM 5.2 + 4.2，softmax 7.3，缩放 3.8 | | 无 |
+| 2048 | FP32 | 626 | GEMM 229 + 180，softmax 117，缩放 100 | | 无 |
+| 2048 | F16 | 241 | GEMM 33 + 32，softmax 124，缩放 52 | | 无 |
+
+- 我们只有默认路径的 `attn.mim` 能跑，是 PyTorch 的 4.6%：每个算子一个 kernel，一线程一个输出点。
+- `attn_tiled.mim` 与未跟踪的 `attn_flash.mim` 现在编译不过（前者被向量级的规则拒绝，后者用了未绑定的中缀 `/`）；`attn_warps.mim` 是给 `ptx_bench.py` 的，没有测。
+- F16 下 PyTorch 的时间一半以上花在 softmax 与缩放这两个逐元素 kernel 上（L=2048：176 / 241），所以把三步融合进一个 kernel 的结构在这里有超过它的余地。
