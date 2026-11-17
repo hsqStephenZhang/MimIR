@@ -35,7 +35,7 @@
 | 协议骨架：`superstep`、`ring_fold`（`async_ring`、`mbar_ring`、`shared_ring`、`cluster_ring`）、`merge_rounds`、`lane_merge` | `src/mim/plug/gpu/gpu.mim`，由 `lower_to_mem.cpp` 调用 | 已搬到 Mim；TMA 与 cluster 的环只有 sm_90a 设备 IR 与 PTX 的结构对比，没有硬件执行 |
 | 类型化数据 tile 外壳：`Tile r unit at life space cap r2 s lay T`、`Ctx` | `bench/typed_tiles/prelude.mim`，lit 在 `lit/gpu/typed_tiles.mim`、`lit/error/typed_tile_*.mim` | 1 个编译检查、1 个 GPU 执行、9 个反例；编译器的解释器没有用这个类型 |
 | 缓冲区层解释器 `run_buffers` | `bench/typed_tiles/buffer_interp.mim` | 原型，决定停在这里：不并入编译器，也不追剩下的差距 |
-| 仍在 C++ 的协议 | `lower_to_mem.cpp` | warp 特化（RedWs）、ping-pong、persistent、批之外的协作填充、`lower_tiled`、`gpu.outline` |
+| 仍在 C++ 的协议 | `lower_to_mem.cpp` | 批之外的协作填充、`lower_tiled`、`gpu.outline`；warp 特化、ping-pong、persistent 的环已是 `gpu.ws_fold` 与 `RingSync`，并在 H200 上执行过 |
 
 性能数字（3090 上大方阵 72–85% cuBLAS，22 例几何平均 52%；1650S 上 87%）和 split-K 的结果在基准仓库的 `results/gpu-tiling-*-20261116/comparison.md` 与 `NOTES.md`，见 §5。
 

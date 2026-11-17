@@ -283,14 +283,52 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 |---|---|---|
 | 同步面板的超步：进入、逐个协作填充、发布、读、离开 | `gpu.superstep` | 批（`close_batch`） |
 | 环：序言、每步等待/同步/补填/计算/轮转、收尾 | `gpu.ring_fold`，拷贝的跟踪方式是参数 `RingSync` | `lower_tile_fold`、`warp_fold` |
+| 生产者 warp 填、消费者 warpgroup 读的环：两个角色各走环的一侧，只在槽的 mbarrier 上相遇 | `gpu.ws_fold`，同一个 `RingSync` | `lower_tile_fold` 的特化 warp（`RedWs`），含 persistent 与 ping-pong |
 | `cp.async` 提交组 | `gpu.async_ring` | 同上 |
-| 每槽一个 mbarrier | `gpu.mbar_ring` | 不被 cluster、persistent、特化 warp 共享的 TMA 环 |
+| 每槽一个 mbarrier | `gpu.mbar_ring` | 所有 TMA 环 |
+| 谁共享这个环：cluster 共享面板、生产者 warp 与它的消费者、cluster、persistent work-group、ping-pong | `gpu.shared_ring`、`consumer_ring`、`cluster_ring`、`resumed_ring`/`fenced_ring`、`pingpong_ring`，各自包一层 `RingSync` | 同上 |
+| 两个消费者轮流发 MMA | `gpu.turn_take`、`gpu.turn_pass` | `lower_mma` |
 | work-item 归约的合并轮次，令牌与面板的类型数超步 | `gpu.merge_rounds` | `lower_bound_fold` |
 | lane 的 shuffle 合并 | `gpu.lane_merge` | `lower_lane_fold`、work-item 归约的 warp 内预合并 |
 
 验证：同步超步、`cp.async` 环、合并轮次、lane 合并的生成结果与原先结构相同或在 GPU 上执行正确，各有一个使 GPU 执行测试失败的变异；`warp_fold` 的环在 RTX 3090 上执行正确（`bench/gpu_fusion/attn_warps.mim`）；TMA 环没有可用的硬件，只比较了 sm_90a 设备 IR（行数与操作集合相同，PTX 指令集合相同）。
 `warp_fold` 的环原先结束时不等最后一组拷贝，现在等。
-仍在 C++ 里的：特化 warp（`RedWs`）与 ping-pong、cluster 共享与拆分、persistent、批之外的协作填充、区域本身（`lower_tiled`）、`gpu.outline`。
+在 H200 NVL（sm_90）上补的验证（2026-11-16）：完整 lit 1005 个测试中 997 个通过、8 个不支持，此前在 sm_75 上固定失败的 12 个都通过，TMA、cluster 共享与拆分、persistent、特化 warp、ping-pong 的环都在硬件上执行正确。
+三个变异：`mbar_ring` 不等填充落地，6 个 `nvptx` 测试在硬件上算错；`shared_ring` 不释放槽，两个 cluster 测试挂死；`cluster_ring` 去掉收尾的 cluster 屏障，原有测试全部照样通过，所以三个 cluster 测试现在数设备 IR 里的 cluster 屏障（`CLUSTER-COUNT`）。
+仍在 C++ 里的：批之外的协作填充、区域本身（`lower_tiled`，含 persistent 的 tile 轮次与特化区域多出的生产者 warp）、`gpu.outline`；环这一侧 C++ 只剩 mbarrier 的存储、TMA 的装载（`expect_tx` 与各次 `tma_load`）和一步的计算。
+
+槽的状态机现在整个在 `RingSync` 里（2026-11-16）：一个槽依次是空、正在填、满、被读。
+`open` 初始化 mbarrier 并让它们对所有参与者可见，`acquire (mem, n)` 等第 `n` 次填充的槽变空，`commit` 结束这次填充发出的拷贝，`await (mem, i)` 等第 `i` 块落地，`release (mem, i)` 交还第 `i` 步不再读的槽，`settle` 等完在途的拷贝。
+`ring_fold` 是同一个单元先后走两侧（序言先填 `depth - 1` 块，每步等待、同步、交还、回填、计算），`ws_fold` 是生产者 warp 与消费者各走一侧；persistent 只是填充计数从 `base` 继续，ping-pong 是 `open` 里多一次交出轮次。
+"空" mbarrier 的到达数（cluster 的 work-group 数，或每个消费者 4 个 warp）、它的奇偶、谁发起，与交还它的那一方写在同一个定义里，不再是 `lower_to_mem` 里分处三地的算术。
+原先 `lower_tile_fold` 里特化 warp 的循环、TMA 环的序言与收尾（约 170 行）删去，剩下的手写循环只服务没有环的折叠。
+
+验收：`lit/gpu` 的 90 个程序里只有带 TMA 环的 12 个输出有变化（初始化移到两次分配之后，以及名字），16 个 Hopper 程序的设备 IR 中内联汇编与 NVVM 指令的多重集合与改动前逐一相同（特化的三条链多一条 `and i1`，是生产者的发起条件在等空槽与装载处各算了一次）；完整 lit 通过。
+在 H200 上执行的变异（新增 `lit/{gpu,nvptx}/tile_wgmma_refill.mim`：块数多于槽数的 2 槽环与晚一步交还的 4 槽环，原有的特化测试只有 2 块，生产者从不回填）：
+
+| 变异 | 结果 |
+|---|---|
+| 消费者不等自己的槽落地 | 5 个特化测试算错 |
+| 消费者不交还槽 | persistent 挂死，`tile_wgmma_refill` 失败；原有的 `tile_wgmma_ws`、`tile_wgmma_pingpong` 测不出 |
+| persistent 的环每个 tile 重新计数 | 两个 persistent 测试挂死 |
+| 生产者不等空槽就填 | `tile_wgmma_refill`、persistent 算错 |
+| "空" mbarrier 每个消费者只数 1 次到达 | persistent 与 `tile_wgmma_refill` 挂死 |
+| 没人把第一轮交给第一个消费者；把轮次交给自己 | ping-pong 挂死 |
+| 消费者交还了错的槽（`(n + 1) % depth`） | **测不出**（两次运行都通过） |
+| 共享面板的 cluster 不等空槽就回填 | **测不出**，块数多于槽数的 `tile_wgmma_cluster_refill` 也一样：回填之前本 work-group 已经过了屏障，这次等待只防 cluster 里另一个 work-group 还在读，两者步调一致时竞争不出现 |
+| 共享面板的 cluster 不交还槽 | 两个 cluster 测试挂死 |
+
+后两条是执行测不出、而槽的类型应当拦下的那一类：交还的必须是自己读过且异步读者已退休的槽，填的必须是已交还的槽。
+
+消费者一侧的槽令牌（2026-11-16）：`gpu.Held depth (s, live)` 是一步对槽 `s` 持有的东西，只有环的同步能造——`await (mem, n)` 返回 `Held depth (n % depth, tt)`，尚未读过任何槽的一步持有的是 `Held depth (0, ff)`。
+`release (mem, s, live, held)` 要的正是 `Held depth (s, live)`：交还哪个槽、是否真的交还，都从令牌的类型读出，同步里不再有 `(n + depth - lag) % depth` 和 `n != 0` 这两处算术。
+晚一步交还（`lag = 1`）与 work-group 自己填的环都改成"把上一步的令牌带到下一步"，循环状态多一项 `[live: Bool, s: Idx depth, H (s, live)]`。
+两个折叠骨架对令牌类型 `H` 是参数化的（`ring_fold_at`、`ws_fold_at`，公开的 `ring_fold`/`ws_fold` 以 `gpu.Held depth` 实例化它们），所以骨架写不出令牌，只能交还 `await` 给过它的槽；Mim 没有私有构造子，这是用参数性换来的。
+令牌是公理而不是 `nom`：带参数的 `nom` 每次应用得到一个新的可变实例，经 `RWPhase` 重建后同一个类型成了两个互不相等的 `nom`（`Held_… ≠ Held_…`），循环状态的类型对不上；公理的应用按结构哈希，`gpu.erase_phases` 在 `lower_to_mem` 之后立刻把类型擦成 `[]`、把值擦成 `()`。
+`lit/error/ring_release.mim`（拿自己的令牌交还下一个槽）与 `ring_release_idle.mim`（把没读过任何槽时持有的那个当作读过的交还）是类型错误，`lit/gpu/ring_release.mim` 是正例；上表里"交还了错的槽"的变异现在写不出来。
+这次暴露的一处行为差别：persistent 的环原先靠跨 tile 连续的计数，在下一个 tile 的第一步交还上一个 tile 最后读的槽；令牌不跨折叠，带着它结束的折叠会让下一个 tile 的生产者永远等不到那个槽（两个 persistent 测试挂死）。
+现在 `ws_fold` 在收尾、异步读者退休之后交还最后持有的槽，所以一次折叠等过的槽都在这次折叠里交还。
+没有做的：生产者一侧（`acquire` 之后才能填、填的是等到的那个槽）没有令牌，因为填充的闭包拿到的是轮转后的面板而不是按槽号取的面板；令牌只用一次也没有检查（`check_sync` 不认识它），靠的是骨架只有两处使用。
 
 环的状态在 Mim 里是嵌套元组（每槽一组面板），`affine.lower_for` 之后留下聚合类型的 phi，NVPTX 推断不出共享内存地址空间，叶子的读退化成通用 `ld`（RTX 3090 上慢 17–31%）；所以流水线在 `lower_for` 之后补了两次 `compile.scalarize`，之后与 C++ 版本的 PTX 读写类别相同、计时持平。
 
@@ -343,3 +381,124 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 | 物理输入是 `«nis - 1 + npp; …»`，按下标拼接 | `npp` 先成为字面量时，异构元组按非字面量下标取出的类型是并 `T ∪ U`，`bitcast` 推断的源类型不再匹配 | 穿过二元组 `(消费者的输入, 生产者的输入)`，只按 pack 自己的绑定子取下标 |
 
 前三条与 D6 的阻塞同源：依赖类型的实例化与比较。它们是继续推进第 3 步（TileFuse 在定律上解释调度）之前最值得在 core 里修的地方。
+
+## 9. 义务由谁承担（2026-11-17）
+
+调度只应影响性能而不影响含义：定律是顺序规范，三条切分引理管"怎么切"，剩下的正确性是每次读都读到规范里的那个值。
+它分成何时、何处、谁三个问题；下表按错误类别列出现在由谁拦下、对应的测试，以及还没有承担者的格子。
+"参考实现"一栏出自对 CUTLASS、Mojo MAX kernels、ThunderKittens、cubek、tilelang、cuda-oxide 源码的一次调研（2026-11-16），没有逐条复核，只用来说明这一格在别处通常是静态、动态还是不查。
+
+| 问题 | 错误类别 | 现在的承担者 | 测试 | 参考实现 |
+|---|---|---|---|---|
+| 切分 | 层级嵌套不合法、操作数种类或收缩种类不符 | 层级类型 | `lit/tensor/tile_levels_scope.mim`、`lit/error/law_req_kind.mim` | cubek 的 scope 是幻影类型，变体与 scope 的搭配在展开时 `panic` |
+| 切分 | 整除、尾块、容量、目标能力 | PE 判定（`check` 规则，事实取自定律） | `lit/error/law_req_rule.mim`、`law_capacity.mim` | 多为运行时断言 |
+| 切分 | 乱序切分一个不可交换或种子非单位元的归约 | PE 判定（`check.combiner`、定律的合并合同） | `lit/error/law_ordered_inner.mim`、`law_items_combiner.mim`、`law_red_inner.mim` | 不查 |
+| 谁 | 续延在错的执行单元里运行，累加器或面板计划配错所有者或生命周期 | 解释器的类型索引（`At`、`Acc`、`Plan`） | 8 个变异在插件验证时被拒（§8.1） | ThunderKittens 的 `group<4>` 静态拒绝在错的单元上调用，但不证明线程属于该组；其余是运行时角色 |
+| 谁 | tile 逃出它的 work-group 或归约步，work-item 读独占的累加器，写已发布的面板 | 外壳的 `Tile` 类型（只在 `bench/typed_tiles`，编译器的解释器没有用） | `lit/error/typed_tile_{step,unit,lifetime,seed,owner,exclusive,readonly}.mim` | Mojo 的可变性在类型里，共享内存的生命周期是 `UntrackedOrigin` |
+| 何时 | 同步面板：填充与读之间没有屏障，令牌或面板用了不止一次，构造进入两次 | `gpu.GM`/`gpu.SharedBuf` 的相位类型加 `gpu.check_sync` | `lit/error/superstep_fill.mim`，`check_sync` 的用例 | 不查 |
+| 何时 | 环：交还了没读过的槽，或别的槽 | `gpu.Held` 令牌与对令牌参数化的骨架 | `lit/error/ring_release.mim`、`ring_release_idle.mim` | 奇偶位是裸整数，不查；Mojo 的线性句柄只保证 `release` 被调用一次 |
+| 何时 | 环：到达数与参与者数、奇偶、发起者不一致 | 写在同一个 `RingSync` 定义里（按构造一致，不是检查） | 硬件上的变异（§8.2 的表） | 手工对齐 |
+| 何时 | 环：深度、交还滞后与在途 MMA 数不相容 | PE 判定（`pipeline_plan.ring_safe`，枚举环的状态） | `lower_to_mem` 里的报错 | 不查 |
+| 何时 | 环：不等落地就读、不等空槽就填、不交还、计数不延续 | **只有执行**：硬件上的变异测得出前三类中的大部分 | `lit/nvptx/tile_wgmma_{ws,persistent,pingpong,refill}.mim` | 不查 |
+| 何时 | 环：共享面板的 cluster 不等空槽就回填 | **无**：是 work-group 之间的竞争，执行测不出（`tile_wgmma_cluster_refill` 的块数多于槽数，变异照样通过） | — | 不查 |
+| 何处 | 列主序的面板被当作行主序，向量宽度不整除 | 外壳 `Tile` 的布局索引（轴的置换） | `lit/error/typed_tile_{layout,vectors}.mim` | CuTe 与 Mojo 的布局代数在类型里，静态形状下可查 |
+| 何处 | 布局不是单射、向量填充不连续、swizzle 与描述符不一致 | PE 判定（`layout_expr` 的 F₂ 解释） | `lit/tensor` 的布局用例 | Mojo 的 `TwoLevelLayout` 把 swizzle 当 F₂ 线性布局；CUTLASS 里 swizzle 不是 `Layout` |
+| 何处 | `wgmma` 操作数面板的布局不是描述符要硬件读的 128 字节 swizzle | PE 判定：`layout_expr.lies_sw128`（任意秩，F₂）在造描述符处检查 K 主序面板 | `lit/tensor/layout_f2.mim`；把 `tc_layout` 的 swizzle 组数改错，编译报错 | 三处各传一个枚举 |
+| 何处 | MN 主序面板的布局、TMA 描述符的 swizzle 与面板不一致 | **无**：MN 主序不查；TMA 描述符的 swizzle 仍是写死的 | — | 同上 |
+| 何处 | 读落在暂存的盒子之外，或绕过布局用逻辑坐标读面板 | **无**：仿射下标没有范围类型 | — | 不查；Descend 用"只能经 view 访问"拦下 |
+| 实现 | 实现不等于定律 | 差分测试（CPU 上与参考结果比较，GPU 上执行） | `lit/tensor/tile_law_exec.mim` 等 | — |
+
+读这张表的三点：
+
+- 类型承担的是"配对"——谁的、何时的、哪个槽的——而不是数值；数值一律是 PE 判定。两者都不需要用户写证明。
+- 环的两侧只在 mbarrier 上相遇，所以一侧的令牌不能证明另一侧的事实：消费者的 `Held` 说明它等过，不说明生产者填的是对的槽。跨角色的那部分由 `ring_safe` 的状态枚举承担，它现在只覆盖深度与滞后。
+- 还没有承担者的几格是接下来最该去的地方：生产者一侧的槽；MN 主序面板与 TMA 描述符的 swizzle；访问只能经过布局。
+  `lies_sw128` 的陈述是"布局等于 128 字节 swizzle 作用在它自己去掉 swizzle 的摆放上"（Hexcute 的 `M = S∘m`），不依赖逻辑轴叫什么，所以带单位轴的三维面板也能判；原有的 `matches_sw128` 只管二维，实际的操作数面板逻辑形状是 `(64, 1, 128)` 这样的三维，所以它此前没有接到造描述符的地方。
+  最后一条对 `placed` 的面板其实已经成立：叶子用逻辑坐标读，坐标到地址的映射由 lowering 按布局值做，绕不过去；绕得过去的只是外壳里"按置换暂存、叶子自己写存储坐标"的那种面板（`resident_as` 加 `stored_at`）。
+  所以外壳的布局索引下一步应当是 `layout_expr.Expr` 本身而不是轴的置换，`stored_at` 随之不再需要。
+
+### 9.1 第 2、3 步动手前查清的两件事（2026-11-17）
+
+- 外壳 `Tile` 的布局索引不能直接换成 `layout_expr.Expr`：`layout_expr.make` 要求秩至少为 2（它描述的是共享内存里的面板），而外壳的 tile 也包括秩 1 的累加器（`rowsum_block_par_steps.mim`）与寄存器里的 tile。
+  所以"布局"只是面板这一类 tile 的索引；要么 `Tile` 的布局索引是"行主序或一个 `Expr`"的和类型，要么面板另有自己的类型。
+  前者会碰到 §8.3 的并类型限制，后者是第四套词汇，两者都需要先定下来再改 13 份带外壳的文件。
+- 解释器里 `stage` 的结果包成带所有者与生命周期的名义类型，按现在的结构拦不下新的错误：`values_of` 的结果在 `leaf_at`/`vec_at` 里当场交给 `map_reduce_post`，产生与消费相隔两行，所有者与生命周期已经由 `Plan` 的索引管住。
+  真正没有被管住的是同一个输入的读映射与值是否配对：`reads_of`、`values_of`、`ris_of`、`sis_of` 各自按 `split_of pan i` 与 `q#0₆` 选一支，再用 `core.bitcast` 对齐类型，四处选错一处类型上看不出来。
+  所以第 2 步更有价值的形式是把每个输入的（读映射，值，秩，形状）作为一个整体由一次选择给出，去掉这些 `bitcast`；它要改的正是 `values_of` 一带，与另一条线上未提交的改动重叠。
+
+### 9.2 读映射与值配对（2026-11-17）
+
+§9.1 的第二条做了：`build_post` 里原来的 `reads_of` 与 `values_of` 合成 `inputs_of`，每个输入的（读映射，值）由一个带秩与形状的函数 `read rk sk (map, value)` 成对给出——映射到 `rk` 个坐标，值是 `Tensor rk sk T`——四种情形（原样读、成员的盒子、整块暂存、面板）各调用它一次。
+把面板的映射配给整块暂存的值、或把普通映射配给面板，现在是插件验证时的类型错误；此前这两处各自按计划的标志选一支，再用 `core.bitcast` 对齐到 `ris_of`/`sis_of` 给出的类型，配错在类型上看不出来。
+剩下的 `bitcast` 只有两类：`read` 里对齐到 `ris_of`/`sis_of` 的那一次（计划成为字面量后两边相等而消去），和整块暂存的结果（`stage` 在 `k = 0` 时的类型是 `Tensor (r + 0) …`，泛型下不化简）。
+验收：`lit/gpu` 的 93 个程序里 89 个输出逐字不变，4 个只差一个变量名，去掉名字后的结构相同；完整 lit 通过。
+没有做的仍是把结果包成带所有者与生命周期的 `Tile`（理由见 §9.1），以及 `ris_of`/`sis_of` 与 `read` 给出的秩和形状是否一致——它们是同一套标志的两份展开，现在靠那一次 `bitcast` 在实例化后相等来体现。
+
+### 9.3 暂存的值带上计划的所有者与生命周期，面板的布局进类型（2026-11-17）
+
+- 解释器：`inputs_of` 给叶子的每个值现在是 `Kept ou grp stp r s T`，所有者与生命周期取自计划的索引；叶子（`leaf_at`、`vec_at`）拿的是 `Plan ou grp stp` 而不是裸的 `Pan`，只有持有同一个计划才能用 `kept_by` 取出张量。
+  让叶子读为另一个生命周期准备的值是插件验证时的类型错误；`lit/gpu` 的输出与改动前逐字相同。
+  这一层按 §9.1 的判断拦下的错误不多（值的产生与消费相邻），它的作用是让"叶子读的东西属于谁、活多久"在类型里有名字，与外壳的 `Tile`/`Panel` 用同一组索引（所有者单元、所有者的原点、生命周期）。
+- 外壳：面板另立类型 `Panel r at life cap rx s lay T`，`lay` 就是 `layout_expr.Expr (rx, s)`，即编译器自己的面板带的那个布局值（`Tile` 的布局索引不能直接换成它，见 §9.1）。
+  `resident_placed lay` 用 `placed` 暂存，读者经 `read_panel` 拿到逻辑形状的张量、用逻辑坐标读，坐标到地址由 lowering 按 `lay` 映射，所以不存在绕过布局的读。
+  `bench/typed_tiles/gemm_panel_placed.mim`（`lit/{gpu,nvptx}/typed_panel.mim`）：A 的面板按末维填充 4 的布局暂存，设备 IR 里是 `[8 x [12 x float]]`，在 H200 上 256 个元素全对；把一种布局的面板当另一种交出去是类型错误（`lit/error/typed_tile_panel_layout.mim`）。
+- 三套词汇的现状：解释器（`At`、`Acc`、`Plan`、`Kept`）与外壳（`Tile`、`Panel`、`Ctx`）用同一组索引但仍是两处定义；外壳的访问能力与 `Panel` 的布局直接用 `gpu.Vis` 与 `layout_expr.Expr`，解释器因为 `tensor` 不导入 `gpu` 而没有能力这一项。
+  要让 `Kept` 也带 `gpu.Vis`，得先把 `Vis` 放到两个插件都能看到的地方。
+- 之后做了这一步：`Vis` 挪到 `buffer` 插件（`buffer.Vis`，`tensor` 与 `gpu` 都导入它），`gpu.Vis` 是它的别名，外壳与同步令牌的写法不变；`Kept` 多了能力索引，`inputs_of` 给叶子的都是 `Published`，`kept_by` 只接受 `Published`。
+  `lit/gpu` 的输出与改动前逐字相同，完整 lit 通过。
+  所以访问能力现在是一个类型，三处共用；所有者、生命周期这组索引在解释器与外壳里仍是两处定义。
+
+### 9.4 改动前后的计时（2026-11-17，H200 NVL）
+
+基线是交接时的提交 `a10d52b44`，与现在的工作树用同一配置各建一份 Debug 构建。
+
+Hopper 链的 kernel 时间（1024³ F16 GEMM，`bench/gpu_tiling/gemm_tiled_wg_*.mim`，完整 host 程序加 nsys，各 3 次，单位 ms，结果都正确）：
+
+| 链 | 基线 | 现在 |
+|---|---|---|
+| `wg_ws`（特化 warp，4 槽环） | 0.0180 / 0.0179 / 0.0179 | 0.0182 / 0.0181 / 0.0182 |
+| `wg_persistent` | 0.0179 / 0.0179 / 0.0179 | 0.0180 / 0.0180 / 0.0179 |
+| `wg_tma` | 0.0126 / 0.0126 / 0.0126 | 0.0127 / 0.0126 / 0.0126 |
+| `wg_cluster`（共享面板） | 0.0235 / 0.0236 / 0.0236 | 0.0217 / 0.0218 / 0.0217 |
+| `wg_split` | 0.0138 / 0.0138 / 0.0138 | 0.0138 / 0.0138 / 0.0138 |
+
+特化 warp 的链慢约 1%，cluster 共享面板的链快约 8%，其余持平；两处差别的原因都没有查。
+
+编译时间（12 个带调度的 `lit/gpu` 程序，`-p opt -X tensor:tile-fuse=1 … -p gpu`，各 3 次取中位数，Debug 构建）：合计 80.5 s 对 94.5 s，每个程序都多 1.1–1.2 s，与程序内容无关。
+这是加载 `tensor` 插件的固定开销：单独 `plugin tensor;` 从 5.3 s 到 6.4 s，按保存的各版本 `tensor.mim` 逐个计时，增加的 1.1 s 全部出自 §9.2 的 `inputs_of`（映射与值配对），`Kept` 与 `Vis` 没有可测的增加。
+把 `read` 写成一组参数、或把同秩的三种情形先选后配，都没有降下来；它是泛型下检查四次带依赖类型的应用的代价，原来的 `bitcast` 不检查。
+没有 Release 构建的数字。
+
+### 9.5 一个 `Tile`，布局索引是 `layout_expr.Expr`（2026-11-17）
+
+§9.1 与 §9.3 里搁下的两件事按计划的字面做了，取代 §9.3 的 `Kept` 与 `Panel`。
+
+- 定义只有一处，在 `tensor.mim`：
+  `Tile r unit at life space cap rx s c lay T`，`at`、`life` 都是 `«r; Nat»`，`cap` 是 `buffer.Vis`，`lay: layout_expr.Expr (rx, c)` 是容量 `c` 上的布局，也就是 `placed` 的参数；数据一律是逻辑形状 `Tensor rx s T`。
+  `RowTile … rx s T` 是行主序（`layout_expr.rows s`）的缩写，`tile_as`、`row_tile`、`row_data` 是构造与取值，`units`、`spaces` 给出单元与内存空间的编号。
+- 解释器：`inputs_of` 交给叶子的值就是这个 `Tile`，所有者 `(ou, grp)`、生命周期 `stp` 取自计划，空间由 `space_of` 给出（暂存的在共享内存，融合成员的盒子在寄存器，其余在调用方给的内存），容量与布局由 `cap_of`、`lay_of` 给出：放置过的面板是布局搜索或张量核给的那个值，其余是 `rows`。
+  `Kept` 删掉了，`kept_by` 改为接受 `Published` 的 `Tile`。
+- 外壳：`bench/typed_tiles/` 各文件不再自己定义 `Tile`，生命周期写成 `‹r; e›`。
+  列主序不再是 `stage` 的轴置换加 `stored_at`，而是一个 `layout_expr.make` 值经 `placed` 暂存，读者用逻辑坐标；`stored_at`、`stored`、`Panel`、`resident_placed`、`read_panel`、`threads_placed` 都删掉了，`resident_as lay` 接受任何布局。
+  `vectors` 只沿逻辑末维，并要求布局把每个向量存成连续的一段（`layout_expr.contiguous` 不为 1）；原来"列主序面板沿列取向量"的 `column_vectors` 在逻辑视图下写不出来，删掉了。
+- 秩小于 2：`layout_expr.make` 仍要求秩至少为 2，新增的 `layout_expr.rows` 直接构造行主序的值，秩 2 起与 `make` 给出的相同，所以秩 1 的累加器也有布局索引。
+  它要到形状是字面量才展开：展开得早，每次展开各造一个包，同一个布局在两处就成了两个类型（一开始 `seed` 的结果与 `steps` 的参数因此对不上）。
+- 到 `gpu.SharedBuf`：`tensor.mim` 用 `import gpu;` 取 `gpu` 的声明（像 `btensor` 对 `ll` 那样只取声明；写成 `plugin gpu;` 会把 gpu 的阶段带进 CPU 程序，ll 后端报错），于是 `Tile` 旁边的 `Lowered (g, e) tile = gpu.SharedBuf (g, e, cap, rx, layout_expr.shape lay, T)` 直接引用 `gpu.SharedBuf`，瓦片的类型决定它的面板的类型。
+  `lit/gpu/tile_shared.mim` 用它检查：`Filling` 的瓦片的面板经 `publish_view` 得到的正是 `Seen` 的瓦片的面板，`view` 给出布局存储形状的缓冲（列主序的 `(8, 16)` 是 `(16, 8)`），`claim` 得到 `Mine` 的；`lit/error/tile_shared_unpublished.mim` 是对未发布的面板取 `view`。
+  方向只能是 `tensor` 引用 `gpu`：`gpu.mim` 引用 `Tile` 就得导入 `tensor`，而 `tensor` 的 C++ 依赖 `gpu` 生成的头文件。
+  `SharedBuf` 自己仍是 `gpu` 里的公理类型（lowering 之后还要存在，带参数的 nom 过不了 `RWPhase`）。
+- 没有做到的：解释器的 `At`、`Acc`、`Plan` 与外壳的 `Ctx` 仍各自定义（它们是上下文，不是数据）；未放置的暂存在类型里写的是 `rows`，而 lowering 之后仍可能给它选一个布局，所以 `rows` 的含义是"没有指定布局"，不是"保证行主序"。
+
+§9.5 之后的编译时间（Debug，各 3 次取中位数，单位 s；Hopper 的 kernel 时间没有重测）：
+
+| | 基线 `a10d52b44` | 现在 |
+|---|---|---|
+| 只加载 `plugin tensor;` | 5.31 | 7.68 |
+| `lit/gpu/typed_tiles.mim` | 5.51 | 7.80 |
+| `lit/gpu/tile_wgmma_ws.mim` | 6.07 | 8.52 |
+
+加载 `tensor` 插件的固定开销从 §9.4 的 6.4 s 又涨到 7.7 s，即统一 `Tile` 这一步再加约 1.3 s，相对基线每次编译共多约 2.4 s（+45%）。
+多出来的部分没有逐项归因，最可能来自 `inputs_of` 的类型里现在带着 `space_of`、`cap_of`、`lay_of`（后者含布局搜索的调用）。
+
+Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经换到 RTX PRO 6000 Blackwell 的主机上，`sm_90a` 的 kernel 在它上面加载失败（`CUresult 209`）。
+§9.4 的表仍是 §9.5 之前的数字；§9.5 之后的两次全量 lit 是在哪块 GPU 上跑的没有记录，重测那一刻是 Blackwell。
