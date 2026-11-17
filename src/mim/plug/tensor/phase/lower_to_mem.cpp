@@ -4487,10 +4487,32 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         }
         return coords;
     };
-    // `gpu.merge_pairs`, `gpu.merge_first` and `gpu.merge_serial` are the merge; where an element goes comes from here.
-    auto meta = w.tuple({w.lit_nat(prank), pshape, el});
-    auto tile = w.tuple(DefVec(prank, [&](size_t d) { return w.lit_nat(rank ? dims[d] : 1); }));
-    auto put  = w.mut_lam(w.pi(w.sigma({acc_ty, w.type_nat(), el}), acc_ty))->set("boundCombinePut");
+    // `gpu.merge_pairs`, `gpu.merge_first` and `gpu.merge_serial` are the merge; where an element lies comes from here.
+    auto partials   = buffer::type_buf(w.lit_nat(prank), pshape, el);
+    auto meta       = w.tuple({partials, el});
+    auto partial_at = [&](const Def* t, const Def* e) {
+        auto at = coords_of(e);
+        auto ti = w.call<core::bitcast>(w.type_i64(), t);
+        if (rank)
+            at[0] = w.call(core::wrap::add, core::Mode::none,
+                           Defs{w.call(core::wrap::mul, core::Mode::none, Defs{ti, w.lit_i64(rows)}), at[0]});
+        else
+            at.push_back(ti);
+        return btensor::folded_idx(pshape, at);
+    };
+    auto get = w.mut_lam(w.pi(w.sigma({acc_ty, partials, w.type_nat(), w.type_nat()}), w.sigma({acc_ty, el})))
+                   ->set("boundPartialGet");
+    {
+        auto [gm, parts, t, e] = get->vars<4>();
+        get->set(true, buffer::op_read(gm, parts, partial_at(t, e)));
+    }
+    auto set
+        = w.mut_lam(w.pi(w.sigma({acc_ty, partials, w.type_nat(), w.type_nat(), el}), acc_ty))->set("boundPartialSet");
+    {
+        auto [sm, parts, t, e, value] = set->vars<5>();
+        set->set(true, buffer::op_write(sm, parts, partial_at(t, e), value)->proj(2, 0));
+    }
+    auto put = w.mut_lam(w.pi(w.sigma({acc_ty, w.type_nat(), el}), acc_ty))->set("boundCombinePut");
     {
         auto [pmem, e, value] = put->vars<3>();
         put->set(true, buffer::op_write(pmem, rbuf, target(coords_of(e)), value)->proj(2, 0));
@@ -4505,12 +4527,12 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
             auto [active, s, pairs, trip] = round->projs<4>([](auto value) { return Lit::as(value); });
             if (!active) continue;
             merges.push_back(w.app(w.app(w.annex<gpu::merge_pairs>(), meta),
-                                   {tile, w.lit_nat(elems), w.lit_nat(s), w.lit_nat(pairs), w.lit_nat(trip), op}));
+                                   {w.lit_nat(elems), w.lit_nat(s), w.lit_nat(pairs), w.lit_nat(trip), op, get, set}));
         }
-        combine = w.app(w.app(w.annex<gpu::merge_first>(), meta), {tile, w.lit_nat(elems), put});
+        combine = w.app(w.app(w.annex<gpu::merge_first>(), meta), {w.lit_nat(elems), get, put});
     } else {
         combine = w.app(w.app(w.annex<gpu::merge_serial>(), meta),
-                        {tile, w.lit_nat(elems), w.lit_nat(parts), rewrite(seed), op, put});
+                        {w.lit_nat(elems), w.lit_nat(parts), rewrite(seed), op, get, put});
     }
     auto protocol
         = w.app(w.annex<gpu::merge_rounds>(), {g, w.lit_nat(merges.size()), w.lit_nat(prank), pshape, el, w.sigma()});

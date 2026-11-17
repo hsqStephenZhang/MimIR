@@ -767,26 +767,21 @@ anx lam merge_rounds {g k r: Nat, s: «r; Nat», T R: *}
     let (t, p) = after k;
     let (t, x) = read_phase (t, λ (m: mem.M 0): [mem.M 0, R] = read (m, view p));
     (group_leave (sync_reclaim t), x);
-/// Where element `e` of partial `t` lies among partial tiles of `dims` stacked along their first dim in a buffer of shape `s`.
-lam partial_at {r: Nat} (s dims: «r; Nat») (t e: Nat): «d: r; Idx (s#d)» =
-    ‹d: r;
-        let stride = vec.fold.r @(Nat, Idx r) @r
-            (λ (q: Idx r, x: Nat): Nat = x * (1, dims#q)#(core.idx2nat d < core.idx2nat q)) (‹q: r; q›, 1);
-        let c      = e / stride % dims#d;
-        core.idx 0 (s#d) (core.select (core.idx2nat d == 0, t * dims#d + c, c))›;
 /// One round of a tree merge for `merge_rounds`: `trip` work-items each merge the pairs `t, t + trip, …` below `pairs`,
 /// pair `p` being element `p % elems` of the partials `p / elems` and `p / elems + span`, into the first of the two.
-anx lam merge_pairs {r: Nat, s: «r; Nat», T: *} (dims: «r; Nat», elems span pairs trip: Nat, op: [T, T] → T)
-    (m: mem.M 0, parts: buffer.Buf (r, s, T)): mem.M 0 =
+/// `get (mem, parts, t, e)` reads element `e` of partial `t` and `set` writes it.
+anx lam merge_pairs {B T: *} (elems span pairs trip: Nat, op: [T, T] → T,
+                              get: [mem.M 0, B, Nat, Nat] → [mem.M 0, T], set: [mem.M 0, B, Nat, Nat, T] → mem.M 0)
+    (m: mem.M 0, parts: B): mem.M 0 =
     fun from (t: I64, m: mem.M 0): mem.M 0 =
         affine.For @(0, 1, mem.M 0) pair done (t, core.bitcast I64 pairs, core.bitcast I64 trip, m)
         where
             con pair (p: I64, m: mem.M 0, next: Cn [mem.M 0]) =
                 let i      = core.bitcast Nat p / elems;
                 let e      = core.bitcast Nat p % elems;
-                let (m, a) = buffer.read (r, s, T) (m, parts, partial_at (s, dims) (i, e));
-                let (m, b) = buffer.read (r, s, T) (m, parts, partial_at (s, dims) (i + span, e));
-                next ((buffer.write (r, s, T) (m, parts, partial_at (s, dims) (i, e), op (a, b)))#0₂);
+                let (m, a) = get (m, parts, i, e);
+                let (m, b) = get (m, parts, i + span, e);
+                next (set (m, parts, i, e, op (a, b)));
             con done (m: mem.M 0) = return m;
         end;
     fun run (m: mem.M 0): mem.M 0 =
@@ -797,28 +792,29 @@ anx lam merge_pairs {r: Nat, s: «r; Nat», T: *} (dims: «r; Nat», elems span 
         end;
     cps.cps2ds run m;
 /// The reading phase of a tree merge: one work-item per element hands the first partial's to `put`.
-anx lam merge_first {r: Nat, s: «r; Nat», T: *} (dims: «r; Nat», elems: Nat, put: [mem.M 0, Nat, T] → mem.M 0)
-    (m: mem.M 0, parts: buffer.Buf (r, s, T)): [mem.M 0, []] =
+anx lam merge_first {B T: *} (elems: Nat, get: [mem.M 0, B, Nat, Nat] → [mem.M 0, T], put: [mem.M 0, Nat, T] → mem.M 0)
+    (m: mem.M 0, parts: B): [mem.M 0, []] =
     fun run (m: mem.M 0): mem.M 0 =
         affine.For @(0, 1, mem.M 0) (bind.item items) exit (0I64, core.bitcast I64 elems, 1I64, m)
         where
             con items (j: I64, m: mem.M 0, yield: Cn [mem.M 0]) =
                 let e      = core.bitcast Nat j;
-                let (m, v) = buffer.read (r, s, T) (m, parts, partial_at (s, dims) (0, e));
+                let (m, v) = get (m, parts, 0, e);
                 yield (put (m, e, v));
             con exit (m: mem.M 0) = return m;
         end;
     (cps.cps2ds run m, ());
 /// The reading phase of a merge in order: one work-item per element folds that element of the `n` partials from
 /// `seed` and hands the result to `put`.
-anx lam merge_serial {r: Nat, s: «r; Nat», T: *} (dims: «r; Nat», elems n: Nat, seed: T, op: [T, T] → T, put: [mem.M 0, Nat, T] → mem.M 0)
-    (m: mem.M 0, parts: buffer.Buf (r, s, T)): [mem.M 0, []] =
+anx lam merge_serial {B T: *} (elems n: Nat, seed: T, op: [T, T] → T, get: [mem.M 0, B, Nat, Nat] → [mem.M 0, T],
+                               put: [mem.M 0, Nat, T] → mem.M 0)
+    (m: mem.M 0, parts: B): [mem.M 0, []] =
     fun of (e: Nat, m: mem.M 0): [mem.M 0, T] =
         affine.For @(0, 2, (mem.M 0, T)) step done (0I64, core.bitcast I64 n, 1I64, (m, seed))
         where
             con step (t: I64, st: [mem.M 0, T], next: Cn [mem.M 0, T]) =
                 let (m, acc) = st;
-                let (m, v)   = buffer.read (r, s, T) (m, parts, partial_at (s, dims) (core.bitcast Nat t, e));
+                let (m, v)   = get (m, parts, core.bitcast Nat t, e);
                 next (m, op (acc, v));
             con done (st: [mem.M 0, T]) = return st;
         end;
