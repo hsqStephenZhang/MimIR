@@ -511,6 +511,7 @@ Hopper 链的 kernel 时间（1024³ F16 GEMM，`bench/gpu_tiling/gemm_tiled_wg_
   列主序不再是 `stage` 的轴置换加 `stored_at`，而是一个 `layout_expr.make` 值经 `placed` 暂存，读者用逻辑坐标；`stored_at`、`stored`、`Panel`、`resident_placed`、`read_panel`、`threads_placed` 都删掉了，`resident_as lay` 接受任何布局。
   `vectors` 只沿逻辑末维，并要求布局把每个向量存成连续的一段（`layout_expr.contiguous` 不为 1）；原来"列主序面板沿列取向量"的 `column_vectors` 在逻辑视图下写不出来，删掉了。
 - 秩小于 2：`layout_expr.make` 仍要求秩至少为 2，新增的 `layout_expr.rows` 直接构造行主序的值，秩 2 起与 `make` 给出的相同，所以秩 1 的累加器也有布局索引。
+  （第一版在秩 3 及以上给错了置换，见 §9.13。）
   它要到形状是字面量才展开：展开得早，每次展开各造一个包，同一个布局在两处就成了两个类型（一开始 `seed` 的结果与 `steps` 的参数因此对不上）。
 - 到 `gpu.SharedBuf`：`tensor.mim` 用 `import gpu;` 取 `gpu` 的声明（像 `btensor` 对 `ll` 那样只取声明；写成 `plugin gpu;` 会把 gpu 的阶段带进 CPU 程序，ll 后端报错），于是 `Tile` 旁边的 `Lowered (g, e) tile = gpu.SharedBuf (g, e, cap, rx, layout_expr.shape lay, T)` 直接引用 `gpu.SharedBuf`，瓦片的类型决定它的面板的类型。
   `lit/gpu/tile_shared.mim` 用它检查：`Filling` 的瓦片的面板经 `publish_view` 得到的正是 `Seen` 的瓦片的面板，`view` 给出布局存储形状的缓冲（列主序的 `(8, 16)` 是 `(16, 8)`），`claim` 得到 `Mine` 的；`lit/error/tile_shared_unpublished.mim` 是对未发布的面板取 `view`。
@@ -667,3 +668,28 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 每次编译比基线多约 5 s，几乎都是加载 `tensor` 插件的固定开销。
 其中大部分随合并 `feat/gpu-tiling` 而来：那条线自己加载就要 9.5 s，这边的改动在它之上再加约 0.8 s。
 没有 Release 构建的数字。
+
+### 9.13 一次外部审阅及其处理（2026-11-17）
+
+用另一个代理（`agy`，只读，没有运行任何程序）审了 `a10d52b44..HEAD` 的全部改动。它列了 9 条，下面是逐条核对的结果；"核对"指我用运行或读代码确认过。
+
+| 审阅意见 | 核对 | 处理 |
+|---|---|---|
+| `ws_fold` 结束时先过 `settle`（cluster 的收尾屏障）再交还最后一个槽；共享面板且晚一步归还时，交还要到达别的 work-group 的 mbarrier，那个 work-group 可能已经退出 | 属实（读代码） | 顺序改为等 MMA、交还、再 `settle` |
+| `layout_expr.rows` 在秩 3 及以上把单位维放错了位置，`shape (rows (2, 3, 4))` 得 `(2, 12, 1)` | 属实（运行复现），是 §9.5 引入的 | 置换改为把单位维放在第 2 位；受影响的只有类型里的布局索引与 `Lowered` 的形状，数据不受影响 |
+| `tc_wgmma` 两个朝向的布局都会被构造，解释器对每块面板都调它，于是非 wgmma 的面板会打出 `make` 的检查错误日志 | 属实（运行复现），原来就有 | 改为形状合法才构造，且只构造被选中的朝向 |
+| `lies_sw128` 只核对布局相对它自己去掉 swizzle 的摆放，不核对描述符假定的行宽；`16 / bytes` 没有防零 | 属实；行宽这一条是 §9.6 把判定改成与朝向无关时丢掉的 | 加上"描述符步进的行是 128 字节"（K 主序看摆放的末维，MN 主序看切出的原子），防零 |
+| `lies_sw128`、`lies_tma128` 判不出（非 2 的幂、带填充）时被放行 | 属实，是有意的 | 没改：判不出不等于错；写在这里 |
+| `check_sync` 对槽令牌的计数可以绕过：把令牌包进元组，或在外层取得、在循环里交还；分支没折叠时会误报 | 属实 | 没改：`ws_fold` 自己就在两个分支里传同一个元组，按元组计数会误报；`check_sync` 的文档改为如实说明 |
+| `gpu.in_flight` 是公理，可以凭空构造 | 属实，§9.8 已写 | 没改 |
+| A 在寄存器里的 wgmma（`wgmma_lane`）调 `wgmma_batch` 时写死在途 0、不参与轮转 | 属实，原来就有 | 没改：与晚归还同用时现在是类型错误而不是错结果 |
+| `ring_safe` 没有按 `persistent_fill` 的编号建模，注释却说覆盖了跨瓦片 | 属实 | 注释改为如实；模型没扩 |
+| `wgmma_batch` 的 `publish` 在"外层通用存储驻留的面板 + 内层环"下可能漏掉 `fence.proxy.async` | 没有核对，原来就有 | 没改 |
+| 绑定归约按 `n` 而不是 warp 数分配部分和的缓冲 | 属实，原来就有，只是多占内存 | 没改 |
+
+审阅指出的证据缺口里补了两处，都在 H200 上执行通过：
+
+- `lit/{gpu,nvptx}/tile_wgmma_ws_shared_refill.mim`：共享面板的 cluster 加生产者 warp，4 槽、8 个块，槽被回填且晚一步归还。
+- `lit/{gpu,nvptx}/tile_wgmma_persistent_late.mim`：持久化的 4 槽环、每块瓦片 6 个块，不是整圈且晚一步归还。
+
+仍然只有"执行结果正确"而没有反例的：上面第一行的修复（错的顺序是与另一个 work-group 退出的竞争，执行测不出）；`tma_fill`、`tma_ring`、`wgmma_batch` 传错参数会怎样。
