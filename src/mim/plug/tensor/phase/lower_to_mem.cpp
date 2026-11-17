@@ -4494,25 +4494,15 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         }
         return coords;
     };
-    auto partial_at = [&](const Def* t, const DefVec& coords) {
-        auto at = DefVec(coords.begin(), coords.end());
-        if (rank)
-            at[0] = w.call(core::wrap::add, core::Mode::none,
-                           Defs{w.call(core::wrap::mul, core::Mode::none, Defs{t, w.lit_i64(rows)}), at[0]});
-        else
-            at.push_back(t);
-        return btensor::folded_idx(pshape, at);
-    };
-    auto item_loop = [&](Lam* from, bool first, u64 trip, const Def* mem, const Def* exit, const char* name) {
-        auto body    = w.mut_con({w.type_i64(), acc_ty, w.cn(acc_ty)})->set(name);
-        auto wrapped = w.app(w.app(w.annex<gpu::bind>(gpu::bind::item), body->type()), body);
-        from->set(first, w.call<affine::For>(wrapped, exit, Defs{w.lit_i64(0), w.lit_i64(trip), w.lit_i64(1), mem}));
-        return body;
-    };
-    auto combine                     = w.mut_lam(w.pi(state, w.sigma({acc_ty, w.sigma()})))->set("boundCombine");
-    auto [combine_mem, merged]       = combine->vars<2>();
-    auto [run_combine, combine_call] = btensor::ds_splice(combine_mem, acc_ty, "boundCombineRun");
-    combine->set(true, w.tuple({combine_call, w.tuple()}));
+    // `gpu.merge_pairs`, `gpu.merge_first` and `gpu.merge_serial` are the merge; where an element goes comes from here.
+    auto meta = w.tuple({w.lit_nat(prank), pshape, el});
+    auto tile = w.tuple(DefVec(prank, [&](size_t d) { return w.lit_nat(rank ? dims[d] : 1); }));
+    auto put  = w.mut_lam(w.pi(w.sigma({acc_ty, w.type_nat(), el}), acc_ty))->set("boundCombinePut");
+    {
+        auto [pmem, e, value] = put->vars<3>();
+        put->set(true, buffer::op_write(pmem, rbuf, target(coords_of(e)), value)->proj(2, 0));
+    }
+    const Def* combine;
     DefVec merges;
     // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each barrier.
     if (Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(parts)))) {
@@ -4521,49 +4511,13 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
         for (auto round : rounds->projs(parts / 2)) {
             auto [active, s, pairs, trip] = round->projs<4>([](auto value) { return Lit::as(value); });
             if (!active) continue;
-            auto merge_round             = w.mut_lam(w.pi(fill->var()->type(), acc_ty))->set("boundTreeRound");
-            auto [round_mem, parts]      = merge_round->var()->projs<2>();
-            auto [run_round, round_call] = btensor::ds_splice(w.tuple({round_mem, parts}), acc_ty, "boundTreeRun");
-            merge_round->set(true, round_call);
-            auto step = item_loop(run_round, true, trip, round_mem, run_round->ret_var(), "boundTreeItems");
-            auto [t, tmem, tyield] = step->vars<3>();
-            // The pair loop's exit is its own continuation; `lower_for` copies an exit's body into the loop.
-            auto after = w.mut_con(acc_ty)->set("boundTreeAfter");
-            after->app(true, tyield, after->var());
-            auto qbody = w.mut_con({w.type_i64(), acc_ty, w.cn(acc_ty)})->set("boundTreePairs");
-            step->set(true, w.call<affine::For>(qbody, after, Defs{t, w.lit_i64(pairs), w.lit_i64(trip), tmem}));
-            auto [pair, qmem, qyield] = qbody->vars<3>();
-            auto plan          = w.app(w.annex(tensor::r8_plan::pair_coords),
-                                       {w.call<core::bitcast>(w.type_nat(), pair), w.lit_nat(elems), w.lit_nat(s)});
-            auto [i, e, other] = plan->projs<3>([&](auto value) { return w.call<core::bitcast>(w.type_i64(), value); });
-            auto coords        = coords_of(e);
-            auto [m1, a]       = buffer::op_read(qmem, parts, partial_at(i, coords))->projs<2>();
-            auto [m2, b]       = buffer::op_read(m1, parts, partial_at(other, coords))->projs<2>();
-            auto merged        = w.app(op, w.tuple({a, b}));
-            qbody->app(true, qyield, buffer::op_write(m2, parts, partial_at(i, coords), merged)->proj(2, 0));
-            merges.push_back(merge_round);
+            merges.push_back(w.app(w.app(w.annex<gpu::merge_pairs>(), meta),
+                                   {tile, w.lit_nat(elems), w.lit_nat(s), w.lit_nat(pairs), w.lit_nat(trip), op}));
         }
-        // One work-item per tile element publishes the first partial.
-        auto citems = item_loop(run_combine, true, elems, combine_mem, run_combine->ret_var(), "boundCombineItems");
-        auto [j, jmem, jyield] = citems->vars<3>();
-        auto coords            = coords_of(j);
-        auto [pmem, pval]      = buffer::op_read(jmem, merged, partial_at(w.lit_i64(0), coords))->projs<2>();
-        citems->app(true, jyield, buffer::op_write(pmem, rbuf, target(coords), pval)->proj(2, 0));
+        combine = w.app(w.app(w.annex<gpu::merge_first>(), meta), {tile, w.lit_nat(elems), put});
     } else {
-        // One work-item per tile element merges that element's partials in order.
-        auto citems = item_loop(run_combine, true, elems, combine_mem, run_combine->ret_var(), "boundCombineItems");
-        auto [j, jmem, jyield] = citems->vars<3>();
-        auto coords            = coords_of(j);
-        auto write             = w.mut_con({acc_ty, el})->set("boundCombineWrite");
-        auto [wmem, wval]      = write->vars<2>();
-        write->app(true, jyield, buffer::op_write(wmem, rbuf, target(coords), wval)->proj(2, 0));
-        auto [tbody, tcall]
-            = affine::counting_for(w.lit_i64(parts), w.tuple({jmem, rewrite(seed)}), write, w.sym("boundCombineStep"));
-        citems->set(true, tcall);
-        auto [t, tacc, tyield] = tbody->vars<3>();
-        auto [tmem, tval]      = tacc->projs<2>();
-        auto [pmem, pval]      = buffer::op_read(tmem, merged, partial_at(t, coords))->projs<2>();
-        tbody->app(true, tyield, w.tuple({pmem, w.app(op, w.tuple({tval, pval}))}));
+        combine = w.app(w.app(w.annex<gpu::merge_serial>(), meta),
+                        {tile, w.lit_nat(elems), w.lit_nat(parts), rewrite(seed), op, put});
     }
     auto protocol
         = w.app(w.annex<gpu::merge_rounds>(), {g, w.lit_nat(merges.size()), w.lit_nat(prank), pshape, el, w.sigma()});
