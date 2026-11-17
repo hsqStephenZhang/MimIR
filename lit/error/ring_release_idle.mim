@@ -6,7 +6,7 @@ plugin core;
 plugin mem;
 plugin gpu;
 
-lam unread {depth: Nat} (H: [Idx depth, Bool] → *) (sync: gpu.SyncOf depth H) (m: mem.M 0): mem.M 0 =
+lam unread {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0): mem.M 0 =
     let (_, _, _, _, release, idle, _) = sync;
     release (m, core.idx 0 depth 0, tt, idle);
 

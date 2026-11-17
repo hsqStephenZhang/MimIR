@@ -37,6 +37,11 @@ bool has_panel(const Def* type) {
     return false;
 }
 
+bool is_slot_token(const Def* def) {
+    return def->type() && (Axm::isa<gpu::Held>(def->type()) || Axm::isa<gpu::Vacant>(def->type()))
+        && !Axm::isa<gpu::unheld>(def);
+}
+
 } // namespace
 
 // A token is consumed where it is made, never inside a mutable nested there, which may run more than once.
@@ -44,6 +49,7 @@ bool has_panel(const Def* type) {
 void CheckSync::start() {
     DefMap<DefVec> users;
     DefSet counted, linear;
+    DefVec slots;
     MutMap<Def*> parent, inlined;
     ankerl::unordered_dense::map<nat_t, const Def*> entered;
     // A `mem.fresh` continuation runs exactly once in place, so it belongs to the mutable that requests it.
@@ -80,6 +86,7 @@ void CheckSync::start() {
             if (!seen.insert(def).second) continue;
             // Universes and levels have no type.
             if (def->type() && (has_token(def->type()) || visibility(def))) linear.insert(def);
+            if (is_slot_token(def)) slots.push_back(def);
             if (auto fresh = Axm::isa<mem::fresh>(def))
                 if (auto k = fresh->arg()->proj(2, 1)->isa_mut()) inlined.emplace(k, mut);
             if (auto enter = Axm::isa<gpu::group_enter>(def)) {
@@ -119,6 +126,10 @@ void CheckSync::start() {
             return Axm::isa<gpu::publish_view>(u) || Axm::isa<gpu::claim>(u);
         });
     };
+    // A ring's last slot may stay held when its fold ends, so a slot token is used at most once.
+    for (auto def : slots)
+        if (auto by = users_of(def); !def->isa<Hole>() && by.size() > 1)
+            def->blame("ring slot token `{}` is used {} times", def, by.size()).bail();
     // Tokens first, so a duplicated token is reported before the panels it duplicates.
     auto order = DefVec(linear.begin(), linear.end());
     std::ranges::stable_partition(order, [](const Def* def) { return Axm::isa<gpu::GM>(def->type()); });

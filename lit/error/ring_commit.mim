@@ -1,0 +1,15 @@
+// RUN: not %mim %s -o - 2>&1 | %FileCheck %s
+
+// A ring's sync gives a fill what it holds of the slot it found empty, so the fill cannot commit copies into another
+// slot with it.
+
+plugin core;
+plugin mem;
+plugin gpu;
+
+lam other {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, acquire, commit, _, _, _, _) = sync;
+    let (m, vacant) = acquire (m, n);
+    commit (m, core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth)), vacant);
+
+// CHECK: error: {{.*}}not assignable
