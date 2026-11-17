@@ -3957,6 +3957,21 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             if (!rows || !cols || *cols * size % 128 || (!mn && *cols * size != 128))
                 slice->blame("a TMA-filled panel holds rows of 128 bytes or atoms of them").bail();
             auto atom = 128 / size;
+            // The copy lands where the hardware puts it, so the panel's layout must name those addresses.
+            if (auto logical = fe::lookup(logical_shapes_, targets[j])) {
+                auto [pos, tiles, perm, pad] = stage->decurry()->decurry()->args<4>();
+                auto inner                   = Lit::as(pos);
+                u64 outer                    = 0;
+                while (Lit::as(perm->proj(2, outer)) == inner)
+                    ++outer;
+                auto row = inner == 0 ? u64(2) : outer, col = inner == 0 ? outer : u64(2);
+                auto query
+                    = w.tuple({fe::lookup(layouts_, targets[j]), w.lit_nat(size), w.lit_nat(row), w.lit_nat(col)});
+                auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_tma128), query, logical);
+                log().d("TMA panel {} against the swizzled copy: {}", targets[j]->type(), verdict);
+                if (Lit::isa(verdict) == 1)
+                    slice->blame("a TMA-filled panel does not lie where the swizzled copy puts it").bail();
+            }
             // A multicast panel is a cluster's: each work-group copies its share of the rows into all of them.
             auto shares = cluster_ && slots[j] < 64 && (cluster_->second >> slots[j] & 1) ? cluster_->first : u64(1);
             if (*rows % (8 * shares))
