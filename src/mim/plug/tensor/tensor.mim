@@ -2845,10 +2845,10 @@ pub mod check
                            persistent, warpgroups, rest))))))
             | 4 (sizes, _, promote, pipeline, pingpong, _, rest) =>
                 or_else (fail_with (both (both (pingpong == 1, warpgroups != 0), warpgroups != 2), 16, warpgroups, 0),
-                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (cluster != 0, 10),
+                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
                 or_else (specialized (block, sizes),
                     wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, warpgroups, rest))))));
+                           persistent, warpgroups, rest)))));
     lam warp_ok {n: Nat, Acc Mma: *, w: «n; Nat»} (ro nis: Nat, block: «n; Nat», a b: Bool, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Verdict =
         match l with
             | 0 => ok

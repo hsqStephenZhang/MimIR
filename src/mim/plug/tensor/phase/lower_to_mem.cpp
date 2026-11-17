@@ -4029,8 +4029,6 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     };
     tma         = tma && panels != 0;
     specialized = tma && producer_ && fragments && fragments->group;
-    if (specialized && cluster_)
-        app->blame("a specialized reduction does not share panels across a cluster").n(unlowered).bail();
     // A persistent work-group sets its ring up in its first tile, and its fills count on across its tiles.
     auto first_round = tile_round_ ? w.call(core::ncmp::e, Defs{tile_round_, w.lit_nat_0()}) : w.lit_tt();
     if (tma && tile_round_) {

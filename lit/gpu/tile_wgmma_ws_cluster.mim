@@ -1,7 +1,10 @@
-// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_ws_cluster.mim:26:{{.*}}error: a specialized reduction does not share panels across a cluster
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_wgmma_mn_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
 
-// A specialized reduction does not share its panels across a cluster.
+// The producer-fed rings of `tile_wgmma_ws.mim` in two work-groups that form a cluster and share no panel: each keeps
+// its own ring.
 
 plugin tensor;
 plugin core;
@@ -24,3 +27,9 @@ extern fun gemm_wg_mn (a: tensor.Tensor 2 (128, 128) H, b: tensor.Tensor 2 (128,
     let root = map_reduce ((128, 128), (128, 128, 128)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
     return (tile_req (root, (), levels, default_control));
+
+// CHECK-DAG: gpu.wgmma_f16
+// CHECK-DAG: gpu.wgmma_wait
+// CHECK-DAG: gpu.tma_load_if
+// CHECK-DAG: gpu.mbar_wait_at
+// CHECK-DAG: gpu.mbar_arrive_if

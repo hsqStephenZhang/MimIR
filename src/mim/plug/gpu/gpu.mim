@@ -922,9 +922,11 @@ anx lam shared_ring {depth: Nat} (sync: RingSync depth, size: Nat, empties: buff
 /// A ring a producer warp fills for `consumers` warpgroups: the first work-item of the producer waits for the "empty"
 /// mbarrier of a slot before it fills it, and the first lane of each of a consumer's four warps arrives on that of the
 /// slot it gives up.
+/// When `readers` work-groups of a cluster share the panels, each one's producer fills its share into all of them, so
+/// a slot is empty once the consumers of all have given it up: each arrives on the slot's mbarrier in every one.
 anx lam consumer_ring {depth: Nat}
-    (sync: RingSync depth, empties: buffer.Buf (1, depth, I64), consumers: Nat, producer: Bool, vacant: Nat → Nat, initiator: Bool): RingSync depth =
-    (λ (m: mem.M 0): mem.M 0 = mbars_init (empties, 4 * consumers, initiator) ((sync#0₇) m),
+    (sync: RingSync depth, empties: buffer.Buf (1, depth, I64), consumers readers: Nat, producer: Bool, vacant: Nat → Nat, initiator: Bool): RingSync depth =
+    (λ (m: mem.M 0): mem.M 0 = mbars_init (empties, 4 * consumers * readers, initiator) ((sync#0₇) m),
      λ (m: mem.M 0, n: Nat): [mem.M 0, Vacant depth (core.idx 0 depth (n % depth))] =
         let issue  = core.bit2.and 0 (producer, core.icmp.e (core.bit2.and 0 (item_index (), 127I64), 0I64));
         let (m, v) = (sync#1₇) (m, n);
@@ -932,7 +934,13 @@ anx lam consumer_ring {depth: Nat}
      sync#2₇, sync#3₇,
      λ (m: mem.M 0, s: Idx depth, live: Bool, h: Held depth (s, live)): mem.M 0 =
         let first = core.icmp.e (core.bit2.and 0 (item_index (), 31I64), 0I64);
-        mbar_arrive_if ((sync#4₇) (m, s, live, h), buf_addr (empties, s), core.bit2.and 0 (first, live)),
+        let issue = core.bit2.and 0 (first, live);
+        let slot  = buf_addr (empties, s);
+        let m     = (sync#4₇) (m, s, live, h);
+        (λ (): mem.M 0 = mbar_arrive_if (m, slot, issue),
+         λ (): mem.M 0 = vec.fold.l @(mem.M 0, Idx readers) @readers
+            (λ (m: mem.M 0, r: Idx readers): mem.M 0 = mbar_arrive_cluster_if (m, slot, core.idx 0 0x100000000 (core.idx2nat r), issue))
+            (m, ‹r: readers; r›))#(1 < readers) (),
      sync#5₇, async_wait);
 /// A work-group's barrier makes the initialized mbarriers visible to all of its work-items.
 anx lam fenced_ring {depth: Nat} (sync: RingSync depth): RingSync depth =
@@ -990,8 +998,10 @@ anx lam tma_ring {depth: Nat}
     let S         = RingSync depth;
     let initiator = core.bit2.and 0 (leader (), first);
     let base      = mbar_ring (bars, blocks, full, initiator);
-    let shared    = (λ (): S = base, λ (): S = shared_ring (base, cluster, empties, vacant, initiator))#sharing ();
-    let fed       = (λ (): S = consumer_ring (shared, empties, consumers, producer, vacant, initiator), λ (): S = shared)
+    let shared    = (λ (): S = base, λ (): S = shared_ring (base, cluster, empties, vacant, initiator))
+                        #(core.bit2.and 0 (sharing, consumers == 0)) ();
+    let readers   = core.select (sharing, cluster, 1);
+    let fed       = (λ (): S = consumer_ring (shared, empties, consumers, readers, producer, vacant, initiator), λ (): S = shared)
                         #(consumers == 0) ();
     let scoped    = ((λ (): S = fenced_ring fed, λ (): S = resumed_ring (fed, first))#persistent,
                      λ (): S = cluster_ring (fed, cluster))#(cluster != 0) ();
