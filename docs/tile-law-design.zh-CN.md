@@ -603,3 +603,14 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 容器回到 H200 NVL 后重跑了全量 lit：1024 个测试，1015 通过，8 个不支持，1 个预期失败，没有失败；以 `cuda-sm90` 为条件的 wgmma、TMA、cluster、持久化、ping-pong 程序都实际执行并通过。
 所以统一的 `Tile`、槽令牌、`tma_fill`、`tma_ring`、`wgmma_batch`、`persistent_tiles`、布局的单一定义现在都有 Hopper 上的执行为证。
 没有重测的仍是 §9.4 的 kernel 时间。
+
+### 9.10 持久化环不再要求整圈（2026-11-17，H200）
+
+调研 §4.2 指出"持久化环每块瓦片的块数是环深的倍数"只是这个构造器的前提。现在去掉了。
+
+- 一块瓦片的第 `i` 个块仍用第 `i % depth` 个缓冲（缓冲每块瓦片从第一个开始轮转），变的是它算作环的第几次填充：`pipeline_plan.persistent_fill (round, count, depth) i` 数出这个槽在之前各块瓦片和本块瓦片里已经被填过几次，mbarrier 的槽号与奇偶都由它得出。
+  块数是整圈时它就是原来的 `round · count + i`。
+- `gpu.ws_fold` 的参数从"之前的填充数 `base`"改为"块到填充编号的映射 `nth`"；检查规则 12 与 C++ 里对应的报错删掉了。
+- 先试过的另一种做法不行：让缓冲按之前的填充数转过去再开始，需要运行期在几块共享内存缓冲之间选择，而它们的地址是按定义静态算出的，kernel 在 H200 上报非法地址（CUDA 716）。
+- `lit/{gpu,nvptx}/tile_wgmma_persistent_turn.mim`：3 槽的环、每块瓦片 4 个块，在 H200 上执行通过；把编号换回 `round · count + i`，它失败而 4 槽的原测试仍通过。
+  原来的拒绝测试 `lit/error/tile_persistent_ring.mim` 删掉了。
