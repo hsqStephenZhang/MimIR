@@ -614,3 +614,15 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - 先试过的另一种做法不行：让缓冲按之前的填充数转过去再开始，需要运行期在几块共享内存缓冲之间选择，而它们的地址是按定义静态算出的，kernel 在 H200 上报非法地址（CUDA 716）。
 - `lit/{gpu,nvptx}/tile_wgmma_persistent_turn.mim`：3 槽的环、每块瓦片 4 个块，在 H200 上执行通过；把编号换回 `round · count + i`，它失败而 4 槽的原测试仍通过。
   原来的拒绝测试 `lit/error/tile_persistent_ring.mim` 删掉了。
+
+### 9.11 生产者 warp 与 cluster 可以同用（2026-11-17，H200）
+
+调研 §4.2 指出的另一处实现限制："specialized 的归约不跨 cluster 共享面板"。现在两种情形都能生成并执行。
+
+- **cluster 里各 work-group 不共享面板**：每个 work-group 有自己的环与生产者 warp，`tma_ring` 在 `consumer_ring` 外面再套 `cluster_ring`。
+- **cluster 共享面板**：每个 work-group 的生产者 warp 把自己那一份行用 multicast 拷进所有 work-group 的槽。
+  一个槽要等所有 work-group 的消费者都交还才算空，所以 `consumer_ring` 多了参数 `readers`：槽的 "empty" mbarrier 期望 `4 · consumers · readers` 次到达，每个消费者 warp 交还时到达 cluster 里每个 work-group 的那个 mbarrier。
+  这就是调研规则 A 说的"到达集合由接收者推出"在这一种拓扑下的样子；`readers` 仍是一个数，不是从接收者图算出来的。
+- 检查规则 10 与 C++ 里对应的报错删掉了；持久化的 work-group 仍不能成 cluster。
+- 测试：`lit/{gpu,nvptx}/tile_wgmma_ws_cluster.mim`（不共享）与 `tile_wgmma_ws_shared.mim`（共享 A 的面板），在 H200 上执行，结果全对；原来的拒绝测试 `lit/error/tile_ws_cluster.mim` 删掉了。
+- 没有做变异：这里可能出的错是 work-group 之间的竞争（到达数少算、少到达一个 work-group），§9 的表里已经记过这类错执行测不出，少到达则是死锁；所以这一步的证据只有"执行结果正确"，没有"错了会被发现"。

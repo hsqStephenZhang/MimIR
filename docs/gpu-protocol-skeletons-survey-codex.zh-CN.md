@@ -186,7 +186,7 @@ packing、在线 softmax 的 `(m,l,O)` 更新和条件 rescale 是这些协议�
 | R5 通道的借用状态 | 消费者的 `gpu.Held` 与生产者的 `gpu.Vacant` 令牌，骨架对两者参数化，`gpu.check_sync` 拒绝同一令牌用两次 | 令牌不带 epoch；归还仍按滞后的步数，不由计算完成证明（规则 A 的前半句） |
 | R4 异步计算的完成队列 | `gpu.wgmma_batch`：累加器只从 `wait` 的结果里拿回来 | 完成与槽的归还之间没有类型上的联系 |
 | R5 的 expected bytes | `gpu.tma_fill`：期望的字节数就是各次拷贝的字节数之和 | — |
-| R6、R7 的组合 | `gpu.tma_ring` 由 cluster、共享、生产者、ping-pong、持久化决定套哪几层 | `specialized` 与 cluster 共享同时出现仍被拒绝（§4.2 说的实现限制）；到达数不是从接收者集合推出的 |
+| R6、R7 的组合 | `gpu.tma_ring` 由 cluster、共享、生产者、ping-pong、持久化决定套哪几层；生产者 warp 与 cluster（共享或不共享面板）可以同用，持久化环不要求整圈 | 到达数由 `readers` 这个数给出，不是从接收者图推出的；持久化与 cluster 不能同用 |
 | R8 | `gpu.merge_pairs`、`merge_first`、`merge_serial`、`lane_merge` | 有序树、scan |
 | R11 | `gpu.persistent_tiles` | 领取下一项与计算当前项的重叠（CLC） |
 | 布局对象 | `Tile` 的布局索引是 `layout_expr.Expr`；`lies_sw128`、`lies_tma128`、`wgmma_fields` 从布局值判定或导出 | R1 的布局转换 |
