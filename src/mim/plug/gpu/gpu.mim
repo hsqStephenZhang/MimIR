@@ -832,6 +832,23 @@ anx lam merge_serial {r: Nat, s: «r; Nat», T: *} (dims: «r; Nat», elems n: N
             con exit (m: mem.M 0) = return m;
         end;
     (cps.cps2ds run m, ());
+/// A persistent work-group runs, round after round, the tile `ctas` further on from its own `id` among `total`, as long
+/// as there is one; `settle` ends a round, so the next tile finds the last one's effects.
+anx lam persistent_tiles {n: Nat, Ts: «n; *»} (total ctas: Nat, settle: «i: n; Ts#i» → «i: n; Ts#i»)
+    (tile: Cn [linear round: Nat, «i: n; Ts#i», Cn «i: n; Ts#i»]): Cn [id: Nat, «i: n; Ts#i», Cn «i: n; Ts#i»] =
+    let S = «i: n; Ts#i»;
+    con run (id: Nat, init: S, exit: Cn S)@tt =
+        affine.For @(0, n, Ts) rounds exit (0I64, core.bitcast I64 ((total + ctas - 1) / ctas), 1I64, init)
+        where
+            con rounds (r: I64, st: S, next: Cn S) =
+                let round  = core.bitcast Nat r;
+                let linear = id + round * ctas;
+                con done (st: S) = next (settle st);
+                con skip (st: S) = next st;
+                con go (st: S)   = tile (linear, round, st, done);
+                (skip, go)#(linear < total) st;
+        end;
+    run;
 /// What a step holds of slot `s` of a ring of `depth` slots: once its fill has landed and until the step gives the
 /// slot up it is `live`; `unheld` is the one that is not, for a step that has read none yet.
 /// Only a ring's sync makes them, `hold` on the memory it waited on so that each is a value of its own, and `retire`

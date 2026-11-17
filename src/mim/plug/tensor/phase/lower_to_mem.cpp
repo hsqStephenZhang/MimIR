@@ -1836,25 +1836,12 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         Lam* tile            = body;
         const Def* tile_acc  = state;
         const Def* tile_exit = yield;
-        Lam* round_done      = nullptr;
-        const Def* round_end = nullptr;
         const Def* round     = nullptr;
+        const Def* id        = linear;
+        // `gpu.persistent_tiles` is the protocol of the rounds; what a tile computes comes from here.
         if (ctas) {
-            auto rounds                   = w.lit_i64((total + ctas - 1) / ctas);
-            auto [tiles, tiles_call]      = affine::counting_for(rounds, state, yield, w.sym("tileRounds"));
-            auto [counter, carried, next] = tiles->vars<3>();
-            round                         = w.call<core::bitcast>(w.type_nat(), counter);
-            linear     = w.call(core::nat::add, Defs{linear, w.call(core::nat::mul, Defs{round, w.lit_nat(ctas)})});
-            tile       = w.mut_con(carried->type())->set("tileRound");
-            round_done = w.mut_con(carried->type())->set("tileRoundDone");
-            auto skip  = w.mut_con(carried->type())->set("tileRoundSkip");
-            skip->app(true, next, skip->var());
-            round_end = next;
-            tiles->app(true, w.extract(w.tuple({skip, tile}), w.call(core::ncmp::l, Defs{linear, w.lit_nat(total)})),
-                       carried);
-            body->set(true, tiles_call);
-            tile_acc  = tile->var();
-            tile_exit = round_done;
+            tile = w.mut_con({w.type_nat(), w.type_nat(), state->type(), w.cn(state->type())})->set("tileRound");
+            std::tie(linear, round, tile_acc, tile_exit) = tile->vars<4>();
         }
         // The producer warp makes a warp count that is no multiple of four, so one sub-partition's register file holds
         // more warps than the others.
@@ -1938,11 +1925,17 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             skip->app(true, tile_exit, skip->var());
             tile->app(true, w.extract(w.tuple({skip, run}), inside), tile_acc);
         }
-        if (round_done) {
-            auto next = DefVec(round_done->var()->projs(plan.count + 1));
+        if (ctas) {
+            auto settle = w.mut_lam(w.pi(state->type(), state->type()))->set("tileRoundSettle");
+            auto next   = DefVec(settle->var()->projs(plan.count + 1));
             if (round_fence_) next[0] = w.app(w.annex<gpu::fence>(), next[0]);
             round_fence_ = fenced;
-            round_done->app(true, round_end, w.tuple(next));
+            settle->set(true, w.tuple(next));
+            auto types
+                = w.tuple(DefVec(plan.count + 1, [&](size_t i) { return state->proj(plan.count + 1, i)->type(); }));
+            auto rounds = w.app(w.annex<gpu::persistent_tiles>(), {w.lit_nat(plan.count + 1), types});
+            rounds      = w.app(w.app(rounds, {w.lit_nat(total), w.lit_nat(ctas), settle}), tile);
+            body->app(true, rounds, {id, state, yield});
         }
         return loop;
     };
