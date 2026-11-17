@@ -2551,7 +2551,9 @@ const Def* LowerToMem::wgmma_batch(const Def* mem, const Def* x, Defs issue, con
     auto& w    = new_world();
     auto batch = w.app(w.annex<gpu::wgmma_batch>(), {x->type(), w.lit_nat(issue.size())});
     batch      = w.app(batch, {w.lit_bool(!proxied_), pending, w.lit_bool(turn), turn ? consumer_ : w.lit_nat_0()});
-    return w.app(w.app(batch, {mem, x}), w.tuple(issue));
+    auto [out, y, left] = w.app(w.app(batch, {mem, x}), w.tuple(issue))->projs<3>();
+    in_flight_          = left;
+    return w.tuple({out, y});
 }
 
 // What `layout_expr.wgmma_fields` says of a `wgmma` operand panel: whether it is MN-major and its descriptor's fields.
@@ -4096,8 +4098,11 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 forward_layouts(ring[0][j], targets[j]);
             return tma ? fill_tma(at, shifted(block), targets, nth) : fill_block(at, block, targets);
         });
-        auto fold_step = w.mut_fun(w.sigma({M, acc_ty, w.type_nat(), slot_ty}), w.sigma({M, acc_ty}))->set("ringStep");
-        closure(fold_step, [&]() -> const Def* {
+        // A specialized step also hands back what its MMAs left in flight, which is what its late release relies on.
+        auto left      = w.app(w.annex<gpu::InFlight>(), w.lit_nat(overlap));
+        auto step_cod  = specialized ? w.sigma({M, acc_ty, left}) : w.sigma({M, acc_ty});
+        auto fold_step = w.mut_fun(w.sigma({M, acc_ty, w.type_nat(), slot_ty}), step_cod)->set("ringStep");
+        auto step_body = [&]() -> const Def* {
             auto [at, acc, iteration, slot] = fold_step->var(2, 0)->projs<4>();
             bind_old(parameter->has_var());
             map(accumulator, acc);
@@ -4120,6 +4125,13 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             auto source = fe::lookup(storage_shapes_, root);
             plain(value);
             return w.tuple({copy_box(at, acc, storage, value, source ? source : extent, extent, cooperative()), acc});
+        };
+        closure(fold_step, [&]() -> const Def* {
+            auto issued = fe::Restore<const Def*>(in_flight_, nullptr);
+            auto next   = step_body();
+            if (!specialized) return next;
+            if (!in_flight_) app->blame("a specialized reduction's step issues no MMAs").bail();
+            return w.tuple({next->proj(2, 0), next->proj(2, 1), in_flight_});
         });
         auto depth  = w.lit_nat(ring.size());
         auto slots  = DefVec(ring.size(), [&](size_t s) { return w.tuple(ring[s]); });

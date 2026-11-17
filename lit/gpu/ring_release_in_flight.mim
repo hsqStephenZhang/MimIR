@@ -1,0 +1,16 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A producer-fed ring gives a slot up `lag` steps after its step read it, and a step that leaves at most `lag` groups of
+// MMAs in flight says so.
+
+plugin core;
+plugin mem;
+plugin gpu;
+
+fun fill (m: mem.M 0, _: Nat, _: []): mem.M 0 = return m;
+fun step (m: mem.M 0, a: I32, _: Nat, _: []): [mem.M 0, I32, gpu.InFlight 1] = return (m, a, gpu.in_flight 1);
+
+extern lam late (m: mem.M 0): [mem.M 0, I32] =
+    gpu.ws_fold @(I32, [], 4) (gpu.async_ring @4 (2, ff), 8I64, ff, 0, 1) (m, 0I32, ‹4; ()›) (fill, step);
+
+// CHECK: gpu.async_wait_group

@@ -257,10 +257,11 @@ private:
     u64 group_threads_ = 0;
     /// In a specialized warpgroup region: whether this warpgroup is the producer, the consumer's index, how many
     /// consumers there are, and whether they alternate their MMAs.
-    const Def* producer_ = nullptr;
-    const Def* consumer_ = nullptr;
-    u64 consumers_       = 0;
-    bool pingpong_       = false;
+    const Def* producer_  = nullptr;
+    const Def* consumer_  = nullptr;
+    const Def* in_flight_ = nullptr; ///< What the last group of MMAs left in flight.
+    u64 consumers_        = 0;
+    bool pingpong_        = false;
     /// How many groups of warpgroup MMAs a fold step leaves pending.
     u64 wgmma_pending_ = 0;
     /// In a persistent work-group, the index of its current tile among its own, and whether its tiles need a
