@@ -27,8 +27,8 @@ struct NvptxCompileArgs {
     bool embed_ptx   = true;
     bool embed_cubin = true;
     std::string compute_cap, libdevice_path;
-    std::string link_llvm_args, opt_args = R"(-passes="nvvm-reflect,default<O3>" -unroll-threshold=600)", llc_args, ptxas_args,
-                                fatbinary_args;
+    std::string link_llvm_args, opt_args = R"(-passes="nvvm-reflect,default<O3>" -unroll-threshold=600)", llc_args,
+                                ptxas_args, fatbinary_args;
 };
 
 constexpr auto Default_Compute_Cap = "75";
@@ -257,6 +257,7 @@ static constexpr PluginArg known_args[] = {
     {"Xllc=<args>",                     "When embedding: passes `<args>` to `llc` (default: none)."},
     {"Xptxas=<args>",                   "When embedding: passes `<args>` to `ptxas` (default: none); also passed to `fatbinary` via `--cmdline` when the PTX image is embedded."},
     {"Xfatbinary=<args>",               "When embedding: passes `<args>` to `fatbinary` (default: none)."},
+    {"ptrmask=<0|1>",                   "States a kernel pointer's 16-byte alignment with `llvm.ptrmask`, which lets LLVM widen the accesses through it, or as an align assumption; the default is the mask from LLVM 23 on, whose earlier versions crash on it."},
     {"profile=1",                       "Sums each kernel's cycles before and at every barrier site; the first thread of the first work-group prints them as `prof <site> c|w <cycles>`."},
 };
 

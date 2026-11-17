@@ -11,6 +11,10 @@ TOOLS = ("llvm-link", "opt", "llc", "ptxas", "fatbinary")
 
 
 def fake_tool(tool, args):
+    # The backend asks `llc` for its version to choose how it states alignment; that is no build step.
+    if args == ["--version"]:
+        print("LLVM version 23.0.0")
+        return
     with open(os.environ["NVPTX_TOOL_LOG"], "a") as log:
         log.write(json.dumps([tool, *args]) + "\n")
     if tool == "fatbinary":

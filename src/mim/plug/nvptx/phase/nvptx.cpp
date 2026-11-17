@@ -173,6 +173,7 @@ private:
     /// Under `-X nvptx:profile=1` a kernel sums the cycles before and at each barrier site; the first thread prints
     /// them.
     bool profile_                      = false;
+    bool ptrmask_                      = false; ///< Whether a kernel pointer's alignment is stated with `llvm.ptrmask`.
     u64 profile_sites_                 = 0;
     static constexpr u64 Profile_Slots = 64;
     /// A kernel whose shared slots exceed the static limit, or overlay panels, carves them out of one array, at these
@@ -775,6 +776,14 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
 
 void DeviceEmitter::start() {
     profile_ = world().driver().arg_nat("nvptx", "profile").value_or(0) != 0;
+    // SeparateConstOffsetFromGEP in LLVM 21 and 22 crashes on GEP chains rooted at a ptrmask.
+    if (auto mask = world().driver().arg_nat("nvptx", "ptrmask")) {
+        ptrmask_ = *mask != 0;
+    } else if (auto llc = fe::sys::find_cmd("llc"); !llc.empty()) {
+        auto version = fe::sys::exec(std::format("{} --version", llc));
+        if (auto at = version.find("version "); at != std::string::npos)
+            ptrmask_ = std::atoi(version.c_str() + at + 8) >= 23;
+    }
     for (auto kernel : world().externals().muts()) {
         auto kernel_lam = kernel->expect_mut<Lam>("an external kernel to be a mutable lambda");
         kernels_.emplace(kernel_lam);
@@ -1010,12 +1019,17 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
 
     // Each pointer parameter is its own device allocation, so its generic address is assumed 16-byte aligned, which
     // lets LLVM widen the accesses through it.
-    // An align assumption rather than llvm.ptrmask: SeparateConstOffsetFromGEP in LLVM 21/22 crashes on GEP chains
-    // rooted at a ptrmask.
+    // Only llvm.ptrmask makes LLVM do so; an align assumption is what an LLVM that cannot take the mask gets.
     if (auto cast = Axm::isa<core::bitcast>(def); cast && kernel_arg_ && Axm::isa<mem::Ptr>(def->type()))
         if (auto extract = cast->arg()->isa<Extract>(); extract && extract->tuple() == kernel_arg_) {
             auto t_src = convert(cast->arg()->type()), t_dst = convert(def->type());
             if (t_src != t_dst) {
+                if (ptrmask_) {
+                    auto value
+                        = bb.assign(name + ".unmasked", "addrspacecast {} {} to {}", t_src, emit(cast->arg()), t_dst);
+                    declare("ptr @llvm.ptrmask.p0.i64(ptr, i64)");
+                    return bb.assign(name, "call ptr @llvm.ptrmask.p0.i64(ptr {}, i64 -16)", value);
+                }
                 auto value = bb.assign(name, "addrspacecast {} {} to {}", t_src, emit(cast->arg()), t_dst);
                 declare("void @llvm.assume(i1)");
                 std::print(bb.body().emplace_back(), "call void @llvm.assume(i1 true) [ \"align\"(ptr {}, i64 16) ]",
