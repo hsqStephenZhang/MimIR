@@ -1004,7 +1004,13 @@ std::optional<std::string> verdict_text(const Def* verdict) {
 }
 
 void report_verdict(const Def* where, const Def* verdict) {
-    if (auto text = verdict_text(verdict)) where->blame("{}", *text).bail();
+    if (auto text = verdict_text(verdict)) {
+        auto& w      = verdict->world();
+        auto kinds   = w.annex(check::kinds);
+        auto reasons = w.annex(check::reasons);
+        auto kind    = Lit::as(kinds->proj(kinds->num_projs(), Lit::as(verdict->proj(3, 0))));
+        where->blame("{}", *text).n("{}", tuple2str(reasons->proj(reasons->num_projs(), kind))).bail();
+    }
 }
 
 template<check id>

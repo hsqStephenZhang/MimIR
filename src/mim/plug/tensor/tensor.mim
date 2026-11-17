@@ -2696,6 +2696,14 @@ pub mod check
         "shared producer input {} differs from the consumer's input {} in rank, shape or element size",
         "shared producer input {} names the fused slot {}",
         "a work-group stages {} bytes of shared memory, more than the target's {}");
+    /// Why each of `messages` rejects a schedule, as an index into `reasons`, so that a limit of the lowering does not
+    /// read as one of the target.
+    anx let kinds = (0, 2, 2, 2, 2, 1, 1, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 2, 2, 2, 2, 2, 3);
+    anx let reasons = ("",
+        "the target's instructions require it",
+        "the schedule would otherwise compute something else",
+        "the target's resources do not allow it",
+        "it is a limit of this lowering, not of the target");
 
     lam any {n: Nat} (p: «n; Bool»): Bool = vec.fold.r @(Bool, Bool) @n (core.bit2.or 0) (p, ff);
     lam count {n: Nat} (p: «n; Bool»): Nat = vec.fold.r @(Nat, Nat) @n core.nat.add (‹d: n; (0, 1)#(p#d)›, 0);

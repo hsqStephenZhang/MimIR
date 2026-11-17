@@ -29,6 +29,15 @@ namespace mim::plug::tensor::phase {
 
 namespace {
 
+// Why a schedule is rejected, so that a limit of this lowering does not read as one of the target.
+constexpr char target[]    = "the target's instructions require it";
+constexpr char unsafe[]    = "the schedule would otherwise compute something else";
+constexpr char unlowered[] = "it is a limit of this lowering, not of the target";
+
+} // namespace
+
+namespace {
+
 /// Does `t` (recursively through immutable sigmas) contain a Pi?
 bool contains_pi(const Def* t) {
     if (t->isa<Pi>()) return true;
@@ -1045,7 +1054,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
     if (batch_ && uniform_ && !target && !probe_fill_ && !async_fill_) {
         // The panel joins its consumer's batch: filled cooperatively without a barrier, read once the batch publishes.
         if (batch_->panels.empty()) {
-            if (entered_++) app->blame("a work-group batch cannot open while another is open").bail();
+            if (entered_++) app->blame("a work-group batch cannot open while another is open").n(unlowered).bail();
             if (!batch_->start) batch_->start = fresh_mem();
         }
         auto fill     = w.mut_lam(w.pi(result_ty, result_ty))->set("panelFill");
@@ -1783,11 +1792,14 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             auto size = sizes[d];
             if (!size) {
                 size = nat_upper(shape->proj(*rank, d));
-                if (!size) app->blame("a bound tensor.tiled level requires literal or bounded extents").bail();
-                if (!cap) app->blame("a bound tensor.tiled level over a runtime extent caps its tail").bail();
+                if (!size)
+                    app->blame("a bound tensor.tiled level requires literal or bounded extents").n(unlowered).bail();
+                if (!cap)
+                    app->blame("a bound tensor.tiled level over a runtime extent caps its tail").n(unlowered).bail();
                 runtime[d] = true;
             }
-            if (*size % steps[d] && !cap) app->blame("a bound tensor.tiled level cannot peel its tail").bail();
+            if (*size % steps[d] && !cap)
+                app->blame("a bound tensor.tiled level cannot peel its tail").n(unlowered).bail();
             counts[d] = (*size + steps[d] - 1) / steps[d];
             total *= counts[d];
         }
@@ -1808,14 +1820,15 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         auto wrapped = w.app(w.app(w.annex<gpu::bind>(tag), body->type()), body);
         // A work-item whose reduction runs on its lanes takes that many adjacent ids, which must fill whole warps.
         if (lanes > 1 && total * lanes % 32)
-            app->blame("the {} work-items' lanes of a lane reduction do not fill whole warps", total).bail();
+            app->blame("the {} work-items' lanes of a lane reduction do not fill whole warps", total).n(target).bail();
         // A cluster that splits each tile's reduction runs `size` work-groups, consecutive ids, per tile.
         auto cluster = std::optional<std::pair<u64, u64>>();
         u64 parts    = 1;
         if (auto bound = Axm::isa<tensor::bind>(app->arg()); bound && plan.bind == 1)
             if (auto marked = Axm::isa<tensor::cluster>(bound->arg())) {
                 auto [size, multicast, split] = marked->decurry()->args<3>([](const Def* d) { return Lit::as(d); });
-                if (!split && total % size) app->blame("{} work-groups do not form clusters of {}", total, size).bail();
+                if (!split && total % size)
+                    app->blame("{} work-groups do not form clusters of {}", total, size).n(target).bail();
                 cluster = {size, multicast};
                 if (split) parts = size;
             }
@@ -1824,7 +1837,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             if (auto marked = Axm::isa<tensor::persistent>(bound->arg())) {
                 ctas = std::min(Lit::as(marked->decurry()->arg()), total);
                 if (Axm::isa<tensor::cluster>(marked->arg()))
-                    app->blame("a persistent work-group level does not run in clusters").bail();
+                    app->blame("a persistent work-group level does not run in clusters").n(unlowered).bail();
             }
         auto extra    = special ? u64(1) : u64(0);
         auto launched = ctas ? ctas : total * lanes * parts + extra;
@@ -1860,7 +1873,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         const Def* producer = nullptr;
         if (special) {
             if (*special && total != 2)
-                app->blame("warpgroup ping-pong alternates two consumers, not {}", total).bail();
+                app->blame("warpgroup ping-pong alternates two consumers, not {}", total).n(unlowered).bail();
             producer = w.call(core::ncmp::e, Defs{linear, w.lit_nat(total)});
             linear   = w.call(core::nat::rem, Defs{linear, w.lit_nat(total)});
         }
@@ -2569,7 +2582,9 @@ const Def* LowerToMem::wgmma_desc(const Def* buffer, const Def* index) {
     auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_sw128), query, logical_shapes_[buffer]);
     log().d("wgmma panel {} against the 128-byte swizzle: {}", buffer->type(), verdict);
     if (Lit::isa(verdict) == 1)
-        buffer->blame("a wgmma operand panel does not lie as the 128-byte swizzle its descriptor names").bail();
+        buffer->blame("a wgmma operand panel does not lie as the 128-byte swizzle its descriptor names")
+            .n(target)
+            .bail();
     auto addr = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}), {buffer, index});
     return w.app(w.annex<gpu::wgmma_desc>(), {addr, w.lit_i64(lbo), w.lit_i64(sbo), w.lit_i64(swizzle)});
 }
@@ -2593,7 +2608,7 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
             auto extent = Lit::isa(Sr->proj(3, d));
             auto tile   = std::array{fragments.m, fragments.n, kt}[d];
             if (!extent || *extent % tile)
-                app->blame("the tensor-core tile does not divide the warp's block {}", Sr).bail();
+                app->blame("the tensor-core tile does not divide the warp's block {}", Sr).n(target).bail();
         }
         auto depth = Lit::as(Sr->proj(3, 2));
         // Input `i` read at loops `(m, n, k)`: its placed physical coordinates and storage.
@@ -2636,7 +2651,7 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
             };
             auto [a_buffer, a0] = operand(0, 0);
             auto [b_buffer, b0] = operand(1, 0);
-            if (wgmma_major(a_buffer).first) app->blame("a wgmma operand A must be K-major").bail();
+            if (wgmma_major(a_buffer).first) app->blame("a wgmma operand A must be K-major").n(unlowered).bail();
             auto [b_mn, b_lbo] = wgmma_major(b_buffer);
             auto desc          = [&](size_t i, u64 ks) {
                 auto [buffer, index] = operand(i, ks);
@@ -3145,9 +3160,10 @@ const Def* LowerToMem::warp_term(const Def* def) {
     auto own     = *ro - lead;
     auto leading = fe::Restore(warp_lead_, lead);
     if (dim(mr.So, *ro, lead) != (group_rows_ ? 64u : 16u))
-        def->blame("a warp-owned region holds 16 rows, a warpgroup-owned 64, not `{}`", mr.So).bail();
+        def->blame("a warp-owned region holds 16 rows, a warpgroup-owned 64, not `{}`", mr.So).n(target).bail();
     auto nt = own == 2 ? dim(mr.So, *ro, lead + 1) / 8 : 0;
-    if (own == 2 && dim(mr.So, *ro, lead + 1) % 8) def->blame("a warp-owned tile's columns are a multiple of 8").bail();
+    if (own == 2 && dim(mr.So, *ro, lead + 1) % 8)
+        def->blame("a warp-owned tile's columns are a multiple of 8").n(target).bail();
     auto inputs = app->arg()->proj(2, 0);
     auto scope  = fe::Restore(mr_inputs_, inputs);
     auto posts  = fe::Restore(mr_posts_, app->arg()->proj(2, 1));
@@ -3185,7 +3201,7 @@ const Def* LowerToMem::warp_term(const Def* def) {
     } else if (*ro == 1 && *rn == 2) {
         // A reduction over the columns: the warp's row reduction of the combined elements.
         auto op = merge_of(mr.comb);
-        if (!op) def->blame("a warp-owned row reduction needs a combiner that merges partials").bail();
+        if (!op) def->blame("a warp-owned row reduction needs a combiner that merges partials").n(unsafe).bail();
         auto cols = dim(mr.Sr, 2, 1);
         if (cols % 8) def->blame("a warp-owned row reduction runs over a multiple of 8 columns").bail();
         nt                  = cols / 8;
@@ -3219,7 +3235,7 @@ const Def* LowerToMem::warp_term(const Def* def) {
         if (!da || !db || da->size() != 2 || db->size() != 2)
             def->blame("a warp-owned product reads projections").bail();
         auto kk = dim(mr.Sr, 3, 2);
-        if (kk % 8) def->blame("a warp-owned product reduces a multiple of 8").bail();
+        if (kk % 8) def->blame("a warp-owned product reduces a multiple of 8").n(target).bail();
         auto nk      = kk / 8;
         auto F       = T;
         auto a_value = Axm::peel<tensor::buf>(input(0));
@@ -3324,7 +3340,7 @@ const Def* LowerToMem::wgmma_lane(const App* app) {
         return *extent;
     };
     auto nt = lit(mr.Sr, 3, 1) / 8, kk = lit(mr.Sr, 3, 2);
-    if (kk % 16) app->blame("a warpgroup-owned product reduces a multiple of 16").bail();
+    if (kk % 16) app->blame("a warpgroup-owned product reduces a multiple of 16").n(target).bail();
     auto nk     = kk / 16;
     auto inputs = app->arg()->proj(2, 0);
     auto scope  = fe::Restore(mr_inputs_, inputs);
@@ -3755,6 +3771,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     if (split_ > 1 && tma && driver().is_loaded("gpu")) {
         if (!literal_count || *literal_count % split_ || first_scalar)
             app->blame("a reduction split over a cluster of {} needs a literal multiple of {} blocks", split_, split_)
+                .n(unlowered)
                 .bail();
         *literal_count /= split_;
         auto rank = w.call<core::idx2nat>(w.app(w.annex<gpu::cluster_rank>(), w.tuple()));
@@ -3941,17 +3958,17 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         for (size_t j = 0; j != panels; ++j) {
             auto stage = Axm::isa<tensor::stage>(Axm::peel<tensor::placed>(roots[pipelined[j]]));
             auto slice = stage ? Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(stage->arg())) : nullptr;
-            if (!slice) roots[pipelined[j]]->blame("a TMA-filled panel stages a slice").bail();
+            if (!slice) roots[pipelined[j]]->blame("a TMA-filled panel stages a slice").n(unlowered).bail();
             auto [slice_meta, source_shape, box] = slice->callee()->as<App>()->uncurry_args<3>();
             auto source                          = rewrite(slice->arg());
             auto [sr, ss, sT]                    = Axm::as<buffer::Buf>(source->type())->args<3>();
-            if (Lit::isa(sr) != 2) slice->blame("a TMA-filled panel stages a slice of a matrix").bail();
+            if (Lit::isa(sr) != 2) slice->blame("a TMA-filled panel stages a slice of a matrix").n(unlowered).bail();
             auto start = rewrite(box->proj(3, 0));
             auto rows = Lit::isa(box->proj(3, 2)->proj(2, 0)), cols = Lit::isa(box->proj(3, 2)->proj(2, 1));
             auto size      = Lit::as(core::op(core::trait::size, sT));
             auto [mn, lbo] = wgmma_major(targets[j]);
             if (!rows || !cols || *cols * size % 128 || (!mn && *cols * size != 128))
-                slice->blame("a TMA-filled panel holds rows of 128 bytes or atoms of them").bail();
+                slice->blame("a TMA-filled panel holds rows of 128 bytes or atoms of them").n(target).bail();
             auto atom = 128 / size;
             // The copy lands where the hardware puts it, so the panel's layout must name those addresses.
             if (auto logical = fe::lookup(logical_shapes_, targets[j])) {
@@ -3966,12 +3983,12 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_tma128), query, logical);
                 log().d("TMA panel {} against the swizzled copy: {}", targets[j]->type(), verdict);
                 if (Lit::isa(verdict) == 1)
-                    slice->blame("a TMA-filled panel does not lie where the swizzled copy puts it").bail();
+                    slice->blame("a TMA-filled panel does not lie where the swizzled copy puts it").n(target).bail();
             }
             // A multicast panel is a cluster's: each work-group copies its share of the rows into all of them.
             auto shares = cluster_ && slots[j] < 64 && (cluster_->second >> slots[j] & 1) ? cluster_->first : u64(1);
             if (*rows % (8 * shares))
-                slice->blame("a multicast panel's {} rows do not split into {} shares", *rows, shares).bail();
+                slice->blame("a multicast panel's {} rows do not split into {} shares", *rows, shares).n(target).bail();
             // The descriptor is the global matrix's, built where the matrix is known outside the kernel.
             auto map          = w.app(w.app(w.app(w.annex<gpu::buf_tensor_map>(), sT), ss),
                                       {outside(source), w.lit_nat(*rows / shares), w.lit_nat(atom)});
@@ -4010,14 +4027,17 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     };
     tma         = tma && panels != 0;
     specialized = tma && producer_ && fragments && fragments->group;
-    if (specialized && cluster_) app->blame("a specialized reduction does not share panels across a cluster").bail();
+    if (specialized && cluster_)
+        app->blame("a specialized reduction does not share panels across a cluster").n(unlowered).bail();
     // A persistent work-group sets its ring up in its first tile.
     // Its tiles fill whole cycles of the ring, so the rotating buffers start every tile at slot 0.
     auto first_round = tile_round_ ? w.call(core::ncmp::e, Defs{tile_round_, w.lit_nat_0()}) : w.lit_tt();
     if (tma && tile_round_) {
-        if (!specialized) app->blame("a TMA reduction in a persistent work-group must be specialized").bail();
+        if (!specialized)
+            app->blame("a TMA reduction in a persistent work-group must be specialized").n(unlowered).bail();
         if (!literal_count || *literal_count % ring.size())
             app->blame("a persistent ring of {} slots needs a multiple of {} blocks per tile", ring.size(), ring.size())
+                .n(unlowered)
                 .bail();
         round_base   = w.call(core::nat::mul, Defs{tile_round_, w.lit_nat(*literal_count)});
         round_fence_ = false;
@@ -4031,7 +4051,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                                                       w.app(w.annex<gpu::shared_scope>(), mem))
                                          ->projs<2>();
     }
-    if (specialized && !inplace) app->blame("a specialized reduction updates its accumulator in place").bail();
+    if (specialized && !inplace)
+        app->blame("a specialized reduction updates its accumulator in place").n(unlowered).bail();
     // A ring of four or more slots keeps a step's MMAs in flight and releases the previous step's slot once those
     // have read it; a shallower one would leave the producer a single slot ahead.
     auto overlap = u64(specialized && ring.size() >= 4);
@@ -4042,7 +4063,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                                  w.lit_nat(overlap)),
                            w.lit_nat_1());
         if (Lit::isa(safe) != 1)
-            app->blame("a ring of {} slots releasing {} steps late breaks its protocol", ring.size(), overlap).bail();
+            app->blame("a ring of {} slots releasing {} steps late breaks its protocol", ring.size(), overlap)
+                .n(unsafe)
+                .bail();
     }
     // A ring is `gpu.ring_fold`'s protocol, its copies tracked by `cp.async` groups or by the slots' mbarriers, or
     // `gpu.ws_fold`'s when a producer warp fills it; what a block's fill and step compute comes from here.
@@ -4269,16 +4292,17 @@ const Def* LowerToMem::lower_lane_fold(const App* app,
     auto mr_app                                         = call ? Axm::isa<tensor::map_reduce_post>(call) : nullptr;
     if (!lane_ || !n || *n != lanes_)
         app->blame("tensor.tile_fold: a lane reduction must run directly in a work-item with as many lanes").bail();
-    if (!inplace) app->blame("tensor.tile_fold: a lane reduction needs an in-place step").bail();
-    if (!seed) app->blame("tensor.tile_fold: a lane reduction needs a scalar seed, its combine's identity").bail();
-    if (!mr_app) app->blame("tensor.tile_fold: a lane reduction's step must be a map_reduce_post").bail();
+    if (!inplace) app->blame("tensor.tile_fold: a lane reduction needs an in-place step").n(unlowered).bail();
+    if (!seed)
+        app->blame("tensor.tile_fold: a lane reduction needs a scalar seed, its combine's identity").n(unsafe).bail();
+    if (!mr_app) app->blame("tensor.tile_fold: a lane reduction's step must be a map_reduce_post").n(unlowered).bail();
     if (!merge) merge = merge_of(btensor::MapRedPost::of(mr_app->callee()->as<App>()).comb);
-    if (!merge) app->blame("tensor.tile_fold: a lane reduction's combiner does not merge partials").bail();
+    if (!merge) app->blame("tensor.tile_fold: a lane reduction's combiner does not merge partials").n(unsafe).bail();
     auto dims = std::vector<u64>(rank);
     u64 elems = 1;
     for (size_t d = 0; d != rank; ++d) {
         auto lit = Lit::isa(storage->proj(rank, d));
-        if (!lit) app->blame("tensor.tile_fold: a lane reduction needs a literal tile").bail();
+        if (!lit) app->blame("tensor.tile_fold: a lane reduction needs a literal tile").n(unlowered).bail();
         dims[d] = *lit;
         elems *= *lit;
     }
@@ -4347,16 +4371,24 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     auto call   = result->isa<App>();
     auto mr_app = call ? Axm::isa<tensor::map_reduce_post>(call) : nullptr;
     if (bound_level_ != 1)
-        app->blame("tensor.tile_fold: a work-item bound reduction must nest directly inside a work-group level").bail();
-    if (!inplace) app->blame("tensor.tile_fold: a work-item bound reduction needs an in-place step").bail();
+        app->blame("tensor.tile_fold: a work-item bound reduction must nest directly inside a work-group level")
+            .n(unlowered)
+            .bail();
+    if (!inplace)
+        app->blame("tensor.tile_fold: a work-item bound reduction needs an in-place step").n(unlowered).bail();
     // Beyond a work-group's 1024 work-items, the blocks run in whole turns of them.
     if (!n || !*n || (*n > 1024 && *n % 1024))
         app->blame("tensor.tile_fold: a work-item bound reduction needs a literal block count of at most 1024 or a "
                    "multiple of it")
             .bail();
     if (!seed)
-        app->blame("tensor.tile_fold: a work-item bound reduction needs a scalar seed, its combine's identity").bail();
-    if (!mr_app) app->blame("tensor.tile_fold: a work-item bound reduction's step must be a map_reduce_post").bail();
+        app->blame("tensor.tile_fold: a work-item bound reduction needs a scalar seed, its combine's identity")
+            .n(unsafe)
+            .bail();
+    if (!mr_app)
+        app->blame("tensor.tile_fold: a work-item bound reduction's step must be a map_reduce_post")
+            .n(unlowered)
+            .bail();
     auto mr = btensor::MapRedPost::of(mr_app->callee()->as<App>());
     if (!merge) merge = merge_of(mr.comb);
     if (!merge)
@@ -4364,11 +4396,12 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
                "tensor.tile_fold: a work-item bound reduction's combiner must be `op (acc, e)` with `e` free of `acc`, "
                "`op` then merging the work-items' partials; got `{}`",
                mr.comb)
+            .n(unsafe)
             .bail();
     auto dims = std::vector<u64>(rank);
     for (size_t d = 0; d != rank; ++d) {
         auto lit = Lit::isa(storage->proj(rank, d));
-        if (!lit) app->blame("tensor.tile_fold: a work-item bound reduction needs a literal tile").bail();
+        if (!lit) app->blame("tensor.tile_fold: a work-item bound reduction needs a literal tile").n(unlowered).bail();
         dims[d] = *lit;
     }
     auto literal_storage = w.tuple(DefVec(rank, [&](size_t d) { return w.lit_nat(dims[d]); }));
@@ -4390,7 +4423,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     // `gpu.merge_rounds` is the protocol: one superstep writes the partials and each merge round claims them for one
     // more.
     auto g = w.lit_nat(batches_++);
-    if (entered_++) app->blame("a work-item bound reduction cannot run inside a work-group batch").bail();
+    if (entered_++) app->blame("a work-item bound reduction cannot run inside a work-group batch").n(unlowered).bail();
     auto state           = w.sigma({w.call<mem::M>(0), buffer::type_buf(w.lit_nat(prank), pshape, el)});
     auto fill            = w.mut_lam(w.pi(state, state))->set("boundFoldFill");
     auto [fm, fb]        = fill->var()->projs<2>();

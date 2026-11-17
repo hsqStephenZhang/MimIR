@@ -1,5 +1,6 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
 // CHECK: tile_pingpong_clipped.mim:26:{{.*}}error: warpgroup ping-pong alternates two consumers, not 1
+// CHECK: note: it is a limit of this lowering, not of the target
 
 // A 128-row work-group tile over 64 rows holds one warpgroup, which has nobody to alternate with.
 
