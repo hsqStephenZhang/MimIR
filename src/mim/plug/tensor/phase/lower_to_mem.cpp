@@ -729,21 +729,22 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
         auto none         = w.bot(w.call<mem::M>(0));
         auto instr        = math::isa_bf16(H) ? w.annex<gpu::wgmma_rs_bf16>() : w.annex<gpu::wgmma_rs_f16>();
         auto v_a          = rewrite(a);
-        const Def* acc    = rewrite(c);
-        auto mem          = w.app(w.annex<gpu::wgmma_fence>(), publish_panels(fresh_mem()));
-        for (u64 kc = 0; kc != nk; ++kc) {
+        auto kept         = w.tuple({rewrite(c), v_a});
+        auto state        = w.sigma({w.call<mem::M>(0), kept->type()});
+        auto issue        = DefVec(nk, [&](size_t kc) -> const Def* {
             auto logical_at = rewrite(at->proj(nk, kc));
             auto physical   = btensor::op_affine_map(place, br, br, logical, bs, logical_at, none)->proj(2, 1);
             auto desc       = wgmma_desc(buffer, *Shape(physical).fold(bs));
-            std::tie(mem, acc)
-                = w.app(instr, {w.lit_nat(nt), mem, w.extract(v_a, w.lit_idx(nk, kc)), desc, w.lit_bool(mn), acc})
-                      ->projs<2>();
-        }
-        mem       = w.app(w.annex<gpu::wgmma_commit>(), mem);
-        auto kept = w.tuple({acc, v_a});
-        auto done = w.app(w.app(w.annex<gpu::wgmma_wait>(), kept->type()), {mem, w.lit_nat_0(), kept});
+            auto lam        = w.mut_lam(w.pi(state, state))->set("wgmmaIssue");
+            auto [mem, x]   = lam->vars<2>();
+            auto [m, acc]   = w.app(instr, {w.lit_nat(nt), mem, w.extract(x->proj(2, 1), w.lit_idx(nk, kc)), desc,
+                                            w.lit_bool(mn), x->proj(2, 0)})
+                                  ->projs<2>();
+            lam->set(true, w.tuple({m, w.tuple({acc, x->proj(2, 1)})}));
+            return lam;
+        });
         (void)rank;
-        return done->proj(2, 1)->proj(2, 0);
+        return wgmma_batch(fresh_mem(), kept, issue, w.lit_nat_0(), false)->proj(2, 1)->proj(2, 0);
     }
     if (Axm::isa<tensor::as_vectors>(app)) return lower_as_vectors(app);
     if (Axm::isa<tensor::set>(app)) return lower_set(app);
@@ -2537,12 +2538,14 @@ const Def* LowerToMem::region_input(const Def* inputs) {
     return view_reads(inputs, proxy, views);
 }
 
+// `gpu.wgmma_batch` is the protocol of a group of MMAs; which instructions it issues over @p x comes from here.
 // Panels a work-group filled with generic stores reach `wgmma` through the async proxy only after every filler fenced
 // them.
-const Def* LowerToMem::publish_panels(const Def* mem) {
-    if (proxied_) return mem;
-    auto& w = new_world();
-    return w.app(w.annex<gpu::fence>(), w.app(w.annex<gpu::fence_proxy_async>(), mem));
+const Def* LowerToMem::wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pending, bool turn) {
+    auto& w    = new_world();
+    auto batch = w.app(w.annex<gpu::wgmma_batch>(), {x->type(), w.lit_nat(issue.size())});
+    batch      = w.app(batch, {w.lit_bool(!proxied_), pending, w.lit_bool(turn), turn ? consumer_ : w.lit_nat_0()});
+    return w.app(w.app(batch, {mem, x}), w.tuple(issue));
 }
 
 // Whether a `wgmma` operand panel is MN-major, from its layout's split, and the bytes between its atoms of 128 bytes.
@@ -2648,17 +2651,16 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
             auto nt          = fragments.count();
             auto instr       = math::isa_bf16(T) ? w.annex<gpu::wgmma_bf16>() : w.annex<gpu::wgmma_f16>();
             const Def* tiles = w.tuple(acc);
+            auto state       = w.sigma({mem->type(), tiles->type()});
+            auto issue       = DefVec(depth / kt, [&](size_t ks) -> const Def* {
+                auto lam = w.mut_lam(w.pi(state, state))->set("wgmmaIssue");
+                lam->set(true, w.app(instr, {nat(nt), lam->var(2, 0), desc(0, ks), desc(1, ks), w.lit_bool(b_mn),
+                                             lam->var(2, 1)}));
+                return lam;
+            });
             // Ping-pong: a consumer issues its MMAs on its turn and then hands the turn to the other one.
-            if (pingpong_ && consumer_) mem = w.app(w.app(w.annex<gpu::turn_take>(), consumer_), mem);
-            mem = w.app(w.annex<gpu::wgmma_fence>(), publish_panels(mem));
-            for (u64 ks = 0; ks != depth / kt; ++ks)
-                std::tie(mem, tiles)
-                    = w.app(instr, {nat(nt), mem, desc(0, ks), desc(1, ks), w.lit_bool(b_mn), tiles})->projs<2>();
-            mem = w.app(w.annex<gpu::wgmma_commit>(), mem);
-            if (pingpong_ && consumer_) mem = w.app(w.app(w.annex<gpu::turn_pass>(), consumer_), mem);
             std::tie(mem, tiles)
-                = w.app(w.app(w.annex<gpu::wgmma_wait>(), tiles->type()), {mem, nat(wgmma_pending_), tiles})
-                      ->projs<2>();
+                = wgmma_batch(mem, tiles, issue, nat(wgmma_pending_), pingpong_ && consumer_)->projs<2>();
             return w.tuple({mem, w.tuple(DefVec(nt, [&](size_t j) { return tiles->proj(nt, j); }))});
         }
         auto read = [&](const Def* lane_reg, Enum auto map, u64 ni, u64 ks) {

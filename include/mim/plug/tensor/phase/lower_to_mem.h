@@ -279,7 +279,7 @@ private:
     const Def* wgmma_lane(const App*);
     const Def* wgmma_a(const btensor::MapRedPost&, u64 nk);
     std::pair<bool, u64> wgmma_major(const Def* buffer);
-    const Def* publish_panels(const Def* mem);
+    const Def* wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pending, bool turn);
     const Def* wgmma_desc(const Def* buffer, const Def* index);
     bool uniform(const Def*) const;
     std::function<const Def*(const Def*)> cooperative();

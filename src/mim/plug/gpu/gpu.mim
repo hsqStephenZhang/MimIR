@@ -878,6 +878,19 @@ anx lam cluster_ring {depth: Nat} (sync: RingSync depth, size: Nat): RingSync de
 /// arrives on the other's.
 anx lam turn_take (consumer: Nat) (m: mem.M 0): mem.M 0 = sync_named (m, core.idx 0 0x100000000 (consumer + 1), 256I32);
 anx lam turn_pass (consumer: Nat) (m: mem.M 0): mem.M 0 = arrive_named (m, core.idx 0 0x100000000 (2 - consumer), 256I32);
+/// A warpgroup's group of `n` MMAs over `x`, the accumulators they write and the register operands they read: prior
+/// accesses are fenced before them, with `publish` after the panels' fillers published them to the async proxy, and
+/// `x` comes back only from the wait that leaves at most `pending` groups in flight.
+/// A consumer taking turns issues them on its `turn`, which it then passes on.
+anx lam wgmma_batch {X: *, n: Nat} (publish: Bool, pending: Nat, turn: Bool, consumer: Nat)
+    (m: mem.M 0, x: X) (issue: «n; [mem.M 0, X] → [mem.M 0, X]»): [mem.M 0, X] =
+    let M      = mem.M 0;
+    let m      = (λ (): M = m, λ (): M = turn_take consumer m)#turn ();
+    let m      = wgmma_fence ((λ (): M = m, λ (): M = fence (fence_proxy_async m))#publish ());
+    let (m, x) = vec.fold.l @([M, X], [M, X] → [M, X]) @n (λ (st: [M, X], f: [M, X] → [M, X]): [M, X] = f st) ((m, x), issue);
+    let m      = wgmma_commit m;
+    let m      = (λ (): M = m, λ (): M = turn_pass consumer m)#turn ();
+    wgmma_wait (m, pending, x);
 /// The first consumer issues first: the second one hands it the turn once, in the `first` tile.
 anx lam pingpong_ring {depth: Nat} (sync: RingSync depth, consumer: Nat, producer first: Bool): RingSync depth =
     let second = core.bit2.and 0 (core.bit2.and 0 (core.ncmp.e (consumer, 1), core.bit2.xor 0 (producer, tt)), first);
