@@ -3,6 +3,7 @@
 #include <mim/check.h>
 #include <mim/nom.h>
 
+#include <mim/plug/buffer/buffer.h>
 #include <mim/plug/mem/mem.h>
 
 namespace mim::plug::gpu::phase {
@@ -136,7 +137,7 @@ void CheckSync::start() {
         } else if (has_token(def->type())) {
             if (by.size() > 1 && !std::ranges::all_of(by, [](const Def* u) { return u->isa<Extract>(); }))
                 def->blame("`{}` holds a work-group phase token and is used {} times", def, by.size()).bail();
-        } else if (auto vis = visibility(def); *vis != gpu::Vis_ctor::Published) {
+        } else if (auto vis = visibility(def); *vis != buffer::Vis_ctor::Published) {
             if (by.size() != 1) def->blame("panel `{}` is used {} times", def, by.size()).bail();
         } else if (by.size() > 1 && std::ranges::any_of(by, [&](const Def* u) {
                        return std::ranges::any_of(users_of(u), [](const Def* c) { return Axm::isa<gpu::claim>(c); });

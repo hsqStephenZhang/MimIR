@@ -1,0 +1,10 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/typed_tiles_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// A's panel of `lit/gpu/typed_panel.mim` lies in shared memory as its layout says, 8 rows padded to 12 elements.
+
+// CHECK: define ptx_kernel void @tileKernel
+// CHECK: [8 x [12 x float]]

@@ -33,3 +33,11 @@ let _ = refly.struc.e (matches_sw128 (rows128, 2), 2);
 let shifted = make @2 ((64, 64), 1, (0₃, 1₃, 2₃), (0, 0), 8, 8, 1, 8, tt);
 let _ = refly.struc.e (matches_sw128 (shifted, 2), 1);
 let _ = refly.struc.e (matches_sw128 (identity, 2), 1);
+
+// For any rank, a layout is the 128-byte swizzle of its own unswizzled placement, or it is not.
+let _ = refly.struc.e (lies_sw128 (swizzled, 2), 2);
+let _ = refly.struc.e (lies_sw128 (rows128, 2), 2);
+let _ = refly.struc.e (lies_sw128 (shifted, 2), 1);
+let _ = refly.struc.e (lies_sw128 (identity, 2), 1);
+let unit3 = make @3 ((64, 1, 64), 1, (0₄, 1₄, 3₄, 2₄), (0, 0, 0), 8, 8, 0, 8, tt);
+let _ = refly.struc.e (lies_sw128 (unit3, 2), 2);

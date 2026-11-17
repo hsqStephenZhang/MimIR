@@ -1,0 +1,30 @@
+// RUN: %mim %s -o /dev/null
+
+// A tile and the `gpu.SharedBuf` it lowers to share one capability: a work-group's barrier publishes a filling tile's
+// panel as the published tile's, whose view is a buffer of the shape the tile's layout stores, and claiming it gives
+// the owned tile's.
+
+plugin tensor;
+plugin gpu;
+plugin buffer;
+plugin core;
+plugin math;
+
+use tensor;
+
+let F32    = math.F32;
+let Shared = Tile 2 units.Block (0, 0) (1, 1) spaces.Shared;
+let col    = layout_expr.make @2 ((8, 16), 1, (1₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1, ff);
+
+lam publish {g e: Nat} (t: gpu.GM (g, e, gpu.GroupPhase#Reading))
+    (p: Shared gpu.Vis#Unpublished 2 (8, 16) (8, 16) col F32) (b: Lowered (g, e) p)
+    : Lowered (g, e) (tile_as 2 units.Block (0, 0) (1, 1) spaces.Shared gpu.Vis#Published col (p#data)) =
+    gpu.publish_view (t, b);
+
+lam seen {g e: Nat} (p: Shared gpu.Vis#Published 2 (8, 16) (8, 16) col F32) (b: Lowered (g, e) p): buffer.Buf (2, (16, 8), F32) =
+    gpu.view b;
+
+lam claimed {g e: Nat} (t: gpu.GM (g, e, gpu.GroupPhase#Updating))
+    (p: Shared gpu.Vis#Published 2 (8, 16) (8, 16) col F32) (b: Lowered (g, e) p)
+    : Lowered (g, e) (tile_as 2 units.Block (0, 0) (1, 1) spaces.Shared gpu.Vis#Owned col (p#data)) =
+    gpu.claim (t, b);

@@ -27,6 +27,27 @@ open('lit/nvptx/typed_tiles.mim', 'w').write('''// RUN: rm -f %{s:stem}.ll %{s:s
 // CHECK: define ptx_kernel void @tileKernel
 // CHECK: @llvm.nvvm.barrier0
 ''')
+panel = open(B + 'gemm_panel_placed.mim').read()
+open('lit/gpu/typed_panel.mim', 'w').write('''// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+
+// The schedule of `lit/gpu/typed_tiles.mim` with A's panel staged padded: its readers use logical coordinates.
+
+''' + panel.rstrip() + '''
+
+// CHECK-NOT: nom Tile
+// CHECK: gpu.launch
+''')
+open('lit/nvptx/typed_panel.mim', 'w').write('''// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/typed_tiles_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// A's panel of `lit/gpu/typed_panel.mim` lies in shared memory as its layout says, 8 rows padded to 12 elements.
+
+// CHECK: define ptx_kernel void @tileKernel
+// CHECK: [8 x [12 x float]]
+''')
 what = {
     'n6': ('step', "A panel staged for one reduction step is read in the context of another."),
     'n7': ('unit', "A work-group claims a tile in a work-item's registers."),
@@ -37,6 +58,7 @@ what = {
     'n13': ('readonly', "A work-item takes a published panel as a tile of its own to write."),
     'n14': ('layout', "A panel stored column-major is handed over as a row-major one."),
     'n15': ('vectors', "A vector view whose vectors do not divide the stored last axis."),
+    'n16': ('panel_layout', "A panel staged in one layout is handed over as a panel in another."),
 }
 for n, (name, doc) in what.items():
     s = open(B + f'reject_{n}.mim').read()

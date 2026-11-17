@@ -21,6 +21,7 @@ plugin cps;
 plugin affine;
 plugin buffer;
 plugin btensor;
+import gpu; // for gpu.SharedBuf, declarations only: a CPU program must not load the gpu stages
 plugin math;
 
 use core.ops.n;
@@ -132,6 +133,11 @@ pub anx lam make {r: Nat}
     let chunks = refly.check (core.bit2.or 0 (core.bit2.xor 0 (xor, tt), power), chunks,
                               "an exclusive-or swizzle needs a power-of-two chunk count");
     ((‹logical›, split, perm, pad, width, groups, shift, chunks, xor) inj Data (r, logical)) inj Expr (r, logical);
+
+/// Row-major storage at the logical shape, which `make` yields from rank two on, at every rank.
+/// It stays as written until the shape is a literal: a pack made anew at every use equals no other.
+pub anx lam rows {r: Nat} (s: «r; Nat»)@(core.pe.is_closed (r, s)): Expr (r, s) =
+    ((‹s›, 1, ‹p: r + 1; p›, ‹r; 0›, 1, 1, 0, 1, ff) inj Data (r, s)) inj Expr (r, s);
 
 pub anx lam shape {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; Nat» =
     shape_impl ((#layout)#split, (#layout)#perm, (#layout)#pad, s);
@@ -279,6 +285,22 @@ pub anx lam matches_sw128 {s: «2; Nat»} (layout: Expr (2, s), bytes: Nat): Nat
     let want  = f2_xor n (e, f2_mul n (f2_rem n (f2_div n (e, atom), 8), 16 / bytes));
     let (lw, rw) = want;
     let (lh, rh) = address @2 @s layout;
+    let differ   = any ‹i: n + 1; (tt, ff)#(core.icmp.e (rw#i, rh#i))›;
+    core.select (both (both (lw, lh), atom * bytes == 128), (2, 1)#differ, 0);
+
+/// Whether a layout of any rank is the 128-byte swizzle applied to its own unswizzled placement, whose rows are 128
+/// bytes of elements of `bytes` each: the element the placement puts at `e` lies at `e ⊕ ((e / atom) % 8) · (16 / bytes)`.
+/// That is what a wgmma descriptor and a TMA descriptor with that swizzle make the hardware read.
+/// 0 if undecided, 1 if not, 2 if so.
+pub anx lam lies_sw128 {r: Nat} {s: «r; Nat»} (layout: Expr (r, s), bytes: Nat): Nat =
+    let n     = total (widths s);
+    let data  = #layout;
+    let plain = make @r (s, data#split, data#perm, data#pad, 1, 1, 0, 1, ff);
+    let atom  = (shape plain)#(core.idx 0 r (r - 1));
+    let e     = address @r @s plain;
+    let want  = f2_xor n (e, f2_mul n (f2_rem n (f2_div n (e, atom), 8), 16 / bytes));
+    let (lw, rw) = want;
+    let (lh, rh) = address @r @s layout;
     let differ   = any ‹i: n + 1; (tt, ff)#(core.icmp.e (rw#i, rh#i))›;
     core.select (both (both (lw, lh), atom * bytes == 128), (2, 1)#differ, 0);
 
@@ -3322,6 +3344,42 @@ end
 /// The splits are fields too: the constructor builds them while the root's inputs are in scope, so each one rebuilds the
 /// root inside its regions from the inputs the regions receive.
 ///
+pub mod units
+pub let Grid   = 0;
+pub let Block  = 1;
+pub let Thread = 4;
+end
+
+pub mod spaces
+pub let Global = 2;
+pub let Shared = 3;
+pub let Reg    = 5;
+end
+
+/// A data tile: unit `unit` at origin `at` owns it until the step `life` ends, all zero meaning as long as its owner,
+/// in memory `space`, where `cap` says what may be done with it.
+/// It is stored at capacity `c` in the layout `lay`, what `placed` takes, and its data is in logical coordinates.
+/// The singleton witness keeps the indices in the type.
+/// A schedule's own tiles, the panels the law interpreter stages and, after lowering, `gpu.SharedBuf` share `cap`.
+pub nom Tile (r: Nat) (unit: Nat) (at: «r; Nat») (life: «r; Nat») (space: Nat) (cap: buffer.Vis)
+         (rx: Nat) (s: «rx; Nat») (c: «rx; Nat») (lay: layout_expr.Expr (rx, c)) (T: *) =
+    [who: «(r, unit, at, life, space, cap, c, lay)», data: Tensor rx s T];
+pub lam tile_as {rx: Nat, s c: «rx; Nat», T: *} (r: Nat) (unit: Nat) (at: «r; Nat») (life: «r; Nat») (space: Nat) (cap: buffer.Vis)
+    (lay: layout_expr.Expr (rx, c)) (x: Tensor rx s T): Tile r unit at life space cap rx s c lay T =
+    (‹(r, unit, at, life, space, cap, c, lay)›, x) inj Tile r unit at life space cap rx s c lay T;
+/// A tile stored row-major at its own shape.
+pub lam RowTile (r: Nat) (unit: Nat) (at: «r; Nat») (life: «r; Nat») (space: Nat) (cap: buffer.Vis) (rx: Nat) (s: «rx; Nat») (T: *): * =
+    Tile r unit at life space cap rx s s (layout_expr.rows s) T;
+pub lam row_tile {rx: Nat, s: «rx; Nat», T: *} (r: Nat) (unit: Nat) (at: «r; Nat») (life: «r; Nat») (space: Nat) (cap: buffer.Vis)
+    (x: Tensor rx s T): RowTile r unit at life space cap rx s T = tile_as r unit at life space cap (layout_expr.rows s) x;
+pub lam row_data {r rx: Nat, unit space: Nat, at life: «r; Nat», cap: buffer.Vis, s: «rx; Nat», T: *}
+    (p: RowTile r unit at life space cap rx s T): Tensor rx s T = p#data;
+/// The panel a tile lowers to: construct `g` holds it in its superstep `e` under the tile's own `cap`, at the shape its
+/// layout stores.
+pub lam Lowered {r rx: Nat, unit space: Nat, at life: «r; Nat», cap: buffer.Vis, s c: «rx; Nat», lay: layout_expr.Expr (rx, c), T: *}
+    (g e: Nat) (_: Tile r unit at life space cap rx s c lay T): * =
+    gpu.SharedBuf (g, e, cap, rx, layout_expr.shape lay, T);
+
 pub mod law
     /// `post_tile` of the tile `(off, ext)`; over a `tiled` region it finishes each of the region's tiles instead, since
     /// a pointwise epilogue commutes with tiling, so it runs where a tile's reduction ends.
@@ -3499,6 +3557,11 @@ pub mod law
         nom Plan (ou: Nat) (grp: «Rn; Nat») (stp: «Rn; Nat») = [who: «(ou, grp, stp)», planned: Pan];
         lam plan_for (ou: Nat) (grp: «Rn; Nat») (stp: «Rn; Nat») (p: Pan): Plan ou grp stp = (‹(ou, grp, stp)›, p) inj Plan ou grp stp;
         let Cx   = λ (ou: Nat) (grp: «Rn; Nat») (stp: «Rn; Nat»): * = [Plan ou grp stp, Gx];
+        // What a leaf reads of an input was made for one plan: it belongs to that plan's owner and lasts as the plan does,
+        // so only a leaf holding that plan reads it, and only what is published, which no unit writes.
+        let Seen = buffer.Vis#Published;
+        lam kept_by {ou sp: Nat, grp: «Rn; Nat», stp: «Rn; Nat», r: Nat, s c: «r; Nat», lay: layout_expr.Expr (r, c), T: *}
+            (_: Plan ou grp stp) (k: Tile Rn ou grp stp sp Seen r s c lay T): Tensor r s T = k#data;
         let none_plan = ‹i: nis; ((ff, 0, 1, ‹Ris#i; 0›, ‹Ris#i; 0›, ‹d: Ris#i; d›), unplaced (Ris#i))›;
         let none_gx   = (‹Rn; 0›, ‹Rn; 0›, ‹Rn; 0›, ‹Rn; 0›, 0, (0, 0, 0), 0);
         // A step's accumulator belongs to the unit `u` running the block at `lo`: it is still the seed, which every tile
@@ -3525,21 +3588,34 @@ pub mod law
                 let S = «(ris_of pan)#i; Nat»;
                 (((core.bitcast S (Sis#i), core.bitcast S (q#4₆))#(member i), core.bitcast S (q#4₆))#(q#0₆),
                  core.bitcast S (stage_shape @(Ris#i, 1) (q#4₆) (q#1₆, q#2₆, q#5₆)))#(split_of pan i)›;
+        // What a leaf reads of each input, and through which map: both are chosen together, at one rank and shape, so
+        // a panel is never read through the map of the plain input or the other way round.
         // A staged input reads its panel: its outer axes in the plan's order, the panel index along the axis, and the
         // offset in the panel last.
-        lam reads_of (lo: «Rn; Nat», pan: Pan): «i: nis; «Rn; affine.Index» → «(ris_of pan)#i; affine.Index»» =
-            ‹i: nis; let q = pan#i#0₂;
-                let r     = Ris#i;
-                let Map   = «Rn; affine.Index» → «(ris_of pan)#i; affine.Index»;
-                let ax    = core.idx 0 r (q#1₆);
-                let panel = λ (o: «Rn; affine.Index»): «core.nat.add (r, 1); affine.Index» =
-                    let c     = tile_shift @(Rn, r) (maps#i) (lo, q#3₆) o;
-                    let outer = ‹d: r; let p = (q#5₆)#d; (c#p, affine.semiop.floordiv (c#ax, q#2₆))#(core.icmp.e (p, ax))›;
-                    tuple.append @r @(‹r; affine.Index›, affine.Index) (outer, affine.semiop.rem (c#ax, q#2₆));
-                (core.bitcast Map (tile_shift @(Rn, r) (maps#i) (lo, (‹r; 0›, q#3₆)#(core.bit2.or 0 (q#0₆, member i)))), core.bitcast Map panel)
-                    #(split_of pan i)›;
-        lam values_of (xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», ys: Phys, items: Nat, pan: Pan)
-            : «i: nis; Tensor ((ris_of pan)#i) ((sis_of pan)#i) (Tis#i)» =
+        // A staged input lies in its owner's shared memory, a fused producer's box where it is computed, the rest where
+        // the caller left it.
+        lam space_of (pan: Pan) (i: Idx nis): Nat =
+            core.select (core.bit2.or 0 (split_of pan i, pan#i#0₂#0₆), spaces.Shared, core.select (member i, spaces.Reg, spaces.Global));
+        // Whether a panel is placed, and how: a tensor core's operand takes the layout its fragments read; a SIMT
+        // panel's comes from the search.
+        lam place_of (pan: Pan) (i: Idx nis): [Bool, layout_expr.Expr (core.nat.add (Ris#i, 1), pan#i#1₂#1₁₁)] =
+            let L     = pan#i#1₂;
+            let r1    = core.nat.add (Ris#i, 1);
+            let bytes = core.trait.size (Tis#i);
+            let wg    = tc_layout.wgmma @r1 (L#1₁₁, L#2₁₁, bytes, L#5₁₁);
+            let lay   = ((panel_layout @(r1, Rn) (L#1₁₁, L#2₁₁, L#3₁₁, bytes, 0, L#5₁₁, L#6₁₁, L#7₁₁, L#8₁₁, L#9₁₁, L#10₁₁),
+                          tc_layout.mma @r1 (L#1₁₁, L#2₁₁, bytes))#(L#4₁₁ == 1), wg#1₂)#(L#4₁₁ == 2);
+            (core.bit2.and 0 (L#0₁₁, core.bit2.or 0 (L#4₁₁ != 2, wg#0₂)), lay);
+        lam placed_at (pan: Pan) (i: Idx nis): Bool = core.bit2.and 0 (split_of pan i, (place_of pan i)#0₂);
+        lam cap_of (pan: Pan) (i: Idx nis): «(ris_of pan)#i; Nat» =
+            let S = «(ris_of pan)#i; Nat»;
+            ((sis_of pan)#i, core.bitcast S (pan#i#1₂#1₁₁))#(placed_at pan i);
+        lam lay_of (pan: Pan) (i: Idx nis): layout_expr.Expr ((ris_of pan)#i, cap_of pan i) =
+            let E = layout_expr.Expr ((ris_of pan)#i, cap_of pan i);
+            (core.bitcast E (layout_expr.rows ((sis_of pan)#i)), core.bitcast E ((place_of pan i)#1₂))#(placed_at pan i);
+        lam inputs_of (lo: «Rn; Nat», xs: «i: nis; Tensor (Ris#i) (Sis#i) (Tis#i)», ys: Phys, items: Nat,
+                       ou: Nat, grp: «Rn; Nat», stp: «Rn; Nat», pan: Pan)
+            : «i: nis; [«Rn; affine.Index» → «(ris_of pan)#i; affine.Index», Tile Rn ou grp stp (space_of pan i) Seen ((ris_of pan)#i) ((sis_of pan)#i) (cap_of pan i) (lay_of pan i) (Tis#i)]» =
             let whole_of = ‹j: nis; core.bit2.and 0 (core.bit2.and 0 (pan#j#0₂#0₆, (tt, ff)#(member j)), (tt, ff)#(split_of pan j))›;
             let offs     = ‹j: nis; pan#j#0₂#3₆›;
             let exts     = ‹j: nis; pan#j#0₂#4₆›;
@@ -3548,18 +3624,22 @@ pub mod law
                     (slice @(Tis#j, Ris#j) (Sis#j) (offs#j, ‹Ris#j; 1›, exts#j) (xs#j)))›;
             let producer = ‹i: nis; (srcs#i#3₈) (ys#i, (whole_of, offs, exts, staged))›;
             ‹i: nis; let q = pan#i#0₂;
+                let Map   = «Rn; affine.Index» → «(ris_of pan)#i; affine.Index»;
                 let Input = Tensor ((ris_of pan)#i) ((sis_of pan)#i) (Tis#i);
+                let read  = λ (rk: Nat) (sk: «rk; Nat») (m: «Rn; affine.Index» → «rk; affine.Index», v: Tensor rk sk (Tis#i))
+                    : [Map, Tile Rn ou grp stp (space_of pan i) Seen ((ris_of pan)#i) ((sis_of pan)#i) (cap_of pan i) (lay_of pan i) (Tis#i)] =
+                    (core.bitcast Map m, tile_as Rn ou grp stp (space_of pan i) Seen (lay_of pan i) (core.bitcast Input v));
+                let ax    = core.idx 0 (Ris#i) (q#1₆);
+                let panel = λ (o: «Rn; affine.Index»): «core.nat.add (Ris#i, 1); affine.Index» =
+                    let c     = tile_shift @(Rn, Ris#i) (maps#i) (lo, q#3₆) o;
+                    let outer = ‹d: Ris#i; let p = (q#5₆)#d; (c#p, affine.semiop.floordiv (c#ax, q#2₆))#(core.icmp.e (p, ax))›;
+                    tuple.append @(Ris#i) @(‹Ris#i; affine.Index›, affine.Index) (outer, affine.semiop.rem (c#ax, q#2₆));
+                let at_lo  = tile_shift @(Rn, Ris#i) (maps#i) (lo, ‹Ris#i; 0›);
+                let at_box = tile_shift @(Rn, Ris#i) (maps#i) (lo, q#3₆);
                 let box   = (srcs#i#2₈) (ys#i, q#3₆, q#4₆);
                 let stg   = stage @(Tis#i, Ris#i, 1) (q#4₆) (q#1₆, q#2₆, q#5₆, ⊥:(Tis#i)) 0 box;
-                let L     = pan#i#1₂;
-                let r1    = core.nat.add (Ris#i, 1);
-                let bytes = core.trait.size (Tis#i);
-                // A tensor core's operand takes the layout its fragments read; a SIMT panel's comes from the search.
-                let wg    = tc_layout.wgmma @r1 (L#1₁₁, L#2₁₁, bytes, L#5₁₁);
-                let lay   = ((panel_layout @(r1, Rn) (L#1₁₁, L#2₁₁, L#3₁₁, bytes, 0, L#5₁₁, L#6₁₁, L#7₁₁, L#8₁₁, L#9₁₁, L#10₁₁),
-                              tc_layout.mma @r1 (L#1₁₁, L#2₁₁, bytes))#(L#4₁₁ == 1), wg#1₂)#(L#4₁₁ == 2);
-                let put   = placed @(Tis#i, r1) @(stage_shape @(Ris#i, 1) (q#4₆) (q#1₆, q#2₆, q#5₆)) (L#1₁₁, lay) stg;
-                let place = core.bit2.and 0 (L#0₁₁, core.bit2.or 0 (L#4₁₁ != 2, wg#0₂));
+                let (place, lay) = place_of pan i;
+                let put   = placed @(Tis#i, core.nat.add (Ris#i, 1)) @(stage_shape @(Ris#i, 1) (q#4₆) (q#1₆, q#2₆, q#5₆)) (pan#i#1₂#1₁₁, lay) stg;
                 // A resident member's elements are spread over the work-group's work-items; with a merge, so are
                 // `C` chunks of each element's reduction, whose partials a second fill merges.
                 // A fused producer is a `map_reduce`, whose epilogue is the identity.
@@ -3591,8 +3671,9 @@ pub mod law
                         (get @(r1, PS, T) (parts, at_of (c, 0)), ‹j: C; j›));
                 let held  = (each, joint)#(1 < C);
                 let whole = stage @(Tis#i, Ris#i, 0) (q#4₆) ((), (), ‹d: Ris#i; d›, ⊥:(Tis#i)) 0 ((box, held)#(member i));
-                (((core.bitcast Input (xs#i), core.bitcast Input box)#(member i), core.bitcast Input whole)#(q#0₆),
-                 core.bitcast Input ((stg, put)#place))#(split_of pan i)›;
+                let kept  = core.bitcast (Tensor r E T) whole;
+                (((read r (Sis#i) (at_lo, xs#i), read r E (at_box, box))#(member i), read r E (at_box, kept))#(q#0₆),
+                 read r1 (stage_shape @(r, 1) E (q#1₆, q#2₆, q#5₆)) (panel, (stg, put)#place))#(split_of pan i)›;
         // The input axis among its last two that the next parallel level's tile drives with unit slope from one loop
         // and no other loop drives, found by imaging unit boxes, as `tile_fuse`'s `panel_axis` finds it.
         lam panel_of {r: Nat} (m: «Rn; affine.Index» → «r; affine.Index», s: «r; Nat», tiles: «Rn; Nat»): «3; Nat» =
@@ -3691,18 +3772,23 @@ pub mod law
                 core.nat.mul (x, core.select (t == 0, 1, ((g#1₇)#k + t - 1) / t))) (‹d: Ro; core.idx2nat d›, 1);
         // Stuck while the ranks are generic, so its body is checked once for every plan.
         lam leaf_at (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
-                     acc: Tensor Ro ext To, items: Nat, pan: Pan)@(core.pe.is_closed (‹i: nis; srcs#i#7₈›, Ris)): Tensor Ro ext To =
+                     acc: Tensor Ro ext To, items: Nat,
+                     ou: Nat, grp: «Rn; Nat», stp: «Rn; Nat», plan: Plan ou grp stp)@(core.pe.is_closed (‹i: nis; srcs#i#7₈›, Ris)): Tensor Ro ext To =
             let off = ‹d: Ro; lo#(core.idx 0 Rn (core.idx2nat d))›;
+            let pan  = plan#planned;
+            let read = inputs_of (lo, unfold xs, xs, items, ou, grp, stp, pan);
             map_reduce_post @(nis, 0) @(To, To, Ro, Rn, SchedT) (ext, size, mk_sched (Rn, 0))
                 @(Tis, ris_of pan, sis_of pan, (), (), ()) (f, outs_default @(To, Ro) ext acc, id @To)
-                (tile_shift @(Rn, Ro) map_out (lo, off)) (reads_of (lo, pan), ()) (values_of (unfold xs, xs, items, pan), ());
+                (tile_shift @(Rn, Ro) map_out (lo, off)) (‹i: nis; read#i#0₂›, ()) (‹i: nis; kept_by plan (read#i#1₂)›, ());
         let leaf = λ (ou: Nat) (grp: «Rn; Nat») (stp: «Rn; Nat») (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
                       acc: Tensor Ro ext To, _: Bool, cx: Cx ou grp stp): Tensor Ro ext To =
-            leaf_at (lo, ext, size, xs, acc, items_of (cx#1₂), boxed (lo, size, (cx#0₂)#planned));
+            leaf_at (lo, ext, size, xs, acc, items_of (cx#1₂), ou, grp, stp, plan_for ou grp stp (boxed (lo, size, (cx#0₂)#planned)));
         // A vector level runs its one parallel loop of size 1 as the vector loop and splits the last reduction loop by
         // its size into an unrolled inner loop, as `tile_fuse`'s `vector` does; without that loop it changes nothing.
         lam vec_at (sizes lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
-                    acc: Tensor Ro ext To, g: Gx, pan: Pan, plain: Tensor Ro ext To)@(core.pe.is_closed (‹i: nis; srcs#i#7₈›, Ris)): Tensor Ro ext To =
+                    acc: Tensor Ro ext To, g: Gx,
+                    ou: Nat, grp: «Rn; Nat», stp: «Rn; Nat», plan: Plan ou grp stp, plain: Tensor Ro ext To)@(core.pe.is_closed (‹i: nis; srcs#i#7₈›, Ris)): Tensor Ro ext To =
+            let pan    = plan#planned;
             let vdim   = vec.fold.r @(Nat, Idx Rn) @Rn
                 (λ (d: Idx Rn, x: Nat): Nat = (x, core.idx2nat d)#(core.bit2.and 0 (sizes#d == 1, core.idx2nat d < Ro))) (‹d: Rn; d›, Rn);
             let last   = core.nat.sub (Rn, 1);
@@ -3710,8 +3796,9 @@ pub mod law
             let K      = size#(core.idx 0 Rn last);
             let off    = ‹d: Ro; lo#(core.idx 0 Rn (core.idx2nat d))›;
             let out    = tile_shift @(Rn, Ro) map_out (lo, off);
-            let ins    = reads_of (lo, pan);
-            let vals   = values_of (unfold xs, xs, items_of g, pan);
+            let read   = inputs_of (lo, unfold xs, xs, items_of g, ou, grp, stp, pan);
+            let ins    = ‹i: nis; read#i#0₂›;
+            let vals   = ‹i: nis; kept_by plan (read#i#1₂)›;
             let whole  = map_reduce_post @(nis, 0) @(To, To, Ro, Rn, SchedT) (ext, size, mk_sched (vdim, 0))
                 @(Tis, ris_of pan, sis_of pan, (), (), ()) (f, outs_default @(To, Ro) ext acc, id @To) out (ins, ()) (vals, ());
             let Rs     = core.nat.add (Rn, 1);
@@ -3729,7 +3816,7 @@ pub mod law
                 #(vdim == Rn);
         let leaf_vec = λ (ou: Nat) (grp: «Rn; Nat») (stp: «Rn; Nat») (sizes: «Rn; Nat», lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Phys,
                           acc: Tensor Ro ext To, cx: Cx ou grp stp): Tensor Ro ext To =
-            vec_at (sizes, lo, ext, size, xs, acc, cx#1₂, boxed (lo, size, (cx#0₂)#planned),
+            vec_at (sizes, lo, ext, size, xs, acc, cx#1₂, ou, grp, stp, plan_for ou grp stp (boxed (lo, size, (cx#0₂)#planned)),
                     leaf ou grp stp (lo, ext, size, xs, acc, ff, cx));
         // A work-group region runs in its cluster and persistently as the levels above it ask; a warpgroup region whose
         // reduction is specialized runs one more warpgroup, the producer, as `tile_fuse` wraps them.

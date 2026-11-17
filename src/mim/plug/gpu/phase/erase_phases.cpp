@@ -9,6 +9,8 @@ const Def* ErasePhases::rewrite_imm_App(const App* app) {
     auto& w    = new_world();
     auto fence = [&](const Def* mem) { return w.app(w.annex<gpu::fence>(), mem); };
     if (Axm::isa<gpu::GM>(app)) return w.call<mem::M>(0);
+    if (Axm::isa<gpu::Held>(app)) return w.sigma();
+    if (Axm::isa<gpu::hold>(app) || Axm::isa<gpu::unheld>(app)) return w.tuple();
     if (auto buf = Axm::isa<gpu::SharedBuf>(app)) {
         auto [g, e, v, r, s, T] = buf->args<6>();
         return buffer::type_buf(rewrite(r), rewrite(s), rewrite(T));

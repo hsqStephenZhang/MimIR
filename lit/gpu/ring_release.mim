@@ -1,0 +1,17 @@
+// RUN: %mim %s -o - | %FileCheck %s
+
+// A step gives up the slot it waited for with what the ring's sync gave it for that slot.
+
+plugin core;
+plugin mem;
+plugin gpu;
+
+lam own {depth: Nat} (H: [Idx depth, Bool] → *) (sync: gpu.SyncOf depth H) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, _, _) = sync;
+    let (m, mine) = await (m, n);
+    release (m, core.idx 0 depth (core.nat.rem (n, depth)), tt, mine);
+
+extern lam twice (m: mem.M 0, n: Nat): mem.M 0 =
+    own (gpu.Held 2) (gpu.async_ring @2 (1, ff)) (m, n);
+
+// CHECK: gpu.async_wait_group

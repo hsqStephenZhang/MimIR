@@ -1,0 +1,18 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: {{.*}}not assignable
+
+// A tile still being filled lowers to an unpublished panel, which has no view.
+
+plugin tensor;
+plugin gpu;
+plugin buffer;
+plugin core;
+plugin math;
+
+use tensor;
+
+let F32    = math.F32;
+let Shared = Tile 2 units.Block (0, 0) (1, 1) spaces.Shared;
+
+lam seen {g e: Nat} (p: Shared gpu.Vis#Unpublished 2 (8, 16) (8, 16) (layout_expr.rows (8, 16)) F32) (b: Lowered (g, e) p)
+    : buffer.Buf (2, (8, 16), F32) = gpu.view b;

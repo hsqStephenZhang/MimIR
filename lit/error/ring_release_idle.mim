@@ -1,0 +1,13 @@
+// RUN: not %mim %s -o - 2>&1 | %FileCheck %s
+
+// What a step holds before it has read any slot is not live, so it cannot be given up as a slot that was read.
+
+plugin core;
+plugin mem;
+plugin gpu;
+
+lam unread {depth: Nat} (H: [Idx depth, Bool] → *) (sync: gpu.SyncOf depth H) (m: mem.M 0): mem.M 0 =
+    let (_, _, _, _, release, idle, _) = sync;
+    release (m, core.idx 0 depth 0, tt, idle);
+
+// CHECK: error: {{.*}}not assignable

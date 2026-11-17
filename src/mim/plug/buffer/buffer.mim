@@ -28,6 +28,13 @@ import compile;
 ///
 axm Buf: [r: Nat, s: «r; Nat», T: *] → *, normalize_Buf;
 ///
+/// ### Vis
+///
+/// What may be done with a buffer or a tile that several execution units share: nothing yet, only its owner's fill
+/// writes it, every unit inside its owner reads it and none writes it, or its owner alone reads and writes it.
+/// Schedules, the tile interpreter and the gpu plugin's synchronization tokens share these names.
+anx nom Vis = | Empty | Unpublished | Published | Owned;
+///
 /// ## Operations
 ///
 /// ### alloc

@@ -1,0 +1,14 @@
+// RUN: not %mim %s -o - 2>&1 | %FileCheck %s
+
+// A ring's sync gives a step what it holds of the slot it waited for, so the step cannot give up another slot with it.
+
+plugin core;
+plugin mem;
+plugin gpu;
+
+lam other {depth: Nat} (H: [Idx depth, Bool] → *) (sync: gpu.SyncOf depth H) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, _, _) = sync;
+    let (m, mine) = await (m, n);
+    release (m, core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth)), tt, mine);
+
+// CHECK: error: {{.*}}not assignable
