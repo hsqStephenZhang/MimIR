@@ -4110,28 +4110,17 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             lam->set(true, w.app(w.app(of, lam->var()), depth));
             return lam;
         };
-        // An mbarrier ring's sync is built from who shares it: a cluster, a producer warp, a persistent work-group.
         const Def* sync;
         if (tma) {
-            auto initiator = w.call(core::bit2::and_, w.lit_nat(2), Defs{leader(), first_round});
-            auto vacant    = parity(w.annex(tensor::pipeline_plan::empty_parity), "ringVacant");
-            auto steps     = specialized ? blocks : w.lit_nat(*literal_count);
-            sync = w.app(w.app(w.annex<gpu::mbar_ring>(), depth),
-                         {bars, steps, parity(w.annex(tensor::pipeline_plan::full_parity), "ringParity"), initiator});
-            if (sharing)
-                sync = w.app(w.app(w.annex<gpu::shared_ring>(), depth),
-                             {sync, w.lit_nat(cluster_->first), empties, vacant, initiator});
-            if (specialized)
-                sync = w.app(w.app(w.annex<gpu::consumer_ring>(), depth),
-                             {sync, empties, w.lit_nat(consumers_), producer_, vacant, initiator});
-            if (cluster_)
-                sync = w.app(w.app(w.annex<gpu::cluster_ring>(), depth), {sync, w.lit_nat(cluster_->first)});
-            else if (tile_round_)
-                sync = w.app(w.app(w.annex<gpu::resumed_ring>(), depth), {sync, first_round});
-            else
-                sync = w.app(w.app(w.annex<gpu::fenced_ring>(), depth), sync);
-            if (specialized && pingpong_)
-                sync = w.app(w.app(w.annex<gpu::pingpong_ring>(), depth), {sync, consumer_, producer_, first_round});
+            auto vacant = parity(w.annex(tensor::pipeline_plan::empty_parity), "ringVacant");
+            auto full   = parity(w.annex(tensor::pipeline_plan::full_parity), "ringParity");
+            auto steps  = specialized ? blocks : w.lit_nat(*literal_count);
+            sync
+                = w.app(w.app(w.annex<gpu::tma_ring>(), depth),
+                        {bars, empties ? empties : bars, steps, full, vacant, w.lit_nat(cluster_ ? cluster_->first : 0),
+                         w.lit_bool(sharing), w.lit_nat(specialized ? consumers_ : 0),
+                         specialized && pingpong_ ? consumer_ : w.lit_nat_0(), specialized ? producer_ : w.lit_ff(),
+                         w.lit_bool(specialized && pingpong_), w.lit_bool(tile_round_ != nullptr), first_round});
         } else {
             sync = w.app(
                 w.app(w.annex<gpu::async_ring>(), depth),

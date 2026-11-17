@@ -883,6 +883,23 @@ anx lam pingpong_ring {depth: Nat} (sync: RingSync depth, consumer: Nat, produce
     let second = core.bit2.and 0 (core.bit2.and 0 (core.ncmp.e (consumer, 1), core.bit2.xor 0 (producer, tt)), first);
     (λ (m: mem.M 0): mem.M 0 = arrive_named_if ((sync#0₇) m, 1I32, 256I32, second),
      sync#1₇, sync#2₇, sync#3₇, sync#4₇, sync#5₇, sync#6₇);
+/// The sync of a ring TMA fills, built from who shares it: a cluster of `cluster` work-groups (0 if none) that may be
+/// `sharing` its panels, `consumers` warpgroups a producer warp fills for (0 if its readers fill it), of which this is
+/// `consumer` and which take turns if `pingpong`, and a `persistent` work-group, whose `first` tile sets the ring up.
+/// `full` and `vacant` give the parities a fill completes and waits for; `empties` is read only by a ring that is
+/// shared or has a producer.
+anx lam tma_ring {depth: Nat}
+    (bars empties: buffer.Buf (1, depth, I64), blocks: Nat, full vacant: Nat → Nat, cluster: Nat, sharing: Bool,
+     consumers consumer: Nat, producer pingpong persistent first: Bool): RingSync depth =
+    let S         = RingSync depth;
+    let initiator = core.bit2.and 0 (leader (), first);
+    let base      = mbar_ring (bars, blocks, full, initiator);
+    let shared    = (λ (): S = base, λ (): S = shared_ring (base, cluster, empties, vacant, initiator))#sharing ();
+    let fed       = (λ (): S = consumer_ring (shared, empties, consumers, producer, vacant, initiator), λ (): S = shared)
+                        #(consumers == 0) ();
+    let scoped    = ((λ (): S = fenced_ring fed, λ (): S = resumed_ring (fed, first))#persistent,
+                     λ (): S = cluster_ring (fed, cluster))#(cluster != 0) ();
+    (λ (): S = scoped, λ (): S = pingpong_ring (scoped, consumer, producer, first))#pingpong ();
 /// `ring_fold` for any `H` and `V`: it only gives up a slot whose `H` an `await` returned and only commits a fill
 /// whose `V` an `acquire` returned, so it cannot make either up.
 /// A step gives up the slot the step before read, once every work-item has synchronized.
