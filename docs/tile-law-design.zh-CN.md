@@ -422,17 +422,18 @@ GPU 专属的展开（R8 树、流水环、warp 特化）仍按评审意见放�
 | 切分 | 整除、尾块、容量、目标能力 | PE 判定（`check` 规则，事实取自定律） | `lit/error/law_req_rule.mim`、`law_capacity.mim` | 多为运行时断言 |
 | 切分 | 乱序切分一个不可交换或种子非单位元的归约 | PE 判定（`check.combiner`、定律的合并合同） | `lit/error/law_ordered_inner.mim`、`law_items_combiner.mim`、`law_red_inner.mim` | 不查 |
 | 谁 | 续延在错的执行单元里运行，累加器或面板计划配错所有者或生命周期 | 解释器的类型索引（`At`、`Acc`、`Plan`） | 8 个变异在插件验证时被拒（§8.1） | ThunderKittens 的 `group<4>` 静态拒绝在错的单元上调用，但不证明线程属于该组；其余是运行时角色 |
-| 谁 | tile 逃出它的 work-group 或归约步，work-item 读独占的累加器，写已发布的面板 | 外壳的 `Tile` 类型（只在 `bench/typed_tiles`，编译器的解释器没有用） | `lit/error/typed_tile_{step,unit,lifetime,seed,owner,exclusive,readonly}.mim` | Mojo 的可变性在类型里，共享内存的生命周期是 `UntrackedOrigin` |
+| 谁 | tile 逃出它的 work-group 或归约步，work-item 读独占的累加器，写已发布的面板 | `tensor.Tile`，解释器与外壳共用（§9.5） | `lit/error/typed_tile_{step,unit,lifetime,seed,owner,exclusive,readonly}.mim` | Mojo 的可变性在类型里，共享内存的生命周期是 `UntrackedOrigin` |
 | 何时 | 同步面板：填充与读之间没有屏障，令牌或面板用了不止一次，构造进入两次 | `gpu.GM`/`gpu.SharedBuf` 的相位类型加 `gpu.check_sync` | `lit/error/superstep_fill.mim`，`check_sync` 的用例 | 不查 |
-| 何时 | 环：交还了没读过的槽，或别的槽 | `gpu.Held` 令牌与对令牌参数化的骨架 | `lit/error/ring_release.mim`、`ring_release_idle.mim` | 奇偶位是裸整数，不查；Mojo 的线性句柄只保证 `release` 被调用一次 |
+| 何时 | 环：交还了没读过的槽或别的槽，提交了没等到空的槽或别的槽 | `gpu.Held`、`gpu.Vacant` 令牌与对令牌参数化的骨架 | `lit/error/ring_release.mim`、`ring_release_idle.mim`、`ring_commit.mim` |
+| 何时 | 环：同一个槽交还两次或填两次 | `gpu.check_sync` 对槽令牌计数（§9.6） | `lit/error/ring_release_twice.mim`、`ring_fill_twice.mim` | 奇偶位是裸整数，不查；Mojo 的线性句柄只保证 `release` 被调用一次 |
 | 何时 | 环：到达数与参与者数、奇偶、发起者不一致 | 写在同一个 `RingSync` 定义里（按构造一致，不是检查） | 硬件上的变异（§8.2 的表） | 手工对齐 |
 | 何时 | 环：深度、交还滞后与在途 MMA 数不相容 | PE 判定（`pipeline_plan.ring_safe`，枚举环的状态） | `lower_to_mem` 里的报错 | 不查 |
 | 何时 | 环：不等落地就读、不等空槽就填、不交还、计数不延续 | **只有执行**：硬件上的变异测得出前三类中的大部分 | `lit/nvptx/tile_wgmma_{ws,persistent,pingpong,refill}.mim` | 不查 |
 | 何时 | 环：共享面板的 cluster 不等空槽就回填 | **无**：是 work-group 之间的竞争，执行测不出（`tile_wgmma_cluster_refill` 的块数多于槽数，变异照样通过） | — | 不查 |
-| 何处 | 列主序的面板被当作行主序，向量宽度不整除 | 外壳 `Tile` 的布局索引（轴的置换） | `lit/error/typed_tile_{layout,vectors}.mim` | CuTe 与 Mojo 的布局代数在类型里，静态形状下可查 |
+| 何处 | 列主序的面板被当作行主序，向量宽度不整除 | `Tile` 的布局索引（`layout_expr.Expr`） | `lit/error/typed_tile_{layout,vectors}.mim` | CuTe 与 Mojo 的布局代数在类型里，静态形状下可查 |
 | 何处 | 布局不是单射、向量填充不连续、swizzle 与描述符不一致 | PE 判定（`layout_expr` 的 F₂ 解释） | `lit/tensor` 的布局用例 | Mojo 的 `TwoLevelLayout` 把 swizzle 当 F₂ 线性布局；CUTLASS 里 swizzle 不是 `Layout` |
-| 何处 | `wgmma` 操作数面板的布局不是描述符要硬件读的 128 字节 swizzle | PE 判定：`layout_expr.lies_sw128`（任意秩，F₂）在造描述符处检查 K 主序面板 | `lit/tensor/layout_f2.mim`；把 `tc_layout` 的 swizzle 组数改错，编译报错 | 三处各传一个枚举 |
-| 何处 | MN 主序面板的布局、TMA 描述符的 swizzle 与面板不一致 | **无**：MN 主序不查；TMA 描述符的 swizzle 仍是写死的 | — | 同上 |
+| 何处 | `wgmma` 操作数面板的布局不是描述符要硬件读的 128 字节 swizzle | PE 判定：`layout_expr.lies_sw128`（任意秩，F₂）在造描述符处检查，K 主序与 MN 主序都查 | `lit/tensor/layout_f2.mim`；把 `tc_layout` 的 swizzle 组数改错，编译报错 | 三处各传一个枚举 |
+| 何处 | TMA 把面板写到的地址不是面板布局说的地址 | PE 判定：`layout_expr.lies_tma128` 在发出 TMA 加载处检查（§9.6） | `lit/tensor/layout_f2.mim` | 同上 |
 | 何处 | 读落在暂存的盒子之外，或绕过布局用逻辑坐标读面板 | **无**：仿射下标没有范围类型 | — | 不查；Descend 用"只能经 view 访问"拦下 |
 | 实现 | 实现不等于定律 | 差分测试（CPU 上与参考结果比较，GPU 上执行） | `lit/tensor/tile_law_exec.mim` 等 | — |
 
@@ -530,3 +531,17 @@ Hopper 链的 kernel 时间（1024³ F16 GEMM，`bench/gpu_tiling/gemm_tiled_wg_
 
 Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经换到 RTX PRO 6000 Blackwell 的主机上，`sm_90a` 的 kernel 在它上面加载失败（`CUresult 209`）。
 §9.4 的表仍是 §9.5 之前的数字；§9.5 之后的两次全量 lit 是在哪块 GPU 上跑的没有记录，重测那一刻是 Blackwell。
+
+### 9.6 生产者令牌、令牌只用一次、MN 主序与 TMA 的布局检查（2026-11-17）
+
+本节的改动都是在 RTX PRO 6000 Blackwell 的主机上做的：`sm_90a` 的 kernel 在那里不执行（lit 里以 `cuda-sm90` 为条件），所以验证是全量 lit 加设备 IR 的比较，没有硬件上的执行。
+
+- 生产者一侧：`acquire` 返回 `gpu.Vacant depth s`，`commit (mem, s, vacant)` 消耗它；骨架对 `V` 也是参数化的，所以它提交的只能是等到空的那个槽（`lit/error/ring_commit.mim`）。
+- 令牌只用一次：原来的令牌在部分求值后不留痕迹（`release` 的最内层是恒等），相同下标的令牌又会被合并成一个节点，没法计数。
+  现在 `hold`、`vacate` 带着内存线索（各自是一个值），最内层的交还与提交是公理 `retire`、`occupy`，`check_sync` 对每个槽令牌数使用次数，超过一次就报错，`erase_phases` 把四者都擦掉。
+  检查的是"至多一次"：`ring_fold` 结束时最后一个槽仍被持有，不交还。
+  10 个环形程序加令牌前后的设备 IR 除值的名字前缀外逐行相同。
+- MN 主序：`lies_sw128` 的原子改为 `128 / bytes`，不再取摆放的末维，于是与面板朝哪边为主无关；lowering 对两种朝向都查，现有程序的判定都是"成立"。
+- TMA：`lies_tma128 (layout, bytes, row, col)` 说的是硬件的写法——一行切成若干 128 字节的原子，逐个原子作为一个盒子堆叠，盒内做 128 字节 swizzle——给出的地址等于面板布局的地址；`row`、`col` 是矩阵的行、列落在面板的哪个逻辑维，由 `stage` 的参数算出。
+  发出 TMA 加载的地方原来按 `a · rows · 128` 字节直接算目的地址，这个假设现在有判定核对；K 主序与 MN 主序的面板判定都是"成立"，行列对调或去掉 swizzle 是"不成立"。
+- 仍没有承担者：共享面板的 cluster 不等空槽就回填（work-group 之间的竞争，要在 H200 上先做出能复现的测试）；读落在暂存的盒子之外。
