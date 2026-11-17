@@ -136,7 +136,7 @@ pub anx lam make {r: Nat}
 
 /// Row-major storage at the logical shape, which `make` yields from rank two on, at every rank.
 /// It stays as written until the shape is a literal: a pack made anew at every use equals no other.
-pub anx lam rows {r: Nat} (s: «r; Nat»)@(core.pe.is_closed (r, s)): Expr (r, s) =
+pub lam rows {r: Nat} (s: «r; Nat»)@(core.pe.is_closed (r, s)): Expr (r, s) =
     ((‹s›, 1, ‹p: r + 1; p›, ‹r; 0›, 1, 1, 0, 1, ff) inj Data (r, s)) inj Expr (r, s);
 
 pub anx lam shape {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; Nat» =
@@ -325,6 +325,15 @@ pub anx lam lies_tma128 {r: Nat} {s: «r; Nat»} (layout: Expr (r, s), bytes row
     let differ   = any ‹i: n + 1; (tt, ff)#(core.icmp.e (rw#i, rh#i))›;
     let sound    = core.bit2.and 0 (core.bit2.and 0 (bytes != 0, 16 % width == 0), rows % 8 == 0);
     core.select (both (both (lw, lh), sound), (2, 1)#differ, 0);
+
+/// What a wgmma descriptor says of an operand panel in `layout` of elements of `bytes` each: whether the panel is
+/// MN-major, which its split into atoms tells, the bytes between its atoms (16 if K-major, where none repeat),
+/// the 1 KiB between its groups of 8 rows of 128 bytes, and the swizzle, 1 for the 128-byte one and 0 for none.
+pub anx lam wgmma_fields {n: Nat} {dims: «n; Nat»} (layout: Expr (n, dims), bytes: Nat): [Bool, Nat, Nat, Nat] =
+    let mn    = (#layout)#split != 1;
+    let shape = shape layout;
+    let atoms = vec.fold.r @(Nat, Idx n) @n (λ (d: Idx n, x: Nat): Nat = x * (1, shape#d)#(0 < core.idx2nat d)) (‹d: n; d›, bytes);
+    (mn, (16, atoms)#mn, 1024, (0, 1)#((#layout)#xor));
 
 /// Whether a layout maps distinct elements to distinct addresses: 0 if its extents leave the F₂ class, 1 if not, 2 if so.
 pub anx lam injective {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): Nat =

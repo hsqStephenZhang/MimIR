@@ -2548,36 +2548,37 @@ const Def* LowerToMem::wgmma_batch(const Def* mem, const Def* x, Defs issue, con
     return w.app(w.app(batch, {mem, x}), w.tuple(issue));
 }
 
-// Whether a `wgmma` operand panel is MN-major, from its layout's split, and the bytes between its atoms of 128 bytes.
-std::pair<bool, u64> LowerToMem::wgmma_major(const Def* buffer) {
-    auto layout = fe::lookup(layouts_, buffer);
-    if (!layout) buffer->blame("a wgmma operand panel needs its swizzled layout").bail();
-    while (layout->isa<Inj>() || layout->isa<Name>())
-        layout = layout->isa<Inj>() ? layout->as<Inj>()->value() : layout->as<Name>()->op();
-    auto [r, s, T] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
-    auto rank      = Lit::as(r);
-    auto lbo       = Lit::as(core::op(core::trait::size, T));
-    for (u64 d = 1; d != rank; ++d)
-        lbo *= Lit::as(s->proj(rank, d));
-    return {Lit::as(layout->proj(9, 1)) != 1, lbo};
+// What `layout_expr.wgmma_fields` says of a `wgmma` operand panel: whether it is MN-major and its descriptor's fields.
+std::array<u64, 4> LowerToMem::wgmma_fields(const Def* buffer) {
+    auto& w      = new_world();
+    auto layout  = fe::lookup(layouts_, buffer);
+    auto logical = fe::lookup(logical_shapes_, buffer);
+    if (!layout || !logical) buffer->blame("a wgmma operand panel needs its swizzled layout").bail();
+    auto T      = Axm::as<buffer::Buf>(buffer->type())->arg(3, 2);
+    auto query  = w.tuple({layout, core::op(core::trait::size, T)});
+    auto fields = panel::at_shape(w.annex(tensor::layout_expr::wgmma_fields), query, logical);
+    return {Lit::as(fields->proj(4, 0)), Lit::as(fields->proj(4, 1)), Lit::as(fields->proj(4, 2)),
+            Lit::as(fields->proj(4, 3))};
 }
 
-// The descriptor of a `wgmma` operand starting at the panel's element @p index: 1 KiB between 8-row groups and,
-// MN-major, the atoms' distance.
+std::pair<bool, u64> LowerToMem::wgmma_major(const Def* buffer) {
+    auto fields = wgmma_fields(buffer);
+    return {fields[0] != 0, fields[1]};
+}
+
+// The descriptor of a `wgmma` operand starting at the panel's element @p index.
 const Def* LowerToMem::wgmma_desc(const Def* buffer, const Def* index) {
-    auto& w           = new_world();
-    auto [mn, lbo]    = wgmma_major(buffer);
-    auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
+    auto& w                      = new_world();
+    auto [mn, lbo, sbo, swizzle] = wgmma_fields(buffer);
+    auto [br, bs, bT]            = Axm::as<buffer::Buf>(buffer->type())->args<3>();
     // The descriptor names the 128-byte swizzle, so the panel's layout must be that one.
-    if (auto logical = fe::lookup(logical_shapes_, buffer)) {
-        auto query   = w.tuple({fe::lookup(layouts_, buffer), core::op(core::trait::size, bT)});
-        auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_sw128), query, logical);
-        log().d("wgmma panel {} against the 128-byte swizzle: {}", buffer->type(), verdict);
-        if (Lit::isa(verdict) == 1)
-            buffer->blame("a wgmma operand panel does not lie as the 128-byte swizzle its descriptor names").bail();
-    }
+    auto query   = w.tuple({fe::lookup(layouts_, buffer), core::op(core::trait::size, bT)});
+    auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_sw128), query, logical_shapes_[buffer]);
+    log().d("wgmma panel {} against the 128-byte swizzle: {}", buffer->type(), verdict);
+    if (Lit::isa(verdict) == 1)
+        buffer->blame("a wgmma operand panel does not lie as the 128-byte swizzle its descriptor names").bail();
     auto addr = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}), {buffer, index});
-    return w.app(w.annex<gpu::wgmma_desc>(), {addr, w.lit_i64(mn ? lbo : 16), w.lit_i64(1024), w.lit_i64(1)});
+    return w.app(w.annex<gpu::wgmma_desc>(), {addr, w.lit_i64(lbo), w.lit_i64(sbo), w.lit_i64(swizzle)});
 }
 
 // One warp's tensor-core block: A's fragments by ldmatrix from its row-major panel, B's by a transposed ldmatrix or
