@@ -537,7 +537,8 @@ anx lam tma_fill {n: Nat} (panels: «n; TmaPanel», bar: I32, issue: Bool) (m: m
 ///
 /// #### mbar_arrive_cluster_if, mbar_wait_if
 ///
-/// `mbar_arrive_cluster_if` arrives once on the mbarrier at shared address `bar` of the cluster's work-group `rank`, releasing this work-group's prior accesses to the cluster.
+/// `mbar_arrive_cluster_if` arrives once on the mbarrier at shared address `bar` of the cluster's work-group `rank`.
+/// It orders no memory access: it says a slot was read, and what is read was written through the async proxy.
 /// `mbar_wait_if` is `mbar_wait_at` in the work-items whose `issue` holds.
 ///
 axm mbar_arrive_cluster_if: [mem.M 0, bar: I32, rank: I32, issue: Bool] → mem.M 0;
