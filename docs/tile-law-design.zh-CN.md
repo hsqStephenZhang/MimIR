@@ -571,3 +571,25 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 现在读写部分和由 C++ 给的 `get`、`set` 完成，骨架只有循环与合并。
 
 写的时候碰到的两件事：`tensor` 插件的 annex 标签已到上限 256（顶层名字各占一个，一个 `mod` 里的所有 annex 共占一个），新的 annex 只能放进已有 annex 的模块；骨架返回的续延要标 `@tt`，否则它不内联，`gpu.outline` 就认不出 work-group 循环与 work-item 循环的嵌套。
+
+### 9.8 对照调研之后的三步（2026-11-17）
+
+依据 `docs/gpu-protocol-skeletons-survey-codex.zh-CN.md` §4.2、§6.2 的规则 A 与 §6.4，以及 `docs/gpu-multilevel-first-principles.zh-CN.md`；验证方式同 §9.6。
+
+- **拒绝的原因分类**。
+  `check.messages` 的每一条现在在 `check.kinds` 里有一个类别，报错后面跟一行说明：目标的指令要求如此、否则算出来的是别的东西、目标的资源不够、只是这个 lowering 的限制。
+  `lower_to_mem.cpp` 里与调度有关的 39 处报错按同样的四类加了说明。
+  调研点名的两处因此不再读成硬件约束："specialized 的归约不跨 cluster 共享面板"与"持久化环每块瓦片的块数要填满整圈"都标为 lowering 的限制。
+- **归还的滞后与在途的 MMA 组数对上**。
+  `gpu.wgmma_batch` 的等待返回 `InFlight pending`，即"此刻至多 `pending` 组 MMA 在途"；`gpu.ws_fold` 要求每一步交回 `InFlight lag`，`lag` 就是它晚几步归还槽。
+  这两个数原来在 C++ 里各传一次（`wgmma_pending_` 与 `overlap`），现在不一致就是类型错误（`lit/error/ring_release_in_flight.mim`）。
+  它说的是数目一致，不是规则 A 要的"归还由计算完成证明"：见证不带是哪一步的 MMA，`ws_fold` 也不消耗它。
+  10 个环形程序改动前后的设备 IR 逐行相同。
+- **调研文档进入这个分支**，并在 §4.1.1 加了它的骨架清单与现有定义的对照；PDF 没有带过来。
+
+没有做的：
+
+- 给 wgmma 的 B 面板选布局仍有 C++ 的 `panel::wgmma` 与 Mim 的 `tc_layout.wgmma` 两份。
+  `tile_fuse` 的代价模型要用 C++ 那份返回的 `Layout` 结构，而 `tc_layout` 模块里没有 annex、插件的 annex 标签又已用满，从 C++ 调不到 Mim 那份；要合并得先腾出标签或把 `tc_layout` 并进已有 annex 的模块。
+- `warp_fold` 的环深仍是 2。
+- 解除"specialized 不与 cluster 共享同用"和"持久化环块数是环深倍数"两个限制：都要在 H200 上执行验证。
