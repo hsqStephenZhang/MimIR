@@ -4055,7 +4055,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     // have read it; a shallower one would leave the producer a single slot ahead.
     auto overlap = u64(specialized && ring.size() >= 4);
     if (specialized && literal_count) {
-        // The protocol model covers two tiles' fills, so a persistent ring's count across tiles is checked too.
+        // The protocol model covers the fills of two tiles numbered in a row, as a persistent ring of whole turns does.
         auto fills = w.lit_nat(std::min<u64>(2 * *literal_count, 16));
         auto safe  = w.app(w.app(w.app(w.app(w.annex(tensor::pipeline_plan::ring_safe), fills), w.lit_nat(ring.size())),
                                  w.lit_nat(overlap)),

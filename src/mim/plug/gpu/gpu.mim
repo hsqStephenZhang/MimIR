@@ -1082,9 +1082,9 @@ lam ws_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth �
                     (early, late)#(lag != 0) m;
                 (consume, produce)#producer m;
             con ws_done (st: S) =
-                let (m, a)       = wgmma_wait (settle st#0₄, 0, st#1₄);
+                let (m, a)       = wgmma_wait (st#0₄, 0, st#1₄);
                 let (live, s, h) = st#3₄;
-                return ((m, release (m, s, live, h))#(lag != 0), a);
+                return (settle ((m, release (m, s, live, h))#(lag != 0)), a);
         end;
     let none: Last = (ff, core.idx 0 depth 0, idle);
     cps.cps2ds run (open start, acc, ring, none);
@@ -1101,6 +1101,8 @@ anx lam ws_fold {A P: *, depth: Nat} (sync: RingSync depth, count: I64, producer
     ws_fold_at @(A, P, depth) (Held depth) (Vacant depth) (sync, count, producer, nth, lag) (start, acc, ring) (fill, step);
 /// Rejects a token or an unpublished, owned or claimed panel used other than exactly once, a panel or token outside the
 /// function that made it, and a construct entered twice.
+/// Of a ring's slot tokens it rejects one used more than once where it is made; one packed into a value or captured by
+/// a loop escapes it.
 axm check_sync: compile.Phase;
 axm erase_phases: compile.Phase;
 ///

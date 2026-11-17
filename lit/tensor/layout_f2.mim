@@ -53,3 +53,11 @@ let _ = refly.struc.e (lies_tma128 (mn, 2, 1, 0), 1);
 let km = (tc_wgmma @3 ((64, 1, 128), 0, 2, tt))#1₂;
 let _ = refly.struc.e (lies_tma128 (km, 2, 2, 0), 2);
 let _ = refly.struc.e (lies_tma128 (make @3 ((64, 1, 128), (#km)#split, (#km)#perm, (#km)#pad, 1, 1, 0, 1, ff), 2, 2, 0), 1);
+
+// Row-major storage is its own shape at every rank.
+let _ = refly.struc.e (shape (rows (2, 3, 4)), (2, 3, 4));
+let _ = refly.struc.e (shape (rows 8), 8);
+// A panel that is no wgmma operand has no such layout, and asking builds none.
+let _ = refly.struc.e ((tc_wgmma @3 ((32, 1, 32), 2, 2, tt))#0₂, ff);
+// A K-major descriptor steps over rows of 128 bytes: a swizzled panel whose rows are twice as wide does not lie so.
+let _ = refly.struc.e (lies_sw128 (make @2 ((64, 128), 1, (0₃, 1₃, 2₃), (0, 0), 8, 8, 0, 8, tt), 2), 1);

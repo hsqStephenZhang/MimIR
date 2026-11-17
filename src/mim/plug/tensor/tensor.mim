@@ -137,7 +137,9 @@ pub anx lam make {r: Nat}
 /// Row-major storage at the logical shape, which `make` yields from rank two on, at every rank.
 /// It stays as written until the shape is a literal: a pack made anew at every use equals no other.
 pub lam rows {r: Nat} (s: «r; Nat»)@(core.pe.is_closed (r, s)): Expr (r, s) =
-    ((‹s›, 1, ‹p: r + 1; p›, ‹r; 0›, 1, 1, 0, 1, ff) inj Data (r, s)) inj Expr (r, s);
+    let perm = ‹p: r + 1; let pp = core.idx2nat p;
+        core.idx 0 (r + 1) (core.select (pp < 2, pp, core.select (pp == 2, r, pp - 1)))›;
+    ((‹s›, 1, perm, ‹r; 0›, 1, 1, 0, 1, ff) inj Data (r, s)) inj Expr (r, s);
 
 pub anx lam shape {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; Nat» =
     shape_impl ((#layout)#split, (#layout)#perm, (#layout)#pad, s);
@@ -299,11 +301,13 @@ pub anx lam lies_sw128 {r: Nat} {s: «r; Nat»} (layout: Expr (r, s), bytes: Nat
     let width = core.select (bytes == 0, 1, bytes);
     let atom  = 128 / width;
     let e     = address @r @s plain;
-    let want  = f2_xor n (e, f2_mul n (f2_rem n (f2_div n (e, atom), 8), 16 / bytes));
+    let want  = f2_xor n (e, f2_mul n (f2_rem n (f2_div n (e, atom), 8), 16 / width));
+    // A descriptor steps over rows of 128 bytes: K-major the placement's last dim, MN-major the atoms it splits into.
+    let row   = core.select (data#split == 1, (shape plain)#(core.idx 0 r (r - 1)), data#split);
     let (lw, rw) = want;
     let (lh, rh) = address @r @s layout;
     let differ   = any ‹i: n + 1; (tt, ff)#(core.icmp.e (rw#i, rh#i))›;
-    core.select (both (both (lw, lh), core.bit2.and 0 (bytes != 0, 16 % width == 0)), (2, 1)#differ, 0);
+    core.select (both (both (lw, lh), core.bit2.and 0 (bytes != 0, 16 % width == 0)), (2, 1)#(core.bit2.or 0 (differ, row * width != 128)), 0);
 
 /// Whether a panel lies where a TMA copy with the 128-byte swizzle puts it: logical dim `row` holds the rows of the
 /// copied matrix and `col` its columns, the hardware stacks the atoms of 128 bytes a row splits into one box after
@@ -358,10 +362,10 @@ pub anx lam tc_mma {n: Nat} (dims: «n; Nat», inner bytes: Nat): Expr (n, dims)
 /// swizzled by the segment; `(ff, _)` when the panel has no such shape.
 pub anx lam tc_wgmma {n: Nat} (dims: «n; Nat», inner bytes: Nat, k_major: Bool): [Bool, Expr (n, dims)] =
     let atom  = 128 / core.select (bytes == 0, 1, bytes);
-    let rows  = vec.fold.r @(Nat, Idx n) @n (λ (d: Idx n, x: Nat): Nat =
+    let tall  = vec.fold.r @(Nat, Idx n) @n (λ (d: Idx n, x: Nat): Nat =
         (x, core.nat.add (x, 1))#(core.bit2.and 0 (core.idx2nat d != inner, dims#d != 1))) (‹d: n; d›, 0);
     let width = dims#(core.idx 0 n inner);
-    let ok    = core.bit2.and 0 (rows == 1, (core.bit2.and 0 (inner == core.nat.sub (n, 1), width % atom == 0), width == atom)#k_major);
+    let ok    = core.bit2.and 0 (tall == 1, (core.bit2.and 0 (inner == core.nat.sub (n, 1), width % atom == 0), width == atom)#k_major);
     let one   = width == atom;
     // K-major: rows, then units, then the contiguous dim.
     let kkey  = ‹d: n; ((1, 0)#(dims#d != 1), 2)#(core.idx2nat d == inner)›;
@@ -379,7 +383,10 @@ pub anx lam tc_wgmma {n: Nat} (dims: «n; Nat», inner bytes: Nat, k_major: Bool
     let mshape = ‹p: n; ((perm1#(core.idx 0 m1 (core.nat.add (core.idx2nat p, 1))), perm1#(core.idx 0 m1 1) * perm1#(core.idx 0 m1 2))#(core.idx2nat p == 1),
                          perm1#(core.idx 0 m1 0))#(core.idx2nat p == 0)›;
     let chunk = 16 / core.select (bytes == 0, 1, bytes);
-    (ok, (tc_term @n (dims, atom, mperm, mshape, chunk, tt), tc_term @n (dims, 1, kperm, kshape, chunk, tt))#k_major);
+    let L = [Bool, Expr (n, dims)];
+    (λ (): L = (ff, rows dims),
+     λ (): L = (tt, (λ (): Expr (n, dims) = tc_term @n (dims, atom, mperm, mshape, chunk, tt),
+                     λ (): Expr (n, dims) = tc_term @n (dims, 1, kperm, kshape, chunk, tt))#k_major ()))#ok ();
 
 /// What a wgmma descriptor says of an operand panel in `layout` of elements of `bytes` each: whether the panel is
 /// MN-major, which its split into atoms tells, the bytes between its atoms (16 if K-major, where none repeat),
