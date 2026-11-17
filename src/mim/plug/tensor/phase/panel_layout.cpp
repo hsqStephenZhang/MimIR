@@ -180,68 +180,32 @@ const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>
     return make(pad);
 }
 
-// A tensor-core panel keeps its source's contiguous dim innermost, so its fill copies 16-byte runs.
-// The pad makes ldmatrix's 8 rows of a narrow panel, or the scalar fragment loads of a wide one, hit distinct banks.
+// `layout_expr.tc_mma` and `layout_expr.tc_wgmma` are the layouts of a tensor core's operand panels.
+// The `Layout` of such a choice only tells whether the panel stays as its storage is.
 Choice mma(const Def* storage, size_t inner, u64 bytes) {
-    auto& w   = storage->world();
-    auto n    = storage->num_projs();
-    auto dims = std::vector<u64>(n);
-    for (size_t d = 0; d != n; ++d)
-        dims[d] = Lit::as(storage->proj(n, d));
-    auto layout = Layout{std::vector<size_t>()};
-    for (size_t d = 0; d != n; ++d)
-        if (d != inner) layout.perm.push_back(d);
-    layout.perm.push_back(inner);
-    layout.permuted = permuted_dims(dims, layout);
-    auto shape      = physical_dims(dims, layout);
-    auto& last      = shape.back();
-    if (bytes == 2 && last * 2 % 32 == 0)
-        last += 8;
-    else if (bytes == 4 && last <= 32 && last / 4 % 2 == 0)
-        last += 4;
-    else if (bytes == 4 && last > 32 && last % 32 == 0)
-        last += 8;
-    auto expr     = term(layout, storage, shape);
-    auto physical = at_shape(w.annex(tensor::layout_expr::shape), expr, storage);
-    return {expr, physical, layout, true};
+    auto& w    = storage->world();
+    auto n     = storage->num_projs();
+    auto expr  = w.app(w.app(w.annex(tensor::layout_expr::tc_mma), w.lit_nat(n)),
+                       {storage, w.lit_nat(inner), w.lit_nat(bytes)});
+    auto plain = Layout{std::vector<size_t>(n)};
+    for (size_t p = 0; p != n; ++p)
+        plain.perm[p] = p;
+    auto moved = expr != term(plain, storage, {});
+    if (moved) plain.split = 0;
+    return {expr, at_shape(w.annex(tensor::layout_expr::shape), expr, storage), plain, true};
 }
 
-// A `wgmma` operand panel holds its fill's contiguous dim in 128-byte segments and its one other dim of more than one
-// element as their rows, and swizzles 16-byte chunks by the segment, the layout its descriptors read.
 Choice wgmma(const Def* storage, size_t inner, u64 bytes, bool k_major) {
-    auto& w     = storage->world();
-    auto n      = storage->num_projs();
-    auto dims   = std::vector<u64>(n);
-    auto layout = Layout{std::vector<size_t>()};
-    auto atom   = 128 / bytes;
-    for (size_t d = 0; d != n; ++d)
-        dims[d] = Lit::as(storage->proj(n, d));
-    auto rows = std::vector<size_t>(), units = std::vector<size_t>();
-    for (size_t d = 0; d != n; ++d)
-        if (d != inner) (dims[d] == 1 ? units : rows).push_back(d);
-    auto none = Choice{nullptr, storage, layout, true};
-    if (rows.size() != 1) return none;
-    if (k_major) {
-        if (dims[inner] != atom) return none;
-        layout.perm = rows;
-        layout.perm.insert(layout.perm.end(), units.begin(), units.end());
-        layout.perm.push_back(inner);
-    } else {
-        // The split's quotient is pre-split position `n - 1` and its remainder position `n`.
-        if (inner != n - 1 || dims[inner] % atom) return none;
-        // A single atom keeps the rows outermost, so no physical dim of one element leads.
-        layout.split = atom;
-        layout.perm  = dims[inner] == atom ? std::vector<size_t>{rows[0]} : std::vector<size_t>{n - 1, rows[0]};
-        layout.perm.insert(layout.perm.end(), units.begin(), units.end());
-        if (dims[inner] == atom) layout.perm.push_back(n - 1);
-        layout.perm.push_back(n);
-    }
-    layout.swizzle  = Swizzle{16 / bytes, 8, 0, 8, true};
-    layout.permuted = permuted_dims(dims, layout);
-    auto shape      = physical_dims(dims, layout);
-    auto expr       = term(layout, storage, shape);
+    auto& w         = storage->world();
+    auto n          = storage->num_projs();
+    auto [ok, expr] = w.app(w.app(w.annex(tensor::layout_expr::tc_wgmma), w.lit_nat(n)),
+                            {storage, w.lit_nat(inner), w.lit_nat(bytes), w.lit_bool(k_major)})
+                          ->projs<2>();
+    auto swizzled   = Layout{std::vector<size_t>()};
+    swizzled.split  = 0;
+    if (Lit::as(ok) == 0) return {nullptr, storage, swizzled, true};
     injective(expr, storage);
-    return {expr, at_shape(w.annex(tensor::layout_expr::shape), expr, storage), layout, true};
+    return {expr, at_shape(w.annex(tensor::layout_expr::shape), expr, storage), swizzled, true};
 }
 
 // The storage of a panel whose fill moves `vec` elements of `bytes` along dim `inner` per step, in the layout that

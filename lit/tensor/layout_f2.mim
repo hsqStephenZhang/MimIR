@@ -42,7 +42,7 @@ let _ = refly.struc.e (lies_sw128 (identity, 2), 1);
 let unit3 = make @3 ((64, 1, 64), 1, (0₄, 1₄, 3₄, 2₄), (0, 0, 0), 8, 8, 0, 8, tt);
 let _ = refly.struc.e (lies_sw128 (unit3, 2), 2);
 // So is the layout of an MN-major tensor-core operand, and the same placement left unswizzled is not.
-let mn = (tensor.tc_layout.wgmma @2 ((64, 128), 1, 2, ff))#1₂;
+let mn = (tc_wgmma @2 ((64, 128), 1, 2, ff))#1₂;
 let _ = refly.struc.e (lies_sw128 (mn, 2), 2);
 let _ = refly.struc.e (lies_sw128 (make @2 ((64, 128), (#mn)#split, (#mn)#perm, (#mn)#pad, 1, 1, 0, 1, ff), 2), 1);
 
@@ -50,6 +50,6 @@ let _ = refly.struc.e (lies_sw128 (make @2 ((64, 128), (#mn)#split, (#mn)#perm, 
 // the matrix's rows and columns in the dims the copy fills, and not with them exchanged or without the swizzle.
 let _ = refly.struc.e (lies_tma128 (mn, 2, 0, 1), 2);
 let _ = refly.struc.e (lies_tma128 (mn, 2, 1, 0), 1);
-let km = (tensor.tc_layout.wgmma @3 ((64, 1, 128), 0, 2, tt))#1₂;
+let km = (tc_wgmma @3 ((64, 1, 128), 0, 2, tt))#1₂;
 let _ = refly.struc.e (lies_tma128 (km, 2, 2, 0), 2);
 let _ = refly.struc.e (lies_tma128 (make @3 ((64, 1, 128), (#km)#split, (#km)#perm, (#km)#pad, 1, 1, 0, 1, ff), 2, 2, 0), 1);
