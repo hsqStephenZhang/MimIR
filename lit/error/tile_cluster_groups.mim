@@ -1,6 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
 // CHECK: tile_cluster_groups.mim:27:{{.*}}error: 2 work-groups do not form clusters of 4
-// CHECK: note: the target's instructions require it
 
 // A cluster's size divides the work-groups it groups.
 
@@ -26,3 +25,5 @@ extern fun gemm_cluster (a: tensor.Tensor 2 (128, 128) H, b: tensor.Tensor 2 (12
     let root = map_reduce ((128, 256), (128, 256, 128)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
     return (tile_req (root, (), levels, default_control));
+
+// CHECK: note: the target's instructions require it
