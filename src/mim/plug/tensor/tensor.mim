@@ -288,21 +288,22 @@ pub anx lam matches_sw128 {s: «2; Nat»} (layout: Expr (2, s), bytes: Nat): Nat
     let differ   = any ‹i: n + 1; (tt, ff)#(core.icmp.e (rw#i, rh#i))›;
     core.select (both (both (lw, lh), atom * bytes == 128), (2, 1)#differ, 0);
 
-/// Whether a layout of any rank is the 128-byte swizzle applied to its own unswizzled placement, whose rows are 128
-/// bytes of elements of `bytes` each: the element the placement puts at `e` lies at `e ⊕ ((e / atom) % 8) · (16 / bytes)`.
+/// Whether a layout of any rank is the 128-byte swizzle applied to its own unswizzled placement, read in rows of 128
+/// bytes of elements of `bytes` each, whichever way the panel is major: the element the placement puts at `e` lies at `e ⊕ ((e / atom) % 8) · (16 / bytes)`.
 /// That is what a wgmma descriptor and a TMA descriptor with that swizzle make the hardware read.
 /// 0 if undecided, 1 if not, 2 if so.
 pub anx lam lies_sw128 {r: Nat} {s: «r; Nat»} (layout: Expr (r, s), bytes: Nat): Nat =
     let n     = total (widths s);
     let data  = #layout;
     let plain = make @r (s, data#split, data#perm, data#pad, 1, 1, 0, 1, ff);
-    let atom  = (shape plain)#(core.idx 0 r (r - 1));
+    let width = core.select (bytes == 0, 1, bytes);
+    let atom  = 128 / width;
     let e     = address @r @s plain;
     let want  = f2_xor n (e, f2_mul n (f2_rem n (f2_div n (e, atom), 8), 16 / bytes));
     let (lw, rw) = want;
     let (lh, rh) = address @r @s layout;
     let differ   = any ‹i: n + 1; (tt, ff)#(core.icmp.e (rw#i, rh#i))›;
-    core.select (both (both (lw, lh), atom * bytes == 128), (2, 1)#differ, 0);
+    core.select (both (both (lw, lh), core.bit2.and 0 (bytes != 0, 16 % width == 0)), (2, 1)#differ, 0);
 
 /// Whether a layout maps distinct elements to distinct addresses: 0 if its extents leave the F₂ class, 1 if not, 2 if so.
 pub anx lam injective {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): Nat =

@@ -2565,8 +2565,8 @@ const Def* LowerToMem::wgmma_desc(const Def* buffer, const Def* index) {
     auto& w           = new_world();
     auto [mn, lbo]    = wgmma_major(buffer);
     auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
-    // The descriptor names the 128-byte swizzle, so a K-major panel's layout must be that one.
-    if (auto logical = fe::lookup(logical_shapes_, buffer); !mn && logical) {
+    // The descriptor names the 128-byte swizzle, so the panel's layout must be that one.
+    if (auto logical = fe::lookup(logical_shapes_, buffer)) {
         auto query   = w.tuple({fe::lookup(layouts_, buffer), core::op(core::trait::size, bT)});
         auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_sw128), query, logical);
         log().d("wgmma panel {} against the 128-byte swizzle: {}", buffer->type(), verdict);
