@@ -501,6 +501,40 @@ axm fence_mbarrier_init: mem.M 0 → mem.M 0;
 ///
 axm tma_load_multicast_if: [mem.M 0, dst: I32, map: GlobalPtr «16; I64», col row: I32, bar: I32, mask: I32, issue: Bool] → mem.M 0;
 ///
+/// #### tma_fill
+///
+/// A panel a fill copies by TMA: `rows × cols` elements of `bytes` each of the matrix `map` describes, from its element
+/// `(row, col)`, to the shared address `base`.
+/// A row splits into atoms of 128 bytes, one box each, stacked `rows · 128` bytes apart.
+/// With more than one of `shares`, each work-group of a cluster of that size copies its share of the rows into all of them.
+///
+let TmaPanel = [base: I32, map: GlobalPtr «16; I64», row col: I32, rows cols bytes shares: Nat];
+lam tma_panel (bar: I32, issue: Bool) (m: mem.M 0, p: TmaPanel): mem.M 0 =
+    let (base, map, row, col, rows, cols, bytes, shares) = p;
+    let word   = core.idx 0 0x100000000;
+    let atom  = 128 / bytes;
+    let atoms = cols / atom;
+    let share = rows / shares;
+    let multi = 1 < shares;
+    let rank  = cluster_rank ();
+    let row   = core.select (multi, core.wrap.add 0 (row, core.wrap.mul 0 (rank, word share)), row);
+    let skip  = core.select (multi, core.wrap.mul 0 (rank, word (share * 128)), 0I32);
+    let all   = vec.fold.r @(Nat, Idx shares) @shares (λ (_: Idx shares, x: Nat): Nat = 2 * x) (‹r: shares; r›, 1) - 1;
+    vec.fold.l @(mem.M 0, Idx atoms) @atoms
+        (λ (m: mem.M 0, a: Idx atoms): mem.M 0 =
+            let k   = core.idx2nat a;
+            let dst = core.wrap.add 0 (core.wrap.add 0 (base, word (k * rows * 128)), skip);
+            let c   = core.wrap.add 0 (col, word (k * atom));
+            (tma_load_if (m, dst, map, c, row, bar, issue),
+             tma_load_multicast_if (m, dst, map, c, row, bar, word all, issue))#multi)
+        (m, ‹a: atoms; a›);
+/// One fill of a ring slot: the mbarrier at `bar` expects the bytes of all `panels`, which the copies then complete, so
+/// what is expected is what is copied; the work-items `issue` selects start them.
+anx lam tma_fill {n: Nat} (panels: «n; TmaPanel», bar: I32, issue: Bool) (m: mem.M 0): mem.M 0 =
+    let bytes = vec.fold.r @(Nat, TmaPanel) @n (λ (p: TmaPanel, x: Nat): Nat = x + p#rows * p#cols * p#bytes) (panels, 0);
+    vec.fold.l @(mem.M 0, TmaPanel) @n (tma_panel (bar, issue))
+        (mbar_expect_tx_if (m, bar, core.idx 0 0x100000000 bytes, issue), panels);
+///
 /// #### mbar_arrive_cluster_if, mbar_wait_if
 ///
 /// `mbar_arrive_cluster_if` arrives once on the mbarrier at shared address `bar` of the cluster's work-group `rank`, releasing this work-group's prior accesses to the cluster.

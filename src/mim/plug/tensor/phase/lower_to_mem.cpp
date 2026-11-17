@@ -3940,8 +3940,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         push();
         bind_old(future->has_var());
         map(future->var(2, 1), w.call(core::nat::mul, Defs{block, rewrite(stride)}));
-        auto loads = std::vector<std::function<const Def*(const Def*, const Def*)>>();
-        u64 bytes  = 0;
+        // `gpu.tma_fill` is the protocol of a fill; which box of which matrix goes where comes from here.
+        auto copies = DefVec();
         for (size_t j = 0; j != panels; ++j) {
             auto stage = Axm::isa<tensor::stage>(Axm::peel<tensor::placed>(roots[pipelined[j]]));
             auto slice = stage ? Axm::isa<tensor::slice>(Axm::peel<tensor::buf>(stage->arg())) : nullptr;
@@ -3976,42 +3976,19 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             auto shares = cluster_ && slots[j] < 64 && (cluster_->second >> slots[j] & 1) ? cluster_->first : u64(1);
             if (*rows % (8 * shares))
                 slice->blame("a multicast panel's {} rows do not split into {} shares", *rows, shares).bail();
-            auto share = *rows / shares;
             // The descriptor is the global matrix's, built where the matrix is known outside the kernel.
             auto map          = w.app(w.app(w.app(w.annex<gpu::buf_tensor_map>(), sT), ss),
-                                      {outside(source), w.lit_nat(share), w.lit_nat(atom)});
+                                      {outside(source), w.lit_nat(*rows / shares), w.lit_nat(atom)});
             auto [tr, ts, tT] = Axm::as<buffer::Buf>(targets[j]->type())->args<3>();
             auto zero         = w.tuple(
                 DefVec(Lit::as(tr), [&](size_t d) { return w.lit_idx(Lit::as(ts->proj(Lit::as(tr), d)), 0); }));
             auto base = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), tT), {tr, ts}), {targets[j], zero});
-            auto row0 = i32(start->proj(2, 0)), col0 = i32(start->proj(2, 1));
-            const Def* offset = w.lit_i32(0);
-            if (shares > 1) {
-                auto rank = w.app(w.annex<gpu::cluster_rank>(), w.tuple());
-                row0      = w.call(core::wrap::add, core::Mode::none,
-                                   Defs{row0, w.call(core::wrap::mul, core::Mode::none, Defs{rank, w.lit_i32(share)})});
-                offset    = w.call(core::wrap::mul, core::Mode::none, Defs{rank, w.lit_i32(share * 128)});
-            }
-            bytes += *rows * *cols * size;
-            for (u64 a = 0; a != *cols / atom; ++a) {
-                auto dst = w.call(
-                    core::wrap::add, core::Mode::none,
-                    Defs{w.call(core::wrap::add, core::Mode::none, Defs{base, w.lit_i32(a * *rows * 128)}), offset});
-                auto col = w.call(core::wrap::add, core::Mode::none, Defs{col0, w.lit_i32(a * atom)});
-                auto all = w.lit_i32((u64(1) << shares) - 1);
-                loads.push_back([=, &w](const Def* m, const Def* bar) {
-                    if (shares > 1)
-                        return w.app(w.annex<gpu::tma_load_multicast_if>(),
-                                     {m, dst, map, col, row0, bar, all, issuer()});
-                    return w.app(w.annex<gpu::tma_load_if>(), {m, dst, map, col, row0, bar, issuer()});
-                });
-            }
+            copies.push_back(w.tuple({base, map, i32(start->proj(2, 0)), i32(start->proj(2, 1)), w.lit_nat(*rows),
+                                      w.lit_nat(*cols), w.lit_nat(size), w.lit_nat(shares)}));
             (void)lbo;
         }
-        auto bar = bar_at(slot);
-        at       = w.app(w.annex<gpu::mbar_expect_tx_if>(), {at, bar, w.lit_i32(bytes), issuer()});
-        for (auto& load : loads)
-            at = load(at, bar);
+        auto fill_of = w.app(w.annex<gpu::tma_fill>(), w.lit_nat(panels));
+        at           = w.app(w.app(fill_of, {w.tuple(copies), bar_at(slot), issuer()}), at);
         pop();
         return at;
     };
