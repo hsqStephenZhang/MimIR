@@ -30,6 +30,7 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<mem::resolve_fresh, mem::phase::AddMem  >(phases);
     Phase::hook<mem::free_locals, mem::phase::FreeLocals>(phases);
     Phase::hook<mem::heap2stack,  mem::phase::Heap2Stack>(phases);
+    Phase::hook<mem::heap2stack_loops, mem::phase::Heap2StackLoops>(phases);
     Phase::hook<mem::seo,         mem::phase::SEO       >(phases);
     // clang-format on
 }

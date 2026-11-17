@@ -869,7 +869,8 @@ std::optional<ReductionLaw> reduction_law(const btensor::MapRedPost& mr) {
     auto& w   = mr.comb->world();
     auto idx  = Idx::isa(mr.To);
     auto size = idx ? Lit::isa(idx) : std::nullopt;
-    if (auto wrap = Axm::isa<core::wrap>(op)) {
+    // Reassociating a sum that must not wrap may overflow a partial sum that the original order does not.
+    if (auto wrap = Axm::isa<core::wrap>(op); wrap && Lit::isa(wrap->uncurry_args<3>()[0]) == 0) {
         if (wrap.id() == core::wrap::add) return ReductionLaw{w.lit(mr.To, 0)};
         if (wrap.id() == core::wrap::mul && size) return ReductionLaw{w.lit_idx_mod(*size, 1)};
     }
@@ -988,11 +989,10 @@ const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     return nullptr;
 }
 
-// The error a literal, nonzero verdict names, its message's `{}` filled with the verdict's values.
-void report_verdict(const Def* where, const Def* verdict) {
+std::optional<std::string> verdict_text(const Def* verdict) {
     auto code = Lit::isa(verdict->proj(3, 0));
-    if (!code || !*code) return;
-    auto& w       = where->world();
+    if (!code || !*code) return {};
+    auto& w       = verdict->world();
     auto messages = w.annex(check::messages);
     auto text     = tuple2str(messages->proj(messages->num_projs(), *code));
     for (size_t i = 1; i != 3; ++i)
@@ -1000,7 +1000,11 @@ void report_verdict(const Def* where, const Def* verdict) {
             auto value = Lit::isa(verdict->proj(3, i));
             text.replace(at, 2, value ? std::to_string(*value) : "?");
         }
-    where->blame("{}", text).bail();
+    return text;
+}
+
+void report_verdict(const Def* where, const Def* verdict) {
+    if (auto text = verdict_text(verdict)) where->blame("{}", *text).bail();
 }
 
 template<check id>

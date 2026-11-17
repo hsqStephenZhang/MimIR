@@ -255,9 +255,11 @@ protected:
     /// Kept inline on purpose so `Emitter` retains no vtable key function (else its vtable would live in a single
     /// module and break derived backends loaded from a separate plugin).
     /// Slots are 16-byte aligned like heap allocations, so vector accesses through `mem.align` hold for both.
-    virtual std::string emit_slot(BB& bb, const App* app, const Def* pointee, const Def* /*addr_space*/) {
+    /// A slot lives in the entry block, where it is static: one in a loop reuses its storage instead of growing the
+    /// stack.
+    virtual std::string emit_slot(BB& /*bb*/, const App* app, const Def* pointee, const Def* /*addr_space*/) {
         auto v_ptr = "%" + app->unique_name() + ".slot";
-        std::print(bb.body().emplace_back(), "{} = alloca {}, align 16", v_ptr, convert(pointee, false));
+        std::print(lam2bb_[root()].head().emplace_back(), "{} = alloca {}, align 16", v_ptr, convert(pointee, false));
         return v_ptr;
     }
 

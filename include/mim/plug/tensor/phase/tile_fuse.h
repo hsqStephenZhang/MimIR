@@ -13,7 +13,8 @@ private:
     void start() override;
     const Def* rewrite_imm_App(const App*) override;
     const Def* realize(const App* request, const DefSet& outside);
-    const Def* run_as_law(const Def* op, const DefVec& group, const Def* levels, const Def* control);
+    const Def*
+    run_as_law(const App* request, const Def* op, const DefVec& group, const Def* levels, const Def* control);
 
     DefMap<const Def*> replacements_;
 };

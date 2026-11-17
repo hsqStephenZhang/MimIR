@@ -1,9 +1,10 @@
-// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null -VVVV 2>&1 | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null -VVVV 2>&1 | %FileCheck %s --check-prefixes=CHECK,%if tile-fuse-path %{TF%} %else %{LAW%}
 // RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
 // RUN: clang++ -O1 %S/tile_reduction_contracts_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
-// RUN: not %mim -p opt -X tensor:tile-fuse=1 -X tensor:strict=1 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=STRICT
-// STRICT: error: unrealized tensor.tile_req {{.*}}: a work-item reduction's seed is not the combiner's identity
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 -X tensor:strict=1 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=%if tile-fuse-path %{STRICT-TF%} %else %{STRICT-LAW%}
+// STRICT-TF: error: unrealized tensor.tile_req {{.*}}: a work-item reduction's seed is not the combiner's identity
+// STRICT-LAW: error: unrealized tensor.tile_req {{.*}}: a work-item reduction needs a vouched or explicit merge
 
 plugin tensor;
 plugin core;
@@ -42,6 +43,8 @@ extern fun i64_add (x: tensor.Tensor 2 (20, 20) I64): tensor.Tensor 1 20 I64 =
 
 // CHECK-NOT: unrealized tensor.tile_req
 // CHECK-DAG: unrealized tensor.tile_req {{.*}}: an ordered reduction level can only tile the outermost reduction loop
-// CHECK-DAG: unrealized tensor.tile_req {{.*}}: a work-item reduction's seed is not the combiner's identity
-// CHECK-DAG: unrealized tensor.tile_req {{.*}}: a work-item reduction requires a recognized reassociable combiner
+// TF-DAG: unrealized tensor.tile_req {{.*}}: a work-item reduction's seed is not the combiner's identity
+// TF-DAG: unrealized tensor.tile_req {{.*}}: a work-item reduction requires a recognized reassociable combiner
+// LAW-DAG: unrealized tensor.tile_req {{.*}}: a work-item reduction needs a vouched or explicit merge
+// LAW-DAG: unrealized tensor.tile_req {{.*}}: a work-item reduction needs a vouched or explicit merge
 // CHECK-NOT: unrealized tensor.tile_req

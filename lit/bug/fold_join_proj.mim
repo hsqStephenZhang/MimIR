@@ -1,0 +1,16 @@
+// RUN: %mim %s -o - | %FileCheck %s
+// XFAIL: *
+
+// Instantiated at n = 2, `rs` is a tuple of two record types, so `rs#i` at the fold's own index variable has their join
+// as its type, and projecting a field from a join fails with "index does not fit within arity `1`".
+// Indexing by a pack's own variable instead (`‹i: n; let (_, _, c) = rs#i; c›`, then folding that) generalizes the join.
+
+plugin core;
+plugin vec;
+
+lam last {n: Nat} (Ps: «n; *») (rs: «i: n; [Ps#i, Nat, Nat]»): Nat =
+    vec.fold.l @(Nat, Idx n) @n (λ (v: Nat, i: Idx n): Nat = core.nat.add (v, (rs#i)#2₃)) (0, ‹i: n; i›);
+
+// CHECK-LABEL: extern fun two
+// CHECK: return 6
+extern fun two (): Nat = return (last (I32, Bool) ((0I32, 1, 2), (tt, 3, 4)));

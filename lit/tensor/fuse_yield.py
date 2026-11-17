@@ -17,7 +17,8 @@ generated.write_text(
     + pipeline
     + ";\n"
 )
-arguments = [mim, str(generated), "-X", "tensor:group=0", "-VVVV"]
+# Heap buffers keep clang -O3 from folding the recomputation that the work counts measure.
+arguments = [mim, str(generated), "-X", "tensor:group=0", "-X", "mem:heap2stack-loops=0", "-VVVV"]
 if mode == "structure":
     arguments += ["-o", "-"]
 else:

@@ -39,8 +39,6 @@ const Def* Lower::rewrite_imm_App(const App* app) {
         auto stage = w.app(w.app(w.app(w.annex<tensor::stage>(), rewrite(meta)), rewrite(shape)), rewrite(layout));
         return w.app(w.app(stage, w.lit_nat_0()), rewrite(input));
     }
-    if (Axm::isa(tensor::law::post_over, app))
-        return post_over_whole(rewrite(app->callee())->as<App>(), rewrite(app->arg()));
     if (Axm::isa<tensor::sdpa>(app)) return lower_via_impl(app, impl<tensor::attention_impl>());
     if (Axm::isa<tensor::sdpa_masked>(app)) return lower_via_impl(app, impl<tensor::attention_masked_impl>());
     if (Axm::isa<tensor::sdpa_online>(app)) return lower_via_impl(app, impl<tensor::sdpa_online_impl>());
