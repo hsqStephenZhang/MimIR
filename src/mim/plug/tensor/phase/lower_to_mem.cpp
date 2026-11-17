@@ -1861,10 +1861,10 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         if (special) {
             auto per_partition = (4 * total + 1 + 3) / 4;
             auto acc_state     = DefVec(tile_acc->projs(plan.count + 1));
-            acc_state[0]       = w.app(
-                w.app(w.annex<gpu::reg_budget>(), w.lit_nat(std::min<u64>(255, 16384 / (32 * per_partition) / 8 * 8))),
-                acc_state[0]);
-            tile_acc = w.tuple(acc_state);
+            auto budget        = std::min<u64>(255, 16384 / (32 * per_partition) / 8 * 8);
+            if (auto cap = driver().arg_nat("tensor", "maxnreg")) budget = std::min<u64>(budget, *cap);
+            acc_state[0] = w.app(w.app(w.annex<gpu::reg_budget>(), w.lit_nat(budget)), acc_state[0]);
+            tile_acc     = w.tuple(acc_state);
         }
         auto rounding = fe::Restore(tile_round_, ctas ? round : tile_round_);
         // Only the persistent level resets the flag, so a specialized reduction below may clear it for this level.
@@ -3629,7 +3629,7 @@ const Def* LowerToMem::warp_fold(const App* app) {
         auto fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
         auto sync
             = w.app(w.app(w.annex<gpu::async_ring>(), depth), {w.lit_nat_0(), w.lit_bool(group_rows_ != nullptr)});
-        fold   = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill});
+        fold   = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill, w.lit_nat_0()});
         fold   = w.app(w.app(fold, {mem, w.tuple({first, kept}), w.tuple({w.tuple(ring[0]), w.tuple(ring[1])})}),
                        {fill, ring_step});
         folded = fold->proj(2, 1)->proj(2, 0);
@@ -4053,7 +4053,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         app->blame("a specialized reduction updates its accumulator in place").n(unlowered).bail();
     // A ring of four or more slots keeps a step's MMAs in flight and releases the previous step's slot once those
     // have read it; a shallower one would leave the producer a single slot ahead.
-    auto overlap = u64(specialized && ring.size() >= 4);
+    // A ring its readers fill by TMA does the same from two slots on: a step's MMAs read only its own slot.
+    auto overlap = u64(specialized ? ring.size() >= 4 : tma && fragments && fragments->group && ring.size() >= 2);
     if (specialized && literal_count) {
         // The protocol model covers the fills of two tiles numbered in a row, as a persistent ring of whole turns does.
         auto fills = w.lit_nat(std::min<u64>(2 * *literal_count, 16));
@@ -4110,7 +4111,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 forward_layouts(ring[0][j], slot->proj(panels, j));
             }
             prepare_realizations(root);
-            auto in_flight = fe::Restore(wgmma_pending_, specialized ? overlap : wgmma_pending_);
+            auto in_flight = fe::Restore(wgmma_pending_, tma ? overlap : wgmma_pending_);
             if (inplace) return lower_into(root, {at, acc, storage, rewrite(zero), extent});
             if (!bounded) {
                 auto value = make_buffer(root, w.lit_nat(rank), rewrite(shape));
@@ -4164,7 +4165,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),
                                     {refill->var(), depth, w.lit_nat(*literal_count)}));
             fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
-            fold = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), refill});
+            fold = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), refill, w.lit_nat(overlap)});
         }
         fold = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
         if (bounded) storage_shapes_[app] = storage;
