@@ -585,11 +585,21 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
   这两个数原来在 C++ 里各传一次（`wgmma_pending_` 与 `overlap`），现在不一致就是类型错误（`lit/error/ring_release_in_flight.mim`）。
   它说的是数目一致，不是规则 A 要的"归还由计算完成证明"：见证不带是哪一步的 MMA，`ws_fold` 也不消耗它。
   10 个环形程序改动前后的设备 IR 逐行相同。
+- **tensor-core 面板的布局只剩一份**。
+  原来 C++ 的 `panel::mma`、`panel::wgmma` 与 Mim 的 `tc_layout.mma`、`tc_layout.wgmma` 各算一遍，前者给 `tile_fuse` 与 `warp_fold` 用，后者给解释器用。
+  Mim 那份挪进 `layout_expr`（`tc_mma`、`tc_wgmma`，该模块已有 annex 标签），C++ 的两个函数改为调用它；`tc_layout` 模块删掉了。
+  10 个 wgmma 程序的设备 IR 不变。
+- **没有搬的循环**：lane 归约、成对缓冲的 `product_fold`、不带环的折叠，看过之后里面只有数据搬运，没有先后或配对的约定，留在 C++。
 - **调研文档进入这个分支**，并在 §4.1.1 加了它的骨架清单与现有定义的对照；PDF 没有带过来。
 
 没有做的：
 
-- 给 wgmma 的 B 面板选布局仍有 C++ 的 `panel::wgmma` 与 Mim 的 `tc_layout.wgmma` 两份。
-  `tile_fuse` 的代价模型要用 C++ 那份返回的 `Layout` 结构，而 `tc_layout` 模块里没有 annex、插件的 annex 标签又已用满，从 C++ 调不到 Mim 那份；要合并得先腾出标签或把 `tc_layout` 并进已有 annex 的模块。
 - `warp_fold` 的环深仍是 2。
 - 解除"specialized 不与 cluster 共享同用"和"持久化环块数是环深倍数"两个限制：都要在 H200 上执行验证。
+
+### 9.9 在 H200 上的复核（2026-11-17）
+
+§9.5–§9.8 的改动此前只在 Blackwell 主机上做过全量 lit 与设备 IR 的比较。
+容器回到 H200 NVL 后重跑了全量 lit：1024 个测试，1015 通过，8 个不支持，1 个预期失败，没有失败；以 `cuda-sm90` 为条件的 wgmma、TMA、cluster、持久化、ping-pong 程序都实际执行并通过。
+所以统一的 `Tile`、槽令牌、`tma_fill`、`tma_ring`、`wgmma_batch`、`persistent_tiles`、布局的单一定义现在都有 Hopper 上的执行为证。
+没有重测的仍是 §9.4 的 kernel 时间。
