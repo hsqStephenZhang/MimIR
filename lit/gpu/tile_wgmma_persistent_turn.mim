@@ -1,7 +1,10 @@
-// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_persistent_ring.mim:27:{{.*}}error: 4 blocks per tile do not fill whole cycles of a persistent ring of 3 slots
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p gpu -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
+// RUN: clang++ -O1 %S/tile_wgmma_persistent_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
 
-// A persistent ring starts every tile at slot 0.
+// The persistent work-groups of `tile_wgmma_persistent.mim` with a 3-slot ring for their 4 blocks per tile: a tile's
+// fills are not whole turns of the ring, so the next tile starts where the last one left it.
 
 plugin tensor;
 plugin core;
@@ -25,3 +28,9 @@ extern fun gemm_wg_persistent (a: tensor.Tensor 2 (384, 256) H, b: tensor.Tensor
     let root = map_reduce ((384, 128), (384, 128, 256)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
         (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
     return (tile_req (root, (), levels, default_control));
+
+// CHECK-DAG: gpu.wgmma_f16
+// CHECK-DAG: gpu.tma_load_if
+// CHECK-DAG: gpu.mbar_wait_at
+// CHECK-DAG: gpu.mbar_arrive_if
+// CHECK-DAG: gpu.reg_budget

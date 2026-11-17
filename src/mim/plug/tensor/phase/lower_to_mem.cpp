@@ -3936,9 +3936,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     };
     auto i32 = [&](const Def* nat) { return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(u64(1) << 32), nat); };
     // In a persistent work-group, the ring's fills count on across its tiles.
-    const Def* round_base = w.lit_nat_0();
-    auto global           = [&](const Def* fill) { return w.call(core::nat::add, Defs{round_base, fill}); };
-    auto at_of            = [&](const Def* buffers, const Def* slot) {
+    const Def* fill_of = nullptr;
+    auto global        = [&](const Def* fill) { return fill_of ? w.app(fill_of, fill) : fill; };
+    auto at_of         = [&](const Def* buffers, const Def* slot) {
         auto [br, bs, bT] = Axm::as<buffer::Buf>(buffers->type())->args<3>();
         auto index        = w.call<core::idx>(w.lit_nat_0(), w.lit_nat(ring.size()), slot);
         return w.app(w.app(w.app(w.annex<gpu::buf_addr>(), bT), {br, bs}), {buffers, w.tuple({index})});
@@ -4031,17 +4031,15 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     specialized = tma && producer_ && fragments && fragments->group;
     if (specialized && cluster_)
         app->blame("a specialized reduction does not share panels across a cluster").n(unlowered).bail();
-    // A persistent work-group sets its ring up in its first tile.
-    // Its tiles fill whole cycles of the ring, so the rotating buffers start every tile at slot 0.
+    // A persistent work-group sets its ring up in its first tile, and its fills count on across its tiles.
     auto first_round = tile_round_ ? w.call(core::ncmp::e, Defs{tile_round_, w.lit_nat_0()}) : w.lit_tt();
     if (tma && tile_round_) {
         if (!specialized)
             app->blame("a TMA reduction in a persistent work-group must be specialized").n(unlowered).bail();
-        if (!literal_count || *literal_count % ring.size())
-            app->blame("a persistent ring of {} slots needs a multiple of {} blocks per tile", ring.size(), ring.size())
-                .n(unlowered)
-                .bail();
-        round_base   = w.call(core::nat::mul, Defs{tile_round_, w.lit_nat(*literal_count)});
+        if (!literal_count)
+            app->blame("a persistent ring needs a literal number of blocks per tile").n(unlowered).bail();
+        fill_of      = w.app(w.annex(tensor::pipeline_plan::persistent_fill),
+                             {tile_round_, w.lit_nat(*literal_count), w.lit_nat(ring.size())});
         round_fence_ = false;
     }
     if (tma) {
@@ -4159,9 +4157,10 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         }
         const Def* fold;
         if (specialized) {
+            auto nth = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringFill");
+            nth->set(true, global(nth->var()));
             fold = w.app(w.annex<gpu::ws_fold>(), {acc_ty, slot_ty, depth});
-            fold = w.app(
-                fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), producer_, round_base, w.lit_nat(overlap)});
+            fold = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), producer_, nth, w.lit_nat(overlap)});
         } else {
             auto refill = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringRefill");
             refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),

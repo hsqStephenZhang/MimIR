@@ -464,6 +464,13 @@ pub anx lam cp_ring_safe (blocks: Nat) (depth: Nat) (waits: Nat): Bool =
 /// `(f / depth + 1) % 2`; a fresh barrier's phase before its first counts as completed, so the first round passes.
 /// `mbarrier.try_wait.parity p` returns once the phase of parity `p` completed, i.e. while the barrier's completed
 /// phases `c` have `c % 2 != p`.
+/// The ring fill that block `i` of tile `round` of a persistent work-group is, each tile having `count` blocks that
+/// take the slots in order from the first: slot `i % depth` has been filled by the blocks of the earlier tiles that
+/// took it and by those before `i` in this one.
+pub anx lam persistent_fill (round count depth: Nat) (i: Nat): Nat =
+    let slot = i % depth;
+    let each = count / depth + (0, 1)#(slot < count % depth);
+    (round * each + i / depth) * depth + slot;
 pub anx lam full_parity (fill: Nat) (depth: Nat): Nat = (fill / depth) % 2;
 pub anx lam empty_parity (fill: Nat) (depth: Nat): Nat = (fill / depth + 1) % 2;
 /// How many of the first `upto` fills land in slot `s`.
@@ -2794,9 +2801,6 @@ pub mod check
     lam splits {n: Nat} (cluster split: Nat, block sizes: «n; Nat»): Verdict =
         let (k, s) = reduced (block, sizes);
         fail_with (both (split != 0, either (core.nat.rem (k, s) != 0, core.nat.rem (k / s, positive cluster) != 0)), 9, k / s, cluster);
-    lam ring {n: Nat} (persistent: Bool, pipeline: Nat, block sizes: «n; Nat»): Verdict =
-        let (k, s) = reduced (block, sizes);
-        fail_with (both (both (persistent, pipeline != 0), core.nat.rem (k / s, positive pipeline) != 0), 12, k / s, pipeline);
     /// A level's block as its loops' extents cap it, an unknown extent of 0 leaving the level's size.
     lam clip {n: Nat} (os: «2; «n; Nat»»): «n; Nat» =
         let (outer, sizes) = os;
@@ -2842,9 +2846,9 @@ pub mod check
             | 4 (sizes, _, promote, pipeline, pingpong, _, rest) =>
                 or_else (fail_with (both (both (pingpong == 1, warpgroups != 0), warpgroups != 2), 16, warpgroups, 0),
                 or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (cluster != 0, 10),
-                or_else (specialized (block, sizes), or_else (ring (persistent, pipeline, block, sizes),
+                or_else (specialized (block, sizes),
                     wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, warpgroups, rest)))))));
+                           persistent, warpgroups, rest))))));
     lam warp_ok {n: Nat, Acc Mma: *, w: «n; Nat»} (ro nis: Nat, block: «n; Nat», a b: Bool, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Verdict =
         match l with
             | 0 => ok
