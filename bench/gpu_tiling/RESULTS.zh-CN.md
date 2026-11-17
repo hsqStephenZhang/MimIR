@@ -670,13 +670,18 @@ B 的 `LDS.U16`+`PRMT` 变成 4 条 `LDSM.16.MT88.4`；同一配置 4096³ F16 �
 
 ### attention（H=12，D=64），µs
 
-| L | 精度 | PyTorch 两次 matmul 加 softmax | 其中 | `F.scaled_dot_product_attention` | 我们 |
-|---|---|---:|---|---:|---:|
-| 512 | FP32 | 54.9 | GEMM 21.2 + 20.5，softmax 7.2，缩放 6.0 | 76.9 | 1195（`attn.mim`，6 个 kernel：503、296、296、77、12、11） |
-| 512 | F16 | 20.4 | GEMM 5.2 + 4.2，softmax 7.3，缩放 3.8 | | 无 |
-| 2048 | FP32 | 626 | GEMM 229 + 180，softmax 117，缩放 100 | | 无 |
-| 2048 | F16 | 241 | GEMM 33 + 32，softmax 124，缩放 52 | | 无 |
+PyTorch 是两次 matmul 加 softmax（四个 kernel：两个 GEMM、softmax、缩放），`torch_kern.py attn`；`F.scaled_dot_product_attention` 更慢（L=512 FP32：76.9）。
+我们的是 `bench/gpu_fusion/attn_warps.mim`（把 `H`、`L` 改成表中的值）：FA2 结构的一个 kernel，work-group 64 行、每个 warp 16 行、key 块 32，QKᵀ 与 PV 用 TF32 的 `mma.m16n8k8`，(max, sum, out) 在寄存器里。
+它用 TF32，所以对照的是允许 TF32 的 PyTorch；F16 的 PyTorch 列在旁边。抽样输出与 CPU 参考的相对误差在 1e-3 以内。
 
-- 我们只有默认路径的 `attn.mim` 能跑，是 PyTorch 的 4.6%：每个算子一个 kernel，一线程一个输出点。
-- `attn_tiled.mim` 与未跟踪的 `attn_flash.mim` 现在编译不过（前者被向量级的规则拒绝，后者用了未绑定的中缀 `/`）；`attn_warps.mim` 是给 `ptx_bench.py` 的，没有测。
-- F16 下 PyTorch 的时间一半以上花在 softmax 与缩放这两个逐元素 kernel 上（L=2048：176 / 241），所以把三步融合进一个 kernel 的结构在这里有超过它的余地。
+| L | PyTorch FP32 | PyTorch TF32 | PyTorch F16 | 我们（TF32，一个 kernel） | 对 TF32 | 对 F16 |
+|---|---:|---:|---:|---:|---:|---:|
+| 512 | 54.9 | 30.1 | 20.4 | 16.9 | 178% | 121% |
+| 1024 | | 105.2 | 55.0 | 49.0 | 215% | 112% |
+| 2048 | 626 | 362.4 | 242.2 | 133.8 | 271% | 181% |
+| 4096 | | 1555 | 1136 | 495.7 | 314% | 229% |
+
+- 默认路径的 `attn.mim`（每个算子一个 kernel，一线程一个输出点）是 1195 µs（L=512），不是该比的东西。
+- PyTorch 的时间有一半左右在 softmax 与缩放两个逐元素 kernel 上（F16、L=2048：176 / 242），融合成一个 kernel 就没有这部分的读写。
+- `attn_tiled.mim` 与未跟踪的 `attn_flash.mim` 现在编译不过（前者被向量级的规则拒绝，后者用了未绑定的中缀 `/`）。
+- 没有比的：专门的 FlashAttention 实现；F16 输入的融合 kernel（我们的 16 位路径只有 GEMM）。
