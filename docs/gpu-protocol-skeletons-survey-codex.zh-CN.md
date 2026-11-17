@@ -176,6 +176,22 @@ packing、在线 softmax 的 `(m,l,O)` 更新和条件 rescale 是这些协议�
 较准确的“多”是分类轴重复：环是容量纪律，WS 是角色分割，cluster 是参与/地址作用域，shuffle 是通信机制，把四者当互斥整块 kernel 骨架会重复计数。[L22][L24][L32][P21]
 建议把它们改成可以组合的契约维度，把“整个 kernel 的调度拓扑”另外记录。
 
+### 4.1.1 审阅之后的进展（2026-11-17）
+
+本文的对照基于交接时的 `gpu.mim` 与 `lower_to_mem.cpp`；此后的改动记在 `docs/tile-law-design.zh-CN.md` §9.5–§9.7，与本文骨架清单的对应如下。
+`docs/papers/` 下的 PDF 没有随本文进入这个分支，§6.5 的表给出了来源与校验和。
+
+| 本文的结构或缺口 | 现在的定义 | 仍然没有的 |
+|---|---|---|
+| R5 通道的借用状态 | 消费者的 `gpu.Held` 与生产者的 `gpu.Vacant` 令牌，骨架对两者参数化，`gpu.check_sync` 拒绝同一令牌用两次 | 令牌不带 epoch；归还仍按滞后的步数，不由计算完成证明（规则 A 的前半句） |
+| R4 异步计算的完成队列 | `gpu.wgmma_batch`：累加器只从 `wait` 的结果里拿回来 | 完成与槽的归还之间没有类型上的联系 |
+| R5 的 expected bytes | `gpu.tma_fill`：期望的字节数就是各次拷贝的字节数之和 | — |
+| R6、R7 的组合 | `gpu.tma_ring` 由 cluster、共享、生产者、ping-pong、持久化决定套哪几层 | `specialized` 与 cluster 共享同时出现仍被拒绝（§4.2 说的实现限制）；到达数不是从接收者集合推出的 |
+| R8 | `gpu.merge_pairs`、`merge_first`、`merge_serial`、`lane_merge` | 有序树、scan |
+| R11 | `gpu.persistent_tiles` | 领取下一项与计算当前项的重叠（CLC） |
+| 布局对象 | `Tile` 的布局索引是 `layout_expr.Expr`；`lies_sw128`、`lies_tma128`、`wgmma_fields` 从布局值判定或导出 | R1 的布局转换 |
+| R9、R10、规则 C 的依赖图 | 无 | 全部 |
+
 ### 4.2 对现有 `blame(...)` 的独立判断
 
 不能把所有 `blame(...)` 都解释成“硬件原理证明这些组合非法”。

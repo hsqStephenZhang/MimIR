@@ -545,3 +545,29 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - TMA：`lies_tma128 (layout, bytes, row, col)` 说的是硬件的写法——一行切成若干 128 字节的原子，逐个原子作为一个盒子堆叠，盒内做 128 字节 swizzle——给出的地址等于面板布局的地址；`row`、`col` 是矩阵的行、列落在面板的哪个逻辑维，由 `stage` 的参数算出。
   发出 TMA 加载的地方原来按 `a · rows · 128` 字节直接算目的地址，这个假设现在有判定核对；K 主序与 MN 主序的面板判定都是"成立"，行列对调或去掉 swizzle 是"不成立"。
 - 仍没有承担者：共享面板的 cluster 不等空槽就回填（work-group 之间的竞争，要在 H200 上先做出能复现的测试）；读落在暂存的盒子之外。
+
+### 9.7 还留在 C++ 里的协议搬进 Mim（2026-11-17）
+
+按价值排的六项，各一个提交；C++ 留下的是"哪个盒子、哪块缓冲、哪条指令"，顺序与配对在 Mim 里。
+验证同 §9.6：全量 lit 加改动前后设备 IR 的比较；其中第 5 项的测试不依赖 `sm_90a`，在当时的 GPU 上实际执行过，其余没有硬件执行。
+
+| 协议 | 现在在 Mim 的定义 | C++ 留下的 | 改动前后的设备 IR |
+|---|---|---|---|
+| TMA 填充 | `gpu.tma_fill`：mbarrier 期望的字节数是各面板字节数之和，随后逐原子发出拷贝，multicast 的份额偏移也在这里 | 每个面板的基址、描述符、起点与行列数 | 逐行相同 |
+| 环的同步由哪几层组成 | `gpu.tma_ring`：由 cluster、是否共享、生产者与消费者数、ping-pong、是否持久化决定套哪些 `*_ring` | 这些标志的取值 | 逐行相同 |
+| wgmma 的一组 MMA | `gpu.wgmma_batch`：发布到 async 代理、`wgmma.fence`、逐条指令、`commit`、轮转的交接，累加器只从 `wait` 的结果里拿回来 | 每条指令的操作数与描述符 | 有副作用的指令顺序相同，每个 kernel 少 18 条重复的地址计算 |
+| wgmma 描述符的字段 | `layout_expr.wgmma_fields`：MN/K 主序、LBO、SBO、swizzle 都从面板的布局值算出 | 取地址 | 逐行相同 |
+| work-item 绑定归约的合并 | `gpu.merge_pairs`、`merge_first`、`merge_serial`，作为 `gpu.merge_rounds` 的各轮与读阶段 | 每个 work-item 的部分和怎么算、部分和的元素怎么读写、结果元素写到哪里 | 未比较；`lit/nvptx/tile_reduce_merge.mim` 等执行通过 |
+| 持久化 work-group 的轮次 | `gpu.persistent_tiles`：第 `round` 轮处理 `id + round · ctas` 号瓦片，越界则跳过，轮末 `settle` | 一块瓦片的计算、轮末是否加 `fence` | 只有两个标签名不同 |
+
+没有搬的：
+
+- `warp_fold` 里环的深度仍写死为 2、同步写死为 `async_ring`，不带流水线的那条路仍是手搭的计数循环；它给 wgmma 的 B 面板选布局仍调 C++ 的 `panel::wgmma`，与 Mim 的 `tc_layout.wgmma` 是两份。
+- `lower_tile_fold` 里不带环的折叠循环、`lower_product_fold`、`lower_lane_fold` 的循环骨架。
+- 找哪些面板是暂存的、哪些 A 片段可以提到循环外，这些是对 IR 的搜索，不是协议。
+
+合并骨架第一版把"第 `t` 份部分和的第 `e` 个元素在哪"也写在了 Mim 里，按缓冲的类型造完整下标；记录型元素的两个程序（`lit/gpu/law_roll.mim`、`law_attention.mim`）因此编译失败，而当时只跑了没覆盖它们的子集就推送了。
+原因是缓冲的下标约定：长度为 1 的轴整个不出现在下标里（`Shape::fold`），这在 Mim 的类型里写不出来。
+现在读写部分和由 C++ 给的 `get`、`set` 完成，骨架只有循环与合并。
+
+写的时候碰到的两件事：`tensor` 插件的 annex 标签已到上限 256（顶层名字各占一个，一个 `mod` 里的所有 annex 共占一个），新的 annex 只能放进已有 annex 的模块；骨架返回的续延要标 `@tt`，否则它不内联，`gpu.outline` 就认不出 work-group 循环与 work-item 循环的嵌套。
