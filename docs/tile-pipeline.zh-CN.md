@@ -33,7 +33,7 @@ mim -p opt -X tensor:tile-fuse=1 -p gpu file.mim -o -          # 打印该点的
 mim -p opt -X tensor:tile-fuse=1 file.mim -p nvptx -X nvptx:sm=90a   # 完整流水线，产生 file_dev.ll / file_dev.ptx
 ```
 
-`-VVVV` 会打印每个 phase 的日志；`tensor.tile_fuse runs root_N as its law` 一行说明 `tile_req` 走的是定律解释器（见 §2.3）。
+`-VVVV` 会打印每个 phase 的日志；`tensor.tile_fuse root_N L<k> …` 各行是 `TileFuse` 逐级实现请求的记录（见 §2.3）。
 
 本文用到的示例（均为 `lit/gpu/` 下的测试，单个 `extern`，16×16 或 128×128 的 GEMM）：
 
@@ -59,18 +59,12 @@ mim -p opt -X tensor:tile-fuse=1 file.mim -p nvptx -X nvptx:sm=90a   # 完整流
 调度通过两条途径进入 IR：
 
 - `tensor.tile_req (root, members, levels, control)`：一个恒等请求，`tensor.group_default`（`-X tensor:tile-fuse=1` 时）把它兑现。
-- `law.run (law, levels, control)` / `law.req (…)`：直接作用在定律上；`law.run` 是普通 Mim 函数，在通用优化（PE）时就被展开成实现原语。
+- `law.run (law, levels, control)` / `law.req (…)`：直接作用在定律上，检查完层级后就是一个 `tile_req`：根是定律的 `request`，其中被融合的生产者带 `tensor.law.member` 标记，担保了合并的定律再用 `merge_with` 标记根。
 
-### 1.2 `tile_req` 的两条实现
+### 1.2 `tile_req` 的实现
 
-`TileFuse::realize`（`src/mim/plug/tensor/phase/tile_fuse.cpp`，约 1847 行）对每个请求二选一：
-
-1. **定律解释器**（默认）。`TileFuse::run_as_law`（约 1808 行）检查根是“朴素” `map_reduce`（无 epilogue、字面形状、规范 schedule，`plain_parts`），最多一个成员；满足时构造 `law.of_map_reduce …`（有成员时是 `law.fuse slot …`），然后改写成 `law.run (law, levels, control)`，由 `tensor.mim` 中 `mod law` 的 `build` 里的 `tile_step`/`group_step`/`item_step`/`warp_step`/`wg_step` 按层级逐级解释（约 3801–3846 行）。
-   `-X tensor:tile-law=0` 关掉这一条；遇到解释器尚不支持的情况（非字面层级尺寸、并行嵌套的归约切分、成员被组外使用、work-group 内带归约的驻留成员等，见约 1860–1885 行的 `unsafe` 判断）也会自动退回第二条。
-2. **C++ TileFuse**：`Levels::tile`（约 1180 行）逐级递归，`Levels::parallel`、`Levels::reduction`、`Levels::mma`、`Levels::wgmma`、`Levels::vector` 分别处理各类层级，并做融合成员的 `Levels::fuse`。
-
-两条实现产生**同一组实现原语**。对 `tile_mma.mim`，`-X tensor:tile-law=0` 与默认输出中出现的 `tensor.*` 原语完全相同（`tiled`×2、`bind`×2、`tile_fold`、`pipeline`、`mma`、`stage`×2、`placed`×2、`slice`×2、`splat`、`map_reduce_post`），只差 C++ 路径多一个 `tensor.clip_sched`。
-因此 `group_default` 之后的所有阶段不区分两条实现。
+`TileFuse::realize`（`src/mim/plug/tensor/phase/tile_fuse.cpp`）是唯一的实现：先剥掉根上的 `merge_with`（作为根的担保合并）与 `tensor.law.member` 标记（被标记的生产者加入成员组），再由 `Levels::tile` 逐级递归，`Levels::parallel`、`Levels::reduction`、`Levels::mma`、`Levels::wgmma`、`Levels::vector` 分别处理各类层级，并做融合成员的 `Levels::fuse`。
+原来 `tensor.mim` 里 `mod law` 的 Mim 解释器（`build_post` 的 `tile_step` 等）与 `TileFuse::run_as_law`、`-X tensor:tile-law` 已删除（2026-11-18，见 `docs/tile-law-design.zh-CN.md` §10）。
 
 ### 1.3 阶段表
 
@@ -139,9 +133,7 @@ extern con gemm16 (a: Tensor, b: Tensor, return_1: Cn Tensor) as _29 =
 ### 2.3 `tensor.group_default` 之后：调度变成实现原语
 
 `GroupDefault::start`（`group_rules.cpp` 约 492 行）在 `tile-fuse=1` 时运行 `TileFuse`。
-日志：`tile_fuse.cpp:1843: tensor.tile_fuse runs root_N as its law`。
-
-定律解释器的做法（`tensor.mim` `mod law` 的 `build`）：
+下面是已删除的定律解释器当时的做法（`tensor.mim` `mod law` 的 `build`），留作对照：
 
 - 每个并行层级（`Par`/`Group`/`Item`/`Warp`/`Warpgroup`）用 `split_par` 生成 `tensor.tiled (ext, ts, tail) xs body`，`body` 被 `wrap` 包上 `tensor.bind scope`：scope 1 = work-group、2 = work-item、3 = warp、6 = warpgroup（`tensor.bind` 的文档在约 2860 行）；`RedWs` 的外层再包 `tensor.specialize pingpong`，`Cluster`/`Persistent` 包 `tensor.cluster`/`tensor.persistent`。
 - 每个归约层级用 `split_bound`（`split_red`/`split_pro`）生成 `tensor.tile_fold (count, unit) acc xs step`，每一步体 `body` 视情况包 `tensor.fill_tma`（`RedTma`/`RedWs`）、`tensor.pipeline ring`（`ring > 1`）、`tensor.bind level`（`RedItems`/`Lanes` 这种由 work-item 或 lane 分摊的归约）。

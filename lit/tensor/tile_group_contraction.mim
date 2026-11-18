@@ -1,7 +1,7 @@
 // RUN: %mim -p opt -X tensor:tile-fuse=2 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
 // RUN: %FileCheck %s < %t.log
 // RUN: %FileCheck %s --check-prefix=BATCH < %t.log
-// RUN: %FileCheck %s --check-prefix=%if tile-fuse-path %{TFPACK%} %else %{LAWPACK%} < %t.log
+// RUN: %FileCheck %s --check-prefix=TFPACK < %t.log
 // RUN: clang++ -O1 -fsanitize=address %S/tile_group_contraction_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 
@@ -53,4 +53,3 @@ extern fun mim_model (qkv: tensor.Tensor 2 (8, 48) F32, w: tensor.Tensor 2 (16, 
 // CHECK-COUNT-3: tensor.tile_group root {{.*}} kind 1
 // BATCH-NOT: kind 1 members {{[1-9]}}
 // TFPACK-COUNT-4: L1 promote input {{[01]}} axis {{[12]}}
-// LAWPACK: tensor.tile_fuse runs {{.*}} as its law

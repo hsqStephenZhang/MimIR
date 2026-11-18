@@ -650,8 +650,9 @@ const Def* post_over_whole(const App* callee, const Def* acc) {
     return w.app(w.app(head, callee->arg()), acc);
 }
 
-template<law>
+template<law id>
 const Def* normalize_post_over(const Def*, const Def* callee, const Def* acc) {
+    if constexpr (id == law::member) return nullptr;
     auto& w                                   = acc->world();
     auto c                                    = callee->as<App>();
     auto implicits                            = c->callee()->as<App>()->arg();
@@ -971,9 +972,20 @@ bool is_contraction(const App* root) { return contraction_input(root) == root->w
 
 const Def* contraction_type(const App* root) { return contraction_input(root); }
 
+namespace {
+
+/// A tile request's root, whose reduction a law's `merge_with` may vouch for.
+const Def* request_root(const Def* op) {
+    op = Axm::peel<buf>(op);
+    if (auto marked = Axm::isa<merge_with>(op)) op = Axm::peel<buf>(marked->arg());
+    return op;
+}
+
+} // namespace
+
 const Def* normalize_root_contraction(const Def*, const Def*, const Def* op) {
     auto& w = op->world();
-    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op))) {
+    if (auto root = Axm::isa<map_reduce_post>(request_root(op))) {
         // A generic root, as a law's type names before its combiner and maps are known, has no kind yet.
         auto mr    = btensor::MapRedPost::of(root->callee()->as<App>());
         auto ranks = mr.ranks();
@@ -1108,14 +1120,14 @@ const Def* normalize_require(const Def*, const Def*, const Def* arg) {
 }
 
 const Def* normalize_root_loops(const Def*, const Def*, const Def* op) {
-    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op)))
+    if (auto root = Axm::isa<map_reduce_post>(request_root(op)))
         if (auto ranks = btensor::MapRedPost::of(root->callee()->as<App>()).ranks())
             return op->world().lit_nat(ranks->nloops());
     return nullptr;
 }
 
 const Def* normalize_root_acc(const Def*, const Def*, const Def* op) {
-    if (auto root = Axm::isa<map_reduce_post>(Axm::peel<buf>(op)))
+    if (auto root = Axm::isa<map_reduce_post>(request_root(op)))
         return btensor::MapRedPost::of(root->callee()->as<App>()).To;
     return nullptr;
 }

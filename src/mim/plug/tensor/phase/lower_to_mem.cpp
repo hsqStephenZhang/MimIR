@@ -697,7 +697,8 @@ void LowerToMem::prepare_realizations(const Def* root, const Lam* region, Defs d
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
     auto& w = new_world();
     if (Axm::isa<tensor::frozen>(app)) return rewrite(app->arg());
-    if (Axm::isa<tensor::mma>(app) || Axm::isa<tensor::pipeline>(app) || Axm::isa<tensor::fill_tma>(app))
+    if (Axm::isa<tensor::mma>(app) || Axm::isa<tensor::pipeline>(app) || Axm::isa<tensor::fill_tma>(app)
+        || Axm::isa(tensor::law::member, app))
         return rewrite(app->arg());
     if (Axm::isa<tensor::prepack>(app)) return lower_prepack(app);
     // By bufferization every region exists, so an epilogue still waiting for one finishes its accumulator whole.
@@ -708,7 +709,9 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
     }
     if (Axm::isa<tensor::tile_req>(app)) {
         report_tile_request(app, "request reached bufferization without realization");
-        return rewrite(app->arg(4, 0));
+        auto op = app->arg(4, 0);
+        if (auto marked = Axm::isa<tensor::merge_with>(op)) op = marked->arg();
+        return rewrite(op);
     }
     if (Axm::isa<cps::cps2ds_dep>(app)) return cps::op_cps2ds_dep(rewrite(app->arg()));
     if (Axm::isa<tensor::buf>(app)) {

@@ -1,5 +1,7 @@
 # tiling 编译流水线：伪代码版（2026-11-16）
 
+> 2026-11-18：§3 的定律解释器与 `run_as_law` 已删除，`tile_req` 与 `law.run` 都只由 `TileFuse` 的逐级递归实现（`docs/tile-law-design.zh-CN.md` §10）。
+
 本文是 [`tile-pipeline.zh-CN.md`](tile-pipeline.zh-CN.md) 的伪代码版本：不贴 IR，而是用类 Python 的伪代码写出每个阶段的输入/输出形态与变换算法的骨架，再把三个示例（SIMT、MMA、wgmma + warp specialization）从源程序逐阶段展开到 PTX。
 IR 的真实片段、复现命令见原文；本文的伪代码均对照 `src/mim/plug/tensor/tensor.mim`、`tensor/phase/{tile_fuse,lower_to_mem}.cpp`、`gpu/phase/{outline,erase_phases}.cpp`、`nvptx/phase/nvptx.cpp` 写成，行号为近似值，以函数名为准。
 

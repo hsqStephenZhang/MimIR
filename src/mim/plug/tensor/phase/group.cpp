@@ -524,9 +524,12 @@ void report_tile_request(const App* app, std::string_view reason) {
 }
 
 const Def* DropTileRequests::rewrite_imm_App(const App* app) {
+    if (auto marked = Axm::isa(tensor::law::member, app)) return rewrite(marked->arg());
     if (Axm::isa<tile_req>(app)) {
         report_tile_request(app, "no tile-and-fuse phase realized this request");
-        return rewrite(app->arg(4, 0));
+        auto op = app->arg(4, 0);
+        if (auto marked = Axm::isa<merge_with>(op)) op = marked->arg();
+        return rewrite(op);
     }
     return RWPhase::rewrite_imm_App(app);
 }
@@ -538,7 +541,9 @@ const Def* ReportGroups::rewrite_imm_App(const App* app) {
     }
     if (Axm::isa<tile_req>(app)) {
         report_tile_request(app, "no tile-and-fuse phase realized this request");
-        return rewrite(app->arg(4, 0));
+        auto op = app->arg(4, 0);
+        if (auto marked = Axm::isa<merge_with>(op)) op = marked->arg();
+        return rewrite(op);
     }
     return RWPhase::rewrite_imm_App(app);
 }

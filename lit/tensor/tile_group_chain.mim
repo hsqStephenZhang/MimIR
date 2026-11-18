@@ -1,4 +1,4 @@
-// RUN: %mim -p opt -X tensor:tile-fuse=2 %s -p ll -X ll:o=%t.ll -o - | %FileCheck %s --check-prefix=%if tile-fuse-path %{TF%} %else %{CHECK%}
+// RUN: %mim -p opt -X tensor:tile-fuse=2 %s -p ll -X ll:o=%t.ll -o - | %FileCheck %s --check-prefix=TF
 // RUN: clang++ -O1 -fsanitize=address %S/tile_group_chain_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 
@@ -16,6 +16,3 @@ extern fun kernel (a b c: tensor.Tensor 2 (64, 64) F32): tensor.Tensor 2 (64, 64
 // TF: let [[R:_[0-9]+]] = mem.malloc («64, 64;
 // TF-DAG: return_{{[0-9]+}} ({{_[0-9]+}}, [[R]]#tt)
 // TF-DAG: mem.free {{.*}}, [[T]]#tt)
-// CHECK: let [[T:_[0-9]+]] = mem.malloc («64, 64;
-// CHECK-DAG: mem.free {{.*}}, [[T]]#tt)
-// CHECK-DAG: return_{{[0-9]+}} ({{_[0-9]+}}, {{_[0-9]+}}#tt)

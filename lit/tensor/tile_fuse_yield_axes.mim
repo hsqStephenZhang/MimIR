@@ -1,5 +1,5 @@
 // RUN: %mim -X math:exp-poly=0 -p opt -X tensor:tile-fuse=2 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
-// RUN: %FileCheck %s --check-prefix=%if tile-fuse-path %{LOG-TF%} %else %{LOG-LAW%} < %t.log
+// RUN: %FileCheck %s --check-prefix=LOG-TF < %t.log
 // RUN: %FileCheck %s --check-prefix=LL < %t.ll
 // RUN: clang++ -O1 -fsanitize=address %S/tile_fuse_yield_axes_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
@@ -14,6 +14,5 @@ extern fun soft (x: tensor.Tensor 2 (5, 7) math.F32): tensor.Tensor 2 (5, 7) mat
     return (tensor.softmax math.mode.fast 1₂ (tensor.buf x));
 
 // LOG-TF: tensor.tile_fuse {{.*}} fused=1 yielded=1
-// LOG-LAW: tensor.tile_fuse runs {{.*}} as its law
 // LL-COUNT-1: call float @llvm.exp.f32
 // LL-NOT: call float @llvm.exp.f32

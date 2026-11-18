@@ -25,7 +25,6 @@ extern fun rowsum16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 1 16 F32 =
     let l = law.of_map_reduce @1 (16, (16, 16)) (add, 0.0:F32) (proj_map @(2, 1) 0) (proj_map @(2, 2) (0, 1),) (buf x,);
     return (law.run (l, serial_group ((4, 0), 1, 0, group_red_items ((0, 4), 1, group_done ())), default_control));
 
-// LOG-NOT: tensor.tile_fuse {{.*}} red
 // LOG: gpu.outline tileGroups{{.*}}: 4 groups × 4 items
 
 // CHECK-DAG: gpu.launch

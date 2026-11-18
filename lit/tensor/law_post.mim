@@ -1,10 +1,9 @@
-// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll -VVVV 2> %t.log
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -p ll -X ll:o=%t.ll
 // RUN: clang++ -O1 -fsanitize=address %S/law_post_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
-// RUN: %FileCheck %s --check-prefix=%if tile-fuse-path %{TF%} %else %{LAW%} < %t.log
 
 // Roots with an epilogue: a product plus a bias, and row sums with counts finished into one integer.
-// The epilogue finishes each tile where its reduction ends, and a tile request on such a root runs as its law.
+// The epilogue finishes each tile where its reduction ends.
 
 plugin tensor;
 plugin core;
@@ -66,5 +65,3 @@ extern fun rows_req (x: tensor.Tensor 2 (16, 16) I64): tensor.Tensor 1 16 I64 =
         (step, (0I64, 0I64), total) (proj_map @(2, 1) 0) (affine.id @2, ()) ((buf x), ());
     return (tile_req (root, (), chunked, default_control));
 
-// LAW-COUNT-2: tensor.tile_fuse runs {{.*}} as its law
-// TF-NOT: as its law

@@ -27,5 +27,4 @@ extern fun gemm (a b: tensor.Tensor 2 (64, 64) F): tensor.Tensor 2 (64, 64) F =
     return (law.run (l, serial_group ((16, 64, 0), 1, 0, group_item ((4, 4, 0), 1, item_lanes ((0, 0, 16), 1, item_done ()))),
                      default_control));
 
-// CHECK-NOT: tensor.tile_fuse {{.*}} red
 // CHECK: gpu.outline tileGroups{{.*}}: 4 groups × 256 items

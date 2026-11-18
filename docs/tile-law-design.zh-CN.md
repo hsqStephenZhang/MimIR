@@ -693,3 +693,22 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - `lit/{gpu,nvptx}/tile_wgmma_persistent_late.mim`：持久化的 4 槽环、每块瓦片 6 个块，不是整圈且晚一步归还。
 
 仍然只有"执行结果正确"而没有反例的：上面第一行的修复（错的顺序是与另一个 work-group 退出的竞争，执行测不出）；`tma_fill`、`tma_ring`、`wgmma_batch` 传错参数会怎样。
+
+## 10. 删掉 Mim 里的调度解释器（2026-11-18）
+
+按 `refactor.md` 的第 2 步，`mod law` 只留规范与小分析，所有调度只由 `TileFuse` 的 C++ 逐级递归（`Levels`）实现。
+
+- 先量差距：`--param tile_law=0`（所有 `tile_req` 都走 `Levels`）下全量 lit 1032 个测试全部照常通过，所以 `run_as_law` 接手的请求 `Levels` 本来都接得住。
+- 删掉的：`build_post` 里的解释器（`tile_step`…`wg_step`、`Plan`/`Acc`/`At`/`Pan`/`Re`/`Res`、`inputs_of`、`place_of`、`panel_of` 的那一套）、`boxed`、`schedule`、`verdict_on`、`shared_producer`、`Views`，以及 C++ 的 `run_as_law`/`law_of`/`plain_parts` 与 `-X tensor:tile-law`、lit 的 `tile_law` 参数和 `tile-fuse-path` 特性。
+  `tensor.mim` 净少约 570 行，`tile_fuse.cpp` 净少约 120 行。
+- `Law` 不再带物理输入的类型 `P`（`phys`/`mean`/`Src` 的 8 个字段都只为解释器服务），改带 `request`：根本身，但被融合的生产者包在 `tensor.law.member` 里。
+  `as_source`/`fuse_law`/`fuse_shared` 用 `marked_of` 标记生产者；生产者担保了合并时再包一层 `merge_with`，`Levels::fuse` 本来就认它。
+  `law.of_sources` 不再收 `Ps`；`law.schedule` 删了，测试改用 `law.run`。
+- `law.req (l, members, levels, control)` 就是 `tile_req (request, members, levels, control)`；`law.run` 是不带额外成员的 `law.req`。
+  定律自己担保合并（`of_map_reduce_merging`、`of_rolling`）时根被 `merge_with` 标记：`root_loops`/`root_acc`/`root_contraction` 透过它看根，`TileFuse::realize` 剥下它，作为没有显式合并的 work-item 归约层级的合并。
+- `TileFuse::start`/`realize` 剥掉 `member` 标记（`strip_marks`，内层先），被标记的生产者加入成员组；标记本身算作组内，所以显式给出的同一个成员不会因此被当成组外使用。
+- `Levels` 补了一处：work-group 层级提升（`promote`）暂存的输入若是成员，暂存块的填充就地算出它的 box（`promoted_`），而不是先整块算出成员（`law_resident`、`law_resident_sum` 原来多一次 launch）。
+- 测试：断言“走定律”的日志行删掉；`law_promote` 的布局日志从 3 次变 2 次，因为 `law.run` 与 `law.req` 现在生成同一个请求，hash-cons 后只实现一次。
+- 全量 lit（H200，`cuda-sm90` 执行）：1032 个测试，1023 通过、8 不支持、1 预期失败，与改动前相同。
+- 编译时间（Debug，同一构建目录，三次取中位数，编到 GPU 代码）：只写 `plugin tensor;` 12.2 s → 1.2 s；`lit/gpu/law_promote` 18.8 → 3.7 s，`law_fuse` 17.5 → 2.7 s，`law_wgmma_ws` 13.4 → 1.6 s。
+- 失去的：解释器由 `Plan ou grp stp`/`Acc u lo ext` 的类型保证面板不越出其所有者与生存期；现在由 `Levels` 的一份 C++ 实现与 `denote` 的差分执行测试共同承担。

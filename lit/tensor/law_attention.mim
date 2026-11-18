@@ -58,7 +58,7 @@ lam attn (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N
 extern fun fa_denote (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
     return (law.denote (attn (buf q, buf k, buf v)));
 extern fun fa_blocks (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
-    return (law.schedule (attn (buf q, buf k, buf v), serial_par ((1, 2, 0), 0, serial_red ((0, 0, 3), 1, 0, serial_done ()))));
+    return (law.run (attn (buf q, buf k, buf v), serial_par ((1, 2, 0), 0, serial_red ((0, 0, 3), 1, 0, serial_done ())), default_control));
 extern fun fa_split (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =
     return (law.red_par (attn (buf q, buf k, buf v), 2, 3));
 extern fun fa_rows (q: Tensor 3 (H, M, K) F, k: Tensor 3 (H, S, K) F, v: Tensor 3 (H, S, N) F): Tensor 2 (H, M) Acc =

@@ -45,5 +45,5 @@ extern fun rows (x: tensor.Tensor 2 (64, 256) F32, y: tensor.Tensor 2 (64, 128) 
         @2 @(F32, 2, 2) ((64, 256), (64, 256)) @((F32, ML), (2, 1), ((64, 256), 64)) (normalize, ⊥:F32)
         (affine.id @2) (affine.id @2, proj_map @(2, 1) 0) (x, ml);
     let c  = law.of_sources ((64, 256), (64, 256)) (copy, 0.0:F32) (affine.id @2) (affine.id @2,)
-        ([tensor.Tensor 2 (64, 256) F32, tensor.Tensor 2 (64, 128) F32],) (law.as_source l,) (x,);
+        (law.as_source l,) (x,);
     return (law.run (c, levels, default_control));
