@@ -14,6 +14,7 @@
 #include <mim/plug/math/math.h>
 
 #include "mim/plug/tensor/phase/group.h"
+#include "mim/plug/tensor/phase/limits.h"
 #include "mim/plug/tensor/phase/panel_layout.h"
 #include "mim/plug/tensor/tensor.h"
 
@@ -1061,8 +1062,9 @@ const Def* Levels::split_over_items(const Def* tile, u64 items, const Def* merge
     if (!bytes) return nullptr;
     u64 parts = 1;
     // Each part folds at least eight elements, which pays for its share of the merge.
-    while (parts * 2 <= items && parts * 2 <= 4 * 32 && *K % (parts * 2) == 0 && *K / (parts * 2) >= 8
-           && parts * 2 * *bytes <= 48 * 1024)
+    auto most = gpu_limits.merge_warps * gpu_limits.warp;
+    while (parts * 2 <= items && parts * 2 <= most && *K % (parts * 2) == 0 && *K / (parts * 2) >= 8
+           && parts * 2 * *bytes <= gpu_limits.static_shared)
         parts *= 2;
     if (parts == 1) return nullptr;
     auto sizes = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / parts : 0); });
@@ -1574,7 +1576,7 @@ const Def* Levels::reduction(const Def* anchor,
         auto k = Lit::isa(K);
         if (!k || *k % sizes[loop]) return fail("a lane reduction needs a literal extent that its blocks divide");
         auto lanes = *k / sizes[loop];
-        if (lanes > 32 || (lanes & (lanes - 1)))
+        if (lanes > gpu_limits.warp || (lanes & (lanes - 1)))
             return fail("a lane reduction needs a power of two of at most 32 lanes");
         if (!law || !Check::test_alpha(mr.init, law->identity))
             return fail("a lane reduction requires a recognized reassociable combiner whose identity is the seed");

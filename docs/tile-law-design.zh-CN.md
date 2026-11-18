@@ -871,3 +871,9 @@ H200 上结果正确（`lit/{gpu,nvptx}/tile_wgmma_tma_store.mim`），但三种
 `check_sync` 要求 `s` 就是 `t`：二者相同，或 `t` 是 `idx (x % depth)`，而 `x` 与 `s` 只差 `depth` 的倍数（按字面量倍数和原子展开 `x`，`idx2nat` 的原子取其下标）；`ring_fold` 的 `block = i · depth + j` 正是这样。
 `ws_fold` 每步轮转槽、总读第 0 个，令牌的槽号与读的位置之间隔着轮转，这条检查还不覆盖它。
 `lit/error/ring_slot_mismatch.mim` 读下一个槽被拒，`lit/gpu/ring_slot_read.mim` 接受 `i · depth + j`。
+
+## 25. `LowerToMem` 分文件与 GPU 常数（2026-11-18）
+
+`lower_to_mem.cpp` 拆成三块：通用的缓冲化留在原文件；`lower_to_mem_stage.cpp` 放 `lower_stage`、环和各种 fold（`lower_tile_fold`、`lower_lane_fold`、`lower_bound_fold`、`lower_product_fold`、TMA 环的 `outside`）；`lower_to_mem_tc.cpp` 放张量核协议（`lower_mma`、wgmma 描述符与批、片段写回与暂存、warp 所有的区域）。三者共用的文件内辅助函数在 `lower_to_mem_util.h`。
+TileFuse 和 LowerToMem 对 GPU 的假设收在 `phase/limits.h` 的 `GpuLimits`：warp 32 个 lane、工作组 1024 个 work-item、不申请就有的 48 KiB 共享内存、合并部分结果的 4 个 warp、少于 8 份部分结果时串行合并。
+两处都不改生成的代码：73 个 bench 的设备 IR 不变。
