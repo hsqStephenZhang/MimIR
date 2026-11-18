@@ -528,9 +528,8 @@ const Def* LowerToMem::stage_fragments(const Def* source,
     auto stored = tma_store_ && cols % 64 == 0 && rows % 8 == 0;
     auto extent = stored ? w.tuple({nat(teams * atoms * rows), nat(64)}) : w.tuple({nat(teams * rows), nat(pitch)});
     const Def* staged;
-    std::tie(mem, staged)
-        = buffer::op_alloc(nat(2), extent, T, w.app(w.annex<gpu::shared_scope>(), fence(mem)))->projs<2>();
-    auto nat_xor = [&](const Def* a, const Def* b) {
+    std::tie(mem, staged) = buffer::op_alloc(nat(2), extent, T, panel_mem(fence(mem)))->projs<2>();
+    auto nat_xor          = [&](const Def* a, const Def* b) {
         auto i64 = [&](const Def* x) { return w.call<core::bitcast>(w.type_i64(), x); };
         return w.call<core::bitcast>(w.type_nat(), w.call(core::bit2::xor_, w.lit_nat_0(), Defs{i64(a), i64(b)}));
     };

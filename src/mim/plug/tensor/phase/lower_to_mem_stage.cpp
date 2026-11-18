@@ -474,12 +474,16 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         pop();
         stages = kept;
         if (!first.empty()) ring.push_back(first);
+        auto group = panel_groups_++;
         for (u64 s = 1; s < depth && !first.empty(); ++s) {
             DefVec buffers;
             for (auto panel : first) {
                 auto [r, shape, T] = Axm::as<buffer::Buf>(panel->type())->args<3>();
                 const Def* other;
-                auto scope           = w.app(w.annex<gpu::shared_scope>(), mem);
+                // The ring's later slots die with the fold, so the epilogue's staging may reuse them.
+                auto scope = tile_round_
+                               ? w.app(w.annex<gpu::shared_scope>(), mem)
+                               : w.app(w.app(w.annex<gpu::panel_scope>(), w.lit_nat(Panel_Groups + group)), mem);
                 std::tie(mem, other) = buffer::op_alloc(r, shape, T, scope)->projs<2>();
                 forward_layouts(panel, other);
                 buffers.push_back(other);
@@ -1373,6 +1377,12 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
         for (size_t i = 0; i != storages.size(); ++i)
             if (storages[i]) storage_shapes_[app->proj(storages.size(), i)] = storages[i];
     return finished->proj(2, 1);
+}
+
+const Def* LowerToMem::panel_mem(const Def* mem) {
+    auto& w = new_world();
+    if (tile_round_) return w.app(w.annex<gpu::shared_scope>(), mem);
+    return w.app(w.app(w.annex<gpu::panel_scope>(), w.lit_nat(Panel_Groups + panel_groups_++)), mem);
 }
 
 } // namespace mim::plug::tensor::phase

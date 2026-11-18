@@ -886,3 +886,11 @@ TileFuse 和 LowerToMem 对 GPU 的假设收在 `phase/limits.h` 的 `GpuLimits`
 对 RESULTS 里 `wg_red_tma` 的调度扫描（每种瓦片取最好的级数），排序与实测的 Spearman 相关：1024 从只看字节的 −0.32 到 0.95（64×256 只有 64 个工作组，字节最少却最慢），2048 和 4096 都与原来相同（0.67、0.95），那里各瓦片的波数之积相同，由字节数决定。
 bank 冲突和寄存器压力还没有进模型：2048 上 128×128 实测比字节更少的 128×256、256×128 快，256×256 因寄存器超限启动失败，这些都看不出来。
 `lit/tensor/law_cost.mim`。
+
+## 27. 环槽与 epilogue 暂存区共用共享内存（2026-11-18）
+
+`gpu.panel_scope` 的面板按构造叠放（各构造从不同时存活，进入时隔着屏障；只在超出 48 KiB 静态上限时叠放）。
+`lower_tile_fold` 的环除第一个槽外都放进本 fold 的一个构造，warpgroup 16 位结果的暂存区（`stage_fragments`）另放一个（`LowerToMem::panel_mem`），编号从 `Panel_Groups`（2³²）数起，不与显式 DSL 的构造冲突。
+fold 结束时所有 wgmma 已等完、环的拷贝已落地，暂存前还有一道屏障，所以叠放安全；persistent 的工作组（`tile_round_`）下一个 tile 的填充可能与本 tile 的 epilogue 同时进行，不叠放。
+2048 的 F16 GEMM（128×128、3 级）由每 SM 一个工作组变成两个：约 30.4 → 27.30 µs。
+
