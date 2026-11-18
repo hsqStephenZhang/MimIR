@@ -4,6 +4,7 @@
 #include <mim/nom.h>
 
 #include <mim/plug/buffer/buffer.h>
+#include <mim/plug/core/core.h>
 #include <mim/plug/cps/cps.h>
 #include <mim/plug/mem/mem.h>
 
@@ -50,6 +51,46 @@ bool has_slot(const Def* type) {
 
 bool is_slot_token(const Def* def) { return def->type() && has_slot(def->type()) && !Axm::isa<gpu::unheld>(def); }
 
+/// A natural number as literal multiples of opaque atoms plus a constant; an `Idx` read as a number is its index.
+std::pair<DefMap<u64>, u64> nat_form(const Def* n) {
+    if (auto lit = Lit::isa(n)) return {{}, *lit};
+    if (auto add = Axm::isa(core::nat::add, n)) {
+        auto [atoms, constant] = nat_form(add->arg(2, 0));
+        auto [more, extra]     = nat_form(add->arg(2, 1));
+        for (auto [atom, k] : more)
+            atoms[atom] += k;
+        return {atoms, constant + extra};
+    }
+    if (auto mul = Axm::isa(core::nat::mul, n))
+        for (size_t i = 0; i != 2; ++i)
+            if (auto k = Lit::isa(mul->arg(2, i))) {
+                auto [atoms, constant] = nat_form(mul->arg(2, 1 - i));
+                for (auto& [_, c] : atoms)
+                    c *= *k;
+                return {atoms, constant * *k};
+            }
+    if (auto conv = Axm::isa<core::idx2nat>(n)) return {{{conv->arg(), 1}}, 0};
+    return {{{n, 1}}, 0};
+}
+
+/// Whether slot index @p t of a ring of @p depth slots is @p s: alike, or `idx (x % depth)` where `x` is `s` up to
+/// multiples of `depth`.
+bool same_slot(const Def* s, const Def* t, u64 depth) {
+    if (s == t) return true;
+    auto idx = Axm::isa<core::idx>(t);
+    if (!idx) return false;
+    auto rem = Axm::isa(core::nat::rem, idx->arg());
+    if (!rem || Lit::isa(rem->arg(2, 1)) != depth) return false;
+    auto [atoms, constant] = nat_form(rem->arg(2, 0));
+    if (auto lit = Lit::isa(s))
+        constant += depth - *lit % depth;
+    else if (auto i = atoms.find(s); i != atoms.end())
+        --i->second;
+    else
+        return false;
+    return constant % depth == 0 && std::ranges::all_of(atoms, [&](auto atom) { return atom.second % depth == 0; });
+}
+
 } // namespace
 
 // A token is consumed where it is made, never inside a mutable nested there, which may run more than once.
@@ -58,6 +99,7 @@ void CheckSync::start() {
     DefMap<DefVec> users;
     DefSet counted, linear;
     DefVec slots, branches;
+    std::vector<const App*> reads;
     MutMap<Def*> parent, inlined;
     ankerl::unordered_dense::map<nat_t, const Def*> entered;
     // A `mem.fresh` continuation runs exactly once in place, so it belongs to the mutable that requests it.
@@ -95,6 +137,7 @@ void CheckSync::start() {
             // Universes and levels have no type.
             if (def->type() && (has_token(def->type()) || visibility(def))) linear.insert(def);
             if (is_slot_token(def)) slots.push_back(def);
+            if (auto read = Axm::isa<gpu::read_slot>(def)) reads.push_back(read);
             if (auto extract = def->isa<Extract>();
                 extract && extract->tuple()->isa<Tuple>() && !Lit::isa(extract->index()))
                 branches.push_back(extract->tuple());
@@ -220,6 +263,12 @@ void CheckSync::start() {
                             def->blame("ring slot token `{}` is made in `{}` but used inside `{}`, which may repeat",
                                        def, home, m)
                                 .bail();
+    }
+    for (auto read : reads) {
+        auto [ring, s, t, live, token] = read->args<5>();
+        auto depth                     = Lit::isa(read->decurry()->arg(3, 1));
+        if (!depth || !same_slot(s, t, *depth))
+            read->blame("ring slot `{}` is read with the token of slot `{}`", s, t).bail();
     }
     // Tokens first, so a duplicated token is reported before the panels it duplicates.
     auto order = DefVec(linear.begin(), linear.end());

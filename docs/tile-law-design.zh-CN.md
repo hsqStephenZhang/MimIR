@@ -865,3 +865,9 @@ TMA 环不再要求 K 主序面板正好一个原子，落点仍由 `lies_tma128
 tensor map 要描述 kernel 写的那块设备缓冲：kernel 捕获的是最外层区域自己的变量，原来 `outer_of_` 一路映射到区域外的原始缓冲，`gpu.outline` 认不出两者相同，为 map 另拷了一份设备缓冲（TMA 加载读副本没有问题，存回则写到了副本里）。现在最外层区域只映射到它的变量，循环携带的结果缓冲也记进 `outer_of_`，TMA 加载也不再多拷 A、B。
 H200 上结果正确（`lit/{gpu,nvptx}/tile_wgmma_tma_store.mim`），但三种规模都略慢（µs，交替两次，关 / 开）：1024 6.43–6.53 / 6.64–6.65，2048（128×128、3 级）30.30–30.64 / 30.71–30.77，4096（128×256、3 级）198.0–198.3 / 199.0–199.2，所以默认关闭。
 
+## 24. 读环槽要持有该槽的令牌（2026-11-18）
+
+`gpu.read_slot (ring, s, t, live, token)` 取出槽 `s` 的面板，并把槽 `t` 的令牌原样交回；`ring_fold` 的每一步都经它读面板，`erase_phases` 把它擦成 `ring#s`。
+`check_sync` 要求 `s` 就是 `t`：二者相同，或 `t` 是 `idx (x % depth)`，而 `x` 与 `s` 只差 `depth` 的倍数（按字面量倍数和原子展开 `x`，`idx2nat` 的原子取其下标）；`ring_fold` 的 `block = i · depth + j` 正是这样。
+`ws_fold` 每步轮转槽、总读第 0 个，令牌的槽号与读的位置之间隔着轮转，这条检查还不覆盖它。
+`lit/error/ring_slot_mismatch.mim` 读下一个槽被拒，`lit/gpu/ring_slot_read.mim` 接受 `i · depth + j`。
