@@ -1084,6 +1084,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
         }
     }
     if (uniform_) shared_fills_.insert(filled);
+    if (uniform_ && !async_fill_ && !probe_fill_) generic_pending_ = true;
     if (layout) {
         layouts_[filled]        = layout;
         layout_views_[filled]   = *layout_view;
@@ -1929,6 +1930,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         // A work-group's only warpgroup is the work-group, so it fills the work-group's panels as one.
         auto whole     = plan.bind == 6 && total == 1 && bound_level_ == 1;
         auto level     = fe::Restore(bound_level_, whole ? 1 : std::min<u64>(plan.bind, 2));
+        auto generic   = fe::Restore(generic_pending_, plan.bind == 1 ? false : generic_pending_);
         auto clustered = fe::Restore(cluster_, plan.bind == 1 ? cluster : cluster_);
         auto splitting = fe::Restore(split_, plan.bind == 1 ? parts : split_);
         auto threads   = fe::Restore(group_threads_, plan.bind == 6 ? 128 * total : group_threads_);
@@ -2564,9 +2566,12 @@ const Def* LowerToMem::region_input(const Def* inputs) {
 // Panels a work-group filled with generic stores reach `wgmma` through the async proxy only after every filler fenced
 // them.
 const Def* LowerToMem::wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pending, bool turn) {
-    auto& w    = new_world();
-    auto batch = w.app(w.annex<gpu::wgmma_batch>(), {x->type(), w.lit_nat(issue.size())});
-    batch      = w.app(batch, {w.lit_bool(!proxied_), pending, w.lit_bool(turn), turn ? consumer_ : w.lit_nat_0()});
+    auto& w = new_world();
+    // A ring publishes only its own slots, not what the work-group stored generically before.
+    auto publish     = !proxied_ || generic_pending_;
+    generic_pending_ = false;
+    auto batch       = w.app(w.annex<gpu::wgmma_batch>(), {x->type(), w.lit_nat(issue.size())});
+    batch            = w.app(batch, {w.lit_bool(publish), pending, w.lit_bool(turn), turn ? consumer_ : w.lit_nat_0()});
     auto [out, y, left] = w.app(w.app(batch, {mem, x}), w.tuple(issue))->projs<3>();
     in_flight_          = left;
     return w.tuple({out, y});
@@ -2931,6 +2936,9 @@ const Def* LowerToMem::write_fragments(const Def* source,
     // memory.
     auto partials = DefVec();
     if (split_ > 1 && fragments.group && group_threads_) {
+        // The producer warpgroup skips the store, so it would never reach the cluster barriers below.
+        if (producer_)
+            destination.buffer->blame("a producer-filled reduction cannot split its blocks over a cluster").bail();
         auto values = fragments.count() * 4;
         auto F32    = w.annex<math::F32>();
         const Def* scratch;
@@ -2966,7 +2974,10 @@ const Def* LowerToMem::write_fragments(const Def* source,
     auto bytes        = Lit::isa(core::op(core::trait::size, dT));
     auto last         = Lit::isa(destination.shape->proj(rank, rank - 1));
     if (fragments.group && partials.empty() && !producer_ && !padded_ && rank == 2 && group_threads_ >= 128 && bytes
-        && *bytes == 2 && last && fragments.cols % 8 == 0 && *last % 8 == 0)
+        && *bytes == 2 && last && fragments.cols % 8 == 0
+        && *last % 8 == 0
+        // The warpgroup's 128 work-items each copy whole 16-byte runs, so the runs must split evenly among them.
+        && 4 * fragments.rows * (fragments.cols / 8) % 128 == 0)
         return stage_fragments(source, fragments, destination, epilogue, mem);
     auto paired = Lit::isa(destination.shape->proj(rank, rank - 1));
     if (rank != 2 || (paired && *paired % 2)) paired = std::nullopt;

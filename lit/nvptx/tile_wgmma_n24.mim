@@ -1,0 +1,6 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda-sm90 %{ clang++ -O1 %S/../gpu/%{s:stem}_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda-sm90 %{ %t %}
+
+// The 24-wide wgmma tile's 16-bit result, on the device.

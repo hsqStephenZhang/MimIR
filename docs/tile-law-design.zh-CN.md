@@ -766,3 +766,17 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
   `law_tiled*`（ms，基线 / 新）：`g2s` 1024 0.2512 / 0.2450，4096 14.71 / 14.62；`law_tiled` 0.288 / 0.208，`g2` 0.213 / 0.178，`g2cap` 0.213 / 0.191，4096 上 10.52 / 9.46、9.97 / 9.24、9.97 / 9.31，`g3_128` 4.34 / 3.95；其余在 ±0.6% 以内。
   F16 GEMM 各规模不变（写 F16：6.22 / 6.21、30.36 / 30.32、200.77 / 200.28、1689 / 1697 µs）。
 - `bench/tools/cmp_device_ir.sh` 用两棵树的构建编译同一组文件并比较重新编号的设备 IR。
+
+## 14. 第二轮审阅（`refactor-review.md`）的高危项（2026-11-18）
+
+- A1 `stage_fragments` 的写回循环是 `rows · runs / 128` 次，N 为 8 的奇数倍（24、40…）时向下取整，漏写行：`lit/{gpu,nvptx}/tile_wgmma_n24.mim` 在修复前 2048 个元素为 0。
+  现在只有 16 字节的段能平分给 128 个 work-item 时才经 shared 暂存，否则直接写回。
+- A2 `wg_red_ws` 配 `serial_cluster_split`：生产者 warpgroup 跳过写回，永远到不了合并部分和的 cluster 屏障。
+  `check.walk` 拒绝 `fill == 2 && split != 0`（复用不再发出的第 10 条消息），`write_fragments` 里留一道兜底（`lit/error/tile_ws_cluster_split.mim`）。
+- A3 外层通用写入的暂存加内层 TMA 环漏发 `fence.proxy.async`：`TileFuse` 要求张量核的两个操作数都由归约层级提升进环（"the tensor-core operands must be promoted into work-group panels"），这种组合现在写不出来。
+  仍加了防护：工作组里有尚未发布的通用写入时，下一批 `wgmma` 先发布（`generic_pending_`，进入 work-group 时清零）；现有的 kernel 都不会触发它。
+- A4 `check_sync` 的槽令牌检查改成白名单：
+  令牌不进 `Pack`（`has_slot` 也认 `Arr`）；装着令牌的值要么按字面下标拆开、要么整体交出一次，拆出的令牌的使用者与整体的使用两两互斥（`ring_fold_at` 的 `skip`/`go` 正是这样）；
+  只有各个分支都是 mutable 的选择算互斥（值的选择两边都会计算，`lit/error/ring_token_select.mim`；`lit/gpu/ring_token_branch.mim` 改用 continuation）；
+  捕获令牌的 mutable 的每次使用都只调用它一次（直接调用、`cps2ds_dep` 且其结果只调用一次、选择里被选一次），且各次使用两两互斥（`lit/error/ring_token_calls.mim`、`ring_token_mixed.mim`）。
+  这三个报错测试在旧的检查下都通过（漏报）。

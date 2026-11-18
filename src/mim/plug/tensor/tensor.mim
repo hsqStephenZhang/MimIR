@@ -2718,7 +2718,7 @@ pub mod check
         "a tensor-core level reads A and B from promoted panels",
         "{} work-groups do not form clusters of {}",
         "{} blocks do not split evenly over a cluster of {}",
-        "a specialized reduction does not share panels across a cluster",
+        "a reduction filled by a producer warpgroup does not split its blocks over a cluster",
         "a TMA reduction in a persistent work-group must be specialized",
         "{} blocks per tile do not fill whole cycles of a persistent ring of {} slots",
         "a bound level cannot peel its tail",
@@ -2851,12 +2851,13 @@ pub mod check
                 or_else ((ok, needs 90 ff 18)#(fill == 1), or_else (reduction_sizes (ro, sizes),
                 or_else ((ok, promotes (nis, promote))#folds, or_else ((ok, fail (persistent, 11))#(fill == 1),
                 or_else ((ok, splits (cluster, split, block, sizes))#(fill == 1),
-                or_else ((ok, specialized (block, sizes))#(fill == 2), or_else ((ok, lanes (block, sizes))#(bind == 4),
+                or_else ((ok, specialized (block, sizes))#(fill == 2), or_else ((ok, fail (split != 0, 10))#(fill == 2),
+                or_else ((ok, lanes (block, sizes))#(bind == 4),
                 or_else (ordered (ro, law, sizes), or_else ((ok, merged @Acc (law, mg))#(bind == 2),
                 or_else ((ok, fail (both (law != 1, law != 4), 22))#(bind == 4),
                     walk (ro, nis, law, unit, (within (block, sizes), clip (block, sizes))#(both (folds, unit == 1)),
                           (a, stages (a, promote, 1))#folds, (b, stages (b, promote, 2))#folds, cluster, split, persistent,
-                          warpgroups, rest)))))))))))))))
+                          warpgroups, rest))))))))))))))))
             | 3 (sizes, rest) =>
                 or_else (fail (either (unit == 3, unit == 6), 28),
                 or_else (vector (ro, sizes), walk (ro, nis, law, unit, block, a, b, cluster, split, persistent, warpgroups, rest)))

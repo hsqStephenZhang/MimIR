@@ -249,6 +249,8 @@ private:
     bool mma_panels_ = false;
     /// While a fold's pipelined fills publish its panels to the async proxy, through which `wgmma` reads them.
     bool proxied_ = false;
+    /// Whether the work-group stored to shared memory generically since it last fenced the async proxy.
+    bool generic_pending_ = false;
     /// The value outside a region of the inputs its body receives, so host-side work on them can stay outside.
     DefMap<const Def*> outer_of_;
     /// The cluster size and multicast mask of the work-group region being lowered.
