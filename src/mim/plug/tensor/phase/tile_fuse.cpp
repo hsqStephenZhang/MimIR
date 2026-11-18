@@ -1062,8 +1062,19 @@ const Def* Levels::split_over_items(const Def* tile, u64 items, const Def* merge
     if (!rks || rks->rr != 1) return nullptr;
     auto rn = rks->nloops();
     auto K  = Lit::isa(mr.Sr->proj(rn, rn - 1));
-    if (!K || *K % items) return nullptr;
-    auto sizes = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / items : 0); });
+    // The work-items share the tile's elements first, so each folds a stretch of one of them.
+    // The work-group's tiles bound the tile's extents.
+    Substitute capped(w);
+    if (group_scope_)
+        for (size_t d = 0, n = group_scope_->tiles.size(); d != n; ++d)
+            if (auto t = group_scope_->tiles[d])
+                capped.substitute(group_scope_->var->proj(2, 1)->proj(n, d), w.lit_nat(t));
+    u64 elements = 1;
+    for (u64 d = 0; d != rks->ro; ++d)
+        if (auto e = nat_upper(capped.rewrite(mr.So->proj(rks->ro, d)))) elements *= *e;
+    auto parts = items % elements == 0 && items / elements > 1 ? items / elements : items;
+    if (!K || *K % parts) return nullptr;
+    auto sizes = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / parts : 0); });
     auto level = LevelSpec{1, 1, 0, 2, w.tuple(sizes), merge};
     auto split = this->tile(tile, fe::Span<const LevelSpec>(&level, 1), depth + 1);
     if (!split) log_.d("tensor.tile_fuse {} keeps a fused reduction whole: {}", op_, reason_);

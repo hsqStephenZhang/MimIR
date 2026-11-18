@@ -55,7 +55,7 @@ private:
     DefVec layout_coords(const Def*, const Def*, Defs);
     const Def* layout_lam(const Def*, const Def*);
     void plain(const Def*) const;
-    bool nat_multiple(const Def*, u64) const;
+    bool nat_multiple(const Def*, u64, u64 off = 0) const;
     u64 vector_width(const Def*, const Def*, const Def*, const Def*, const Def*, u64) const;
     const Def* lower_broadcast(const App*);
     const Def* lower_map_reduce(const App*, const Destination* = nullptr);

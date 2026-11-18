@@ -756,3 +756,13 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - `law_tiled*`（`krun.sh`，kbench 中位数，ms，1024 / 4096）：`law_tiled` 0.288→0.208 / 10.51→9.46，`g2`、`g2cap` 0.213→0.191 / 9.97→9.31，`g3_128` 0.157→0.157 / 4.34→3.95，其余（`g3`、`g3_128w`、`tc`、`tc8`、`h16`、`bf16`）在 1% 以内；`g2s` 1024 上 0.251→0.272（复测三次一致），4096 上 14.71→14.72。
 - softmax（12×1024×1024，`softmax_driver.cpp`，nsys，µs）：`softmax_resident` 29.6 / 29.7，`softmax_resident_law` 37.5→29.6，`softmax_resident_shared` 27.0→29.6。
   后者失去了 `law.fuse_shared` 让生产者读消费者暂存行的优化，现在与 `softmax_resident` 相同。
+
+之后修的两处（全量 lit 通过）：
+
+- 融合进工作组的归约分给 work-item 时（`split_over_items`），先按瓦片的元素分，每个 work-item 只折叠一个元素的一段：`softmax_resident` 的 4 行 × 1024 原来每个 work-item 折 4 行各 4 个元素、每行 8 层合并，现在 1 行 16 个元素、6 层合并，与定律当时的做法相同。
+  softmax（µs，基线 / 新）：`softmax_resident` 29.61 / 27.38，`softmax_resident_law` 37.62 / 27.41，`softmax_resident_shared` 27.00 / 27.40。
+- 暂存的向量化填充（`vector_width`）不再要求长度是字面量，只要求可证明是向量宽度的倍数：`nat_multiple` 带一个偏移，认得选择（`min`）、加字面量与饱和差。
+  夹在张量边界上的块 `min (k0 + 15, 1023) − k0 + 1` 由此可以 128 位地填。
+  `law_tiled*`（ms，基线 / 新）：`g2s` 1024 0.2512 / 0.2450，4096 14.71 / 14.62；`law_tiled` 0.288 / 0.208，`g2` 0.213 / 0.178，`g2cap` 0.213 / 0.191，4096 上 10.52 / 9.46、9.97 / 9.24、9.97 / 9.31，`g3_128` 4.34 / 3.95；其余在 ±0.6% 以内。
+  F16 GEMM 各规模不变（写 F16：6.22 / 6.21、30.36 / 30.32、200.77 / 200.28、1689 / 1697 µs）。
+- `bench/tools/cmp_device_ir.sh` 用两棵树的构建编译同一组文件并比较重新编号的设备 IR。

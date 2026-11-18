@@ -1093,15 +1093,26 @@ const Def* LowerToMem::lower_generate(const App* app) {
     return filled;
 }
 
-bool LowerToMem::nat_multiple(const Def* def, u64 v) const {
+bool LowerToMem::nat_multiple(const Def* def, u64 v, u64 off) const {
     if (v == 1) return true;
-    if (auto lit = Lit::isa(def)) return *lit % v == 0;
+    off %= v;
+    if (auto lit = Lit::isa(def)) return (*lit + off) % v == 0;
+    // A selection, such as a `min`, is one of its cases.
+    if (auto select = def->isa<Extract>(); select && select->tuple()->isa<Tuple>())
+        return std::ranges::all_of(select->tuple()->ops(), [&](const Def* x) { return nat_multiple(x, v, off); });
     if (auto nat = Axm::isa<core::nat>(def)) {
         auto [a, b] = nat->args<2>();
-        if (nat.id() == core::nat::add) return nat_multiple(a, v) && nat_multiple(b, v);
-        if (nat.id() == core::nat::mul) return nat_multiple(a, v) || nat_multiple(b, v);
+        if (nat.id() == core::nat::add) {
+            if (auto c = Lit::isa(a)) return nat_multiple(b, v, off + *c);
+            if (auto c = Lit::isa(b)) return nat_multiple(a, v, off + *c);
+            return nat_multiple(a, v, off) && nat_multiple(b, v);
+        }
+        // A saturating difference of two multiples is one.
+        if (nat.id() == core::nat::sub) return off == 0 && nat_multiple(a, v) && nat_multiple(b, v);
+        if (nat.id() == core::nat::mul) return off == 0 && (nat_multiple(a, v) || nat_multiple(b, v));
         return false;
     }
+    if (off != 0) return false;
     if (auto multiple = fe::lookup(multiples_, def)) return *multiple % v == 0;
     return false;
 }
@@ -1116,9 +1127,9 @@ u64 LowerToMem::vector_width(const Def* type,
                              u64 align) const {
     auto size = Lit::isa(core::op(core::trait::size, type));
     if (!size || *size == 0 || 16 % *size != 0 || 16 / *size < 2) return 1;
-    auto v   = 16 / *size;
-    auto ext = Lit::isa(extent), st = Lit::isa(step), rw = Lit::isa(row);
-    if (!ext || *ext % v || !st || *st != 1 || !rw || *rw % v || align % v || !nat_multiple(start, v)) return 1;
+    auto v  = 16 / *size;
+    auto st = Lit::isa(step), rw = Lit::isa(row);
+    if (!nat_multiple(extent, v) || !st || *st != 1 || !rw || *rw % v || align % v || !nat_multiple(start, v)) return 1;
     return v;
 }
 
@@ -2194,7 +2205,7 @@ const Def* LowerToMem::lower_stage(const App* app) {
             // A padded source's rows are as far apart as its storage's.
             if (auto storage = fe::lookup(storage_shapes_, source)) row = storage->proj(ri, ri - 1);
             vec = vector_width(type, extent->proj(r, c), start->proj(r, c), step->proj(r, c), row, contiguous->second);
-            if (auto run = Lit::isa(s_out->proj(rk, *inner)); !run || *run % vec) vec = 1;
+            if (!nat_multiple(s_out->proj(rk, *inner), vec)) vec = 1;
         }
         auto element = vec == 1 ? type : old.arr(vec, type);
         auto getter  = old.app(old.annex<tensor::get>(), {physical_rank, physical_shape, type});
@@ -2204,7 +2215,7 @@ const Def* LowerToMem::lower_stage(const App* app) {
         auto scale = old.tuple(DefVec(rk, [&](size_t d) { return old.lit_nat(d == inner ? vec : 1); }));
         if (vec != 1) {
             auto dims    = DefVec(s_out->projs(rk));
-            dims[*inner] = old.lit_nat(*Lit::isa(dims[*inner]) / vec);
+            dims[*inner] = old.call(core::nat::div, Defs{dims[*inner], old.lit_nat(vec)});
             s_out        = old.tuple(dims);
             pad          = old.pack(vec, pad);
         }
