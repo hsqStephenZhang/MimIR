@@ -2944,6 +2944,14 @@ const Def* LowerToMem::write_fragments(const Def* source,
         }
         mem = w.app(w.annex<gpu::sync_cluster>(), mem);
     }
+    // A warpgroup's 16-bit result goes through shared memory: a lane holds only two adjacent elements of a row, whose
+    // 4-byte stores leave the 32-byte sectors of global memory half empty.
+    auto [dr, ds, dT] = Axm::as<buffer::Buf>(destination.buffer->type())->args<3>();
+    auto bytes        = Lit::isa(core::op(core::trait::size, dT));
+    auto last         = Lit::isa(destination.shape->proj(rank, rank - 1));
+    if (fragments.group && partials.empty() && !producer_ && !padded_ && rank == 2 && group_threads_ >= 128 && bytes
+        && *bytes == 2 && last && fragments.cols % 8 == 0 && *last % 8 == 0)
+        return stage_fragments(source, fragments, destination, epilogue, mem);
     auto paired = Lit::isa(destination.shape->proj(rank, rank - 1));
     if (rank != 2 || (paired && *paired % 2)) paired = std::nullopt;
     for (u64 f = 0; f != fragments.count(); ++f) {
@@ -3009,6 +3017,69 @@ const Def* LowerToMem::write_fragments(const Def* source,
                 mem = joined;
             }
         }
+    }
+    return w.tuple({mem, destination.buffer});
+}
+
+// Writes each warpgroup's fragments into its own rows of a work-group buffer in shared memory, and then each
+// warpgroup's work-items copy those rows out in 16-byte runs.
+// The barriers before and after keep the buffer clear of the panels every warpgroup still reads and of the rows
+// still being written.
+const Def* LowerToMem::stage_fragments(const Def* source,
+                                       const Fragments& fragments,
+                                       const Destination& destination,
+                                       const Epilogue& epilogue,
+                                       const Def* mem) {
+    auto& w    = new_world();
+    auto nat   = [&](u64 v) { return w.lit_nat(v); };
+    auto add   = [&](const Def* a, const Def* b) { return w.call(core::nat::add, Defs{a, b}); };
+    auto mul   = [&](const Def* a, u64 b) { return w.call(core::nat::mul, Defs{a, nat(b)}); };
+    auto idx   = [&](u64 size, const Def* x) { return w.call<core::idx>(w.lit_nat_0(), nat(size), x); };
+    auto fence = [&](const Def* m) { return w.app(w.annex<gpu::fence>(), m); };
+    auto lane  = lane_index(w);
+    auto ns    = fragments.cols / fragments.n;
+    auto T     = Axm::as<buffer::Buf>(destination.buffer->type())->arg(3, 2);
+    auto rows  = 4 * fragments.rows;
+    auto cols  = fragments.cols;
+    // A row padded by 16 bytes puts a warp's eight rows on different banks.
+    auto pitch = cols + 8;
+    auto teams = group_threads_ / 128;
+    auto tid   = w.call<core::bitcast>(w.type_nat(), w.app(w.annex<gpu::item_index>(), w.tuple()));
+    auto team  = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{tid, nat(128)}), nat(teams)});
+    auto first = add(mul(team, rows), group_row(w, true));
+    const Def* staged;
+    std::tie(mem, staged) = buffer::op_alloc(nat(2), w.tuple({nat(teams * rows), nat(pitch)}), T,
+                                             w.app(w.annex<gpu::shared_scope>(), fence(mem)))
+                                ->projs<2>();
+    for (u64 f = 0; f != fragments.count(); ++f) {
+        auto value = source->proj(fragments.count(), f);
+        for (u64 e = 0; e != 4; ++e) {
+            auto [local_row, local_col] = fragment_coords(w, mma_m16n8k8_tf32::l_c, w.tuple({lane, w.lit_idx(4, e)}));
+            auto row                    = add(nat(f / ns * fragments.m), local_row);
+            auto col                    = add(nat(f % ns * fragments.n), local_col);
+            auto element                = w.extract(value, w.lit_idx(4, e));
+            if (epilogue) std::tie(mem, element) = epilogue(mem, add(group_row(w, true), row), col, element);
+            auto at = w.tuple({idx(teams * rows, add(first, row)), idx(pitch, col)});
+            mem     = buffer::op_write(mem, staged, at, element)->proj(2, 0);
+        }
+    }
+    mem          = fence(mem);
+    auto runs    = cols / 8;
+    auto own     = w.call(core::nat::rem, Defs{tid, nat(128)});
+    auto from    = buffer::op_vectorize(nat(8), staged);
+    auto to      = buffer::op_vectorize(nat(8), destination.buffer);
+    auto [h, wd] = destination.shape->projs<2>();
+    auto wide    = Lit::as(wd) / 8;
+    for (u64 k = 0; k != rows * runs / 128; ++k) {
+        auto v      = add(nat(k * 128), own);
+        auto r      = w.call(core::nat::div, Defs{v, nat(runs)});
+        auto c      = w.call(core::nat::rem, Defs{v, nat(runs)});
+        auto in     = w.tuple({idx(teams * rows, add(mul(team, rows), r)), idx(pitch / 8, c)});
+        auto [m, x] = buffer::op_read(mem, from, in)->projs<2>();
+        auto row    = add(destination.origin->proj(2, 0), r);
+        auto col    = add(w.call(core::nat::div, Defs{destination.origin->proj(2, 1), nat(8)}), c);
+        auto out    = w.tuple({w.call<core::idx>(w.lit_nat_0(), h, row), idx(wide, col)});
+        mem         = buffer::op_write(m, to, out, x)->proj(2, 0);
     }
     return w.tuple({mem, destination.buffer});
 }

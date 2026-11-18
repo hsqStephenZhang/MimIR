@@ -130,11 +130,14 @@ const Def* Outline::rewrite_imm_App(const App* app) {
         auto init   = args->proj(4, 3);
         auto inside = fe::Restore(in_item_, true);
         auto width  = group ? 128 : warp ? 32 : 1;
-        auto index  = warp ? w.call(core::shr::l, Defs{item_id_, w.lit_i64(group ? 7 : 5)}) : item_id_;
-        auto rank
-            = fe::Restore(rank_, group ? w.call(core::bit2::and_, core::Mode::none,
-                                                Defs{w.call(core::shr::l, Defs{item_id_, w.lit_i64(5)}), w.lit_i64(3)})
-                                       : rank_);
+        // A warp's or warpgroup's index is the same in all of a warp's lanes; saying so keeps what it addresses
+        // uniform.
+        auto uniform = [&](const Def* x) { return w.app(w.annex<gpu::uniform>(), x); };
+        auto index   = warp ? uniform(w.call(core::shr::l, Defs{item_id_, w.lit_i64(group ? 7 : 5)})) : item_id_;
+        auto rank    = fe::Restore(
+            rank_, group ? uniform(w.call(core::bit2::and_, core::Mode::none,
+                                          Defs{w.call(core::shr::l, Defs{item_id_, w.lit_i64(5)}), w.lit_i64(3)}))
+                         : rank_);
         auto lane  = fe::Restore(lane_, warp ? w.call(core::bit2::and_, core::Mode::none, Defs{item_id_, w.lit_i64(31)})
                                              : lane_);
         auto count = trip_count(args);

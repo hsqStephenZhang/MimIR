@@ -368,6 +368,12 @@ axm shfl_xor: [x: math.F32, mask: I32] → math.F32;
 ///
 axm shfl_idx: [x: math.F32, src: I32] → math.F32;
 ///
+/// #### uniform
+///
+/// `x`, which is the same in every lane of the warp, as lane 0 has it, so the backend may keep it in a uniform register.
+///
+axm uniform: I64 → I64;
+///
 /// ### Warpgroup Tensor Cores
 ///
 /// A warpgroup is four consecutive warps of a work-group whose first warp index is a multiple of 4; the operations of this section are collective over it.

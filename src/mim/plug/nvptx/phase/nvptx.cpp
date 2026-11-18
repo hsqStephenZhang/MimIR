@@ -1396,6 +1396,11 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         declare("float @llvm.nvvm.shfl.sync.bfly.f32(i32, float, i32, i32)");
         return bb.assign(name, "call float @llvm.nvvm.shfl.sync.bfly.f32(i32 -1, float {}, i32 {}, i32 31)", v_x,
                          v_mask);
+    } else if (auto uniform = Axm::isa<gpu::uniform>(def)) {
+        auto x = bb.assign(name + ".x", "trunc i64 {} to i32", emit(uniform->arg()));
+        declare("i32 @llvm.nvvm.shfl.sync.idx.i32(i32, i32, i32, i32)");
+        auto y = bb.assign(name + ".y", "call i32 @llvm.nvvm.shfl.sync.idx.i32(i32 -1, i32 {}, i32 0, i32 31)", x);
+        return bb.assign(name, "zext i32 {} to i64", y);
     } else if (auto shfl = Axm::isa<gpu::shfl_idx>(def)) {
         auto [x, src] = shfl->args<2>();
         auto v_x = emit(x), v_src = emit(src);

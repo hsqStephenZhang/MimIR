@@ -83,6 +83,8 @@ private:
         = std::function<std::pair<const Def*, const Def*>(const Def* mem, const Def* row, const Def* col, const Def*)>;
     const Def* store_fragments(const Def* source, const Fragments&, const Destination&, const Epilogue& = {});
     const Def* write_fragments(const Def* source, const Fragments&, const Destination&, const Epilogue& = {});
+    const Def*
+    stage_fragments(const Def* source, const Fragments&, const Destination&, const Epilogue&, const Def* mem);
     const Def* store_epilogue(const App*, const Destination&);
     std::pair<const Def*, const Def*> load_fragments(const Def* init, const Fragments&, const Def* mem);
     u64 lane_count(const Def* body) const;
