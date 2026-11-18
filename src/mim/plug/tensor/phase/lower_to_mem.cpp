@@ -531,8 +531,8 @@ const Def* LowerToMem::wrap_fresh_mem(const Def* body) {
 }
 
 bool LowerToMem::uniform(const Def* value) const {
-    if (bound_level_ == 1) return true;
-    return bound_level_ == 2 && item_origin_ && !value->has_free_var(item_origin_);
+    if (group_wide_) return true;
+    return storage_level_ == 2 && item_origin_ && !value->has_free_var(item_origin_);
 }
 
 // A work-group's uniform fills run once, spread over its work-items by `gpu.outline`.
@@ -546,7 +546,7 @@ std::function<const Def*(const Def*)> LowerToMem::cooperative() {
 // A consumer inside a work-group fills the panels it reads as one batch, starting from its own memory or, without
 // one, from a fresh memory at the first fill.
 std::optional<LowerToMem::Batch> LowerToMem::open_batch(const Def* start) {
-    if (bound_level_ == 0 || !driver().is_loaded("gpu")) return {};
+    if (storage_level_ == 0 || !driver().is_loaded("gpu")) return {};
     return Batch{start, batches_++};
 }
 
@@ -951,7 +951,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
         logical      = w.tuple(dims);
         T            = T->as<Arr>()->body();
     }
-    auto storage      = bounded_shape(logical, bound_level_ != 0);
+    auto storage      = bounded_shape(logical, storage_level_ != 0);
     auto layout       = static_cast<const Def*>(nullptr);
     auto layout_view  = std::optional<Layout>();
     auto layout_shape = storage;
@@ -1672,7 +1672,7 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         steps[d] = sizes[d] ? std::min(*sizes[d], *tile) : *tile;
     }
     const Def* mem = destination ? destination->mem : fresh_mem();
-    auto in_group  = bound_level_ == 1 && driver().is_loaded("gpu");
+    auto in_group  = storage_level_ == 1 && driver().is_loaded("gpu");
     DefVec buffers(plan.count);
     if (destination) {
         mem        = destination->mem;
@@ -1920,8 +1920,9 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         // A warp's lanes share its tile like a work-item's own; only the tensor-core lowering tells them apart.
         // A work-group's only warpgroup is the work-group, so it fills the work-group's panels as one; a producer
         // warpgroup beside it would never reach the work-group's barriers.
-        auto lone      = plan.bind == 6 && total == 1 && !special && bound_level_ == 1;
-        auto level     = fe::Restore(bound_level_, lone ? 1 : std::min<u64>(plan.bind, 2));
+        auto whole     = plan.bind == 1 || (plan.bind == 6 && total == 1 && !special && group_wide_);
+        auto level     = fe::Restore(storage_level_, whole ? 1 : std::min<u64>(plan.bind, 2));
+        auto wide      = fe::Restore(group_wide_, whole);
         auto clustered = fe::Restore(cluster_, plan.bind == 1 ? cluster : cluster_);
         auto threads   = fe::Restore(group_threads_, plan.bind == 6 ? 128 * total : group_threads_);
         auto owned = fe::Restore(warp_self_, plan.bind == 5 || plan.bind == 7 ? warp_lane(old_world()) : warp_self_);
@@ -1962,11 +1963,11 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     };
     auto done = w.mut_con(call->type())->set("tileScratchDone");
     // A work-group level inside a work-group, as a `group_tile_req` has, is its one tile and runs in place.
-    auto bound = plan.bind && driver().is_loaded("gpu") && !(plan.bind == 1 && bound_level_ != 0);
+    auto bound = plan.bind && driver().is_loaded("gpu") && !(plan.bind == 1 && storage_level_ != 0);
     // Work-items that fill a work-group's buffer publish it to the others behind a barrier.
     const Def* exit = done;
     auto shared_out = std::ranges::any_of(buffers, [&](const Def* b) { return group_buffers_.contains(b); });
-    if (bound && plan.bind >= 2 && bound_level_ == 1 && (shared_out || composed_)) {
+    if (bound && plan.bind >= 2 && group_wide_ && (shared_out || composed_)) {
         auto published = w.mut_con(done->type()->as<Pi>()->dom())->set("tilePublished");
         auto state     = DefVec(published->var()->projs(plan.count + 1));
         state[0]       = w.app(w.annex<gpu::fence>(), state[0]);
@@ -2142,7 +2143,7 @@ const Def* LowerToMem::lower_stage(const App* app) {
         owned |= bool(Axm::isa<tensor::tiled_n>(extract->tuple()) || Axm::isa<tensor::tiled_multi>(extract->tuple()));
     // A bound region fills a slice cooperatively; a box with runtime extents has no buffer type to alias anyway.
     auto view = Axm::isa<tensor::slice>(input) || Axm::isa<tensor::slice_box>(input);
-    if (view && bound_level_ == 0) {
+    if (view && storage_level_ == 0) {
         auto [vr, vs, vT] = TensorType::decode(app->type()->as<Nom>());
         view = !std::ranges::all_of(vs->projs(Lit::as(vr)), [](const Def* e) { return bool(Lit::isa(e)); });
     }
@@ -2191,7 +2192,7 @@ const Def* LowerToMem::lower_stage(const App* app) {
         auto r = Lit::as(rank), ri = Lit::as(physical_rank);
         auto [pr, s_out, pT] = TensorType::decode(app->type()->as<Nom>());
         auto rk              = s_out->num_projs();
-        if (inner && bound_level_ != 0) {
+        if (inner && storage_level_ != 0) {
             auto c   = contiguous->first;
             auto row = physical_shape->proj(ri, ri - 1);
             // A padded source's rows are as far apart as its storage's.
@@ -3856,7 +3857,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
 
     auto literal_count = Lit::isa(count);
     // A separate first block would duplicate a work-group's panels; its work-items fill the seed instead.
-    auto first_scalar = inplace && literal_count && *literal_count != 0 && splat_scalar(init) && bound_level_ == 0;
+    auto first_scalar = inplace && literal_count && *literal_count != 0 && splat_scalar(init) && storage_level_ == 0;
     // A cluster that splits the reduction gives each of its work-groups a contiguous `1 / size` of the blocks.
     const Def* base = nullptr;
     if (cluster_.split > 1 && tma && driver().is_loaded("gpu")) {
@@ -3871,7 +3872,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     }
     auto shifted = [&](const Def* block) { return base ? w.call(core::nat::add, Defs{block, base}) : block; };
     auto extent  = rewrite(shape);
-    auto storage = bounded_shape(extent, bound_level_ != 0);
+    auto storage = bounded_shape(extent, storage_level_ != 0);
     auto bounded = storage != extent;
     // Without the gpu plugin a bound reduction runs as the sequential fold, like bound parallel levels run as loops.
     auto bound_fold = level == 2 && driver().is_loaded("gpu");
@@ -3884,7 +3885,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     if (lane_fold)
         return lower_lane_fold(app, parameter, root, result, merge, rank, element, extent, storage, bounded, inplace);
     // A warp's tensor-core block keeps the accumulator as fragments in every lane's registers.
-    auto mma       = driver().is_loaded("gpu") && bound_level_ != 0 ? Axm::isa<tensor::mma>(result) : nullptr;
+    auto mma       = driver().is_loaded("gpu") && storage_level_ != 0 ? Axm::isa<tensor::mma>(result) : nullptr;
     auto fragments = std::optional<Fragments>();
     if (mma) {
         auto extents = Lit::isa(extent->proj(2, 0)) && Lit::isa(extent->proj(2, 1));
@@ -3947,7 +3948,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     // computes on the current ones; each block's fills form one group of asynchronous copies.
     auto depth     = Lit::as(w.app(w.annex(tensor::pipeline_plan::depth),
                                    {w.lit_nat(pipeline), w.lit_nat(literal_count ? *literal_count : 0)}));
-    auto stages    = depth > 1 && bound_level_ != 0 && driver().is_loaded("gpu") && inplace && !first_scalar
+    auto stages    = depth > 1 && storage_level_ != 0 && driver().is_loaded("gpu") && inplace && !first_scalar
                        ? staged_panels(root, parameter->var())
                        : DefVec();
     auto blocks_of = [&](const Def* var) {
@@ -4471,7 +4472,7 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
             seed = splat->arg(2, 1);
     auto call   = result->isa<App>();
     auto mr_app = call ? Axm::isa<tensor::map_reduce_post>(call) : nullptr;
-    if (bound_level_ != 1)
+    if (!group_wide_)
         app->blame("tensor.tile_fold: a work-item bound reduction must nest directly inside a work-group level")
             .n(unlowered)
             .bail();
@@ -4542,7 +4543,8 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     const Def* update;
     {
         // Each work-item folds its block into a private seeded tile, as the sequential fold does per block.
-        auto level2        = fe::Restore(bound_level_, u64(2));
+        auto level2        = fe::Restore(storage_level_, u64(2));
+        auto per_item      = fe::Restore(group_wide_, false);
         auto origin        = fe::Restore(item_origin_, parameter->var()->as<Var>());
         auto private_scope = fe::Restore(uniform_, false);
         auto pending       = fe::Restore(pending_, {});
@@ -4716,7 +4718,7 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
     DefVec primary, spare, storages;
     fe::Vector<bool> pooled;
     // A work-group's fold keeps its state in shared memory at its bounded storage, written by all its work-items.
-    auto group = bound_level_ == 1 && driver().is_loaded("gpu");
+    auto group = storage_level_ == 1 && driver().is_loaded("gpu");
     // A field that only its own update reads, element by element, is updated in place.
     auto in_place = fe::Vector<bool>();
     if (auto sigma = type->isa_imm<Sigma>(); sigma && group) {

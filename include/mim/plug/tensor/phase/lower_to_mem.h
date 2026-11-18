@@ -208,8 +208,12 @@ private:
     /// and `(ext, nullptr)` marks a non-empty tile extent.
     std::vector<std::pair<const Def*, const Def*>> tile_ends_;
     Scratch* scratch_ = nullptr;
-    /// The binding of the innermost bound region being lowered: 0 outside, 1 work-group, 2 work-item.
-    u64 bound_level_ = 0;
+    /// Where the innermost bound region's tiles live: 0 outside, 1 the work-group's shared memory, 2 private to its
+    /// work-item, warp or warpgroup.
+    u64 storage_level_ = 0;
+    /// Whether all work-items of the work-group run the region together, so it may fill cooperatively and wait at the
+    /// work-group's barriers.
+    bool group_wide_ = false;
     /// The origin var of the work-item region being lowered; a value free of it is the same in every work-item.
     const Var* item_origin_ = nullptr;
     bool uniform_           = false;

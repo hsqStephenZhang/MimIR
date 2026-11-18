@@ -838,3 +838,14 @@ work-item 的部分结果在 warp 内经 shuffle 合并之后，剩下不到 8 �
 `softmax_fused` 61.9 / 33.7，`softmax_fused_online` 50.0 / 36.0，`softmax_resident8` 86.5 / 44.6，`softmax_resident` 27.2 / 26.1，`softmax_resident_law` 27.2 / 26.1，`softmax_resident_shared` 27.1 / 26.1（旧的定律版本 26.9），`gpu_fusion/attn_tiled` 60.2 / 59.5，`gpu_attn/attn_tiled`（H=2、L=128、D=64）18.2 / 17.2。
 没有 48 KiB 的限制时 `gpu_attn/attn_elem` 的部分结果要 2 MiB 共享内存，启动失败；没有每段 8 个元素的下限时 `attn_tiled` 的 512 长的行切 128 段，慢 1%。
 16 长的行（`lit/gpu/tile_resident`、`tile_reduce_fused*`、`lit/nvptx/tile_resident`）因此切 2 段而不是 4 段。
+
+## 21. 存放层与执行者分开（2026-11-18）
+
+`LowerToMem` 的 `bound_level_` 拆成两个量：`storage_level_` 说明区域的瓦片放在哪（0 区域外、1 工作组共享内存、2 work-item / warp / warpgroup 私有），`group_wide_` 说明工作组的全部 work-item 是否一起执行这个区域。
+协作填充（`uniform`）、区域结束时的发布屏障、work-item 归约要求外层是工作组，这三处看 `group_wide_`；缓冲放在共享内存还是私有、有界存储、批量填充、环和 `mma` 的前提看 `storage_level_`。
+工作组层和工作组里唯一的、非生产者的 warpgroup 都是"全工作组"：原来写作把 warpgroup 的层号改成 1 的特判 `lone`，现在由 `group_wide_` 直接表达。
+TileFuse 的 `next_items_` 不再是成员，而是 `Levels::tile`、`parallel`、`reduction`、`fuse` 的参数：工作组层算出后传给它的融合和下面的层，下一个并行层重新计算，`split_over_items` 传空。
+两处都不改生成的代码：73 个 bench 的设备 IR 与改动前相同。
+
+§14 的按面板发布（`generic_panels_`）仍没有能执行到它的程序：外层 promote A、内层 `wg_red_tma` 时环照旧用 TMA 从全局内存加载 A，wgmma 不读 promote 出的面板，H200 上结果正确，PTX 里没有也不需要 `fence.proxy.async`；手写的张量 IR 里，warpgroup 读的 B 必须是 fold 步内的 `stage`，fold 外暂存的 A 进寄存器（`wgmma_rs`），步内的面板都进环。
+这个组合下 promote 出的面板多占一块共享内存、多两道屏障却没人读，留待以后处理。

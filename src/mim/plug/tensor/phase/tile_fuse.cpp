@@ -922,7 +922,8 @@ public:
         , strict_(strict) {}
 
     /// The value of @p anchor tiled by @p levels; `nullptr` when a level cannot be realized, see reason().
-    const Def* tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64 depth);
+    /// @p items is the work-item count of the item level that follows the work-group level being fused.
+    const Def* tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64 depth, std::optional<u64> items = {});
     std::string_view reason() const { return reason_; }
     /// Members handed back by the outermost region, with the region results that replace them.
     const auto& yielded() const { return yielded_; }
@@ -959,7 +960,7 @@ private:
     const Def* tile_of(const Def* producer, const Def* off, const Def* ext, const Def* cap) const;
     template<class Id>
     const Def* reduction_tile(const btensor::MapRedPost& mr, const Def* anchor, DefVec args) const;
-    Fused fuse(const Def* value, const Var* own, u64 depth, u64 kind);
+    Fused fuse(const Def* value, const Var* own, u64 depth, u64 kind, std::optional<u64> items);
     const Def* split_over_items(const Def* tile, u64 items, const Def* merge, u64 depth);
     const Def* parallel(const Def* anchor,
                         const btensor::MapRedPost& mr,
@@ -970,7 +971,8 @@ private:
                         u64 promote,
                         u64 bind,
                         fe::Span<const LevelSpec> rest,
-                        u64 depth);
+                        u64 depth,
+                        std::optional<u64> items);
     const Def* reduction(const Def* anchor,
                          const btensor::MapRedPost& mr,
                          u64 ro,
@@ -982,7 +984,8 @@ private:
                          const Def* merge,
                          u64 pipeline,
                          fe::Span<const LevelSpec> rest,
-                         u64 depth);
+                         u64 depth,
+                         std::optional<u64> items);
     const Def* vector(const App* root, u64 rn, fe::Span<const u64> sizes, fe::Span<const LevelSpec> rest, u64 depth);
     const Def* mma(const App* root, u64 rn, fe::Span<const u64> shape, u64 depth);
     const Def* wgmma(const App* root, u64 rn, fe::Span<const u64> shape, u64 depth);
@@ -996,8 +999,6 @@ private:
     bool strict_;
     fe::Vector<const Var*> scopes_;
     std::optional<LevelScope> group_scope_, item_scope_;
-    /// The work-item count of the item level that follows the work-group level being fused.
-    std::optional<u64> next_items_;
     /// Reductions split over the work-items, by producer; later reads view them instead of recomputing them.
     DefMap<std::pair<const Def*, Origin>> resident_;
     /// Pointwise producers a deeper reduction level stages and this level does not; the query marks them with role 1.
@@ -1086,13 +1087,12 @@ const Def* Levels::split_over_items(const Def* tile, u64 items, const Def* merge
     auto sizes = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / parts : 0); });
     auto level = LevelSpec{1, 1, 0, 2, w.tuple(sizes), merge};
     // The split is a work-item reduction already, so nothing inside it splits over the work-items again.
-    auto inner = fe::Restore(next_items_, std::optional<u64>());
-    auto split = this->tile(tile, fe::Span<const LevelSpec>(&level, 1), depth + 1);
+    auto split = this->tile(tile, fe::Span<const LevelSpec>(&level, 1), depth + 1, {});
     if (!split) log_.d("tensor.tile_fuse {} keeps a fused reduction whole: {}", op_, reason_);
     return split;
 }
 
-Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind) {
+Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind, std::optional<u64> items) {
     auto& w = world();
     Fused result{value, 0, {}, {}};
     DefSet visited;
@@ -1162,8 +1162,8 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
             log_.d("tensor.tile_fuse {} skip {}: its tile storage {} has no constant bound", op_, p, storage(tile));
             continue;
         }
-        if (reduces && next_items_)
-            if (auto split = split_over_items(tile, *next_items_, merge, depth))
+        if (reduces && items)
+            if (auto split = split_over_items(tile, *items, merge, depth))
                 resident_.emplace(origin.producer, std::pair{tile = split, origin});
         Substitute substitute(w);
         for (auto free : result.value->free_vars())
@@ -1183,7 +1183,7 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
     return result;
 }
 
-const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64 depth) {
+const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64 depth, std::optional<u64> items) {
     if (levels.empty()) return anchor;
     auto root = graph::map_reduce(anchor);
     if (!root) return fail("the root tile is not a map_reduce_post");
@@ -1195,12 +1195,12 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64
     if (level.kind == 5) {
         if (level.tail == 0) return fail("a persistent level launches at least one work-group");
         persistent_ = level.tail;
-        return tile(anchor, levels.subspan(1), depth + 1);
+        return tile(anchor, levels.subspan(1), depth + 1, items);
     }
     if (level.kind == 4) {
         if (level.tail < 2 || level.tail > 8) return fail("a cluster has 2 to 8 work-groups");
         cluster_ = {level.tail, level.promote, level.split};
-        return tile(anchor, levels.subspan(1), depth + 1);
+        return tile(anchor, levels.subspan(1), depth + 1, items);
     }
     if (level.tail > 1) return fail("a tail is 0 (cap) or 1 (peel)");
     if (Lit::isa(level.sizes->arity()) != rn)
@@ -1213,11 +1213,13 @@ const Def* Levels::tile(const Def* anchor, fe::Span<const LevelSpec> levels, u64
             return fail("tile sizes must be literals");
     auto rest = levels.subspan(1);
     switch (level.kind) {
-        case 0: return parallel(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, rest, depth);
+        case 0:
+            return parallel(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind, rest, depth,
+                            items);
         case 1:
             tma_ = level.tma;
             return reduction(anchor, mr, ro, rn, literal, level.tail == 1, level.promote, level.bind,
-                             level.merge ? level.merge : merge_, level.pipeline, rest, depth);
+                             level.merge ? level.merge : merge_, level.pipeline, rest, depth, items);
         case 2: return vector(root, rn, literal, rest, depth);
         default: return mma(root, rn, literal, depth);
     }
@@ -1232,7 +1234,8 @@ const Def* Levels::parallel(const Def* anchor,
                             u64 promote,
                             u64 bind,
                             fe::Span<const LevelSpec> rest,
-                            u64 depth) {
+                            u64 depth,
+                            std::optional<u64> items) {
     auto& w         = world();
     auto scope_bind = fe::Restore(bound_, bind ? bind : bound_);
     if (!canonical_write(mr, ro, rn)) return fail("the root does not write loop d to output axis d");
@@ -1251,7 +1254,7 @@ const Def* Levels::parallel(const Def* anchor,
     }
     // The outermost level stays a region even over the whole shape, so tile bodies own every intermediate buffer.
     // A scalar root has no grid to tile.
-    if (whole && !bind && !promote && (depth || !ro)) return tile(anchor, rest, depth + 1);
+    if (whole && !bind && !promote && (depth || !ro)) return tile(anchor, rest, depth + 1, items);
 
     auto box   = w.sigma({w.arr(mr.Ro, w.type_nat()), w.arr(mr.Ro, w.type_nat())});
     auto probe = w.mut_lam(box, w.type_nat());
@@ -1269,14 +1272,14 @@ const Def* Levels::parallel(const Def* anchor,
     if (Axm::isa<tile_of_box>(root_tile)) {
         log_.d("tensor.tile_fuse {} L{} skip: the root has no tile here: {}", op_, depth,
                producer_tile(anchor, off, ext, w.tuple(tiles)).reason);
-        return tile(anchor, rest, depth + 1);
+        return tile(anchor, rest, depth + 1, items);
     }
     scopes_.push_back(var);
     auto literal = fe::Vector<u64>(ro, [&](size_t d) { return sizes[d]; });
     auto group_scope = fe::Restore(group_scope_, bind == 1 ? std::optional{LevelScope{var, literal, mr.So}} : group_scope_);
     auto item_scope  = fe::Restore(item_scope_, bind >= 2 ? std::optional{LevelScope{var, literal, mr.So}} : item_scope_);
     // A reduction fused into a work-group's tile is split over the work-items of the item level that follows.
-    auto items = std::optional<u64>();
+    items = {};
     if (bind == 1)
         for (auto& level : rest) {
             if (level.kind != 0 || level.bind != 2) continue;
@@ -1288,7 +1291,6 @@ const Def* Levels::parallel(const Def* anchor,
             items = count;
             break;
         }
-    auto next_items = fe::Restore(next_items_, items);
     // A promoted input's box is staged into the work-group's shared memory once; every fused read views it.
     if (promote) {
         auto nis = Lit::as(mr.nis);
@@ -1322,7 +1324,7 @@ const Def* Levels::parallel(const Def* anchor,
                 staged_below >> slot & 1 && !(promote >> slot & 1) && isa_pointwise(input))
                 staged_pointwise_.insert(input);
     }
-    auto fused = fuse(root_tile, var, depth, 0);
+    auto fused = fuse(root_tile, var, depth, 0, items);
 
     struct Yield {
         const Def *producer, *source, *tile;
@@ -1379,7 +1381,7 @@ const Def* Levels::parallel(const Def* anchor,
         }
         yields.push_back({p, origin.producer, handed, *rank, std::move(axes)});
     }
-    auto value = tile(fused.value, rest, depth + 1);
+    auto value = tile(fused.value, rest, depth + 1, items);
     scopes_.pop_back();
     escaping_ = std::move(enclosing);
     if (!value) return nullptr;
@@ -1470,7 +1472,8 @@ const Def* Levels::reduction(const Def* anchor,
                              const Def* merge,
                              u64 pipeline,
                              fe::Span<const LevelSpec> rest,
-                             u64 depth) {
+                             u64 depth,
+                             std::optional<u64> items) {
     auto& w   = world();
     auto tma  = tma_;
     auto loop = rn;
@@ -1480,7 +1483,7 @@ const Def* Levels::reduction(const Def* anchor,
         if (loop != rn) return fail("a reduction level tiles a single reduction loop");
         loop = d;
     }
-    if (loop == rn) return tile(anchor, rest, depth + 1);
+    if (loop == rn) return tile(anchor, rest, depth + 1, items);
     auto K        = mr.Sr->proj(rn, loop);
     const Def* ks = w.lit_nat(sizes[loop]);
     // Each promoted input (bit i of promote) is staged per block into panels as wide as the next parallel level's tile
@@ -1570,11 +1573,11 @@ const Def* Levels::reduction(const Def* anchor,
     // A reduction that fits one block is not split, but its promoted inputs are still staged, once.
     // Group-wide panels take the blocked path, which places them in the work-group's shared ring.
     if (auto k = Lit::isa(K); k && *k <= sizes[loop] && !group_wide) {
-        if (panels.empty()) return tile(anchor, rest, depth + 1);
-        auto block  = fuse(anchor, nullptr, depth, 1);
+        if (panels.empty()) return tile(anchor, rest, depth + 1, items);
+        auto block  = fuse(anchor, nullptr, depth, 1, items);
         block.value = stage_block(block.value, w.lit_nat_0(), K);
         if (!block.value) return fail("the promoted reduction is not a map_reduce_post");
-        return tile(block.value, rest, depth + 1);
+        return tile(block.value, rest, depth + 1, items);
     }
 
     auto law = reduction_law(mr);
@@ -1615,10 +1618,10 @@ const Def* Levels::reduction(const Def* anchor,
     }
     scopes_.push_back(var);
     // Members are fused first, so a promoted input stages its fused tile.
-    auto fused  = fuse(partial, var, depth, 1);
+    auto fused  = fuse(partial, var, depth, 1, items);
     fused.value = stage_block(fused.value, ko, chunk);
     if (!fused.value) return fail("the promoted reduction chunk is not a map_reduce_post");
-    auto value = tile(fused.value, rest, depth + 1);
+    auto value = tile(fused.value, rest, depth + 1, items);
     scopes_.pop_back();
     if (!value) return nullptr;
 
@@ -1644,11 +1647,11 @@ const Def* Levels::reduction(const Def* anchor,
         auto [at, rem] = build(w.annex<tf_tail>(), {w.tuple({K, ks})})->projs<2>();
         auto partial   = reduction_tile<tile_of_partial>(mr, anchor, {off, ext, w.lit_nat(loop), at, rem, last->var()});
         if (!partial) return fail("the root has no reduction tail");
-        auto block  = fuse(partial, nullptr, depth, 1);
+        auto block  = fuse(partial, nullptr, depth, 1, items);
         block.value = stage_block(block.value, at, rem);
         if (!block.value) return fail("the promoted reduction tail is not a map_reduce_post");
         tail_fused = block.count;
-        auto done  = tile(block.value, rest, depth + 1);
+        auto done  = tile(block.value, rest, depth + 1, items);
         if (!done) return nullptr;
         last->set(true, done);
     } else {
