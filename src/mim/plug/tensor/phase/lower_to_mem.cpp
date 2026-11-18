@@ -736,17 +736,20 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
         if (!layout || !logical) app->blame("a wgmma operand panel needs its swizzled layout").bail();
         auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
         auto rank         = Lit::as(br);
-        auto mn           = wgmma_major(buffer).first;
-        auto place        = layout_lam(layout, logical);
-        auto none         = w.bot(w.call<mem::M>(0));
-        auto instr        = math::isa_bf16(H) ? w.annex<gpu::wgmma_rs_bf16>() : w.annex<gpu::wgmma_rs_f16>();
-        auto v_a          = rewrite(a);
-        auto kept         = w.tuple({rewrite(c), v_a});
-        auto state        = w.sigma({w.call<mem::M>(0), kept->type()});
-        auto issue        = DefVec(nk, [&](size_t kc) -> const Def* {
+        auto kdim         = std::optional<u64>();
+        if (auto i = wgmma_kdims_.find(Axm::peel<tensor::placed>(Axm::peel<tensor::buf>(b))); i != wgmma_kdims_.end())
+            kdim = i->second;
+        auto mn    = wgmma_major(buffer, kdim).first;
+        auto place = layout_lam(layout, logical);
+        auto none  = w.bot(w.call<mem::M>(0));
+        auto instr = math::isa_bf16(H) ? w.annex<gpu::wgmma_rs_bf16>() : w.annex<gpu::wgmma_rs_f16>();
+        auto v_a   = rewrite(a);
+        auto kept  = w.tuple({rewrite(c), v_a});
+        auto state = w.sigma({w.call<mem::M>(0), kept->type()});
+        auto issue = DefVec(nk, [&](size_t kc) -> const Def* {
             auto logical_at = rewrite(at->proj(nk, kc));
             auto physical   = btensor::op_affine_map(place, br, br, logical, bs, logical_at, none)->proj(2, 1);
-            auto desc       = wgmma_desc(buffer, *Shape(physical).fold(bs));
+            auto desc       = wgmma_desc(buffer, *Shape(physical).fold(bs), kdim);
             auto lam        = w.mut_lam(w.pi(state, state))->set("wgmmaIssue");
             auto [mem, x]   = lam->vars<2>();
             auto [m, acc]   = w.app(instr, {w.lit_nat(nt), mem, w.extract(x->proj(2, 1), w.lit_idx(nk, kc)), desc,
@@ -755,7 +758,6 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
             lam->set(true, w.tuple({m, w.tuple({acc, x->proj(2, 1)})}));
             return lam;
         });
-        (void)rank;
         return wgmma_batch(fresh_mem(), kept, issue, w.lit_nat_0(), false, {buffer})->proj(2, 1)->proj(2, 0);
     }
     if (Axm::isa<tensor::as_vectors>(app)) return lower_as_vectors(app);
@@ -1423,11 +1425,12 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
         auto last = Lit::isa(logical->proj(r, r - 1)), physical_last = Lit::isa(storage->proj(r, r - 1));
         auto n = size && 16 % *size == 0 ? 16 / *size : 1;
         // A vector runs along the logical last dim, so the layout must keep that dim innermost.
-        auto keeps_last
-            = !layout || (view->perm.back() + 1 == view->perm.size() && (view->split == 1 || view->split % n == 0));
-        auto vectors   = panels_.contains(buffer) && n > 1 && last && *last % n == 0 && physical_last
-                      && *physical_last % n == 0 && keeps_last;
-        auto placement = layout ? layout_lam(layout, logical) : w.app(w.annex<affine::id>(), w.lit_nat(r));
+        auto keeps_last = !layout
+                       || (view->perm.back() + 1 == view->perm.size()
+                           && (view->split == 1 || (!view->axis && view->split % n == 0)));
+        auto vectors    = panels_.contains(buffer) && n > 1 && last && *last % n == 0 && physical_last
+                       && *physical_last % n == 0 && keeps_last;
+        auto placement  = layout ? layout_lam(layout, logical) : w.app(w.annex<affine::id>(), w.lit_nat(r));
         if (!vectors) {
             if (!layout) continue;
             auto lam = w.mut_lam(input_maps[i]->type()->as<Pi>())->set("placedMap");
@@ -2566,28 +2569,29 @@ LowerToMem::wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pen
     return w.tuple({out, y});
 }
 
-// What `layout_expr.wgmma_fields` says of a `wgmma` operand panel: whether it is MN-major and its descriptor's fields.
-std::array<u64, 4> LowerToMem::wgmma_fields(const Def* buffer) {
+// What `layout_expr.wgmma_fields` says of a `wgmma` operand panel whose K dim is @p kdim: whether it is MN-major and
+// its descriptor's fields.
+std::array<u64, 4> LowerToMem::wgmma_fields(const Def* buffer, std::optional<u64> kdim) {
     auto& w      = new_world();
     auto layout  = layout_of(buffer);
     auto logical = logical_of(buffer);
     if (!layout || !logical) buffer->blame("a wgmma operand panel needs its swizzled layout").bail();
     auto T      = Axm::as<buffer::Buf>(buffer->type())->arg(3, 2);
-    auto query  = w.tuple({layout, core::op(core::trait::size, T)});
+    auto query  = w.tuple({layout, core::op(core::trait::size, T), w.lit_nat(kdim.value_or(logical->num_projs()))});
     auto fields = panel::at_shape(w.annex(tensor::layout_expr::wgmma_fields), query, logical);
     return {Lit::as(fields->proj(4, 0)), Lit::as(fields->proj(4, 1)), Lit::as(fields->proj(4, 2)),
             Lit::as(fields->proj(4, 3))};
 }
 
-std::pair<bool, u64> LowerToMem::wgmma_major(const Def* buffer) {
-    auto fields = wgmma_fields(buffer);
+std::pair<bool, u64> LowerToMem::wgmma_major(const Def* buffer, std::optional<u64> kdim) {
+    auto fields = wgmma_fields(buffer, kdim);
     return {fields[0] != 0, fields[1]};
 }
 
 // The descriptor of a `wgmma` operand starting at the panel's element @p index.
-const Def* LowerToMem::wgmma_desc(const Def* buffer, const Def* index) {
+const Def* LowerToMem::wgmma_desc(const Def* buffer, const Def* index, std::optional<u64> kdim) {
     auto& w                      = new_world();
-    auto [mn, lbo, sbo, swizzle] = wgmma_fields(buffer);
+    auto [mn, lbo, sbo, swizzle] = wgmma_fields(buffer, kdim);
     auto [br, bs, bT]            = Axm::as<buffer::Buf>(buffer->type())->args<3>();
     // The descriptor names the 128-byte swizzle, so the panel's layout must be that one.
     auto query   = w.tuple({layout_of(buffer), core::op(core::trait::size, bT)});
@@ -2663,11 +2667,15 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
             };
             auto [a_buffer, a0] = operand(0, 0);
             auto [b_buffer, b0] = operand(1, 0);
-            if (wgmma_major(a_buffer).first) app->blame("a wgmma operand A must be K-major").n(unlowered).bail();
-            auto [b_mn, b_lbo] = wgmma_major(b_buffer);
+            auto kdims          = std::array<std::optional<u64>, 2>();
+            for (size_t i = 0; i != 2; ++i)
+                kdims[i] = dim_of_loop(old_mr.maps->proj(2, i), Lit::as(old_mr.Ris->proj(2, i)), 2);
+            if (wgmma_major(a_buffer, kdims[0]).first)
+                app->blame("a wgmma operand A must be K-major").n(unlowered).bail();
+            auto [b_mn, b_lbo] = wgmma_major(b_buffer, kdims[1]);
             auto desc          = [&](size_t i, u64 ks) {
                 auto [buffer, index] = operand(i, ks);
-                return wgmma_desc(buffer, index);
+                return wgmma_desc(buffer, index, kdims[i]);
             };
             auto nt          = fragments.count();
             auto instr       = math::isa_bf16(T) ? w.annex<gpu::wgmma_bf16>() : w.annex<gpu::wgmma_f16>();
@@ -3538,6 +3546,8 @@ const Def* LowerToMem::warp_fold(const App* app) {
                 auto bytes            = Lit::as(core::op(core::trait::size, T));
                 auto choice = panel::wgmma(rewrite(shape), r - 1, bytes, db && db->size() == r && db->back() == 2);
                 if (choice.expr) placed_layouts_[b] = w.tuple({rewrite(shape), choice.expr});
+                for (size_t d = 0; db && db->size() == r && d != r; ++d)
+                    if ((*db)[d] == 2) wgmma_kdims_[b] = d;
             }
             auto input  = product->arg()->proj(2, 0)->proj(2, 0);
             auto source = Axm::peel<tensor::buf>(input);
@@ -4058,9 +4068,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             if (Lit::isa(sr) != 2) slice->blame("a TMA-filled panel stages a slice of a matrix").n(unlowered).bail();
             auto start = rewrite(box->proj(3, 0));
             auto rows = Lit::isa(box->proj(3, 2)->proj(2, 0)), cols = Lit::isa(box->proj(3, 2)->proj(2, 1));
-            auto size      = Lit::as(core::op(core::trait::size, sT));
-            auto [mn, lbo] = wgmma_major(targets[j]);
-            if (!rows || !cols || *cols * size % 128 || (!mn && *cols * size != 128))
+            auto size = Lit::as(core::op(core::trait::size, sT));
+            if (!rows || !cols || *cols * size % 128)
                 slice->blame("a TMA-filled panel holds rows of 128 bytes or atoms of them").n(target).bail();
             auto atom = 128 / size;
             // The copy lands where the hardware puts it, so the panel's layout must name those addresses.
@@ -4091,7 +4100,6 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             auto base = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), tT), {tr, ts}), {targets[j], zero});
             copies.push_back(w.tuple({base, map, i32(start->proj(2, 0)), i32(start->proj(2, 1)), w.lit_nat(*rows),
                                       w.lit_nat(*cols), w.lit_nat(size), w.lit_nat(shares)}));
-            (void)lbo;
         }
         auto fill_of = w.app(w.annex<gpu::tma_fill>(), w.lit_nat(panels));
         at           = w.app(w.app(fill_of, {w.tuple(copies), bar_at(slot), issuer()}), at);

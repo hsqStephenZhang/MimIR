@@ -25,7 +25,7 @@ namespace {
 std::vector<u64> permuted_dims(const std::vector<u64>& dims, const Layout& layout) {
     auto pre = dims;
     if (layout.split != 1) {
-        pre.back() /= layout.split;
+        pre[layout.axis.value_or(dims.size() - 1)] /= layout.split;
         pre.push_back(layout.split);
     }
     auto result = std::vector<u64>(pre.size());
@@ -86,9 +86,10 @@ struct Fill {
     /// The physical offset of logical panel coordinates under a layout and the padded physical shape.
     u64 offset(std::vector<u64> coords, const Layout& layout, const std::vector<u64>& shape) const {
         if (layout.split != 1) {
-            auto last     = coords.back();
-            coords.back() = last / layout.split;
-            coords.push_back(last % layout.split);
+            auto& cut = coords[layout.axis.value_or(coords.size() - 1)];
+            auto rest = cut % layout.split;
+            cut /= layout.split;
+            coords.push_back(rest);
         }
         auto permuted = std::vector<u64>(layout.perm.size());
         for (size_t p = 0; p != permuted.size(); ++p)
@@ -169,9 +170,10 @@ const Def* term(const Layout& layout, const Def* logical, const std::vector<u64>
     auto perm    = w.tuple(DefVec(rank + 1, [&](size_t p) { return w.lit_idx(rank + 1, extended[p]); }));
     auto swizzle = layout.swizzle.value_or(Swizzle{1, 1, 0, 1});
     auto make    = [&](const Def* pad) {
-        return w.app(w.app(w.annex(tensor::layout_expr::make), w.lit_nat(rank)),
-                     {logical, w.lit_nat(layout.split), perm, pad, w.lit_nat(swizzle.width), w.lit_nat(swizzle.groups),
-                      w.lit_nat(swizzle.shift), w.lit_nat(swizzle.chunks), w.lit_bool(swizzle.xored)});
+        return w.app(w.app(w.annex(tensor::layout_expr::make_at), w.lit_nat(rank)),
+                     {logical, w.lit_nat(layout.split), w.lit_nat(layout.axis.value_or(rank - 1)), perm, pad,
+                      w.lit_nat(swizzle.width), w.lit_nat(swizzle.groups), w.lit_nat(swizzle.shift),
+                      w.lit_nat(swizzle.chunks), w.lit_bool(swizzle.xored)});
     };
     auto base_expr = make(w.tuple(DefVec(rank, [&](size_t) { return w.lit_nat_0(); })));
     if (physical.empty()) return base_expr;
@@ -440,9 +442,10 @@ Choice decode(const Def* expr, const Def* storage, size_t inner, u64 vec, u64 by
     auto data = expr;
     while (auto name = data->isa<Name>())
         data = name->op();
-    auto fields  = data->projs<9>();
+    auto fields  = data->projs<10>();
     auto layout  = Layout{};
     layout.split = Lit::as(fields[1]);
+    if (auto axis = Lit::as(fields[9]); axis + 1 != n) layout.axis = axis;
     for (size_t p = 0; p != n + 1; ++p)
         if (layout.split != 1 || p != 2) layout.perm.push_back(Lit::as(fields[2]->proj(n + 1, p)));
     auto swizzle = Swizzle{Lit::as(fields[4]), Lit::as(fields[5]), Lit::as(fields[6]), Lit::as(fields[7]),

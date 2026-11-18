@@ -2,10 +2,14 @@
 #include <cstdio>
 #include <cstdlib>
 
+#ifndef K
+#    define K 128
+#endif
+
 extern "C" float* gemm_wg_mn(_Float16*, _Float16*);
 
 int main() {
-    constexpr int m = 128, n = 128, k = 128;
+    constexpr int m = 128, n = 128, k = K;
     static _Float16 a[m * k], b[n * k];
     for (int i = 0; i != m * k; ++i) a[i] = _Float16(float(i % 7) - 3.0f);
     for (int i = 0; i != n * k; ++i) b[i] = _Float16(float(i % 5) * 0.5f - 1.0f);

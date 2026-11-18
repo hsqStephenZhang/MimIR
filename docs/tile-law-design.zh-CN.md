@@ -849,3 +849,11 @@ TileFuse 的 `next_items_` 不再是成员，而是 `Levels::tile`、`parallel`�
 
 §14 的按面板发布（`generic_panels_`）仍没有能执行到它的程序：外层 promote A、内层 `wg_red_tma` 时环照旧用 TMA 从全局内存加载 A，wgmma 不读 promote 出的面板，H200 上结果正确，PTX 里没有也不需要 `fence.proxy.async`；手写的张量 IR 里，warpgroup 读的 B 必须是 fold 步内的 `stage`，fold 外暂存的 A 进寄存器（`wgmma_rs`），步内的面板都进环。
 这个组合下 promote 出的面板多占一块共享内存、多两道屏障却没人读，留待以后处理。
+
+## 22. 布局切分任意一维（2026-11-18）
+
+`layout_expr.Data` 多了 `axis`：`split` 切分的逻辑维。`make` 仍切分最后一维，`make_at` 指定切分哪一维；`shape`、`interpret` 和 F₂ 的判定都按 `axis` 走，C++ 的 `panel::Layout` 也带上它（未设即最后一维）。
+`tc_wgmma` 的 K 主序面板宽于一个 128 字节原子时，把 K 维切成原子，排成"原子号、单位维、行、原子内元素"，即 TMA 逐原子放的位置（`lies_tma128` 判定），每个原子内仍是按行的 128 字节 swizzle。
+这样的面板与 MN 主序面板的布局结构相同，主序要由面板的 K 维定：`wgmma_fields` 多了参数 `kdim`，切分了 K 维以外的维才是 MN 主序；LowerToMem 从读映射求 K 维（`dim_of_loop`，移到 `tensor.h`），`wgmma_lane` 从相邻两个 k 块的位置求，只有一块时不知道，按原来的规则。
+TMA 环不再要求 K 主序面板正好一个原子，落点仍由 `lies_tma128` 核对。
+`lit/{gpu,nvptx}/tile_wgmma_tma_bk128.mim` 在 H200 上执行 K = 256、BK = 128 的 GEMM 并对照 CPU；性能见 `bench/gpu_tiling/RESULTS.zh-CN.md`：能跑，但不比 BK=64 快。

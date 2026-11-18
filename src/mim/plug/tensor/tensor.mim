@@ -61,7 +61,8 @@ anx nom Data (r: Nat, s: «r; Nat») =
      perm: «r + 1; Idx (r + 1)»,
      pad: «r; Nat»,
      width groups shift chunks: Nat,
-     xor: Bool];
+     xor: Bool,
+     axis: Nat];
 /// A storage layout of a panel whose unpadded logical shape is `s`; carrying `s` as a singleton keeps it in the type.
 pub anx nom Expr (r: Nat, s: «r; Nat») = Data (r, s);
 
@@ -88,12 +89,15 @@ pub let i64_index_ops: IndexOps =
      (λ (x: I64, y: Nat): I64 = core.bitcast I64 (core.bitcast Nat x % y)),
      core.bit2.xor 0);
 
+/// The dims before placement: the logical ones with dim `axis` divided by `split`, and `split` itself last.
+lam pre_shape {r: Nat} (split axis: Nat, logical: «r; Nat»): «r + 1; Nat» =
+    ‹p: r + 1; let pp = core.idx2nat p;
+        core.select (pp == r, split,
+            core.select (pp == axis, logical#(core.idx 0 r pp) / split, logical#(core.idx 0 r pp)))›;
+
 lam shape_impl {r: Nat}
-    (split: Nat, perm: «r + 1; Idx (r + 1)», pad logical: «r; Nat»): «r; Nat» =
-    let last = core.idx 0 r (r - 1);
-    let pre = ‹p: r + 1; let pp = core.idx2nat p;
-                core.select (pp == r, split,
-                    core.select (pp + 1 == r, logical#last / split, logical#(core.idx 0 r pp)))›;
+    (split axis: Nat, perm: «r + 1; Idx (r + 1)», pad logical: «r; Nat»): «r; Nat» =
+    let pre = pre_shape @r (split, axis, logical);
     let placed = ‹p: r + 1; pre#(perm#p)›;
     ‹p: r; let pp = core.idx2nat p;
            let base = core.select (pp == 0, placed#(core.idx 0 (r + 1) 0),
@@ -106,13 +110,15 @@ lam shape_impl {r: Nat}
 /// A swizzle acts on segments of `chunks · width` elements of the linear physical order, a segment's index being its row.
 /// A checked block rotation is a bijection on a segment's complete set of chunks.
 /// So is an exclusive or with a group below a power-of-two chunk count.
-pub anx lam make {r: Nat}
-    (logical: «r; Nat», split: Nat, perm: «r + 1; Idx (r + 1)», pad: «r; Nat»,
+/// `split` divides logical dim `axis`.
+pub anx lam make_at {r: Nat}
+    (logical: «r; Nat», split axis: Nat, perm: «r + 1; Idx (r + 1)», pad: «r; Nat»,
      width groups shift chunks: Nat, xor: Bool): Expr (r, logical) =
     let checked = refly.check (r >= 2, logical, "layout rank must be at least two");
+    let axis = refly.check (axis < r, axis, "layout split axis must be a logical dim");
     let split = refly.check (split > 0, split, "layout split must be nonzero");
-    let split = refly.check (checked#(core.idx 0 r (r - 1)) % split == 0, split,
-                             "layout split must divide the last logical extent");
+    let split = refly.check (checked#(core.idx 0 r axis) % split == 0, split,
+                             "layout split must divide the extent of its axis");
     let perm = refly.check (vec.is_unique perm, perm, "layout permutation must contain every dimension once");
     let perm = refly.check (core.bit2.or 0 (split != 1, core.idx2nat (perm#(core.idx 0 (r + 1) 2)) == r), perm,
                             "an unsplit layout keeps its unit dimension at position 2");
@@ -123,7 +129,7 @@ pub anx lam make {r: Nat}
     let groups = core.select (enabled, refly.check (groups > 0, groups, "layout swizzle groups must be nonzero"), 1);
     let groups = core.select (enabled,
         refly.check (groups <= chunks, groups, "layout swizzle groups must not exceed chunks"), 1);
-    let physical = shape_impl (split, perm, pad, checked);
+    let physical = shape_impl (split, axis, perm, pad, checked);
     let columns = vec.fold.r @(Nat, Idx r) @r
         (λ (p: Idx r, acc: Nat): Nat = acc * (1, physical#p)#(0 < core.idx2nat p)) (‹p: r; p›, 1);
     let chunks = refly.check (core.bit2.or 0 (core.bit2.xor 0 (enabled, tt), columns % (chunks * width) == 0), chunks,
@@ -132,30 +138,32 @@ pub anx lam make {r: Nat}
     let power = core.icmp.e (core.bit2.and 0 (core.bitcast I64 chunks, core.bitcast I64 (chunks - 1)), 0I64);
     let chunks = refly.check (core.bit2.or 0 (core.bit2.xor 0 (xor, tt), power), chunks,
                               "an exclusive-or swizzle needs a power-of-two chunk count");
-    ((‹logical›, split, perm, pad, width, groups, shift, chunks, xor) inj Data (r, logical)) inj Expr (r, logical);
+    ((‹logical›, split, perm, pad, width, groups, shift, chunks, xor, axis) inj Data (r, logical)) inj Expr (r, logical);
+pub anx lam make {r: Nat}
+    (logical: «r; Nat», split: Nat, perm: «r + 1; Idx (r + 1)», pad: «r; Nat»,
+     width groups shift chunks: Nat, xor: Bool): Expr (r, logical) =
+    make_at @r (logical, split, r - 1, perm, pad, width, groups, shift, chunks, xor);
 
 /// Row-major storage at the logical shape, which `make` yields from rank two on, at every rank.
 /// It stays as written until the shape is a literal: a pack made anew at every use equals no other.
 pub lam rows {r: Nat} (s: «r; Nat»)@(core.pe.is_closed (r, s)): Expr (r, s) =
     let perm = ‹p: r + 1; let pp = core.idx2nat p;
         core.idx 0 (r + 1) (core.select (pp < 2, pp, core.select (pp == 2, r, pp - 1)))›;
-    ((‹s›, 1, perm, ‹r; 0›, 1, 1, 0, 1, ff) inj Data (r, s)) inj Expr (r, s);
+    ((‹s›, 1, perm, ‹r; 0›, 1, 1, 0, 1, ff, r - 1) inj Data (r, s)) inj Expr (r, s);
 
 pub anx lam shape {r: Nat} {s: «r; Nat»} (layout: Expr (r, s)): «r; Nat» =
-    shape_impl ((#layout)#split, (#layout)#perm, (#layout)#pad, s);
+    shape_impl ((#layout)#split, (#layout)#axis, (#layout)#perm, (#layout)#pad, s);
 
 lam interpret {r: Nat} {s: «r; Nat»} (ops: IndexOps, layout: Expr (r, s), x: «r; ops#C»): «r; ops#C» =
     let logical = s;
     let split = (#layout)#split;
+    let axis = (#layout)#axis;
     let perm = (#layout)#perm;
-    let last = core.idx 0 r (r - 1);
-    let pre_shape = ‹p: r + 1; let pp = core.idx2nat p;
-                      core.select (pp == r, split,
-                          core.select (pp + 1 == r, logical#last / split, logical#(core.idx 0 r pp)))›;
-    let placed_shape = ‹p: r + 1; pre_shape#(perm#p)›;
+    let cut = x#(core.idx 0 r axis);
+    let placed_shape = ‹p: r + 1; (pre_shape @r (split, axis, logical))#(perm#p)›;
     let pre = ‹p: r + 1; let pp = core.idx2nat p;
-                core.select (pp == r, ops#remainder (x#last, split),
-                    core.select (pp + 1 == r, ops#floordiv (x#last, split), x#(core.idx 0 r pp)))›;
+                core.select (pp == r, ops#remainder (cut, split),
+                    core.select (pp == axis, ops#floordiv (cut, split), x#(core.idx 0 r pp)))›;
     let split_coords = ‹p: r + 1; pre#(perm#p)›;
     let placed = ‹p: r; let pp = core.idx2nat p;
                     core.select (pp == 0, split_coords#(core.idx 0 (r + 1) 0),
@@ -164,7 +172,7 @@ lam interpret {r: Nat} {s: «r; Nat»} (ops: IndexOps, layout: Expr (r, s), x: �
                                           placed_shape#(core.idx 0 (r + 1) 2)),
                                  split_coords#(core.idx 0 (r + 1) 2)),
                         split_coords#(core.idx 0 (r + 1) (pp + 1))))›;
-    let physical = shape_impl (split, perm, (#layout)#pad, logical);
+    let physical = shape_impl (split, axis, perm, (#layout)#pad, logical);
     let strides = ‹p: r; let pp = core.idx2nat p;
                      vec.fold.r @(Nat, Idx r) @r
                          (λ (q: Idx r, acc: Nat): Nat = acc * (1, physical#q)#(pp < core.idx2nat q))
@@ -297,7 +305,7 @@ pub anx lam matches_sw128 {s: «2; Nat»} (layout: Expr (2, s), bytes: Nat): Nat
 pub anx lam lies_sw128 {r: Nat} {s: «r; Nat»} (layout: Expr (r, s), bytes: Nat): Nat =
     let n     = total (widths s);
     let data  = #layout;
-    let plain = make @r (s, data#split, data#perm, data#pad, 1, 1, 0, 1, ff);
+    let plain = make_at @r (s, data#split, data#axis, data#perm, data#pad, 1, 1, 0, 1, ff);
     let width = core.select (bytes == 0, 1, bytes);
     let atom  = 128 / width;
     let e     = address @r @s plain;
@@ -341,11 +349,11 @@ lam tc_sorted {m: Nat} (key: «m; Nat»): «m; Idx m» =
     ‹p: m; core.idx 0 m (vec.fold.r @(Nat, Idx m) @m (λ (d: Idx m, x: Nat): Nat = (x, core.idx2nat d)#(rank#d == core.idx2nat p))
         (‹d: m; d›, 0))›;
 /// The layout term of `perm` over the pre-split dims and `split`, padded to `physical`.
-lam tc_term {n: Nat} (logical: «n; Nat», split: Nat, perm: «n + 1; Idx (n + 1)», physical: «n; Nat», width: Nat, swizzled: Bool)
+lam tc_term {n: Nat} (logical: «n; Nat», split axis: Nat, perm: «n + 1; Idx (n + 1)», physical: «n; Nat», width: Nat, swizzled: Bool)
     : Expr (n, logical) =
     let (w, g, c) = ((1, 1, 1), (width, 8, 8))#swizzled;
-    let base      = shape @n @logical (make @n (logical, split, perm, ‹n; 0›, w, g, 0, c, swizzled));
-    make @n (logical, split, perm, ‹p: n; core.nat.sub (physical#p, base#p)›, w, g, 0, c, swizzled);
+    let base      = shape @n @logical (make_at @n (logical, split, axis, perm, ‹n; 0›, w, g, 0, c, swizzled));
+    make_at @n (logical, split, axis, perm, ‹p: n; core.nat.sub (physical#p, base#p)›, w, g, 0, c, swizzled);
 /// A warp's mma operand: the contiguous dim innermost, the last physical dim padded so ldmatrix's rows hit distinct
 /// banks.
 pub anx lam tc_mma {n: Nat} (dims: «n; Nat», inner bytes: Nat): Expr (n, dims) =
@@ -357,7 +365,7 @@ pub anx lam tc_mma {n: Nat} (dims: «n; Nat», inner bytes: Nat): Expr (n, dims)
     let pad   = core.select (core.bit2.and 0 (bytes == 2, last * 2 % 32 == 0), 8,
                 core.select (core.bit2.and 0 (bytes == 4, core.bit2.and 0 (last <= 32, last / 4 % 2 == 0)), 4,
                 core.select (core.bit2.and 0 (bytes == 4, core.bit2.and 0 (32 < last, last % 32 == 0)), 8, 0)));
-    tc_term @n (dims, 1, perm, ‹p: n; (shape#p, core.nat.add (shape#p, pad))#(core.idx2nat p == core.nat.sub (n, 1))›, 1, ff);
+    tc_term @n (dims, 1, core.nat.sub (n, 1), perm, ‹p: n; (shape#p, core.nat.add (shape#p, pad))#(core.idx2nat p == core.nat.sub (n, 1))›, 1, ff);
 /// A wgmma operand: its one dim of more than one element as the rows of 128-byte segments of the contiguous dim,
 /// swizzled by the segment; `(ff, _)` when the panel has no such shape.
 pub anx lam tc_wgmma {n: Nat} (dims: «n; Nat», inner bytes: Nat, k_major: Bool): [Bool, Expr (n, dims)] =
@@ -365,7 +373,7 @@ pub anx lam tc_wgmma {n: Nat} (dims: «n; Nat», inner bytes: Nat, k_major: Bool
     let tall  = vec.fold.r @(Nat, Idx n) @n (λ (d: Idx n, x: Nat): Nat =
         (x, core.nat.add (x, 1))#(core.bit2.and 0 (core.idx2nat d != inner, dims#d != 1))) (‹d: n; d›, 0);
     let width = dims#(core.idx 0 n inner);
-    let ok    = core.bit2.and 0 (tall == 1, (core.bit2.and 0 (inner == core.nat.sub (n, 1), width % atom == 0), width == atom)#k_major);
+    let ok    = core.bit2.and 0 (tall == 1, core.bit2.and 0 (width % atom == 0, core.bit2.or 0 (k_major, inner == core.nat.sub (n, 1))));
     let one   = width == atom;
     // K-major: rows, then units, then the contiguous dim.
     let kkey  = ‹d: n; ((1, 0)#(dims#d != 1), 2)#(core.idx2nat d == inner)›;
@@ -373,6 +381,11 @@ pub anx lam tc_wgmma {n: Nat} (dims: «n; Nat», inner bytes: Nat, k_major: Bool
     let kperm = ‹q: n + 1; let e = core.idx2nat q;
         core.idx 0 (n + 1) ((((core.idx2nat (korder#(core.idx 0 n (core.nat.sub (e, 1)))), n)#(e == 2)), core.idx2nat (korder#(core.idx 0 n e)))#(e < 2))›;
     let kshape = ‹p: n; dims#(korder#p)›;
+    // K-major over several atoms: the atoms of the contiguous dim, then units, rows and an atom's elements.
+    let akey  = ‹e: n + 1; let i = core.idx2nat e;
+        (((1, 2)#(dims#(core.idx 0 n i) != 1), 0)#(i == inner), 3)#(i == n)›;
+    let aperm = tc_sorted @(n + 1) akey;
+    let ashape = shape_impl @n (atom, inner, aperm, ‹n; 0›, dims);
     // MN-major: the contiguous dim split into atoms, whose quotient leads unless it is one atom.
     let m1    = n + 1;
     let mkey  = ‹e: m1; let i = core.idx2nat e;
@@ -385,14 +398,15 @@ pub anx lam tc_wgmma {n: Nat} (dims: «n; Nat», inner bytes: Nat, k_major: Bool
     let chunk = 16 / core.select (bytes == 0, 1, bytes);
     let L = [Bool, Expr (n, dims)];
     (λ (): L = (ff, rows dims),
-     λ (): L = (tt, (λ (): Expr (n, dims) = tc_term @n (dims, atom, mperm, mshape, chunk, tt),
-                     λ (): Expr (n, dims) = tc_term @n (dims, 1, kperm, kshape, chunk, tt))#k_major ()))#ok ();
+     λ (): L = (tt, (λ (): Expr (n, dims) = tc_term @n (dims, atom, core.nat.sub (n, 1), mperm, mshape, chunk, tt),
+                     (λ (): Expr (n, dims) = tc_term @n (dims, atom, inner, aperm, ashape, chunk, tt),
+                      λ (): Expr (n, dims) = tc_term @n (dims, 1, core.nat.sub (n, 1), kperm, kshape, chunk, tt))#one)#k_major ()))#ok ();
 
 /// What a wgmma descriptor says of an operand panel in `layout` of elements of `bytes` each: whether the panel is
-/// MN-major, which its split into atoms tells, the bytes between its atoms (16 if K-major, where none repeat),
+/// MN-major, which a split of a dim other than its K dim `kdim` tells, the bytes between its atoms (16 if K-major),
 /// the 1 KiB between its groups of 8 rows of 128 bytes, and the swizzle, 1 for the 128-byte one and 0 for none.
-pub anx lam wgmma_fields {n: Nat} {dims: «n; Nat»} (layout: Expr (n, dims), bytes: Nat): [Bool, Nat, Nat, Nat] =
-    let mn    = (#layout)#split != 1;
+pub anx lam wgmma_fields {n: Nat} {dims: «n; Nat»} (layout: Expr (n, dims), bytes kdim: Nat): [Bool, Nat, Nat, Nat] =
+    let mn    = core.bit2.and 0 ((#layout)#split != 1, (#layout)#axis != kdim);
     let shape = shape layout;
     let atoms = vec.fold.r @(Nat, Idx n) @n (λ (d: Idx n, x: Nat): Nat = x * (1, shape#d)#(0 < core.idx2nat d)) (‹d: n; d›, bytes);
     (mn, (16, atoms)#mn, 1024, (0, 1)#((#layout)#xor));

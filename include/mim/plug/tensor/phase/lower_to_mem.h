@@ -241,6 +241,8 @@ private:
     bool async_fill_ = false;
     /// Whether tensor-core operands are rounded to TF32 to nearest before `mma` (`-X tensor:tf32-rna`).
     bool tf32_rna_ = false;
+    /// The K dim of a warpgroup-owned product's B panel, by its stage.
+    DefMap<u64> wgmma_kdims_;
     /// `(mem, buffer)` the next uniform fill writes instead of allocating; it leaves its memory in filled_mem_.
     std::optional<std::pair<const Def*, const Def*>> fill_target_;
     /// While a pipelined fold sizes its ring: a uniform fill only allocates its panel.
@@ -309,10 +311,10 @@ private:
     const Def* owned_row(const Def* row);
     const Def* wgmma_lane(const App*);
     const Def* wgmma_a(const btensor::MapRedPost&, u64 nk);
-    std::array<u64, 4> wgmma_fields(const Def* buffer);
-    std::pair<bool, u64> wgmma_major(const Def* buffer);
+    std::array<u64, 4> wgmma_fields(const Def* buffer, std::optional<u64> kdim);
+    std::pair<bool, u64> wgmma_major(const Def* buffer, std::optional<u64> kdim);
     const Def* wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pending, bool turn, Defs operands);
-    const Def* wgmma_desc(const Def* buffer, const Def* index);
+    const Def* wgmma_desc(const Def* buffer, const Def* index, std::optional<u64> kdim);
     bool uniform(const Def*) const;
     std::function<const Def*(const Def*)> cooperative();
     const Def* shared_mem(const Def*);

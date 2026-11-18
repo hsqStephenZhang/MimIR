@@ -307,6 +307,25 @@ struct Linear {
     }
 };
 
+/// The input dim that reads loop @p loop with unit slope, if any.
+inline std::optional<u64> dim_of_loop(const Def* map, u64 rank, u64 loop) {
+    auto& w   = map->world();
+    auto pi   = map->type()->as<Pi>();
+    auto rn   = Lit::as(pi->dom()->arity());
+    auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
+    auto read = w.app(map, var);
+    for (u64 d = 0; d != rank; ++d) {
+        auto form = Linear::of(read->proj(rank, d));
+        bool own  = true;
+        for (u64 k = 0; k != rn; ++k) {
+            auto atom = form.atoms.find(var->proj(rn, k));
+            own &= (atom == form.atoms.end() ? 0 : atom->second) == (k == loop ? 1 : 0);
+        }
+        if (own) return d;
+    }
+    return {};
+}
+
 /// @p perm as literals, if it is literal.
 inline std::optional<fe::Vector<u64>> lit_perm(const Def* perm) {
     if (auto r = Lit::isa(perm->arity())) return lit_projs(perm, *r);

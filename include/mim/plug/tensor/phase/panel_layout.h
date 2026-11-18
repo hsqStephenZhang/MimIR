@@ -18,11 +18,13 @@ struct Swizzle {
     bool xored = false;
 };
 
-/// A panel's storage layout: its last dim split into `(extent / split, split)`, those dims permuted (`perm[p]` is
-/// the dim at physical position `p`), and the rows of the result swizzled.
+/// A panel's storage layout: its dim `axis` (the last if unset) split into `(extent / split, split)`, with `split`
+/// appended after the dims, those dims permuted (`perm[p]` is the dim at physical position `p`), and the rows of the
+/// result swizzled.
 struct Layout {
     std::vector<size_t> perm;
     u64 split = 1;
+    std::optional<size_t> axis;
     std::optional<Swizzle> swizzle;
     /// The dims after the split and permutation, before merging and padding.
     std::vector<u64> permuted;

@@ -22,7 +22,7 @@ let padded = make @2 ((64, 64), 1, (0₃, 1₃, 2₃), (0, 4), 1, 1, 0, 1, ff);
 let _ = refly.struc.e (injective padded, 0);
 
 // A permutation that repeats a dim, which `make` rejects, maps two rows onto one.
-let collapsed = ((‹(64, 64)›, 1, (0₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1, ff) inj Data (2, (64, 64))) inj Expr (2, (64, 64));
+let collapsed = ((‹(64, 64)›, 1, (0₃, 0₃, 2₃), (0, 0), 1, 1, 0, 1, ff, 1) inj Data (2, (64, 64))) inj Expr (2, (64, 64));
 let _ = refly.struc.e (injective collapsed, 1);
 
 // The swizzle a K-major wgmma panel is filled in is the one its descriptor makes the hardware read.
@@ -61,3 +61,12 @@ let _ = refly.struc.e (shape (rows 8), 8);
 let _ = refly.struc.e ((tc_wgmma @3 ((32, 1, 32), 2, 2, tt))#0₂, ff);
 // A K-major descriptor steps over rows of 128 bytes: a swizzled panel whose rows are twice as wide does not lie so.
 let _ = refly.struc.e (lies_sw128 (make @2 ((64, 128), 1, (0₃, 1₃, 2₃), (0, 0), 8, 8, 0, 8, tt), 2), 1);
+
+// A K-major wgmma panel two atoms deep splits its K dim, the first, into atoms stacked one after another, as TMA puts them.
+let (deep_ok, deep) = tc_wgmma @3 ((128, 1, 64), 0, 2, tt);
+let _ = refly.struc.e (deep_ok, tt);
+let _ = refly.struc.e (injective deep, 2);
+let _ = refly.struc.e (lies_tma128 (deep, 2, 2, 0), 2);
+let _ = refly.struc.e (lies_sw128 (deep, 2), 2);
+let _ = refly.struc.e ((wgmma_fields (deep, 2, 0))#0₄, ff);
+let _ = refly.struc.e ((wgmma_fields (deep, 2, 2))#0₄, tt);

@@ -723,25 +723,6 @@ const Def* panel_term(const App* staged, const PanelSite& site) {
     return w.tuple({storage, choice.expr});
 }
 
-/// The input dim that reads loop @p loop with unit slope, if any.
-std::optional<u64> dim_of_loop(const Def* map, u64 rank, u64 loop) {
-    auto& w   = map->world();
-    auto pi   = map->type()->as<Pi>();
-    auto rn   = Lit::as(pi->dom()->arity());
-    auto var  = w.mut_lam(pi->dom(), pi->codom())->var();
-    auto read = w.app(map, var);
-    for (u64 d = 0; d != rank; ++d) {
-        auto form = Linear::of(read->proj(rank, d));
-        bool own  = true;
-        for (u64 k = 0; k != rn; ++k) {
-            auto atom = form.atoms.find(var->proj(rn, k));
-            own &= (atom == form.atoms.end() ? 0 : atom->second) == (k == loop ? 1 : 0);
-        }
-        if (own) return d;
-    }
-    return {};
-}
-
 /// A reduction level's block along output loop `loop`: `[k0, k0 + k)`.
 struct Block {
     u64 loop;
