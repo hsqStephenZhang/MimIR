@@ -3763,6 +3763,54 @@ pub mod law
         let pick  = vec.fold.l @(Nat, Idx c) @c (λ (x: Nat, j: Idx c): Nat =
             (x, core.idx2nat j)#(better (j, core.idx 0 c x))) (0, ‹j: c; j›);
         candidates#(core.idx 0 c pick);
+    /// The streaming multiprocessors of the target `check.target` names, an H200's when it names none.
+    lam sms (target: Nat): Nat =
+        let cc = target / 2;
+        let c  = (132, 188)#(cc == 120);
+        let c  = (c, 148)#(cc == 100);
+        let c  = (c, 108)#(cc == 80);
+        let c  = (c, 84)#(cc == 86);
+        (c, 128)#(cc == 89);
+    /// The block sizes of a schedule's work-group level, 0 for a loop it leaves whole.
+    lam group_blocks {n: Nat, Acc Kind: *} (l: TileLevels (n, Acc, Kind))@(core.pe.is_closed l): «n; Nat» =
+        match l with
+            | 0 => ‹n; 0›
+            | 1 (_, sizes, _, _, _) => sizes
+            | 2 _ => ‹n; 0›
+            | 3 _ => ‹n; 0›
+            | 4 _ => ‹n; 0›
+            | 5 (_, _, _, rest) => group_blocks rest
+            | 6 (_, rest) => group_blocks rest;
+    /// The waves the work-groups of `levels` run in over the target's streaming multiprocessors, and the work of one,
+    /// its points of the iteration space.
+    anx lam waves {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind))
+        : [Nat, Nat] =
+        let ro    = ro_of l;
+        let Sr    = extents_of l;
+        let ts    = group_blocks levels;
+        let size  = ‹d: n; let t = ts#d; let e = Sr#d; (e, core.select (t < e, t, e))#(core.bit2.and 0 (core.idx2nat d < ro, t != 0))›;
+        let count = vec.fold.r @(Nat, Idx n) @n (λ (d: Idx n, x: Nat): Nat =
+            (x, core.nat.mul (x, (Sr#d + size#d - 1) / size#d))#(core.idx2nat d < ro)) (‹d: n; d›, 1);
+        let work  = vec.fold.r @(Nat, Nat) @n (λ (e x: Nat): Nat = core.nat.mul (e, x)) (size, 1);
+        let k     = sms (check.target ());
+        ((count + k - 1) / k, work);
+    /// The time of `levels` in points of the iteration space: each wave takes as long as one work-group's work, so a last
+    /// wave that leaves processors idle costs as much as a full one.
+    anx lam cost {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), levels: TileLevels (n, Acc, Kind)): Nat =
+        let (w, work) = waves (l, levels);
+        core.nat.mul (w, work);
+    /// Of `c` candidate schedules the legal one of the least cost, the fewest bytes moved deciding a tie.
+    anx lam fastest {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *, c: Nat}
+        (l: Law (r, s, T, n, Acc, Kind), candidates: «c; TileLevels (n, Acc, Kind)»): TileLevels (n, Acc, Kind) =
+        let times = ‹j: c; cost (l, candidates#j)›;
+        let bytes = ‹j: c; (traffic_of l) (candidates#j)›;
+        let bad   = ‹j: c; (0, 1)#((verdict_of (l, candidates#j))#0₃ != 0)›;
+        lam better (j x: Idx c): Bool =
+            core.bit2.or 0 (bad#j < bad#x, core.bit2.and 0 (bad#j == bad#x,
+                core.bit2.or 0 (times#j < times#x, core.bit2.and 0 (times#j == times#x, bytes#j < bytes#x))));
+        let pick  = vec.fold.l @(Nat, Idx c) @c (λ (x: Nat, j: Idx c): Nat =
+            (x, core.idx2nat j)#(better (j, core.idx 0 c x))) (0, ‹j: c; j›);
+        candidates#(core.idx 0 c pick);
     anx lam par {r: Nat, s: «r; Nat», T: *, n: Nat, Acc Kind: *} (l: Law (r, s, T, n, Acc, Kind), ts: «r; Nat»): Tensor r s T =
         check.report (checked_of l, (par_of l) ts);
     /// Blocks of a reduction loop inside another fold out of order, which only a law's combiner or merge permits.

@@ -877,3 +877,12 @@ H200 上结果正确（`lit/{gpu,nvptx}/tile_wgmma_tma_store.mim`），但三种
 `lower_to_mem.cpp` 拆成三块：通用的缓冲化留在原文件；`lower_to_mem_stage.cpp` 放 `lower_stage`、环和各种 fold（`lower_tile_fold`、`lower_lane_fold`、`lower_bound_fold`、`lower_product_fold`、TMA 环的 `outside`）；`lower_to_mem_tc.cpp` 放张量核协议（`lower_mma`、wgmma 描述符与批、片段写回与暂存、warp 所有的区域）。三者共用的文件内辅助函数在 `lower_to_mem_util.h`。
 TileFuse 和 LowerToMem 对 GPU 的假设收在 `phase/limits.h` 的 `GpuLimits`：warp 32 个 lane、工作组 1024 个 work-item、不申请就有的 48 KiB 共享内存、合并部分结果的 4 个 warp、少于 8 份部分结果时串行合并。
 两处都不改生成的代码：73 个 bench 的设备 IR 不变。
+
+## 26. 按波计时的代价（2026-11-18）
+
+`law.traffic` 只数全局内存字节，会把只占一半 SM 的大瓦片排在前面。
+`law.waves (l, levels)` 给出工作组按目标 SM 数（`check.target`，缺省 H200 的 132 个）分成的波数和一个工作组的工作量（迭代空间的点数），`law.cost` 是二者之积：每波与一个工作组的工作一样长，最后一波不满也算整波。
+`law.fastest` 先排除不合法的，再按 `cost`，相同时按字节数选；`law.best` 不变。
+对 RESULTS 里 `wg_red_tma` 的调度扫描（每种瓦片取最好的级数），排序与实测的 Spearman 相关：1024 从只看字节的 −0.32 到 0.95（64×256 只有 64 个工作组，字节最少却最慢），2048 和 4096 都与原来相同（0.67、0.95），那里各瓦片的波数之积相同，由字节数决定。
+bank 冲突和寄存器压力还没有进模型：2048 上 128×128 实测比字节更少的 128×256、256×128 快，256×256 因寄存器超限启动失败，这些都看不出来。
+`lit/tensor/law_cost.mim`。

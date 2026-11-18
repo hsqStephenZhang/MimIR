@@ -1,0 +1,46 @@
+// RUN: %mim -p opt -X tensor:tile-fuse=1 %s -o - | %FileCheck %s
+
+// A law also estimates a schedule's time: its work-groups run in waves over an H200's 132 streaming multiprocessors, each
+// wave as long as one work-group's work.
+// For a 1024 × 1024 × 1024 product, 64 × 128 blocks make 128 work-groups of 64 · 128 · 1024 points in one wave; 64 × 256
+// blocks move fewer bytes, but their 64 work-groups leave half the processors idle for twice as long.
+// So `law.best`, which counts bytes, picks 64 × 256, and `law.fastest` picks 64 × 128.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [F32, F32])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
+
+lam gemm (a: tensor.Tensor 2 (1024, 1024) F32, b: tensor.Tensor 2 (1024, 1024) F32) =
+    law.of_map_reduce ((1024, 1024), (1024, 1024, 1024)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+
+let narrow = serial_group ((64, 128, 0), 0, 0, group_item ((4, 4, 0), 0, item_done ()));
+let wide   = serial_group ((64, 256, 0), 0, 0, group_item ((4, 4, 0), 0, item_done ()));
+
+extern fun cost_narrow (a b: tensor.Tensor 2 (1024, 1024) F32): Nat = return (law.cost (gemm (a, b), narrow));
+extern fun cost_wide (a b: tensor.Tensor 2 (1024, 1024) F32): Nat = return (law.cost (gemm (a, b), wide));
+extern fun cost_best (a b: tensor.Tensor 2 (1024, 1024) F32): Nat =
+    let l = gemm (a, b);
+    return (law.cost (l, law.best (l, (narrow, wide))));
+extern fun cost_fastest (a b: tensor.Tensor 2 (1024, 1024) F32): Nat =
+    let l = gemm (a, b);
+    return (law.cost (l, law.fastest (l, (wide, narrow))));
+
+// CHECK-LABEL: extern con cost_best
+// CHECK: (_{{[0-9]+}}, 16777216)
+// CHECK-LABEL: extern con cost_fastest
+// CHECK: (_{{[0-9]+}}, 8388608)
+// CHECK-LABEL: extern con cost_narrow
+// CHECK: (_{{[0-9]+}}, 8388608)
+// CHECK-LABEL: extern con cost_wide
+// CHECK: (_{{[0-9]+}}, 16777216)
