@@ -788,3 +788,11 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - `law` 的 `staged_of` 累加 work-group 里每个暂存面板的归约，不再在第一个归约处停下（`lit/error/law_capacity_nested.mim`：两层各 128 KiB）。
 - `check.walk` 记着 work-group 的块（`gblock`），warpgroup 数按它算，和 `TileFuse` 的 `group_scope_` 一致；之前中间夹一个 `group_par` 时按缩小后的块算。
 - 消息 12 不再报告，只保留编号；消息 10 改为报告 A2 的规则。
+
+## 16. bench 整理（2026-11-18）
+
+- 五份相同的 buffer 解释器合成 `bench/typed_tiles/buffer_levels.mim`，`buffer_interp.mim` 与 `bench/gpu_fusion/gemm_*_buffers.mim` 只留各自的形状与层级；`step` 的分支是 thunk，选中的才展开。生成的设备 IR 与拆分前相同。
+- `bench/tools/compile_all.sh` 把占位符（`HH`、`LL`、`DD`、`BM`、`BK`、`SCALE`、`PIPE`、`CL`）换成小的默认值后编译每个 GPU bench，`reject_*` 反过来要编不过；现在全部通过。
+  `bench/gpu_attn/*.mim` 是 `kattn.sh` 等脚本替换占位符后的模板，不是过时的文件；`attn_fa` 要 `BK=64`。
+  `bench/gpu_fusion/attn_tiled.mim` 的向量层原来同时标了 h 与 m 两个循环，改为只标 m 后可以编译，结果正确。
+- `bench/gpu_*/k*.sh` 的仓库根不再写死为主 checkout，而是由脚本位置推出（或 `ROOT=`）。

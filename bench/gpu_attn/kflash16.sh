@@ -2,7 +2,7 @@
 # kflash16.sh <BH> <L> <f16|bf16> [generator args...]: generates a hand-written 16-bit attention kernel with $GEN.py (default flash_h16), checks it and sums its kernel times
 # with nsys.
 export PATH=$HOME/opt/llvm-23/bin:$HOME/opt/tools/bin:$HOME/opt/src/llvm-build/bin:$HOME/opt/cuda/bin:$PATH
-R=/home/chzh00001/workspaces/MimIR
+R=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 B=$R/bench/gpu_attn
 BH=$1 L=$2 TY=$3; shift 3
 GEN=${GEN:-flash_h16}

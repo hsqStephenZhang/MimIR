@@ -2,7 +2,7 @@
 # kattn.sh <name.mim> <H> <L> <D> [extra mim flags...]: compiles an attention bench for that shape, checks it and sums
 # its kernel times with nsys; DRIVER=attn_driver16.cpp checks an F16 one.
 export PATH=$HOME/opt/llvm-23/bin:$HOME/opt/tools/bin:$HOME/opt/src/llvm-build/bin:$HOME/opt/cuda/bin:$PATH
-R=/home/chzh00001/workspaces/MimIR
+R=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 B=$R/bench/gpu_attn
 f=$1 H=$2 L=$3 D=$4; shift 4
 BM=${BM:-64} BK=${BK:-32}

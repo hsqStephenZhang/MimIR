@@ -2,7 +2,7 @@
 # kflash.sh <BH> <L> [extra mim flags...] (BC=<keys per block>): generates the hand-written FA2 kernel, checks it and sums its kernel times
 # with nsys.
 export PATH=$HOME/opt/llvm-23/bin:$HOME/opt/tools/bin:$HOME/opt/src/llvm-build/bin:$HOME/opt/cuda/bin:$PATH
-R=/home/chzh00001/workspaces/MimIR
+R=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 B=$R/bench/gpu_attn
 BH=$1 L=$2 BC=${BC:-64}; shift 2
 n=flash_warp_${BH}_${L}_${BC}

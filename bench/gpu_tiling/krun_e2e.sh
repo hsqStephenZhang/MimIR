@@ -2,7 +2,7 @@
 # krun_e2e.sh <name.mim> [extra mim flags...]: compiles a 16-bit gpu_tiling GEMM (N=<n> resizes it), runs it end to end, and
 # sums its kernel time with nsys; for kernels that take more than their buffers, such as TMA descriptors.
 export PATH=$HOME/opt/llvm-23/bin:$HOME/opt/tools/bin:$HOME/opt/src/llvm-build/bin:$HOME/opt/cuda/bin:$PATH
-R=/home/chzh00001/workspaces/MimIR
+R=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 B=$R/bench/gpu_tiling
 mkdir -p $B/out && cd $B/out
 f=$1; shift

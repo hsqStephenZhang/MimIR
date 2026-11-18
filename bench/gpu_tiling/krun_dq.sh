@@ -1,7 +1,7 @@
 #!/bin/bash
 # krun_dq.sh <name.mim> [extra mim flags...]: compile a gpu_tiling bench and time its kernel with kbench; N=<n> resizes it.
 export PATH=$HOME/opt/llvm-23/bin:$HOME/opt/tools/bin:$HOME/opt/src/llvm-build/bin:$HOME/opt/cuda/bin:$PATH
-R=/home/chzh00001/workspaces/MimIR
+R=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 B=$R/bench/gpu_tiling
 mkdir -p $B/out && cd $B/out
 [ kbench_dq -nt $B/kbench_dq.cpp ] || clang++ -O2 -std=c++20 $B/kbench_dq.cpp -I$HOME/opt/cuda/include -L/.singularity.d/libs -lcuda -o kbench_dq

@@ -2,7 +2,7 @@
 # krun.sh <name.mim> [extra mim flags...]: compile a gpu_tiling bench and time its kernel with kbench; N=<n> resizes it,
 # TY=<f16f32|bf16f32|...> times a 16-bit one with kbench16.
 export PATH=$HOME/opt/llvm-23/bin:$HOME/opt/tools/bin:$HOME/opt/src/llvm-build/bin:$HOME/opt/cuda/bin:$PATH
-R=/home/chzh00001/workspaces/MimIR
+R=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 B=$R/bench/gpu_tiling
 mkdir -p $B/out && cd $B/out
 [ kbench -nt $B/kbench.cpp ] || clang++ -O2 -std=c++20 $B/kbench.cpp -I$HOME/opt/cuda/include -L/.singularity.d/libs -lcuda -o kbench

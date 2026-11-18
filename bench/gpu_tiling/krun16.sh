@@ -2,7 +2,7 @@
 # krun16.sh <n> <f16|bf16> [generator args...]: generates a 16-bit GEMM kernel with $GEN.py (default gemm_h16), compiles it for
 # sm_$SM (default 90a) and times it with kbench16.
 export PATH=$HOME/opt/llvm-23/bin:$HOME/opt/tools/bin:$HOME/opt/src/llvm-build/bin:$HOME/opt/cuda/bin:$PATH
-R=/home/chzh00001/workspaces/MimIR
+R=${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 B=$R/bench/gpu_tiling
 mkdir -p $B/out && cd $B/out
 [ kbench16 -nt $B/kbench16.cpp ] || clang++ -O2 -std=c++20 $B/kbench16.cpp -I$HOME/opt/cuda/include -lcuda -o kbench16
