@@ -448,10 +448,12 @@ void Emitter::emit_epilogue_impl(Lam* lam) {
         if (callee->is_set()) {
             if (auto head = callee->body()->isa<App>()) {
                 if (auto dispatch = Dispatch(head)) {
-                    auto vec   = Axm::isa<ll::vec>(dispatch.index());
-                    auto novec = Axm::isa<ll::novec>(dispatch.index());
-                    if (vec || novec) {
-                        auto [it, _] = loop_md_.emplace(callee, std::pair{LoopMdBase + 2 + loop_md_.size(), bool(vec)});
+                    auto vec      = Axm::isa<ll::vec>(dispatch.index());
+                    auto novec    = Axm::isa<ll::novec>(dispatch.index());
+                    auto nounroll = Axm::isa<ll::nounroll>(dispatch.index());
+                    if (vec || novec || nounroll) {
+                        auto hint    = vec ? u64(0) : novec ? u64(1) : u64(2);
+                        auto [it, _] = loop_md_.emplace(callee, std::pair{LoopMdBase + 3 + loop_md_.size(), hint});
                         return bb.tail("br label {}, !llvm.loop !{}", id(callee), it->second.first);
                     }
                 }
@@ -1245,6 +1247,8 @@ std::optional<std::string> Emitter::emit_vec(BB& bb, const std::string& name, co
         return emit(v->arg());
     } else if (auto nv = Axm::isa<ll::novec>(def)) {
         return emit(nv->arg());
+    } else if (auto nu = Axm::isa<ll::nounroll>(def)) {
+        return emit(nu->arg());
     } else if (auto zip = Axm::isa<vecp::zip>(def)) {
         auto ni_n   = zip->decurry()->decurry()->decurry()->arg();
         auto nat_ni = Lit::expect(ni_n->proj(2, 0), "the `vec.zip` inputs count");

@@ -34,6 +34,11 @@ const Def* LowerFor::rewrite_imm_App(const App* app) {
         } else if (auto ll_novec = Axm::isa<ll::novec>(old_body)) {
             old_body = ll_novec->arg();
             if (old_world().driver().is_loaded("ll")) vec_axm = ll_novec->axm();
+        } else if (auto ll_nounroll = Axm::isa<ll::nounroll>(old_body)) {
+            old_body = ll_nounroll->arg();
+            // The nvptx device emitter is an ll emitter too.
+            auto& driver = old_world().driver();
+            if (driver.is_loaded("ll") || driver.is_loaded("nvptx")) vec_axm = ll_nounroll->axm();
         }
 
         auto old_body_lam = old_body->isa_mut<Lam>();

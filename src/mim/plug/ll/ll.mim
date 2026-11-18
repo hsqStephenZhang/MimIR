@@ -44,3 +44,9 @@ axm vec: {T: *} → T → T;
 /// A schedule puts it on the loops enclosing its vector loop; left alone, LLVM may vectorize one of those instead, and since they are strided that costs a gather per load.
 /// `affine.lower_for` moves it like `vec`, and the emitter attaches `llvm.loop.vectorize.enable false`.
 axm novec: {T: *} → T → T;
+///
+/// ### nounroll
+///
+/// Forbids LLVM to unroll the annotated loop, whose body is unrolled already: unrolling it again only grows the code.
+/// `affine.lower_for` moves it like `vec`, and the emitter attaches `llvm.loop.unroll.disable`.
+axm nounroll: {T: *} → T → T;

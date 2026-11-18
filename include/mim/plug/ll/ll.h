@@ -284,11 +284,11 @@ protected:
     std::ostringstream func_impls_;
     LamMap<const Def*> simd_phi_;
 
-    /// Loop-metadata node id per `ll.vec`/`ll.novec`-annotated loop header, and whether it may vectorize;
-    /// `LoopMdBase` and `LoopMdBase + 1` hold the shared enable/disable hints, the per-loop nodes follow,
-    /// clear of the ids the embedded runtime module brings along.
+    /// Loop-metadata node id per `ll.vec`/`ll.novec`/`ll.nounroll`-annotated loop header, and which of the shared hints
+    /// at `LoopMdBase`, `LoopMdBase + 1` and `LoopMdBase + 2` it takes; the per-loop nodes follow, clear of the ids the
+    /// embedded runtime module brings along.
     static constexpr u64 LoopMdBase = 1000;
-    LamMap<std::pair<u64, bool>> loop_md_;
+    LamMap<std::pair<u64, u64>> loop_md_;
 
     bool simd_    = true;
     Rt rt_        = Rt::embed;
@@ -448,9 +448,9 @@ inline void Emitter::start() {
         std::ostringstream md_decls;
         std::println(md_decls, "!{} = !{{!\"llvm.loop.vectorize.enable\", i1 true}}", LoopMdBase);
         std::println(md_decls, "!{} = !{{!\"llvm.loop.vectorize.enable\", i1 false}}", LoopMdBase + 1);
+        std::println(md_decls, "!{} = !{{!\"llvm.loop.unroll.disable\"}}", LoopMdBase + 2);
         for (const auto& [_, md] : loop_md_)
-            std::println(md_decls, "!{} = distinct !{{!{}, !{}}}", md.first, md.first,
-                         md.second ? LoopMdBase : LoopMdBase + 1);
+            std::println(md_decls, "!{} = distinct !{{!{}, !{}}}", md.first, md.first, LoopMdBase + md.second);
         section(md_decls.str());
     }
     section(access_md_decls_.str());
