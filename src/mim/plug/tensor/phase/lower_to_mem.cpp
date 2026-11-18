@@ -3700,7 +3700,8 @@ const Def* LowerToMem::warp_fold(const App* app) {
         auto fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
         auto sync
             = w.app(w.app(w.annex<gpu::async_ring>(), depth), {w.lit_nat_0(), w.lit_bool(group_rows_ != nullptr)});
-        fold   = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill, w.lit_nat_0()});
+        fold   = w.app(fold,
+                       {sync, w.call<core::bitcast>(w.type_i64(), rewrite(count)), refill, w.lit_nat_0(), w.lit_ff()});
         fold   = w.app(w.app(fold, {mem, w.tuple({first, kept}), w.tuple({w.tuple(ring[0]), w.tuple(ring[1])})}),
                        {fill, ring_step});
         folded = fold->proj(2, 1)->proj(2, 0);
@@ -4213,13 +4214,11 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         if (tma) {
             auto vacant = parity(w.annex(tensor::pipeline_plan::empty_parity), "ringVacant");
             auto full   = parity(w.annex(tensor::pipeline_plan::full_parity), "ringParity");
-            auto steps  = specialized ? blocks : w.lit_nat(*literal_count);
-            sync
-                = w.app(w.app(w.annex<gpu::tma_ring>(), depth),
-                        {bars, empties ? empties : bars, steps, full, vacant, w.lit_nat(cluster_ ? cluster_->first : 0),
-                         w.lit_bool(sharing), w.lit_nat(specialized ? consumers_ : 0),
-                         specialized && pingpong_ ? consumer_ : w.lit_nat_0(), specialized ? producer_ : w.lit_ff(),
-                         w.lit_bool(specialized && pingpong_), w.lit_bool(tile_round_ != nullptr), first_round});
+            sync = w.app(w.app(w.annex<gpu::tma_ring>(), depth),
+                         {bars, empties ? empties : bars, full, vacant, w.lit_nat(cluster_ ? cluster_->first : 0),
+                          w.lit_bool(sharing), w.lit_nat(specialized ? consumers_ : 0),
+                          specialized && pingpong_ ? consumer_ : w.lit_nat_0(), specialized ? producer_ : w.lit_ff(),
+                          w.lit_bool(specialized && pingpong_), w.lit_bool(tile_round_ != nullptr), first_round});
         } else {
             sync = w.app(
                 w.app(w.annex<gpu::async_ring>(), depth),
@@ -4236,7 +4235,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),
                                     {refill->var(), depth, w.lit_nat(*literal_count)}));
             fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
-            fold = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), refill, w.lit_nat(overlap)});
+            fold = w.app(
+                fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), refill, w.lit_nat(overlap), w.lit_bool(tma)});
         }
         fold = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
         if (bounded) storage_shapes_[app] = storage;

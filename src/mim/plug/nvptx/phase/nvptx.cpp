@@ -1321,6 +1321,9 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         auto v_x = emit(x);
         declare("void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64)");
         std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 {})", Lit::as(n));
+        // ptxas may schedule reads of the accumulators above a wait in the same block, but not across a membar.
+        if (Lit::as(n) == 0)
+            std::print(bb.body().emplace_back(), "call void asm sideeffect \"membar.cta;\", \"~{{memory}}\"()");
         // The accumulators change and the register operands stay in use until the wait, so each is redefined after it.
         auto t_x   = convert(x->type());
         auto paths = std::vector<std::pair<std::string, const Def*>>();
