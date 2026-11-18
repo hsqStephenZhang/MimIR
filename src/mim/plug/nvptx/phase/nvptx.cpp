@@ -1225,6 +1225,27 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
                    {"i32 " + emit(dst), "i64 " + map_i, "i32 " + emit(col), "i32 " + emit(row), "i32 " + emit(bar),
                     "i32 " + pred});
         return std::string();
+    } else if (auto tma = Axm::isa<gpu::tma_store_if>(def)) {
+        auto [mem, src, map, col, row, issue] = tma->args<6>();
+        emit_unsafe(mem);
+        auto v_map = emit(map);
+        auto t_map = convert(map->type());
+        if (t_map != "ptr") v_map = bb.assign(name + ".gm", "addrspacecast {} {} to ptr", t_map, v_map);
+        auto map_i = bb.assign(name + ".map", "ptrtoint ptr {} to i64", v_map);
+        auto pred  = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb,
+                   "{ .reg .pred q; setp.ne.b32 q, $4, 0; @q cp.async.bulk.tensor.2d.global.shared::cta.bulk_group "
+                   "[$1, {$2, $3}], [$0]; @q cp.async.bulk.commit_group; }",
+                   "r,l,r,r,r",
+                   {"i32 " + emit(src), "i64 " + map_i, "i32 " + emit(col), "i32 " + emit(row), "i32 " + pred});
+        return std::string();
+    } else if (auto wait = Axm::isa<gpu::tma_store_wait_if>(def)) {
+        auto [mem, issue] = wait->args<2>();
+        emit_unsafe(mem);
+        auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb, "{ .reg .pred q; setp.ne.b32 q, $0, 0; @q cp.async.bulk.wait_group.read 0; }", "r",
+                   {"i32 " + pred});
+        return std::string();
     } else if (auto reg = Axm::isa<gpu::setmaxnreg>(def)) {
         auto [mem, inc, n] = reg->args<3>();
         emit_unsafe(mem);

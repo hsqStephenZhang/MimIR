@@ -857,3 +857,11 @@ TileFuse 的 `next_items_` 不再是成员，而是 `Levels::tile`、`parallel`�
 这样的面板与 MN 主序面板的布局结构相同，主序要由面板的 K 维定：`wgmma_fields` 多了参数 `kdim`，切分了 K 维以外的维才是 MN 主序；LowerToMem 从读映射求 K 维（`dim_of_loop`，移到 `tensor.h`），`wgmma_lane` 从相邻两个 k 块的位置求，只有一块时不知道，按原来的规则。
 TMA 环不再要求 K 主序面板正好一个原子，落点仍由 `lies_tma128` 核对。
 `lit/{gpu,nvptx}/tile_wgmma_tma_bk128.mim` 在 H200 上执行 K = 256、BK = 128 的 GEMM 并对照 CPU；性能见 `bench/gpu_tiling/RESULTS.zh-CN.md`：能跑，但不比 BK=64 快。
+
+## 23. TMA 存回（2026-11-18）
+
+`-X tensor:tma-store=1` 让 warpgroup 的 16 位结果经 TMA 存回。
+每个 warpgroup 把片段写进不填充的暂存区，按 128 字节原子排、原子内按行 128B swizzle，即 TMA 加载放的位置；写完后执行 `fence.proxy.async` 和一道屏障，再由 warpgroup 的第一个 work-item 每个原子发一条 `gpu.tma_store_if`（`cp.async.bulk.tensor` + `commit_group`），最后 `gpu.tma_store_wait_if` 等待它们读完共享内存。
+tensor map 要描述 kernel 写的那块设备缓冲：kernel 捕获的是最外层区域自己的变量，原来 `outer_of_` 一路映射到区域外的原始缓冲，`gpu.outline` 认不出两者相同，为 map 另拷了一份设备缓冲（TMA 加载读副本没有问题，存回则写到了副本里）。现在最外层区域只映射到它的变量，循环携带的结果缓冲也记进 `outer_of_`，TMA 加载也不再多拷 A、B。
+H200 上结果正确（`lit/{gpu,nvptx}/tile_wgmma_tma_store.mim`），但三种规模都略慢（µs，交替两次，关 / 开）：1024 6.43–6.53 / 6.64–6.65，2048（128×128、3 级）30.30–30.64 / 30.71–30.77，4096（128×256、3 级）198.0–198.3 / 199.0–199.2，所以默认关闭。
+

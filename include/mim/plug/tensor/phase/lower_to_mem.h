@@ -240,7 +240,8 @@ private:
     /// The fills of a pipelined fold copy asynchronously; its loop waits for them before its fence.
     bool async_fill_ = false;
     /// Whether tensor-core operands are rounded to TF32 to nearest before `mma` (`-X tensor:tf32-rna`).
-    bool tf32_rna_ = false;
+    bool tf32_rna_  = false;
+    bool tma_store_ = false;
     /// The K dim of a warpgroup-owned product's B panel, by its stage.
     DefMap<u64> wgmma_kdims_;
     /// `(mem, buffer)` the next uniform fill writes instead of allocating; it leaves its memory in filled_mem_.

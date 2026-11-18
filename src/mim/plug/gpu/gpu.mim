@@ -508,6 +508,14 @@ axm fence_mbarrier_init: mem.M 0 → mem.M 0;
 ///
 axm tma_load_multicast_if: [mem.M 0, dst: I32, map: GlobalPtr «16; I64», col row: I32, bar: I32, mask: I32, issue: Bool] → mem.M 0;
 ///
+/// #### tma_store_if, tma_store_wait_if
+///
+/// `tma_store_if` copies the box at the shared address `src` to element `(row, col)` of the matrix `map` describes, as one
+/// bulk group; `tma_store_wait_if` waits until the work-item's bulk groups have read their shared memory.
+/// Both act in the work-items where `issue` holds.
+axm tma_store_if: [mem.M 0, src: I32, map: GlobalPtr «16; I64», col row: I32, issue: Bool] → mem.M 0;
+axm tma_store_wait_if: [mem.M 0, issue: Bool] → mem.M 0;
+///
 /// #### tma_fill
 ///
 /// A panel a fill copies by TMA: `rows × cols` elements of `bytes` each of the matrix `map` describes, from its element

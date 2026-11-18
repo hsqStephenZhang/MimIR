@@ -1,0 +1,13 @@
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll %t
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:tma-store=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:no-embed -X nvptx:sm=90a
+// RUN: %FileCheck %s --input-file=%{s:stem}_dev.ll
+// RUN: rm -f %{s:stem}.ll %{s:stem}_dev.ll
+// RUN: %mim -p opt -X tensor:tile-fuse=1 -X tensor:tma-store=1 %S/../gpu/%{s:stem}.mim -p nvptx -X nvptx:sm=90a
+// RUN: %if system-linux && cuda-sm90 %{ clang++ -O1 -DK=256 %S/../gpu/tile_wgmma_h_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda-sm90 %{ %t %}
+
+// The result leaves shared memory by bulk tensor stores.
+
+// CHECK-DAG: cp.async.bulk.tensor.2d.global.shared::cta.bulk_group
+// CHECK-DAG: cp.async.bulk.wait_group.read 0
+// CHECK-DAG: fence.proxy.async

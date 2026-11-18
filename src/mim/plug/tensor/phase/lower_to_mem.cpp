@@ -470,6 +470,7 @@ void LowerToMem::validate() {
 void LowerToMem::start() {
     tensor_key_ = tensor_key(old_world());
     tf32_rna_   = driver().arg_nat("tensor", "tf32-rna").value_or(0) != 0;
+    tma_store_  = driver().arg_nat("tensor", "tma-store").value_or(0) != 0;
     validate();
     RWPhase::start();
     assert(pending_.empty());
@@ -1715,7 +1716,9 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     bind_new(run->has_var());
     if (auto var = parameter->has_var()) bind_old(var);
     map(proxy, runtime->proj(2, 1));
-    outer_of_[runtime->proj(2, 1)] = captured;
+    // A kernel captures the outermost region's own variable, so a TMA descriptor names what the kernel reads.
+    auto outermost = storage_level_ == 0;
+    if (!outermost) outer_of_[runtime->proj(2, 1)] = captured;
     forward_storage(sources, proxy);
     forward_layouts(captured, runtime->proj(2, 1));
     // Offsets live in the new world; extents stay in the old one, where the body is specialized to them.
@@ -1725,6 +1728,10 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
     std::function<const Def*(size_t, const Def*, const Def*)> emit
         = [&](size_t d, const Def* acc, const Def* exit) -> const Def* {
         if (d == *rank) {
+            // The loops carry the region's results in the buffers it started with.
+            for (u64 i = 0; i != plan.count; ++i)
+                outer_of_[acc->proj(plan.count + 1, i + 1)]
+                    = outermost ? runtime->proj(2, 0)->proj(plan.count + 1, i + 1) : buffers[i];
             auto off    = w.tuple(offsets);
             auto result = lower_tile_body(plan, off, extents, reads, acc->projs(plan.count + 1), &scratch, destination);
             return w.app(exit, result);
@@ -3069,10 +3076,18 @@ const Def* LowerToMem::stage_fragments(const Def* source,
     auto tid   = w.call<core::bitcast>(w.type_nat(), w.app(w.annex<gpu::item_index>(), w.tuple()));
     auto team  = w.call(core::nat::rem, Defs{w.call(core::nat::div, Defs{tid, nat(128)}), nat(teams)});
     auto first = add(mul(team, rows), group_row(w, true));
+    // TMA stores a team's tile in boxes of 128-byte atoms, which lie swizzled one after another as a TMA load puts
+    // them.
+    auto atoms  = cols / 64;
+    auto stored = tma_store_ && cols % 64 == 0 && rows % 8 == 0;
+    auto extent = stored ? w.tuple({nat(teams * atoms * rows), nat(64)}) : w.tuple({nat(teams * rows), nat(pitch)});
     const Def* staged;
-    std::tie(mem, staged) = buffer::op_alloc(nat(2), w.tuple({nat(teams * rows), nat(pitch)}), T,
-                                             w.app(w.annex<gpu::shared_scope>(), fence(mem)))
-                                ->projs<2>();
+    std::tie(mem, staged)
+        = buffer::op_alloc(nat(2), extent, T, w.app(w.annex<gpu::shared_scope>(), fence(mem)))->projs<2>();
+    auto nat_xor = [&](const Def* a, const Def* b) {
+        auto i64 = [&](const Def* x) { return w.call<core::bitcast>(w.type_i64(), x); };
+        return w.call<core::bitcast>(w.type_nat(), w.call(core::bit2::xor_, w.lit_nat_0(), Defs{i64(a), i64(b)}));
+    };
     for (u64 f = 0; f != fragments.count(); ++f) {
         auto value = source->proj(fragments.count(), f);
         for (u64 e = 0; e != 4; ++e) {
@@ -3082,8 +3097,37 @@ const Def* LowerToMem::stage_fragments(const Def* source,
             auto element                = w.extract(value, w.lit_idx(4, e));
             if (epilogue) std::tie(mem, element) = epilogue(mem, add(group_row(w, true), row), col, element);
             auto at = w.tuple({idx(teams * rows, add(first, row)), idx(pitch, col)});
-            mem     = buffer::op_write(mem, staged, at, element)->proj(2, 0);
+            if (stored) {
+                auto own_row = add(group_row(w, true), row);
+                auto atom    = w.call(core::nat::div, Defs{col, nat(64)});
+                auto within  = w.call(core::nat::rem, Defs{col, nat(64)});
+                auto chunk   = nat_xor(w.call(core::nat::div, Defs{within, nat(8)}),
+                                       w.call(core::nat::rem, Defs{own_row, nat(8)}));
+                auto line    = add(add(mul(team, atoms * rows), mul(atom, rows)), own_row);
+                at           = w.tuple({idx(teams * atoms * rows, line),
+                                        idx(64, add(mul(chunk, 8), w.call(core::nat::rem, Defs{within, nat(8)})))});
+            }
+            mem = buffer::op_write(mem, staged, at, element)->proj(2, 0);
         }
+    }
+    if (stored) {
+        mem               = fence(w.app(w.annex<gpu::fence_proxy_async>(), mem));
+        auto own          = w.call(core::nat::rem, Defs{tid, nat(128)});
+        auto issue        = w.call(core::ncmp::e, Defs{own, nat(0)});
+        auto i32          = [&](const Def* x) { return w.call<core::idx>(w.lit_nat_0(), w.lit_nat(u64(1) << 32), x); };
+        auto [sr, ss, sT] = Axm::as<buffer::Buf>(staged->type())->args<3>();
+        auto ds           = Axm::as<buffer::Buf>(destination.buffer->type())->arg(3, 1);
+        auto map          = w.app(w.app(w.app(w.annex<gpu::buf_tensor_map>(), T), ds),
+                                  {outside(destination.buffer), nat(rows), nat(64)});
+        for (u64 a = 0; a != atoms; ++a) {
+            auto at
+                = w.tuple({idx(teams * atoms * rows, add(mul(team, atoms * rows), nat(a * rows))), idx(64, nat(0))});
+            auto src = w.app(w.app(w.app(w.annex<gpu::buf_addr>(), sT), {sr, ss}), {staged, at});
+            auto col = i32(add(destination.origin->proj(2, 1), nat(a * 64)));
+            mem = w.app(w.annex<gpu::tma_store_if>(), {mem, src, map, col, i32(destination.origin->proj(2, 0)), issue});
+        }
+        mem = w.app(w.annex<gpu::tma_store_wait_if>(), {mem, issue});
+        return w.tuple({mem, destination.buffer});
     }
     mem          = fence(mem);
     auto runs    = cols / 8;
