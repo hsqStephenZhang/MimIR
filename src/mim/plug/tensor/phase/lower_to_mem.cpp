@@ -731,8 +731,8 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
         auto nk            = Lit::as(a->type()->arity());
         auto nt            = Lit::as(c->type()->arity());
         auto buffer        = rewrite(b);
-        auto logical       = logical_shapes_[buffer];
-        auto layout        = fe::lookup(layouts_, buffer);
+        auto logical       = logical_of(buffer);
+        auto layout        = layout_of(buffer);
         if (!layout || !logical) app->blame("a wgmma operand panel needs its swizzled layout").bail();
         auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
         auto rank         = Lit::as(br);
@@ -862,9 +862,9 @@ std::pair<const Def*, const Def*> LowerToMem::storage_access(const Def* old, con
     auto coordinates = rewrite(index);
     auto nats        = DefVec(rank, [&](size_t d) { return w.call<core::idx2nat>(coordinates->proj(rank, d)); });
     if (n) nats.back() = w.call(core::nat::mul, Defs{nats.back(), n});
-    if (auto layout = fe::lookup(layouts_, source)) {
+    if (auto layout = layout_of(source)) {
         auto i64s     = DefVec(rank, [&](size_t d) { return w.call<core::bitcast>(w.type_i64(), nats[d]); });
-        auto physical = layout_coords(layout, logical_shapes_[source], i64s);
+        auto physical = layout_coords(layout, logical_of(source), i64s);
         nats = DefVec(physical.size(), [&](size_t p) { return w.call<core::bitcast>(w.type_nat(), physical[p]); });
     }
     if (n) {
@@ -1085,11 +1085,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
     }
     if (uniform_) shared_fills_.insert(filled);
     if (uniform_ && !async_fill_ && !probe_fill_) generic_pending_ = true;
-    if (layout) {
-        layouts_[filled]        = layout;
-        layout_views_[filled]   = *layout_view;
-        logical_shapes_[filled] = layout_shape;
-    }
+    if (layout) placements_[filled] = Placement{layout, *layout_view, layout_shape};
     if (inner && uniform_) panels_.insert(filled);
     return filled;
 }
@@ -1199,7 +1195,7 @@ const Def* LowerToMem::layout_lam(const Def* layout, const Def* logical) {
 }
 
 void LowerToMem::plain(const Def* buffer) const {
-    if (fe::lookup(layouts_, buffer)) buffer->blame("a panel in a storage layout can only be read element-wise").bail();
+    if (layout_of(buffer)) buffer->blame("a panel in a storage layout can only be read element-wise").bail();
 }
 
 std::pair<DefVec, DefVec> LowerToMem::capture_producers(const Def* function) {
@@ -1419,10 +1415,10 @@ const Def* LowerToMem::lower_map_reduce(const App* app, const Destination* desti
     auto input_maps = DefVec(mr.maps->projs(nis));
     for (u64 i = 0; i != nis; ++i) {
         auto buffer = is->proj(nis, i), storage = mr.Sis->proj(nis, i);
-        auto layout  = fe::lookup(layouts_, buffer);
-        auto view    = fe::lookup(layout_views_, buffer);
+        auto layout  = layout_of(buffer);
+        auto view    = view_of(buffer);
         auto r       = storage->num_projs();
-        auto logical = layout ? fe::lookup(logical_shapes_, buffer) : storage;
+        auto logical = layout ? logical_of(buffer) : storage;
         auto size    = Lit::isa(core::op(core::trait::size, mr.Tis->proj(nis, i)));
         auto last = Lit::isa(logical->proj(r, r - 1)), physical_last = Lit::isa(storage->proj(r, r - 1));
         auto n = size && 16 % *size == 0 ? 16 / *size : 1;
@@ -2457,13 +2453,9 @@ void LowerToMem::forward_storage(const Def* inputs, const Def* proxy) {
 // A panel passed into a region keeps the layout its fill wrote, so the region's reads place their coordinates.
 void LowerToMem::forward_layouts(const Def* buffers, const Def* params) {
     auto forward = [this](const Def* buffer, const Def* param) {
-        if (auto found = fe::lookup(layouts_, buffer)) {
-            auto view = fe::lookup(layout_views_, buffer);
-            if (!view) buffer->blame("a panel layout is missing its cost-model view").bail();
-            auto copied_view       = *view;
-            layouts_[param]        = found;
-            layout_views_[param]   = std::move(copied_view);
-            logical_shapes_[param] = logical_shapes_[buffer];
+        if (auto placed = fe::lookup(placements_, buffer)) {
+            auto copied        = *placed;
+            placements_[param] = std::move(copied);
         }
         if (panels_.contains(buffer)) panels_.insert(param);
     };
@@ -2580,8 +2572,8 @@ const Def* LowerToMem::wgmma_batch(const Def* mem, const Def* x, Defs issue, con
 // What `layout_expr.wgmma_fields` says of a `wgmma` operand panel: whether it is MN-major and its descriptor's fields.
 std::array<u64, 4> LowerToMem::wgmma_fields(const Def* buffer) {
     auto& w      = new_world();
-    auto layout  = fe::lookup(layouts_, buffer);
-    auto logical = fe::lookup(logical_shapes_, buffer);
+    auto layout  = layout_of(buffer);
+    auto logical = logical_of(buffer);
     if (!layout || !logical) buffer->blame("a wgmma operand panel needs its swizzled layout").bail();
     auto T      = Axm::as<buffer::Buf>(buffer->type())->arg(3, 2);
     auto query  = w.tuple({layout, core::op(core::trait::size, T)});
@@ -2601,8 +2593,8 @@ const Def* LowerToMem::wgmma_desc(const Def* buffer, const Def* index) {
     auto [mn, lbo, sbo, swizzle] = wgmma_fields(buffer);
     auto [br, bs, bT]            = Axm::as<buffer::Buf>(buffer->type())->args<3>();
     // The descriptor names the 128-byte swizzle, so the panel's layout must be that one.
-    auto query   = w.tuple({fe::lookup(layouts_, buffer), core::op(core::trait::size, bT)});
-    auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_sw128), query, logical_shapes_[buffer]);
+    auto query   = w.tuple({layout_of(buffer), core::op(core::trait::size, bT)});
+    auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_sw128), query, logical_of(buffer));
     log().d("wgmma panel {} against the 128-byte swizzle: {}", buffer->type(), verdict);
     if (Lit::isa(verdict) == 1)
         buffer->blame("a wgmma operand panel does not lie as the 128-byte swizzle its descriptor names")
@@ -2642,9 +2634,9 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
             auto storage = fe::lookup(storage_shapes_, old_is->proj(2, i));
             if (!storage) storage = rewrite(old_mr.Sis->proj(2, i));
             auto map = rewrite(old_mr.maps->proj(2, i));
-            if (auto layout = fe::lookup(layouts_, buffer)) {
+            if (auto layout = layout_of(buffer)) {
                 auto placed = w.mut_lam(map->type()->as<Pi>())->set("placedMap");
-                placed->set(true, w.app(layout_lam(layout, logical_shapes_[buffer]), w.app(map, placed->var())));
+                placed->set(true, w.app(layout_lam(layout, logical_of(buffer)), w.app(map, placed->var())));
                 map = placed;
             }
             auto loops              = w.tuple(DefVec(3, [&](size_t d) {
@@ -2753,13 +2745,13 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
                 };
                 auto rows   = storage ? storage : shape;
                 auto rank   = rows->num_projs();
-                auto layout = fe::lookup(layouts_, buffer);
+                auto layout = layout_of(buffer);
                 // The physical dim a logical dim's runs of 8 land in, unchanged.
                 auto lands = [&](u64 dim) -> std::optional<u64> {
                     auto at = std::optional<u64>();
                     for (u64 j : {1, 7, 8}) {
                         auto point = DefVec(*r, [&](size_t d) { return w.lit_i64(d == dim ? j : 0); });
-                        auto phys  = layout ? layout_coords(layout, logical_shapes_[buffer], point) : point;
+                        auto phys  = layout ? layout_coords(layout, logical_of(buffer), point) : point;
                         for (u64 d = 0; d != phys.size(); ++d) {
                             auto x = Lit::isa(phys[d]);
                             if (!x || (*x != 0 && (*x != j || (at && *at != d)))) return {};
@@ -4072,15 +4064,14 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 slice->blame("a TMA-filled panel holds rows of 128 bytes or atoms of them").n(target).bail();
             auto atom = 128 / size;
             // The copy lands where the hardware puts it, so the panel's layout must name those addresses.
-            if (auto logical = fe::lookup(logical_shapes_, targets[j])) {
+            if (auto logical = logical_of(targets[j])) {
                 auto [pos, tiles, perm, pad] = stage->decurry()->decurry()->args<4>();
                 auto inner                   = Lit::as(pos);
                 u64 outer                    = 0;
                 while (Lit::as(perm->proj(2, outer)) == inner)
                     ++outer;
                 auto row = inner == 0 ? u64(2) : outer, col = inner == 0 ? outer : u64(2);
-                auto query
-                    = w.tuple({fe::lookup(layouts_, targets[j]), w.lit_nat(size), w.lit_nat(row), w.lit_nat(col)});
+                auto query   = w.tuple({layout_of(targets[j]), w.lit_nat(size), w.lit_nat(row), w.lit_nat(col)});
                 auto verdict = panel::at_shape(w.annex(tensor::layout_expr::lies_tma128), query, logical);
                 log().d("TMA panel {} against the swizzled copy: {}", targets[j]->type(), verdict);
                 if (Lit::isa(verdict) == 1)

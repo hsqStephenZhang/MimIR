@@ -176,12 +176,27 @@ private:
     DefMap<u64> fill_vector_;
     /// The capacities and layouts `tensor.placed` assigns to stages, and to the generates that fill them.
     DefMap<const Def*> placed_layouts_, fill_layouts_;
-    /// The panels stored in a non-identity layout, by buffer; every access goes through the layout term's interpreter.
-    DefMap<const Def*> layouts_;
-    /// Read-only layout fields used only to decide whether a panel read can stay vectorized.
-    DefMap<Layout> layout_views_;
-    /// The logical shapes of those panels.
-    DefMap<const Def*> logical_shapes_;
+    /// A panel stored in a non-identity layout: every access goes through the layout term's interpreter, the layout's
+    /// cost-model view decides whether a read can stay vectorized, and the layout maps the panel's logical shape.
+    struct Placement {
+        const Def* layout;
+        Layout view;
+        const Def* logical;
+    };
+    /// The placed panels, by buffer.
+    DefMap<Placement> placements_;
+    const Def* layout_of(const Def* buffer) const {
+        auto placed = fe::lookup(placements_, buffer);
+        return placed ? placed->layout : nullptr;
+    }
+    const Layout* view_of(const Def* buffer) const {
+        auto placed = fe::lookup(placements_, buffer);
+        return placed ? &placed->view : nullptr;
+    }
+    const Def* logical_of(const Def* buffer) const {
+        auto placed = fe::lookup(placements_, buffer);
+        return placed ? placed->logical : nullptr;
+    }
     /// The work-group panels, by buffer: 16-byte aligned, so their consumers read them a vector at a time.
     DefSet panels_;
     /// Nat terms known to be multiples of the value: the tile origins of the regions being lowered.
