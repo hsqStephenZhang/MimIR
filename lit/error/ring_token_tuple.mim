@@ -1,0 +1,22 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: {{.*}} holds a ring slot token and is used 2 times
+
+// A slot token wrapped in a tuple is still one token: handing the tuple out twice would give the slot up twice.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam twice {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, _, _) = sync;
+    let (m, mine) = await (m, n);
+    let s   = core.idx 0 depth (core.nat.rem (n, depth));
+    let box = (mine, n);
+    lam give (m: mem.M 0, b: [H (s, tt), Nat])@ff: mem.M 0 = release (m, s, tt, b#0_2);
+    give (give (m, box), box);
+
+extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
+    twice (gpu.Held 2) (gpu.Vacant 2) (gpu.async_ring @2 (1, ff)) (m, n);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

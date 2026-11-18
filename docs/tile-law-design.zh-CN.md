@@ -730,3 +730,17 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - 测试：`tile_levels_scope` 现在由 check 报"work-items, warps and warpgroups run only inside a work-group"，不再是类型错误；`tile_wgmma_rows`/`tile_wgmma_n` 报新规则 32；`tile_warp_mma_divides` 的 warp 层改为封顶尾块，否则先报"bound level cannot peel"，现在报 6 号规则。
   `tile_pingpong_consumers` 原来靠类型里未裁剪的 work-group 切块（192 行，3 个 warpgroup）报错，但根只有 128 行，裁剪后只有 2 个 warpgroup 计算，ping-pong 其实合法；测试的根改成 192 行，由 16 号规则报。
 - 代价：违反嵌套规则的链不再是类型错误，而是 PE 求出的 check 报错，报在请求处而不是层级处；符号层级时这些规则要等到字面量才查。
+
+## 12. 槽令牌检查补上的三处（2026-11-18）
+
+§9.13 审阅里记下的 `check_sync` 缺口，按 `refactor.md` 第 3 步补上：
+
+- 包进元组的令牌：类型里含 `Held`/`Vacant` 的值（元组、`hold` 的结果、带令牌的参数）只能被投影使用，否则把元组交出去两次就把槽交还了两次（`lit/error/ring_token_tuple.mim`）。
+- 循环里交还外层的令牌：令牌的使用者落在它所在的 mutable 里嵌套的、可能重复执行的 mutable 中时报错（`lit/error/ring_token_loop.mim`）；直接调用、分支选择与 `cps2ds` 只执行一次，调用自身或被交给别处（`affine.For` 的体、`vec.fold` 的步）则可能重复。
+  只按嵌套报错会把 `ring_fold_at` 里只跑一次的 `refilled` 之类 continuation 也拦下（第一次全量 lit 56 个失败）。
+- 互斥分支：同一令牌（或装着它的元组）的多次使用若分别只在同一个选择 `(…)#c` 的不同分支里（分支是值，或是 continuation 及嵌在其中的 mutable），算作一次；原来没折叠的分支会误报（`lit/gpu/ring_token_branch.mim`），`ring_fold_at` 的 `skip`/`go` 也靠这一条。
+
+三个测试在旧的检查下：前两个通过（漏报），第三个报 "used 2 times"（误报）。
+
+`Tile`/`Lowered` 在 §10 之后只剩显式调度的 DSL（`lit/gpu/typed_*`、`bench/typed_tiles`）在用，自动调度器不再碰它们，所以没有再挪到单独的模块里。
+`refactor.md` 第 3 步里 `ws_done` 的顺序、`layout_expr.rows`、`tc_wgmma` 的急切求值和 `lies_sw128` 的行宽已在 §9.13 修过。

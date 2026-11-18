@@ -4,6 +4,7 @@
 #include <mim/nom.h>
 
 #include <mim/plug/buffer/buffer.h>
+#include <mim/plug/cps/cps.h>
 #include <mim/plug/mem/mem.h>
 
 namespace mim::plug::gpu::phase {
@@ -37,19 +38,39 @@ bool has_panel(const Def* type) {
     return false;
 }
 
-bool is_slot_token(const Def* def) {
-    return def->type() && (Axm::isa<gpu::Held>(def->type()) || Axm::isa<gpu::Vacant>(def->type()))
-        && !Axm::isa<gpu::unheld>(def);
+bool is_slot(const Def* type) { return Axm::isa<gpu::Held>(type) || Axm::isa<gpu::Vacant>(type); }
+
+bool has_slot(const Def* type) {
+    if (is_slot(type)) return true;
+    if (auto sigma = type->isa<Sigma>())
+        return std::ranges::any_of(sigma->ops(), [](const Def* op) { return has_slot(op); });
+    return false;
+}
+
+bool is_slot_token(const Def* def) { return def->type() && has_slot(def->type()) && !Axm::isa<gpu::unheld>(def); }
+
+/// The defs @p def is made of, up to the mutables it names.
+const DefSet& reach(const Def* def, DefMap<DefSet>& cache) {
+    if (auto i = cache.find(def); i != cache.end()) return i->second;
+    DefSet seen;
+    for (DefVec stack{def}; !stack.empty();) {
+        auto d = stack.back();
+        stack.pop_back();
+        if (!seen.insert(d).second || d->isa_mut()) continue;
+        for (auto op : d->ops())
+            if (op) stack.push_back(op);
+    }
+    return cache[def] = std::move(seen);
 }
 
 } // namespace
 
 // A token is consumed where it is made, never inside a mutable nested there, which may run more than once.
-// Divergent use is not checked.
+// Only a slot token may be used once in each case of a selection; other divergent use is not checked.
 void CheckSync::start() {
     DefMap<DefVec> users;
     DefSet counted, linear;
-    DefVec slots;
+    DefVec slots, branches;
     MutMap<Def*> parent, inlined;
     ankerl::unordered_dense::map<nat_t, const Def*> entered;
     // A `mem.fresh` continuation runs exactly once in place, so it belongs to the mutable that requests it.
@@ -87,6 +108,9 @@ void CheckSync::start() {
             // Universes and levels have no type.
             if (def->type() && (has_token(def->type()) || visibility(def))) linear.insert(def);
             if (is_slot_token(def)) slots.push_back(def);
+            if (auto extract = def->isa<Extract>();
+                extract && extract->tuple()->isa<Tuple>() && !Lit::isa(extract->index()))
+                branches.push_back(extract->tuple());
             if (auto fresh = Axm::isa<mem::fresh>(def))
                 if (auto k = fresh->arg()->proj(2, 1)->isa_mut()) inlined.emplace(k, mut);
             if (auto enter = Axm::isa<gpu::group_enter>(def)) {
@@ -126,10 +150,67 @@ void CheckSync::start() {
             return Axm::isa<gpu::publish_view>(u) || Axm::isa<gpu::claim>(u);
         });
     };
+    auto inside = [&](const Def* def, Def* mut) {
+        for (auto at = placed(def); at; at = fe::lookup(parent, at))
+            if (at == mut || outer(at) == mut) return true;
+        return false;
+    };
+    // A call, a selection and `cps2ds` run a mutable once; a mutable that calls itself or is handed elsewhere may
+    // repeat.
+    auto repeats = [&](Def* mut) {
+        return std::ranges::any_of(users_of(mut), [&](const Def* user) {
+            if (inside(user, mut)) return true;
+            if (auto app = user->isa<App>(); app && (app->callee() == mut || Axm::isa<cps::cps2ds_dep>(app)))
+                return false;
+            auto by = users_of(user);
+            return !user->isa<Tuple>() || by.empty() || !std::ranges::all_of(by, [&](const Def* e) {
+                return e->isa<Extract>() && std::ranges::all_of(users_of(e), [&](const Def* call) {
+                           auto app = call->isa<App>();
+                           return app && app->callee() == e;
+                       });
+            });
+        });
+    };
+    // Two uses in different cases of one selection never both run.
+    DefMap<DefSet> reached;
+    auto exclusive = [&](const Def* u, const Def* v) {
+        for (auto tuple : branches) {
+            auto n       = tuple->num_ops();
+            auto case_of = [&](const Def* d) {
+                std::optional<size_t> found;
+                for (size_t i = 0; i != n; ++i)
+                    if (auto alt = tuple->op(i)->isa_mut();
+                        alt ? inside(d, alt) : reach(tuple->op(i), reached).contains(d)) {
+                        if (found) return std::optional<size_t>();
+                        found = i;
+                    }
+                return found;
+            };
+            if (auto i = case_of(u), j = case_of(v); i && j && *i != *j) return true;
+        }
+        return false;
+    };
     // A ring's last slot may stay held when its fold ends, so a slot token is used at most once.
-    for (auto def : slots)
-        if (auto by = users_of(def); !def->isa<Hole>() && by.size() > 1)
-            def->blame("ring slot token `{}` is used {} times", def, by.size()).bail();
+    for (auto def : slots) {
+        if (def->isa<Hole>()) continue;
+        auto by = users_of(def);
+        if (!is_slot(def->type())) std::erase_if(by, [](const Def* u) { return u->isa<Extract>(); });
+        for (size_t i = 0; i != by.size(); ++i)
+            for (size_t j = 0; j != i; ++j)
+                if (!exclusive(by[i], by[j])) {
+                    if (is_slot(def->type()))
+                        def->blame("ring slot token `{}` is used {} times", def, by.size()).bail();
+                    def->blame("`{}` holds a ring slot token and is used {} times", def, by.size()).bail();
+                }
+        if (auto home = placed(def))
+            for (auto user : by)
+                if (auto at = placed(user); at && at != home && nested(at, home))
+                    for (auto m = at; m && outer(m) != home; m = fe::lookup(parent, m))
+                        if (repeats(m))
+                            def->blame("ring slot token `{}` is made in `{}` but used inside `{}`, which may repeat",
+                                       def, home, m)
+                                .bail();
+    }
     // Tokens first, so a duplicated token is reported before the panels it duplicates.
     auto order = DefVec(linear.begin(), linear.end());
     std::ranges::stable_partition(order, [](const Def* def) { return Axm::isa<gpu::GM>(def->type()); });

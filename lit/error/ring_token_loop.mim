@@ -1,0 +1,22 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: ring slot token {{.*}} is made in {{.*}} but used inside {{.*}}, which may repeat
+
+// A loop body may run more than once, so it cannot give up a slot its loop was handed before it started.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam each {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, _, _) = sync;
+    let (m, mine) = await (m, n);
+    let s = core.idx 0 depth (core.nat.rem (n, depth));
+    lam loop (m: mem.M 0, i: Nat)@ff: mem.M 0 =
+        (loop (release (m, s, tt, mine), core.nat.add (i, 1)), m)#(core.ncmp.e (i, n));
+    loop (m, 0);
+
+extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
+    each (gpu.Held 2) (gpu.Vacant 2) (gpu.async_ring @2 (1, ff)) (m, n);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";
