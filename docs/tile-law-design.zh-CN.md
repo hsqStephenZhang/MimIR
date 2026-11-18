@@ -769,7 +769,7 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 ## 14. 第二轮审阅（`refactor-review.md`）的高危项（2026-11-18）
 
 - A1 `stage_fragments` 的写回循环是 `rows · runs / 128` 次，N 为 8 的奇数倍（24、40…）时向下取整，漏写行：`lit/{gpu,nvptx}/tile_wgmma_n24.mim` 在修复前 2048 个元素为 0。
-  现在只有 16 字节的段能平分给 128 个 work-item 时才经 shared 暂存，否则直接写回。
+  现在循环向上取整，最后一轮超出的 work-item 把下标截到最后一段、再写一次同样的值（用户选的"向上取整加掩码"，不带分支），仍经 shared 暂存。
 - A2 `wg_red_ws` 配 `serial_cluster_split`：生产者 warpgroup 跳过写回，永远到不了合并部分和的 cluster 屏障。
   `check.walk` 拒绝 `fill == 2 && split != 0`（复用不再发出的第 10 条消息），`write_fragments` 里留一道兜底（`lit/error/tile_ws_cluster_split.mim`）。
 - A3 外层通用写入的暂存加内层 TMA 环漏发 `fence.proxy.async`：`TileFuse` 要求张量核的两个操作数都由归约层级提升进环（"the tensor-core operands must be promoted into work-group panels"），这种组合现在写不出来。

@@ -2962,10 +2962,7 @@ const Def* LowerToMem::write_fragments(const Def* source,
     auto bytes        = Lit::isa(core::op(core::trait::size, dT));
     auto last         = Lit::isa(destination.shape->proj(rank, rank - 1));
     if (fragments.group && partials.empty() && !roles_.producer && !padded_ && rank == 2 && group_threads_ >= 128
-        && bytes && *bytes == 2 && last && fragments.cols % 8 == 0
-        && *last % 8 == 0
-        // The warpgroup's 128 work-items each copy whole 16-byte runs, so the runs must split evenly among them.
-        && 4 * fragments.rows * (fragments.cols / 8) % 128 == 0)
+        && bytes && *bytes == 2 && last && fragments.cols % 8 == 0 && *last % 8 == 0)
         return stage_fragments(source, fragments, destination, epilogue, mem);
     auto paired = Lit::isa(destination.shape->proj(rank, rank - 1));
     if (rank != 2 || (paired && *paired % 2)) paired = std::nullopt;
@@ -3085,8 +3082,12 @@ const Def* LowerToMem::stage_fragments(const Def* source,
     auto to      = buffer::op_vectorize(nat(8), destination.buffer);
     auto [h, wd] = destination.shape->projs<2>();
     auto wide    = Lit::as(wd) / 8;
-    for (u64 k = 0; k != rows * runs / 128; ++k) {
-        auto v      = add(nat(k * 128), own);
+    // The last round's work-items past the runs copy the last run again, as the runs need not split evenly.
+    auto total = rows * runs;
+    for (u64 k = 0; k != (total + 127) / 128; ++k) {
+        auto v = add(nat(k * 128), own);
+        if ((k + 1) * 128 > total)
+            v = w.extract(w.tuple({nat(total - 1), v}), w.call(core::ncmp::l, Defs{v, nat(total)}));
         auto r      = w.call(core::nat::div, Defs{v, nat(runs)});
         auto c      = w.call(core::nat::rem, Defs{v, nat(runs)});
         auto in     = w.tuple({idx(teams * rows, add(mul(team, rows), r)), idx(pitch / 8, c)});

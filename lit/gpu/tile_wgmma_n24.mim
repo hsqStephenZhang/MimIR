@@ -2,7 +2,7 @@
 // RUN: clang++ -O1 %S/tile_wgmma_n24_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 // A warpgroup whose wgmma tile is 24 wide writes its 16-bit result whole: its 16-byte runs do not split evenly over
-// the 128 work-items, so it stores them directly instead of staging them in shared memory.
+// the 128 work-items, so the last round's extra work-items copy the last run again.
 
 plugin tensor;
 plugin core;
