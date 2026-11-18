@@ -1918,9 +1918,10 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
             extents[d]    = runtime[d] || (*sizes[d] % steps[d] && !padded) ? nullptr : old.lit_nat(steps[d]);
         }
         // A warp's lanes share its tile like a work-item's own; only the tensor-core lowering tells them apart.
-        // A work-group's only warpgroup is the work-group, so it fills the work-group's panels as one.
-        auto whole     = plan.bind == 6 && total == 1 && bound_level_ == 1;
-        auto level     = fe::Restore(bound_level_, whole ? 1 : std::min<u64>(plan.bind, 2));
+        // A work-group's only warpgroup is the work-group, so it fills the work-group's panels as one; a producer
+        // warpgroup beside it would never reach the work-group's barriers.
+        auto lone      = plan.bind == 6 && total == 1 && !special && bound_level_ == 1;
+        auto level     = fe::Restore(bound_level_, lone ? 1 : std::min<u64>(plan.bind, 2));
         auto clustered = fe::Restore(cluster_, plan.bind == 1 ? cluster : cluster_);
         auto threads   = fe::Restore(group_threads_, plan.bind == 6 ? 128 * total : group_threads_);
         auto owned = fe::Restore(warp_self_, plan.bind == 5 || plan.bind == 7 ? warp_lane(old_world()) : warp_self_);

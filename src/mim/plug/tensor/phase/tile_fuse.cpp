@@ -1085,6 +1085,8 @@ const Def* Levels::split_over_items(const Def* tile, u64 items, const Def* merge
     if (parts == 1) return nullptr;
     auto sizes = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / parts : 0); });
     auto level = LevelSpec{1, 1, 0, 2, w.tuple(sizes), merge};
+    // The split is a work-item reduction already, so nothing inside it splits over the work-items again.
+    auto inner = fe::Restore(next_items_, std::optional<u64>());
     auto split = this->tile(tile, fe::Span<const LevelSpec>(&level, 1), depth + 1);
     if (!split) log_.d("tensor.tile_fuse {} keeps a fused reduction whole: {}", op_, reason_);
     return split;
