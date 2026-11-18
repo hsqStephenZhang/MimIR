@@ -810,3 +810,13 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 `tile_fuse.cpp` 里与 `walk` 重复的报错（并行或归约层切错循环、单个归约循环、向量层、lane 的块数与组合子、work-item 归约的组合子与种子、有序归约只切最外层、张量核要提升面板且整除块、wgmma 的瓦片即 warpgroup 的瓦片、张量核只在 warp 或 warpgroup 里）只在层级链不是字面量时才走到，文案与 `walk` 的消息一致。
 只在 C++ 的：根的结构（"the root does not write loop d to output axis d"、累加器或 epilogue 没有瓦片、A 不是行主序、wgmma 要 16 位输入以外的形式）、lowering 的限制（TMA 面板的形状与 swizzle、warp/warpgroup 拥有的区域、work-group 批次、`cannot bufferize: …`）、以及运行时才知道的块数（持久环与 cluster 切分要字面的块数）。
 `lower_to_mem` 里 "a persistent work-group level does not run in clusters" 与 "a TMA reduction in a persistent work-group must be specialized" 是 `walk` 的 33、11 号在符号层级下的兜底。
+
+## 18. `LowerToMem` 的状态成组（2026-11-18）
+
+审阅说三个高危问题出在类内互相牵连的状态字段上。这一步把总是一起设置、一起读取的字段合成显式的结构，每一步之后 `bench/tools/compile_all.sh` 编出的 73 个 bench 的设备 IR 与改动前逐字相同，全量 lit 通过：
+
+- `Placement`（布局项、代价模型视图、逻辑形状）取代 `layouts_`、`layout_views_`、`logical_shapes_` 三张并行的表，经 `layout_of`/`view_of`/`logical_of` 读；`forward_layouts` 整个复制，"有布局却没有视图"不再可能，那条报错删了。
+- `Roles`（生产者、消费者编号、消费者数、ping-pong）取代 `producer_`、`consumer_`、`consumers_`、`pingpong_`，进入特化的 warpgroup 区域时一次设置。
+- `Cluster`（大小、多播掩码、切分数）取代 `cluster_` 的 `optional<pair>` 与 `split_`，进入 work-group 区域时一次设置。
+
+`proxied_` 没有换成每个面板的来源：A3 的组合现在写不出来，`generic_pending_` 只是防护（§14）。

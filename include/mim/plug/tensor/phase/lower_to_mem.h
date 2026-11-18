@@ -268,19 +268,26 @@ private:
     bool generic_pending_ = false;
     /// The value outside a region of the inputs its body receives, so host-side work on them can stay outside.
     DefMap<const Def*> outer_of_;
-    /// The cluster size and multicast mask of the work-group region being lowered.
-    std::optional<std::pair<u64, u64>> cluster_;
-    /// How many work-groups of a cluster share each tile's reduction, 1 unless the cluster splits it.
-    u64 split_ = 1;
+    /// The cluster of the work-group region being lowered: its size, 0 outside of one, the inputs it multicasts, and
+    /// how many of its work-groups share each tile's reduction, 1 unless it splits them.
+    struct Cluster {
+        u64 size      = 0;
+        u64 multicast = 0;
+        u64 split     = 1;
+    };
+    Cluster cluster_;
     /// The work-items of the warpgroup-bound region being lowered.
     u64 group_threads_ = 0;
-    /// In a specialized warpgroup region: whether this warpgroup is the producer, the consumer's index, how many
-    /// consumers there are, and whether they alternate their MMAs.
-    const Def* producer_  = nullptr;
-    const Def* consumer_  = nullptr;
+    /// The warpgroups of a specialized region: whether this one is the producer, the consumer's index, how many
+    /// consumers there are, and whether they alternate their MMAs; outside of one, no producer.
+    struct Roles {
+        const Def* producer = nullptr;
+        const Def* consumer = nullptr;
+        u64 consumers       = 0;
+        bool pingpong       = false;
+    };
+    Roles roles_;
     const Def* in_flight_ = nullptr; ///< What the last group of MMAs left in flight.
-    u64 consumers_        = 0;
-    bool pingpong_        = false;
     /// How many groups of warpgroup MMAs a fold step leaves pending.
     u64 wgmma_pending_ = 0;
     /// In a persistent work-group, the index of its current tile among its own, and whether its tiles need a
