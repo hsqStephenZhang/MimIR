@@ -753,8 +753,8 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),
                                     {refill->var(), depth, w.lit_nat(*literal_count)}));
             fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
-            fold = w.app(
-                fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), refill, w.lit_nat(overlap), w.lit_bool(tma)});
+            fold = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), refill, w.lit_nat(overlap),
+                                w.lit_bool(tma), w.lit_tt()});
         }
         fold = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
         if (bounded) storage_shapes_[app] = storage;

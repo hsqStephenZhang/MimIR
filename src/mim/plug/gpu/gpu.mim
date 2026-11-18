@@ -1026,7 +1026,7 @@ anx lam tma_ring {depth: Nat}
 /// whose `V` an `acquire` returned, so it cannot make either up.
 /// A step gives up the slot the step before read, once every work-item has synchronized: before it computes, or with
 /// `lag` 1 after it, when its own MMAs may stay in flight and those of the step before have retired.
-lam ring_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: SyncOf depth H V, count: I64, refill: Nat → Nat, lag: Nat, exact: Bool)
+lam ring_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: SyncOf depth H V, count: I64, refill: Nat → Nat, lag: Nat, exact turns: Bool)
     (start: mem.M 0, acc: A, ring: «depth; P»)
     (fill: Fn [mem.M 0, Nat, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A]): [mem.M 0, A] =
     let Last   = [live: Bool, s: Idx depth, H (s, live)];
@@ -1039,9 +1039,42 @@ lam ring_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth
             let (m, v) = acquire (m, n);
             commit (cps.cps2ds fill (m, n, n, ring#(core.idx 0 depth n)), core.idx 0 depth (n % depth), v))
         (open start, ‹s: ahead; s›);
-    // The loop runs `depth` blocks a turn, so each block's slots are literal ones: block `turn · depth + j` reads slot
-    // `j` and refills the slot after it.
+    // With `turns` the loop runs `depth` blocks a turn, so each block's slots are literal ones: block `turn · depth + j`
+    // reads slot `j` and refills the slot after it.
     let blocks = core.bitcast Nat count;
+    // Without, a step reads the first slot and rotates the slots, which keeps one copy of the step's code.
+    fun rolled (init: S): [mem.M 0, A] =
+        affine.For @(0, 4, (mem.M 0, A, «depth; P», Last)) ring_step step_done (0I64, count, 1I64, init)
+        where
+            con ring_step (i: I64, st: S, yield: Cn S) =
+                let (m, a, slots, last) = st;
+                let block        = core.bitcast Nat i;
+                let (m, mine)    = await (m, block);
+                let (live, s, h) = last;
+                let turned       = ‹s: depth; slots#(core.idx 0 depth ((core.idx2nat s + 1) % depth))›;
+                let next: Last   = (tt, core.idx 0 depth (block % depth), mine);
+                fun refilled (m: mem.M 0): mem.M 0 =
+                    let synced = release (fence m, s, live, h);
+                    con refilling (m: mem.M 0) =
+                        let (vacant, v) = acquire (m, block + ahead);
+                        return (commit (cps.cps2ds fill (vacant, refill block, block + ahead, slots#(core.idx 0 depth ahead)),
+                                        core.idx 0 depth ((block + ahead) % depth), v));
+                    con done (m: mem.M 0) = return m;
+                    (refilling, done)#(core.bit2.and 0 (exact, blocks <= block + ahead)) synced;
+                con early (m: mem.M 0) =
+                    let (m, a) = cps.cps2ds step (cps.cps2ds refilled m, a, block, slots#(core.idx 0 depth 0));
+                    yield (m, a, turned, next);
+                con late (m: mem.M 0) =
+                    let (m, a) = cps.cps2ds step (m, a, block, slots#(core.idx 0 depth 0));
+                    yield (cps.cps2ds refilled m, a, turned, next);
+                (early, late)#(lag != 0) m;
+            con step_done (st: S) =
+                con waited (m: mem.M 0) =
+                    let (m, a) = wgmma_wait (m, 0, st#1₄);
+                    return (settle m, a);
+                con ready (m: mem.M 0) = return (settle m, st#1₄);
+                (ready, waited)#(lag != 0) st#0₄;
+        end;
     fun run (init: S): [mem.M 0, A] =
         affine.For @(0, 4, (mem.M 0, A, «depth; P», Last)) (ll.nounroll ring_turn) ring_done
             (0I64, core.bitcast I64 ((blocks + depth - 1) / depth), 1I64, init)
@@ -1083,7 +1116,7 @@ lam ring_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth
                 (ready, waited)#(lag != 0) st#0₄;
         end;
     let none: Last = (ff, core.idx 0 depth 0, idle);
-    cps.cps2ds run (primed, acc, ring, none);
+    cps.cps2ds ((rolled, run)#turns) (primed, acc, ring, none);
 /// A work-group folds `count` blocks into `acc`, each read from panels `P` that asynchronous copies fill ahead into a
 /// ring of `depth` slots.
 /// The prologue fills blocks `0 .. depth - 2`; step `i` waits for its block, synchronizes, gives up the slot of the
@@ -1092,11 +1125,13 @@ lam ring_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth
 /// With `lag` 1 the step computes first, leaving its MMAs in flight while it waits for those of the step before, which
 /// is when that step's slot is free; the fold then ends by waiting for all of them.
 /// An `exact` ring fills no block past the last, which a sync that counts its fills by mbarrier allows.
+/// With `turns` the loop runs `depth` blocks a turn so that each reads a literal slot; without, the step's code exists
+/// once, which a step that already needs many registers prefers.
 /// `fill (mem, block, n, slot)` starts the copies of `block`'s panels into `slot` as the ring's `n`-th fill.
-anx lam ring_fold {A P: *, depth: Nat} (sync: RingSync depth, count: I64, refill: Nat → Nat, lag: Nat, exact: Bool)
+anx lam ring_fold {A P: *, depth: Nat} (sync: RingSync depth, count: I64, refill: Nat → Nat, lag: Nat, exact turns: Bool)
     (start: mem.M 0, acc: A, ring: «depth; P»)
     (fill: Fn [mem.M 0, Nat, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A]): [mem.M 0, A] =
-    ring_fold_at @(A, P, depth) (Held depth) (Vacant depth) (sync, count, refill, lag, exact) (start, acc, ring) (fill, step);
+    ring_fold_at @(A, P, depth) (Held depth) (Vacant depth) (sync, count, refill, lag, exact, turns) (start, acc, ring) (fill, step);
 /// A step hands back the witness that it left at most `lag` groups of MMAs in flight: the slot given up `lag` steps
 /// after it was read is then one no MMA still reads.
 /// `ws_fold` for any `H`, which likewise only gives up slots it awaited, the last one once its readers have retired at
