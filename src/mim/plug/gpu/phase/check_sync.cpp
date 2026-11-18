@@ -44,29 +44,16 @@ bool has_slot(const Def* type) {
     if (is_slot(type)) return true;
     if (auto sigma = type->isa<Sigma>())
         return std::ranges::any_of(sigma->ops(), [](const Def* op) { return has_slot(op); });
+    if (auto arr = type->isa<Arr>()) return has_slot(arr->body());
     return false;
 }
 
 bool is_slot_token(const Def* def) { return def->type() && has_slot(def->type()) && !Axm::isa<gpu::unheld>(def); }
 
-/// The defs @p def is made of, up to the mutables it names.
-const DefSet& reach(const Def* def, DefMap<DefSet>& cache) {
-    if (auto i = cache.find(def); i != cache.end()) return i->second;
-    DefSet seen;
-    for (DefVec stack{def}; !stack.empty();) {
-        auto d = stack.back();
-        stack.pop_back();
-        if (!seen.insert(d).second || d->isa_mut()) continue;
-        for (auto op : d->ops())
-            if (op) stack.push_back(op);
-    }
-    return cache[def] = std::move(seen);
-}
-
 } // namespace
 
 // A token is consumed where it is made, never inside a mutable nested there, which may run more than once.
-// Only a slot token may be used once in each case of a selection; other divergent use is not checked.
+// A slot token may be used once in each case of a selection among mutables; other divergent use is not checked.
 void CheckSync::start() {
     DefMap<DefVec> users;
     DefSet counted, linear;
@@ -155,32 +142,14 @@ void CheckSync::start() {
             if (at == mut || outer(at) == mut) return true;
         return false;
     };
-    // A call, a selection and `cps2ds` run a mutable once; a mutable that calls itself or is handed elsewhere may
-    // repeat.
-    auto repeats = [&](Def* mut) {
-        return std::ranges::any_of(users_of(mut), [&](const Def* user) {
-            if (inside(user, mut)) return true;
-            if (auto app = user->isa<App>(); app && (app->callee() == mut || Axm::isa<cps::cps2ds_dep>(app)))
-                return false;
-            auto by = users_of(user);
-            return !user->isa<Tuple>() || by.empty() || !std::ranges::all_of(by, [&](const Def* e) {
-                return e->isa<Extract>() && std::ranges::all_of(users_of(e), [&](const Def* call) {
-                           auto app = call->isa<App>();
-                           return app && app->callee() == e;
-                       });
-            });
-        });
-    };
-    // Two uses in different cases of one selection never both run.
-    DefMap<DefSet> reached;
+    // Two uses in different cases of one selection among mutables never both run.
     auto exclusive = [&](const Def* u, const Def* v) {
         for (auto tuple : branches) {
-            auto n       = tuple->num_ops();
+            if (!std::ranges::all_of(tuple->ops(), [](const Def* op) { return op->isa_mut(); })) continue;
             auto case_of = [&](const Def* d) {
                 std::optional<size_t> found;
-                for (size_t i = 0; i != n; ++i)
-                    if (auto alt = tuple->op(i)->isa_mut();
-                        alt ? inside(d, alt) : reach(tuple->op(i), reached).contains(d)) {
+                for (size_t i = 0, n = tuple->num_ops(); i != n; ++i)
+                    if (inside(d, tuple->op(i)->isa_mut())) {
                         if (found) return std::optional<size_t>();
                         found = i;
                     }
@@ -190,18 +159,59 @@ void CheckSync::start() {
         }
         return false;
     };
+    auto pairwise = [&](const DefVec& uses) {
+        for (size_t i = 0; i != uses.size(); ++i)
+            for (size_t j = 0; j != i; ++j)
+                if (!exclusive(uses[i], uses[j])) return false;
+        return true;
+    };
+    auto called_once = [&](const Def* callee) {
+        auto by = users_of(callee);
+        return by.size() == 1 && by.front()->isa<App>() && by.front()->as<App>()->callee() == callee;
+    };
+    // A mutable runs at most once if each use calls it once, directly, through `cps2ds` or as a case of a selection,
+    // and no two uses run together.
+    auto repeats = [&](Def* mut) {
+        auto by = users_of(mut);
+        return !pairwise(by) || !std::ranges::all_of(by, [&](const Def* user) {
+            if (inside(user, mut)) return false;
+            if (auto app = user->isa<App>())
+                return app->callee() == mut || (Axm::isa<cps::cps2ds_dep>(app) && called_once(app));
+            if (!user->isa<Tuple>() || !std::ranges::all_of(user->ops(), [](const Def* op) { return op->isa_mut(); }))
+                return false;
+            auto picks = users_of(user);
+            return picks.size() == 1 && picks.front()->isa<Extract>() && called_once(picks.front());
+        });
+    };
     // A ring's last slot may stay held when its fold ends, so a slot token is used at most once.
     for (auto def : slots) {
         if (def->isa<Hole>()) continue;
+        if (def->isa<Pack>()) def->blame("ring slot token `{}` is packed into copies", def).bail();
         auto by = users_of(def);
-        if (!is_slot(def->type())) std::erase_if(by, [](const Def* u) { return u->isa<Extract>(); });
-        for (size_t i = 0; i != by.size(); ++i)
-            for (size_t j = 0; j != i; ++j)
-                if (!exclusive(by[i], by[j])) {
-                    if (is_slot(def->type()))
-                        def->blame("ring slot token `{}` is used {} times", def, by.size()).bail();
-                    def->blame("`{}` holds a ring slot token and is used {} times", def, by.size()).bail();
+        if (!is_slot(def->type())) {
+            // A value that holds a slot token is taken apart by literal indices or handed on whole, never both where
+            // both run.
+            DefVec whole, consumers;
+            for (auto u : by) {
+                auto part = u->isa<Extract>();
+                if (!part) {
+                    whole.push_back(u);
+                    continue;
                 }
+                if (!Lit::isa(part->index()))
+                    u->blame("a ring slot token is selected from `{}` by a computed index", def).bail();
+                if (has_slot(part->type())) std::ranges::copy(users_of(part), std::back_inserter(consumers));
+            }
+            for (auto u : whole)
+                for (auto c : consumers)
+                    if (!exclusive(u, c))
+                        def->blame("`{}` holds a ring slot token and is both taken apart and used whole", def).bail();
+            by = whole;
+        }
+        if (!pairwise(by)) {
+            if (is_slot(def->type())) def->blame("ring slot token `{}` is used {} times", def, by.size()).bail();
+            def->blame("`{}` holds a ring slot token and is used {} times", def, by.size()).bail();
+        }
         if (auto home = placed(def))
             for (auto user : by)
                 if (auto at = placed(user); at && at != home && nested(at, home))

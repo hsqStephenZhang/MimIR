@@ -1,0 +1,22 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: {{.*}} holds a ring slot token and is both taken apart and used whole
+
+// A value that holds a slot token is taken apart or handed on, not both: each would give the slot up.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam twice {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, _, _) = sync;
+    let (m, mine) = await (m, n);
+    let s = core.idx 0 depth (core.nat.rem (n, depth));
+    lam give (m: mem.M 0, q: [Nat, [Nat, H (s, tt)]])@ff: mem.M 0 = release (m, s, tt, q#1_2#1_2);
+    lam both (m: mem.M 0, p: [Nat, H (s, tt)])@ff: mem.M 0 = give (release (m, s, tt, p#1_2), (1, p));
+    both (m, (n, mine));
+
+extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
+    twice (gpu.Held 2) (gpu.Vacant 2) (gpu.async_ring @2 (1, ff)) (m, n);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

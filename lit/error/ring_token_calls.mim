@@ -1,0 +1,21 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: ring slot token {{.*}} is made in {{.*}} but used inside {{.*}}, which may repeat
+
+// A local function that gives the slot up runs as often as it is called.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam twice {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, _, _) = sync;
+    let (m, mine) = await (m, n);
+    let s = core.idx 0 depth (core.nat.rem (n, depth));
+    lam give (m: mem.M 0)@ff: mem.M 0 = release (m, s, tt, mine);
+    give (give m);
+
+extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
+    twice (gpu.Held 2) (gpu.Vacant 2) (gpu.async_ring @2 (1, ff)) (m, n);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";
