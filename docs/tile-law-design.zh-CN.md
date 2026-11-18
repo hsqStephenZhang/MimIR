@@ -796,3 +796,17 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
   `bench/gpu_attn/*.mim` 是 `kattn.sh` 等脚本替换占位符后的模板，不是过时的文件；`attn_fa` 要 `BK=64`。
   `bench/gpu_fusion/attn_tiled.mim` 的向量层原来同时标了 h 与 m 两个循环，改为只标 m 后可以编译，结果正确。
 - `bench/gpu_*/k*.sh` 的仓库根不再写死为主 checkout，而是由脚本位置推出（或 `ROOT=`）。
+
+## 17. 合法性检查的分工（2026-11-18）
+
+规则写在三处，各管一类，不再各写一份同样的知识：
+
+| 位置 | 管什么 | 例子 |
+|---|---|---|
+| 构造函数的 `require` | 单个层级自己的参数 | 尾块是 0 或 1、cluster 2–8 个 work-group、持久化至少一个 work-group、mma/wgmma 的形状、ping-pong 是 0 或 1、向量层在最内 |
+| `check.walk`（PE 归约，报在请求处） | 层级之间与层级对根的事实：嵌套、尺寸、目标能力、组合子、共享内存 | 消息 1–34 |
+| `TileFuse`/`lower_to_mem` 的报错 | `walk` 卡住（符号的层级或根）时同样的规则，以及只有根的结构或 lowering 才知道的事 | 见下 |
+
+`tile_fuse.cpp` 里与 `walk` 重复的报错（并行或归约层切错循环、单个归约循环、向量层、lane 的块数与组合子、work-item 归约的组合子与种子、有序归约只切最外层、张量核要提升面板且整除块、wgmma 的瓦片即 warpgroup 的瓦片、张量核只在 warp 或 warpgroup 里）只在层级链不是字面量时才走到，文案与 `walk` 的消息一致。
+只在 C++ 的：根的结构（"the root does not write loop d to output axis d"、累加器或 epilogue 没有瓦片、A 不是行主序、wgmma 要 16 位输入以外的形式）、lowering 的限制（TMA 面板的形状与 swizzle、warp/warpgroup 拥有的区域、work-group 批次、`cannot bufferize: …`）、以及运行时才知道的块数（持久环与 cluster 切分要字面的块数）。
+`lower_to_mem` 里 "a persistent work-group level does not run in clusters" 与 "a TMA reduction in a persistent work-group must be specialized" 是 `walk` 的 33、11 号在符号层级下的兜底。
