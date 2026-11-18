@@ -1,0 +1,26 @@
+// RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: tile_cluster_alone.mim:26:{{.*}}error: a cluster or persistent level needs a work-group level below it
+
+// A cluster groups work-groups, so a chain without a work-group level has nothing to cluster.
+
+plugin tensor;
+plugin core;
+plugin affine;
+plugin math;
+
+use tensor;
+
+let H    = math.F16;
+let F32  = math.F32;
+let fast = math.mode.fast;
+
+fun mac (acc: F32, xy: [H, H])@tt: F32 =
+    let (x, y) = xy;
+    return (math.arith.add fast (acc, math.arith.mul fast (math.conv.f2f math.f32 x, math.conv.f2f math.f32 y)));
+
+let levels = serial_cluster (2, 0, serial_par ((128, 64, 0), 0, serial_done ()));
+
+extern fun gemm_wg_persistent (a: tensor.Tensor 2 (384, 256) H, b: tensor.Tensor 2 (256, 128) H): tensor.Tensor 2 (384, 128) F32 =
+    let root = map_reduce ((384, 128), (384, 128, 256)) (mac, 0.0:F32) (proj_map @(3, 2) (0, 1))
+        (proj_map @(3, 2) (0, 2), proj_map @(3, 2) (2, 1)) (buf a, buf b);
+    return (tile_req (root, (), levels, default_control));

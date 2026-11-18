@@ -780,3 +780,11 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
   只有各个分支都是 mutable 的选择算互斥（值的选择两边都会计算，`lit/error/ring_token_select.mim`；`lit/gpu/ring_token_branch.mim` 改用 continuation）；
   捕获令牌的 mutable 的每次使用都只调用它一次（直接调用、`cps2ds_dep` 且其结果只调用一次、选择里被选一次），且各次使用两两互斥（`lit/error/ring_token_calls.mim`、`ring_token_mixed.mim`）。
   这三个报错测试在旧的检查下都通过（漏报）。
+
+## 15. 合法性规则收拢（2026-11-18）
+
+- Cluster 与 Persistent 的规则只在 `check.walk`：一条链至多一个 cluster 或 persistent 层（任意顺序、中间隔着别的层也算，消息 33），它们下面要有 work-group 层（消息 34）。
+  `serial_persistent` 构造时不再检查紧邻的下一层（`lit/error/tile_persistent_cluster.mim`、`tile_cluster_persistent.mim`、`tile_cluster_alone.mim`）。
+- `law` 的 `staged_of` 累加 work-group 里每个暂存面板的归约，不再在第一个归约处停下（`lit/error/law_capacity_nested.mim`：两层各 128 KiB）。
+- `check.walk` 记着 work-group 的块（`gblock`），warpgroup 数按它算，和 `TileFuse` 的 `group_scope_` 一致；之前中间夹一个 `group_par` 时按缩小后的块算。
+- 消息 12 不再报告，只保留编号；消息 10 改为报告 A2 的规则。

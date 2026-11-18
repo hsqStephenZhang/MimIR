@@ -2599,11 +2599,7 @@ lam cluster_size (size: Nat): Bool = core.bit2.and 0 (2 <= size, size <= 8);
 anx lam serial_cluster {n: Nat, Acc: *, Mma: *} (size multicast: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
     (TileLevels (n, Acc, Mma))#Cluster (require (cluster_size size, size, "a cluster has 2 to 8 work-groups"), multicast, 0, rest);
 anx lam serial_persistent {n: Nat, Acc: *, Mma: *} (ctas: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
-    let unclustered = match rest with
-        | 0 => tt | 1 _ => tt | 2 _ => tt | 3 _ => tt | 4 _ => tt | 5 _ => ff | 6 _ => tt;
-    (TileLevels (n, Acc, Mma))#Persistent
-        (require (ctas != 0, ctas, "a persistent level launches at least one work-group"),
-         require (unclustered, rest, "a persistent level's work-groups do not run in clusters"));
+    (TileLevels (n, Acc, Mma))#Persistent (require (ctas != 0, ctas, "a persistent level launches at least one work-group"), rest);
 anx lam serial_cluster_split {n: Nat, Acc: *, Mma: *} (size: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
     (TileLevels (n, Acc, Mma))#Cluster (require (cluster_size size, size, "a cluster has 2 to 8 work-groups"), 0, 1, rest);
 anx lam group_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = level_done ();
@@ -2708,6 +2704,7 @@ pub mod check
     /// `value`, or the error the verdict names once it is literal.
     axm report: {T: *} → [«3; Nat», T] → T, normalize_check;
 
+    /// Message 12 is no longer reported; it keeps its index so that the later ones keep theirs.
     anx let messages = ("",
         "a parallel level cannot tile a reduction loop",
         "a reduction level cannot tile a parallel loop",
@@ -2740,10 +2737,12 @@ pub mod check
         "a reduction over work-items runs inside a work-group, one over lanes inside a work-item",
         "a reduction filled by TMA or by a producer warpgroup runs inside a warpgroup",
         "a tensor-core level ends the levels of a warp or a warpgroup",
-        "a warpgroup's tile is the m by n tile of its wgmma");
+        "a warpgroup's tile is the m by n tile of its wgmma",
+        "a chain has at most one cluster or persistent level",
+        "a cluster or persistent level needs a work-group level below it");
     /// Why each of `messages` rejects a schedule, as an index into `reasons`, so that a limit of the lowering does not
     /// read as one of the target.
-    anx let kinds = (0, 2, 2, 2, 2, 1, 1, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 2, 2, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4, 4);
+    anx let kinds = (0, 2, 2, 2, 2, 1, 1, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 2, 2, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4);
     anx let reasons = ("",
         "the target's instructions require it",
         "the schedule would otherwise compute something else",
@@ -2826,13 +2825,13 @@ pub mod check
         or_else (fail (both (bind == 1, unit != 0), 26),
                  fail (both (either (bind == 2, either (bind == 3, bind == 6)), unit != 1), 27));
     /// The rules of the levels `l` running in `unit` over a root with `ro` parallel loops and `nis` inputs: `block` is the
-    /// block they tile, `a` and `b` whether A and B are staged, `cluster` and `split` the cluster they run in, `persistent`
-    /// whether their work-groups persist and `warpgroups` how many warpgroups compute.
+    /// block they tile and `gblock` their work-group's, `a` and `b` whether A and B are staged, `cluster` and `split` the
+    /// cluster they run in, `persistent` whether their work-groups persist and `warpgroups` how many warpgroups compute.
     lam walk {n: Nat, Acc Mma: *}
-        (ro nis law unit: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, warpgroups: Nat,
+        (ro nis law unit: Nat, block gblock: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, warpgroups: Nat,
          l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
         match l with
-            | 0 => ok
+            | 0 => fail (both (unit == 0, either (cluster != 0, persistent)), 34)
             | 1 (bind, sizes, tail, promote, rest) =>
                 let group = bind == 1;
                 let inside = (unit, bind)#(bind != 0);
@@ -2840,9 +2839,9 @@ pub mod check
                 or_else (parallel_sizes (ro, sizes),
                 or_else ((ok, promotes (nis, promote))#group, or_else ((ok, peels (tail, block, sizes))#(bind != 0),
                 or_else ((ok, clusters (cluster, split, block, sizes))#group, or_else ((ok, needs 90 tt 17)#(bind == 6),
-                    walk (ro, nis, law, inside, (within (block, sizes), clip (block, sizes))#group,
+                    walk (ro, nis, law, inside, (within (block, sizes), clip (block, sizes))#group, (gblock, clip (block, sizes))#group,
                           (a, stages (a, promote, 1))#group, (b, stages (b, promote, 2))#group, cluster, split, persistent,
-                          (warpgroups, consumers (block, sizes))#(bind == 6), rest))))))))
+                          (warpgroups, consumers (gblock, sizes))#(bind == 6), rest))))))))
             | 2 (bind, sizes, _, promote, _, fill, pingpong, mg, rest) =>
                 let folds = bind == 0;
                 or_else (fail (both (bind == 2, unit != 1), 29), or_else (fail (both (bind == 4, unit != 2), 29),
@@ -2855,28 +2854,29 @@ pub mod check
                 or_else ((ok, lanes (block, sizes))#(bind == 4),
                 or_else (ordered (ro, law, sizes), or_else ((ok, merged @Acc (law, mg))#(bind == 2),
                 or_else ((ok, fail (both (law != 1, law != 4), 22))#(bind == 4),
-                    walk (ro, nis, law, unit, (within (block, sizes), clip (block, sizes))#(both (folds, unit == 1)),
+                    walk (ro, nis, law, unit, (within (block, sizes), clip (block, sizes))#(both (folds, unit == 1)), gblock,
                           (a, stages (a, promote, 1))#folds, (b, stages (b, promote, 2))#folds, cluster, split, persistent,
                           warpgroups, rest))))))))))))))))
             | 3 (sizes, rest) =>
                 or_else (fail (either (unit == 3, unit == 6), 28),
-                or_else (vector (ro, sizes), walk (ro, nis, law, unit, block, a, b, cluster, split, persistent, warpgroups, rest)))
+                or_else (vector (ro, sizes), walk (ro, nis, law, unit, block, gblock, a, b, cluster, split, persistent, warpgroups, rest)))
             | 4 (shape, _) =>
                 or_else (fail (both (unit != 3, unit != 6), 31), or_else ((ok, needs 80 ff 19)#(unit == 3),
                 or_else (fail (both (unit == 6, any ‹d: n; both (core.idx2nat d < ro, both (block#d != 0, block#d != shape#d))›), 32),
                     mma (shape, block, a, b))))
             | 5 (size, _, cut, rest) =>
-                or_else (fail (unit != 0, 26), or_else (needs 90 ff 18,
-                    walk (ro, nis, law, unit, block, a, b, size, cut, persistent, warpgroups, rest)))
+                or_else (fail (unit != 0, 26), or_else (fail (either (cluster != 0, persistent), 33), or_else (needs 90 ff 18,
+                    walk (ro, nis, law, unit, block, gblock, a, b, size, cut, persistent, warpgroups, rest))))
             | 6 (_, rest) =>
-                or_else (fail (unit != 0, 26), walk (ro, nis, law, unit, block, a, b, cluster, split, tt, warpgroups, rest));
+                or_else (fail (unit != 0, 26), or_else (fail (either (cluster != 0, persistent), 33),
+                    walk (ro, nis, law, unit, block, gblock, a, b, cluster, split, tt, warpgroups, rest)));
     /// The verdict of a chain on a law: its root's rules and what its combiner permits.
     anx lam law_verdict {n: Nat, Acc Kind: *} (ro nis: Nat, extents: «n; Nat», law: Nat, l: TileLevels (n, Acc, Kind)): Verdict =
-        walk (ro, nis, law, 0, extents, ff, ff, 0, 0, ff, 0, l);
+        walk (ro, nis, law, 0, extents, extents, ff, ff, 0, 0, ff, 0, l);
 
     /// The verdict of a chain over a root with `ro` parallel loops, `nis` inputs and loop `extents`.
     anx lam verdict {n: Nat, Acc Kind: *} (ro nis: Nat, extents: «n; Nat», l: TileLevels (n, Acc, Kind)): Verdict =
-        walk (ro, nis, 4, 0, extents, ff, ff, 0, 0, ff, 0, l);
+        walk (ro, nis, 4, 0, extents, extents, ff, ff, 0, 0, ff, 0, l);
     anx lam levels {T: *, r: Nat, s: «r; Nat»}
         (op: Tensor r s T, l: TileLevels (root_loops op, root_acc op, root_contraction op)): Verdict =
         verdict (parallel op, inputs op, extents op, l);
@@ -3483,8 +3483,8 @@ pub mod law
                 let bytes = vec.fold.r @(Nat, Nat) @(Ris#i) (λ (e y: Nat): Nat = core.nat.mul (e, y)) (box, core.trait.size (Tis#i));
                 (0, core.nat.mul (bytes, depth))#(bit_of promote i)›;
             vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (each, 0);
-        // The shared memory a work-group stages: the boxes its level keeps resident and the panels of the first reduction
-        // inside it, one per ring slot, which cover the work-group's `block` also below its work-items, warps and warpgroups.
+        // The shared memory a work-group stages: the boxes its level keeps resident and the panels of each reduction inside
+        // it, one per ring slot, which cover the work-group's `block` also below its work-items, warps and warpgroups.
         lam ring (pipeline: Nat): Nat = core.select (pipeline == 0, check.depth (), pipeline);
         lam staged_of {M: *} (grouped: Bool, block: «Rn; Nat», l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Nat =
             match l with
@@ -3492,8 +3492,8 @@ pub mod law
                 | 1 (bind, sizes, _, promote, rest) =>
                     (staged_of (grouped, block, rest), core.nat.add (staged (promote, 1, sizes), staged_of (tt, sizes, rest)))#(bind == 1)
                 | 2 (bind, sizes, _, promote, pipeline, _, _, _, rest) =>
-                    (staged_of (grouped, block, rest),
-                     staged (promote, ring pipeline, ‹d: Rn; (block#d, sizes#d)#(Ro <= core.idx2nat d)›))#(core.bit2.and 0 (grouped, bind == 0))
+                    core.nat.add (staged_of (grouped, block, rest),
+                        (0, staged (promote, ring pipeline, ‹d: Rn; (block#d, sizes#d)#(Ro <= core.idx2nat d)›))#(core.bit2.and 0 (grouped, bind == 0)))
                 | 3 (_, rest) => staged_of (grouped, block, rest)
                 | 4 _ => 0
                 | 5 (_, _, _, rest) => staged_of (grouped, block, rest)

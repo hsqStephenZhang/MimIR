@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_persistent_cluster.mim:21:{{.*}}error: a persistent level's work-groups do not run in clusters
+// CHECK: tile_persistent_cluster.mim:27:{{.*}}error: a chain has at most one cluster or persistent level
 
 // A persistent work-group level does not run in clusters.
 
