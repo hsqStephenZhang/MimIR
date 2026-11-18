@@ -707,7 +707,7 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - `law.req (l, members, levels, control)` 就是 `tile_req (request, members, levels, control)`；`law.run` 是不带额外成员的 `law.req`。
   定律自己担保合并（`of_map_reduce_merging`、`of_rolling`）时根被 `merge_with` 标记：`root_loops`/`root_acc`/`root_contraction` 透过它看根，`TileFuse::realize` 剥下它，作为没有显式合并的 work-item 归约层级的合并。
 - `TileFuse::start`/`realize` 剥掉 `member` 标记（`strip_marks`，内层先），被标记的生产者加入成员组；标记本身算作组内，所以显式给出的同一个成员不会因此被当成组外使用。
-- `Levels` 补了一处：work-group 层级提升（`promote`）暂存的输入若是成员，暂存块的填充就地算出它的 box（`promoted_`），而不是先整块算出成员（`law_resident`、`law_resident_sum` 原来多一次 launch）。
+- `Levels` 补了一处：work-group 层级提升（`promote`）的输入若是成员，不整块暂存它，而是像其它成员一样融合进读它的瓦片（`law_resident`、`law_resident_sum` 原来多一次 launch；§13 起取代了先前“暂存填充里就地算 box”的做法，那个做法在 1024 长的行上编不过）。
 - 测试：断言“走定律”的日志行删掉；`law_promote` 的布局日志从 3 次变 2 次，因为 `law.run` 与 `law.req` 现在生成同一个请求，hash-cons 后只实现一次。
 - 全量 lit（H200，`cuda-sm90` 执行）：1032 个测试，1023 通过、8 不支持、1 预期失败，与改动前相同。
 - 编译时间（Debug，同一构建目录，三次取中位数，编到 GPU 代码）：只写 `plugin tensor;` 12.2 s → 1.2 s；`lit/gpu/law_promote` 18.8 → 3.7 s，`law_fuse` 17.5 → 2.7 s，`law_wgmma_ws` 13.4 → 1.6 s。
@@ -744,3 +744,15 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 
 `Tile`/`Lowered` 在 §10 之后只剩显式调度的 DSL（`lit/gpu/typed_*`、`bench/typed_tiles`）在用，自动调度器不再碰它们，所以没有再挪到单独的模块里。
 `refactor.md` 第 3 步里 `ws_done` 的顺序、`layout_expr.rows`、`tc_wgmma` 的急切求值和 `lies_sw128` 的行宽已在 §9.13 修过。
+
+## 13. 重构前后的 kernel 性能（2026-11-18，H200 NVL）
+
+基线是 `f566f6a61`（`~/workspaces/MimIR-tilebase`，同样的 Debug 配置），新的是本分支；两边都编到 `sm_90a`。
+先比较规范编号后的设备 IR：新构建与“基线加 `-X tensor:tile-law=0`”逐字相同，所以差别全部来自原先默认走定律解释器的请求，`attn_warps`、各个 `softmax_*`、`rowsum`、`buffer_interp` 等 13 个 kernel 两边相同。
+
+- F16 GEMM（`gemm_levels.sh`，nsys，三次中位数，µs）：写 F16 时 1024（64×128，4 级）6.26 / 6.23，2048 30.46 / 30.25，4096 200.35 / 199.90，8192 1691 / 1692；写 F32 时 1024 6.74 / 6.75，2048 30.05 / 30.08，4096 210.39 / 210.45，8192 1705 / 1704。
+  1024 的 64×128 调度起初只有定律路径编得出（"a wgmma operand panel needs its swizzled layout"）：只有一个瓦片的 warpgroup 区域不让里面暂存的东西外提，面板的填充于是不算工作组统一的，布局没有记下。
+  现在一个 work-group 唯一的 warpgroup 按 work-group 填面板（`lower_to_mem` 的绑定层级保持 1）。
+- `law_tiled*`（`krun.sh`，kbench 中位数，ms，1024 / 4096）：`law_tiled` 0.288→0.208 / 10.51→9.46，`g2`、`g2cap` 0.213→0.191 / 9.97→9.31，`g3_128` 0.157→0.157 / 4.34→3.95，其余（`g3`、`g3_128w`、`tc`、`tc8`、`h16`、`bf16`）在 1% 以内；`g2s` 1024 上 0.251→0.272（复测三次一致），4096 上 14.71→14.72。
+- softmax（12×1024×1024，`softmax_driver.cpp`，nsys，µs）：`softmax_resident` 29.6 / 29.7，`softmax_resident_law` 37.5→29.6，`softmax_resident_shared` 27.0→29.6。
+  后者失去了 `law.fuse_shared` 让生产者读消费者暂存行的优化，现在与 `softmax_resident` 相同。

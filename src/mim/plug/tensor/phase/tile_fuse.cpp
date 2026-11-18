@@ -1000,8 +1000,6 @@ private:
     std::optional<u64> next_items_;
     /// Reductions split over the work-items, by producer; later reads view them instead of recomputing them.
     DefMap<std::pair<const Def*, Origin>> resident_;
-    /// Inputs a work-group level's promotion staged whole.
-    DefSet promoted_;
     /// Pointwise producers a deeper reduction level stages and this level does not; the query marks them with role 1.
     DefSet staged_pointwise_;
     DefMap<Origin> origins_;
@@ -1099,14 +1097,11 @@ Levels::Fused Levels::fuse(const Def* value, const Var* own, u64 depth, u64 kind
                                 .rr
                             != 0;
         auto origin   = compose(p, next->off, next->ext, next->cap);
-        auto resident = resident_.find(origin.producer);
-        auto fill     = resident != resident_.end()
-                     && (resident->second.first == p || depends_on(resident->second.first, next->app));
-        // The shared tile's own fill reads the producer, which a promoted member computes there.
-        if (fill && !(promoted_.contains(origin.producer) && in_group(next->producer))) continue;
-        if (resident != resident_.end() && !fill) {
+        if (auto resident = resident_.find(origin.producer); resident != resident_.end()) {
             auto [shared, from] = resident->second;
-            auto whole          = Check::test_alpha(origin.off, from.off) && Check::test_alpha(next->ext, from.ext);
+            // The shared tile's own fill reads the producer.
+            if (shared == p || depends_on(shared, next->app)) continue;
+            auto whole = Check::test_alpha(origin.off, from.off) && Check::test_alpha(next->ext, from.ext);
             log_.d("tensor.tile_fuse {} read {} from the work-items' shared tile", op_, p);
             auto r     = Lit::as(TensorType::isa(p->type())->r);
             auto start = w.tuple(DefVec(r, [&](size_t d) {
@@ -1282,13 +1277,13 @@ const Def* Levels::parallel(const Def* anchor,
             staging.map(free, free);
         for (auto read : reads(root_tile))
             for (u64 slot = 0; slot != nis; ++slot) {
-                if (!(promote >> slot & 1) || read.producer != is->proj(nis, slot)) continue;
+                // A member is fused into the tiles that read it instead.
+                if (!(promote >> slot & 1) || read.producer != is->proj(nis, slot) || in_group(read.producer)) continue;
                 auto staged = stage_whole(slice_of(read.producer, read.off, read.ext));
                 staging.substitute(read.app, staged);
                 resident_.emplace(read.producer, std::pair{
                                                      staged, Origin{read.producer, read.off, read.ext, read.cap}
                 });
-                promoted_.insert(read.producer);
                 log_.d("tensor.tile_fuse {} L{} stage input {} box {} × {} in the work-group", op_, depth, slot,
                        read.off, read.ext);
             }
