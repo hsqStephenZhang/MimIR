@@ -4649,8 +4649,9 @@ const Def* LowerToMem::lower_bound_fold(const App* app,
     }
     const Def* combine;
     DefVec merges;
-    // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each barrier.
-    if (Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(parts)))) {
+    // A power-of-two work-item count merges its partials as a tree, halving the live partials behind each barrier; a
+    // few are merged by one work-item behind a single barrier.
+    if (parts >= 8 && Lit::as(w.app(w.annex(tensor::r8_plan::is_tree), w.lit_nat(parts)))) {
         auto rounds = w.app(w.annex(tensor::r8_plan::rounds), {w.lit_nat(parts), w.lit_nat(elems)});
         // A single round's tuple is the round itself, so the count comes from the plan, not the value's arity.
         for (auto round : rounds->projs(parts / 2)) {

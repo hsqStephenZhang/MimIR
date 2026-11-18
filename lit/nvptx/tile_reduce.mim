@@ -4,9 +4,10 @@
 // RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_reduce_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
 // RUN: %if system-linux && cuda %{ %t %}
 
-// The bound reduction's kernel merges as a tree behind fences: after the partials are stored and after the merge.
+// The bound reduction's four partials are merged by one work-item behind a fence: after the partials are stored and
+// after the merge.
 
 // CHECK: addrspace(3) global
 // CHECK: define ptx_kernel void @tileKernel
-// CHECK-COUNT-4: call void @llvm.nvvm.barrier0()
+// CHECK-COUNT-2: call void @llvm.nvvm.barrier0()
 // CHECK-NOT: call void @llvm.nvvm.barrier0()

@@ -4,9 +4,9 @@
 // RUN: %if system-linux && cuda %{ clang++ -O1 %S/../gpu/tile_reduce_aux.cpp %{s:stem}.ll -lcuda -o %t -Wno-override-module %}
 // RUN: %if system-linux && cuda %{ %t %}
 
-// The law's work-item reduction runs on the device with the same merge tree as TileFuse's.
+// The law's work-item reduction runs on the device with the same merge as TileFuse's.
 
 // CHECK: addrspace(3) global
 // CHECK: define ptx_kernel void @tileKernel
-// CHECK-COUNT-4: call void @llvm.nvvm.barrier0()
+// CHECK-COUNT-2: call void @llvm.nvvm.barrier0()
 // CHECK-NOT: call void @llvm.nvvm.barrier0()

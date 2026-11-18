@@ -820,3 +820,12 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - `Cluster`（大小、多播掩码、切分数）取代 `cluster_` 的 `optional<pair>` 与 `split_`，进入 work-group 区域时一次设置。
 
 `proxied_` 没有换成每个面板的来源：A3 的组合现在写不出来，`generic_pending_` 只是防护（§14）。
+
+## 19. 少量部分结果串行合并（2026-11-18）
+
+work-item 的部分结果在 warp 内经 shuffle 合并之后，剩下不到 8 份时由一个 work-item 串行合并，只过一道屏障，不再走每轮一道屏障的树。
+`softmax_resident_shared` 每行 64 段，shuffle 后剩 2 份：27.53 → 27.09 µs；同一时段交替测三次，旧的定律版本 26.97 / 26.93 / 27.00，新的 27.12 / 27.19 / 27.16，还差约 0.7%。
+剩下的差别在 shuffle：ptxas 证明不了它前面那个 4 次的循环是统一的，把 40 条 shuffle 包成了 `WARPSYNC`/`ENDCOLLECTIVE`；定律版本不用 shuffle，每个读者自己从共享内存合并全部部分结果（MUFU 176 条对 133 条）。
+关掉 shuffle 只走共享内存是 28.12 µs，串行合并 64 份是 27.14 µs，都不更好。
+受影响的其余 kernel（µs，前 / 后）：`softmax_resident` 27.45 / 27.09，`softmax_resident_law` 27.42 / 27.20，`softmax_fused` 61.96 / 61.90，`softmax_fused_online` 50.09 / 50.24，`attn_tiled` 60.19 / 60.18。
+四个 work-item 的归约（`lit/nvptx/tile_reduce`、`tile_reduce_merge`、`law_run_items`）的屏障从 4 道减到 2 道。
