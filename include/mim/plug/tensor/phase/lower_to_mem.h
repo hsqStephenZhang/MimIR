@@ -264,8 +264,8 @@ private:
     bool mma_panels_ = false;
     /// While a fold's pipelined fills publish its panels to the async proxy, through which `wgmma` reads them.
     bool proxied_ = false;
-    /// Whether the work-group stored to shared memory generically since it last fenced the async proxy.
-    bool generic_pending_ = false;
+    /// The panels a work-group filled with generic stores, which `wgmma` reads only after they are published.
+    DefSet generic_panels_;
     /// The value outside a region of the inputs its body receives, so host-side work on them can stay outside.
     DefMap<const Def*> outer_of_;
     /// The cluster of the work-group region being lowered: its size, 0 outside of one, the inputs it multicasts, and
@@ -307,7 +307,7 @@ private:
     const Def* wgmma_a(const btensor::MapRedPost&, u64 nk);
     std::array<u64, 4> wgmma_fields(const Def* buffer);
     std::pair<bool, u64> wgmma_major(const Def* buffer);
-    const Def* wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pending, bool turn);
+    const Def* wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pending, bool turn, Defs operands);
     const Def* wgmma_desc(const Def* buffer, const Def* index);
     bool uniform(const Def*) const;
     std::function<const Def*(const Def*)> cooperative();

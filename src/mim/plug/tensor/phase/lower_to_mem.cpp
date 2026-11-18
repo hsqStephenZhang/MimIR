@@ -756,7 +756,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
             return lam;
         });
         (void)rank;
-        return wgmma_batch(fresh_mem(), kept, issue, w.lit_nat_0(), false)->proj(2, 1)->proj(2, 0);
+        return wgmma_batch(fresh_mem(), kept, issue, w.lit_nat_0(), false, {buffer})->proj(2, 1)->proj(2, 0);
     }
     if (Axm::isa<tensor::as_vectors>(app)) return lower_as_vectors(app);
     if (Axm::isa<tensor::set>(app)) return lower_set(app);
@@ -1084,7 +1084,7 @@ const Def* LowerToMem::lower_generate(const App* app) {
         }
     }
     if (uniform_) shared_fills_.insert(filled);
-    if (uniform_ && !async_fill_ && !probe_fill_) generic_pending_ = true;
+    if (uniform_ && !async_fill_ && !probe_fill_) generic_panels_.insert(filled);
     if (layout) placements_[filled] = Placement{layout, *layout_view, layout_shape};
     if (inner && uniform_) panels_.insert(filled);
     return filled;
@@ -1921,7 +1921,6 @@ const Def* LowerToMem::lower_tiled(const App* app, const Destination* destinatio
         // A work-group's only warpgroup is the work-group, so it fills the work-group's panels as one.
         auto whole     = plan.bind == 6 && total == 1 && bound_level_ == 1;
         auto level     = fe::Restore(bound_level_, whole ? 1 : std::min<u64>(plan.bind, 2));
-        auto generic   = fe::Restore(generic_pending_, plan.bind == 1 ? false : generic_pending_);
         auto clustered = fe::Restore(cluster_, plan.bind == 1 ? cluster : cluster_);
         auto threads   = fe::Restore(group_threads_, plan.bind == 6 ? 128 * total : group_threads_);
         auto owned = fe::Restore(warp_self_, plan.bind == 5 || plan.bind == 7 ? warp_lane(old_world()) : warp_self_);
@@ -2452,6 +2451,7 @@ void LowerToMem::forward_layouts(const Def* buffers, const Def* params) {
             placements_[param] = std::move(copied);
         }
         if (panels_.contains(buffer)) panels_.insert(param);
+        if (generic_panels_.contains(buffer)) generic_panels_.insert(param);
     };
     if (Axm::isa<buffer::Buf>(buffers->type())) return forward(buffers, params);
     if (auto n = Lit::isa(buffers->type()->arity()))
@@ -2551,13 +2551,14 @@ const Def* LowerToMem::region_input(const Def* inputs) {
 // `gpu.wgmma_batch` is the protocol of a group of MMAs; which instructions it issues over @p x comes from here.
 // Panels a work-group filled with generic stores reach `wgmma` through the async proxy only after every filler fenced
 // them.
-const Def* LowerToMem::wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pending, bool turn) {
+const Def*
+LowerToMem::wgmma_batch(const Def* mem, const Def* x, Defs issue, const Def* pending, bool turn, Defs operands) {
     auto& w = new_world();
-    // A ring publishes only its own slots, not what the work-group stored generically before.
-    auto publish     = !proxied_ || generic_pending_;
-    generic_pending_ = false;
-    auto batch       = w.app(w.annex<gpu::wgmma_batch>(), {x->type(), w.lit_nat(issue.size())});
-    batch = w.app(batch, {w.lit_bool(publish), pending, w.lit_bool(turn), turn ? roles_.consumer : w.lit_nat_0()});
+    // A ring publishes only its own slots, not a panel the work-group filled with generic stores.
+    auto publish
+        = !proxied_ || std::ranges::any_of(operands, [&](const Def* b) { return generic_panels_.contains(b); });
+    auto batch = w.app(w.annex<gpu::wgmma_batch>(), {x->type(), w.lit_nat(issue.size())});
+    batch      = w.app(batch, {w.lit_bool(publish), pending, w.lit_bool(turn), turn ? roles_.consumer : w.lit_nat_0()});
     auto [out, y, left] = w.app(w.app(batch, {mem, x}), w.tuple(issue))->projs<3>();
     in_flight_          = left;
     return w.tuple({out, y});
@@ -2677,8 +2678,9 @@ const Def* LowerToMem::lower_mma(const App* app, const Destination& destination,
                 return lam;
             });
             // Ping-pong: a consumer issues its MMAs on its turn and then hands the turn to the other one.
-            std::tie(mem, tiles)
-                = wgmma_batch(mem, tiles, issue, nat(wgmma_pending_), roles_.pingpong && roles_.consumer)->projs<2>();
+            std::tie(mem, tiles) = wgmma_batch(mem, tiles, issue, nat(wgmma_pending_),
+                                               roles_.pingpong && roles_.consumer, {a_buffer, b_buffer})
+                                       ->projs<2>();
             return w.tuple({mem, w.tuple(DefVec(nt, [&](size_t j) { return tiles->proj(nt, j); }))});
         }
         auto read = [&](const Def* lane_reg, Enum auto map, u64 ni, u64 ks) {

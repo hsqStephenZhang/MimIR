@@ -774,7 +774,7 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - A2 `wg_red_ws` 配 `serial_cluster_split`：生产者 warpgroup 跳过写回，永远到不了合并部分和的 cluster 屏障。
   `check.walk` 拒绝 `fill == 2 && split != 0`（复用不再发出的第 10 条消息），`write_fragments` 里留一道兜底（`lit/error/tile_ws_cluster_split.mim`）。
 - A3 外层通用写入的暂存加内层 TMA 环漏发 `fence.proxy.async`：`TileFuse` 要求张量核的两个操作数都由归约层级提升进环（"the tensor-core operands must be promoted into work-group panels"），这种组合现在写不出来。
-  仍加了防护：工作组里有尚未发布的通用写入时，下一批 `wgmma` 先发布（`generic_pending_`，进入 work-group 时清零）；现有的 kernel 都不会触发它。
+  发布按面板的来源决定：work-group 用通用存储填的面板记在 `generic_panels_` 里，随 `forward_layouts` 传到区域的参数，`wgmma_batch` 读到其中一个就发布，环自己的槽仍由环的协议发布；现有的 kernel 都不读这样的面板，73 个 bench 的设备 IR 不变。
 - A4 `check_sync` 的槽令牌检查改成白名单：
   令牌不进 `Pack`（`has_slot` 也认 `Arr`）；装着令牌的值要么按字面下标拆开、要么整体交出一次，拆出的令牌的使用者与整体的使用两两互斥（`ring_fold_at` 的 `skip`/`go` 正是这样）；
   只有各个分支都是 mutable 的选择算互斥（值的选择两边都会计算，`lit/error/ring_token_select.mim`；`lit/gpu/ring_token_branch.mim` 改用 continuation）；
@@ -819,7 +819,7 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - `Roles`（生产者、消费者编号、消费者数、ping-pong）取代 `producer_`、`consumer_`、`consumers_`、`pingpong_`，进入特化的 warpgroup 区域时一次设置。
 - `Cluster`（大小、多播掩码、切分数）取代 `cluster_` 的 `optional<pair>` 与 `split_`，进入 work-group 区域时一次设置。
 
-`proxied_` 没有换成每个面板的来源：A3 的组合现在写不出来，`generic_pending_` 只是防护（§14）。
+`wgmma` 是否发布由它读的面板的来源决定（`generic_panels_`，§14），`proxied_` 只说明环自己的槽由协议发布。
 
 ## 19. 少量部分结果串行合并（2026-11-18）
 
