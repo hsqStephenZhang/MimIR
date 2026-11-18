@@ -174,33 +174,25 @@ lam run_buffers {nis: Nat} {To: *, Ro Rn: Nat} (So: «Ro; Nat», Sr: «Rn; Nat»
             let run   = ((λ (): [mem.M 0, D] = blocks (own, m, dst), mine)#(core.bit2.and 0 (private, seeded)),
                          λ (): [mem.M 0, D] = k (lo, size, seeded, plan, grp, own, m, dst))#(core.ncmp.e (loop, Rn));
             run ();
-    lam item_step {M: *} (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D, l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
+    lam step {M: *} (unit: Nat, lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
+        let here = leaf (lo, size, seeded, plan, grp, own, m, dst);
         match l with
-            | 0 => leaf (lo, size, seeded, plan, grp, own, m, dst)
-            | 1 (sizes, _, rest) => split (unbound @D, ff) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst)
-            | 2 (sizes, _, promote, _, rest) => fold (sizes, promote, tt, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst)
+            | 1 (bind, sizes, _, _, rest) =>
+                let inner = λ (u: Nat) (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] =
+                    step (u, lo, size, seeded, plan, grp, own, m, dst, rest);
+                let serial = split (unbound @D, ff) (sizes, inner unit) (lo, size, seeded, plan, grp, own, m, dst);
+                let group  = split (gpu.bind.group @(Step D), tt) (sizes, inner 1) (lo, size, seeded, plan, grp, own, m, dst);
+                let item   = split (gpu.bind.item @(Step D), ff) (sizes, inner 2) (lo, size, seeded, plan, grp, own, m, dst);
+                (((here, item)#(bind == 2), group)#(bind == 1), serial)#(bind == 0)
+            | 2 (bind, sizes, _, promote, _, _, _, _, rest) =>
+                (here, fold (sizes, (0, promote)#(unit != 0), unit == 2, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] =
+                    step (unit, lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst))#(bind == 0)
             | 3 (sizes, _) => leaf_at (vector sizes) (lo, size, seeded, plan, grp, own, m, dst)
-            | 4 (_, _, _) => leaf (lo, size, seeded, plan, grp, own, m, dst);
-    lam group_step {M: *, g: «Rn; Nat»} (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D, l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): [mem.M 0, D] =
-        match l with
-            | 0 => leaf (lo, size, seeded, plan, grp, own, m, dst)
-            | 1 (sizes, _, rest) => split (unbound @D, ff) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst)
-            | 2 (sizes, _, rest) => split (gpu.bind.item @(Step D), ff) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] = item_step (lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst)
-            | 3 (sizes, _, promote, _, rest) => fold (sizes, promote, ff, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst)
-            | 4 (_, _, _, _) => leaf (lo, size, seeded, plan, grp, own, m, dst)
-            | 5 (sizes, _) => leaf_at (vector sizes) (lo, size, seeded, plan, grp, own, m, dst)
-            | 6 (sizes: «Rn; Nat», _: Nat, _: WarpLevels (Rn, To, M, within (g, sizes))) => leaf (lo, size, seeded, plan, grp, own, m, dst)
-            | 7 (sizes: «Rn; Nat», _: Nat, _: WarpgroupLevels (Rn, To, M, g, sizes)) => leaf (lo, size, seeded, plan, grp, own, m, dst);
-    lam tile_step {M: *} (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D, l: TileLevels (Rn, To, M))@(core.pe.is_closed l): [mem.M 0, D] =
-        match l with
-            | 0 => leaf (lo, size, seeded, plan, grp, own, m, dst)
-            | 1 (sizes, _, rest) => split (unbound @D, ff) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] = tile_step (lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst)
-            | 2 (sizes: «Rn; Nat», _ _: Nat, rest: GroupLevels (Rn, To, M, sizes)) => split (gpu.bind.group @(Step D), tt) (sizes, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] = group_step (lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst)
-            | 3 (sizes, _, _, rest) => fold (sizes, 0, ff, λ (lo size: «Rn; Nat», seeded: Bool, plan: Plan, grp: Group, own: Own, m: mem.M 0, dst: D): [mem.M 0, D] = tile_step (lo, size, seeded, plan, grp, own, m, dst, rest)) (lo, size, seeded, plan, grp, own, m, dst)
-            | 4 (sizes, _) => leaf_at (vector sizes) (lo, size, seeded, plan, grp, own, m, dst)
-            | 5 (_, _, _, _) => leaf (lo, size, seeded, plan, grp, own, m, dst)
-            | 6 (_, _) => leaf (lo, size, seeded, plan, grp, own, m, dst);
-    tile_step (‹Rn; 0›, Sr, tt, (ff, ‹i: nis; ‹Ris#i; 0››, ‹i: nis; ‹Ris#i; 0››, 0), (‹Rn; 0›, Sr),
+            | 0 => here
+            | 4 _ => here
+            | 5 _ => here
+            | 6 _ => here;
+    step (0, ‹Rn; 0›, Sr, tt, (ff, ‹i: nis; ‹Ris#i; 0››, ‹i: nis; ‹Ris#i; 0››, 0), (‹Rn; 0›, Sr),
         (ff, ‹Ro; 0›, ‹Ro; 0›, ⊥:(buffer.Buf (Ro, ‹Ro; 0›, To))), m, dst, levels);
 
 let F32 = math.F32;

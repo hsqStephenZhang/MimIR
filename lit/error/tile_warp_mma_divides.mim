@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_warp_mma_divides.mim:20:{{.*}}error: a warp's mma tile is (16, 8, 8) for F32 operands or (16, 8, 16) for 16-bit ones and divides the warp's tile
+// CHECK: tile_warp_mma_divides.mim:28:{{.*}}error: a tensor-core tile does not divide its block
 
 // A warp's mma tile divides the warp's tile.
 
@@ -17,7 +17,7 @@ fun mac (acc: F, xy: [F, F])@tt: F =
     let (x, y) = xy;
     return (math.arith.add fast (acc, math.arith.mul fast (x, y)));
 
-let inner = group_warp ((16, 12, 0), 1, warp_red ((0, 0, 8), 1, 3, warp_mma (16, 8, 8)));
+let inner = group_warp ((16, 12, 0), 0, warp_red ((0, 0, 8), 1, 3, warp_mma (16, 8, 8)));
 
 lam body (off ext: «2; Nat») (a: Tensor 2 (64, 64) F, b: Tensor 2 (64, 64) F, c: Tensor 2 (64, 64) F): Tensor 2 ext F =
     let ct = slice @(F, 2) (64, 64) (off, (1, 1), ext) c;

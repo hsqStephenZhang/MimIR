@@ -1,5 +1,5 @@
 // RUN: not %mim -p opt -X tensor:tile-fuse=1 %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: tile_wgmma_rows.mim:22:{{.*}}error: argument is not assignable to callee's domain
+// CHECK: tile_wgmma_rows.mim:27:{{.*}}error: a warpgroup's tile is the m by n tile of its wgmma
 
 // A warpgroup owns the 64 × N tile of its wgmma.
 

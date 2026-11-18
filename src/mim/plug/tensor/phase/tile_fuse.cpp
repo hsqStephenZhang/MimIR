@@ -179,89 +179,66 @@ struct LevelSpec {
 
 /// The levels of a `tile_req` chain, outermost first; `nullopt` unless the chain is a literal value.
 std::optional<std::vector<LevelSpec>> tile_levels(const Def* levels) {
-    enum { Serial, Group, Item, Warp, Warpgroup } scope = Serial;
+    bool serial = true;
     std::vector<LevelSpec> specs;
     // A law's request casts its levels from the law's level type to the root's, two instances of one structure.
     if (auto cast = Axm::isa<core::bitcast>(levels)) levels = cast->arg();
     for (auto cur = levels;;) {
-        // The chain's noms are newtypes over variants: a `Name` wraps the case's `Inj`.
+        // The chain is a newtype over a variant: a `Name` wraps the case's `Inj`.
         if (auto name = cur->isa<Name>()) cur = name->op();
         auto inj = cur->isa<Inj>();
         if (!inj) return std::nullopt;
-        auto i = inj->index();
-        if (i == 0) return specs;
-        // `WarpLevels#Mma` and `WarpgroupLevels#Wgmma` hold their shape first, then evidence, and end the chain.
-        if ((scope == Warp || scope == Warpgroup) && i == 2) {
-            auto value = inj->value();
-            specs.push_back(LevelSpec{3, 0, 0, 0, value->proj(value->num_projs(), 0), nullptr});
-            return specs;
-        }
         auto n     = inj->value()->num_projs();
         auto field = [&](size_t j) { return inj->value()->proj(n, j); };
         auto lit   = [&](size_t j) { return Lit::isa(field(j)); };
-        LevelSpec spec{0, 0, 0, 0, field(0), nullptr};
-        // (kind, bind) per constructor of TileLevels / GroupLevels / ItemLevels / WarpLevels / WarpgroupLevels; -1
-        // marks a case without one.
-        static constexpr int table[5][8][2] = {
-            {{0, 0}, {0, 0},   {0, 1},   {1, 0},   {2, 0},   {4, 0},   {5, 0}, {-1, -1}},
-            {{0, 0}, {0, 0},   {0, 2},   {1, 0},   {1, 2},   {2, 0},   {0, 3},   {0, 6}},
-            {{0, 0}, {0, 0},   {1, 0},   {2, 0},   {1, 4}, {-1, -1}, {-1, -1}, {-1, -1}},
-            {{0, 0}, {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}},
-            {{0, 0}, {1, 0}, {-1, -1},   {1, 0},   {1, 0}, {-1, -1}, {-1, -1}, {-1, -1}}
-        };
-        if (i > 7 || table[scope][i][0] < 0) return std::nullopt;
-        spec.kind = table[scope][i][0], spec.bind = table[scope][i][1];
-        if (spec.kind == 4) {
-            // `Cluster` carries its size and multicast mask where other levels carry sizes and a tail.
-            auto size = lit(0), multicast = lit(1), split = lit(2);
-            if (!size || !multicast || !split) return std::nullopt;
-            spec.tail = *size, spec.promote = *multicast, spec.split = *split;
-            specs.push_back(spec);
-            cur = field(n - 1);
-            continue;
-        }
-        if (spec.kind == 5) {
-            auto ctas = lit(0);
-            if (!ctas) return std::nullopt;
-            spec.tail = *ctas;
-            specs.push_back(spec);
-            cur = field(n - 1);
-            continue;
-        }
-        if (spec.kind != 2) {
-            auto tail = lit(1);
-            if (!tail) return std::nullopt;
-            spec.tail = *tail;
-        }
-        if ((spec.kind == 1 && spec.bind == 0) || (spec.kind == 0 && spec.bind == 1)) {
-            auto promote = lit(2);
-            if (!promote) return std::nullopt;
-            spec.promote = *promote;
-        }
-        spec.tma = scope == Warpgroup && (i == 3 || i == 4);
-        spec.ws  = scope == Warpgroup && i == 4;
-        if (spec.ws) {
-            auto pingpong = lit(4);
-            if (!pingpong) return std::nullopt;
-            spec.pingpong = *pingpong;
-        }
-        if (spec.kind == 1 && spec.bind == 0 && scope != Serial) {
-            auto pipeline = lit(3);
-            if (!pipeline) return std::nullopt;
-            spec.pipeline = *pipeline;
-        }
-        if (spec.kind == 1 && spec.bind == 2) {
-            auto option = field(2);
-            if (auto name = option->isa<Name>()) option = name->op();
-            auto merge = option->isa<Inj>();
-            if (!merge) return std::nullopt;
-            if (merge->index() == 1) spec.merge = merge->value();
+        LevelSpec spec{0, 0, 0, 0, nullptr, nullptr};
+        switch (inj->index()) {
+            case 0: return specs;
+            case 1: {
+                auto bind = lit(0), tail = lit(2), promote = lit(3);
+                if (!bind || !tail || !promote) return std::nullopt;
+                spec.bind = *bind, spec.sizes = field(1), spec.tail = *tail, spec.promote = *promote;
+                break;
+            }
+            case 2: {
+                auto bind = lit(0), tail = lit(2), promote = lit(3), pipeline = lit(4), fill = lit(5),
+                     pingpong = lit(6);
+                if (!bind || !tail || !promote || !pipeline || !fill || !pingpong) return std::nullopt;
+                spec.kind = 1, spec.bind = *bind, spec.sizes = field(1), spec.tail = *tail;
+                if (*bind == 0) spec.promote = *promote;
+                // A serial reduction stages no ring, so it keeps the default depth.
+                if (*bind == 0 && !serial) spec.pipeline = *pipeline;
+                spec.tma = *fill != 0, spec.ws = *fill == 2, spec.pingpong = *pingpong;
+                if (*bind == 2) {
+                    auto option = field(7);
+                    if (auto name = option->isa<Name>()) option = name->op();
+                    auto merge = option->isa<Inj>();
+                    if (!merge) return std::nullopt;
+                    if (merge->index() == 1) spec.merge = merge->value();
+                }
+                break;
+            }
+            case 3: spec.kind = 2, spec.sizes = field(0); break;
+            case 4:
+                spec.kind = 3, spec.sizes = field(0);
+                specs.push_back(spec);
+                return specs;
+            case 5: {
+                auto size = lit(0), multicast = lit(1), split = lit(2);
+                if (!size || !multicast || !split) return std::nullopt;
+                spec.kind = 4, spec.tail = *size, spec.promote = *multicast, spec.split = *split;
+                break;
+            }
+            case 6: {
+                auto ctas = lit(0);
+                if (!ctas) return std::nullopt;
+                spec.kind = 5, spec.tail = *ctas;
+                break;
+            }
+            default: return std::nullopt;
         }
         specs.push_back(spec);
-        if (spec.bind == 1) scope = Group;
-        if (spec.kind == 0 && spec.bind == 2) scope = Item;
-        if (spec.kind == 0 && spec.bind == 3) scope = Warp;
-        if (spec.kind == 0 && spec.bind == 6) scope = Warpgroup;
+        if (spec.kind == 0 && spec.bind == 1) serial = false;
         cur = field(n - 1);
     }
 }

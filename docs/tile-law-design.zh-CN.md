@@ -712,3 +712,21 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 - 全量 lit（H200，`cuda-sm90` 执行）：1032 个测试，1023 通过、8 不支持、1 预期失败，与改动前相同。
 - 编译时间（Debug，同一构建目录，三次取中位数，编到 GPU 代码）：只写 `plugin tensor;` 12.2 s → 1.2 s；`lit/gpu/law_promote` 18.8 → 3.7 s，`law_fuse` 17.5 → 2.7 s，`law_wgmma_ws` 13.4 → 1.6 s。
 - 失去的：解释器由 `Plan ou grp stp`/`Acc u lo ext` 的类型保证面板不越出其所有者与生存期；现在由 `Levels` 的一份 C++ 实现与 `denote` 的差分执行测试共同承担。
+
+## 11. 一个层级类型（2026-11-18）
+
+`refactor.md` 第 1 步：五个互递归的 nom（`TileLevels`/`GroupLevels`/`ItemLevels`/`WarpLevels`/`WarpgroupLevels`）合成一个 `TileLevels (n, Acc, Mma)`，分支与 C++ 的 `LevelSpec` 一一对应：
+
+- `Par [bind, sizes, tail, promote, rest]`：`bind` 0 在所在单元里依次跑，1 work-group，2 work-item，3 warp，6 warpgroup；
+- `Red [bind, sizes, tail, promote, pipeline, fill, pingpong, merge, rest]`：`bind` 0 依次折叠，2 分给 work-item（按 `merge` 合并），4 分给 lane；`fill` 1 用 TMA、2 用生产者 warpgroup；
+- `Vec`、`Tc [shape, operands]`（warp 的 mma 与 warpgroup 的 wgmma 都是它）、`Cluster`、`Persistent`。
+
+构造函数（`serial_group`、`group_item`、`wg_red_ws`、`warp_mma`……）名字与参数都不变，只是不再带 `{g}`/`{b}`/`{t}` 这类切块索引；`ScopeTile`/`scope_tile` 删了，`within` 只剩 check 在用。
+
+- 嵌套规则从类型挪到 `check.walk`：一个函数、一遍，状态是所在单元、块、A/B 是否暂存、cluster、持久化与计算的 warpgroup 数，原来的 `tile_ok`…`wg_ok` 与 `tile_law`…`wg_law` 十个函数都并进去了（`law` 为 4 时不查组合子，即普通 `tile_req`）。
+  新增的规则（消息 26–32）：work-group/cluster/持久化层级只在串行代码里；work-item、warp、warpgroup 只在 work-group 里；warp 与 warpgroup 里只有归约和张量核层级；work-item 归约在 work-group 里、lane 归约在 work-item 里；TMA 与生产者填充的归约在 warpgroup 里；张量核层级只结束 warp 或 warpgroup；warpgroup 的切块正好是它的 wgmma 的 m × n（原来由 `wg_mma` 的类型索引保证）。
+- law 的共享内存估算（`staged_of`）与 `of_blocks` 的解释器各自从五个按 nom 拆开的函数变成一个；bench 里五份相同的 buffer 解释器（`bench/gpu_fusion/gemm_*_buffers.mim`、`bench/typed_tiles/buffer_interp.mim`）同样合成一个按单元分派的 `step`。
+- C++ 的 `tile_levels` 不再查表推断“哪个 nom 的第几个构造子”，直接读字段。
+- 测试：`tile_levels_scope` 现在由 check 报"work-items, warps and warpgroups run only inside a work-group"，不再是类型错误；`tile_wgmma_rows`/`tile_wgmma_n` 报新规则 32；`tile_warp_mma_divides` 的 warp 层改为封顶尾块，否则先报"bound level cannot peel"，现在报 6 号规则。
+  `tile_pingpong_consumers` 原来靠类型里未裁剪的 work-group 切块（192 行，3 个 warpgroup）报错，但根只有 128 行，裁剪后只有 2 个 warpgroup 计算，ping-pong 其实合法；测试的根改成 192 行，由 16 号规则报。
+- 代价：违反嵌套规则的链不再是类型错误，而是 PE 求出的 check 报错，报在请求处而不是层级处；符号层级时这些规则要等到字面量才查。

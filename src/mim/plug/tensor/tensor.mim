@@ -2497,14 +2497,9 @@ axm report_groups: compile.Phase;
 ///
 /// Identity request for multi-level tile-and-fuse of root `op`.
 /// `members` are the producers the partition placed in `op`'s group; only they are fused.
-/// `levels` lists the levels outermost first as a chain whose type names the scope its levels run in:
-/// `TileLevels` for serial code, `GroupLevels` inside a work-group, `ItemLevels` inside a work-item,
-/// `WarpLevels` inside a warp, whose 32 work-items compute its tile together, and `WarpgroupLevels` inside a warpgroup
-/// of four consecutive warps.
-/// Entering a work-group or a work-item continues in the next chain, so a level the scope does not offer,
-/// such as a work-item bound reduction outside a work-group, does not type-check.
-/// `GroupLevels` and `WarpgroupLevels` are also indexed by the tiles of their work-group and warpgroup, so a `wg_mma`
-/// only fits a warpgroup tile of its own `m × n` and ping-pong only a work-group of two warpgroups.
+/// `levels` lists the levels outermost first as one `TileLevels` chain; each level runs in serial code, a work-group, a
+/// work-item, a warp of 32 work-items or a warpgroup of four consecutive warps, as the levels around it bind.
+/// `check.walk` rejects a level its unit does not offer, such as a work-item bound reduction outside a work-group.
 /// `control: FuseQuery → FuseDecision` decides, per candidate, whether to fuse and whether to yield.
 /// `report_groups` removes residual requests with a warning, failing under `tensor:strict=1`.
 ///
@@ -2553,65 +2548,52 @@ anx nom HalfMma = | Half;
 axm require: {T: *} → {n: Nat} → [Bool, T, «n; I8»] → T, normalize_require;
 ///
 anx nom TileMerge (Acc: *) = | Combiner | Merge: [Acc, Acc] → Acc;
-/// The tiles of the enclosing work-group and warpgroup index their chains; a level that depends on one carries this
-/// evidence of it.
-axm ScopeTile: {n: Nat} → «n; Nat» → *;
-axm scope_tile: {n: Nat} → [tile: «n; Nat»] → ScopeTile tile;
 /// A tail is 0 to cap the last tile and 1 to peel it.
 lam peeled (tail: Nat): Nat = require (tail <= 1, tail, "a tail is 0 (cap) or 1 (peel)");
 /// The extents a level of `sizes` leaves to the next one, a `0` keeping the enclosing extent.
-/// It indexes a warp's levels by the warp's tile.
 axm within: {n: Nat} → [outer sizes: «n; Nat»] → «n; Nat», normalize_within;
 /// Whether `shape` divides `block`, whose `0` extents are not known yet.
 lam divides {n: Nat} (shape block: «n; Nat»): Bool =
     vec.fold.r @(Bool, Bool) @n (core.bit2.and 0) (‹d: n; core.bit2.or 0 (block#d == 0, core.nat.rem (block#d, (shape#d, 1)#(shape#d == 0)) == 0)›, tt);
-anx mutual
-    nom TileLevels (n: Nat, Acc: *, Mma: *) =
-        | Done
-        | Par: [sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)]
-        | Group: [sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma, sizes)]
-        | Red: [sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)]
-        | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)]
-        | Cluster: [size multicast split: Nat, rest: TileLevels (n, Acc, Mma)]
-        | Persistent: [ctas: Nat, rest: TileLevels (n, Acc, Mma)];
-    nom GroupLevels (n: Nat, Acc: *, Mma: *, group: «n; Nat») =
-        | Done
-        | Par: [sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, Mma, group)]
-        | Item: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)]
-        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc, Mma, group)]
-        | RedItems: [sizes: «n; Nat», tail: Nat, merge: TileMerge Acc, rest: GroupLevels (n, Acc, Mma, group)]
-        | Vec: [sizes: «n; Nat», rest: GroupLevels (n, Acc, Mma, group)]
-        | Warp: [sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, Mma, within (group, sizes))]
-        | Warpgroup: [sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma, group, sizes)];
-    nom ItemLevels (n: Nat, Acc: *, Mma: *) =
-        | Done
-        | Par: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)]
-        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc, Mma)]
-        | Vec: [sizes: «n; Nat», rest: ItemLevels (n, Acc, Mma)]
-        | Lanes: [sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)];
-    nom WarpLevels (n: Nat, Acc: *, Mma: *, block: «n; Nat») =
-        | Done
-        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, Mma, block)]
-        | Mma: [shape: «n; Nat», operands: Mma, block: ScopeTile block];
-    nom WarpgroupLevels (n: Nat, Acc: *, Mma: *, group tile: «n; Nat») =
-        | Done
-        | Red: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma, group, tile)]
-        | Wgmma: [shape: «n; Nat», operands: Mma, owned: ScopeTile tile]
-        | RedTma: [sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma, group, tile)]
-        | RedWs: [sizes: «n; Nat», tail promote pipeline pingpong: Nat, consumers: ScopeTile group, rest: WarpgroupLevels (n, Acc, Mma, group, tile)];
-end
+/// The levels of a tile request, outermost first; `check.walk` decides which may nest in which.
+/// `Par` splits the output into tiles that `bind` runs: 0 in order in the enclosing unit, 1 work-groups, 2 work-items,
+/// 3 warps and 6 warpgroups; a work-group level keeps the boxes of the inputs `promote` sets resident.
+/// `Red` folds the blocks of one reduction loop: `bind` 0 in order, 2 over the work-items, merged by `merge`, and 4 over
+/// the lanes of a work-item; `fill` 1 fills its panels by TMA and 2 by a producer warpgroup, which `pingpong` may let
+/// alternate two consumers.
+/// `Tc` ends a warp's or a warpgroup's levels in tensor-core tiles of `shape` over the operands `Mma` names.
+anx nom TileLevels (n: Nat, Acc: *, Mma: *) =
+    | Done
+    | Par: [bind: Nat, sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)]
+    | Red: [bind: Nat, sizes: «n; Nat», tail promote pipeline fill pingpong: Nat, merge: TileMerge Acc, rest: TileLevels (n, Acc, Mma)]
+    | Vec: [sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)]
+    | Tc: [shape: «n; Nat», operands: Mma]
+    | Cluster: [size multicast split: Nat, rest: TileLevels (n, Acc, Mma)]
+    | Persistent: [ctas: Nat, rest: TileLevels (n, Acc, Mma)];
 ///
-/// The constructors as functions, so a chain infers `n` and `Acc` from the request.
+/// The constructors as functions, so a chain infers `n` and `Acc` from the request; their names say the unit they run in.
 ///
-anx lam serial_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = (TileLevels (n, Acc, Mma))#Done;
+lam level_innermost {n: Nat, Acc: *, Mma: *} (rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    require (match rest with | 0 => tt | 1 _ => ff | 2 _ => ff | 3 _ => ff | 4 _ => ff | 5 _ => ff | 6 _ => ff, rest,
+             "a vector level must be the innermost");
+lam level_par {n: Nat, Acc: *, Mma: *} (bind: Nat, sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Par (bind, sizes, peeled tail, promote, rest);
+lam level_red {n: Nat, Acc: *, Mma: *} (bind: Nat, sizes: «n; Nat», tail promote pipeline fill pingpong: Nat, merge: TileMerge Acc, rest: TileLevels (n, Acc, Mma))
+    : TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Red (bind, sizes, peeled tail, promote, pipeline, fill, pingpong, merge, rest);
+lam level_fold {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline fill pingpong: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_red (0, sizes, tail, promote, pipeline, fill, pingpong, (TileMerge Acc)#Combiner, rest);
+lam level_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    (TileLevels (n, Acc, Mma))#Vec (sizes, level_innermost rest);
+lam level_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = (TileLevels (n, Acc, Mma))#Done;
+anx lam serial_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = level_done ();
 anx lam serial_par {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
-    (TileLevels (n, Acc, Mma))#Par (sizes, peeled tail, rest);
-anx lam serial_group {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma, sizes)): TileLevels (n, Acc, Mma) =
-    (TileLevels (n, Acc, Mma))#Group (sizes, peeled tail, promote, rest);
+    level_par (0, sizes, tail, 0, rest);
+anx lam serial_group {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_par (1, sizes, tail, promote, rest);
 anx lam serial_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
-    (TileLevels (n, Acc, Mma))#Red (sizes, peeled tail, promote, rest);
-anx lam serial_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
-    (TileLevels (n, Acc, Mma))#Vec (sizes, require (match rest with | 0 => tt | 1 _ => ff | 2 _ => ff | 3 _ => ff | 4 _ => ff | 5 _ => ff | 6 _ => ff, rest, "a vector level must be the innermost"));
+    level_fold (sizes, tail, promote, 0, 0, 0, rest);
+anx lam serial_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) = level_vec (sizes, rest);
 /// A portable cluster runs 2 to 8 work-groups.
 lam cluster_size (size: Nat): Bool = core.bit2.and 0 (2 <= size, size <= 8);
 anx lam serial_cluster {n: Nat, Acc: *, Mma: *} (size multicast: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
@@ -2624,41 +2606,41 @@ anx lam serial_persistent {n: Nat, Acc: *, Mma: *} (ctas: Nat, rest: TileLevels 
          require (unclustered, rest, "a persistent level's work-groups do not run in clusters"));
 anx lam serial_cluster_split {n: Nat, Acc: *, Mma: *} (size: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
     (TileLevels (n, Acc, Mma))#Cluster (require (cluster_size size, size, "a cluster has 2 to 8 work-groups"), 0, 1, rest);
-anx lam group_done {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (_: []): GroupLevels (n, Acc, Mma, g) = (GroupLevels (n, Acc, Mma, g))#Done;
-anx lam group_par {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#Par (sizes, peeled tail, rest);
-anx lam group_item {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#Item (sizes, peeled tail, rest);
-anx lam group_red {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#Red (sizes, peeled tail, promote, 0, rest);
-anx lam group_red_pipelined {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail promote pipeline: Nat, rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#Red (sizes, peeled tail, promote, pipeline, rest);
-anx lam group_red_items {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail: Nat, rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#RedItems (sizes, peeled tail, (TileMerge Acc)#Combiner, rest);
+anx lam group_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = level_done ();
+anx lam group_par {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_par (0, sizes, tail, 0, rest);
+anx lam group_item {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_par (2, sizes, tail, 0, rest);
+anx lam group_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, 0, 0, 0, rest);
+anx lam group_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, pipeline, 0, 0, rest);
+anx lam group_red_items {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_red (2, sizes, tail, 0, 0, 0, 0, (TileMerge Acc)#Combiner, rest);
 /// Work-items merge their partials with `merge` along a butterfly tree, so the caller vouches that it is a commutative
 /// monoid with the seed as its identity, of which the step is a homomorphism.
-anx lam group_red_merge {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail: Nat, merge: [Acc, Acc] → Acc, rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#RedItems (sizes, peeled tail, (TileMerge Acc)#Merge merge, rest);
-anx lam group_vec {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», rest: GroupLevels (n, Acc, Mma, g)): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#Vec (sizes, require (match rest with | 0 => tt | 1 _ => ff | 2 _ => ff | 3 _ => ff | 4 _ => ff | 5 _ => ff | 6 _ => ff | 7 _ => ff, rest, "a vector level must be the innermost"));
-anx lam group_warp {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, Mma, within (g, sizes))): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#Warp (sizes, peeled tail, rest);
-anx lam item_done {n: Nat, Acc: *, Mma: *} (_: []): ItemLevels (n, Acc, Mma) = (ItemLevels (n, Acc, Mma))#Done;
-anx lam item_par {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
-    (ItemLevels (n, Acc, Mma))#Par (sizes, peeled tail, rest);
-anx lam item_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
-    (ItemLevels (n, Acc, Mma))#Red (sizes, peeled tail, promote, 0, rest);
-anx lam item_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
-    (ItemLevels (n, Acc, Mma))#Red (sizes, peeled tail, promote, pipeline, rest);
-anx lam item_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
-    (ItemLevels (n, Acc, Mma))#Vec (sizes, require (match rest with | 0 => tt | 1 _ => ff | 2 _ => ff | 3 _ => ff | 4 _ => ff, rest, "a vector level must be the innermost"));
-anx lam item_lanes {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: ItemLevels (n, Acc, Mma)): ItemLevels (n, Acc, Mma) =
-    (ItemLevels (n, Acc, Mma))#Lanes (sizes, peeled tail, rest);
-anx lam warp_done {n: Nat, Acc: *, Mma: *, b: «n; Nat»} (_: []): WarpLevels (n, Acc, Mma, b) = (WarpLevels (n, Acc, Mma, b))#Done;
-anx lam warp_red {n: Nat, Acc: *, Mma: *, b: «n; Nat»} (sizes: «n; Nat», tail promote: Nat, rest: WarpLevels (n, Acc, Mma, b)): WarpLevels (n, Acc, Mma, b) =
-    (WarpLevels (n, Acc, Mma, b))#Red (sizes, peeled tail, promote, 0, rest);
-anx lam warp_red_pipelined {n: Nat, Acc: *, Mma: *, b: «n; Nat»} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpLevels (n, Acc, Mma, b)): WarpLevels (n, Acc, Mma, b) =
-    (WarpLevels (n, Acc, Mma, b))#Red (sizes, peeled tail, promote, pipeline, rest);
+anx lam group_red_merge {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, merge: [Acc, Acc] → Acc, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_red (2, sizes, tail, 0, 0, 0, 0, (TileMerge Acc)#Merge merge, rest);
+anx lam group_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) = level_vec (sizes, rest);
+anx lam group_warp {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_par (3, sizes, tail, 0, rest);
+anx lam group_warpgroup {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_par (6, sizes, tail, 0, rest);
+anx lam item_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = level_done ();
+anx lam item_par {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_par (0, sizes, tail, 0, rest);
+anx lam item_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, 0, 0, 0, rest);
+anx lam item_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, pipeline, 0, 0, rest);
+anx lam item_vec {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) = level_vec (sizes, rest);
+anx lam item_lanes {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_red (4, sizes, tail, 0, 0, 0, 0, (TileMerge Acc)#Combiner, rest);
+anx lam warp_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = level_done ();
+anx lam warp_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, 0, 0, 0, rest);
+anx lam warp_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, pipeline, 0, 0, rest);
 /// The operands a warp's `mma` tile takes: `(16, 8, 8)` runs F32 ones as TF32, `(16, 8, 16)` takes 16-bit ones.
 lam warp_mma_kind (shape: «3; Nat»): * =
     let (m, n, k) = shape;
@@ -2669,40 +2651,27 @@ lam warp_mma_shape (shape: «3; Nat»): Bool =
 /// The operand kind of a warp's `mma` tile, as a value of the type its shape selects.
 axm warp_mma_operands: [shape: «3; Nat»] → warp_mma_kind shape;
 /// A contraction root's levels end in an MMA over its three loops `(m, n, k)`.
-anx lam warp_mma {Acc: *, b: «3; Nat»} (shape: «3; Nat»): WarpLevels (3, Acc, warp_mma_kind shape, b) =
-    (WarpLevels (3, Acc, warp_mma_kind shape, b))#Mma
-        (require (core.bit2.and 0 (warp_mma_shape shape, divides (shape, b)), shape,
-                  "a warp's mma tile is (16, 8, 8) for F32 operands or (16, 8, 16) for 16-bit ones and divides the warp's tile"),
-         warp_mma_operands shape, scope_tile b);
-anx lam group_warpgroup {n: Nat, Acc: *, Mma: *, g: «n; Nat»} (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, sizes)): GroupLevels (n, Acc, Mma, g) =
-    (GroupLevels (n, Acc, Mma, g))#Warpgroup (sizes, peeled tail, rest);
-anx lam wg_done {n: Nat, Acc: *, Mma: *, g t: «n; Nat»} (_: []): WarpgroupLevels (n, Acc, Mma, g, t) = (WarpgroupLevels (n, Acc, Mma, g, t))#Done;
-anx lam wg_red {n: Nat, Acc: *, Mma: *, g t: «n; Nat»} (sizes: «n; Nat», tail promote: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, t)): WarpgroupLevels (n, Acc, Mma, g, t) =
-    (WarpgroupLevels (n, Acc, Mma, g, t))#Red (sizes, peeled tail, promote, 0, rest);
-anx lam wg_red_pipelined {n: Nat, Acc: *, Mma: *, g t: «n; Nat»} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, t)): WarpgroupLevels (n, Acc, Mma, g, t) =
-    (WarpgroupLevels (n, Acc, Mma, g, t))#Red (sizes, peeled tail, promote, pipeline, rest);
-lam wgmma_tile (shape: «3; Nat»): «3; Nat» = let (m, n, k) = shape; (m, n, 0);
+anx lam warp_mma {Acc: *} (shape: «3; Nat»): TileLevels (3, Acc, warp_mma_kind shape) =
+    (TileLevels (3, Acc, warp_mma_kind shape))#Tc
+        (require (warp_mma_shape shape, shape, "a warp's mma tile is (16, 8, 8) for F32 operands or (16, 8, 16) for 16-bit ones"),
+         warp_mma_operands shape);
+anx lam wg_done {n: Nat, Acc: *, Mma: *} (_: []): TileLevels (n, Acc, Mma) = level_done ();
+anx lam wg_red {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, 0, 0, 0, rest);
+anx lam wg_red_pipelined {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, pipeline, 0, 0, rest);
 /// Whether `(m, n, k)` is the tile of one `wgmma` over 16-bit operands, `(64, 8 j, 16)` with `8 j <= 256`.
 lam wgmma_shape (shape: «3; Nat»): Bool =
     let (m, n, k) = shape;
     core.bit2.and 0 (core.bit2.and 0 (m == 64, k == 16),
                      core.bit2.and 0 (core.nat.rem (n, 8) == 0, core.bit2.and 0 (n != 0, n <= 256)));
 /// A `wgmma` takes 16-bit operands.
-/// Its warpgroup owns the `m × n` tile of one `wgmma`.
-anx lam wg_mma {Acc: *, g: «3; Nat»} (shape: «3; Nat»): WarpgroupLevels (3, Acc, HalfMma, g, wgmma_tile shape) =
-    (WarpgroupLevels (3, Acc, HalfMma, g, wgmma_tile shape))#Wgmma
-        (require (wgmma_shape shape, shape, "a wgmma tile is (64, 8 j, 16) with 8 j <= 256"), HalfMma#Half,
-         scope_tile (wgmma_tile shape));
-anx lam wg_red_tma {n: Nat, Acc: *, Mma: *, g t: «n; Nat»} (sizes: «n; Nat», tail promote pipeline: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, t)): WarpgroupLevels (n, Acc, Mma, g, t) =
-    (WarpgroupLevels (n, Acc, Mma, g, t))#RedTma (sizes, peeled tail, promote, pipeline, rest);
-/// How many warpgroups tile a work-group's tile `g`, a `0` in `t` leaving that loop to each of them.
-lam warpgroups {n: Nat} (g t: «n; Nat»): Nat =
-    vec.fold.r @(Nat, Nat) @n core.nat.mul (‹d: n; (g#d / (t#d, 1)#(t#d == 0), 1)#(t#d == 0)›, 1);
-anx lam wg_red_ws {n: Nat, Acc: *, Mma: *, g t: «n; Nat»} (sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, t)): WarpgroupLevels (n, Acc, Mma, g, t) =
-    (WarpgroupLevels (n, Acc, Mma, g, t))#RedWs (sizes, peeled tail, promote, pipeline,
-        require (core.bit2.or 0 (pingpong == 0, core.bit2.and 0 (pingpong == 1, warpgroups (g, t) == 2)), pingpong,
-                 "pingpong is 0, or 1 for a work-group of two computing warpgroups"),
-        scope_tile g, rest);
+anx lam wg_mma {Acc: *} (shape: «3; Nat»): TileLevels (3, Acc, HalfMma) =
+    (TileLevels (3, Acc, HalfMma))#Tc (require (wgmma_shape shape, shape, "a wgmma tile is (64, 8 j, 16) with 8 j <= 256"), HalfMma#Half);
+anx lam wg_red_tma {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, pipeline, 1, 0, rest);
+anx lam wg_red_ws {n: Nat, Acc: *, Mma: *} (sizes: «n; Nat», tail promote pipeline pingpong: Nat, rest: TileLevels (n, Acc, Mma)): TileLevels (n, Acc, Mma) =
+    level_fold (sizes, tail, promote, pipeline, 2, require (pingpong <= 1, pingpong, "pingpong is 0, or 1 for a work-group of two computing warpgroups"), rest);
 anx let FuseQuery = [level kind role: Nat, reduces outside_use in_group: Bool, tile_bytes: Nat];
 anx let FuseDecision = [fuse yield: Bool];
 /// The loop count and accumulator type of the `map_reduce_post` that computes a tile request's root; they index the
@@ -2764,10 +2733,17 @@ pub mod check
         "a lane reduction needs a recognized reassociable combiner whose identity is the seed",
         "shared producer input {} differs from the consumer's input {} in rank, shape or element size",
         "shared producer input {} names the fused slot {}",
-        "a work-group stages {} bytes of shared memory, more than the target's {}");
+        "a work-group stages {} bytes of shared memory, more than the target's {}",
+        "a work-group, cluster or persistent level runs only in serial code",
+        "work-items, warps and warpgroups run only inside a work-group",
+        "only reductions and tensor-core tiles run inside a warp or a warpgroup",
+        "a reduction over work-items runs inside a work-group, one over lanes inside a work-item",
+        "a reduction filled by TMA or by a producer warpgroup runs inside a warpgroup",
+        "a tensor-core level ends the levels of a warp or a warpgroup",
+        "a warpgroup's tile is the m by n tile of its wgmma");
     /// Why each of `messages` rejects a schedule, as an index into `reasons`, so that a limit of the lowering does not
     /// read as one of the target.
-    anx let kinds = (0, 2, 2, 2, 2, 1, 1, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 2, 2, 2, 2, 2, 3);
+    anx let kinds = (0, 2, 2, 2, 2, 1, 1, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 2, 2, 2, 2, 2, 3, 4, 4, 4, 4, 4, 4, 4);
     anx let reasons = ("",
         "the target's instructions require it",
         "the schedule would otherwise compute something else",
@@ -2835,144 +2811,71 @@ pub mod check
                       either (any ‹d: n; both (both (sizes#d != 0, core.idx2nat d < ro), sizes#d != 1)›,
                               1 < count ‹d: n; both (sizes#d != 0, core.idx2nat d < ro)›)), 14);
 
-    lam wg_ok {n: Nat, Acc Mma: *, g t: «n; Nat»}
-        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, warpgroups: Nat,
-         l: WarpgroupLevels (n, Acc, Mma, g, t))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (sizes, _, promote, _, rest) =>
-                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                    wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, warpgroups, rest)))
-            | 2 (shape, _, _) => mma (shape, block, a, b)
-            | 3 (sizes, _, promote, _, rest) =>
-                or_else (needs 90 ff 18, or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote), or_else (fail (persistent, 11),
-                or_else (splits (cluster, split, block, sizes),
-                    wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, warpgroups, rest))))))
-            | 4 (sizes, _, promote, pipeline, pingpong, _, rest) =>
-                or_else (fail_with (both (both (pingpong == 1, warpgroups != 0), warpgroups != 2), 16, warpgroups, 0),
-                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                or_else (specialized (block, sizes),
-                    wg_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster, split,
-                           persistent, warpgroups, rest)))));
-    lam warp_ok {n: Nat, Acc Mma: *, w: «n; Nat»} (ro nis: Nat, block: «n; Nat», a b: Bool, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (sizes, _, promote, _, rest) =>
-                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                    warp_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), rest)))
-            | 2 (shape, _, _) => or_else (needs 80 ff 19, mma (shape, block, a, b));
-    lam item_ok {n: Nat, Acc Mma: *} (ro nis: Nat, block: «n; Nat», a b: Bool, l: ItemLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (sizes, _, rest) => or_else (parallel_sizes (ro, sizes), item_ok (ro, nis, within (block, sizes), a, b, rest))
-            | 2 (sizes, _, promote, _, rest) =>
-                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                    item_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), rest)))
-            | 3 (sizes, rest) => or_else (vector (ro, sizes), item_ok (ro, nis, block, a, b, rest))
-            | 4 (sizes, _, rest) =>
-                or_else (reduction_sizes (ro, sizes), or_else (lanes (block, sizes),
-                    item_ok (ro, nis, within (block, sizes), a, b, rest)));
-    lam group_ok {n: Nat, Acc Mma: *, g: «n; Nat»}
-        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: GroupLevels (n, Acc, Mma, g))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (sizes, _, rest) =>
-                or_else (parallel_sizes (ro, sizes),
-                         group_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
-            | 2 (sizes, tail, rest) =>
-                or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
-                    item_ok (ro, nis, within (block, sizes), a, b, rest)))
-            | 3 (sizes, _, promote, _, rest) =>
-                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                    group_ok (ro, nis, clip (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
-                              split, persistent, rest)))
-            | 4 (sizes, _, _, rest) =>
-                or_else (reduction_sizes (ro, sizes),
-                         group_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
-            | 5 (sizes, rest) => or_else (vector (ro, sizes), group_ok (ro, nis, block, a, b, cluster, split, persistent, rest))
-            | 6 (sizes: «n; Nat», tail: Nat, rest: WarpLevels (n, Acc, Mma, within (g, sizes))) =>
-                or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
-                    warp_ok (ro, nis, within (block, sizes), a, b, rest)))
-            | 7 (sizes: «n; Nat», tail: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, sizes)) =>
-                or_else (parallel_sizes (ro, sizes), or_else (peels (tail, block, sizes),
-                    or_else (needs 90 tt 17,
-                    wg_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, consumers (block, sizes), rest))));
-    lam tile_ok {n: Nat, Acc Mma: *}
-        (ro nis: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (sizes, _, rest) =>
-                or_else (parallel_sizes (ro, sizes),
-                         tile_ok (ro, nis, within (block, sizes), a, b, cluster, split, persistent, rest))
-            | 2 (sizes: «n; Nat», tail promote: Nat, rest: GroupLevels (n, Acc, Mma, sizes)) =>
-                or_else (parallel_sizes (ro, sizes), or_else (promotes (nis, promote),
-                or_else (peels (tail, block, sizes), or_else (clusters (cluster, split, block, sizes),
-                    group_ok (ro, nis, clip (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
-                              split, persistent, rest)))))
-            | 3 (sizes, _, promote, rest) =>
-                or_else (reduction_sizes (ro, sizes), or_else (promotes (nis, promote),
-                    tile_ok (ro, nis, within (block, sizes), stages (a, promote, 1), stages (b, promote, 2), cluster,
-                             split, persistent, rest)))
-            | 4 (sizes, rest) => or_else (vector (ro, sizes), tile_ok (ro, nis, block, a, b, cluster, split, persistent, rest))
-            | 5 (size, _, cut, rest) => or_else (needs 90 ff 18, tile_ok (ro, nis, block, a, b, size, cut, persistent, rest))
-            | 6 (_, rest) => tile_ok (ro, nis, block, a, b, cluster, split, tt, rest);
-
     /// What a law's combiner permits, `law`: 0 nothing, 1 a recognized reassociable combiner whose identity is the seed,
-    /// 2 one whose seed is not its identity, 3 a merge the law vouches for, a commutative monoid with the seed as identity.
+    /// 2 one whose seed is not its identity, 3 a merge the law vouches for, a commutative monoid with the seed as identity,
+    /// and 4 unknown, outside of a law, which permits everything here and leaves it to `tile_fuse`.
     /// A level that tiles a reduction loop inside another folds its elements out of order, and a split over work-items
     /// merges partials along a butterfly, which either permits; a lane split merges by a recognized combiner only.
     lam inner {n: Nat} (ro: Nat, sizes: «n; Nat»): Bool = any ‹d: n; both (sizes#d != 0, ro < core.idx2nat d)›;
     lam ordered {n: Nat} (ro law: Nat, sizes: «n; Nat»): Verdict = fail (both (inner (ro, sizes), law == 0), 20);
     lam merged {Acc: *} (law: Nat, mg: TileMerge Acc): Verdict =
-        match mg with | 0 => fail (both (law != 1, law != 3), 21) | 1 _ => ok;
-    lam wg_law {n: Nat, Acc Mma: *, g t: «n; Nat»} (ro law: Nat, l: WarpgroupLevels (n, Acc, Mma, g, t))@(core.pe.is_closed l): Verdict =
+        match mg with | 0 => fail (both (both (law != 1, law != 3), law != 4), 21) | 1 _ => ok;
+    /// Whether a level that `bind` runs may nest in `unit`: 0 serial code, 1 a work-group, 2 a work-item, 3 a warp and
+    /// 6 a warpgroup.
+    lam nests (unit bind: Nat): Verdict =
+        or_else (fail (both (bind == 1, unit != 0), 26),
+                 fail (both (either (bind == 2, either (bind == 3, bind == 6)), unit != 1), 27));
+    /// The rules of the levels `l` running in `unit` over a root with `ro` parallel loops and `nis` inputs: `block` is the
+    /// block they tile, `a` and `b` whether A and B are staged, `cluster` and `split` the cluster they run in, `persistent`
+    /// whether their work-groups persist and `warpgroups` how many warpgroups compute.
+    lam walk {n: Nat, Acc Mma: *}
+        (ro nis law unit: Nat, block: «n; Nat», a b: Bool, cluster split: Nat, persistent: Bool, warpgroups: Nat,
+         l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
         match l with
             | 0 => ok
-            | 1 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), wg_law (ro, law, rest))
-            | 2 (_, _, _) => ok
-            | 3 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), wg_law (ro, law, rest))
-            | 4 (sizes, _, _, _, _, _, rest) => or_else (ordered (ro, law, sizes), wg_law (ro, law, rest));
-    lam warp_law {n: Nat, Acc Mma: *, w: «n; Nat»} (ro law: Nat, l: WarpLevels (n, Acc, Mma, w))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), warp_law (ro, law, rest))
-            | 2 (_, _, _) => ok;
-    lam item_law {n: Nat, Acc Mma: *} (ro law: Nat, l: ItemLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (_, _, rest) => item_law (ro, law, rest)
-            | 2 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), item_law (ro, law, rest))
-            | 3 (_, rest) => item_law (ro, law, rest)
-            | 4 (sizes, _, rest) => or_else (ordered (ro, law, sizes), or_else (fail (law != 1, 22), item_law (ro, law, rest)));
-    lam group_law {n: Nat, Acc Mma: *, g: «n; Nat»} (ro law: Nat, l: GroupLevels (n, Acc, Mma, g))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (_, _, rest) => group_law (ro, law, rest)
-            | 2 (_, _, rest) => item_law (ro, law, rest)
-            | 3 (sizes, _, _, _, rest) => or_else (ordered (ro, law, sizes), group_law (ro, law, rest))
-            | 4 (sizes, _, mg, rest) => or_else (ordered (ro, law, sizes), or_else (merged @Acc (law, mg), group_law (ro, law, rest)))
-            | 5 (_, rest) => group_law (ro, law, rest)
-            | 6 (sizes: «n; Nat», _: Nat, rest: WarpLevels (n, Acc, Mma, within (g, sizes))) => warp_law (ro, law, rest)
-            | 7 (sizes: «n; Nat», _: Nat, rest: WarpgroupLevels (n, Acc, Mma, g, sizes)) => wg_law (ro, law, rest);
-    lam tile_law {n: Nat, Acc Mma: *} (ro law: Nat, l: TileLevels (n, Acc, Mma))@(core.pe.is_closed l): Verdict =
-        match l with
-            | 0 => ok
-            | 1 (_, _, rest) => tile_law (ro, law, rest)
-            | 2 (sizes: «n; Nat», _ _: Nat, rest: GroupLevels (n, Acc, Mma, sizes)) => group_law (ro, law, rest)
-            | 3 (sizes, _, _, rest) => or_else (ordered (ro, law, sizes), tile_law (ro, law, rest))
-            | 4 (_, rest) => tile_law (ro, law, rest)
-            | 5 (_, _, _, rest) => tile_law (ro, law, rest)
-            | 6 (_, rest) => tile_law (ro, law, rest);
-    anx lam combining {n: Nat, Acc Kind: *} (ro law: Nat, l: TileLevels (n, Acc, Kind)): Verdict = tile_law (ro, law, l);
+            | 1 (bind, sizes, tail, promote, rest) =>
+                let group = bind == 1;
+                let inside = (unit, bind)#(bind != 0);
+                or_else (nests (unit, bind), or_else (fail (both (bind == 0, either (unit == 3, unit == 6)), 28),
+                or_else (parallel_sizes (ro, sizes),
+                or_else ((ok, promotes (nis, promote))#group, or_else ((ok, peels (tail, block, sizes))#(bind != 0),
+                or_else ((ok, clusters (cluster, split, block, sizes))#group, or_else ((ok, needs 90 tt 17)#(bind == 6),
+                    walk (ro, nis, law, inside, (within (block, sizes), clip (block, sizes))#group,
+                          (a, stages (a, promote, 1))#group, (b, stages (b, promote, 2))#group, cluster, split, persistent,
+                          (warpgroups, consumers (block, sizes))#(bind == 6), rest))))))))
+            | 2 (bind, sizes, _, promote, _, fill, pingpong, mg, rest) =>
+                let folds = bind == 0;
+                or_else (fail (both (bind == 2, unit != 1), 29), or_else (fail (both (bind == 4, unit != 2), 29),
+                or_else (fail (both (fill != 0, unit != 6), 30),
+                or_else (fail_with (both (both (pingpong == 1, warpgroups != 0), warpgroups != 2), 16, warpgroups, 0),
+                or_else ((ok, needs 90 ff 18)#(fill == 1), or_else (reduction_sizes (ro, sizes),
+                or_else ((ok, promotes (nis, promote))#folds, or_else ((ok, fail (persistent, 11))#(fill == 1),
+                or_else ((ok, splits (cluster, split, block, sizes))#(fill == 1),
+                or_else ((ok, specialized (block, sizes))#(fill == 2), or_else ((ok, lanes (block, sizes))#(bind == 4),
+                or_else (ordered (ro, law, sizes), or_else ((ok, merged @Acc (law, mg))#(bind == 2),
+                or_else ((ok, fail (both (law != 1, law != 4), 22))#(bind == 4),
+                    walk (ro, nis, law, unit, (within (block, sizes), clip (block, sizes))#(both (folds, unit == 1)),
+                          (a, stages (a, promote, 1))#folds, (b, stages (b, promote, 2))#folds, cluster, split, persistent,
+                          warpgroups, rest)))))))))))))))
+            | 3 (sizes, rest) =>
+                or_else (fail (either (unit == 3, unit == 6), 28),
+                or_else (vector (ro, sizes), walk (ro, nis, law, unit, block, a, b, cluster, split, persistent, warpgroups, rest)))
+            | 4 (shape, _) =>
+                or_else (fail (both (unit != 3, unit != 6), 31), or_else ((ok, needs 80 ff 19)#(unit == 3),
+                or_else (fail (both (unit == 6, any ‹d: n; both (core.idx2nat d < ro, both (block#d != 0, block#d != shape#d))›), 32),
+                    mma (shape, block, a, b))))
+            | 5 (size, _, cut, rest) =>
+                or_else (fail (unit != 0, 26), or_else (needs 90 ff 18,
+                    walk (ro, nis, law, unit, block, a, b, size, cut, persistent, warpgroups, rest)))
+            | 6 (_, rest) =>
+                or_else (fail (unit != 0, 26), walk (ro, nis, law, unit, block, a, b, cluster, split, tt, warpgroups, rest));
     /// The verdict of a chain on a law: its root's rules and what its combiner permits.
     anx lam law_verdict {n: Nat, Acc Kind: *} (ro nis: Nat, extents: «n; Nat», law: Nat, l: TileLevels (n, Acc, Kind)): Verdict =
-        or_else (tile_ok (ro, nis, extents, ff, ff, 0, 0, ff, l), tile_law (ro, law, l));
+        walk (ro, nis, law, 0, extents, ff, ff, 0, 0, ff, 0, l);
 
     /// The verdict of a chain over a root with `ro` parallel loops, `nis` inputs and loop `extents`.
     anx lam verdict {n: Nat, Acc Kind: *} (ro nis: Nat, extents: «n; Nat», l: TileLevels (n, Acc, Kind)): Verdict =
-        tile_ok (ro, nis, extents, ff, ff, 0, 0, ff, l);
+        walk (ro, nis, 4, 0, extents, ff, ff, 0, 0, ff, 0, l);
     anx lam levels {T: *, r: Nat, s: «r; Nat»}
         (op: Tensor r s T, l: TileLevels (root_loops op, root_acc op, root_contraction op)): Verdict =
         verdict (parallel op, inputs op, extents op, l);
@@ -2985,7 +2888,7 @@ axm tile_req: {T: *, r: Nat, s: «r; Nat», M K: *}
 /// large as `op`, so the work-group runs it in place.
 anx lam group_tile_req {T: *, r: Nat, s: «r; Nat», M K: *}
     (op: Tensor r s T, members: M, sizes: «root_loops op; Nat»,
-     levels: GroupLevels (root_loops op, root_acc op, root_contraction op, sizes), control: K)
+     levels: TileLevels (root_loops op, root_acc op, root_contraction op), control: K)
     : Tensor r s T =
     tile_req (op, members, serial_group (sizes, 1, 0, levels), control);
 axm tile_fuse: compile.Phase;
@@ -3566,10 +3469,10 @@ pub mod law
         lam blocks_of {M: *} (l: TileLevels (Rn, To, M))@(core.pe.is_closed l): «Rn; Nat» =
             match l with
                 | 0 => ‹Rn; 0›
-                | 1 (sizes, _, _) => sizes
-                | 2 (sizes: «Rn; Nat», _ _: Nat, _: GroupLevels (Rn, To, M, sizes)) => sizes
-                | 3 (_, _, _, _) => ‹Rn; 0›
-                | 4 (_, _) => ‹Rn; 0›
+                | 1 (_, sizes, _, _, _) => sizes
+                | 2 _ => ‹Rn; 0›
+                | 3 _ => ‹Rn; 0›
+                | 4 _ => ‹Rn; 0›
                 | 5 (_, _, _, rest) => blocks_of rest
                 | 6 (_, rest) => blocks_of rest;
         // The bytes of the boxes of the inputs `promote` sets for a block of `size` (0 for a whole loop), `depth` times each.
@@ -3580,49 +3483,20 @@ pub mod law
                 (0, core.nat.mul (bytes, depth))#(bit_of promote i)›;
             vec.fold.r @(Nat, Nat) @nis (λ (e x: Nat): Nat = core.nat.add (e, x)) (each, 0);
         // The shared memory a work-group stages: the boxes its level keeps resident and the panels of the first reduction
-        // inside it, one per ring slot, which cover the work-group's block also below its work-items, warps and warpgroups.
+        // inside it, one per ring slot, which cover the work-group's `block` also below its work-items, warps and warpgroups.
         lam ring (pipeline: Nat): Nat = core.select (pipeline == 0, check.depth (), pipeline);
-        lam panels (block sizes: «Rn; Nat», promote pipeline: Nat): Nat =
-            staged (promote, ring pipeline, ‹d: Rn; (block#d, sizes#d)#(Ro <= core.idx2nat d)›);
-        lam item_shared {M: *} (block: «Rn; Nat», l: ItemLevels (Rn, To, M))@(core.pe.is_closed l): Nat =
+        lam staged_of {M: *} (grouped: Bool, block: «Rn; Nat», l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Nat =
             match l with
                 | 0 => 0
-                | 1 (_, _, rest) => item_shared (block, rest)
-                | 2 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
-                | 3 (_, rest) => item_shared (block, rest)
-                | 4 (_, _, rest) => item_shared (block, rest);
-        lam warp_shared {M: *, b: «Rn; Nat»} (block: «Rn; Nat», l: WarpLevels (Rn, To, M, b))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
-                | 2 (_, _, _) => 0;
-        lam wg_shared {M: *, g t: «Rn; Nat»} (block: «Rn; Nat», l: WarpgroupLevels (Rn, To, M, g, t))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
-                | 2 (_, _, _) => 0
-                | 3 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
-                | 4 (sizes, _, promote, pipeline, _, _, _) => panels (block, sizes, promote, pipeline);
-        lam group_shared {M: *, g: «Rn; Nat»} (block: «Rn; Nat», l: GroupLevels (Rn, To, M, g))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (_, _, rest) => group_shared (block, rest)
-                | 2 (_, _, rest) => item_shared (block, rest)
-                | 3 (sizes, _, promote, pipeline, _) => panels (block, sizes, promote, pipeline)
-                | 4 (_, _, _, rest) => group_shared (block, rest)
-                | 5 (_, rest) => group_shared (block, rest)
-                | 6 (_, _, rest) => warp_shared (block, rest)
-                | 7 (_, _, rest) => wg_shared (block, rest);
-        lam staged_of {M: *} (l: TileLevels (Rn, To, M))@(core.pe.is_closed l): Nat =
-            match l with
-                | 0 => 0
-                | 1 (_, _, rest) => staged_of rest
-                | 2 (sizes: «Rn; Nat», _ promote: Nat, rest: GroupLevels (Rn, To, M, sizes)) =>
-                    core.nat.add (staged (promote, 1, sizes), group_shared (sizes, rest))
-                | 3 (_, _, _, rest) => staged_of rest
-                | 4 (_, rest) => staged_of rest
-                | 5 (_, _, _, rest) => staged_of rest
-                | 6 (_, rest) => staged_of rest;
+                | 1 (bind, sizes, _, promote, rest) =>
+                    (staged_of (grouped, block, rest), core.nat.add (staged (promote, 1, sizes), staged_of (tt, sizes, rest)))#(bind == 1)
+                | 2 (bind, sizes, _, promote, pipeline, _, _, _, rest) =>
+                    (staged_of (grouped, block, rest),
+                     staged (promote, ring pipeline, ‹d: Rn; (block#d, sizes#d)#(Ro <= core.idx2nat d)›))#(core.bit2.and 0 (grouped, bind == 0))
+                | 3 (_, rest) => staged_of (grouped, block, rest)
+                | 4 _ => 0
+                | 5 (_, _, _, rest) => staged_of (grouped, block, rest)
+                | 6 (_, rest) => staged_of (grouped, block, rest);
         // The bytes a schedule moves through global memory, as Welder counts them: every block reads the box of each
         // input that its loops' block images, and the output is written once.
         let traffic = λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat =
@@ -3642,7 +3516,7 @@ pub mod law
         let fuses     = vec.fold.r @(Bool, Bool) @nis (core.bit2.or 0) (‹i: nis; srcs#i#2₃›, ff);
         let splits    = core.bit2.and 0 (core.bit2.or 0 (combining == 3, core.bit2.and 0 (combining == 1, (tt, ff)#fuses)), (tt, ff)#finished);
         (Ro, nis, Sr, posted (is, post_is), posted (marked, post_is), par, red, red_par, traffic, combining,
-         λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat = staged_of levels,
+         λ (levels: TileLevels (Rn, To, root_contraction (make kinds))): Nat = staged_of (ff, ‹Rn; 0›, levels),
          (merge, check.merge f)#(core.bit2.and 0 (splits, combining == 1)), ordered, checked, splits);
     /// `build_post` with the neutral epilogue.
     lam build {nis: Nat} {To: *, Ro Rn: Nat}
@@ -3942,69 +3816,31 @@ pub mod law
         // A tile's reduction starts from `init` and ends in `finish`; a parallel level below a reduction keeps its meaning.
         let reduce = λ (k: Red): Par =
             λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = finish (lo, ext, k (lo, ext, size, xs, init ext));
-        lam warp_red {b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: WarpLevels (Rn, T, NoMma, b))@(core.pe.is_closed l): A ext =
-            match l with
-                | 1 (sizes, tl, _, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = warp_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 0 => step (lo, ext, size, xs, acc)
-                | 2 _ => step (lo, ext, size, xs, acc);
-        lam item_red (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: ItemLevels (Rn, T, NoMma))@(core.pe.is_closed l): A ext =
+        // Below a reduction a parallel level keeps its meaning, so only the reductions split the blocks.
+        lam red_at (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: TileLevels (Rn, T, NoMma))@(core.pe.is_closed l): A ext =
             match l with
                 | 0 => step (lo, ext, size, xs, acc)
-                | 1 (_, _, rest) => item_red (lo, ext, size, xs, acc, rest)
-                | 2 (sizes, tl, _, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 3 (_, rest) => item_red (lo, ext, size, xs, acc, rest)
-                | 4 (sizes, tl, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc);
-        lam group_red {g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: GroupLevels (Rn, T, NoMma, g))@(core.pe.is_closed l): A ext =
-            match l with
-                | 0 => step (lo, ext, size, xs, acc)
-                | 1 (_, _, rest) => group_red (lo, ext, size, xs, acc, rest)
-                | 2 (_, _, rest) => item_red (lo, ext, size, xs, acc, rest)
-                | 3 (sizes, tl, _, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 4 (sizes, tl, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 5 (_, rest) => group_red (lo, ext, size, xs, acc, rest)
-                | 6 (sizes: «Rn; Nat», _: Nat, rest: WarpLevels (Rn, T, NoMma, within (g, sizes))) => warp_red (lo, ext, size, xs, acc, rest)
-                | 7 _ => step (lo, ext, size, xs, acc);
-        lam tile_red (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext, l: TileLevels (Rn, T, NoMma))@(core.pe.is_closed l): A ext =
-            match l with
-                | 0 => step (lo, ext, size, xs, acc)
-                | 1 (_, _, rest) => tile_red (lo, ext, size, xs, acc, rest)
-                | 2 (sizes: «Rn; Nat», _ _: Nat, rest: GroupLevels (Rn, T, NoMma, sizes)) => group_red (lo, ext, size, xs, acc, rest)
-                | 3 (sizes, tl, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = tile_red (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
-                | 4 (_, rest) => tile_red (lo, ext, size, xs, acc, rest)
-                | 5 (_, _, _, rest) => tile_red (lo, ext, size, xs, acc, rest)
-                | 6 (_, rest) => tile_red (lo, ext, size, xs, acc, rest);
+                | 1 (_, _, _, _, rest) => red_at (lo, ext, size, xs, acc, rest)
+                | 2 (_, sizes, tl, _, _, _, _, _, rest) => red (sizes, tl, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = red_at (lo, ext, size, xs, acc, rest)) (lo, ext, size, xs, acc)
+                | 3 (_, rest) => red_at (lo, ext, size, xs, acc, rest)
+                | 4 _ => step (lo, ext, size, xs, acc)
+                | 5 (_, _, _, rest) => red_at (lo, ext, size, xs, acc, rest)
+                | 6 (_, rest) => red_at (lo, ext, size, xs, acc, rest);
         // A warp level owns its rows (`tensor.bind 5`): its region keeps the user's tiles in the warp's registers.
-        lam warp_par {b: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: WarpLevels (Rn, T, NoMma, b))@(core.pe.is_closed l): Tensor Ro ext T =
-            reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = warp_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
-        lam item_par (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: ItemLevels (Rn, T, NoMma))@(core.pe.is_closed l): Tensor Ro ext T =
+        // A warpgroup level does not split the user's blocks.
+        lam par_at (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: TileLevels (Rn, T, NoMma))@(core.pe.is_closed l): Tensor Ro ext T =
+            let whole = reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = red_at (lo, ext, size, xs, acc, l));
             match l with
-                | 1 (sizes, tl, rest) => par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = item_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
-                | 3 (_, rest) => item_par (lo, ext, size, xs, rest)
-                | 0 => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
-                | 2 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
-                | 4 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = item_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
-        lam group_par {g: «Rn; Nat»} (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: GroupLevels (Rn, T, NoMma, g))@(core.pe.is_closed l): Tensor Ro ext T =
-            match l with
-                | 1 (sizes, tl, rest) => par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = group_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
-                | 2 (sizes, tl, rest) => par (sizes, tl, 2, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = item_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
-                | 5 (_, rest) => group_par (lo, ext, size, xs, rest)
-                | 6 (sizes: «Rn; Nat», tl: Nat, rest: WarpLevels (Rn, T, NoMma, within (g, sizes))) =>
-                    par (sizes, tl, 5, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = warp_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
-                | 0 => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
-                | 3 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
-                | 4 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
-                | 7 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = group_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
-        lam tile_par (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, l: TileLevels (Rn, T, NoMma))@(core.pe.is_closed l): Tensor Ro ext T =
-            match l with
-                | 1 (sizes, tl, rest) => par (sizes, tl, 0, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = tile_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
-                | 2 (sizes: «Rn; Nat», tl _: Nat, rest: GroupLevels (Rn, T, NoMma, sizes)) =>
-                    par (sizes, tl, 1, λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = group_par (lo, ext, size, xs, rest)) (lo, ext, size, xs)
-                | 4 (_, rest) => tile_par (lo, ext, size, xs, rest)
-                | 5 (_, _, _, rest) => tile_par (lo, ext, size, xs, rest)
-                | 6 (_, rest) => tile_par (lo, ext, size, xs, rest)
-                | 0 => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = tile_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs)
-                | 3 _ => reduce (λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs, acc: A ext): A ext = tile_red (lo, ext, size, xs, acc, l)) (lo, ext, size, xs);
-        (Ro, nis, Sr, denote, λ (levels: TileLevels (Rn, T, NoMma)): Tensor Ro So T = tile_par (‹Rn; 0›, So, Sr, is, levels));
+                | 1 (bind, sizes, tl, _, rest) =>
+                    (par (sizes, tl, (bind, 5)#(bind == 3), λ (lo: «Rn; Nat», ext: «Ro; Nat», size: «Rn; Nat», xs: Xs): Tensor Ro ext T = par_at (lo, ext, size, xs, rest)),
+                     whole)#(bind == 6) (lo, ext, size, xs)
+                | 3 (_, rest) => par_at (lo, ext, size, xs, rest)
+                | 5 (_, _, _, rest) => par_at (lo, ext, size, xs, rest)
+                | 6 (_, rest) => par_at (lo, ext, size, xs, rest)
+                | 0 => whole (lo, ext, size, xs)
+                | 2 _ => whole (lo, ext, size, xs)
+                | 4 _ => whole (lo, ext, size, xs);
+        (Ro, nis, Sr, denote, λ (levels: TileLevels (Rn, T, NoMma)): Tensor Ro So T = par_at (‹Rn; 0›, So, Sr, is, levels));
     /// A block law whose blocks roll a statistic, as `of_rolling` does per element: a block moves the statistic to
     /// `r'`, the accumulated tiles are corrected by `scale (ratio (r, r'))`, and the block accumulates into them against `r'`.
     /// The accumulator `A` stays the caller's flat tuple of tiles; `split` and `join` view it as the statistic and the rest.
