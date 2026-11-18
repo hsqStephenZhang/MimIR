@@ -7,7 +7,7 @@
 // The work-group's four rows of `x` live in a shared array next to the pair partials; one kernel, no device heap.
 
 // CHECK-DAG: addrspace(3) global [4 x [16 x float]]
-// CHECK-DAG: addrspace(3) global [16 x [2 x float]]
+// CHECK-DAG: addrspace(3) global [8 x [2 x float]]
 // CHECK: define ptx_kernel void @tileKernel
 // CHECK-NOT: define ptx_kernel
 // CHECK-NOT: call i8* @malloc

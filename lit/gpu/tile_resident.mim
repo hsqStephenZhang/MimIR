@@ -48,7 +48,7 @@ extern fun softmax16 (x: tensor.Tensor 2 (16, 16) F32): tensor.Tensor 2 (16, 16)
     return (tile_req (y, ml, levels, default_control));
 
 // LOG: L0 stage input 0 box
-// LOG: L1 red loop=1 ks=4 tail=peel inputs=1 fused=0 tail_fused=0 bind=2
+// LOG: L1 red loop=1 ks=8 tail=peel inputs=1 fused=0 tail_fused=0 bind=2
 // LOG: L1 par tiles=‹2; 4› tail=peel inputs=2 fused=0 yielded=0 bind=2
 // LOG: L0 par tiles=(4, 16) tail=peel inputs=1 fused=1 yielded=0 bind=1
 // LOG: gpu.outline tileGroups{{.*}}: 4 groups × 4 items

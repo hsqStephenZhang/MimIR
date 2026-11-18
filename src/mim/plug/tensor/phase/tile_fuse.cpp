@@ -1051,8 +1051,8 @@ const Def* Levels::reduction_tile(const btensor::MapRedPost& mr, const Def* anch
     return Axm::isa<Id>(tile) ? nullptr : tile;
 }
 
-// The reduction tile @p tile as a `tile_fold` whose blocks the @p items work-items fold (R8), if its single
-// reduction loop divides into them.
+// The reduction tile @p tile as a `tile_fold` whose blocks up to @p items work-items fold (R8), if a power of two of
+// them divides its single reduction loop.
 const Def* Levels::split_over_items(const Def* tile, u64 items, const Def* merge, u64 depth) {
     auto& w   = world();
     auto root = graph::map_reduce(tile);
@@ -1062,18 +1062,27 @@ const Def* Levels::split_over_items(const Def* tile, u64 items, const Def* merge
     if (!rks || rks->rr != 1) return nullptr;
     auto rn = rks->nloops();
     auto K  = Lit::isa(mr.Sr->proj(rn, rn - 1));
-    // The work-items share the tile's elements first, so each folds a stretch of one of them.
-    // The work-group's tiles bound the tile's extents.
+    if (!K) return nullptr;
+    // A warp's partials merge by shuffles and the few warps' left by one work-item, so at most four warps take part.
+    // The work-group keeps every part's partial tile in shared memory, within the 48 KiB a launch has by default.
     Substitute capped(w);
     if (group_scope_)
         for (size_t d = 0, n = group_scope_->tiles.size(); d != n; ++d)
             if (auto t = group_scope_->tiles[d])
                 capped.substitute(group_scope_->var->proj(2, 1)->proj(n, d), w.lit_nat(t));
-    u64 elements = 1;
-    for (u64 d = 0; d != rks->ro; ++d)
-        if (auto e = nat_upper(capped.rewrite(mr.So->proj(rks->ro, d)))) elements *= *e;
-    auto parts = items % elements == 0 && items / elements > 1 ? items / elements : items;
-    if (!K || *K % parts) return nullptr;
+    auto bytes = Lit::isa(core::op(core::trait::size, mr.To));
+    for (u64 d = 0; bytes && d != rks->ro; ++d)
+        if (auto e = nat_upper(capped.rewrite(mr.So->proj(rks->ro, d))))
+            *bytes *= *e;
+        else
+            bytes.reset();
+    if (!bytes) return nullptr;
+    u64 parts = 1;
+    // Each part folds at least eight elements, which pays for its share of the merge.
+    while (parts * 2 <= items && parts * 2 <= 4 * 32 && *K % (parts * 2) == 0 && *K / (parts * 2) >= 8
+           && parts * 2 * *bytes <= 48 * 1024)
+        parts *= 2;
+    if (parts == 1) return nullptr;
     auto sizes = DefVec(rn, [&](size_t d) { return w.lit_nat(d + 1 == rn ? *K / parts : 0); });
     auto level = LevelSpec{1, 1, 0, 2, w.tuple(sizes), merge};
     auto split = this->tile(tile, fe::Span<const LevelSpec>(&level, 1), depth + 1);

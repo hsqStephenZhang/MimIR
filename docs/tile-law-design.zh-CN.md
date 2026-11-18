@@ -759,8 +759,7 @@ Hopper 的 kernel 时间在 §9.5 之后没有重测成：重测时容器已经�
 
 之后修的两处（全量 lit 通过）：
 
-- 融合进工作组的归约分给 work-item 时（`split_over_items`），先按瓦片的元素分，每个 work-item 只折叠一个元素的一段：`softmax_resident` 的 4 行 × 1024 原来每个 work-item 折 4 行各 4 个元素、每行 8 层合并，现在 1 行 16 个元素、6 层合并，与定律当时的做法相同。
-  softmax（µs，基线 / 新）：`softmax_resident` 29.61 / 27.38，`softmax_resident_law` 37.62 / 27.41，`softmax_resident_shared` 27.00 / 27.40。
+- 融合进工作组的归约分给 work-item 时（`split_over_items`）的段数，§20 定下了现在的规则；这一步时 `softmax_resident*` 是 29.6 → 27.4 µs。
 - 暂存的向量化填充（`vector_width`）不再要求长度是字面量，只要求可证明是向量宽度的倍数：`nat_multiple` 带一个偏移，认得选择（`min`）、加字面量与饱和差。
   夹在张量边界上的块 `min (k0 + 15, 1023) − k0 + 1` 由此可以 128 位地填。
   `law_tiled*`（ms，基线 / 新）：`g2s` 1024 0.2512 / 0.2450，4096 14.71 / 14.62；`law_tiled` 0.288 / 0.208，`g2` 0.213 / 0.178，`g2cap` 0.213 / 0.191，4096 上 10.52 / 9.46、9.97 / 9.24、9.97 / 9.31，`g3_128` 4.34 / 3.95；其余在 ±0.6% 以内。
@@ -829,3 +828,13 @@ work-item 的部分结果在 warp 内经 shuffle 合并之后，剩下不到 8 �
 关掉 shuffle 只走共享内存是 28.12 µs，串行合并 64 份是 27.14 µs，都不更好。
 受影响的其余 kernel（µs，前 / 后）：`softmax_resident` 27.45 / 27.09，`softmax_resident_law` 27.42 / 27.20，`softmax_fused` 61.96 / 61.90，`softmax_fused_online` 50.09 / 50.24，`attn_tiled` 60.19 / 60.18。
 四个 work-item 的归约（`lit/nvptx/tile_reduce`、`tile_reduce_merge`、`law_run_items`）的屏障从 4 道减到 2 道。
+
+## 20. 融合归约分几段（2026-11-18）
+
+`split_over_items` 原来把归约循环按全部 work-item 切段（256 段，每段 4 个元素），后来按"先分元素"切（64 段）；但 `lower_bound_fold` 并不把元素分给不同的 work-item，每段都折叠整个块的私有瓦片，所以真正起作用的是合并：一个 warp 的部分结果经 shuffle 合并，剩下的少于 8 份时一个 work-item 串行合并（§19），否则走树。
+现在取 2 的幂的段数，尽量多，但不超过 work-item 数、四个 warp（shuffle 后至多 4 份）、每段至少 8 个元素，且所有段的部分结果瓦片放得进 48 KiB 共享内存。
+`softmax_resident_shared` 上扫段数：16 段 63.79、32 段 48.25、64 段 27.12、128 段 26.12、256 段 29.64 µs。
+`bench/tools/compile_all.sh` 里设备 IR 变了的 kernel，同一时段交替三次（µs，前 / 后）：
+`softmax_fused` 61.9 / 33.7，`softmax_fused_online` 50.0 / 36.0，`softmax_resident8` 86.5 / 44.6，`softmax_resident` 27.2 / 26.1，`softmax_resident_law` 27.2 / 26.1，`softmax_resident_shared` 27.1 / 26.1（旧的定律版本 26.9），`gpu_fusion/attn_tiled` 60.2 / 59.5，`gpu_attn/attn_tiled`（H=2、L=128、D=64）18.2 / 17.2。
+没有 48 KiB 的限制时 `gpu_attn/attn_elem` 的部分结果要 2 MiB 共享内存，启动失败；没有每段 8 个元素的下限时 `attn_tiled` 的 512 长的行切 128 段，慢 1%。
+16 长的行（`lit/gpu/tile_resident`、`tile_reduce_fused*`、`lit/nvptx/tile_resident`）因此切 2 段而不是 4 段。
