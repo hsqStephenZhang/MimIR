@@ -1,6 +1,6 @@
 import Ring.Fold
-import Ring.Async
-import Ring.Cooperative
+import Ring.Witness
+import Ring.WarpWitness
 
 namespace Ring
 
