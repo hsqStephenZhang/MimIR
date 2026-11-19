@@ -328,3 +328,54 @@ codex 的审阅在给出报告前被中断。它写好并跑完的探针在 `/tm
   - 令牌构造只能来自登记的状态转换（能力私有化）；
   - `mem.M` 的线性性与 T1 一起处理，至少保证产生令牌的 mem 不被复制。
 - T2 之前，先在核心决定 Nat 的语义，并让 `normalize_nat` 的规则与之一致。
+
+## 13. 与 Async Graphene（CC'26）的对照
+
+Hagedorn 与 Grover，"It's about Time: Temporal Abstractions for Asynchronous GPU Tensor Computations"，CC'26，doi:10.1145/3771775.3786277。下文“§x”均指该论文的章节。
+
+### 13.1 它做了什么
+
+- **类型。** 张量类型在 Graphene 的布局 `[shape:stride].dtype|mem` 上叠加四种时间修饰（§4.1）：
+  - future `!T`：按完成机制分为 `!group`（commit/wait 组）和 `!mbar`（mbarrier），省略时由产生它的指令沿 def-use 推断；
+  - aref `%T`：生产者/消费者共享的缓冲，状态为 full 或 empty；
+  - tuple `<T1, T2>`：多个 future 共用一个 barrier，GEMM 上约快 5–10%；
+  - iterator `#T`：环形访问，`<<`/`>>` 取偏移。
+
+  GEMM 的主类型是 `#[7].%!<[128,64].fp16|smem, [64,128].fp16|smem>`。附录 Fig. 1 只给出类型的**构成**规则（`Future`、`Aref`、`Tuple`、`Iter` 等），没有使用规则，也没有可靠性定理。
+- **到达与参与者。** 线程也是张量：用切片和 `elect_leader` 圈出执行范围，参与谓词由算法 1 从线程张量的 AST 推出，aref 的 barrier 到达数也由此推出（§4.2.1）。
+- **流水。** 任务带 `delay`，由算法 2 生成 prologue、稳态和 epilogue（§4.2.2）。
+- **硬件。** `async.tma`/`async.mma` 从类型推出 TMA 描述符、坐标、wgmma 描述符，并检查秩、形状、内存空间和目标是否为 future（§4.3）。
+- **评测。** H100 与 B200 上 GEMM 达到 cuBLAS 的 98%；FlashAttention（head dim 64/128/256）达到 FA3 的 98%。
+
+### 13.2 它的保证到哪里为止
+
+- **future 只区分“已等待/未等待”。** `!T` 必须 `wait` 才能当 `T` 用，可以防止过早使用。但 future 不是线性的，没有规则阻止重复等待或丢弃。
+- **aref 的 full/empty 是运行时状态**（mbarrier 的 phase），不是类型状态。`put`/`get` 的作用域结束时会自动发信号。
+- **延迟释放完全手写**（§4.1.2）：`delay_signal = True` 关掉自动信号，再手写 `wgmma.wait_group(delay)`、`iter << delay`、`signal_consumed`。这一步回退的是不是正确的槽、对应的 wgmma 是否已经退役，都不受检查。
+- **“by construction”只是一句话。** 论文称“prevents synchronization bugs by construction”（§6），但没有使用规则和定理来支撑。
+
+### 13.3 我们借鉴什么
+
+1. **数据与能力合一。** 面板本身带时间修饰，例如 `Future (ring, s, g) P`；只有 `await` 能把它变成 `P`，不再有游离的令牌。这样 §12 的 `forged`（凭空构造令牌）和 `unit-dictionary`（单位类型冒充令牌）在用户层面不再可能出现。
+2. **作用域化的获取与释放。** 用户接口采用 `with_slot ring n (λ panel. body)`，线性令牌只留在协议库内部，§4 的线性检查只需覆盖库代码。这也绕开了 `mem.M` 可复制导致令牌被 hash-consing 合并的问题（§12 的 `same-app`）。
+3. **完成机制进类型。** 区分 `group` 与 `mbar`，对应我们的 `async_ring` 与 `mbar_ring`。wgmma 的在途组数（`InFlight lag`）可以作为 `group` future 的计数来检查。
+4. **布局进类型。** 把 `layout_expr` 放进 `SharedBuf` 的类型。它的 `async.tma` 只检查秩、形状和空间；我们可以由 F₂ 判定 wgmma 描述符和 TMA 落点与类型里的布局一致。这比它的检查更强。
+5. **参与者是线程张量。** 用它的做法，从线程范围推出参与谓词和 barrier 到达数，可以直接解决 §8 的问题，即 §29 中“部分 CTA 被当作全组”。
+6. **future tuple 共用 barrier。** 我们的环槽本来就是面板元组，可以作为类型层面的显式标记。
+
+### 13.4 我们可以多做、因而构成差异的
+
+| 方面 | Async Graphene | 本设计 |
+|---|---|---|
+| 未等待就用 | 类型排除（`!T` vs `T`） | 同（future 修饰） |
+| 重复使用、遗漏释放 | 不检查 | 线性令牌，限于库内部（§4） |
+| full/empty | 运行时 phase | typestate：`Vacant` → `Held` → 释放（§4、§5） |
+| 读到正确的槽和代 | 迭代器维护，不检查 | 环、槽、代作为依赖索引，由类型等价判定（§5） |
+| 延迟释放（`delay`） | 手写 `iter << delay` + `signal_consumed` | 由 `InFlight` 见证和索引检查“回退的就是已退役的那一槽”（§5） |
+| 叠放区域复用 | 无 | 区域 typestate（§6） |
+| 可靠性 | 没有定理 | Lean 小模型中的两条定理（§7） |
+| 运行时代价 | 无（编译期抽象） | 无（检查后擦除） |
+
+论文主张据此应写成：在 Async Graphene 的时间修饰之上，加上**线性性、依赖索引和 typestate**，把它留给程序员的那几处检查（延迟释放、槽与代、区域复用）变成可判定的类型检查，并给出模型中的可靠性定理。
+
+性能上它是强基线（H100 上 FA3 的 98%），我们的 attention 只有 cuDNN 的 0.73–0.97，所以论文应以类型为主线，性能只作“不付代价”的证据。
