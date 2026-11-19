@@ -13,6 +13,7 @@
 #include "mim/plug/gpu/phase/mem_checks.h"
 #include "mim/plug/gpu/phase/outline.h"
 #include "mim/plug/gpu/phase/remove_double_syncs.h"
+#include "mim/plug/gpu/phase/ring_trace.h"
 #include "mim/plug/gpu/phase/split_apply.h"
 
 using namespace mim;
@@ -67,6 +68,7 @@ static void reg_phases(Flags2Phases& phases) {
     // clang-format off
     Phase::hook<gpu::check_sync,                gpu::phase::CheckSync        >(phases);
     Phase::hook<gpu::erase_phases,              gpu::phase::ErasePhases      >(phases);
+    Phase::hook<gpu::ring_trace,                gpu::phase::RingTrace        >(phases);
     Phase::hook<gpu::mem_checks,                gpu::phase::MemChecks        >(phases);
     Phase::hook<gpu::outline,                   gpu::phase::Outline          >(phases);
     Phase::hook<gpu::remove_double_syncs,       gpu::phase::RemoveDoubleSyncs>(phases);

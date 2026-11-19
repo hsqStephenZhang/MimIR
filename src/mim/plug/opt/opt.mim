@@ -46,6 +46,7 @@ extern lam _default_compile (): compile.Phase =
         compile.named "tensor.group_default",
         compile.named "tensor.lower_to_mem",
         compile.named "gpu.check_sync",
+        compile.named "gpu.ring_trace",
         compile.named "gpu.erase_phases",
         compile.named "tensor.distribute",
         // tensor bufferization emits mem.M placeholders that need a mem chain.

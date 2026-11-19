@@ -7,6 +7,7 @@ add_mim_plugin(gpu
         phase/mem_checks.cpp
         phase/outline.cpp
         phase/remove_double_syncs.cpp
+        phase/ring_trace.cpp
         phase/split_apply.cpp
         phase/split_off_kernels.cpp
 )

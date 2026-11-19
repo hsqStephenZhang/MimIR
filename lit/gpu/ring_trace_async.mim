@@ -1,0 +1,16 @@
+// REQUIRES: ring-lean
+// UNSUPPORTED: roundtrip
+// The cp.async rings of two real attention kernels, one reading its panels with loads and one with WGMMA batches,
+// run event sequences that the Lean checker of `proofs/ring` certifies.
+// RUN: sed 's/\bHH\b/2/g;s/\bLL\b/128/g;s/\bDD\b/64/g;s/\bBM\b/64/g;s/\bBK\b/64/g;s/SCALE/0.125/g' %srcroot/bench/gpu_attn/attn_law.mim > %t.law.mim
+// RUN: sed 's/\bHH\b/2/g;s/\bLL\b/128/g;s/\bDD\b/64/g;s/\bBM\b/64/g;s/\bBK\b/64/g;s/SCALE/0.125/g' %srcroot/bench/gpu_attn/attn_wg.mim > %t.wg.mim
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 -X gpu:ring-trace=1 %t.law.mim -o /dev/null 2> %t.law.log
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 -X gpu:ring-trace=1 %t.wg.mim -o /dev/null 2> %t.wg.log
+// RUN: %FileCheck %s --check-prefix=WG --input-file %t.wg.log
+// RUN: python3 %srcroot/bench/tools/ring_trace_check.py %srcroot/proofs/ring %t.law.log %t.wg.log | %FileCheck %s
+// WG: ring-trace wgmma_fence 0
+// WG-NEXT: ring-trace read 0 0 wgmma 0
+// WG-NEXT: ring-trace wgmma_commit 0
+// WG-NEXT: ring-trace wgmma_wait0 0
+// CHECK: rid=0 model=async events=13 accepted
+// CHECK: rid=0 model=async events=21 accepted
