@@ -875,9 +875,10 @@ axm Vacant: [rid depth: Nat] → Idx depth → *;
 priv axm vacate: {rid depth: Nat} → [mem.M 0, s: Idx depth] → [mem.M 0, Vacant (rid, depth) s];
 axm occupy: {rid depth: Nat} → [mem.M 0, s: Idx depth, Vacant (rid, depth) s] → mem.M 0;
 /// What a step's side of ring `rid` holds of the ring itself: `tt` from its `await` until the `release` after it.
-/// Only a ring's sync makes and moves it, on memory, so a second `await` before a `release` does not type.
+/// Only a ring's `open` makes it and only its sync moves it, on memory, so a second `await` before a `release` does not
+/// type and `gpu.check_sync` rejects a state used twice.
 axm Ring: [rid depth: Nat] → Bool → *;
-priv axm ring_idle: [rid depth: Nat] → Ring (rid, depth) ff;
+priv axm ring_open: {rid depth: Nat} → mem.M 0 → [mem.M 0, Ring (rid, depth) ff];
 priv axm ring_got: {rid depth: Nat} → [mem.M 0, Ring (rid, depth) ff] → [mem.M 0, Ring (rid, depth) tt];
 priv axm ring_put: {rid depth: Nat} → [mem.M 0, got: Bool, Ring (rid, depth) got] → [mem.M 0, Ring (rid, depth) ff];
 /// The panels of ring `rid`; only a ring's fold makes them, so its tokens read no other ring's panels.
@@ -891,14 +892,14 @@ axm read_slot: {P: *, rid depth: Nat} → [ring: Panels (rid, depth) P, s t: Idx
 /// the fill holds of it, and `commit (mem, s, vacant)` closes the copies the fill of slot `s` started; `await (mem, i)` returns once block `i`'s panels have landed, with what `H` says the
 /// step holds of that slot; `release (mem, s, live, held)` gives slot `s` up if it is held `live`; `settle` waits for
 /// all copies still in flight.
-/// `idle` is what a step holds before it has read any slot, which is not live, and its `R` before its first `await`.
+/// `idle` is what a step holds before it has read any slot, which is not live; `open` gives the step's `R`.
 /// `await` takes `R ff` to `R tt` and `release` takes either back, so a step awaits at most once per release.
 anx lam SyncOf (depth: Nat) (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *): * =
-    [open: mem.M 0 → mem.M 0, acquire: [m: mem.M 0, n: Nat] → [mem.M 0, V (core.idx 0 depth (n % depth))],
+    [open: mem.M 0 → [mem.M 0, R ff], acquire: [m: mem.M 0, n: Nat] → [mem.M 0, V (core.idx 0 depth (n % depth))],
      commit: [mem.M 0, s: Idx depth, V s] → mem.M 0,
      await: [m: mem.M 0, n: Nat, R ff] → [mem.M 0, H (core.idx 0 depth (n % depth), tt), R tt],
      release: [mem.M 0, s: Idx depth, live: Bool, H (s, live), got: Bool, R got] → [mem.M 0, R ff],
-     idle: [H (core.idx 0 depth 0, ff), R ff],
+     idle: H (core.idx 0 depth 0, ff),
      settle: mem.M 0 → mem.M 0];
 lam RingSync (rid depth: Nat): * = SyncOf depth (Held (rid, depth)) (Vacant (rid, depth)) (Ring (rid, depth));
 /// A ring sync's `await` and `release` built from how it waits for a block and gives a slot up.
@@ -912,7 +913,6 @@ lam ring_release {rid depth: Nat} (m: mem.M 0, s: Idx depth, live: Bool, h: Held
     ring_put (retire (m, s, live, h), got, r);
 lam kept {rid depth: Nat} (m: mem.M 0, n: Nat): [mem.M 0, Vacant (rid, depth) (core.idx 0 depth (n % depth))] =
     vacate (m, core.idx 0 depth (n % depth));
-lam same (m: mem.M 0): mem.M 0 = m;
 /// The mbarriers of `bars` start a phase that `count` arrivals complete, initialized by the work-items `issue` selects.
 lam mbars_init {depth: Nat} (bars: buffer.Buf (1, depth, I64), count: Nat, issue: Bool) (m: mem.M 0): mem.M 0 =
     vec.fold.l @(mem.M 0, Idx depth) @depth
@@ -921,28 +921,28 @@ lam mbars_init {depth: Nat} (bars: buffer.Buf (1, depth, I64), count: Nat, issue
 /// `cp.async` commit groups: a fill is one group and a step waits until at most `pending` are in flight.
 /// With `proxy` the panels are read through the async proxy, so each filler first publishes its writes to it.
 anx lam async_ring {rid depth: Nat} (pending: Nat, proxy: Bool): RingSync (rid, depth) =
-    (same, kept @(rid, depth), λ (m: mem.M 0, s: Idx depth, v: Vacant (rid, depth) s): mem.M 0 = async_commit (occupy (m, s, v)),
+    (ring_open @(rid, depth), kept @(rid, depth), λ (m: mem.M 0, s: Idx depth, v: Vacant (rid, depth) s): mem.M 0 = async_commit (occupy (m, s, v)),
      ring_await @(rid, depth) (λ (m: mem.M 0, _: Nat): mem.M 0 =
         let waited = async_wait_group pending m;
         (waited, fence_proxy_async waited)#proxy),
      ring_release @(rid, depth),
-     (unheld (rid, depth), ring_idle (rid, depth)), async_wait);
+     unheld (rid, depth), async_wait);
 /// mbarriers, one per slot in `bars`: the ring's fill `n` completes the phase of parity `parity n` of slot `n % depth`,
 /// which the step that reads it waits for, so a ring that fills no block past its last has nothing left in flight.
 /// A fill arrives on its slot's mbarrier by itself, so nothing commits it; `initiator` selects who initializes them.
 anx lam mbar_ring {rid depth: Nat} (bars: buffer.Buf (1, depth, I64), parity: Nat → Nat, initiator: Bool): RingSync (rid, depth) =
     let landed = λ (m: mem.M 0, n: Nat): mem.M 0 =
         mbar_wait_at (m, buf_addr (bars, core.idx 0 depth (n % depth)), core.idx 0 0x100000000 (parity n));
-    (mbars_init (bars, 1, initiator), kept @(rid, depth), occupy @(rid, depth),
+    (λ (m: mem.M 0): [mem.M 0, Ring (rid, depth) ff] = ring_open @(rid, depth) (mbars_init (bars, 1, initiator) m), kept @(rid, depth), occupy @(rid, depth),
      ring_await @(rid, depth) landed,
      ring_release @(rid, depth),
-     (unheld (rid, depth), ring_idle (rid, depth)),
+     unheld (rid, depth),
      async_wait);
 /// A cluster that shares panels refills a slot only when all of its `size` work-groups have read it, which the "empty"
 /// mbarrier of the slot counts: the leader arrives for each of them on that of the slot it gives up, and it waits for
 /// the phase of parity `vacant n` before fill `n`.
 anx lam shared_ring {rid depth: Nat} (sync: RingSync (rid, depth), size: Nat, empties: buffer.Buf (1, depth, I64), vacant: Nat → Nat, initiator: Bool): RingSync (rid, depth) =
-    (λ (m: mem.M 0): mem.M 0 = mbars_init (empties, size, initiator) ((sync#0₇) m),
+    (λ (m: mem.M 0): [mem.M 0, Ring (rid, depth) ff] = let (m, r) = (sync#0₇) m; (mbars_init (empties, size, initiator) m, r),
      λ (m: mem.M 0, n: Nat): [mem.M 0, Vacant (rid, depth) (core.idx 0 depth (n % depth))] =
         let (m, v) = (sync#1₇) (m, n);
         (mbar_wait_if (m, buf_addr (empties, core.idx 0 depth (n % depth)), core.idx 0 0x100000000 (vacant n), leader ()), v),
@@ -963,7 +963,7 @@ anx lam shared_ring {rid depth: Nat} (sync: RingSync (rid, depth), size: Nat, em
 /// a slot is empty once the consumers of all have given it up: each arrives on the slot's mbarrier in every one.
 anx lam consumer_ring {rid depth: Nat}
     (sync: RingSync (rid, depth), empties: buffer.Buf (1, depth, I64), consumers readers: Nat, producer: Bool, vacant: Nat → Nat, initiator: Bool): RingSync (rid, depth) =
-    (λ (m: mem.M 0): mem.M 0 = mbars_init (empties, 4 * consumers * readers, initiator) ((sync#0₇) m),
+    (λ (m: mem.M 0): [mem.M 0, Ring (rid, depth) ff] = let (m, r) = (sync#0₇) m; (mbars_init (empties, 4 * consumers * readers, initiator) m, r),
      λ (m: mem.M 0, n: Nat): [mem.M 0, Vacant (rid, depth) (core.idx 0 depth (n % depth))] =
         let issue  = core.bit2.and 0 (producer, core.icmp.e (core.bit2.and 0 (item_index (), 127I64), 0I64));
         let (m, v) = (sync#1₇) (m, n);
@@ -982,7 +982,7 @@ anx lam consumer_ring {rid depth: Nat}
      sync#5₇, async_wait);
 /// A work-group's barrier makes the initialized mbarriers visible to all of its work-items.
 anx lam fenced_ring {rid depth: Nat} (sync: RingSync (rid, depth)): RingSync (rid, depth) =
-    (λ (m: mem.M 0): mem.M 0 = fence ((sync#0₇) m), sync#1₇, sync#2₇, sync#3₇, sync#4₇, sync#5₇, sync#6₇);
+    (λ (m: mem.M 0): [mem.M 0, Ring (rid, depth) ff] = let (m, r) = (sync#0₇) m; (fence m, r), sync#1₇, sync#2₇, sync#3₇, sync#4₇, sync#5₇, sync#6₇);
 /// A persistent work-group sets its ring up in its `first` tile only.
 /// Later tiles skip the barrier, so a producer ahead of its consumers never waits for their stores.
 anx lam resumed_ring {rid depth: Nat} (sync: RingSync (rid, depth), first: Bool): RingSync (rid, depth) =
@@ -992,11 +992,11 @@ anx lam resumed_ring {rid depth: Nat} (sync: RingSync (rid, depth), first: Bool)
             con fenced (m: mem.M 0) = return (fence m);
             con ready (m: mem.M 0)  = return m;
         end;
-    (λ (m: mem.M 0): mem.M 0 = cps.cps2ds set_up ((sync#0₇) m), sync#1₇, sync#2₇, sync#3₇, sync#4₇, sync#5₇, sync#6₇);
+    (λ (m: mem.M 0): [mem.M 0, Ring (rid, depth) ff] = let (m, r) = (sync#0₇) m; (cps.cps2ds set_up m, r), sync#1₇, sync#2₇, sync#3₇, sync#4₇, sync#5₇, sync#6₇);
 /// A cluster's `size` work-groups load into each other's slots: each sees the others' mbarriers initialized before the
 /// fold, and the cluster's barrier ends it.
 anx lam cluster_ring {rid depth: Nat} (sync: RingSync (rid, depth), size: Nat): RingSync (rid, depth) =
-    (λ (m: mem.M 0): mem.M 0 = sync_cluster (fence_mbarrier_init (cluster_size size ((sync#0₇) m))),
+    (λ (m: mem.M 0): [mem.M 0, Ring (rid, depth) ff] = let (m, r) = (sync#0₇) m; (sync_cluster (fence_mbarrier_init (cluster_size size m)), r),
      sync#1₇, sync#2₇, sync#3₇, sync#4₇, sync#5₇, λ (m: mem.M 0): mem.M 0 = sync_cluster ((sync#6₇) m));
 /// Two consumers take turns at issuing their MMAs: `turn_take` waits on the consumer's named barrier and `turn_pass`
 /// arrives on the other's.
@@ -1006,6 +1006,9 @@ anx lam turn_pass (consumer: Nat) (m: mem.M 0): mem.M 0 = arrive_named (m, core.
 /// Only the wait of `wgmma_batch` makes one; `gpu.erase_phases` erases it.
 axm InFlight: Nat → *;
 priv axm in_flight: [pending: Nat] → InFlight pending;
+/// A slot a step read is free of that step's MMAs once the witness of the step `d` later says at most `k ≤ d` groups are
+/// in flight; a fold says so on the memory it gives the slot up on, and `gpu.check_sync` checks `k ≤ d`.
+priv axm retired: {k d: Nat} → [mem.M 0, InFlight k] → mem.M 0;
 /// A warpgroup's group of `n` MMAs over `x`, the accumulators they write and the register operands they read: prior
 /// accesses are fenced before them, with `publish` after the panels' fillers published them to the async proxy, and
 /// `x` comes back only from the wait that leaves at most `pending` groups in flight, with the witness of that.
@@ -1023,7 +1026,7 @@ anx lam wgmma_batch {X: *, n: Nat} (publish: Bool, pending: Nat, turn: Bool, con
 /// The first consumer issues first: the second one hands it the turn once, in the `first` tile.
 anx lam pingpong_ring {rid depth: Nat} (sync: RingSync (rid, depth), consumer: Nat, producer first: Bool): RingSync (rid, depth) =
     let second = core.bit2.and 0 (core.bit2.and 0 (core.ncmp.e (consumer, 1), core.bit2.xor 0 (producer, tt)), first);
-    (λ (m: mem.M 0): mem.M 0 = arrive_named_if ((sync#0₇) m, 1I32, 256I32, second),
+    (λ (m: mem.M 0): [mem.M 0, Ring (rid, depth) ff] = let (m, r) = (sync#0₇) m; (arrive_named_if (m, 1I32, 256I32, second), r),
      sync#1₇, sync#2₇, sync#3₇, sync#4₇, sync#5₇, sync#6₇);
 /// The sync of a ring TMA fills, built from who shares it: a cluster of `cluster` work-groups (0 if none) that may be
 /// `sharing` its panels, `consumers` warpgroups a producer warp fills for (0 if its readers fill it), of which this is
@@ -1050,19 +1053,20 @@ anx lam tma_ring {rid depth: Nat}
 /// `lag` 1 after it, when its own MMAs may stay in flight and those of the step before have retired.
 lam ring_fold_at {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I64, refill: Nat → Nat, lag: Nat, exact turns: Bool)
     (start: mem.M 0, acc: A, ring: «depth; P»)
-    (fill: Fn [mem.M 0, Nat, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A]): [mem.M 0, A] =
+    (fill: Fn [mem.M 0, Nat, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A, InFlight lag]): [mem.M 0, A] =
     let H      = Held (rid, depth);
     let R      = Ring (rid, depth);
-    let Last   = [live: Bool, s: Idx depth, held: H (s, live), ring: R ff];
+    let Last   = [live: Bool, s: Idx depth, held: H (s, live), ring: R ff, left: InFlight lag];
     let S      = [mem.M 0, A, «depth; P», Last];
     let ahead  = depth - 1;
     let (open, acquire, commit, await, release, idle, settle) = sync;
+    let (opened, r0) = open start;
     let primed = vec.fold.l @(mem.M 0, Idx ahead) @ahead
         (λ (m: mem.M 0, s: Idx ahead): mem.M 0 =
             let n      = core.idx2nat s;
             let (m, v) = acquire (m, n);
             commit (cps.cps2ds fill (m, n, n, ring#(core.idx 0 depth n)), core.idx 0 depth (n % depth), v))
-        (open start, ‹s: ahead; s›);
+        (opened, ‹s: ahead; s›);
     // With `turns` the loop runs `depth` blocks a turn, so each block's slots are literal ones: block `turn · depth + j`
     // reads slot `j` and refills the slot after it.
     let blocks = core.bitcast Nat count;
@@ -1073,9 +1077,9 @@ lam ring_fold_at {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I
             con ring_step (i: I64, st: S, yield: Cn S) =
                 let (m, a, slots, last) = st;
                 let block           = core.bitcast Nat i;
-                let (live, s, h, r) = last;
-                let (m, mine, r)    = await (m, block, r);
-                let turned          = ‹s: depth; slots#(core.idx 0 depth ((core.idx2nat s + 1) % depth))›;
+                let (live, s, h, r, w) = last;
+                let (m, mine, r)       = await (m, block, r);
+                let turned             = ‹s: depth; slots#(core.idx 0 depth ((core.idx2nat s + 1) % depth))›;
                 let here            = core.idx 0 depth (block % depth);
                 fun refilled (m: mem.M 0): [mem.M 0, R ff] =
                     let (synced, r) = release (fence m, s, live, h, tt, r);
@@ -1086,13 +1090,13 @@ lam ring_fold_at {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I
                     con done (m: mem.M 0) = return (m, r);
                     (refilling, done)#(core.bit2.and 0 (exact, blocks <= block + ahead)) synced;
                 con early (m: mem.M 0) =
-                    let (m, r) = cps.cps2ds refilled m;
-                    let (m, a) = cps.cps2ds step (m, a, block, slots#(core.idx 0 depth 0));
-                    yield (m, a, turned, (tt, here, mine, r));
+                    let (m, r)      = cps.cps2ds refilled (retired @(lag, 0) (m, w));
+                    let (m, a, now) = cps.cps2ds step (m, a, block, slots#(core.idx 0 depth 0));
+                    yield (m, a, turned, (tt, here, mine, r, now));
                 con late (m: mem.M 0) =
-                    let (m, a) = cps.cps2ds step (m, a, block, slots#(core.idx 0 depth 0));
-                    let (m, r) = cps.cps2ds refilled m;
-                    yield (m, a, turned, (tt, here, mine, r));
+                    let (m, a, now) = cps.cps2ds step (m, a, block, slots#(core.idx 0 depth 0));
+                    let (m, r)      = cps.cps2ds refilled (retired @(lag, 1) (m, now));
+                    yield (m, a, turned, (tt, here, mine, r, now));
                 (early, late)#(lag != 0) m;
             con step_done (st: S) =
                 con waited (m: mem.M 0) =
@@ -1113,8 +1117,8 @@ lam ring_fold_at {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I
                     let later      = core.idx 0 depth ((at + ahead) % depth);
                     con skip (m: mem.M 0) = return (m, a, slots, last);
                     con go (m: mem.M 0) =
-                        let (live, s, h, r) = last;
-                        let (m, mine, r)    = await (m, block, r);
+                        let (live, s, h, r, w) = last;
+                        let (m, mine, r)       = await (m, block, r);
                         let here            = core.idx 0 depth (block % depth);
                         let (panel, mine)   = read_slot @(P, rid, depth) (panels @(rid, depth, P) slots, j, here, mine);
                         fun refilled (m: mem.M 0): [mem.M 0, R ff] =
@@ -1126,13 +1130,13 @@ lam ring_fold_at {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I
                             con done (m: mem.M 0) = return (m, r);
                             (refilling, done)#(core.bit2.and 0 (exact, blocks <= block + ahead)) synced;
                         con early (m: mem.M 0) =
-                            let (m, r) = cps.cps2ds refilled m;
-                            let (m, a) = cps.cps2ds step (m, a, block, panel);
-                            return (m, a, slots, (tt, here, mine, r));
+                            let (m, r)      = cps.cps2ds refilled (retired @(lag, 0) (m, w));
+                            let (m, a, now) = cps.cps2ds step (m, a, block, panel);
+                            return (m, a, slots, (tt, here, mine, r, now));
                         con late (m: mem.M 0) =
-                            let (m, a) = cps.cps2ds step (m, a, block, panel);
-                            let (m, r) = cps.cps2ds refilled m;
-                            return (m, a, slots, (tt, here, mine, r));
+                            let (m, a, now) = cps.cps2ds step (m, a, block, panel);
+                            let (m, r)      = cps.cps2ds refilled (retired @(lag, 1) (m, now));
+                            return (m, a, slots, (tt, here, mine, r, now));
                         (early, late)#(lag != 0) m;
                     (skip, go)#(block < blocks) m;
                 yield (vec.fold.l @(S, Idx depth) @depth (λ (st: S, j: Idx depth): S = cps.cps2ds one (st, j)) (st, ‹j: depth; j›));
@@ -1143,8 +1147,7 @@ lam ring_fold_at {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I
                 con ready (m: mem.M 0) = return (settle m, st#1₄);
                 (ready, waited)#(lag != 0) st#0₄;
         end;
-    let (unread, r) = idle;
-    let none: Last  = (ff, core.idx 0 depth 0, unread, r);
+    let none: Last = (ff, core.idx 0 depth 0, idle, r0, in_flight lag);
     cps.cps2ds ((rolled, run)#turns) (primed, acc, ring, none);
 /// A work-group folds `count` blocks into `acc`, each read from panels `P` that asynchronous copies fill ahead into a
 /// ring of `depth` slots.
@@ -1159,7 +1162,7 @@ lam ring_fold_at {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I
 /// `fill (mem, block, n, slot)` starts the copies of `block`'s panels into `slot` as the ring's `n`-th fill.
 anx lam ring_fold {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I64, refill: Nat → Nat, lag: Nat, exact turns: Bool)
     (start: mem.M 0, acc: A, ring: «depth; P»)
-    (fill: Fn [mem.M 0, Nat, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A]): [mem.M 0, A] =
+    (fill: Fn [mem.M 0, Nat, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A, InFlight lag]): [mem.M 0, A] =
     ring_fold_at @(A, P, rid, depth) (sync, count, refill, lag, exact, turns) (start, acc, ring) (fill, step);
 /// A step hands back the witness that it left at most `lag` groups of MMAs in flight: the slot given up `lag` steps
 /// after it was read is then one no MMA still reads.
@@ -1168,9 +1171,10 @@ anx lam ring_fold {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: 
 lam ws_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: SyncOf depth H V R, count: I64, producer: Bool, nth: Nat → Nat, lag: Nat)
     (start: mem.M 0, acc: A, ring: «depth; P»)
     (fill: Fn [mem.M 0, Nat, P] → mem.M 0, step: Fn [mem.M 0, A, Nat, P] → [mem.M 0, A, InFlight lag]): [mem.M 0, A] =
-    let Last = [live: Bool, s: Idx depth, held: H (s, live), ring: R ff];
+    let Last = [live: Bool, s: Idx depth, held: H (s, live), ring: R ff, left: InFlight lag];
     let S    = [mem.M 0, A, «depth; P», Last];
     let (open, acquire, commit, await, release, idle, settle) = sync;
+    let (opened, r0) = open start;
     fun run (init: S): [mem.M 0, A] =
         affine.For @(0, 4, (mem.M 0, A, «depth; P», Last)) ws_step ws_done (0I64, count, 1I64, init)
         where
@@ -1183,26 +1187,25 @@ lam ws_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth �
                     let (m, v) = acquire (m, n);
                     yield (commit (cps.cps2ds fill (m, block, slots#(core.idx 0 depth 0)), core.idx 0 depth (n % depth), v), a, next, last);
                 con consume (m: mem.M 0) =
-                    let (live, s, h, r) = last;
-                    let (m, mine, r)    = await (m, n, r);
-                    let (m, a, _)       = cps.cps2ds step (m, a, block, slots#(core.idx 0 depth 0));
-                    let here            = core.idx 0 depth (n % depth);
+                    let (live, s, h, r, w) = last;
+                    let (m, mine, r)       = await (m, n, r);
+                    let (m, a, now)        = cps.cps2ds step (m, a, block, slots#(core.idx 0 depth 0));
+                    let here               = core.idx 0 depth (n % depth);
                     con early (m: mem.M 0) =
-                        let (m, r) = release (m, here, tt, mine, tt, r);
-                        yield (m, a, next, (live, s, h, r));
+                        let (m, r) = release (retired @(lag, 0) (m, now), here, tt, mine, tt, r);
+                        yield (m, a, next, (live, s, h, r, w));
                     con late (m: mem.M 0) =
-                        let (m, r) = release (m, s, live, h, tt, r);
-                        yield (m, a, next, (tt, here, mine, r));
+                        let (m, r) = release (retired @(lag, 1) (m, now), s, live, h, tt, r);
+                        yield (m, a, next, (tt, here, mine, r, now));
                     (early, late)#(lag != 0) m;
                 (consume, produce)#producer m;
             con ws_done (st: S) =
                 let (m, a)          = wgmma_wait (st#0₄, 0, st#1₄);
-                let (live, s, h, r) = st#3₄;
+                let (live, s, h, r, _) = st#3₄;
                 return (settle ((m, (release (m, s, live, h, ff, r))#0₂)#(lag != 0)), a);
         end;
-    let (unread, r) = idle;
-    let none: Last  = (ff, core.idx 0 depth 0, unread, r);
-    cps.cps2ds run (open start, acc, ring, none);
+    let none: Last = (ff, core.idx 0 depth 0, idle, r0, in_flight lag);
+    cps.cps2ds run (opened, acc, ring, none);
 /// A warpgroup region folds `count` blocks into `acc`, its producer warp and its consumers each running their side of
 /// one ring of `depth` slots and meeting only at the slots' mbarriers.
 /// In step `i` the producer acquires the first slot and starts the copies of block `i` into it with

@@ -11,8 +11,10 @@ plugin compile;
 
 extern lam mix_two_rings (m: mem.M 0, bars0 bars1: buffer.Buf (1, 2, I64), n: Nat): mem.M 0 =
     let parity = λ (i: Nat): Nat = core.nat.rem (i, 2);
-    let (_, _, _, await0, _, (_, ring0), _) = gpu.mbar_ring (bars0, parity, tt);
-    let (_, _, _, _, release1, (_, ring1), _) = gpu.mbar_ring (bars1, parity, tt);
+    let (open_ring0, _, _, await0, _, _, _) = gpu.mbar_ring (bars0, parity, tt);
+    let (m, ring0) = open_ring0 m;
+    let (open_ring1, _, _, _, release1, _, _) = gpu.mbar_ring (bars1, parity, tt);
+    let (m, ring1) = open_ring1 m;
     let (m, mine0, _) = await0 (m, n, ring0);
     (release1 (m, core.idx 0 2 (core.nat.rem (n, 2)), tt, mine0, ff, ring1))#0_2;
 

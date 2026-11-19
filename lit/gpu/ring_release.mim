@@ -7,7 +7,8 @@ plugin mem;
 plugin gpu;
 
 lam own {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, _, _, await, release, (_, ring), _) = sync;
+    let (open_ring, _, _, await, release, _, _) = sync;
+    let (m, ring) = open_ring m;
     let (m, mine, ring) = await (m, n, ring);
     (release (m, core.idx 0 depth (core.nat.rem (n, depth)), tt, mine, tt, ring))#0_2;
 

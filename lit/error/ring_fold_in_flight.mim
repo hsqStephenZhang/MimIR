@@ -1,0 +1,16 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+
+// A ring that gives a slot up `lag` steps after its step read it needs the step to leave at most `lag` groups of MMAs
+// in flight: one that may leave two cannot have its slot given up one step later.
+
+plugin core;
+plugin mem;
+plugin gpu;
+
+fun fill (m: mem.M 0, _ _: Nat, _: []): mem.M 0 = return m;
+fun step (m: mem.M 0, a: I32, _: Nat, _: []): [mem.M 0, I32, gpu.InFlight 2] = return (gpu.wgmma_batch @(I32, 0) (ff, 2, ff, 0) (m, a) ‹0; λ (st: [mem.M 0, I32]): [mem.M 0, I32] = st›);
+
+extern lam late (m: mem.M 0): [mem.M 0, I32] =
+    gpu.ring_fold @(I32, [], 0, 2) (gpu.async_ring @(0, 2) (0, ff), 8I64, λ (i: Nat): Nat = i, 1, ff, tt) (m, 0I32, ‹2; ()›) (fill, step);
+
+// CHECK: error: {{.*}}not assignable

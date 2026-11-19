@@ -13,7 +13,9 @@ const Def* ErasePhases::rewrite_imm_App(const App* app) {
     if (auto panels = Axm::isa<gpu::Panels>(app)) return w.arr(rewrite(panels->decurry()->arg(2, 1)), rewrite(app->arg()));
     if (Axm::isa<gpu::panels>(app)) return rewrite(app->arg());
     if (Axm::isa<gpu::InFlight>(app)) return w.sigma();
-    if (Axm::isa<gpu::unheld>(app) || Axm::isa<gpu::in_flight>(app) || Axm::isa<gpu::ring_idle>(app)) return w.tuple();
+    if (Axm::isa<gpu::unheld>(app) || Axm::isa<gpu::in_flight>(app)) return w.tuple();
+    if (Axm::isa<gpu::ring_open>(app)) return w.tuple({rewrite(app->arg()), w.tuple()});
+    if (Axm::isa<gpu::retired>(app)) return rewrite(app->arg())->proj(2, 0);
     if (Axm::isa<gpu::ring_got>(app)) return w.tuple({rewrite(app->arg())->proj(2, 0), w.tuple()});
     if (Axm::isa<gpu::ring_put>(app)) return w.tuple({rewrite(app->arg())->proj(3, 0), w.tuple()});
     if (Axm::isa<gpu::hold>(app) || Axm::isa<gpu::vacate>(app))

@@ -10,7 +10,8 @@ plugin compile;
 
 lam next_slot {rid depth: Nat} (sync: gpu.SyncOf depth (gpu.Held (rid, depth)) (gpu.Vacant (rid, depth)) (gpu.Ring (rid, depth)))
     (m: mem.M 0, n: Nat, ring: gpu.Panels (rid, depth) Nat): [mem.M 0, Nat] =
-    let (_, _, _, await, release, (_, state), _) = sync;
+    let (open_state, _, _, await, release, _, _) = sync;
+    let (m, state) = open_state m;
     let (m, mine, state)     = await (m, n, state);
     let s             = core.idx 0 depth (core.nat.rem (n, depth));
     let ahead         = core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth));

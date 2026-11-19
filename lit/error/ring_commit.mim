@@ -8,7 +8,8 @@ plugin mem;
 plugin gpu;
 
 lam other {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, acquire, commit, _, _, (_, ring), _) = sync;
+    let (open_ring, acquire, commit, _, _, _, _) = sync;
+    let (m, ring) = open_ring m;
     let (m, vacant) = acquire (m, n);
     commit (m, core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth)), vacant);
 

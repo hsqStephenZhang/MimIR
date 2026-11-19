@@ -52,12 +52,11 @@ lam run (rid depth count lag: Nat, turns: Bool) (m: M, bars: Bars depth, map: Ma
         let panel = (word (core.bitcast Nat panelAddr), map, word block, 0I32, 1, 64, 2, 1);
         let bar = gpu.buf_addr (bars, core.idx 0 depth (nth % depth));
         return (gpu.tma_fill @1 (panel, bar, gpu.leader ()) m);
-    fun step (m: M, a: I32, block: Nat, panelAddr: I64): [M, I32] =
+    fun step (m: M, a: I32, block: Nat, panelAddr: I64): [M, I32, gpu.InFlight lag] =
         let issue = λ (m: M, a: I32): [M, I32] =
             let (m, _) = gpu.wgmma_f16 (1, m, core.bitcast I64 block, panelAddr, ff, ‹1, 4; 0.0:math.F32›);
             (m, a);
-        let (m, a, _) = gpu.wgmma_batch @(I32, 2) (ff, lag, ff, 0) (m, a) (issue, issue);
-        return (m, a);
+        return (gpu.wgmma_batch @(I32, 2) (ff, lag, ff, 0) (m, a) (issue, issue));
     let (m, _) = gpu.ring_fold @(I32, I64, rid, depth) (sync, core.bitcast I64 count, refill, lag, tt, turns)
         (m, 0I32, ‹s: depth; core.bitcast I64 (128 * core.idx2nat s)›) (fill, step);
     m;

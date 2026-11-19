@@ -13,7 +13,8 @@ lam sink (h: gpu.Held (0, 2) (0₂, tt))@ff: mem.M 0 → mem.M 0 =
     give;
 
 extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, _, _, await, _, (_, ring), _) = gpu.async_ring @(0, 2) (1, ff);
+    let (open_ring, _, _, await, _, _, _) = gpu.async_ring @(0, 2) (1, ff);
+    let (m, ring) = open_ring m;
     let (m, mine, ring) = await (m, 0, ring);
     let f = sink mine;
     lam loop (m: mem.M 0, i: Nat)@ff: mem.M 0 =

@@ -9,7 +9,8 @@ plugin compile;
 plugin affine;
 
 extern fun step (m: mem.M 0, endi: I64): mem.M 0 =
-    let (_, _, _, await, release, (_, ring), _) = gpu.async_ring @(0, 3) (1, ff);
+    let (open_ring, _, _, await, release, _, _) = gpu.async_ring @(0, 3) (1, ff);
+    let (m, ring) = open_ring m;
     let (m, h, ring) = await (m, 0, ring);
     affine.For @(0, 1, mem.M 0) work finish (0I64, endi, 1I64, m)
     where

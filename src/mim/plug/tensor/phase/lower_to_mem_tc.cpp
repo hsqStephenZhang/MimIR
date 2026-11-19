@@ -1182,12 +1182,16 @@ const Def* LowerToMem::warp_fold(const App* app) {
                 forward_layouts(ring[0][j], targets[j]);
             return fill_block(at, block, targets);
         });
-        auto ring_step = w.mut_fun(w.sigma({M, acc_ty, w.type_nat(), slot_ty}), w.sigma({M, acc_ty}))->set("ringStep");
+        auto left      = w.app(w.annex<gpu::InFlight>(), w.lit_nat_0());
+        auto ring_step = w.mut_fun(w.sigma({M, acc_ty, w.type_nat(), slot_ty}), w.sigma({M, acc_ty, left}))->set("ringStep");
         closure(ring_step, [&]() -> const Def* {
             auto [at, acc, iteration, slot] = ring_step->var(2, 0)->projs<4>();
             bind_old(parameter->has_var());
-            auto next = fold_step(iteration, acc->proj(2, 0), acc->proj(2, 1), slot);
-            return w.tuple({at, w.tuple({next, acc->proj(2, 1)})});
+            auto issued = fe::Restore<const Def*>(in_flight_, nullptr);
+            auto next   = fold_step(iteration, acc->proj(2, 0), acc->proj(2, 1), slot);
+            // A step without MMAs reads its panels with loads, which complete within it.
+            auto done = in_flight_ ? in_flight_ : w.app(w.annex<gpu::in_flight>(), w.lit_nat_0());
+            return w.tuple({at, w.tuple({next, acc->proj(2, 1)}), done});
         });
         auto depth  = w.lit_nat(2);
         auto refill = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringRefill");

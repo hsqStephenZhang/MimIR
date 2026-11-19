@@ -8,7 +8,8 @@ plugin gpu;
 plugin compile;
 
 extern fun step (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, _, _, await, release, (_, ring), _) = gpu.async_ring @(0, 2) (1, ff);
+    let (open_ring, _, _, await, release, _, _) = gpu.async_ring @(0, 2) (1, ff);
+    let (m, ring) = open_ring m;
     let (m, mine, ring) = await (m, n, ring);
     let s = core.idx 0 2 (core.nat.rem (n, 2));
     con yes (m: mem.M 0) = return ((release (m, s, tt, mine, tt, ring))#0_2);

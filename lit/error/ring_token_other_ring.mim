@@ -10,8 +10,10 @@ plugin gpu;
 plugin compile;
 
 extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, _, _, await, _, (_, ring0), _) = gpu.async_ring @(0, 2) (1, ff);
-    let (_, _, _, _, release, (_, ring1), _) = gpu.async_ring @(1, 2) (1, ff);
+    let (open_ring0, _, _, await, _, _, _) = gpu.async_ring @(0, 2) (1, ff);
+    let (m, ring0) = open_ring0 m;
+    let (open_ring1, _, _, _, release, _, _) = gpu.async_ring @(1, 2) (1, ff);
+    let (m, ring1) = open_ring1 m;
     let (m, mine, _) = await (m, n, ring0);
     (release (m, core.idx 0 2 (core.nat.rem (n, 2)), tt, mine, ff, ring1))#0_2;
 

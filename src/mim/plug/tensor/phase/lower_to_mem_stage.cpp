@@ -686,9 +686,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 forward_layouts(ring[0][j], targets[j]);
             return tma ? fill_tma(at, shifted(block), targets, nth) : fill_block(at, block, targets);
         });
-        // A specialized step also hands back what its MMAs left in flight, which is what its late release relies on.
+        // A step also hands back what its MMAs left in flight, which is what the release of the slot it read relies on.
         auto left      = w.app(w.annex<gpu::InFlight>(), w.lit_nat(overlap));
-        auto step_cod  = specialized ? w.sigma({M, acc_ty, left}) : w.sigma({M, acc_ty});
+        auto step_cod  = w.sigma({M, acc_ty, left});
         auto fold_step = w.mut_fun(w.sigma({M, acc_ty, w.type_nat(), slot_ty}), step_cod)->set("ringStep");
         auto step_body = [&]() -> const Def* {
             auto [at, acc, iteration, slot] = fold_step->var(2, 0)->projs<4>();
@@ -717,9 +717,11 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         closure(fold_step, [&]() -> const Def* {
             auto issued = fe::Restore<const Def*>(in_flight_, nullptr);
             auto next   = step_body();
-            if (!specialized) return next;
-            if (!in_flight_) app->blame("a specialized reduction's step issues no MMAs").bail();
-            return w.tuple({next->proj(2, 0), next->proj(2, 1), in_flight_});
+            if (!in_flight_ && (specialized || overlap != 0))
+                app->blame("a reduction step that leaves MMAs in flight issues none").bail();
+            // A step without MMAs reads its panels with loads, which complete within it.
+            auto left = in_flight_ ? in_flight_ : w.app(w.annex<gpu::in_flight>(), w.lit_nat_0());
+            return w.tuple({next->proj(2, 0), next->proj(2, 1), left});
         });
         auto depth  = w.lit_nat(ring.size());
         auto slots  = DefVec(ring.size(), [&](size_t s) { return w.tuple(ring[s]); });

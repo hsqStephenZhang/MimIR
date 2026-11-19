@@ -9,7 +9,8 @@ plugin compile;
 
 lam turn {rid depth: Nat} (sync: gpu.SyncOf depth (gpu.Held (rid, depth)) (gpu.Vacant (rid, depth)) (gpu.Ring (rid, depth)))
     (m: mem.M 0, i: Nat, j: Idx depth, ring: gpu.Panels (rid, depth) Nat): [mem.M 0, Nat] =
-    let (_, _, _, await, release, (_, state), _) = sync;
+    let (open_state, _, _, await, release, _, _) = sync;
+    let (m, state) = open_state m;
     let block         = core.nat.add (core.nat.mul (i, depth), core.idx2nat j);
     let (m, mine, state)     = await (m, block, state);
     let s             = core.idx 0 depth (core.nat.rem (block, depth));

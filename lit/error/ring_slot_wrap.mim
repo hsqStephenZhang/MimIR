@@ -10,7 +10,8 @@ plugin compile;
 
 lam wrapped {rid depth: Nat} (sync: gpu.SyncOf depth (gpu.Held (rid, depth)) (gpu.Vacant (rid, depth)) (gpu.Ring (rid, depth)))
     (m: mem.M 0, i: Nat, ring: gpu.Panels (rid, depth) Nat): [mem.M 0, Nat] =
-    let (_, _, _, await, release, (_, state), _) = sync;
+    let (open_state, _, _, await, release, _, _) = sync;
+    let (m, state) = open_state m;
     let n             = core.nat.add (18446744073709551613, core.nat.mul (depth, i));
     let (m, mine, state)     = await (m, n, state);
     let s             = core.idx 0 depth (core.nat.rem (n, depth));

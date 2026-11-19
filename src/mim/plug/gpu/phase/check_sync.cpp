@@ -92,7 +92,7 @@ bool has_fn(const Def* type) {
 
 /// What a step holds before its first `await`, which any number of steps may start from.
 bool is_idle(const Def* def) {
-    if (Axm::isa<gpu::unheld>(def) || Axm::isa<gpu::ring_idle>(def)) return true;
+    if (Axm::isa<gpu::unheld>(def)) return true;
     if (auto tuple = def->isa<Tuple>()) return std::ranges::all_of(tuple->ops(), is_idle);
     return false;
 }
@@ -228,6 +228,14 @@ void CheckSync::start() {
             if (def->type() && (has_token(def->type()) || visibility(def))) linear.insert(def);
             if (is_slot_token(def)) slots.push_back(def);
             if (auto read = Axm::isa<gpu::read_slot>(def)) reads.push_back(read);
+            if (auto freed = Axm::isa<gpu::retired>(def)) {
+                auto [k, d] = freed->decurry()->args<2>([](const Def* n) { return Lit::isa(n); });
+                if (!k || !d) def->blame("`{}` gives a slot up on a count of MMAs it cannot compute", def).bail();
+                if (*k > *d)
+                    def->blame("a slot is given up {} steps after its read while {} groups of MMAs may be in flight",
+                               *d, *k)
+                        .bail();
+            }
             if (auto app = def->isa<App>())
                 if (auto pi = app->callee()->type()->isa<Pi>(); pi && mentions_slot(pi->dom())) calls.push_back(app);
             // A hole or bottom that would stand for a slot token, also one a function would return, comes from no sync.
