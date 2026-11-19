@@ -306,3 +306,25 @@ axm region_leave: {g} → [mem.M 0, Region (g, Live)] → [mem.M 0, Region (g, D
 | 4 | T2b：代 | parity 错位的反例被类型拒绝；对照 `ring_safe` |
 | 5 | T3：区域 typestate | §29 的叠放反例被拒，去掉人工 fence 后仍正确 |
 | 6 | T4：Lean 模型 | 两条定理，信任边界说明 |
+
+## 12. 第一轮审阅的发现（codex，未完成）
+
+codex 的审阅在给出报告前被中断。它写好并跑完的探针在 `/tmp/codex-types/`，结果如下。被当前 `check_sync` 接受、本应拒绝的有：
+
+| 探针 | 内容 | 对本设计的影响 |
+|---|---|---|
+| `nom` | 令牌包进 `nom Box (T: *) = T` 后交还两次 | §4.1 的结构传播覆盖 |
+| `join` | 令牌注入 `T ∪ Nat`，`match` 后用两次 | 传播规则必须穿透 `Join`/`Inj`/`Match`，写成明确规则 |
+| `same-app` | 同一个 `m` 上两次 `gpu.hold (m, s)`，hash-consing 合并成一个令牌 | **§4.4 的前提不成立**：`mem.M` 本身可以复制，“每个令牌由不同的 mem 产生”无从保证。要么把 `mem.M` 纳入线性检查（§4.5 不能再推迟），要么令牌带上唯一来源 |
+| `unit-dictionary` | `read_slot` 的 `H` 实例化为 `λ _ = []`，不持任何令牌读槽 | `read_slot`（和 `SyncOf`）不能对任意 `H` 多态；`H` 必须是登记过的线性构造器 |
+| `forged` | 不经 `await`，直接 `gpu.hold` 造令牌读槽 | 线性只管使用次数，不管构造。`hold`/`vacate` 必须是协议私有的能力：只有 `await`/`acquire` 这类状态转换能产生令牌 |
+| `drop-vacant` | `Vacant` 被丢弃 | §4.2 把 `Vacant` 定为线性即可 |
+| `confluence` | 核心现有规则 `(c·x) % b = 0`（`b | c`）与先代入、再按 u64 折叠的结果不同（`(3·i) % 3` 得 0 或 2） | 核心 normalizer 已经不合流。Nat 的语义（数学自然数还是 u64）必须在核心定下来，§5.2 的规则不能只靠 GPU 侧的约定 |
+
+被正确拒绝的有：`for-body`、`for-exit`（在可能重复执行的循环体或出口里用令牌），`return-box`（返回捕获令牌的闭包后调用），`same-app-diverge`，`permutation`（计算下标取令牌）。
+
+据此修改计划：
+- T1 增加两条：
+  - 令牌构造只能来自登记的状态转换（能力私有化）；
+  - `mem.M` 的线性性与 T1 一起处理，至少保证产生令牌的 mem 不被复制。
+- T2 之前，先在核心决定 Nat 的语义，并让 `normalize_nat` 的规则与之一致。
