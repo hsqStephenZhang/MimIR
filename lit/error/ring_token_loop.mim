@@ -8,15 +8,15 @@ plugin mem;
 plugin gpu;
 plugin compile;
 
-lam each {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, _, _, await, release, _, _) = sync;
-    let (m, mine) = await (m, n);
+lam each {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, (_, ring), _) = sync;
+    let (m, mine, ring) = await (m, n, ring);
     let s = core.idx 0 depth (core.nat.rem (n, depth));
     lam loop (m: mem.M 0, i: Nat)@ff: mem.M 0 =
-        (loop (release (m, s, tt, mine), core.nat.add (i, 1)), m)#(core.ncmp.e (i, n));
+        (loop ((release (m, s, tt, mine, tt, ring))#0_2, core.nat.add (i, 1)), m)#(core.ncmp.e (i, n));
     loop (m, 0);
 
 extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
-    each (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
+    each (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.Ring (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

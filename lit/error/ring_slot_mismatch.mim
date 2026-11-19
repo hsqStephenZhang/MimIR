@@ -8,14 +8,14 @@ plugin mem;
 plugin gpu;
 plugin compile;
 
-lam next_slot {rid depth: Nat} (sync: gpu.SyncOf depth (gpu.Held (rid, depth)) (gpu.Vacant (rid, depth)))
+lam next_slot {rid depth: Nat} (sync: gpu.SyncOf depth (gpu.Held (rid, depth)) (gpu.Vacant (rid, depth)) (gpu.Ring (rid, depth)))
     (m: mem.M 0, n: Nat, ring: gpu.Panels (rid, depth) Nat): [mem.M 0, Nat] =
-    let (_, _, _, await, release, _, _) = sync;
-    let (m, mine)     = await (m, n);
+    let (_, _, _, await, release, (_, state), _) = sync;
+    let (m, mine, state)     = await (m, n, state);
     let s             = core.idx 0 depth (core.nat.rem (n, depth));
     let ahead         = core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth));
     let (panel, mine) = gpu.read_slot @(Nat, rid, depth) (ring, ahead, s, mine);
-    (release (m, s, tt, mine), panel);
+    ((release (m, s, tt, mine, tt, state))#0_2, panel);
 
 extern lam step (m: mem.M 0, n: Nat, ring: gpu.Panels (0, 2) Nat): [mem.M 0, Nat] =
     next_slot @(0, 2) (gpu.async_ring @(0, 2) (1, ff)) (m, n, ring);

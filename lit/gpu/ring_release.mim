@@ -6,12 +6,12 @@ plugin core;
 plugin mem;
 plugin gpu;
 
-lam own {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, _, _, await, release, _, _) = sync;
-    let (m, mine) = await (m, n);
-    release (m, core.idx 0 depth (core.nat.rem (n, depth)), tt, mine);
+lam own {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, (_, ring), _) = sync;
+    let (m, mine, ring) = await (m, n, ring);
+    (release (m, core.idx 0 depth (core.nat.rem (n, depth)), tt, mine, tt, ring))#0_2;
 
 extern lam twice (m: mem.M 0, n: Nat): mem.M 0 =
-    own (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
+    own (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.Ring (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
 
 // CHECK: gpu.async_wait_group

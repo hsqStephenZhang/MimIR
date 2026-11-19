@@ -7,14 +7,14 @@ plugin mem;
 plugin gpu;
 plugin compile;
 
-lam turn {rid depth: Nat} (sync: gpu.SyncOf depth (gpu.Held (rid, depth)) (gpu.Vacant (rid, depth)))
+lam turn {rid depth: Nat} (sync: gpu.SyncOf depth (gpu.Held (rid, depth)) (gpu.Vacant (rid, depth)) (gpu.Ring (rid, depth)))
     (m: mem.M 0, i: Nat, j: Idx depth, ring: gpu.Panels (rid, depth) Nat): [mem.M 0, Nat] =
-    let (_, _, _, await, release, _, _) = sync;
+    let (_, _, _, await, release, (_, state), _) = sync;
     let block         = core.nat.add (core.nat.mul (i, depth), core.idx2nat j);
-    let (m, mine)     = await (m, block);
+    let (m, mine, state)     = await (m, block, state);
     let s             = core.idx 0 depth (core.nat.rem (block, depth));
     let (panel, mine) = gpu.read_slot @(Nat, rid, depth) (ring, j, s, mine);
-    (release (m, s, tt, mine), panel);
+    ((release (m, s, tt, mine, tt, state))#0_2, panel);
 
 extern lam step (m: mem.M 0, i: Nat, j: Idx 2, ring: gpu.Panels (0, 2) Nat): [mem.M 0, Nat] =
     turn @(0, 2) (gpu.async_ring @(0, 2) (1, ff)) (m, i, j, ring);

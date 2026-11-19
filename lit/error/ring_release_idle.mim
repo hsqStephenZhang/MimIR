@@ -6,8 +6,8 @@ plugin core;
 plugin mem;
 plugin gpu;
 
-lam unread {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0): mem.M 0 =
-    let (_, _, _, _, release, idle, _) = sync;
-    release (m, core.idx 0 depth 0, tt, idle);
+lam unread {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0): mem.M 0 =
+    let (_, _, _, _, release, (idle, ring), _) = sync;
+    (release (m, core.idx 0 depth 0, tt, idle, tt, ring))#0_2;
 
 // CHECK: error: {{.*}}not assignable

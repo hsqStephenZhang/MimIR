@@ -35,6 +35,8 @@ extern lam _compile (): compile.Phase = compile.phases ff (
     compile.named "cps.conv", compile.named "affine.lower_for", compile.scalarize, compile.scalarize,
     compile.lam_spec, compile.single_erasure, compile.dispatch_normalize, compile.ret_wrap, compile.named "ll.emit");
 """
+    # Erasure leaves a ring's token and state as units, which the dump may print under one name.
+    host = host.replace("v: [], v: []", "_: [], _: []")
     (work / "host.mim").write_text(host)
     subprocess.run([mim, "--werror", "host.mim", "-p", "ll", "-X", "ll:rt=extern", "-o", os.devnull], cwd=work, check=True)
     (work / "main.c").write_text('#include <stdio.h>\nint main(void) {\n' + "\n".join(calls) + "\n}\n")

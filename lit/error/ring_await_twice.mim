@@ -1,0 +1,18 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: argument is not assignable to callee's domain
+
+// A step awaits once before it gives a slot up: a second await would hold the same slot twice.
+
+plugin core;
+plugin mem;
+plugin gpu;
+
+lam twice {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, (_, ring), _) = sync;
+    let (m, mine, ring) = await (m, n, ring);
+    let (m, again, ring) = await (m, n, ring);
+    let s = core.idx 0 depth (core.nat.rem (n, depth));
+    (release ((release (m, s, tt, mine, tt, ring))#0_2, s, tt, again, ff, ring))#0_2;
+
+extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
+    twice (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.Ring (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);

@@ -6,9 +6,9 @@ plugin core;
 plugin mem;
 plugin gpu;
 
-lam other {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, _, _, await, release, _, _) = sync;
-    let (m, mine) = await (m, n);
-    release (m, core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth)), tt, mine);
+lam other {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, (_, ring), _) = sync;
+    let (m, mine, ring) = await (m, n, ring);
+    (release (m, core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth)), tt, mine, tt, ring))#0_2;
 
 // CHECK: error: {{.*}}not assignable

@@ -8,13 +8,13 @@ plugin mem;
 plugin gpu;
 plugin compile;
 
-lam twice {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V) (m: mem.M 0, n: Nat): mem.M 0 =
-    let (_, _, _, await, release, _, _) = sync;
-    let (m, mine) = await (m, n);
+lam twice {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, (_, ring), _) = sync;
+    let (m, mine, ring) = await (m, n, ring);
     let s = core.idx 0 depth (core.nat.rem (n, depth));
-    release (release (m, s, tt, mine), s, tt, mine);
+    (release ((release (m, s, tt, mine, tt, ring))#0_2, s, tt, mine, tt, ring))#0_2;
 
 extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
-    twice (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
+    twice (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.Ring (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

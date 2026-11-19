@@ -9,12 +9,12 @@ plugin compile;
 plugin affine;
 
 extern fun step (m: mem.M 0, endi: I64): mem.M 0 =
-    let (_, _, _, await, release, _, _) = gpu.async_ring @(0, 3) (1, ff);
-    let (m, h) = await (m, 0);
+    let (_, _, _, await, release, (_, ring), _) = gpu.async_ring @(0, 3) (1, ff);
+    let (m, h, ring) = await (m, 0, ring);
     affine.For @(0, 1, mem.M 0) work finish (0I64, endi, 1I64, m)
     where
         con work (i: I64, m: mem.M 0, next: Cn [mem.M 0]) = next (gpu.fence m);
-        con finish (m: mem.M 0) = return (release (m, 0₃, tt, h));
+        con finish (m: mem.M 0) = return ((release (m, 0₃, tt, h, tt, ring))#0_2);
     end;
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

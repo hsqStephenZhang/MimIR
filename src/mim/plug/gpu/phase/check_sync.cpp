@@ -42,7 +42,9 @@ bool has_panel(const Def* type) {
     return false;
 }
 
-bool is_slot(const Def* type) { return Axm::isa<gpu::Held>(type) || Axm::isa<gpu::Vacant>(type); }
+bool is_slot(const Def* type) {
+    return Axm::isa<gpu::Held>(type) || Axm::isa<gpu::Vacant>(type) || Axm::isa<gpu::Ring>(type);
+}
 
 bool has_slot(const Def* type) {
     if (is_slot(type)) return true;
@@ -88,7 +90,14 @@ bool has_fn(const Def* type) {
     return false;
 }
 
-bool is_slot_token(const Def* def) { return def->type() && has_slot(def->type()) && !Axm::isa<gpu::unheld>(def); }
+/// What a step holds before its first `await`, which any number of steps may start from.
+bool is_idle(const Def* def) {
+    if (Axm::isa<gpu::unheld>(def) || Axm::isa<gpu::ring_idle>(def)) return true;
+    if (auto tuple = def->isa<Tuple>()) return std::ranges::all_of(tuple->ops(), is_idle);
+    return false;
+}
+
+bool is_slot_token(const Def* def) { return def->type() && has_slot(def->type()) && !is_idle(def); }
 
 /// A natural number as literal multiples of opaque atoms plus a constant, all modulo @p depth; an `Idx` read as a
 /// number is its index. `std::nullopt` if a literal is so large that the sum might wrap around, which would break the

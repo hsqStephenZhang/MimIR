@@ -1,0 +1,23 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: ring slot token {{.*}} is used {{[0-9]+}} times
+
+// Awaiting twice from one state would also hold a slot twice: the state a release returns is used once.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam twice {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (R: Bool → *) (sync: gpu.SyncOf depth H V R) (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, release, (_, ring), _) = sync;
+    let s = core.idx 0 depth (core.nat.rem (n, depth));
+    let (m, mine, ring) = await (m, n, ring);
+    let (m, ring)       = release (m, s, tt, mine, tt, ring);
+    let (m, next, got)  = await (m, n, ring);
+    let (m, again, _)   = await (m, n, ring);
+    (release ((release (m, s, tt, next, tt, got))#0_2, s, tt, again, ff, ring))#0_2;
+
+extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
+    twice (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.Ring (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";
