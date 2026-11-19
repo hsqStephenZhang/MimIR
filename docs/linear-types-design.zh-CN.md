@@ -672,3 +672,17 @@ codex 额度用完，由 Claude 子代理调研。结论：
 - **排序**：D′（有限相位 typestate）+ E（残余验证）＞ F（检查器内的游标归纳）＞ B（依赖类型的循环组合子）＞ A（存在打包）＞ C（细化类型）。
 - **相关工作**：Async Graphene 的环迭代器类型不含游标，是相对坐标系的先例，但没有线性；CUTLASS `PipelineState` 在运行时持有 (index, phase)；Kuiper 按绝对迭代号索引屏障令牌；Tristan & Leroy（POPL'10）逐实例验证软件流水，是残余验证的先例。
 - **另两点发现**：`ws_fold` 拿到 `InFlight` 见证却丢弃，没接到 `release`；`ws_fold` 依赖 `persistent_fill i ≡ i (mod d)`（`tensor.mim:497`），目前无检查。
+
+### 21.6 两相环状态（§21.5 的 D′）
+
+- `gpu.Ring (rid, depth) b` 是每个读者一侧的线性状态，只由私有的 `ring_idle`、`ring_got`、`ring_put` 产生和推进，`ring_got`/`ring_put` 都带 mem，免得哈希共享把两次推进合并。
+- `SyncOf` 多一个参数 `R: Bool → *`：
+  - `await: [m, n, R ff] → [mem, H (n % d, tt), R tt]`；
+  - `release: [mem, s, live, H (s, live), got: Bool, R got] → [mem, R ff]`；
+  - `idle: [H (0, ff), R ff]`。
+  - `release` 对相位泛型：`ws_fold` 在 `lag 1` 收尾时于 `R ff` 下交还最后一个槽。严格要求 `R tt` 会多出一个收尾操作和一个字段。
+- `ring_fold_at`（rolled 与 `turns`）和 `ws_fold_at` 把状态放进 `Last`，`refilled` 返回 `[mem, R ff]`。`Last` 的分量起了名字，否则擦除后的两个单位分量在 dump 时同名。
+- `check_sync` 把 `Ring` 当作令牌，单次使用；`erase_phases` 把它擦成 `[]`。
+- **拒绝**：同一状态上连续两次 `await`，前端类型检查即拒（`lit/error/ring_await_twice.mim`）；`release` 返回的状态被用两次，`check_sync` 拒（`lit/error/ring_state_alias.mim`）。
+- **缺口**：初始状态 `ring_idle` 与 `unheld` 一样不计使用次数，所以从初始状态出发的两次 `await` 不被拒。要关掉它，需要让 `ring_idle` 带 mem 并只由 `open` 产生。
+- 20 个手写协议测试按新接口移植。全量 lit 通过。73 个 benchmark 中 71 个设备 IR 经 `canon_ir.py` 后逐字节相同；`gemm_tiled_wg_{ws,persistent}` 只差一个 LLVM 值名（`%_552.p` 变成 `%m_552.p`），指令相同。
