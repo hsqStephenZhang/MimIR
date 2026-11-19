@@ -1,0 +1,16 @@
+// REQUIRES: ring-lean
+// UNSUPPORTED: roundtrip
+// The cooperative and the warp-specialized TMA rings of two real GEMMs run, per role, event sequences that the Lean
+// checkers of `proofs/ring` certify.
+// RUN: sed 's/\bBM\b/64/g;s/\bBK\b/64/g;s/\bPIPE\b/2/g' %srcroot/bench/gpu_tiling/gemm_tiled_wg_tma.mim > %t.coop.mim
+// RUN: sed 's/\bBM\b/64/g;s/\bBK\b/64/g;s/\bPIPE\b/2/g' %srcroot/bench/gpu_tiling/gemm_tiled_wg_ws.mim > %t.ws.mim
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 -X gpu:ring-trace=3 %t.coop.mim -o /dev/null 2> %t.coop.log
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 -X gpu:ring-trace=3 %t.ws.mim -o /dev/null 2> %t.ws.log
+// RUN: %FileCheck %s --check-prefix=WS --input-file %t.ws.log
+// RUN: python3 %srcroot/bench/tools/ring_trace_check.py %srcroot/proofs/ring %t.coop.log %t.ws.log | %FileCheck %s
+// WS: ring-trace {{.*}} thread=256
+// WS: ring-trace mbar_wait 1.0 1
+// WS-NEXT: ring-trace fill 0 0 0
+// WS-NEXT: ring-trace expect 0.0
+// CHECK: model=cooperative {{.*}} accepted
+// CHECK: model=warp_specialized {{.*}} accepted

@@ -748,8 +748,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                                     ? std::pair("cooperative", "check-layout")
                                     : std::pair("none", "consumers");
             std::println(stderr,
-                         "ring-coverage rid={} fold=tile depth={} lag={} consumers={} groups={} model={} scope={}",
-                         Lit::as(rid), depth, overlap, consumers, ring_groups(ring), model, scope);
+                         "ring-coverage rid={} fold=tile depth={} lag={} count={} consumers={} groups={} model={} scope={}",
+                         Lit::as(rid), depth, overlap, literal_count.value_or(0), consumers, ring_groups(ring), model,
+                         scope);
         }
         const Def* sync;
         if (tma) {

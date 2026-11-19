@@ -83,7 +83,7 @@ def compile_bench(root, lib, work, bench):
     work.mkdir(parents=True, exist_ok=True)
     (work / f"{name}.mim").write_text(src)
     cmd = [str(root / "build-debug/bin/mim"), "-P", str(lib), "-p", "opt", "-p", "gpu", "-X", "tensor:tile-fuse=1",
-           "-X", "tensor:ring-coverage=1", "-X", "gpu:ring-trace=1", f"{name}.mim", "-p", "nvptx", "-X", "nvptx:sm=90a",
+           "-X", "tensor:ring-coverage=1", "-X", "gpu:ring-trace=3", f"{name}.mim", "-p", "nvptx", "-X", "nvptx:sm=90a",
            "-o", "/dev/null"]
     run = subprocess.run(["bash", "-c", "ulimit -v 16000000; exec \"$@\"", "_", *cmd], cwd=work, capture_output=True,
                          text=True, timeout=900)
@@ -100,21 +100,19 @@ def verdict(root, work, name, code, ir, error, base):
     if ir == base:
         return "same", ""
     log = work / f"{name}.log"
-    models = re.findall(r"^ring-coverage .* model=(\w+)", log.read_text(errors="replace"), re.MULTILINE)
-    if any(model != "async" for model in models):
-        return "unchecked", "model=" + ",".join(models)
     try:
-        checked = [(ring, events) for ring, events in ring_trace_check.rings(log)]
+        checked = ring_trace_check.rings(log)
     except ValueError as e:
         return "trace", str(e).split(": ", 1)[-1][:90]
-    for ring, events in checked:
-        if ring["model"] != "async":
-            return "unchecked", f"model={ring['model']}"
-        proxy = "1" if ring["proxy"] == "true" else "0"
-        run = subprocess.run(["lake", "exe", "ring_async_check", ring["depth"], ring["count"], proxy],
-                             cwd=root / "proofs/ring", input="\n".join(events) + "\n", capture_output=True, text=True)
-        if run.returncode != 0:
-            return "lean", (run.stdout + run.stderr).strip().splitlines()[-1][:90]
+    for ring, traces in checked:
+        try:
+            verdict, ok = ring_trace_check.check(root / "proofs/ring", ring, traces)
+        except (KeyError, ValueError) as e:
+            return "trace", str(e)[:90]
+        if ok is None:
+            return "unchecked", verdict
+        if not ok:
+            return "lean", verdict[:90]
     return "MISSED", ""
 
 
