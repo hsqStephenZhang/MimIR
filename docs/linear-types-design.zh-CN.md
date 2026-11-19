@@ -501,3 +501,13 @@ MimIR 是编译器：用户写的是 PyTorch 模型（经 `mimir-frontend` 导�
    建议 （a）+（c）。
 2. **Lean 工具链。** 本机没有 `lean`/`lake`/`elan`。T4 需要安装 elan，并在用户目录下载工具链。
 3. **codex 的代劳。** 让 codex 在工作区里无沙箱改代码被本地权限检查拒绝了，这个容器里它的沙箱又起不来。要把实现任务交给 codex，需要为这条命令加一条权限规则。
+
+## 18. 第 2 步：环的身份（2026-11-19，`b8322375e`）
+
+按 §17 的决定，`RingState ρ` 采用“能力 + 残余验证”。第一部分是环的身份：
+- 令牌类型带上环编号：`Held (rid, depth) (s, live)`、`Vacant (rid, depth) s`；`hold`/`retire`/`vacate`/`occupy`/`unheld`、`RingSync`、各环构造器、`ring_fold`/`ws_fold` 都多一个 `rid`。
+- `rid` 由 `LowerToMem` 给每个环分配一个新的字面量（`rings_`），在环的整个生命周期里固定，不随迭代变化，所以与 `affine.For` 的固定状态类型相容。
+- 两个环的令牌混用是类型错误，前端在构造调用时就拒绝（`lit/error/ring_token_other_ring.mim`）。
+- `rid` 只出现在类型里，擦除后消失：73 个 bench 的设备 IR 与改动前完全相同，全量 lit 1053 通过。
+
+还没做的：把 `open` 产生的线性 `RingState rid` 串进 fold 状态，使令牌只能由消费唯一前态的转换产生；以及第 3 步的残余 fold 验证器，它等 Lean 模型确定协议的形状之后再做。
