@@ -1,0 +1,19 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: has the unresolved index
+
+// A ring sync whose number nobody gave leaves a hole that two rings would share.
+
+plugin core;
+plugin mem;
+plugin buffer;
+plugin gpu;
+plugin compile;
+
+extern lam mix_two_rings (m: mem.M 0, bars0 bars1: buffer.Buf (1, 2, I64), n: Nat): mem.M 0 =
+    let parity = λ (i: Nat): Nat = core.nat.rem (i, 2);
+    let (_, _, _, await0, _, _, _) = gpu.mbar_ring (bars0, parity, tt);
+    let (_, _, _, _, release1, _, _) = gpu.mbar_ring (bars1, parity, tt);
+    let (m, mine0) = await0 (m, n);
+    release1 (m, core.idx 0 2 (core.nat.rem (n, 2)), tt, mine0);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

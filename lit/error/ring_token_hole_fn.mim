@@ -1,0 +1,20 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: stands for a ring slot token that no ring sync made
+
+// A hole of function type would make a slot token out of nothing.
+
+plugin gpu;
+plugin compile;
+
+lam get_hole (s: Idx 3) {f: [] → gpu.Held (0, 3) (s, tt)} (r: «3; Nat»): Nat =
+    let (p, _) = gpu.read_slot @(Nat, 3, gpu.Held (0, 3)) (r, s, s, f ());
+    p;
+
+extern lam step_hole (s: Idx 3, r: «3; Nat»): Nat = get_hole s r;
+
+extern lam step_bot (s: Idx 3, r: «3; Nat»): Nat =
+    let f = ⊥:([] → gpu.Held (0, 3) (s, tt));
+    let (p, _) = gpu.read_slot @(Nat, 3, gpu.Held (0, 3)) (r, s, s, f ());
+    p;
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

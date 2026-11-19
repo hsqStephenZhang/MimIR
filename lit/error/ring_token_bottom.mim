@@ -1,5 +1,5 @@
 // RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: error: ring slot token `⊥:(gpu.Held (0, 3) (s, tt))` is the bottom value, which no ring sync made
+// CHECK: error: `⊥:(gpu.Held (0, 3) (s, tt))` stands for a ring slot token that no ring sync made
 
 plugin gpu;
 plugin compile;

@@ -1,5 +1,5 @@
 // RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: error: ring slot token `?` is never supplied
+// CHECK: error: `?` stands for a ring slot token that no ring sync made
 
 // An implicit token that nothing supplies leaves a hole, which erasure would turn into a read of the slot.
 

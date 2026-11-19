@@ -1,0 +1,29 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: a ring slot token of type
+
+// A function that returns a slot conversion must not let two different free indices stand for each other.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam id_slot (r: Nat, s: Idx 3, live: Bool)@ff: gpu.Held (r, 3) (s, live) → gpu.Held (r, 3) (s, live) =
+    lam same (h: gpu.Held (r, 3) (s, live))@ff: gpu.Held (r, 3) (s, live) = h;
+    same;
+
+lam cast_fn (r1: Nat, s: Idx 3, l1: Bool)@ff: [r2: Nat, t: Idx 3, l2: Bool] → gpu.Held (r1, 3) (s, l1) → gpu.Held (r2, 3) (t, l2) =
+    lam target (r2: Nat, t: Idx 3, l2: Bool)@ff: gpu.Held (r1, 3) (s, l1) → gpu.Held (r2, 3) (t, l2) =
+        id_slot (r1, s, l1);
+    target;
+
+// 1. Cast slot 0 to slot 1, ring 0 to ring 1, and idle (ff) to live (tt)!
+extern lam forge_and_swap (m: mem.M 0, ring: «3; Nat»): [mem.M 0, Nat] =
+    let (_, _, _, _, _, idle0, _) = gpu.async_ring @(0, 3) (1, ff);
+    let (_, _, _, _, release1, _, _) = gpu.async_ring @(1, 3) (1, ff);
+    let h_forged: gpu.Held (1, 3) (1₃, tt) = cast_fn (0, 0₃, ff) (1, 1₃, tt) idle0;
+    let (p, h_forged) = gpu.read_slot @(Nat, 3, gpu.Held (1, 3)) (ring, 1₃, 1₃, h_forged);
+    (release1 (m, 1₃, tt, h_forged), p);
+
+extern lam _compile (): compile.Phase =
+    compile.named "gpu.check_sync";

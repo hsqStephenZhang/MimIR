@@ -1,0 +1,23 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: holds a ring slot token and may be called more than once
+
+// A closure made outside a loop and called once inside it runs once per iteration.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam sink (h: gpu.Held (0, 2) (0₂, tt))@ff: mem.M 0 → mem.M 0 =
+    lam give (m: mem.M 0)@ff: mem.M 0 = gpu.retire (m, 0₂, tt, h);
+    give;
+
+extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, _, _, _) = gpu.async_ring @(0, 2) (1, ff);
+    let (m, mine) = await (m, 0);
+    let f = sink mine;
+    lam loop (m: mem.M 0, i: Nat)@ff: mem.M 0 =
+        (loop (f m, core.nat.add (i, 1)), m)#(core.ncmp.e (i, n));
+    loop (m, 0);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

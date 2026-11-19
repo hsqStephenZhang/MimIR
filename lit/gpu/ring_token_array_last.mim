@@ -1,0 +1,19 @@
+// RUN: %mim %s -o /dev/null
+
+// An array of dependent ring states is compared element by element.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+let Last = [live: Bool, s: Idx 3, gpu.Held (0, 3) (s, live)];
+
+lam take_arr (xs: «2; Last»)@ff: Last = xs#0₂;
+
+extern lam step (h0: gpu.Held (0, 3) (0₃, tt), h1: gpu.Held (0, 3) (1₃, tt)): Last =
+    let item0: Last = (tt, 0₃, h0);
+    let item1: Last = (tt, 1₃, h1);
+    take_arr (item0, item1);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

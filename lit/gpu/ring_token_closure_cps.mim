@@ -1,0 +1,19 @@
+// RUN: %mim %s -o /dev/null
+
+// A closure holding a slot that cps2ds turns into a direct function and calls once is fine.
+
+plugin core;
+plugin mem;
+plugin cps;
+plugin gpu;
+plugin compile;
+
+lam sink_cps (h: gpu.Held (0, 3) (0₃, tt))@ff: Fn mem.M 0 → mem.M 0 =
+    fun give (m: mem.M 0)@ff: mem.M 0 = return (gpu.retire (m, 0₃, tt, h));
+    give;
+
+extern lam step (m: mem.M 0, h: gpu.Held (0, 3) (0₃, tt)): mem.M 0 =
+    let f = sink_cps h;
+    cps.cps2ds f m;
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

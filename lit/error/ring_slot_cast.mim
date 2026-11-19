@@ -1,5 +1,5 @@
 // RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
-// CHECK: error: a ring slot token of type `gpu.Held (0, 3) (s, tt)` is passed where `gpu.Held (0, 3) (t, tt)` is expected
+// CHECK: error: a ring slot token of type `[t{{.*}}: Idx 3] → gpu.Held (0, 3) (s{{.*}}, tt) → gpu.Held (0, 3) (t{{.*}}, tt)` is passed where
 
 // The core check lets two different free variables stand for each other, so a function from slot `s` to slot `t`
 // would turn the token of slot 0 into one of slot 1.
