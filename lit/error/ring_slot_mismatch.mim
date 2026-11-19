@@ -8,16 +8,16 @@ plugin mem;
 plugin gpu;
 plugin compile;
 
-lam next_slot {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gpu.SyncOf depth H V)
-    (m: mem.M 0, n: Nat, ring: «depth; Nat»): [mem.M 0, Nat] =
+lam next_slot {rid depth: Nat} (sync: gpu.SyncOf depth (gpu.Held (rid, depth)) (gpu.Vacant (rid, depth)))
+    (m: mem.M 0, n: Nat, ring: gpu.Panels (rid, depth) Nat): [mem.M 0, Nat] =
     let (_, _, _, await, release, _, _) = sync;
     let (m, mine)     = await (m, n);
     let s             = core.idx 0 depth (core.nat.rem (n, depth));
     let ahead         = core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth));
-    let (panel, mine) = gpu.read_slot @(Nat, depth, H) (ring, ahead, s, mine);
+    let (panel, mine) = gpu.read_slot @(Nat, rid, depth) (ring, ahead, s, mine);
     (release (m, s, tt, mine), panel);
 
-extern lam step (m: mem.M 0, n: Nat, ring: «2; Nat»): [mem.M 0, Nat] =
-    next_slot (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n, ring);
+extern lam step (m: mem.M 0, n: Nat, ring: gpu.Panels (0, 2) Nat): [mem.M 0, Nat] =
+    next_slot @(0, 2) (gpu.async_ring @(0, 2) (1, ff)) (m, n, ring);
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

@@ -461,7 +461,7 @@ void CheckSync::start() {
     }
     for (auto read : reads) {
         auto [ring, s, t, token] = read->args<4>();
-        auto depth               = Lit::isa(read->decurry()->arg(3, 1));
+        auto depth               = Lit::isa(read->decurry()->arg(3, 2));
         if (!depth || !same_slot(s, t, *depth))
             read->blame("ring slot `{}` is read with the token of slot `{}`", s, t).bail();
     }

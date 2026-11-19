@@ -1,0 +1,18 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: argument is not assignable to callee's domain
+
+// The panels of a ring carry its number, so a token of ring 0 cannot read ring 1's panels.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+extern lam step (m: mem.M 0, n: Nat, panels1: gpu.Panels (1, 2) Nat): [mem.M 0, Nat] =
+    let (_, _, _, await, release, _, _) = gpu.async_ring @(0, 2) (1, ff);
+    let (m, mine)     = await (m, n);
+    let s             = core.idx 0 2 (core.nat.rem (n, 2));
+    let (panel, mine) = gpu.read_slot @(Nat, 0, 2) (panels1, s, s, mine);
+    (release (m, s, tt, mine), panel);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

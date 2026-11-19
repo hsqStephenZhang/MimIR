@@ -18,11 +18,11 @@ lam cast_fn (r1: Nat, s: Idx 3, l1: Bool)@ff: [r2: Nat, t: Idx 3, l2: Bool] → 
     target;
 
 // 1. Cast slot 0 to slot 1, ring 0 to ring 1, and idle (ff) to live (tt)!
-extern lam forge_and_swap (m: mem.M 0, ring: «3; Nat»): [mem.M 0, Nat] =
+extern lam forge_and_swap (m: mem.M 0, ring: gpu.Panels (1, 3) Nat): [mem.M 0, Nat] =
     let (_, _, _, _, _, idle0, _) = gpu.async_ring @(0, 3) (1, ff);
     let (_, _, _, _, release1, _, _) = gpu.async_ring @(1, 3) (1, ff);
     let h_forged: gpu.Held (1, 3) (1₃, tt) = cast_fn (0, 0₃, ff) (1, 1₃, tt) idle0;
-    let (p, h_forged) = gpu.read_slot @(Nat, 3, gpu.Held (1, 3)) (ring, 1₃, 1₃, h_forged);
+    let (p, h_forged) = gpu.read_slot @(Nat, 1, 3) (ring, 1₃, 1₃, h_forged);
     (release1 (m, 1₃, tt, h_forged), p);
 
 extern lam _compile (): compile.Phase =

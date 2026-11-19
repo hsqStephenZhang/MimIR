@@ -4,8 +4,8 @@
 plugin gpu;
 plugin compile;
 
-extern lam step (r: «3; Nat», s: Idx 3): Nat =
-    let (p, _) = gpu.read_slot @(Nat, 3, gpu.Held (0, 3)) (r, s, s, ⊥:(gpu.Held (0, 3) (s, tt)));
+extern lam step (r: gpu.Panels (0, 3) Nat, s: Idx 3): Nat =
+    let (p, _) = gpu.read_slot @(Nat, 0, 3) (r, s, s, ⊥:(gpu.Held (0, 3) (s, tt)));
     p;
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";
