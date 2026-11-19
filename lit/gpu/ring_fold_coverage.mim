@@ -7,7 +7,20 @@
 // RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 %t.half.mim -p nvptx -X nvptx:sm=90a -X nvptx:no-embed -o /dev/null 2> %t.half.log
 // RUN: python3 %srcroot/bench/tools/ring_coverage.py %t.full.log | %FileCheck %s --check-prefix=FULL
 // RUN: python3 %srcroot/bench/tools/ring_coverage.py %t.half.log | %FileCheck %s --check-prefix=HALF
-// FULL: rid=0 scope=covered layout=disjoint
+// FULL: rid=0 scope=covered model=tma layout=disjoint
 // FULL: total 1
-// HALF: rid=0 scope=overlaid layout=overlaid
+// HALF: rid=0 scope=overlaid model=tma layout=overlaid
 // HALF: total 1
+// Each real ring path at its benchmark size names the Lean model that covers it.
+// RUN: sed 's/\bHH\b/2/g;s/\bLL\b/128/g;s/\bDD\b/64/g;s/\bBM\b/64/g;s/\bBK\b/64/g;s/SCALE/0.125/g;s/\bPIPE\b/2/g' %srcroot/bench/gpu_attn/attn_wg.mim > %t.async.mim
+// RUN: sed 's/\bHH\b/2/g;s/\bLL\b/128/g;s/\bDD\b/64/g;s/\bBM\b/64/g;s/\bBK\b/64/g;s/SCALE/0.125/g;s/\bPIPE\b/2/g' %srcroot/bench/gpu_tiling/gemm_tiled_wg_tma.mim > %t.coop.mim
+// RUN: sed 's/\bHH\b/2/g;s/\bLL\b/128/g;s/\bDD\b/64/g;s/\bBM\b/64/g;s/\bBK\b/64/g;s/SCALE/0.125/g;s/\bPIPE\b/2/g' %srcroot/bench/gpu_tiling/gemm_tiled_wg_ws.mim > %t.ws.mim
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 %t.async.mim -p nvptx -X nvptx:sm=90a -X nvptx:no-embed -o /dev/null 2> %t.async.log
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 %t.coop.mim -p nvptx -X nvptx:sm=90a -X nvptx:no-embed -o /dev/null 2> %t.coop.log
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 %t.ws.mim -p nvptx -X nvptx:sm=90a -X nvptx:no-embed -o /dev/null 2> %t.ws.log
+// RUN: python3 %srcroot/bench/tools/ring_coverage.py %t.async.log | %FileCheck %s --check-prefix=ASYNC
+// RUN: python3 %srcroot/bench/tools/ring_coverage.py %t.coop.log | %FileCheck %s --check-prefix=COOP
+// RUN: python3 %srcroot/bench/tools/ring_coverage.py %t.ws.log | %FileCheck %s --check-prefix=WS
+// ASYNC: rid=0 scope=covered model=async layout=disjoint
+// COOP: rid=0 scope=covered model=cooperative layout=disjoint
+// WS: rid=0 scope=covered model=warp_specialized layout=disjoint

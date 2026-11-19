@@ -1,5 +1,7 @@
 #include "mim/plug/tensor/phase/lower_to_mem.h"
 
+#include <set>
+
 #include "lower_to_mem_util.h"
 
 namespace mim::plug::tensor::phase {
@@ -730,18 +732,24 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         // Each ring's tokens carry its own number, so the tokens of two rings never stand for each other.
         auto rid = w.lit_nat(rings_++);
         if (driver().arg_nat("tensor", "ring-coverage").value_or(0)) {
-            auto consumers = specialized ? roles_.consumers : group_threads_ / 128;
-            auto scope     = !tma                            ? "cp.async"
-                           : tile_round_                     ? "persistent"
-                           : cluster_.size                   ? "cluster"
-                           : specialized                     ? "ws_fold"
-                           : !fragments || !fragments->group ? "no-wgmma-batch"
-                           : consumers == 0                  ? "unknown-consumers"
-                           : consumers > 1                   ? "multiple-consumers"
-                           : ring.empty() || overlap > 1     ? "depth-or-lag"
-                                                             : "check-layout";
-            std::println(stderr, "ring-coverage rid={} fold=tile depth={} lag={} consumers={} group={} scope={}",
-                         Lit::as(rid), ring.size(), overlap, consumers, panel_group, scope);
+            // Each covered shape names the Lean model in `proofs/ring` whose protocol theorems apply to it.
+            auto consumers      = specialized ? roles_.consumers : group_threads_ / 128;
+            auto depth          = ring.size();
+            auto [model, scope] = tile_round_                     ? std::pair("none", "persistent")
+                                : cluster_.size                   ? std::pair("none", "cluster")
+                                : depth < 2                       ? std::pair("none", "depth")
+                                : !tma                            ? std::pair("async", "check-layout")
+                                : specialized                     ? consumers == 2 && !roles_.pingpong && overlap == 1
+                                                                      ? std::pair("warp_specialized", "check-layout")
+                                                                      : std::pair("none", "ws-config")
+                                : !fragments || !fragments->group ? std::pair("none", "no-wgmma-batch")
+                                : consumers == 1                  ? std::pair("tma", "check-layout")
+                                : consumers == 2 && overlap == 1 && *literal_count + 1 >= depth
+                                    ? std::pair("cooperative", "check-layout")
+                                    : std::pair("none", "consumers");
+            std::println(stderr,
+                         "ring-coverage rid={} fold=tile depth={} lag={} consumers={} groups={} model={} scope={}",
+                         Lit::as(rid), depth, overlap, consumers, ring_groups(ring), model, scope);
         }
         const Def* sync;
         if (tma) {
@@ -1397,6 +1405,21 @@ const Def* LowerToMem::lower_product_fold(const App* app) {
         for (size_t i = 0; i != storages.size(); ++i)
             if (storages[i]) storage_shapes_[app->proj(storages.size(), i)] = storages[i];
     return finished->proj(2, 1);
+}
+
+std::string LowerToMem::ring_groups(const std::vector<DefVec>& ring) {
+    auto groups = std::set<std::string>();
+    for (auto& slot : ring)
+        for (auto buffer : slot) {
+            auto alloc = buffer->isa<Extract>() ? Axm::isa<buffer::alloc>(buffer->as<Extract>()->tuple()) : nullptr;
+            auto scope = alloc ? Axm::isa<gpu::panel_scope>(alloc->arg()) : nullptr;
+            groups.insert(!alloc ? "unknown" : scope ? std::to_string(Lit::as(scope->decurry()->arg())) : "shared");
+        }
+    if (groups.size() > 1) groups.erase("shared");
+    auto names = std::string();
+    for (auto& group : groups)
+        names += (names.empty() ? "" : ",") + group;
+    return names.empty() ? "shared" : names;
 }
 
 const Def* LowerToMem::panel_mem(const Def* mem) {

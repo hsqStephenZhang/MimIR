@@ -1,6 +1,6 @@
 # 单 CTA 的异步共享内存环
 
-73 个 GPU benchmark 生成 11 个环。按单 CTA、槽区间不叠放等前提，**7 个环原则上可应用协议定理**，包括 5 个 `cp.async`、1 个双消费者合作 TMA 和 1 个独立生产者 `ws_fold`。旧分类器仍报告 `covered 0`。5 个 `cp.async` 的日志没有逐环布局字段；把协议结论用于物理 kernel 时，还要核对读写地址、线程参与范围与生成指令。下文给出各路径的假设和分类口径。
+73 个 GPU benchmark 生成 11 个环。按单 CTA、槽区间不叠放等前提，**7 个环原则上可应用协议定理**，包括 5 个 `cp.async`、1 个双消费者合作 TMA 和 1 个独立生产者 `ws_fold`。分类器现按模型报告这 7 个环（`covered-async 5`、`covered-cooperative 1`、`covered-warp_specialized 1`）。把协议结论用于物理 kernel 时，还要核对读写地址、线程参与范围与生成指令。下文给出各路径的假设和分类口径。
 
 ## 单消费者 TMA 小步模型
 
@@ -111,6 +111,8 @@ python3 bench/tools/ring_coverage.py /tmp/ring-bench
 | `cluster` | 2 | 0 | 含 split，需要跨 CTA 跟踪 multicast 和远端 arrival。 |
 | `persistent` | 1 | 0 | 需要跨 tile 保持代号、相位、释放和初始化状态。 |
 | **合计** | **11** | **7** | 其余 62 个 benchmark 没有走这两处造环路径。 |
+
+日志现在给出 `model=` 与 `groups=`。`model` 取 `tma`、`async`、`cooperative`、`warp_specialized` 或 `none`；`none` 时 `scope` 写明原因（`persistent`、`cluster`、`depth`、`ws-config`、`no-wgmma-batch`、`consumers`）。`groups` 列出环各槽的 panel group；不在任何 group 中的槽记为 `shared`，NVPTX 逐个顺序放置它们，因此不会叠放。5 个 `cp.async` 环的四个面板都属此类。合作路径另要求 `consumers=2`、`lag=1`、`count ≥ d−1`；独立生产者要求两个消费组、非 pingpong、`lag=1`。
 
 统计使用 `f8385cf39` 的 LowerToMem 和 NVPTX 日志，并重新运行了 `ring_coverage.py`。日志中的主分类互斥；例如 `multiple-consumers` 的第二条还带有叠放布局。相邻使用者的生存期和同步边界需要另证。[分类脚本](../../bench/tools/ring_coverage.py) · [覆盖回归](../../lit/gpu/ring_fold_coverage.mim)
 

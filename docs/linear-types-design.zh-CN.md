@@ -616,3 +616,31 @@ MimIR 是编译器：用户写的是 PyTorch 模型（经 `mimir-frontend` 导�
 2. 面板句柄与 `rid` 绑定，引入线性 `RingState rid`，防止同槽重复 `await`。
 3. 用 Lean 的 `Code` 证书检查真实的残余 fold，而不只是合成夹具。
 4. cluster、persistent、叠放的模型扩展。
+
+## 21. 第三轮（2026-11-19）
+
+### 21.1 面板句柄（`961c8c9a6`）
+
+`gpu.Panels (rid, depth) P` 是环槽的类型化句柄，只能由私有的 `gpu.panels` 构造。`read_slot` 只接受同一 `(rid, depth)` 的句柄和令牌，因此拿另一个环的面板去读会在类型层被拒（`lit/error/ring_panels_other_ring.mim`）。`ring_fold_at` 改为对 `Held (rid, depth)` 特化。`gpu.erase_phases` 把句柄擦成原来的数组。全量 lit 通过，73 个 benchmark 的设备 IR 经 `canon_ir.py` 后逐字节不变。
+
+### 21.2 分类器（§20.3 第 1 项）
+
+`-X tensor:ring-coverage=1` 的日志给出每个环的 `model` 和 `groups`，`ring_coverage.py` 结合 NVPTX 的放置结果给出结论：
+
+| 结论 | 环数 | benchmark |
+| --- | ---: | --- |
+| `covered`，`async` | 5 | `attn_{law,roll,warp,wg}`、`fusion/attn_warps` |
+| `covered`，`cooperative` | 1 | `gemm_tiled_wg_tma` |
+| `covered`，`warp_specialized` | 1 | `gemm_tiled_wg_ws` |
+| `overlaid`（协议为 cooperative） | 1 | `gemm_tiled_wg_tma_h` |
+| `cluster` | 2 | `gemm_tiled_wg_{cluster,split}` |
+| `persistent` | 1 | `gemm_tiled_wg_persistent` |
+
+合计 7/11，与 Lean 扩展预计的一致。`lit/gpu/ring_fold_coverage.mim` 现在对三条真实路径各编译一个 benchmark。这仍是“形状落在模型前提内”的判断，不是对残余代码的证书检查。
+
+### 21.3 尚未做的
+
+- **RingState。** 同槽重复 `await` 仍未拒绝。§17 定的“能力 + 残余验证”中，能力一半需要把 `RingState rid` 穿过 `SyncOf` 的每个操作。`gpu.in_flight` 仍是公开的，两个测试在用。
+- **rolled 环与 `ws_fold` 仍直接读 `slots#0`**，没有经过 `read_slot`。
+- **真实残余的证书检查（第 3 项）。** 单消费者 TMA 有可计算的 `Ring.fold`/`Code`，但 11 个真实环里没有单消费者 TMA。`Async`、`Cooperative`、`WarpSpecialized` 是以事件时间表陈述的 `Prop` 结构，没有可执行的检查器。要检查真实 kernel，需要先为每个模型写可计算的逐参与者事件检查器，并证明它蕴含相应的 `Fold`/`ReadCode`；再从 `gpu.erase_phases` 之前的残余里抽取逐线程（或逐 warpgroup）事件。后者可沿用 `ring_fold_trace` 的主机执行办法：把 `threadIdx` 当参数，枚举代表线程。
+- cluster、persistent、叠放的模型（第 4 项）。
