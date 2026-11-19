@@ -449,3 +449,24 @@ Hagedorn 与 Grover，"It's about Time: Temporal Abstractions for Asynchronous G
 5. 叠放。
 
 §4.7、§5.5 的行数估计作废，改按上面的里程碑估算。每一步报告：误拒、unknown、PE 节点数、峰值内存、编译耗时、寄存器变化。
+
+## 15. 定位：我们是编译器，不是 kernel DSL
+
+MimIR 是编译器：用户写的是 PyTorch 模型（经 `mimir-frontend` 导入），kernel 由编译器生成。前面几节借用了 DSL 论文“留给程序员的事”的说法，需要按这个定位改写。
+
+- **类型检查的对象是编译器自己的输出。** 协议的线性性、槽和代的索引、区域状态，检查的是 `LowerToMem` 生成的实例。检查失败说明编译器有 bug，而不是用户写错了。所以这套类型系统的作用相当于**验证编译器输出**（certifying compilation / translation validation），而不是给用户的安全网。
+  - 仓库里已有这类 bug 的实例，都是编译器在叠放或主序上的错误：§29 的跨轮叠放、同一面板两种主序。它们比合成的“用户误用”例子更适合当论文的动机和评测。
+  - 诊断面向编译器开发者：报出是哪个 phase、哪个协议实例、违反了哪条义务。
+- **对照的轴要分开。**
+  - **编译器轴**：Triton 编译器（含自动 WS）、TileLang 的自动部分、IREE、TVM、Tawa（从 tile 程序自动推出 aref）。比较的是能否检查**自动生成的**同步是否正确，以及检查的代价。
+  - **kernel 语言轴**：Async Graphene、ThunderKittens、CuTe DSL、Gluon。在这条轴上，“程序员写错”对应的是我们的第二种用法，见下一条。
+- **能写 kernel 同样重要。** Mim 本身可以直接写 kernel：`gpu.mim` 里的协议库、`bench/typed_tiles`、`lit/gpu/warpgroup_owned.mim` 这类手写张量级 IR。专家可以写新协议或特殊 kernel，编译器的 lowering 也是用同一套协议写成的。这条路径上，§13 的借鉴照样成立：
+  - 作用域化的 `with_slot`；
+  - 面板带 future 修饰；
+  - 公开构造器全部密封。
+
+  这样，编译器生成的 kernel 和人写的 kernel 走同一套检查。
+- **论文主张据此改写为**：同一套类型化的协议既是编译器 lowering 的目标，也是手写 kernel 的语言。类型检查在擦除前验证编译器为每个 PyTorch 模型生成的协议实例。评测用真实的编译器 bug（历史 bug 与变异）说明检查的价值，再用手写 kernel 说明表达能力。
+- **对 §14 的影响**：
+  - 能力来源的那些漏洞仍要修：`Hole`、`⊥`、公开构造器、面板逃逸。编译器自己的 bug 也会造成同样的效果，比如生成代码时漏传或错传令牌。
+  - 但“用户恶意构造”的反例优先级下降；优先级最高的是编译器可能真正犯的错：槽号算错、代算错、叠放区域提前复用、漏掉参与者。
