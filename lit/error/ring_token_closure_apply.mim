@@ -1,0 +1,17 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: ring slot token `h` is made in `step` but used inside `give`, which may repeat
+
+// A closure holding the slot that a function calls twice gives the slot up twice.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam twice (f: mem.M 0 → mem.M 0, m: mem.M 0)@ff: mem.M 0 = f (f m);
+
+extern lam step (m: mem.M 0, h: gpu.Held 3 (0₃, tt)): mem.M 0 =
+    lam give (m: mem.M 0)@ff: mem.M 0 = gpu.retire (m, 0₃, tt, h);
+    twice (give, m);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

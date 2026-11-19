@@ -1,0 +1,19 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: `sink h` holds a ring slot token and may be called more than once
+
+// `sink h` is one closure holding the slot; calling it twice would give the slot up twice.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+lam sink (h: gpu.Held 3 (0₃, tt))@ff: mem.M 0 → mem.M 0 =
+    lam give (m: mem.M 0)@ff: mem.M 0 = gpu.retire (m, 0₃, tt, h);
+    give;
+
+extern lam step (m: mem.M 0, h: gpu.Held 3 (0₃, tt)): mem.M 0 =
+    let f = sink h;
+    f (f m);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

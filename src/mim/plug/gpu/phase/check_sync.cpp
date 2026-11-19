@@ -51,6 +51,14 @@ bool has_slot(const Def* type) {
     return false;
 }
 
+bool has_fn(const Def* type) {
+    if (type->isa<Pi>()) return true;
+    if (auto sigma = type->isa<Sigma>())
+        return std::ranges::any_of(sigma->ops(), [](const Def* op) { return has_fn(op); });
+    if (auto arr = type->isa<Arr>()) return has_fn(arr->body());
+    return false;
+}
+
 bool is_slot_token(const Def* def) { return def->type() && has_slot(def->type()) && !Axm::isa<gpu::unheld>(def); }
 
 /// A natural number as literal multiples of opaque atoms plus a constant, all modulo @p depth; an `Idx` read as a
@@ -133,6 +141,7 @@ void CheckSync::start() {
     DefVec slots, branches;
     fe::Vector<const App*> reads, calls;
     fe::Vector<Lam*> bodies;
+    DefMap<fe::Vector<Lam*>> returns;
     MutMap<Def*> parent, inlined;
     ankerl::unordered_dense::map<nat_t, const Def*> entered;
     // A `mem.fresh` continuation runs exactly once in place, so it belongs to the mutable that requests it.
@@ -154,7 +163,10 @@ void CheckSync::start() {
         if (!done.insert(mut).second) continue;
         if (auto lam = mut->isa<Lam>(); lam && (has_token(lam->dom()) || has_panel(lam->dom())))
             lam->blame("a work-group phase token or panel must not cross into `{}`", lam).bail();
-        if (auto lam = mut->isa<Lam>(); lam && lam->is_set() && has_slot(lam->codom())) bodies.push_back(lam);
+        if (auto lam = mut->isa<Lam>(); lam && lam->is_set()) {
+            returns[lam->body()].push_back(lam);
+            if (has_slot(lam->codom())) bodies.push_back(lam);
+        }
         DefSet seen;
         auto stack = DefVec();
         for (auto op : mut->ops())
@@ -248,9 +260,61 @@ void CheckSync::start() {
         auto by = users_of(callee);
         return by.size() == 1 && by.front()->isa<App>() && by.front()->as<App>()->callee() == callee;
     };
-    // A mutable runs at most once if each use calls it once, directly, through `cps2ds` or as a case of a selection,
-    // and no two uses run together.
+    // The calls a function value reaches through tuples, literal projections, returns and the parameters of functions
+    // called once; `std::nullopt` if it may escape anywhere else.
+    auto calls_of = [&](const Def* fn) -> std::optional<DefVec> {
+        auto sites = DefVec();
+        auto todo  = DefVec{fn};
+        auto done  = DefSet{fn};
+        auto push  = [&](const Def* def) {
+            if (done.insert(def).second) todo.push_back(def);
+        };
+        while (!todo.empty()) {
+            auto value = todo.back();
+            todo.pop_back();
+            if (auto i = returns.find(value); i != returns.end())
+                for (auto lam : i->second)
+                    for (auto user : users_of(lam)) {
+                        auto app = user->isa<App>();
+                        if (!app || app->callee() != lam) return {};
+                        push(app);
+                    }
+            for (auto user : users_of(value)) {
+                if (auto app = user->isa<App>()) {
+                    if (app->callee() == value) {
+                        sites.push_back(app);
+                        continue;
+                    }
+                    auto lam = app->callee()->isa_mut<Lam>();
+                    if (!lam || !called_once(lam)) return {};
+                    auto n = Lit::isa(app->arg()->arity()).value_or(0);
+                    if (app->arg() == value) {
+                        push(lam->var());
+                    } else if (auto tuple = app->arg()->isa<Tuple>(); tuple && n) {
+                        for (size_t j = 0; j != n; ++j)
+                            if (tuple->op(j) == value) push(lam->var(n, j));
+                    } else {
+                        return {};
+                    }
+                } else if (auto part = user->isa<Extract>()) {
+                    if (!Lit::isa(part->index())) return {};
+                    if (has_fn(part->type())) push(part);
+                } else if (user->isa<Tuple>()) {
+                    push(user);
+                } else {
+                    return {};
+                }
+            }
+        }
+        return sites;
+    };
+    // A mutable runs at most once if each use calls it once, directly, through `cps2ds`, as a case of a selection, or
+    // as a value that only one call reaches, and no two uses run together.
     auto repeats = [&](Def* mut) {
+        if (auto sites = calls_of(mut); sites && pairwise(*sites) && std::ranges::none_of(*sites, [&](const Def* site) {
+                                            return inside(site, mut);
+                                        }))
+            return false;
         auto by = users_of(mut);
         return !pairwise(by) || !std::ranges::all_of(by, [&](const Def* user) {
             if (inside(user, mut)) return false;
@@ -267,6 +331,11 @@ void CheckSync::start() {
         rigid(app->callee()->type()->as<Pi>()->dom(), app->arg(), app);
     for (auto lam : bodies)
         rigid(lam->codom(), lam->body(), lam);
+    // A partial application that takes a slot token is a closure holding it, which runs at most once.
+    for (auto app : calls)
+        if (app->type()->isa<Pi>() && has_slot(app->arg()->type()))
+            if (auto sites = calls_of(app); !sites || !pairwise(*sites))
+                app->blame("`{}` holds a ring slot token and may be called more than once", app).bail();
     // A ring's last slot may stay held when its fold ends, so a slot token is used at most once.
     for (auto def : slots) {
         if (auto hole = def->isa<Hole>()) {
