@@ -102,3 +102,11 @@ python3 bench/tools/ring_coverage.py /tmp/ring-bench
 11 个环各在一个 benchmark 中，其余 62 个没有走这两处造环路径。另有 10 个拒绝用例按预期失败。表中每个环只计一次。两种普通 TMA 环中，F16 输出的 `gemm_tiled_wg_tma_h` 还与尾声发生物理叠放。把这两个 GEMM 的 CTA 从两组缩为一组后，F32 输出的环满足前提，F16 输出的环仍因叠放而排除。[覆盖回归](../../lit/gpu/ring_fold_coverage.mim)
 
 多消费者需要分别跟踪各组的在途读和最后一次交还。`ws_fold` 还引入独立生产者与 empty barrier。cluster 需要跨 CTA 跟踪 multicast 和远端 arrival，persistent 需要跨 tile 保持代号、奇偶位和初始化状态。叠放区域需要证明相邻使用者的生存期及同步边界。[设计文档 §14.3、§17](../../docs/linear-types-design.zh-CN.md)
+
+### 每线程复制组（第二项，新增 5 个协议实例）
+
+`Async.Fold` 给每个发出复制的线程独立的 issue、commit、complete、wait 和 settle 事件。一张时间表表示一个有限执行前缀，未发生的事件取 `none`。程序顺序及等待条件是事件的启用条件；线程可在会合之间错开，同一线程的组也可乱序完成。每次 fill 各线程各提交一组（包括空组）。第 `i` 次等待前已提交 `d−1+i` 组，`pending=d−2` 保证票号 `0..i` 的组都已完成。各线程随后按需执行 proxy fence，所有线程到达 `refilled` 的 CTA 屏障才放行。末尾 `async_wait` 等待本线程的剩余复制。此路径使用 `exact=false`，因此最后几次补填仍递增票号，源块重复取 `count−1`。
+
+- `Async.read_current_generation` 对每个实际发出复制的线程分别证明：读发射时及读在途期间，其在目标槽负责的部分显示本块、本次票号，且该部分没有在途写。前提是各线程覆盖所读面板、写入区间互不冲突，读与填充操作数通过槽位及源块证书。
+- `Async.overwrite_after_last_read` 证明任一线程重写同槽之前，每个较老的同步 load 都已执行，属于 WGMMA 的读所在批次也已完成。`lag=0`，每个相关 WGMMA 批次在此步内等待 0，异步代理读还要求 proxy fence 和 WGMMA fence。CTA 会合把每个读者的本地顺序传到每个填充线程。
+- 五条 `fold=warp depth=2 lag=0` 日志分别为 `gpu_attn_attn_{law,roll,warp,wg}` 与 `gpu_fusion_attn_warps`。`wg` 的 PTX 含 proxy fence 和步内 WGMMA 等待，其余四条用同步读。warp lowering 要求块数至少为 2，另行为第二个槽分配共享缓冲区。现有日志对这些环打印 `layout=n/a`。这五项是协议层的覆盖，分类器宜记录 warp 环的缓冲区身份和实际区间，核对双槽、复制等待立即数、屏障、代理及读退休方式后计入物理布局已确认的覆盖。仅看 `scope=cp.async` 不足以纳入其他 lowering 路径。

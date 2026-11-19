@@ -1,4 +1,5 @@
 import Ring.Fold
+import Ring.Async
 
 namespace Ring
 
