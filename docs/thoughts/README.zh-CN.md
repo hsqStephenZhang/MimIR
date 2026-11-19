@@ -41,7 +41,7 @@ agy（Gemini 4 Argon）核对过这组文档，报告在 [`../reviews/thoughts_a
   - **运行时并发检查已有先例**：Triton ConSan。
   - 多级切块、融合控制、按共享内存定级数、warp 特化、split-k 都有先例，重叠最强的是 IREE 的 7 种 GPU 切块级加 SMT 约束，以及 MLIR 的 `fusionControlFn`。自动 WS 与流水还有 Cypress（PLDI'25）、Twill（OSDI'26）、Tawa（CGO'26）。
   - “类型保证层级作用域”已不成立：`TileLevels` 合并后，改由 `check.walk` 在部分求值时判定。
-  - “调度选择复用同一份合法性规则”**与代码不符**：`law.fastest`/`law.best` 只调用 `check.fits`（共享内存容量），不调用 `check.walk`（`tensor.mim:3805-3820`；`check.verdict` 只在 `:3936` 的 `tile_req` 处用到，汇总者核实）。
+  - “调度选择复用同一份合法性规则”**成立**。agy 说 `law.fastest` 只用 `check.fits`，这不对：`law.best`/`law.fastest` 用 `verdict_of` 标记不合法的候选（`tensor.mim:3766,3814`），而 `verdict_of` 调用 `check.law_verdict`，后者就是 `walk`，再加共享内存容量检查（`:3412-3418`，`:2894`）。`lit/tensor/law_traffic.mim` 的 `traffic_legal` 用例里，`law.best` 正是因为 walk 的判定越过了候选 `bad`。汇总者第一轮只 grep 了 `check.walk` 和 `check.verdict` 这两个名字，误认了 agy 的说法，现已更正。
 - **性能**（E §2，均转引自文档，未重测）：
   - H200 F16 GEMM 是 cuBLAS 的 94–100%（1024–8192）；
   - 编译出的 attention 是 cuDNN 的 0.73–0.88×，手写 FA3 结构为 0.92×；
@@ -55,7 +55,7 @@ agy（Gemini 4 Argon）核对过这组文档，报告在 [`../reviews/thoughts_a
 | --- | --- | --- | --- |
 | 本页、D、E、`linear-types-design` §22 | “51 个改变了生成代码的组合全部被拒，类型层 14、Lean 37” | 改为下面的口径。原来混淆了“生成代码改变”与“被拒”：静态拒绝时根本没有生成代码可比 | `bench/tools/mutate.py` 的 `verdict`；`erase_phases.cpp` 擦掉 `hold` 的槽号 |
 | A、B、D、本页 | Mojo 的槽、环身份、面板都不在类型里 | 环身份（origin）、环深、面板负载都在类型里；只有槽号和相位不在 | `tile_pipeline.mojo:809-839` |
-| C §5、本页 §3 | `law.fastest` 用 `check.walk` 排除不合法候选 | 它只用 `check.fits` | `tensor.mim:3805-3820` |
+| C §5、本页 §1 | （第一轮误改）`law.fastest` 只用 `check.fits` | 原说法正确：`law.fastest` 经 `verdict_of` → `check.law_verdict` → `walk` 排除不合法候选 | `tensor.mim:3412-3418,3814`；`lit/tensor/law_traffic.mim` |
 | E (f3) | CPU attention 实验“步骤 1 阻塞，尚未测量” | 步骤 1–5 都已完成；结论是比不启用规则慢 1.43–3.11×，堆分配为 3L²+132L+87 次 | `attention-schedule-experiment.zh-CN.md:208-1374` |
 | B | `tensor.mim` 的行号来自删除解释器之前的旧树；`extra/torch/torch.mim` 不在本树 | 行号已更新；torch 插件在 `MimIR-fork/extra/torch/` | agy F-5，汇总者抽查 |
 | B | Mojo 表项写“无检查”；IREE 仍写有 `GPUPipelining` | 已同步 A 的修正 | A §2.2 |
@@ -76,9 +76,9 @@ agy（Gemini 4 Argon）核对过这组文档，报告在 [`../reviews/thoughts_a
 | 生成代码改变 | 44 | **全部被拒**，分布见下 |
 
 那 44 对的分布：
-- **6 对**被类型或 `check_sync` 拒：`read_other_slot` 5 对，`ws_release_current` 1 对；
+- **8 对**被类型或 `check_sync` 拒：`read_other_slot` 5 对，`early_release` 2 对（`InFlight` 见证接到交还上之后，§4 第 1 项），`ws_release_current` 1 对；
 - **1 对**被 `tensor.mim` 的有界协议模拟 `ring_safe` 拒：`ws_fold` 上的 `full_parity`；
-- **37 对**被 Lean 检查器拒。其中 1 对（`attn_wg` 上的 `wgmma_wait`）是文本格式解析失败，不是语义规则拒绝。
+- **35 对**被 Lean 检查器拒。其中 1 对（`attn_wg` 上的 `wgmma_wait`）是文本格式解析失败，不是语义规则拒绝。接上见证之前，`early_release` 的 2 对也由 Lean 拒，当时是 6 / 37。
 
 ## 3. 可主张的贡献
 
@@ -88,14 +88,14 @@ agy（Gemini 4 Argon）核对过这组文档，报告在 [`../reviews/thoughts_a
    - 第一层：擦除式的线性与两相协议类型，加上 `check_sync`，在部分求值之后检查令牌线性、环身份、槽号与两相顺序。
    - 第二层：残余事件提取（`gpu.ring_trace`），加上 Lean 中证明可靠的逐角色检查器，逐 kernel 证明 T1/T2：读到本代，覆盖晚于上一代的最后一次读。
    - 已覆盖 11 个真实环中的 7 个；变异评测见 §2。
-   - 应如实写出两层的分工：类型层只拦下了 6 对，时序和奇偶类错误目前全靠证书。
+   - 应如实写出两层的分工：类型层拦下 8 对，局部所有权、槽号和在途计数归它管；代、奇偶和跨角色时间表靠证书。`wgmma_wait` 变异让受信任的 `wgmma_batch` 给出错误的见证，类型层看不出来，只能由 Lean 抓到。
    - 证据：D §3，E (c)(d)(e)，`linear-types-design` §16–§22。
 2. **协议骨架、F₂ 布局判定与调度合法性规则写在同一个高阶 IR 里，由同一个部分求值器特化。**
    - 协议骨架：`gpu.mim` 中的 `SyncOf`、`ring_fold`、`ws_fold`、`wgmma_batch`。
    - F₂ 布局判定：`tensor.mim:224-340` 中的 `lies_sw128`、`lies_tma128`。
    - 合法性规则：`check.walk`、`ring_safe`、`control`。
    - 新意在于这些都是普通的 IR 函数，部分求值后交给 C++ 降级，并且可以擦除。“调度在 IR 里”本身是论文 §7 已有的内容。
-   - 要让“调度选择复用合法性规则”成立，需要让 `law.fastest` 调用 `check.verdict`（agy 估计约 3 行）。
+   - 调度选择（`law.best`、`law.fastest`）经 `verdict_of` 复用同一份 `walk` 规则，测试见 `lit/tensor/law_traffic.mim`。
 3. **零运行时开销的擦除，以及生产级的多级代码生成。**
    - 从 SIMT 到 cp.async、mma.sync，再到 TMA、mbarrier、WGMMA、WS、cluster、persistent。
    - 加入类型与状态后，73 个 benchmark 的 device IR 中 71 个逐字节不变，2 个只差一个值名。
@@ -125,7 +125,7 @@ agy（Gemini 4 Argon）核对过这组文档，报告在 [`../reviews/thoughts_a
 
 | 优先级 | 方向 | 补的是什么 | 出处 |
 | --- | --- | --- | --- |
-| 1 | 把 `InFlight` 见证接到 `release` 上（`gpu.mim` 中 `ws_fold_at` 丢弃见证处）；`ring_idle` 由 `open` 产生并计入单次使用；`law.fastest` 调用 `check.verdict` | 让 `early_release`、`wgmma_wait` 在类型层被拒，明确两层的分工；堵住初始状态两次 await 的缺口；让贡献 2 名副其实 | agy §5.2，D G6/G7，`linear-types-design` §21.6 |
+| 1 | **已完成**（`a9b4b6d0b`，`linear-types-design` §23）：`InFlight` 见证接到交还上，由 `check_sync` 在 PE 之后检查 `k ≤ d`；`ring_open` 带 mem 产生初始状态，并计入单次使用；`law.fastest` 本来就经 `verdict_of` 用 `walk` 排除候选 | `early_release` 改由类型层拒；初始状态两次 await 的缺口已关闭 | 同左 |
 | 2 | 补叠放、persistent、cluster 的 Lean 模型和检查器 | 覆盖率从 7/11 提到 11/11；叠放对应 §29 的历史 bug，最快的 GEMM 配置正好在这几类里 | E §3，agy §5.2 |
 | 3 | 从 PTX 提取事件，取代从 Mim 残余提取 | 把之后的各 phase、LLVM 移出信任基；还能检查 ptxas 越过 `wgmma.wait_group` 重排的问题 | D §5，`bench/gpu_tiling/RESULTS.zh-CN.md:769-771` |
 | 4 | 扩大变异：回放历史 bug，变异 `LowerToMem` 的 C++ 代码；在 GPU 上用 compute-sanitizer、ConSan 式插桩做差分测试 | 现在的变异全是 `.mim`；检验手写的硬件模型 | D G9，A §5 |

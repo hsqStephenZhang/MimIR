@@ -204,7 +204,7 @@ MimIR 一侧以 `~/workspaces/MimIR-thoughts`（f12e45a50）为准，下文 `ten
 1. **流水环的协议写在 IR 里，并有静态的线性令牌检查和机械化的协议模型。**
    - CUTLASS 的 `PipelineTmaAsync` API 形状几乎相同，但没有检查；MLIR 明说依赖是用户责任；Triton/TileLang 自动生成但不验证；TVM 只检查 stage/order 与读写依赖，不建模 mbarrier 相位与异步代理。
    - 限定：令牌检查有已知缺口（轮转槽、名义类型里的令牌）；Lean 证书覆盖 11 个环中的 7 个，而且是“协议模型 + 轨迹核对”，不是对生成 PTX 的证明。
-2. **调度合法性规则写成 IR 里的函数，由部分求值在 elaboration 时判定。**（汇总时更正：`law.fastest`/`law.best` 只用 `check.fits` 筛掉超出共享内存的候选，并不调用 `check.walk`，见 `tensor.mim:3805-3820`；`check.verdict` 只在 `tile_req` 处调用。）
+2. **调度合法性规则写成 IR 里的函数，由部分求值在 elaboration 时判定。**调度选择也用同一份规则：`law.best`/`law.fastest` 经 `verdict_of` → `check.law_verdict` → `walk` 排除不合法的候选（`tensor.mim:3412-3418,3814`，`lit/tensor/law_traffic.mim`）。
    - 对照：CUTLASS 的 `can_implement` 与 IREE 的约束都写在 C++ 里；transform 方言在解释时才失败。
    - 限定：IREE 已经把 GPU 配置的约束发成 SMT 供调优器使用（`LLVMGPUConstraintGenerator.cpp`），“规则即约束”本身不新；新意只在“规则、调度、语义在同一个 IR 里，用同一个求值器”。两份规则（Mim 与 C++ 晚检）的一致性没有证明（`tile-check-rules.md`）。
 3. **在线 softmax 式的融合写成带担保的“rolling 定律”，由同一套层级去切。**
