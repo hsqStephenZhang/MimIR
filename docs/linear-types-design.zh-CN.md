@@ -686,3 +686,35 @@ codex 额度用完，由 Claude 子代理调研。结论：
 - **拒绝**：同一状态上连续两次 `await`，前端类型检查即拒（`lit/error/ring_await_twice.mim`）；`release` 返回的状态被用两次，`check_sync` 拒（`lit/error/ring_state_alias.mim`）。
 - **缺口**：初始状态 `ring_idle` 与 `unheld` 一样不计使用次数，所以从初始状态出发的两次 `await` 不被拒。要关掉它，需要让 `ring_idle` 带 mem 并只由 `open` 产生。
 - 20 个手写协议测试按新接口移植。全量 lit 通过。73 个 benchmark 中 71 个设备 IR 经 `canon_ir.py` 后逐字节相同；`gemm_tiled_wg_{ws,persistent}` 只差一个 LLVM 值名（`%_552.p` 变成 `%m_552.p`），指令相同。
+
+## 22. 变异评测（第一批，2026-11-19）
+
+`bench/tools/mutate.py <out>` 把插件目录复制一份（`.so` 用链接，`.mim` 复制），对 `gpu.mim`/`tensor.mim` 注入一个协议 bug，用 `-P` 指向它，编译 7 个带环的 benchmark（5 个 cp.async，合作 TMA，`ws_fold`），按层判定：
+- **static**：前端类型检查或 `check_sync` 拒绝；
+- **trace**：`gpu.ring_trace` 的结构检查拒绝；
+- **lean**：Lean 检查器拒绝；
+- **same**：device IR 与基线相同（规范化 gid、元数据号和值名后），即对这个 kernel 是等价变异；
+- **unchecked**：IR 变了，但这个环的模型还没有可执行检查器；
+- **MISSED**：IR 变了，检查器却接受。
+
+| 变异 | 含义 | 结果 |
+| --- | --- | --- |
+| `wait_pending` | cp.async 步少等一组 | 5 个 cp.async：lean |
+| `no_proxy_fence` | 异步代理读者缺 proxy fence | `attn_wg`：lean；其余 same |
+| `no_refill_barrier` | 补填前没有 CTA 屏障 | 5 个 cp.async：lean；合作 TMA：unchecked |
+| `refill_read_slot` | 补填写进正在读的槽 | 4 个 turns 环：lean；合作 TMA：unchecked |
+| `read_other_slot` | 读的槽不是 await 的槽 | 4 个 turns 环和合作 TMA：static（`check_sync`） |
+| `no_settle` | 结束时不等在途复制 | 5 个 cp.async：same；合作 TMA：unchecked |
+| `early_release` | lag 1 时在 MMA 退休前交还槽 | 合作 TMA、`ws_fold`：unchecked |
+| `prologue_slot` | 序言填错槽 | 5 个 cp.async：trace（读到没被填过的缓冲区）；合作 TMA：unchecked |
+| `hold_slot` | await 担保了错的槽 | 7 个全部：static（类型） |
+| `wgmma_wait` | WGMMA 批次多留一组在途 | `attn_wg`：trace；合作 TMA、`ws_fold`：unchecked |
+| `ws_release_current` | `ws_fold` 交还刚读的槽 | `ws_fold`：static（`check_sync`，令牌用两次） |
+| `full_parity` | full mbarrier 奇偶位错 | `ws_fold`：static（`tensor.mim` 的有界模拟）；合作 TMA：unchecked |
+| `empty_parity` | empty mbarrier 奇偶位错 | `ws_fold`：unchecked |
+| `refill_block` | 补填块号错 | 5 个 cp.async：lean；合作 TMA：unchecked |
+| `pending_formula` | `pipeline_plan.pending` 错 | 全部 same（warp fold 直接传 0） |
+
+- 生成代码变了或被拒的 51 个（变异，kernel）组合中，40 个被抓到：static 19、trace 7、lean 14。另 11 个都在合作 TMA 与 `ws_fold` 上，等可执行检查器。cp.async 环上没有 MISSED。
+- **类型层的明显短板是 `early_release`**：lag 1 时，槽在它的 MMA 退休之前就交还，这是真实可能的 bug，而类型层不管。`ring_fold` 的 `step` 不返回 `InFlight` 见证，`ws_fold` 拿到见证却丢弃，见证没有接到 `release` 上（§21.5）。把见证接上后，这个变异应该在类型层被拒。
+- `no_settle`、`pending_formula` 在 device 层等价：前者在之后的 phase 里另有等待，后者不在任何 benchmark 的路径上。
