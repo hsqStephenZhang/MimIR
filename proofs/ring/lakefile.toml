@@ -1,6 +1,10 @@
 name = "mimir-ring"
 version = "0.1.0"
-defaultTargets = ["Ring"]
+defaultTargets = ["Ring", "ring_trace"]
 
 [[lean_lib]]
 name = "Ring"
+
+[[lean_exe]]
+name = "ring_trace"
+root = "Trace"

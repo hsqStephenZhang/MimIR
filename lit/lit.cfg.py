@@ -1,4 +1,4 @@
-import os, subprocess, sys
+import os, shutil, subprocess, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from mim_sh_test import MimShTest
 from mim_roundtrip_test import MimRoundTripTest
@@ -42,6 +42,9 @@ config.substitutions.append(('%libdir', config.my_obj_root + '/lib'))
 config.environment = os.environ
 
 config.available_features.add("always")
+if shutil.which("lake"):
+    config.available_features.add("ring-lean")
+config.substitutions.append(('%srcroot', '"' + config.my_src_root + '"'))
 
 # Gate expensive tests on optimized builds via `// REQUIRES: release`.
 if getattr(config, 'build_type', '').lower() in ('release', 'relwithdebinfo', 'minsizerel'):

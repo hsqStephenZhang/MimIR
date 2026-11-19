@@ -1,0 +1,69 @@
+// RUN: python3 %S/ring_fold_trace.py %mim %s %srcroot/proofs/ring %t
+// REQUIRES: ring-lean
+// UNSUPPORTED: roundtrip
+
+plugin mem;
+plugin buffer;
+plugin gpu;
+plugin tensor;
+plugin core;
+plugin cps;
+plugin math;
+plugin compile;
+
+use core.ops.n;
+
+let M = mem.M 0;
+lam Bars (depth: Nat): * = buffer.Buf (1, depth, I64);
+let Acc = «1, 4; math.F32»;
+let Map = gpu.GlobalPtr «16; I64»;
+let word = core.idx 0 0x100000000;
+
+// Opaque during specialization. The driver binds this single leaf to the host trace sink.
+axm ring_event: Fn [M, Nat, Nat, Nat, Nat] → M;
+lam event (m: M, op x y z: Nat): M = cps.cps2ds ring_event (m, op, x, y, z);
+
+rule leader (): gpu.leader () => tt;
+rule address (depth: Nat, b: Bars depth, s: Idx depth): gpu.buf_addr (b, s) => word (8 * core.idx2nat s);
+rule init (m: M, bar arrivals: I32): gpu.mbar_init_if (m, bar, arrivals, tt) =>
+    event (m, 0, core.idx2nat bar, core.idx2nat arrivals, 0);
+rule expectTx (m: M, bar bytes: I32): gpu.mbar_expect_tx_if (m, bar, bytes, tt) =>
+    event (m, 1, core.idx2nat bar, core.idx2nat bytes, 0);
+rule load (m: M, dst: I32, map: Map, row bar: I32): gpu.tma_load_if (m, dst, map, 0I32, row, bar, tt) =>
+    event (m, 2, core.idx2nat row, core.idx2nat dst, core.idx2nat bar);
+rule poll (m: M, bar parity: I32): gpu.mbar_wait_at (m, bar, parity) =>
+    event (m, 3, core.idx2nat bar, core.idx2nat parity, 0);
+rule release (rid depth: Nat, m: M, s: Idx depth, live: Bool, h: gpu.Held (rid, depth) (s, live)):
+    gpu.retire @(rid, depth) (m, s, live, h) => event (m, 4, core.idx2nat live, core.idx2nat s, 0);
+rule mma (m: M, a b: I64, x: Acc): gpu.wgmma_f16 (1, m, a, b, ff, x) =>
+    (event (m, 5, core.bitcast Nat a, core.bitcast Nat b, 0), x);
+rule commit (m: M): gpu.wgmma_commit m => event (m, 6, 0, 0, 0);
+rule wait (m: M, n: Nat, x: I32): gpu.wgmma_wait (m, n, x) => (event (m, 7, n, 0, 0), x);
+rule fence (m: M): gpu.fence m => m;
+rule wgFence (m: M): gpu.wgmma_fence m => m;
+rule settle (m: M): gpu.async_wait m => m;
+
+lam run (rid depth count lag: Nat, turns: Bool) (m: M, bars: Bars depth, map: Map): M =
+    let full  = λ (j: Nat): Nat = tensor.pipeline_plan.full_parity j depth;
+    let empty = λ (j: Nat): Nat = tensor.pipeline_plan.empty_parity j depth;
+    let sync  = gpu.tma_ring @(rid, depth) (bars, bars, full, empty, 0, ff, 0, 0, ff, ff, ff, tt);
+    let refill = λ (i: Nat): Nat = tensor.pipeline_plan.refill_block (i, depth, count);
+    fun fill (m: M, block nth: Nat, panelAddr: I64): M =
+        let panel = (word (core.bitcast Nat panelAddr), map, word block, 0I32, 1, 64, 2, 1);
+        let bar = gpu.buf_addr (bars, core.idx 0 depth (nth % depth));
+        return (gpu.tma_fill @1 (panel, bar, gpu.leader ()) m);
+    fun step (m: M, a: I32, block: Nat, panelAddr: I64): [M, I32] =
+        let issue = λ (m: M, a: I32): [M, I32] =
+            let (m, _) = gpu.wgmma_f16 (1, m, core.bitcast I64 block, panelAddr, ff, ‹1, 4; 0.0:math.F32›);
+            (m, a);
+        let (m, a, _) = gpu.wgmma_batch @(I32, 2) (ff, lag, ff, 0) (m, a) (issue, issue);
+        return (m, a);
+    let (m, _) = gpu.ring_fold @(I32, I64, rid, depth) (sync, core.bitcast I64 count, refill, lag, tt, turns)
+        (m, 0I32, ‹s: depth; core.bitcast I64 (128 * core.idx2nat s)›) (fill, step);
+    m;
+
+extern lam _compile (): compile.Phase = compile.phases ff (
+    compile.named "gpu.check_sync",
+    compile.rule_app (leader, address),
+    compile.rule_app (init, expectTx, load, poll, release, mma, commit, wait, fence, wgFence, settle),
+    compile.named "gpu.erase_phases", compile.cleanup);
