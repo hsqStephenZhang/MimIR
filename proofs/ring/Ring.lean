@@ -1,5 +1,7 @@
 import Ring.Fold
 import Ring.AsyncCode
+import Ring.CoopCode
+import Ring.WsCode
 import Ring.Witness
 import Ring.WarpWitness
 

@@ -72,6 +72,16 @@ import Ring
 #print axioms Ring.EmptyBarrier.handshake
 #print axioms Ring.WarpSpecialized.read_current_generation
 #print axioms Ring.WarpSpecialized.overwrite_after_last_read
+#print axioms Ring.Cooperative.fold_of_accepted
+#print axioms Ring.Cooperative.accepted_read_current_generation
+#print axioms Ring.Cooperative.accepted_overwrite_after_last_read
+#print axioms Ring.Cooperative.expected_accepted
+#print axioms Ring.Cooperative.diagnoseRole_none
+#print axioms Ring.WarpSpecialized.fold_of_accepted
+#print axioms Ring.WarpSpecialized.accepted_read_current_generation
+#print axioms Ring.WarpSpecialized.accepted_overwrite_after_last_read
+#print axioms Ring.WarpSpecialized.expected_accepted
+#print axioms Ring.WarpSpecialized.diagnoseRole_none
 LEAN
 ```
 
@@ -183,3 +193,54 @@ wgmma_fence C | wgmma_commit C | wgmma_wait0 C
 - `EmptyBarrier.handshake` 对事件时间作联合归纳。full poll 成功推出该代已发布，empty poll 成功推出每个较早代的八个 arrival 都发生过。只到七个、各组进度不同、奇偶位多次回绕都包含在证明中。
 - `WarpSpecialized.read_current_generation` 与 `WarpSpecialized.overwrite_after_last_read` 分别证明 T1、T2。后者沿每个消费组自己的 WGMMA 等待、warp arrival 和生产者的 empty 等待建立顺序。`WarpSpecialized.exists_execution` 在 `d ≥ 2` 给出处理每块并完成末次交还的见证。[握手证明](Ring/EmptyBarrier.lean) · [完整协议](Ring/WarpSpecialized.lean)
 - `gpu_tiling_gemm_tiled_wg_ws` 日志为 `depth=4 lag=1 consumers=2`，panel group 布局为 `disjoint`。分类器可把这个非 persistent、非 cluster 的 producer/consumer 配置送入布局检查，核对一个生产者、两个消费组、empty 初值 8、逐 warp 的 arrival、正常及收尾释放。其余 `ws_fold` 配置仍须分别核对。
+
+### TMA 环的可执行检查器
+
+[TmaCode.lean](Ring/TmaCode.lean) 给合作 TMA 和独立生产者共用一套按角色、按程序顺序的 PTX 级指令。槽和屏障均用下标命名，由提取器把地址映射成下标。`full S`/`empty S` 是槽 `S` 的 full / empty mbarrier。
+
+```text
+init full S N | init empty S N        # mbarrier.init，N 为每相 arrival 数
+expect_tx full S BYTES                # mbarrier.arrive.expect_tx，开始一次填充
+tma_load SLOT full S SRC BYTES        # 一条 cp.async.bulk.tensor，紧跟在本次填充的 expect_tx 或前一条 tma_load 之后
+mbar_wait full S P | mbar_wait empty S P
+mbar_arrive empty S                   # 消费 warp 首 lane 交还槽
+bar                                   # CTA bar.sync
+wgmma_fence | read BLOCK SLOT | wgmma_commit | wgmma_wait N
+settle                                # 收尾的 async_wait，必须是最后一条
+```
+
+每行一条，`#` 之后为注释。输入按 `role ...` 行分段。只写代表线程实际生效的指令，`_if` 谓词为假的指令不写。填充 `J` 是第 `J` 条 `expect_tx`；它的 `tma_load` 必须连续紧跟，至少一条，字节数之和等于 `expect_tx` 的字节数（`bytesMatch`）。`read` 的批次即当前步唯一的 WGMMA 批次。
+
+**合作 TMA。** `lake exe ring_coop_check D COUNT < roles`。第一段为 `role leader`（线程 0，属于消费组 0，负责初始化和全部填充），其后依次为 `role consumer 1`、`role consumer 2` …，组数即段数。规范序列：
+
+- leader：`init full s 1`（`s = 0..d−1`）、`bar`，序言填充 `0..d−2`；
+- 第 `i` 步（各组）：`mbar_wait full (i%d) ((i/d)%2)`、`wgmma_fence`、若干 `read i (i%d)`、`wgmma_commit`、`wgmma_wait 1`、`bar`；leader 在 `i+d−1 < count` 时随后填充 `i+d−1`（`expect_tx full ((i+d−1)%d)`，`tma_load` 的源块为 `i+d−1`）；
+- 收尾：`wgmma_wait 0`、`settle`。
+
+`accepts d count leader P` 另要求 `2 ≤ d`、`d−1 ≤ count`。
+
+**独立生产者。** `lake exe ring_ws_check D COUNT < roles`。三段 `role producer`、`role consumer 0`、`role consumer 1` 各一次，顺序任意。消费组的代表是某个 warp 的首 lane；消费者 0 含线程 0，负责初始化。规范序列：
+
+- producer：`bar`；对每块 `j`：`mbar_wait empty (j%d) ((j/d+1)%2)`、`expect_tx full (j%d) B`、`tma_load (j%d) full (j%d) j b`…；收尾 `wgmma_wait 0`、`settle`；
+- consumer 0 先 `init full s 1`（`s = 0..d−1`）再 `init empty s 8`，然后与 consumer 1 相同：`bar`；第 `i` 步 `mbar_wait full (i%d) ((i/d)%2)`、`wgmma_fence`、`read i (i%d)`…、`wgmma_commit`、`wgmma_wait 1`，`i ≥ 1` 时再 `mbar_arrive empty ((i−1)%d)`；收尾 `wgmma_wait 0`，`count ≥ 1` 时 `mbar_arrive empty ((count−1)%d)`，`settle`。
+
+`accepts d count role P` 另要求 `0 < d`。两个可执行文件的输出与 `ring_async_check` 一致：`accepted`（退出码 0）；或逐角色 `rejected role R op I (line L) 'OP': 原因`、`rejected role R at end (op I): 原因`（退出码 1）；语法、角色头或参数错误退出码 2。`--expected D COUNT GROUPS LOADS BYTES MMAS`（合作）和 `--expected D COUNT LOADS BYTES MMAS`（独立生产者）按同一格式打印规范序列。`diagnoseRole_none` 证明报告 `accepted` 时 `accepts` 为真；`expected_accepted` 证明规范序列对一般参数被接受（合作需 `2 ≤ d ≤ count+1`，独立生产者需 `0 < d`，二者都需每次填充至少一条 `tma_load`）。
+
+**时间表与硬件规则。** `Exec` 给每个角色一个 `Track`（已执行前缀长度和每个位置的时刻），另给每次填充的 arrival、字节落地和发布事件，每个组每个批次的退休事件；合作路径有 CTA 屏障放行事件，独立生产者有八个消费 warp 首 lane 的第 `k` 次 arrival。`Consistent` 只要求：
+
+- 程序顺序：已执行前缀内时刻严格递增；合作路径的屏障规则与 `Async` 相同；
+- 填充：`expect_tx` 之后才有 arrival；每条 `tma_load` 之后才有本次填充的落地；没有对应 `expect_tx` 的填充不落地；发布晚于 arrival 和落地；
+- full 屏障：位置 `q` 的 `mbar_wait full b p` 在时刻 `t` 返回，仅当到 `t` 为止已发布、且 `expect_tx` 在 `b` 上的填充数的奇偶 `≠ p`；
+- empty 屏障：生产者的 `mbar_wait empty b p` 返回，仅当八个 warp 在 `b` 上已发生的 arrival 总数除以 8 的奇偶 `≠ p`；
+- WGMMA：批次在其 commit 之后退休；`wgmma_wait n` 返回前，提交后又至少提交 `n` 组的每个批次都已退休。
+
+由此 `cta` 直接构造模型的 CTA，`fold_of_accepted` 证明 `Cooperative.Fold` 和 `WarpSpecialized.Fold` 的**每个字段**，`readCode_of_accepted` 给出每个 `read` 的 `ReadCode`。`accepted_read_current_generation`（T1）与 `accepted_overwrite_after_last_read`（T2）对任意被接受的程序和任意一致时间表成立，结论与模型定理相同。T2 的写开始取 `expect_tx`，本次填充的每条 `tma_load` 都在它之后。独立生产者的物理槽投影 `slots s` 的第 `h` 次访问取块 `s + d·h`；`tally_slot` 证明按块号统计槽 `s` 的事件与按访问统计相同，从而 `full`、`empty` 两个字段由上面的屏障规则推出。
+
+拒绝引理：合作路径 `wrong_parity_rejected`、`refill_without_barrier_rejected`、`wrong_slot_rejected`、`wrong_fill_slot_rejected`、`wrong_wait_rejected`；独立生产者 `wrong_full_parity_rejected`、`wrong_empty_parity_rejected`、`missing_release_rejected`、`early_release_rejected`（交还早于退休该块批次的 `wgmma_wait`）、`wrong_slot_rejected`、`wrong_release_slot_rejected`、`wrong_fill_slot_rejected`。文件末尾另有 `decide` 例子。
+
+以下几点是投影假设，不由程序顺序推出：
+
+- **warpgroup 收敛。** 每个消费组用一条程序和一条时间线代表，`mbar_wait`、WGMMA fence/commit/wait 和读都视为组事件。独立生产者中四个 warp 的 arrival 各有时刻，但限定在本组 `mbar_arrive` 前一条与后一条指令之间（`giveAfter`、`giveBefore`）。
+- **相位与填充一一对应。** full 屏障的每个完成相位对应一次已发布填充，empty 屏障每 8 次 arrival 完成一相。检查器核对了它的前提：初始化计数 1 和 8、full 屏障上只有 `expect_tx` 到达、字节数相符；初始化对其他线程的可见性由设置阶段的 `bar` 保证，模型未单独表示。字节级的到达语义只在单消费者小步模型中形式化。
+- 提取器仍负责地址到槽、屏障和源块的映射、各组代表线程的选择及谓词求值。
+

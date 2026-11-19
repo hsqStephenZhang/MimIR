@@ -14,7 +14,7 @@ structure Slot where
 
 def group (w : Fin 8) : Fin 2 := ⟨w.val / 4, by have := w.isLt; omega⟩
 
-private def total : (n : Nat) → (Fin n → Nat) → Nat
+def total : (n : Nat) → (Fin n → Nat) → Nat
   | 0, _ => 0
   | n+1, f => total n (fun i => f i.succ) + f 0
 

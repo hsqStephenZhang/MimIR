@@ -1,6 +1,6 @@
 name = "mimir-ring"
 version = "0.1.0"
-defaultTargets = ["Ring", "ring_trace", "ring_async_check"]
+defaultTargets = ["Ring", "ring_trace", "ring_async_check", "ring_coop_check", "ring_ws_check"]
 
 [[lean_lib]]
 name = "Ring"
@@ -12,3 +12,11 @@ root = "Trace"
 [[lean_exe]]
 name = "ring_async_check"
 root = "AsyncCheck"
+
+[[lean_exe]]
+name = "ring_coop_check"
+root = "CoopCheck"
+
+[[lean_exe]]
+name = "ring_ws_check"
+root = "WsCheck"
