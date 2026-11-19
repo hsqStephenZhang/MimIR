@@ -511,3 +511,7 @@ MimIR 是编译器：用户写的是 PyTorch 模型（经 `mimir-frontend` 导�
 - `rid` 只出现在类型里，擦除后消失：73 个 bench 的设备 IR 与改动前完全相同，全量 lit 1053 通过。
 
 还没做的：把 `open` 产生的线性 `RingState rid` 串进 fold 状态，使令牌只能由消费唯一前态的转换产生；以及第 3 步的残余 fold 验证器，它等 Lean 模型确定协议的形状之后再做。
+
+## 19. 第 3 步：具体残余 fold 的验证
+
+单 CTA、单消费者的 TMA 实例已接到 Lean 的可执行 `Ring.fold`。56 个特化实例中，rolled 与 unrolled 逐对一致。28 个 `lag = 0` 实例都比模型少一次退出时的 `wait_group 0`，其余 28 个逐条相等。`LowerToMem` 生成的环可用 `-X tensor:ring-coverage=1` 分类，区域叠放由 NVPTX 的最终布局判定。事件对应、benchmark 计数和剩余证明义务见[验证报告](../proofs/ring/README.md#与残余-fold-对接)。

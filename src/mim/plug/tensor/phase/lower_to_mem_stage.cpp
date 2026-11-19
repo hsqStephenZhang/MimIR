@@ -452,6 +452,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
     // A ring of `depth` buffers per panel; `ring[s]` holds the block `s` ahead of the current one.
     std::vector<DefVec> ring;
     std::vector<size_t> pipelined;
+    u64 panel_group = 0;
     if (!stages.empty()) {
         auto probe = old.mut_lam(parameter->type()->as<Pi>());
         if (auto block = Lit::isa(stride)) multiples_[probe->var(2, 1)] = *block;
@@ -474,7 +475,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         pop();
         stages = kept;
         if (!first.empty()) ring.push_back(first);
-        auto group = panel_groups_++;
+        panel_group = Panel_Groups + panel_groups_++;
         for (u64 s = 1; s < depth && !first.empty(); ++s) {
             DefVec buffers;
             for (auto panel : first) {
@@ -483,7 +484,7 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                 // The ring's later slots die with the fold, so the epilogue's staging may reuse them.
                 auto scope = tile_round_
                                ? w.app(w.annex<gpu::shared_scope>(), mem)
-                               : w.app(w.app(w.annex<gpu::panel_scope>(), w.lit_nat(Panel_Groups + group)), mem);
+                               : w.app(w.app(w.annex<gpu::panel_scope>(), w.lit_nat(panel_group)), mem);
                 std::tie(mem, other) = buffer::op_alloc(r, shape, T, scope)->projs<2>();
                 forward_layouts(panel, other);
                 buffers.push_back(other);
@@ -728,6 +729,20 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
         };
         // Each ring's tokens carry its own number, so the tokens of two rings never stand for each other.
         auto rid = w.lit_nat(rings_++);
+        if (driver().arg_nat("tensor", "ring-coverage").value_or(0)) {
+            auto consumers = specialized ? roles_.consumers : group_threads_ / 128;
+            auto scope     = !tma                            ? "cp.async"
+                           : tile_round_                     ? "persistent"
+                           : cluster_.size                   ? "cluster"
+                           : specialized                     ? "ws_fold"
+                           : !fragments || !fragments->group ? "no-wgmma-batch"
+                           : consumers == 0                  ? "unknown-consumers"
+                           : consumers > 1                   ? "multiple-consumers"
+                           : ring.empty() || overlap > 1     ? "depth-or-lag"
+                                                             : "check-layout";
+            std::println(stderr, "ring-coverage rid={} fold=tile depth={} lag={} consumers={} group={} scope={}",
+                         Lit::as(rid), ring.size(), overlap, consumers, panel_group, scope);
+        }
         const Def* sync;
         if (tma) {
             auto vacant = parity(w.annex(tensor::pipeline_plan::empty_parity), "ringVacant");

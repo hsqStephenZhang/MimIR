@@ -164,6 +164,7 @@ static constexpr PluginArg known_args[] = {
     {"reference-tiles=<n>", "Lower regions, stage and prepack through their Mim reference implementations (default 0)."},
     {"tile-ref=<n>", "Normalize tile_of and tile_of_box to their specification, a slice of the whole producer (default 0)."},
     {"tile-fuse=<n>", "1: realize tensor.tile_req requests with the tile-and-fuse driver instead of grouping; 2: also partition into tile_req groups with default_tile_config (default 0)."},
+    {"ring-coverage=<n>", "Report the Lean fold scope of generated rings and NVPTX panel placement (default 0)."},
     {"pipeline=<n>", "Default `pipeline` depth of reduction levels inside a work-group that leave it 0: blocks of the fold whose panels are in flight, `n` keeping a ring of `n` buffers per panel and filling the panels `n - 1` blocks ahead, as groups of `cp.async` on sm_80 (default `1`)."},
     {"tf32-rna=<n>", "Round tensor-core operands to TF32 to nearest with ties away from zero (`gpu.tf32_rna`) instead of letting `mma` truncate them (default 0)."},
     {"strict=<n>", "Fail on unrealized group_req markers instead of warning (default 0)."},

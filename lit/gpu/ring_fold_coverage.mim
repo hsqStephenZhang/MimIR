@@ -1,0 +1,13 @@
+// UNSUPPORTED: roundtrip
+// Reduce the CTA's 128 rows to one warpgroup's 64 in each benchmark. The half-result epilogue
+// stages its output in the panel arena. Only device placement can distinguish these two rings.
+// RUN: sed 's/serial_group ((128,/serial_group ((64,/;s/PIPE/2/g' %srcroot/bench/gpu_tiling/gemm_tiled_wg_tma.mim > %t.full.mim
+// RUN: sed 's/serial_group ((128,/serial_group ((64,/;s/PIPE/2/g' %srcroot/bench/gpu_tiling/gemm_tiled_wg_tma_h.mim > %t.half.mim
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 %t.full.mim -p nvptx -X nvptx:sm=90a -X nvptx:no-embed -o /dev/null 2> %t.full.log
+// RUN: %mim -p opt -p gpu -X tensor:tile-fuse=1 -X tensor:ring-coverage=1 %t.half.mim -p nvptx -X nvptx:sm=90a -X nvptx:no-embed -o /dev/null 2> %t.half.log
+// RUN: python3 %srcroot/bench/tools/ring_coverage.py %t.full.log | %FileCheck %s --check-prefix=FULL
+// RUN: python3 %srcroot/bench/tools/ring_coverage.py %t.half.log | %FileCheck %s --check-prefix=HALF
+// FULL: rid=0 scope=covered layout=disjoint
+// FULL: total 1
+// HALF: rid=0 scope=overlaid layout=overlaid
+// HALF: total 1

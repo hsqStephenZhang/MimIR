@@ -1193,7 +1193,9 @@ const Def* LowerToMem::warp_fold(const App* app) {
         auto refill = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringRefill");
         refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),
                                 {refill->var(), depth, w.lit_nat(*literal_count)}));
-        auto rid  = w.lit_nat(rings_++);
+        auto rid = w.lit_nat(rings_++);
+        if (driver().arg_nat("tensor", "ring-coverage").value_or(0))
+            std::println(stderr, "ring-coverage rid={} fold=warp depth=2 lag=0 scope=cp.async", Lit::as(rid));
         auto fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, rid, depth});
         auto sync = w.app(w.app(w.annex<gpu::async_ring>(), {rid, depth}),
                           {w.lit_nat_0(), w.lit_bool(group_rows_ != nullptr)});

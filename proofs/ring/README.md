@@ -6,7 +6,7 @@
 
 ## 程序与硬件的边界
 
-序言无条件填充 `0 ≤ j < d - 1`。第 `i` 步先等槽 `i % d` 的本代，然后按下表执行。交还的都是上一步的槽，第 0 步的交还为空。补填的块号为 `i + (d - 1)`，只在它小于 `count` 时发起。退出时统一执行 `wait_group 0`，在 `lag = 0` 路径上此等待已由每步完成。
+序言无条件填充 `0 ≤ j < d - 1`。第 `i` 步先等槽 `i % d` 的本代，然后按下表执行。交还的都是上一步的槽，第 0 步的交还为空。补填的块号为 `i + (d - 1)`，只在它小于 `count` 时发起。模型在退出时追加 `wait_group 0`。Mim 只在 `lag = 1` 时发出这条指令。`lag = 0` 的每次提交已紧跟一次 `wait_group 0`。
 
 | 参数 | 等到本块之后的操作顺序 |
 | --- | --- |
@@ -58,6 +58,44 @@ LEAN
 
 ## 与残余 fold 对接
 
-按设计文档 §14.3 第 3 步，可从一次实际的 `LowerToMem` 输出提取带环身份的操作序列，核对 TMA 的源块、目标字节区间、屏障、预期字节数，及每条 MMA 的读区间。对展开的循环证明 `i = turn * d + j` 时字面槽为 `j`；对轮转的循环跟踪槽排列。再核对 `(i / d) % 2`、循环边界、组提交和等待的顺序，检查机器整数计算无溢出。验证器可输出到 `Ring.fold` 的对应证明，或直接输出 `Ring.Code` 证书；还需证明每条残余指令的可观察效果对应 `Host` / `HW` 的步进。这样可在擦除环令牌后复用安全定理。这里尚未对一份真实的残余 IR 完成该验证。[设计文档 §14.3、§17](../../docs/linear-types-design.zh-CN.md)
+[lit 用例](../../lit/gpu/ring_fold_trace.mim)用与 lowering 相同的 `tma_ring`、`pipeline_plan.full_parity`、`refill_block` 和 `ring_fold` 实例化单 CTA 环。每个物理槽有一个独立的面板标签，普通循环须正确轮转这些标签，展开循环须选对字面槽。每次 fill 用 `tma_fill` 复制一行 128 字节，每步用 `wgmma_batch` 发射两条 MMA。MMA 描述符在用例中携带块号和面板偏移，便于直接核对读取来源。
 
-模型限定为单 CTA、一个生产者、一个消费者，槽之间无别名。cluster / multicast、多消费者的 warp specialization、persistent tiles 和叠放区域均在范围之外。`async_ring` 的 cp.async 组与 `ws_fold_at` 的生产者分支也需要各自的语义。这里抽象了每个块的载荷、线程级收敛、代理 fence 细节、物理地址和 ptxas 调度。排空是存在性结论；无限重试和不公平调度仍被允许。
+先运行 `gpu.check_sync`，再用 Mim 重写规则把特化后的叶操作换成消费同一条内存链的事件记录。这样能在擦除前观察 `retire` 的实际槽和 live 位。将残余程序唯一的记录原语绑定到主机打印函数后，运行其循环、索引和分支。提取器无需重写一遍调度，也不依赖 dump 的节点号或定义的打印顺序。[驱动脚本](../../lit/gpu/ring_fold_trace.py)
+
+| 模型 | 核对的残余事件及操作数 |
+| --- | --- |
+| 初态 | leader 对每个 full barrier 初始化一次，arrival 数为 1。面板与屏障分别从各自数组的偏移 0 编号。 |
+| `fill j`（含补填） | `mbar_expect_tx_if` 的屏障偏移、128 字节，紧接着 `tma_load_if` 的源行 `j`、目标面板偏移 `128 * (j % d)` 和同一屏障偏移 `8 * (j % d)`。 |
+| `poll i` | `mbar_wait_at` 使用槽 `i % d` 的屏障和奇偶位 `(i / d) % 2`。记录一次程序等待，硬件重试属于小步语义。 |
+| `mma i` / `commit` / `waitGroups n` | 逐条核对 `wgmma_f16` 的块与物理面板标签、`wgmma_commit` 和 `wgmma_wait` 的立即数。 |
+| `release none` / `release (some j)` | `retire` 的 `(live, slot)` 分别为 `(0, 0)` 和 `(1, j % d)`。 |
+| `next` | 循环推进，无独立的设备同步事件。CTA fence、WGMMA fence 和收尾的 `async_wait` 均在这次投影之外。 |
+
+从本目录运行 `lake exe ring_trace 3 7 1 2` 可打印相同格式的 Lean 参考序列，参数依次为深度、块数、lag 和每块的 MMA 条数。输出直接遍历 `Ring.fold`。[可执行投影](Trace.lean)
+
+**56 个实例。** 深度取 2、3、4，块数取去重后的 `{0, 1, d−1, d, 2d+1}`，lag 取 0、1，turns 取两种值，width 固定为 2。每对 rolled / unrolled 的观察序列相同。`lag = 1` 的 28 个实例与 Lean 逐条相等。`lag = 0` 的 28 个实例都恰好少了模型最后的 `wait_group 0`。非空循环的最后一组已在步内等待，空循环从未提交过组。测试只接受精确相等或这一项已知差异。两边都保留 `count < d−1` 时序言超出逻辑块数的填充。
+
+这是对具体特化实例的同步序列验证。把安全定理直接用于物理 kernel 仍需证明描述符、实际读写地址与字节范围、线程收敛以及擦除到硬件小步的对应。末尾冗余等待的语义等价也尚未在 Lean 中证明。
+
+### 生成器的覆盖范围
+
+在仓库根目录运行以下命令。分类器按一次 lowering 分配的环计数。对于协议形状符合的环，再以同一次编译的 panel group 查 NVPTX 的实际槽区间，缺少布局证据时返回 `unknown-layout`。
+
+```bash
+(ulimit -v 16000000; bench/tools/compile_all.sh /tmp/ring-bench -X tensor:ring-coverage=1)
+python3 bench/tools/ring_coverage.py /tmp/ring-bench
+```
+
+| 73 个成功编译的 benchmark 中的主分类 | 环数 |
+| --- | ---: |
+| 满足单 CTA、单生产者、单消费者、TMA / WGMMA、正深度、允许的 lag、区域不叠放 | 0 |
+| `cp.async`，使用复制组同步 | 5 |
+| 普通 TMA，两个消费 warpgroup | 2 |
+| cluster（含 split） | 2 |
+| 独立生产者的 `ws_fold` | 1 |
+| persistent tiles | 1 |
+| **合计** | **11** |
+
+11 个环各在一个 benchmark 中，其余 62 个没有走这两处造环路径。另有 10 个拒绝用例按预期失败。表中每个环只计一次。两种普通 TMA 环中，F16 输出的 `gemm_tiled_wg_tma_h` 还与尾声发生物理叠放。把这两个 GEMM 的 CTA 从两组缩为一组后，F32 输出的环满足前提，F16 输出的环仍因叠放而排除。[覆盖回归](../../lit/gpu/ring_fold_coverage.mim)
+
+多消费者需要分别跟踪各组的在途读和最后一次交还。`ws_fold` 还引入独立生产者与 empty barrier。cluster 需要跨 CTA 跟踪 multicast 和远端 arrival，persistent 需要跨 tile 保持代号、奇偶位和初始化状态。叠放区域需要证明相邻使用者的生存期及同步边界。[设计文档 §14.3、§17](../../docs/linear-types-design.zh-CN.md)

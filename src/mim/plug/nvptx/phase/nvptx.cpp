@@ -880,6 +880,22 @@ std::string DeviceEmitter::prepare() {
         }
         arena = std::max(arena, offset - total);
     }
+    // Only device placement knows whether a ring actually shares storage with an epilogue.
+    if (world().driver().arg_nat("tensor", "ring-coverage").value_or(0)) {
+        std::map<u64, bool> overlaid;
+        for (auto slot : slots) {
+            auto scope = Axm::isa<gpu::panel_scope>(slot->as<App>()->arg());
+            if (!scope) continue;
+            auto& overlaps = overlaid[Lit::as(scope->decurry()->arg())];
+            auto start     = dynamic_slots_.at(slot);
+            for (auto other : slots) {
+                auto at = dynamic_slots_.at(other);
+                overlaps |= other != slot && start < at + bytes(other) && at < start + bytes(slot);
+            }
+        }
+        for (auto [group, overlaps] : overlaid)
+            std::println(stderr, "ring-layout group={} placement={}", group, overlaps ? "overlaid" : "disjoint");
+    }
     total += arena;
     if (plain > Static_Shared_Limit) {
         auto kname             = id(kernel).substr(1);
