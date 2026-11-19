@@ -5,16 +5,15 @@ open Ring
 /-- Observable operands in the one-panel fixture. Panel and barrier offsets are in
     separate arrays. A successful poll identifies its slot and the parity it tested. -/
 private def events (d : Nat) : Op → List String
-  | .fill j =>
-    let slot := j % d
+  | .fill j slot =>
     [s!"expect {8 * slot} 128", s!"fill {j} {128 * slot} {8 * slot}"]
-  | .poll i => [s!"poll {8 * (i % d)} {i / d % 2}"]
+  | .poll i slot => [s!"poll {8 * slot} {i / d % 2}"]
   | .release none => ["release 0 0"]
   | .release (some i) => [s!"release 1 {i % d}"]
-  | .mma i => [s!"mma {i} {128 * (i % d)}"]
+  | .mma i slot => [s!"mma {i} {128 * slot}"]
   | .commit => ["commit"]
   | .waitGroups n => [s!"wait_group {n}"]
-  | .next => []
+  | .next | .fence => []
 
 def main (args : List String) : IO Unit := do
   let [some d, some count, some lag, some width] := args.map String.toNat?

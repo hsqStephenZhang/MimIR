@@ -10,16 +10,16 @@
 
 | 参数 | 等到本块之后的操作顺序 |
 | --- | --- |
-| `lag = 0` | 交还、补填，再发射本块的 MMA、提交、等待 0 组 |
-| `lag = 1` | 发射本块的 MMA、提交、等待至多最新 1 组，再交还、补填 |
+| `lag = 0` | CTA 会合、交还、补填，再发射本块的 MMA、提交、等待 0 组 |
+| `lag = 1` | 发射本块的 MMA、提交、等待至多最新 1 组，再由 CTA 会合、交还、补填 |
 
-`exact` 在源码中约束循环补填。若单独实例化骨架使 `count < d - 1`，序言仍会发起额外的填充。模型保留这些事件，排空见证也使它们完成。块标签仅表示数据来源；在这种实例上读取额外块的全局内存地址是否有效，需另行检查。生成器按请求深度和块数的较小者选择有效深度。参见 [索引与深度定义](../../src/mim/plug/tensor/tensor.mim)。
+`exact` 在源码中约束循环补填。若单独实例化骨架使 `count < d - 1`，序言仍会发起额外的填充。`prologue_extra_fill` 证明每个 `count ≤ j < d−1` 的块都出现在序言。循环中的 `pipeline_plan.refill_block` 把源块钳到 `count−1`，TMA 的 `exact = true` 使越过末块的循环补填完全跳过；序言直接传 `n`，不经过该钳位。模型保留这些事件，排空见证也使它们完成。块标签仅表示数据来源；在这种实例上读取额外块的全局内存地址是否有效，需另行检查。生成器按请求深度和块数的较小者选择有效深度。参见 [索引与深度定义](../../src/mim/plug/tensor/tensor.mim)。
 
 ### 硬件假设
 
 以下假设由 `Device`、`HW` 和 `Host` 的归纳构造子给出。项目自定义的 Lean 公理为 **零**。用 `#print axioms` 检查主要定理，依赖项只有 Lean 标准逻辑中的 `propext`、`Classical.choice` 和 `Quot.sound`。
 
-- 每槽的 full mbarrier 从相位 0 开始，每代需要一次 arrival。一次 fill 记录目标槽、源块、代和预期字节总数。一个块的多条 TMA 指令合并计数，各块之间可任意交错；同块的字节可以分批完成。arrival 和字节到达可按任意顺序发生。两项均齐备才允许发布数据、递增相位并清除在途事务。发布是一次原子事件。[NVIDIA PTX 的 mbarrier 语义](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-mbarrier)
+- 每槽的 full mbarrier 从相位 0 开始，每代需要一次 arrival。一次 fill 记录目标槽、源块、代和预期字节总数。开始写入时原有 `visible` 立即失效。一个块的多条 TMA 指令合并计数，各块之间可任意交错；同块的字节可以分批完成。arrival 和字节到达可按任意顺序发生。两项均齐备才允许发布数据、递增相位并清除在途事务。发布是一次原子事件。[NVIDIA PTX 的 mbarrier 语义](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-mbarrier)
 - 消费者只用奇偶位轮询，未完成时可重试。无界相位计数是证明用的影子状态。设备发布的数据标签取自实际在途的 copy；只有通过等待后，fold 才能发射读取该槽的 MMA。[NVIDIA PTX 的等待指令](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-mbarrier-test-wait-try-wait)
 - 每条 MMA 登记所读槽和代；commit 把所有待提交的读划入同一组。各组可独立完成，整组完成即归还组内全部读。第 `k` 次提交后（共已提交 `k` 组，编号从 0 起），`wait_group N` 返回要求所有仍在途组的编号至少为 `k - N`。例如最新组已经完成时，一个更老的组仍能阻塞 `wait_group 1`。这条规则保留了“最新”的含义。[NVIDIA PTX 的 WGMMA 提交与等待](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#asynchronous-warpgroup-level-matrix-instructions-wgmma-wait-group)
 
@@ -33,6 +33,7 @@
 | `no_ABA` | 轮询块 `i` 时，槽的相位只可能是 `g = i / d` 或 `g + 1`。奇偶测试成功当且仅当块 `i` 已发布且没有在途写。因此两次翻相不会冒充本代完成。 |
 | `read_current_generation`（T1） | 发射任何一条读块 `i` 的 MMA 之前，槽 `i % d` 中可见的数据正是块 `i`、代 `i / d` 的填充，且相位已翻转。 |
 | `overwrite_after_last_read`（T2） | 发射块 `j ≥ d` 的填充之前，块 `j - d` 的读已经全部完成。待提交列表和任何在途组里都没有这一读。首轮填充没有上一代。 |
+| `live_read_race_free` | 在任意可达状态，每个待提交或在途组内的读 `r` 所指定的物理槽都满足 `visible = some r ∧ tx = none`，包括指令之间和轮询重试期间。 |
 | `release_after_last_read` | 每次交还一个实际读过的槽时，该块的所有读已经完成。 |
 | `exists_drained_iff`、`singleSlot_stalls` | 对正深度，恰在 `d ≥ 2` 或空循环时存在排空执行。见证处理了全部 `count` 块，指令已用尽，待提交列表、在途组及每槽事务均为空。单槽非空循环的每个可达状态都等于初态。 |
 
@@ -53,6 +54,8 @@ import Ring
 #print axioms Ring.exists_drained_iff
 LEAN
 ```
+
+`fill j s`、`poll i s`、`mma i s` 的机器语义直接使用物理操作数 `s`。只有 `Rule` 的相应构造子把它与逻辑块取模相联系。因此等待正确、面板槽错误的指令流可以表示，但不能构造证书。单逻辑消费者自己执行的组等待已足以保证它的 T2；`refilled` 中的 `fence` 在单参与者投影中是一步空操作。此项修复本身新增覆盖 0 个 benchmark 环。
 
 硬件事件和 CTA 的指令小步在 [Machine.lean](Ring/Machine.lean)，窗口与保持性在 [Invariant.lean](Ring/Invariant.lean)，指令序列证书及其语义在 [Certificate.lean](Ring/Certificate.lean)。[Fold.lean](Ring/Fold.lean) 构造程序并证明它具有证书，[Ring.lean](Ring.lean) 给出对任意执行的定理和单槽反例。
 

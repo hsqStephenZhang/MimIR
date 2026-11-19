@@ -11,7 +11,7 @@ private theorem seq_first (f : Nat → List Op) (n : Nat) :
     exact ⟨tail ++ f (n + 1), by rw [seq, h, List.append_assoc]⟩
 
 private theorem singleSlot_first (n : Nat) :
-    ∃ tail, fold 1 (n + 1) lag width = .poll 0 :: tail := by
+    ∃ tail, fold 1 (n + 1) lag width = .poll 0 0 :: tail := by
   obtain ⟨tail, h⟩ := seq_first (iteration 1 (n + 1) lag width) n
   unfold fold
   rw [h]
@@ -22,15 +22,15 @@ private theorem initial_still (dev : HW initial m) : False := by
   | slot step => cases step <;> simp [initial, empty] at *
   | retire split => simp [initial] at split
 
-private theorem poll_zero_stuck (step : Step d bytes (.poll 0 :: ops, initial) y) :
-    y = (.poll 0 :: ops, initial) := by
+private theorem poll_zero_stuck (step : Step d bytes (.poll 0 0 :: ops, initial) y) :
+    y = (.poll 0 0 :: ops, initial) := by
   cases step with
   | hw dev => exact (initial_still dev).elim
   | retry => rfl
   | host instr => cases instr with
     | poll ok => simp [passes, initial, empty] at ok
 
-private theorem stuck_run (run : Run d bytes x y) (stuck : x = (.poll 0 :: ops, initial)) :
+private theorem stuck_run (run : Run d bytes x y) (stuck : x = (.poll 0 0 :: ops, initial)) :
     y = x := by
   induction run with
   | refl => rfl
@@ -47,7 +47,7 @@ private theorem empty_one : Code 1 zero (fold 1 0 lag width) (finalMark 1 0) :=
 -- Covers both certified programs and the literal one-slot program stuck at its first poll.
 def FoldInv (d count : Nat) (cfg : Config) : Prop :=
   Certified d (finalMark d count) cfg ∨
-    (d = 1 ∧ ∃ tail, cfg = (.poll 0 :: tail, initial))
+    (d = 1 ∧ ∃ tail, cfg = (.poll 0 0 :: tail, initial))
 
 theorem foldInvariant (hd : 0 < d) (run : Run d bytes (fold d count lag width, initial) cfg) :
     FoldInv d count cfg := by
@@ -69,15 +69,29 @@ theorem FoldInv.head (inv : FoldInv d count (op :: ops, m)) : SafeAt d m op := b
 
 /-- T1 holds before every MMA issue, including every issue in a multi-MMA group. -/
 theorem read_current_generation (hd : 0 < d)
-    (run : Run d bytes (fold d count lag width, initial) (.mma i :: tail, m)) :
-    (m.slots (i % d)).visible = some (ref d i) ∧
-    (m.slots (i % d)).phase = i / d + 1 ∧ (m.slots (i % d)).tx = none := by
-  have ready : Ready d i (m.slots (i % d)) := (foldInvariant hd run).head
+    (run : Run d bytes (fold d count lag width, initial) (.mma i s :: tail, m)) :
+    (m.slots s).visible = some (ref d i) ∧
+    (m.slots s).phase = i / d + 1 ∧ (m.slots s).tx = none := by
+  have ready : Ready d i (m.slots s) := (foldInvariant hd run).head
   exact ⟨ready.2.1, ready.1, ready.2.2⟩
+
+theorem live_read_race_free (hd : 0 < d)
+    (run : Run d bytes (fold d count lag width, initial) cfg) (live : Live cfg.2 r) :
+    (cfg.2.slots r.slot).visible = some r ∧ (cfg.2.slots r.slot).tx = none := by
+  have safe : LiveReady d cfg.2 := by
+    by_cases deep : 2 ≤ d
+    · exact Certified.liveReady ⟨zero, Inv.initial, foldCertificate deep⟩ LiveReady.initial run
+    have : d = 1 := by omega
+    subst d
+    cases count with
+    | zero => exact Certified.liveReady ⟨zero, Inv.initial, empty_one⟩ LiveReady.initial run
+    | succ n => rw [singleSlot_stalls run]; exact LiveReady.initial
+  obtain ⟨tag, ready⟩ := safe r live
+  exact ⟨ready.2.1.trans (congrArg some tag.symm), ready.2.2⟩
 
 /-- T2 holds before issue, including reads pending commit and reads in any live group. -/
 theorem overwrite_after_last_read (hd : 0 < d)
-    (run : Run d bytes (fold d count lag width, initial) (.fill j :: tail, m))
+    (run : Run d bytes (fold d count lag width, initial) (.fill j s :: tail, m))
     (previousExists : d ≤ j) : ¬ Live m (ref d (j - d)) :=
   (foldInvariant hd run).head previousExists
 
@@ -87,9 +101,9 @@ theorem release_after_last_read (hd : 0 < d)
 
 /-- The parity observation cannot have skipped two flips; success identifies the exact fill. -/
 theorem no_ABA (hd : 0 < d)
-    (run : Run d bytes (fold d count lag width, initial) (.poll i :: tail, m)) :
-    ((m.slots (i % d)).phase = i / d ∨ (m.slots (i % d)).phase = i / d + 1) ∧
-    (passes d i m ↔ Ready d i (m.slots (i % d))) := by
+    (run : Run d bytes (fold d count lag width, initial) (.poll i s :: tail, m)) :
+    ((m.slots s).phase = i / d ∨ (m.slots s).phase = i / d + 1) ∧
+    (passes d i s m ↔ Ready d i (m.slots s)) := by
   have head := (foldInvariant hd run).head
   rcases head with phase | ready
   · refine ⟨Or.inl phase, ?_, ?_⟩

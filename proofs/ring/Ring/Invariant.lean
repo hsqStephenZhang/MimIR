@@ -38,7 +38,7 @@ theorem Inv.initial : Inv d zero initial := by
     simp [At, zero, Before, Ring.initial, empty, Nat.div_eq_of_lt (by omega : j < d)]
   · simp [Ring.initial]
 
-private theorem stable_none (h : Device c c') (hn : c.tx = none) : False := by
+theorem stable_none (h : Device c c') (hn : c.tx = none) : False := by
   cases h <;> simp_all
 
 theorem Issued.hardware (h : Issued d j c) (step : Device c c') : Issued d j c' := by
@@ -95,13 +95,14 @@ theorem window_unique {lo d x y : Nat} (hx : lo ≤ x ∧ x < lo + d)
 inductive Rule (d : Nat) : Mark → Op → Mark → Prop
   | fill (space : v.filled < v.lo + d)
       (old : d ≤ v.filled → v.filled - d < v.floor ∧ v.filled - d < v.k) :
-      Rule d v (.fill v.filled) { v with filled := v.filled + 1 }
+      Rule d v (.fill v.filled (v.filled % d)) { v with filled := v.filled + 1 }
   | poll (issued : v.seen < v.filled) :
-      Rule d v (.poll v.seen) { v with seen := v.seen + 1 }
+      Rule d v (.poll v.seen (v.seen % d)) { v with seen := v.seen + 1 }
   | mma (inWindow : v.lo ≤ v.k) (acquired : v.k < v.seen) :
-      Rule d v (.mma v.k) { v with batch := v.batch + 1 }
+      Rule d v (.mma v.k (v.k % d)) { v with batch := v.batch + 1 }
   | commit (bound : v.floor ≤ v.k) : Rule d v .commit { v with k := v.k + 1, batch := 0 }
   | waitGroups : Rule d v (.waitGroups n) { v with floor := v.k - n }
+  | fence : Rule d v .fence v
   | release (retired : ∀ j, prev = some j → j < v.floor ∧ j < v.k) :
       Rule d v (.release prev) v
   | next (seen : v.lo < v.seen) :
@@ -113,7 +114,7 @@ theorem Inv.pollWindow (h : Inv d v m) (issued : v.seen < v.filled) :
   simpa [At, issued] using h.window v.seen (by omega) (by omega)
 
 theorem Inv.pollReady (h : Inv d v m) (issued : v.seen < v.filled)
-    (ok : passes d v.seen m) : Ready d v.seen (m.slots (v.seen % d)) := by
+    (ok : passes d v.seen (v.seen % d) m) : Ready d v.seen (m.slots (v.seen % d)) := by
   rcases h.pollWindow issued with ready | ⟨phase, _⟩
   · exact ready
   · exact (ok (congrArg (· % 2) phase)).elim
@@ -150,7 +151,7 @@ theorem Inv.preserve (h : Inv d v m) (rule : Rule d v op w)
           using h.window j lo hi
   | mma _ _ =>
     cases step
-    exact { h with pending := by simp [List.replicate_succ, h.pending] }
+    exact { h with pending := by simp [List.replicate_succ, h.pending, ref] }
   | commit bound =>
     cases step
     refine ⟨h.window, by simp [h.commits], rfl, ?_, ord⟩
@@ -173,7 +174,7 @@ theorem Inv.preserve (h : Inv d v m) (rule : Rule d v op w)
       have := recent g hg
       rw [h.commits] at this
       exact ⟨by dsimp; omega, (h.groups _ hg).2⟩
-  | release => cases step; exact h
+  | fence | release => cases step; exact h
   | next seen =>
     cases step
     refine { h with window := ?_, ordered := by dsimp; omega }

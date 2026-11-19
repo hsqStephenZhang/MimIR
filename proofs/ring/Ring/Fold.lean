@@ -17,19 +17,33 @@ def seq (f : Nat → List Op) : Nat → List Op
   | 0 => []
   | n + 1 => seq f n ++ f n
 
-def prologue (d : Nat) := seq (fun j => [.fill j]) (d - 1)
+def prologue (d : Nat) := seq (fun j => [.fill j (j % d)]) (d - 1)
+
+/-- Direct calls of the skeleton can prime nonexistent source blocks. -/
+theorem prologue_extra_fill (short : count ≤ j) (primed : j < d - 1) :
+    count ≤ j ∧ .fill j (j % d) ∈ prologue d := by
+  refine ⟨short, ?_⟩
+  unfold prologue
+  generalize d - 1 = n at primed ⊢
+  induction n with
+  | zero => omega
+  | succ n ih =>
+    simp only [seq, List.mem_append, List.mem_singleton]
+    by_cases eq : j = n
+    · exact Or.inr (by rw [eq])
+    · exact Or.inl (ih (by omega))
 
 def refill (d count i : Nat) : List Op :=
   let j := i + (d - 1)
-  [.release (previous i)] ++ (if j < count then [.fill j] else [])
+  [.fence, .release (previous i)] ++ (if j < count then [.fill j (j % d)] else [])
 
-def compute (lag : Lag) (width i : Nat) : List Op :=
-  List.replicate width (.mma i) ++ [.commit, .waitGroups lag.keep]
+def compute (d : Nat) (lag : Lag) (width i : Nat) : List Op :=
+  List.replicate width (.mma i (i % d)) ++ [.commit, .waitGroups lag.keep]
 
 def iteration (d count : Nat) (lag : Lag) (width : Nat → Nat) (i : Nat) : List Op :=
-  .poll i :: (match lag with
-    | .zero => refill d count i ++ (compute .zero (width i) i ++ [.next])
-    | .one => compute .one (width i) i ++ (refill d count i ++ [.next]))
+  .poll i (i % d) :: (match lag with
+    | .zero => refill d count i ++ (compute d .zero (width i) i ++ [.next])
+    | .one => compute d .one (width i) i ++ (refill d count i ++ [.next]))
 
 def fold (d count : Nat) (lag : Lag) (width : Nat → Nat) : List Op :=
   prologue d ++ seq (iteration d count lag width) count ++ [.waitGroups 0]
@@ -44,7 +58,7 @@ def finalMark (d count : Nat) : Mark :=
   ⟨count, max (d - 1) count, count, count, count, 0⟩
 
 private theorem primes (n : Nat) (bound : n ≤ d) :
-    Code d zero (seq (fun j => [.fill j]) n) { zero with filled := n } := by
+    Code d zero (seq (fun j => [.fill j (j % d)]) n) { zero with filled := n } := by
   induction n with
   | zero => exact .nil
   | succ n ih =>
@@ -52,7 +66,7 @@ private theorem primes (n : Nat) (bound : n ≤ d) :
       (by dsimp [zero]; omega)) .nil)
 
 private theorem issues (n : Nat) (lo : v.lo ≤ v.k) (seen : v.k < v.seen) :
-    Code d v (List.replicate n (.mma v.k)) { v with batch := v.batch + n } := by
+    Code d v (List.replicate n (.mma v.k (v.k % d))) { v with batch := v.batch + n } := by
   induction n with
   | zero => exact .nil
   | succ n ih =>
@@ -61,7 +75,7 @@ private theorem issues (n : Nat) (lo : v.lo ≤ v.k) (seen : v.k < v.seen) :
 
 private theorem computes (n : Nat) (lag : Lag) (lo : v.lo ≤ v.k)
     (seen : v.k < v.seen) (bound : v.floor ≤ v.k) :
-    Code d v (compute lag n v.k)
+    Code d v (compute d lag n v.k)
       { v with batch := 0, k := v.k + 1, floor := v.k + 1 - lag.keep } :=
   (issues n lo seen).append (.cons (.commit bound) (.cons .waitGroups .nil))
 
@@ -74,12 +88,12 @@ private theorem refills (hd : 2 ≤ d) (i : Nat) (lo : v.lo = i)
   by_cases more : i + (d - 1) < count
   · have now : v.filled = i + (d - 1) := by unfold frontier at front; omega
     have later : frontier d count (i + 1) = v.filled + 1 := by unfold frontier; omega
-    simp only [more, ite_true, List.singleton_append, later]
+    simp only [more, ite_true, later]
     rw [← now]
-    exact .cons (.release retired) (.cons (.fill (by omega) (by intro h; constructor <;> omega)) .nil)
+    exact .cons .fence (.cons (.release retired) (.cons (.fill (by omega) (by intro h; constructor <;> omega)) .nil))
   · have later : frontier d count (i + 1) = v.filled := by unfold frontier at *; omega
     simp only [more, ite_false, List.append_nil, later]
-    exact .cons (.release retired) .nil
+    exact .cons .fence (.cons (.release retired) .nil)
 
 private theorem oneIteration (hd : 2 ≤ d) (here : i < count) :
     Code d (boundary d count lag i) (iteration d count lag width i)

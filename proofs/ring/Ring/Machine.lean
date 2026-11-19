@@ -27,7 +27,7 @@ structure Cell where
 def empty : Cell := ⟨0, none, none⟩
 
 def Cell.start (c : Cell) (p : Copy) : Cell :=
-  { c with tx := some ⟨p, false, 0⟩ }
+  { c with visible := none, tx := some ⟨p, false, 0⟩ }
 
 -- Phase is a ghost counter. The poll instruction below sees just its low bit.
 inductive Device : Cell → Cell → Prop
@@ -54,11 +54,12 @@ def Machine.put (m : Machine) (s : Nat) (c : Cell) : Machine :=
   { m with slots := fun t => if t = s then c else m.slots t }
 
 inductive Op where
-  | fill (j : Nat)
-  | poll (i : Nat)
-  | mma (i : Nat)
+  | fill (j slot : Nat)
+  | poll (i slot : Nat)
+  | mma (i slot : Nat)
   | commit
   | waitGroups (n : Nat)
+  | fence
   | release (previous : Option Nat)
   | next
   deriving DecidableEq
@@ -68,19 +69,20 @@ inductive HW : Machine → Machine → Prop
   | slot (step : Device (m.slots s) c) : HW m (m.put s c)
   | retire (split : m.groups = xs ++ g :: ys) : HW m { m with groups := xs ++ ys }
 
-def passes (d i : Nat) (m : Machine) : Prop :=
-  (m.slots (i % d)).phase % 2 ≠ (i / d) % 2
+def passes (d i slot : Nat) (m : Machine) : Prop :=
+  (m.slots slot).phase % 2 ≠ (i / d) % 2
 
 -- No read-generation or reuse checks occur at fill or MMA issue.
 inductive Host (d : Nat) (bytes : Nat → Nat) : Op → Machine → Machine → Prop
-  | fill : Host d bytes (.fill j) m
-      (m.put (j % d) ((m.slots (j % d)).start ⟨ref d j, bytes j⟩))
-  | poll (ok : passes d i m) : Host d bytes (.poll i) m m
-  | mma : Host d bytes (.mma i) m { m with pending := ref d i :: m.pending }
+  | fill : Host d bytes (.fill j s) m
+      (m.put s ((m.slots s).start ⟨⟨j, s, j / d⟩, bytes j⟩))
+  | poll (ok : passes d i s m) : Host d bytes (.poll i s) m m
+  | mma : Host d bytes (.mma i s) m { m with pending := ⟨i, s, i / d⟩ :: m.pending }
   | commit : Host d bytes .commit m
       { m with pending := [], groups := ⟨m.commits, m.pending⟩ :: m.groups, commits := m.commits + 1 }
   | waitGroups (recent : ∀ g ∈ m.groups, m.commits ≤ g.serial + n) :
       Host d bytes (.waitGroups n) m m
+  | fence : Host d bytes .fence m m
   | release : Host d bytes (.release prev) m m
   | next : Host d bytes .next m m
 
@@ -88,7 +90,7 @@ abbrev Config := List Op × Machine
 
 inductive Step (d : Nat) (bytes : Nat → Nat) : Config → Config → Prop
   | hw (h : HW m m') : Step d bytes (ops, m) (ops, m')
-  | retry (h : ¬ passes d i m) : Step d bytes (.poll i :: ops, m) (.poll i :: ops, m)
+  | retry (h : ¬ passes d i s m) : Step d bytes (.poll i s :: ops, m) (.poll i s :: ops, m)
   | host (h : Host d bytes op m m') : Step d bytes (op :: ops, m) (ops, m')
 
 inductive Run (d : Nat) (bytes : Nat → Nat) : Config → Config → Prop

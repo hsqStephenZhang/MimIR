@@ -31,13 +31,13 @@ theorem Certified.reachable (h : Certified d z x) (run : Run d bytes x y) : Cert
   | snoc _ step ih => exact ih.step step
 
 def SafeAt (d : Nat) (m : Machine) : Op → Prop
-  | .mma i => Ready d i (m.slots (i % d))
-  | .fill j => d ≤ j → ¬ Live m (ref d (j - d))
-  | .poll i => (m.slots (i % d)).phase = i / d ∨ Ready d i (m.slots (i % d))
+  | .mma i s => Ready d i (m.slots s)
+  | .fill j _ => d ≤ j → ¬ Live m (ref d (j - d))
+  | .poll i s => (m.slots s).phase = i / d ∨ Ready d i (m.slots s)
   | .release (some j) => ¬ Live m (ref d j)
   | _ => True
 
-private theorem Inv.retired (inv : Inv d v m) (floor : j < v.floor) (commit : j < v.k) :
+theorem Inv.retired (inv : Inv d v m) (floor : j < v.floor) (commit : j < v.k) :
     ¬ Live m (ref d j) := by
   rintro (pending | ⟨g, hg, hr⟩)
   · rw [inv.pending] at pending
@@ -69,6 +69,90 @@ theorem Certified.head (h : Certified d z (op :: ops, m)) : SafeAt d m op := by
     | mma lo seen =>
       simpa [SafeAt, At, seen] using inv.window v.k lo (by omega)
     | _ => trivial
+
+/-- The ownership assertion persists while an asynchronous reader is live, even
+    when its block has left the sliding window. -/
+def LiveReady (d : Nat) (m : Machine) : Prop :=
+  ∀ r, Live m r → r = ref d r.block ∧ Ready d r.block (m.slots r.slot)
+
+theorem LiveReady.initial : LiveReady d initial := by simp [LiveReady, Live, Ring.initial]
+
+theorem LiveReady.hardware (safe : LiveReady d m) (hw : HW m m') : LiveReady d m' := by
+  intro r live
+  cases hw with
+  | slot step =>
+    rename_i s
+    obtain ⟨tag, ready⟩ := safe r live
+    by_cases eq : r.slot = s
+    · rw [← eq] at step
+      exact (stable_none step ready.2.2).elim
+    · exact ⟨tag, by simpa [Machine.put, eq] using ready⟩
+  | retire split =>
+    apply safe
+    rcases live with hp | ⟨g, hg, hr⟩
+    · exact Or.inl hp
+    · exact Or.inr ⟨g, by rw [split]; simpa using (List.mem_append.mp hg).imp_right Or.inr, hr⟩
+
+private theorem previous_of_phase (phase : x / d + 1 = y / d) (slot : x % d = y % d) :
+    x + d = y := by
+  have hx := Nat.mod_add_div x d
+  have hy := Nat.mod_add_div y d
+  rw [← phase, Nat.mul_succ, ← slot] at hy
+  omega
+
+theorem LiveReady.fill_free (safe : LiveReady d m) (inv : Inv d v m)
+    (space : v.filled < v.lo + d)
+    (old : d ≤ v.filled → v.filled - d < v.floor ∧ v.filled - d < v.k)
+    (live : Live m r) : r.slot ≠ v.filled % d := by
+  intro same
+  obtain ⟨tag, ready⟩ := safe r live
+  have ord := inv.ordered
+  have before : Before d v.filled (m.slots (v.filled % d)) := by
+    simpa [At, show ¬ v.filled < v.seen by omega] using inv.window v.filled (by omega) space
+  rw [same] at ready
+  have slot := congrArg Ref.slot tag
+  change r.slot = r.block % d at slot
+  have prev := previous_of_phase (ready.1.symm.trans before.1) (slot.symm.trans same)
+  obtain ⟨floor, k⟩ := old (by omega)
+  rw [tag] at live
+  exact inv.retired (by omega) (by omega) live
+
+theorem LiveReady.host (safe : LiveReady d m) (inv : Inv d v m)
+    (rule : Rule d v op w) (host : Host d bytes op m m') : LiveReady d m' := by
+  intro r live
+  cases rule with
+  | fill space old =>
+    cases host
+    have diff := safe.fill_free inv space old live
+    simpa [Machine.put, diff] using safe r live
+  | mma lo seen =>
+    cases host
+    rcases live with (hp | hg)
+    · rcases List.mem_cons.mp hp with rfl | hp
+      · refine ⟨rfl, ?_⟩
+        have ord := inv.ordered
+        simpa [At, seen] using inv.window v.k lo (by omega)
+      · exact safe r (Or.inl hp)
+    · exact safe r (Or.inr hg)
+  | commit bound =>
+    cases host
+    rcases live with hp | ⟨g, hg, hr⟩
+    · cases hp
+    · rcases List.mem_cons.mp hg with rfl | hg
+      · exact safe r (Or.inl hr)
+      · exact safe r (Or.inr ⟨_, hg, hr⟩)
+  | _ => cases host <;> exact safe r live
+
+theorem Certified.liveReady (cert : Certified d z x) (safe : LiveReady d x.2)
+    (run : Run d bytes x y) : LiveReady d y.2 := by
+  induction run with
+  | refl => exact safe
+  | snoc prefixRun step ih =>
+    obtain ⟨v, inv, code⟩ := cert.reachable prefixRun
+    cases step with
+    | hw h => exact ih.hardware h
+    | retry => exact ih
+    | host h => cases code with | cons rule _ => exact ih.host inv rule h
 
 -- Progress uses an explicit eager schedule. Safety above makes no eagerness assumption.
 inductive Devices : Machine → Machine → Prop
@@ -146,6 +230,7 @@ private theorem Rule.eager (rule : Rule d v op w) (inv : Inv d v m) (q : Quiet m
     have posted := inv.preserve (bytes := bytes) (.commit bound) .commit
     exact ⟨next, .snoc (single .commit) (.hw dev), posted.hardware dev, q.1, rfl⟩
   | waitGroups => exact direct (.waitGroups (by simp [q.2])) q
+  | fence => exact direct .fence q
   | release => exact direct .release q
   | next => exact direct .next q
 
