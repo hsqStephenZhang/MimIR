@@ -756,6 +756,9 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             fold = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), refill, w.lit_nat(overlap),
                                 w.lit_bool(tma), w.lit_tt()});
         }
+        // A ring that shares its later slots starts behind a barrier, so no work-item still reads the last epilogue's
+        // staging; a TMA ring's set-up has one already.
+        if (!tile_round_ && !tma && ring.size() > 1) mem = w.app(w.annex<gpu::fence>(), mem);
         fold = w.app(w.app(fold, {mem, buffer, w.tuple(slots)}), {fill, fold_step});
         if (bounded) storage_shapes_[app] = storage;
         auto [out_mem, out] = fold->projs<2>();

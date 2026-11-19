@@ -403,10 +403,16 @@ pub anx lam tc_wgmma {n: Nat} (dims: «n; Nat», inner bytes: Nat, k_major: Bool
                       λ (): Expr (n, dims) = tc_term @n (dims, 1, core.nat.sub (n, 1), kperm, kshape, chunk, tt))#one)#k_major ()))#ok ();
 
 /// What a wgmma descriptor says of an operand panel in `layout` of elements of `bytes` each: whether the panel is
-/// MN-major, which a split of a dim other than its K dim `kdim` tells, the bytes between its atoms (16 if K-major),
+/// MN-major, whose contiguous dim is not its K dim `kdim` (a split one if `kdim` is `n`, unknown), the bytes between
+/// its atoms (16 if K-major),
 /// the 1 KiB between its groups of 8 rows of 128 bytes, and the swizzle, 1 for the 128-byte one and 0 for none.
 pub anx lam wgmma_fields {n: Nat} {dims: «n; Nat»} (layout: Expr (n, dims), bytes kdim: Nat): [Bool, Nat, Nat, Nat] =
-    let mn    = core.bit2.and 0 ((#layout)#split != 1, (#layout)#axis != kdim);
+    let data  = #layout;
+    // The contiguous logical dim: the split one, or else the one placed innermost, the unit dim aside.
+    let last  = core.idx2nat (data#perm#(core.idx 0 (n + 1) n));
+    let inner = core.select (data#split != 1, data#axis,
+                    core.select (last == n, core.idx2nat (data#perm#(core.idx 0 (n + 1) (n - 1))), last));
+    let mn    = core.select (kdim == n, data#split != 1, inner != kdim);
     let shape = shape layout;
     let atoms = vec.fold.r @(Nat, Idx n) @n (λ (d: Idx n, x: Nat): Nat = x * (1, shape#d)#(0 < core.idx2nat d)) (‹d: n; d›, bytes);
     (mn, (16, atoms)#mn, 1024, (0, 1)#((#layout)#xor));
@@ -3771,11 +3777,12 @@ pub mod law
         let c  = (c, 108)#(cc == 80);
         let c  = (c, 84)#(cc == 86);
         (c, 128)#(cc == 89);
-    /// The block sizes of a schedule's work-group level, 0 for a loop it leaves whole.
+    /// The block sizes of a schedule's work-group level, the parallel level bound to work-groups, 0 for a loop it leaves
+    /// whole.
     lam group_blocks {n: Nat, Acc Kind: *} (l: TileLevels (n, Acc, Kind))@(core.pe.is_closed l): «n; Nat» =
         match l with
             | 0 => ‹n; 0›
-            | 1 (_, sizes, _, _, _) => sizes
+            | 1 (bind, sizes, _, _, rest) => (group_blocks rest, sizes)#(bind == 1)
             | 2 _ => ‹n; 0›
             | 3 _ => ‹n; 0›
             | 4 _ => ‹n; 0›

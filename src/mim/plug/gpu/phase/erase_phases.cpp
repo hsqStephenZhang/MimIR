@@ -17,7 +17,7 @@ const Def* ErasePhases::rewrite_imm_App(const App* app) {
     if (Axm::isa<gpu::retire>(app)) return rewrite(app->arg())->proj(4, 0);
     if (Axm::isa<gpu::occupy>(app)) return rewrite(app->arg())->proj(3, 0);
     if (auto read = Axm::isa<gpu::read_slot>(app)) {
-        auto [ring, slot, held, live, token] = read->args<5>([this](const Def* d) { return rewrite(d); });
+        auto [ring, slot, held, token] = read->args<4>([this](const Def* d) { return rewrite(d); });
         return w.tuple({w.extract(ring, slot), token});
     }
     if (auto buf = Axm::isa<gpu::SharedBuf>(app)) {

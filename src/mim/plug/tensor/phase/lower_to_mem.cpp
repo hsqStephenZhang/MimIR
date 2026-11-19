@@ -413,8 +413,7 @@ const Def* LowerToMem::rewrite_imm_App(const App* app) {
         if (!layout || !logical) app->blame("a wgmma operand panel needs its swizzled layout").bail();
         auto [br, bs, bT] = Axm::as<buffer::Buf>(buffer->type())->args<3>();
         auto kdim         = std::optional<u64>();
-        if (auto i = wgmma_kdims_.find(Axm::peel<tensor::placed>(Axm::peel<tensor::buf>(b))); i != wgmma_kdims_.end())
-            kdim = i->second;
+        if (auto i = wgmma_kdims_.find(app); i != wgmma_kdims_.end()) kdim = i->second;
         auto mn    = wgmma_major(buffer, kdim).first;
         auto place = layout_lam(layout, logical);
         auto none  = w.bot(w.call<mem::M>(0));

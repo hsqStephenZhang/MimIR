@@ -14,7 +14,7 @@ lam wrapped {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync
     let n             = core.nat.add (18446744073709551613, core.nat.mul (depth, i));
     let (m, mine)     = await (m, n);
     let s             = core.idx 0 depth (core.nat.rem (n, depth));
-    let (panel, mine) = gpu.read_slot @(Nat, depth, H) (ring, core.idx 0 depth 0, s, tt, mine);
+    let (panel, mine) = gpu.read_slot @(Nat, depth, H) (ring, core.idx 0 depth 0, s, mine);
     (release (m, s, tt, mine), panel);
 
 extern lam step (m: mem.M 0, i: Nat, ring: «3; Nat»): [mem.M 0, Nat] =

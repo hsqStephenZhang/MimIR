@@ -524,8 +524,9 @@ const Def* LowerToMem::stage_fragments(const Def* source,
     auto first = add(mul(team, rows), group_row(w, true));
     // TMA stores a team's tile in boxes of 128-byte atoms, which lie swizzled one after another as a TMA load puts
     // them.
-    auto atoms  = cols / 64;
-    auto stored = tma_store_ && cols % 64 == 0 && rows % 8 == 0;
+    auto atoms = cols / 64;
+    // A tensor map encodes only floating-point 16-bit elements here.
+    auto stored = tma_store_ && cols % 64 == 0 && rows % 8 == 0 && (T == w.annex<math::F16>() || math::isa_bf16(T));
     auto extent = stored ? w.tuple({nat(teams * atoms * rows), nat(64)}) : w.tuple({nat(teams * rows), nat(pitch)});
     const Def* staged;
     std::tie(mem, staged) = buffer::op_alloc(nat(2), extent, T, panel_mem(fence(mem)))->projs<2>();
@@ -959,7 +960,11 @@ const Def* LowerToMem::wgmma_lane(const App* app) {
         = old.tuple(DefVec(nk, [&](size_t kc) { return old.extract(old.extract(a, old.lit_idx(nk, kc)), self); }));
     auto callee
         = old.app(old.app(old.app(old.annex<tensor::wgmma_lane>(), H), {old.lit_nat(nk), old.lit_nat(nt), Ri}), Si);
-    auto own   = old.app(callee, {own_a, b, at, old.extract(c, self)});
+    auto own = old.app(callee, {own_a, b, at, old.extract(c, self)});
+    // Two products may read one panel along different dims, so each use records its own K dim.
+    if (auto db = map_dims(mr.maps->proj(2, 1), 3))
+        for (size_t d = 0; d != db->size(); ++d)
+            if ((*db)[d] == 2) wgmma_kdims_[own] = d;
     auto lanes = old.pack(32, own);
     return old.app(old.app(old.annex<tensor::warp_keep>(), own->type()), lanes);
 }
@@ -1011,8 +1016,6 @@ const Def* LowerToMem::warp_fold(const App* app) {
                 auto bytes            = Lit::as(core::op(core::trait::size, T));
                 auto choice = panel::wgmma(rewrite(shape), r - 1, bytes, db && db->size() == r && db->back() == 2);
                 if (choice.expr) placed_layouts_[b] = w.tuple({rewrite(shape), choice.expr});
-                for (size_t d = 0; db && db->size() == r && d != r; ++d)
-                    if ((*db)[d] == 2) wgmma_kdims_[b] = d;
             }
             auto input  = product->arg()->proj(2, 0)->proj(2, 0);
             auto source = Axm::peel<tensor::buf>(input);

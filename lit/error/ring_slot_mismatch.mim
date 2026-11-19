@@ -14,7 +14,7 @@ lam next_slot {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sy
     let (m, mine)     = await (m, n);
     let s             = core.idx 0 depth (core.nat.rem (n, depth));
     let ahead         = core.idx 0 depth (core.nat.rem (core.nat.add (n, 1), depth));
-    let (panel, mine) = gpu.read_slot @(Nat, depth, H) (ring, ahead, s, tt, mine);
+    let (panel, mine) = gpu.read_slot @(Nat, depth, H) (ring, ahead, s, mine);
     (release (m, s, tt, mine), panel);
 
 extern lam step (m: mem.M 0, n: Nat, ring: «2; Nat»): [mem.M 0, Nat] =

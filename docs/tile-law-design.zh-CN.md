@@ -900,3 +900,21 @@ fold 结束时所有 wgmma 已等完、环的拷贝已落地，暂存前还有�
 warpgroup 所有的区域（`group_rows_`，16 位 attention）本来就用掉很多寄存器，展开两份让它从每 SM 两个工作组掉到一个：`attn_wg` 32 × 2048 由 0.116 退到 0.143 ms；它现在不展开，回到 0.121（余下的差距是 wgmma 等待后的 `membar.cta`）。工作组层的环仍展开。
 逐块轮转时读的位置与令牌的槽号隔着轮转，§24 的 `read_slot` 只用在展开的那种循环里。
 
+
+## 29. 外部审阅（codex，2026-11-19）与处理
+
+codex（gpt-6.2-astra）审阅了 `f566f6a61..d76b6fb54`，每条都附了小的 Mim 探针（`/tmp/codex-review/`）。已修的：
+- 环槽与 epilogue 暂存区叠放（§27）只保证了"环 → epilogue"：同一工作组串行算多个子块时，上一轮 epilogue 还在读暂存区，下一轮 fold 的 prologue 已经往叠放的环槽里拷贝。参与叠放的 cp.async 环现在在 prologue 前过一道屏障；TMA 环的设置（`fenced_ring`）本来就有一道。修复前后 1024 的 TMA GEMM 设备 IR 相同（同一时段都是 6.56 µs）。
+- wgmma 的 K 维按面板记录（§22），同一块 B 面板被两个乘积沿不同的维读时，其中一组 MMA 主序错了；而未切分的面板一律当 K 主序。现在每个 `tensor.wgmma_lane` 按自己的读映射记 K 维，`wgmma_fields` 比较 K 维与面板连续的那一维。
+- `check_sync` 的槽号匹配在 u64 上溢出（§24）：改为模深度运算，非 2 的幂的深度遇到 ≥ 2³² 的字面量就不认（`8651695d8`）。`gpu.read_slot` 只收持有中的令牌（`H (t, tt)`），`gpu.unheld` 读不了槽。
+- TMA 存回（§23）只用于 F16/BF16 结果，其他两字节类型走原来的写回。
+- `law.waves`（§26）找绑定到工作组的那层，不再取第一个并行层。
+- `bench/tools/compile_all.sh` 有失败时返回非零。
+没修、记下的：
+- 槽号匹配假定块号不会被一个巨大的变量项绕回 2⁶⁴；非 2 的幂的深度在那种情况下不成立。
+- 槽令牌包进 nominal 类型后，`check_sync` 看不到它。
+- 只覆盖工作组一部分的 warpgroup（同一工作组里另有更宽的 item 区域）仍被当作全组，outline 报 divergent guard 下的屏障而编译失败（不会算错）。
+- 嵌套区域里由切片物化的 TMA 输入找不到主机端的缓冲，后端报错。
+- `check.walk` 接受 warp 层下的 `wg_mma`，到 TileFuse 才失败；`wg_red_ws` 的 pingpong 按外层 `gblock` 数消费者，`group_par` 下误报。
+- N=24 的暂存写回最后一轮让多余的 work-item 重复写同一个 16 字节（值相同）。
+- `canon_ir.py` 把所有元数据引用归成 `!N`，会掩盖只改 alias 关系的差异；F16 对照把 NaN 当通过。

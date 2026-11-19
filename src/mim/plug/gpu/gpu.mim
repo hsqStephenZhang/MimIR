@@ -875,8 +875,8 @@ axm Vacant: [depth: Nat] → Idx depth → *;
 axm vacate: {depth: Nat} → [mem.M 0, s: Idx depth] → [mem.M 0, Vacant depth s];
 axm occupy: {depth: Nat} → [mem.M 0, s: Idx depth, Vacant depth s] → mem.M 0;
 /// The panel in slot `s` of `ring`, read with the token of slot `t` handed through; `check_sync` requires `s` to be `t`.
-axm read_slot: {P: *, depth: Nat, H: [Idx depth, Bool] → *} → [ring: «depth; P», s t: Idx depth, live: Bool, H (t, live)]
-             → [P, H (t, live)];
+axm read_slot: {P: *, depth: Nat, H: [Idx depth, Bool] → *} → [ring: «depth; P», s t: Idx depth, H (t, tt)]
+             → [P, H (t, tt)];
 /// How a ring of slots that asynchronous copies fill is synchronized; a slot is empty, being filled, full and read in turn.
 /// `open` sets the ring up; `acquire (mem, n)` returns once the slot of the ring's fill `n` is empty, with what `V` says
 /// the fill holds of it, and `commit (mem, s, vacant)` closes the copies the fill of slot `s` started; `await (mem, i)` returns once block `i`'s panels have landed, with what `H` says the
@@ -1088,7 +1088,7 @@ lam ring_fold_at {A P: *, depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth
                     con skip (m: mem.M 0) = return (m, a, slots, last);
                     con go (m: mem.M 0) =
                         let (m, mine)  = await (m, block);
-                        let (panel, mine) = read_slot @(P, depth, H) (slots, j, core.idx 0 depth (block % depth), tt, mine);
+                        let (panel, mine) = read_slot @(P, depth, H) (slots, j, core.idx 0 depth (block % depth), mine);
                         let (live, s, h) = last;
                         let next: Last = (tt, core.idx 0 depth (block % depth), mine);
                         fun refilled (m: mem.M 0): mem.M 0 =

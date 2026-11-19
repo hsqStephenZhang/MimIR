@@ -19,3 +19,4 @@ for f in $R/bench/{gpu_attn,gpu_fusion,gpu_tiling,typed_tiles}/*.mim; do
     fi
 done
 echo "$fails failed"
+[ $fails -eq 0 ]

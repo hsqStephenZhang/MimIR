@@ -13,7 +13,7 @@ lam turn {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: g
     let block         = core.nat.add (core.nat.mul (i, depth), core.idx2nat j);
     let (m, mine)     = await (m, block);
     let s             = core.idx 0 depth (core.nat.rem (block, depth));
-    let (panel, mine) = gpu.read_slot @(Nat, depth, H) (ring, j, s, tt, mine);
+    let (panel, mine) = gpu.read_slot @(Nat, depth, H) (ring, j, s, mine);
     (release (m, s, tt, mine), panel);
 
 extern lam step (m: mem.M 0, i: Nat, j: Idx 2, ring: «2; Nat»): [mem.M 0, Nat] =

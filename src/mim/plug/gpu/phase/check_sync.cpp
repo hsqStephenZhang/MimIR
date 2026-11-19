@@ -112,7 +112,7 @@ void CheckSync::start() {
     DefMap<DefVec> users;
     DefSet counted, linear;
     DefVec slots, branches;
-    std::vector<const App*> reads;
+    fe::Vector<const App*> reads;
     MutMap<Def*> parent, inlined;
     ankerl::unordered_dense::map<nat_t, const Def*> entered;
     // A `mem.fresh` continuation runs exactly once in place, so it belongs to the mutable that requests it.
@@ -278,8 +278,8 @@ void CheckSync::start() {
                                 .bail();
     }
     for (auto read : reads) {
-        auto [ring, s, t, live, token] = read->args<5>();
-        auto depth                     = Lit::isa(read->decurry()->arg(3, 1));
+        auto [ring, s, t, token] = read->args<4>();
+        auto depth               = Lit::isa(read->decurry()->arg(3, 1));
         if (!depth || !same_slot(s, t, *depth))
             read->blame("ring slot `{}` is read with the token of slot `{}`", s, t).bail();
     }
