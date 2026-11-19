@@ -716,9 +716,13 @@ codex 额度用完，由 Claude 子代理调研。结论：
 | `pending_formula` | `pipeline_plan.pending` 错 | same | same | same |
 
 - 生成代码变了或被拒的 51 个（变异，kernel）组合全部被抓到：static 14，lean 37，**没有 MISSED，也没有 unchecked**。7 个基线 kernel 全部被接受。
+- **口径更正**（agy 核对）：static 时根本没有生成代码可比。`hold_slot` 的 7 对只改了擦除前的幽灵下标（`erase_phases` 会丢掉 `hold` 的槽号），生成代码不变，是协议库自身通不过类型检查。所以真正改变生成代码的是 44 对，全部被拒：
+  - 类型或 `check_sync` 拒 6 对：`read_other_slot` 5 对，`ws_release_current` 1 对；
+  - `ring_safe` 有界模拟拒 1 对：`ws_fold` 上的 `full_parity`；
+  - Lean 检查器拒 37 对，其中 1 对是文本格式解析失败。
 - 带 * 的一项是 Async 检查器的文本格式不接受非零的 `wgmma_wait` 而拒（退出码 2），不是语义规则拒的；Async 模型本来就要求步内等到 0。
 - 第一版统计（只有 cp.async 检查器时）误写成 static 19、trace 7、lean 14；实际 static 是 14。那一版的 `prologue_slot` 由提取器“读到没被填过的缓冲区”拒绝；槽改按环的初始位置命名后，改由 Lean 拒（`slot is not ticket % d`）。
-- **类型层只抓到 14 个**：`early_release` 这类时序错误只能靠 Lean 证书。把 `InFlight` 见证接到 `release` 上，才能让它在类型层就被拒（§21.5）。
+- **类型层只抓到 14 个（改变代码的只有 6 个）**：`early_release` 这类时序错误只能靠 Lean 证书。把 `InFlight` 见证接到 `release` 上，才能让它在类型层就被拒（§21.5）。
 - `no_settle`、`pending_formula` 在 device 层等价：前者在之后的 phase 里另有等待，后者不在任何 benchmark 的路径上。
 
 ### 22.1 TMA 环的证书检查

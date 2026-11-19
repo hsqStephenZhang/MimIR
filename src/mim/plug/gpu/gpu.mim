@@ -1220,7 +1220,7 @@ anx lam ws_fold {A P: *, rid depth: Nat} (sync: RingSync (rid, depth), count: I6
 /// a loop escapes it.
 axm check_sync: compile.Phase;
 axm erase_phases: compile.Phase;
-/// With `-X gpu:ring-trace=1`, prints the ring events one thread runs, for the checkers in `proofs/ring`.
+/// With `-X gpu:ring-trace=n`, prints the ring events work-items 0, 128, ... run, n of them, for the checkers in `proofs/ring`.
 axm ring_trace: compile.Phase;
 ///
 /// ### remove_double_syncs
