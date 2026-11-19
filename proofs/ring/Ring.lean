@@ -1,4 +1,5 @@
 import Ring.Fold
+import Ring.AsyncCode
 import Ring.Witness
 import Ring.WarpWitness
 

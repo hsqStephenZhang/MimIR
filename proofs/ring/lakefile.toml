@@ -1,6 +1,6 @@
 name = "mimir-ring"
 version = "0.1.0"
-defaultTargets = ["Ring", "ring_trace"]
+defaultTargets = ["Ring", "ring_trace", "ring_async_check"]
 
 [[lean_lib]]
 name = "Ring"
@@ -8,3 +8,7 @@ name = "Ring"
 [[lean_exe]]
 name = "ring_trace"
 root = "Trace"
+
+[[lean_exe]]
+name = "ring_async_check"
+root = "AsyncCheck"

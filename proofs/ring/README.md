@@ -60,6 +60,12 @@ import Ring
 #print axioms Ring.exists_drained_iff
 #print axioms Ring.Async.read_current_generation
 #print axioms Ring.Async.overwrite_after_last_read
+#print axioms Ring.Async.fold_of_accepted
+#print axioms Ring.Async.readCode_of_accepted
+#print axioms Ring.Async.accepted_read_current_generation
+#print axioms Ring.Async.accepted_overwrite_after_last_read
+#print axioms Ring.Async.expected_accepted
+#print axioms Ring.Async.diagnose_none
 #print axioms Ring.Cooperative.poll_published
 #print axioms Ring.Cooperative.read_current_generation
 #print axioms Ring.Cooperative.overwrite_after_last_read
@@ -129,6 +135,37 @@ python3 bench/tools/ring_coverage.py /tmp/ring-bench
 - `Async.read_current_generation` 对每个实际发出复制的线程分别证明：读发射时及读在途期间，其在目标槽负责的部分显示本块、本次票号，且该部分没有在途写。前提是各线程覆盖所读面板、写入区间互不冲突，读与填充操作数通过槽位及源块证书。
 - `Async.overwrite_after_last_read` 证明任一线程重写同槽之前，每个较老的同步 load 都已执行，属于 WGMMA 的读所在批次也已完成。`lag=0`，每个相关 WGMMA 批次在此步内等待 0，异步代理读还要求 proxy fence 和 WGMMA fence。CTA 会合把每个读者的本地顺序传到每个填充线程。
 - 五条 `fold=warp depth=2 lag=0` 日志分别为 `gpu_attn_attn_{law,roll,warp,wg}` 与 `gpu_fusion_attn_warps`。`wg` 的 PTX 含 proxy fence 和步内 WGMMA 等待，其余四条用同步读。warp lowering 要求块数至少为 2，另行为第二个槽分配共享缓冲区。现有分类脚本对这些环打印 `layout=n/a`。对应 PTX 中，`attn_wg` 的四个静态面板各占 8192 字节，`attn_warps` 的各占 8704 字节；`law/roll/warp` 在动态共享区的四个面板基址偏移分别为 0、17408、34816、52224。这五项是协议层的覆盖，分类器宜记录 warp 环的缓冲区身份和实际区间，核对双槽、复制等待立即数、屏障、代理及读退休方式后计入物理布局已确认的覆盖。仅看 `scope=cp.async` 不足以纳入其他 lowering 路径。
+
+#### 可执行检查器
+
+[AsyncCode.lean](Ring/AsyncCode.lean) 为单个线程按程序顺序看到的指令定义 `Instr`：`fill j s src`（票号 `j` 的一条 `cp.async`，可连续多条）、`commit`、`waitGroup n`、`proxyFence`、`barrier`（`refilled` 的 `bar.sync`）、`read b s r`（`r` 为 `load` 或 `wgmma c`）、`wgmmaFence c`、`wgmmaCommit c`、`wgmmaWait0 c`、`settle`（末尾 `cp.async.wait_all`）。`accepts d count proxy P` 是一次线性扫描。每条指令只对照之前各类指令的计数及前一条指令检查局部规则：票号等于已提交组数，槽为 `j % d`，源块为 `Async.source`；序言恰好 `d−1` 组；第 `i` 步依次为立即数 `d−2` 的等待、（`proxy` 时）proxy fence、屏障、补填 `i+d−1` 及其提交，其后才读块 `i` 的槽 `i % d`；WGMMA 读必须位于本步内编号连续的 fence/commit/wait 0 批次中，且只在 `proxy` 时允许；最后恰好一个 `settle`；`d ≥ 2`。
+
+`expected d count proxy loads mmas` 生成规范序列（每步 `loads` 个同步读，`proxy` 时再加一个含 `mmas` 个读的 WGMMA 批次），`expected_accepted` 证明它被接受。`wrong_slot_rejected`、`wrong_immediate_rejected`、`refill_without_barrier_rejected` 是一般的拒绝引理，文件末尾另有 `decide` 例子。
+
+**时间表。** `Exec` 给每个线程一个已执行前缀长度 `done l` 和每个位置的时刻 `time l q`，另给屏障放行 `release k`、复制组完成 `complete l j`、WGMMA 批次完成 `batchDone l b`。`Consistent prog e` 只要求：
+
+- 程序顺序：已执行前缀内的时刻严格递增；
+- 屏障：每个线程的第 `k` 个 `barrier` 早于 `release k`（某线程没有第 `k` 个屏障则永不放行），线程在其后的下一条指令晚于 `release k`；
+- 硬件：组完成晚于其提交；位置 `q` 的 `waitGroup n` 按它自己的立即数满足 `Stream.WaitGroup`；`settle` 之前已提交的组均在它之前完成；批次完成晚于其 `wgmmaCommit`，`wgmmaWait0` 之前已提交的批次均在它之前完成。
+
+`cta prog e` 由程序和时间表直接构造 `Async.CTA`：每个线程票号 `j` 的 issue 取该票号**第一条** `fill`，commit、wait、proxy fence、settle 取相应种类的第 `n` 次出现；槽和源块取第一条 `fill` 的操作数；`fence` 即 `release`。warpgroup 投影到线程本身，即每个线程自己的 WGMMA fence/commit/wait 事件代表其所在批次。`readAt prog e l q` 把位置 `q` 的 `read` 变成 `Async.Read`。
+
+- `fold_of_accepted`：各线程程序都被接受且时间表满足 `Consistent`，则 `Async.Fold (cta prog e) d count (d−2) proxy` 成立。
+- `readCode_of_accepted`：此时每个 `readAt` 给出的读满足 `Async.ReadCode`。
+- `accepted_read_current_generation`、`accepted_overwrite_after_last_read`：由上两条直接得到 T1、T2，对任意被接受的程序和任意一致的时间表成立。`Fold` 的每个字段都由程序顺序、屏障或硬件规则推出，没有削弱。
+- `diagnose_none`：可执行文件报告 `accepted` 时，`accepts` 为真。
+
+检查器只核对指令种类、顺序和逻辑操作数。从 PTX 地址到槽号和源块、各线程写入区间互不冲突、所有线程执行同一 `bar.sync`，仍由提取器负责。
+
+**可执行文件。** `lake exe ring_async_check D COUNT PROXY < ops` 读取一个线程的指令，`PROXY` 取 `0/1`。每行一条，`#` 之后为注释，空行忽略：
+
+```text
+fill J SLOT SRC | commit | wait N | proxy_fence | bar | settle
+read BLOCK SLOT load | read BLOCK SLOT wgmma C
+wgmma_fence C | wgmma_commit C | wgmma_wait0 C
+```
+
+输出 `accepted`（退出码 0），或 `rejected op I (line L) 'OP': 原因`，序列在末尾才失败时为 `rejected at end (op I): 原因`（退出码 1）；参数或语法错误退出码 2。`lake exe ring_async_check --expected D COUNT PROXY LOADS MMAS` 以同一格式打印规范序列。
 
 ### 合作 TMA（第三项，新增 1 个布局不叠放的环）
 
