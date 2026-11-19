@@ -730,3 +730,29 @@ codex 额度用完，由 Claude 子代理调研。结论：
 - Lean（`82366ff0e`，子代理）：`Ring/TmaCode.lean`、`CoopCode.lean`、`WsCode.lean`，可执行文件 `ring_coop_check`、`ring_ws_check`。各角色程序被接受且时间表一致，就推出 `Cooperative`/`WarpSpecialized` 的 `Fold` 与 `ReadCode`，进而 T1/T2。假设：warpgroup 收敛（每组一个代表程序）；full 屏障每相对应一次已发布填充、empty 屏障每 8 次 arrival 一相。
 - 提取器：`-X gpu:ring-trace=N` 依次追踪线程 0、128、…（每个 warpgroup 一个，最后是生产者 warp）。线程身份原语（`leader`、`item_index`、`warp_rank`、`lane_id`）换成该线程的字面量，`gpu.bind` 循环跑该线程的那次迭代，谓词为假的操作不记。TMA fill 进入闭包记录 `expect_tx` 与 `tma_load`，每条加载的字节数取自 `buf_tensor_map` 的盒子尺寸。槽按 fold 循环初始状态里环数组的位置命名，屏障按 init 顺序命名。`ws_fold` 的 fill 不带票号，取票号等于块号（非 persistent 时 `nth i = i`）。
 - `gemm_tiled_wg_tma`（181 个事件）与 `gemm_tiled_wg_ws`（107 个事件）都被接受。至此 7 个原则覆盖的真实环全部经过证书检查。回归测试 `lit/gpu/ring_trace_tma.mim`。
+
+## 23. 类型层补强（2026-11-19）
+
+- **`InFlight` 见证接到交还上。**
+  - `ring_fold` 的 step 和 `ws_fold` 一样，返回 `InFlight lag` 见证；`LowerToMem` 两条路径都给出它。没有 MMA 的步用 load 读，读在步内完成，给 `InFlight 0`。
+  - `Last` 携带读该槽那一步的见证。
+  - 每次交还前，折叠库在 mem 上调用私有的 `gpu.retired @(k, d) (mem, w)`：用“读后第 d 步”的见证 `InFlight k` 担保那次读已经退休。early 分支用上一步的见证，`d = 0`；late 分支用本步的见证，`d = 1`。
+  - `check_sync` 在 PE 之后按字面量要求 `k ≤ d`。
+  - 结果：`early_release`（lag 1 时走 early 分支）在合作 TMA 和 `ws_fold` 上被类型层拒绝，报错为 “a slot is given up 0 steps after its read while 1 groups of MMAs may be in flight”。
+  - `ring_fold` 的 step 留在途的 MMA 组数比 `lag` 多时，前端就报错（`lit/error/ring_fold_in_flight.mim`）。
+- **初始状态由 `open` 产生。**
+  - `SyncOf.open: mem.M 0 → [mem.M 0, R ff]`；`idle` 只剩 `H`；`ring_idle` 换成带 mem 的私有 `ring_open`。
+  - 6 个包装 `open` 的构造器都转发这个状态。
+  - 初始状态因此也按令牌计使用次数，从它出发连 await 两次会被拒（`lit/error/ring_state_open_alias.mim`）。§21.6 的缺口已关闭。
+- **`law.fastest`** 本来就经 `verdict_of` → `check.law_verdict` → `walk` 排除不合法的候选，不需要改动。agy 的说法有误，见 `lit/tensor/law_traffic.mim`。
+- **验证**：
+  - 全量 lit 1072 个通过，22 个手写协议测试已改为经 `open` 取状态；
+  - 73 个 benchmark 的 device IR 与 `391a25ebd` 相比，去掉值名后全部相同；
+  - 7 个真实环仍被 Lean 检查器接受。
+- **变异评测（新口径）**：生成代码改变的 44 对全部被拒：
+  - 类型或 `check_sync` 拒 8 对：`read_other_slot` 5 对、`early_release` 2 对、`ws_release_current` 1 对；
+  - `ring_safe` 拒 1 对；
+  - Lean 拒 35 对。
+
+  另有 7 对 `hold_slot` 只改擦除前的幽灵下标。
+  `wgmma_wait` 变异仍只能靠 Lean 抓：它让受信任的 `wgmma_batch` 少等一组，却照样给出原来的见证，等于见证本身在说谎，类型层看不出来。
