@@ -10,7 +10,7 @@ plugin compile;
 
 extern lam step (m: mem.M 0, ring: «3; Nat», s: Idx 3): [mem.M 0, Nat] =
     let (m, h) = gpu.hold (m, s);
-    let (p, h) = gpu.read_slot @(Nat, 3, gpu.Held 3) (ring, s, s, h);
+    let (p, h) = gpu.read_slot @(Nat, 3, gpu.Held (0, 3)) (ring, s, s, h);
     (gpu.retire (m, s, tt, h), p);
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

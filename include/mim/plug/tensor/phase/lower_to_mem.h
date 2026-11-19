@@ -243,7 +243,9 @@ private:
     bool tf32_rna_  = false;
     bool tma_store_ = false;
     /// The constructs whose panels `gpu.panel_scope` lets overlay those of the others, counted from `Panel_Groups`.
-    u64 panel_groups_                 = 0;
+    u64 panel_groups_ = 0;
+    /// The rings lowered so far, which number each ring's slot tokens.
+    u64 rings_                        = 0;
     static constexpr u64 Panel_Groups = u64(1) << 32;
     /// The memory a dead ring slot may share with a later construct's panel, outside a persistent tile.
     const Def* panel_mem(const Def* mem);

@@ -18,6 +18,6 @@ lam next_slot {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sy
     (release (m, s, tt, mine), panel);
 
 extern lam step (m: mem.M 0, n: Nat, ring: «2; Nat»): [mem.M 0, Nat] =
-    next_slot (gpu.Held 2) (gpu.Vacant 2) (gpu.async_ring @2 (1, ff)) (m, n, ring);
+    next_slot (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n, ring);
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

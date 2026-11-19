@@ -11,6 +11,6 @@ fun fill (m: mem.M 0, _: Nat, _: []): mem.M 0 = return m;
 fun step (m: mem.M 0, a: I32, _: Nat, _: []): [mem.M 0, I32, gpu.InFlight 2] = return (m, a, gpu.in_flight 2);
 
 extern lam early (m: mem.M 0): [mem.M 0, I32] =
-    gpu.ws_fold @(I32, [], 4) (gpu.async_ring @4 (2, ff), 8I64, ff, λ (i: Nat): Nat = i, 1) (m, 0I32, ‹4; ()›) (fill, step);
+    gpu.ws_fold @(I32, [], 0, 4) (gpu.async_ring @(0, 4) (2, ff), 8I64, ff, λ (i: Nat): Nat = i, 1) (m, 0I32, ‹4; ()›) (fill, step);
 
 // CHECK: error: {{.*}}not assignable

@@ -12,6 +12,6 @@ lam own {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: gp
     release (m, core.idx 0 depth (core.nat.rem (n, depth)), tt, mine);
 
 extern lam twice (m: mem.M 0, n: Nat): mem.M 0 =
-    own (gpu.Held 2) (gpu.Vacant 2) (gpu.async_ring @2 (1, ff)) (m, n);
+    own (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
 
 // CHECK: gpu.async_wait_group

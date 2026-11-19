@@ -6,8 +6,8 @@
 plugin gpu;
 plugin compile;
 
-lam get (s: Idx 3) {h: gpu.Held 3 (s, tt)} (r: «3; Nat»): Nat =
-    let (p, _) = gpu.read_slot @(Nat, 3, gpu.Held 3) (r, s, s, h);
+lam get (s: Idx 3) {h: gpu.Held (0, 3) (s, tt)} (r: «3; Nat»): Nat =
+    let (p, _) = gpu.read_slot @(Nat, 3, gpu.Held (0, 3)) (r, s, s, h);
     p;
 
 extern lam step (s: Idx 3, r: «3; Nat»): Nat = get s r;

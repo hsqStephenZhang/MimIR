@@ -726,11 +726,13 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
             lam->set(true, w.app(w.app(of, lam->var()), depth));
             return lam;
         };
+        // Each ring's tokens carry its own number, so the tokens of two rings never stand for each other.
+        auto rid = w.lit_nat(rings_++);
         const Def* sync;
         if (tma) {
             auto vacant = parity(w.annex(tensor::pipeline_plan::empty_parity), "ringVacant");
             auto full   = parity(w.annex(tensor::pipeline_plan::full_parity), "ringParity");
-            sync = w.app(w.app(w.annex<gpu::tma_ring>(), depth),
+            sync = w.app(w.app(w.annex<gpu::tma_ring>(), {rid, depth}),
                          {bars, empties ? empties : bars, full, vacant, w.lit_nat(cluster_.size), w.lit_bool(sharing),
                           w.lit_nat(specialized ? roles_.consumers : 0),
                           specialized && roles_.pingpong ? roles_.consumer : w.lit_nat_0(),
@@ -738,21 +740,21 @@ const Def* LowerToMem::lower_tile_fold(const App* app, const Destination* destin
                           w.lit_bool(tile_round_ != nullptr), first_round});
         } else {
             sync = w.app(
-                w.app(w.annex<gpu::async_ring>(), depth),
+                w.app(w.annex<gpu::async_ring>(), {rid, depth}),
                 {w.app(w.annex(tensor::pipeline_plan::pending), depth), w.lit_bool(fragments && fragments->group)});
         }
         const Def* fold;
         if (specialized) {
             auto nth = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringFill");
             nth->set(true, global(nth->var()));
-            fold = w.app(w.annex<gpu::ws_fold>(), {acc_ty, slot_ty, depth});
+            fold = w.app(w.annex<gpu::ws_fold>(), {acc_ty, slot_ty, rid, depth});
             fold = w.app(fold,
                          {sync, w.call<core::bitcast>(w.type_i64(), blocks), roles_.producer, nth, w.lit_nat(overlap)});
         } else {
             auto refill = w.mut_lam(w.pi(w.type_nat(), w.type_nat()))->set("ringRefill");
             refill->set(true, w.app(w.annex(tensor::pipeline_plan::refill_block),
                                     {refill->var(), depth, w.lit_nat(*literal_count)}));
-            fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, depth});
+            fold = w.app(w.annex<gpu::ring_fold>(), {acc_ty, slot_ty, rid, depth});
             fold = w.app(fold, {sync, w.call<core::bitcast>(w.type_i64(), blocks), refill, w.lit_nat(overlap),
                                 w.lit_bool(tma), w.lit_tt()});
         }

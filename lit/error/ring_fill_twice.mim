@@ -15,6 +15,6 @@ lam twice {depth: Nat} (H: [Idx depth, Bool] → *) (V: Idx depth → *) (sync: 
     commit (commit (m, s, vacant), s, vacant);
 
 extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
-    twice (gpu.Held 2) (gpu.Vacant 2) (gpu.async_ring @2 (1, ff)) (m, n);
+    twice (gpu.Held (0, 2)) (gpu.Vacant (0, 2)) (gpu.async_ring @(0, 2) (1, ff)) (m, n);
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

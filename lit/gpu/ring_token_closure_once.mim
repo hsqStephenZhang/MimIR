@@ -8,12 +8,12 @@ plugin mem;
 plugin gpu;
 plugin compile;
 
-lam box (h: gpu.Held 3 (0₃, tt))@ff: [Nat, mem.M 0 → mem.M 0] =
+lam box (h: gpu.Held (0, 3) (0₃, tt))@ff: [Nat, mem.M 0 → mem.M 0] =
     lam give (m: mem.M 0)@ff: mem.M 0 = gpu.retire (m, 0₃, tt, h);
     (0, give);
 
 lam once (f: mem.M 0 → mem.M 0, m: mem.M 0)@ff: mem.M 0 = f m;
 
-extern lam step (m: mem.M 0, h: gpu.Held 3 (0₃, tt)): mem.M 0 = once ((box h)#1₂, m);
+extern lam step (m: mem.M 0, h: gpu.Held (0, 3) (0₃, tt)): mem.M 0 = once ((box h)#1₂, m);
 
 extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

@@ -1,0 +1,18 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: argument is not assignable to callee's domain
+// CHECK: gpu.Held (0, 2)
+
+// Each ring's tokens carry its number, so a step cannot give a slot of ring 0 up to ring 1.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+extern lam step (m: mem.M 0, n: Nat): mem.M 0 =
+    let (_, _, _, await, _, _, _) = gpu.async_ring @(0, 2) (1, ff);
+    let (_, _, _, _, release, _, _) = gpu.async_ring @(1, 2) (1, ff);
+    let (m, mine) = await (m, n);
+    release (m, core.idx 0 2 (core.nat.rem (n, 2)), tt, mine);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

@@ -8,11 +8,11 @@ plugin mem;
 plugin gpu;
 plugin compile;
 
-lam sink (h: gpu.Held 3 (0₃, tt))@ff: mem.M 0 → mem.M 0 =
+lam sink (h: gpu.Held (0, 3) (0₃, tt))@ff: mem.M 0 → mem.M 0 =
     lam give (m: mem.M 0)@ff: mem.M 0 = gpu.retire (m, 0₃, tt, h);
     give;
 
-extern lam step (m: mem.M 0, h: gpu.Held 3 (0₃, tt)): mem.M 0 =
+extern lam step (m: mem.M 0, h: gpu.Held (0, 3) (0₃, tt)): mem.M 0 =
     let f = sink h;
     f (f m);
 
