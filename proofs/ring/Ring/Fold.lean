@@ -38,7 +38,7 @@ def refill (d count i : Nat) : List Op :=
   [.fence, .release (previous i)] ++ (if j < count then [.fill j (j % d)] else [])
 
 def compute (d : Nat) (lag : Lag) (width i : Nat) : List Op :=
-  List.replicate width (.mma i (i % d)) ++ [.commit, .waitGroups lag.keep]
+  .wgmmaFence :: (List.replicate width (.mma i (i % d)) ++ [.commit, .waitGroups lag.keep])
 
 def iteration (d count : Nat) (lag : Lag) (width : Nat → Nat) (i : Nat) : List Op :=
   .poll i (i % d) :: (match lag with
@@ -77,7 +77,7 @@ private theorem computes (n : Nat) (lag : Lag) (lo : v.lo ≤ v.k)
     (seen : v.k < v.seen) (bound : v.floor ≤ v.k) :
     Code d v (compute d lag n v.k)
       { v with batch := 0, k := v.k + 1, floor := v.k + 1 - lag.keep } :=
-  (issues n lo seen).append (.cons (.commit bound) (.cons .waitGroups .nil))
+  .cons .wgmmaFence ((issues n lo seen).append (.cons (.commit bound) (.cons .waitGroups .nil)))
 
 private theorem refills (hd : 2 ≤ d) (i : Nat) (lo : v.lo = i)
     (front : v.filled = frontier d count i) (floor : i ≤ v.floor) (k : i ≤ v.k) :

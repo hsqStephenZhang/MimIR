@@ -13,6 +13,21 @@ theorem Code.append (a : Code d u xs v) (b : Code d v ys w) : Code d u (xs ++ ys
   | nil => exact b
   | cons r _ ih => exact .cons r (ih b)
 
+def Op.slotOK (d : Nat) : Op → Prop
+  | .fill j s | .poll j s | .mma j s => s = j % d
+  | _ => True
+
+theorem Code.head_slot (code : Code d v (op :: ops) z) : op.slotOK d := by
+  cases code with
+  | cons rule _ => cases rule <;> first | rfl | trivial
+
+/-- Even after a successful poll, a read addressing the other panel cannot
+    consume the tail of a certificate. -/
+theorem wrong_panel_rejected (wrong : s ≠ i % d) :
+    ¬ Code d v (.poll i (i%d) :: .mma i s :: ops) z := by
+  intro code
+  cases code with | cons _ tail => exact wrong tail.head_slot
+
 def Certified (d : Nat) (endMark : Mark) (cfg : Config) :=
   ∃ v, Inv d v cfg.2 ∧ Code d v cfg.1 endMark
 
@@ -230,6 +245,7 @@ private theorem Rule.eager (rule : Rule d v op w) (inv : Inv d v m) (q : Quiet m
     have posted := inv.preserve (bytes := bytes) (.commit bound) .commit
     exact ⟨next, .snoc (single .commit) (.hw dev), posted.hardware dev, q.1, rfl⟩
   | waitGroups => exact direct (.waitGroups (by simp [q.2])) q
+  | wgmmaFence => exact direct .wgmmaFence q
   | fence => exact direct .fence q
   | release => exact direct .release q
   | next => exact direct .next q

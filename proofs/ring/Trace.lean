@@ -13,7 +13,7 @@ private def events (d : Nat) : Op → List String
   | .mma i slot => [s!"mma {i} {128 * slot}"]
   | .commit => ["commit"]
   | .waitGroups n => [s!"wait_group {n}"]
-  | .next | .fence => []
+  | .next | .fence | .wgmmaFence => []
 
 def main (args : List String) : IO Unit := do
   let [some d, some count, some lag, some width] := args.map String.toNat?

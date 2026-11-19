@@ -102,6 +102,7 @@ inductive Rule (d : Nat) : Mark → Op → Mark → Prop
       Rule d v (.mma v.k (v.k % d)) { v with batch := v.batch + 1 }
   | commit (bound : v.floor ≤ v.k) : Rule d v .commit { v with k := v.k + 1, batch := 0 }
   | waitGroups : Rule d v (.waitGroups n) { v with floor := v.k - n }
+  | wgmmaFence : Rule d v .wgmmaFence v
   | fence : Rule d v .fence v
   | release (retired : ∀ j, prev = some j → j < v.floor ∧ j < v.k) :
       Rule d v (.release prev) v
@@ -174,7 +175,7 @@ theorem Inv.preserve (h : Inv d v m) (rule : Rule d v op w)
       have := recent g hg
       rw [h.commits] at this
       exact ⟨by dsimp; omega, (h.groups _ hg).2⟩
-  | fence | release => cases step; exact h
+  | wgmmaFence | fence | release => cases step; exact h
   | next seen =>
     cases step
     refine { h with window := ?_, ordered := by dsimp; omega }

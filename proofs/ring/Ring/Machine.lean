@@ -60,6 +60,7 @@ inductive Op where
   | commit
   | waitGroups (n : Nat)
   | fence
+  | wgmmaFence
   | release (previous : Option Nat)
   | next
   deriving DecidableEq
@@ -82,6 +83,7 @@ inductive Host (d : Nat) (bytes : Nat → Nat) : Op → Machine → Machine → 
       { m with pending := [], groups := ⟨m.commits, m.pending⟩ :: m.groups, commits := m.commits + 1 }
   | waitGroups (recent : ∀ g ∈ m.groups, m.commits ≤ g.serial + n) :
       Host d bytes (.waitGroups n) m m
+  | wgmmaFence : Host d bytes .wgmmaFence m m
   | fence : Host d bytes .fence m m
   | release : Host d bytes (.release prev) m m
   | next : Host d bytes .next m m
