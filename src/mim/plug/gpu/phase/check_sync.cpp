@@ -1,5 +1,7 @@
 #include "mim/plug/gpu/phase/check_sync.h"
 
+#include <bit>
+
 #include <mim/check.h>
 #include <mim/nom.h>
 
@@ -51,44 +53,55 @@ bool has_slot(const Def* type) {
 
 bool is_slot_token(const Def* def) { return def->type() && has_slot(def->type()) && !Axm::isa<gpu::unheld>(def); }
 
-/// A natural number as literal multiples of opaque atoms plus a constant; an `Idx` read as a number is its index.
-std::pair<DefMap<u64>, u64> nat_form(const Def* n) {
-    if (auto lit = Lit::isa(n)) return {{}, *lit};
+/// A natural number as literal multiples of opaque atoms plus a constant, all modulo @p depth; an `Idx` read as a
+/// number is its index. `std::nullopt` if a literal is so large that the sum might wrap around, which would break the
+/// congruence.
+std::optional<std::pair<DefMap<u64>, u64>> nat_form(const Def* n, u64 depth) {
+    auto small = [&](u64 lit) { return std::has_single_bit(depth) || lit < (u64(1) << 32); };
+    if (auto lit = Lit::isa(n)) {
+        if (!small(*lit)) return {};
+        return std::pair{DefMap<u64>{}, *lit % depth};
+    }
     if (auto add = Axm::isa(core::nat::add, n)) {
-        auto [atoms, constant] = nat_form(add->arg(2, 0));
-        auto [more, extra]     = nat_form(add->arg(2, 1));
-        for (auto [atom, k] : more)
-            atoms[atom] += k;
-        return {atoms, constant + extra};
+        auto lhs = nat_form(add->arg(2, 0), depth), rhs = nat_form(add->arg(2, 1), depth);
+        if (!lhs || !rhs) return {};
+        for (auto [atom, k] : rhs->first)
+            lhs->first[atom] = (lhs->first[atom] + k) % depth;
+        lhs->second = (lhs->second + rhs->second) % depth;
+        return lhs;
     }
     if (auto mul = Axm::isa(core::nat::mul, n))
         for (size_t i = 0; i != 2; ++i)
             if (auto k = Lit::isa(mul->arg(2, i))) {
-                auto [atoms, constant] = nat_form(mul->arg(2, 1 - i));
-                for (auto& [_, c] : atoms)
-                    c *= *k;
-                return {atoms, constant * *k};
+                auto form = small(*k) ? nat_form(mul->arg(2, 1 - i), depth) : std::nullopt;
+                if (!form) return {};
+                for (auto& [_, c] : form->first)
+                    c = c * (*k % depth) % depth;
+                form->second = form->second * (*k % depth) % depth;
+                return form;
             }
-    if (auto conv = Axm::isa<core::idx2nat>(n)) return {{{conv->arg(), 1}}, 0};
-    return {{{n, 1}}, 0};
+    if (auto conv = Axm::isa<core::idx2nat>(n)) return std::pair{DefMap<u64>{{conv->arg(), 1 % depth}}, u64(0)};
+    return std::pair{DefMap<u64>{{n, 1 % depth}}, u64(0)};
 }
 
 /// Whether slot index @p t of a ring of @p depth slots is @p s: alike, or `idx (x % depth)` where `x` is `s` up to
-/// multiples of `depth`.
+/// multiples of `depth`, assuming no atom of `x` is large enough to wrap it around.
 bool same_slot(const Def* s, const Def* t, u64 depth) {
     if (s == t) return true;
     auto idx = Axm::isa<core::idx>(t);
     if (!idx) return false;
     auto rem = Axm::isa(core::nat::rem, idx->arg());
     if (!rem || Lit::isa(rem->arg(2, 1)) != depth) return false;
-    auto [atoms, constant] = nat_form(rem->arg(2, 0));
+    auto form = nat_form(rem->arg(2, 0), depth);
+    if (!form) return false;
+    auto& [atoms, constant] = *form;
     if (auto lit = Lit::isa(s))
-        constant += depth - *lit % depth;
+        constant = (constant + depth - *lit % depth) % depth;
     else if (auto i = atoms.find(s); i != atoms.end())
-        --i->second;
+        i->second = (i->second + depth - 1) % depth;
     else
         return false;
-    return constant % depth == 0 && std::ranges::all_of(atoms, [&](auto atom) { return atom.second % depth == 0; });
+    return constant == 0 && std::ranges::all_of(atoms, [](auto atom) { return atom.second == 0; });
 }
 
 } // namespace
