@@ -110,3 +110,11 @@ python3 bench/tools/ring_coverage.py /tmp/ring-bench
 - `Async.read_current_generation` 对每个实际发出复制的线程分别证明：读发射时及读在途期间，其在目标槽负责的部分显示本块、本次票号，且该部分没有在途写。前提是各线程覆盖所读面板、写入区间互不冲突，读与填充操作数通过槽位及源块证书。
 - `Async.overwrite_after_last_read` 证明任一线程重写同槽之前，每个较老的同步 load 都已执行，属于 WGMMA 的读所在批次也已完成。`lag=0`，每个相关 WGMMA 批次在此步内等待 0，异步代理读还要求 proxy fence 和 WGMMA fence。CTA 会合把每个读者的本地顺序传到每个填充线程。
 - 五条 `fold=warp depth=2 lag=0` 日志分别为 `gpu_attn_attn_{law,roll,warp,wg}` 与 `gpu_fusion_attn_warps`。`wg` 的 PTX 含 proxy fence 和步内 WGMMA 等待，其余四条用同步读。warp lowering 要求块数至少为 2，另行为第二个槽分配共享缓冲区。现有日志对这些环打印 `layout=n/a`。这五项是协议层的覆盖，分类器宜记录 warp 环的缓冲区身份和实际区间，核对双槽、复制等待立即数、屏障、代理及读退休方式后计入物理布局已确认的覆盖。仅看 `scope=cp.async` 不足以纳入其他 lowering 路径。
+
+### 合作 TMA（第三项，新增 1 个布局不叠放的环）
+
+`Cooperative.Fold` 对应 `consumers=0, cluster=0, persistent=false` 的 `tma_ring` 和 `lag=1, exact=true` 的 `ring_fold_at`，要求 `2 ≤ d` 且 `d−1 ≤ count`。日志的 `consumers=2` 计 CTA 内的读者组；传给 `tma_ring` 的 0 表示这些读者自己填环。leader 发起 TMA，各组独立轮询同一 full barrier，然后各自 fence、发射若干 MMA、提交一组、等待最近 1 组。任意组可先到达 `refilled`。各组都到达后 CTA 屏障才放行，leader 才能向旧槽写入。该路径没有 empty barrier。
+
+- `Cooperative.poll_published` 从实际屏障上的发布次数、成功 poll 的单比特比较和迭代顺序推出相应填充已发布。一次发布要求一次 arrival 和本次预期的全部字节均已到达；时间表将最后一个字节到达之前的细节投影掉。
+- `Cooperative.read_current_generation` 证明任意组的任一 MMA 发射时及在途期间读到当前块和代，物理槽上没有在途写。`Cooperative.overwrite_after_last_read` 证明同槽的后续写严格晚于**每个**读者组的旧批次退休。屏障自身不使 WGMMA 退休。证明使用每组每块一次 commit、wait 的“最近 N 组”条件，以及所有组参加同一轮 CTA 会合。
+- 两条日志都是 `depth=2 lag=1 consumers=2`。`gpu_tiling_gemm_tiled_wg_tma` 的 panel group 布局为 `disjoint`，计入原则覆盖。`gpu_tiling_gemm_tiled_wg_tma_h` 的协议也匹配，但布局为 `overlaid`，仍排除。分类器应在这个合作路径检查深度、lag、组数和 WGMMA 批次，再进入现有 `check-layout` 分支。保留对 cluster、独立生产者、persistent 和无布局证据的单独判定。

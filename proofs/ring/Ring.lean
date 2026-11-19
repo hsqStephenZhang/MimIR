@@ -1,5 +1,6 @@
 import Ring.Fold
 import Ring.Async
+import Ring.Cooperative
 
 namespace Ring
 
