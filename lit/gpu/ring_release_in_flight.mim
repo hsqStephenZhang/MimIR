@@ -8,7 +8,7 @@ plugin mem;
 plugin gpu;
 
 fun fill (m: mem.M 0, _: Nat, _: []): mem.M 0 = return m;
-fun step (m: mem.M 0, a: I32, _: Nat, _: []): [mem.M 0, I32, gpu.InFlight 1] = return (m, a, gpu.in_flight 1);
+fun step (m: mem.M 0, a: I32, _: Nat, _: []): [mem.M 0, I32, gpu.InFlight 1] = return (gpu.wgmma_batch @(I32, 0) (ff, 1, ff, 0) (m, a) ‹0; λ (st: [mem.M 0, I32]): [mem.M 0, I32] = st›);
 
 extern lam late (m: mem.M 0): [mem.M 0, I32] =
     gpu.ws_fold @(I32, [], 0, 4) (gpu.async_ring @(0, 4) (2, ff), 8I64, ff, λ (i: Nat): Nat = i, 1) (m, 0I32, ‹4; ()›) (fill, step);

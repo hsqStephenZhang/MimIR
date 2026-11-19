@@ -1,0 +1,11 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+
+// Only the wait of `gpu.wgmma_batch` vouches that at most `pending` groups of MMAs are in flight.
+
+plugin core;
+plugin mem;
+plugin gpu;
+
+fun step (m: mem.M 0, a: I32): [mem.M 0, I32, gpu.InFlight 1] = return (m, a, gpu.in_flight 1);
+
+// CHECK: error: `in_flight` is private to its enclosing `mod`

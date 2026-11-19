@@ -640,7 +640,8 @@ MimIR 是编译器：用户写的是 PyTorch 模型（经 `mimir-frontend` 导�
 
 ### 21.3 尚未做的
 
-- **RingState。** 同槽重复 `await` 仍未拒绝。§17 定的“能力 + 残余验证”中，能力一半需要把 `RingState rid` 穿过 `SyncOf` 的每个操作。`gpu.in_flight` 仍是公开的，两个测试在用。
-- **rolled 环与 `ws_fold` 仍直接读 `slots#0`**，没有经过 `read_slot`。
+- **RingState。** 同槽重复 `await` 仍未拒绝。§17 定的“能力 + 残余验证”中，能力一半需要把 `RingState rid` 穿过 `SyncOf` 的每个操作。
+- `gpu.in_flight` 已改为 `priv`：只有 `wgmma_batch` 的等待能给出 `InFlight pending` 见证，原先伪造见证的两个测试改为经过 0 条 MMA 的 `wgmma_batch`（`lit/error/ring_in_flight_forge.mim`）。
+- **rolled 环与 `ws_fold` 仍直接读 `slots#0`**，没有经过 `read_slot`。它们每步轮转槽数组，第 0 位是物理槽 `block % depth` 这一点是循环不变量。要让句柄类型带上轮转量，`affine.For` 的状态类型就得依赖迭代号，与 RingState 是同一个阻碍（§17）。改为不轮转、按动态下标读，会改变设备 IR，所以暂不做。
 - **真实残余的证书检查（第 3 项）。** 单消费者 TMA 有可计算的 `Ring.fold`/`Code`，但 11 个真实环里没有单消费者 TMA。`Async`、`Cooperative`、`WarpSpecialized` 是以事件时间表陈述的 `Prop` 结构，没有可执行的检查器。要检查真实 kernel，需要先为每个模型写可计算的逐参与者事件检查器，并证明它蕴含相应的 `Fold`/`ReadCode`；再从 `gpu.erase_phases` 之前的残余里抽取逐线程（或逐 warpgroup）事件。后者可沿用 `ring_fold_trace` 的主机执行办法：把 `threadIdx` 当参数，枚举代表线程。
 - cluster、persistent、叠放的模型（第 4 项）。

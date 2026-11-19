@@ -986,7 +986,7 @@ anx lam turn_pass (consumer: Nat) (m: mem.M 0): mem.M 0 = arrive_named (m, core.
 /// What a warpgroup knows once at most `pending` of its groups of MMAs are in flight.
 /// Only the wait of `wgmma_batch` makes one; `gpu.erase_phases` erases it.
 axm InFlight: Nat → *;
-axm in_flight: [pending: Nat] → InFlight pending;
+priv axm in_flight: [pending: Nat] → InFlight pending;
 /// A warpgroup's group of `n` MMAs over `x`, the accumulators they write and the register operands they read: prior
 /// accesses are fenced before them, with `publish` after the panels' fillers published them to the async proxy, and
 /// `x` comes back only from the wait that leaves at most `pending` groups in flight, with the witness of that.
