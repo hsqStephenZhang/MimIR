@@ -104,6 +104,25 @@ bool same_slot(const Def* s, const Def* t, u64 depth) {
     return constant == 0 && std::ranges::all_of(atoms, [](auto atom) { return atom.second == 0; });
 }
 
+/// Checks that @p value fits @p want rigidly wherever @p want holds a slot token; a dependent Sigma is instantiated
+/// with @p value's own components first.
+void rigid(const Def* want, const Def* value, const Def* at) {
+    if (!has_slot(want)) return;
+    if (auto sigma = want->isa<Sigma>())
+        if (auto n = Lit::isa(sigma->arity()); n && Lit::isa(value->type()->arity()) == n) {
+            auto parts = DefVec(sigma->ops().begin(), sigma->ops().end());
+            if (sigma->isa_mut()) {
+                auto reduced = sigma->reduce(value);
+                parts        = DefVec(reduced.begin(), reduced.end());
+            }
+            for (size_t i = 0; i != *n; ++i)
+                rigid(parts[i], value->proj(*n, i), at);
+            return;
+        }
+    if (!Check::test_alpha(want, value->type()))
+        at->blame("a ring slot token of type `{}` is passed where `{}` is expected", value->type(), want).bail();
+}
+
 } // namespace
 
 // A token is consumed where it is made, never inside a mutable nested there, which may run more than once.
@@ -112,7 +131,8 @@ void CheckSync::start() {
     DefMap<DefVec> users;
     DefSet counted, linear;
     DefVec slots, branches;
-    fe::Vector<const App*> reads;
+    fe::Vector<const App*> reads, calls;
+    fe::Vector<Lam*> bodies;
     MutMap<Def*> parent, inlined;
     ankerl::unordered_dense::map<nat_t, const Def*> entered;
     // A `mem.fresh` continuation runs exactly once in place, so it belongs to the mutable that requests it.
@@ -134,6 +154,7 @@ void CheckSync::start() {
         if (!done.insert(mut).second) continue;
         if (auto lam = mut->isa<Lam>(); lam && (has_token(lam->dom()) || has_panel(lam->dom())))
             lam->blame("a work-group phase token or panel must not cross into `{}`", lam).bail();
+        if (auto lam = mut->isa<Lam>(); lam && lam->is_set() && has_slot(lam->codom())) bodies.push_back(lam);
         DefSet seen;
         auto stack = DefVec();
         for (auto op : mut->ops())
@@ -151,6 +172,8 @@ void CheckSync::start() {
             if (def->type() && (has_token(def->type()) || visibility(def))) linear.insert(def);
             if (is_slot_token(def)) slots.push_back(def);
             if (auto read = Axm::isa<gpu::read_slot>(def)) reads.push_back(read);
+            if (auto app = def->isa<App>())
+                if (auto pi = app->callee()->type()->isa<Pi>(); pi && has_slot(pi->dom())) calls.push_back(app);
             if (auto extract = def->isa<Extract>();
                 extract && extract->tuple()->isa<Tuple>() && !Lit::isa(extract->index()))
                 branches.push_back(extract->tuple());
@@ -239,9 +262,19 @@ void CheckSync::start() {
             return picks.size() == 1 && picks.front()->isa<Extract>() && called_once(picks.front());
         });
     };
+    // The core check lets two different free variables stand for each other, so slot tokens are compared rigidly.
+    for (auto app : calls)
+        rigid(app->callee()->type()->as<Pi>()->dom(), app->arg(), app);
+    for (auto lam : bodies)
+        rigid(lam->codom(), lam->body(), lam);
     // A ring's last slot may stay held when its fold ends, so a slot token is used at most once.
     for (auto def : slots) {
-        if (def->isa<Hole>()) continue;
+        if (auto hole = def->isa<Hole>()) {
+            if (!Hole::isa_set(hole)) def->blame("ring slot token `{}` is never supplied", def).bail();
+            continue;
+        }
+        if (def->isa<Bot>())
+            def->blame("ring slot token `{}` is the bottom value, which no ring sync made", def).bail();
         if (def->isa<Pack>()) def->blame("ring slot token `{}` is packed into copies", def).bail();
         auto by = users_of(def);
         if (!is_slot(def->type())) {

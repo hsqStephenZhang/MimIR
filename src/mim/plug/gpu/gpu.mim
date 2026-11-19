@@ -866,13 +866,13 @@ anx lam persistent_tiles {n: Nat, Ts: «n; *»} (total ctas: Nat, settle: «i: n
 /// Only a ring's sync makes them, `hold` on the memory it waited on so that each is a value of its own, and `retire`
 /// consumes one; `gpu.check_sync` rejects one used twice and `gpu.erase_phases` erases them.
 axm Held: [depth: Nat] → [Idx depth, Bool] → *;
-axm hold: {depth: Nat} → [mem.M 0, s: Idx depth] → [mem.M 0, Held depth (s, tt)];
-axm unheld: [depth: Nat] → Held depth (core.idx 0 depth 0, ff);
+priv axm hold: {depth: Nat} → [mem.M 0, s: Idx depth] → [mem.M 0, Held depth (s, tt)];
+priv axm unheld: [depth: Nat] → Held depth (core.idx 0 depth 0, ff);
 axm retire: {depth: Nat} → [mem.M 0, s: Idx depth, live: Bool, Held depth (s, live)] → mem.M 0;
 /// What a fill holds of slot `s` once the slot is empty and until its copies are committed.
 /// Only a ring's sync makes one, with `vacate`, and `occupy` consumes it; they are checked and erased as `Held` is.
 axm Vacant: [depth: Nat] → Idx depth → *;
-axm vacate: {depth: Nat} → [mem.M 0, s: Idx depth] → [mem.M 0, Vacant depth s];
+priv axm vacate: {depth: Nat} → [mem.M 0, s: Idx depth] → [mem.M 0, Vacant depth s];
 axm occupy: {depth: Nat} → [mem.M 0, s: Idx depth, Vacant depth s] → mem.M 0;
 /// The panel in slot `s` of `ring`, read with the token of slot `t` handed through; `check_sync` requires `s` to be `t`.
 axm read_slot: {P: *, depth: Nat, H: [Idx depth, Bool] → *} → [ring: «depth; P», s t: Idx depth, H (t, tt)]

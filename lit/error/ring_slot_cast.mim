@@ -1,0 +1,18 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: a ring slot token of type `gpu.Held 3 (s, tt)` is passed where `gpu.Held 3 (t, tt)` is expected
+
+// The core check lets two different free variables stand for each other, so a function from slot `s` to slot `t`
+// would turn the token of slot 0 into one of slot 1.
+
+plugin gpu;
+plugin compile;
+
+lam cast_slot (s: Idx 3)@ff: [t: Idx 3] → gpu.Held 3 (s, tt) → gpu.Held 3 (t, tt) =
+    lam target (t: Idx 3)@ff: gpu.Held 3 (s, tt) → gpu.Held 3 (t, tt) =
+        lam cast (h: gpu.Held 3 (s, tt))@ff: gpu.Held 3 (t, tt) = h;
+        cast;
+    target;
+
+extern lam swap (h: gpu.Held 3 (0₃, tt)): gpu.Held 3 (1₃, tt) = cast_slot 0₃ 1₃ h;
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

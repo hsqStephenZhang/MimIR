@@ -1,0 +1,11 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: ring slot token `⊥:(gpu.Held 3 (s, tt))` is the bottom value, which no ring sync made
+
+plugin gpu;
+plugin compile;
+
+extern lam step (r: «3; Nat», s: Idx 3): Nat =
+    let (p, _) = gpu.read_slot @(Nat, 3, gpu.Held 3) (r, s, s, ⊥:(gpu.Held 3 (s, tt)));
+    p;
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";

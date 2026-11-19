@@ -1,0 +1,16 @@
+// RUN: not %mim %s -o /dev/null 2>&1 | %FileCheck %s
+// CHECK: error: `hold` is private to its enclosing `mod`
+
+// Only a ring's sync makes a slot token, so a program cannot hold a slot it never waited for.
+
+plugin core;
+plugin mem;
+plugin gpu;
+plugin compile;
+
+extern lam step (m: mem.M 0, ring: «3; Nat», s: Idx 3): [mem.M 0, Nat] =
+    let (m, h) = gpu.hold (m, s);
+    let (p, h) = gpu.read_slot @(Nat, 3, gpu.Held 3) (ring, s, s, h);
+    (gpu.retire (m, s, tt, h), p);
+
+extern lam _compile (): compile.Phase = compile.named "gpu.check_sync";
