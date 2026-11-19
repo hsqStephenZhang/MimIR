@@ -99,7 +99,7 @@
 | C3 | Lean 协议定理 T1（`read_current_generation`）和 T2（`overwrite_after_last_read`），覆盖四个模型：单消费者 TMA 小步模型、cp.async、合作 TMA、WS（empty mbarrier） | `proofs/ring/Ring/*.lean`；`822bf0149`、`db9aabb61`、`c2c79dd69`、`33ad70696`、`dbe26e329`。没有项目自定义公理（`#print axioms` 只列出 `propext`、`Classical.choice`、`Quot.sound`）。另有 `no_ABA`、`exists_drained_iff`，用来排除空真 |
 | C4 | 可执行检查器，并证明“接受 ⇒ `Fold` ∧ `ReadCode` ⇒ T1/T2” | `AsyncCode.lean`（`391a25ebd`）；`TmaCode`/`CoopCode`/`WsCode.lean`（`82366ff0e`）；`fold_of_accepted`、`readCode_of_accepted`、`diagnose_none`/`diagnoseRole_none` |
 | C5 | 逐 kernel 的证书检查：从残余里提取事件，覆盖 7/11 个真实环 | `ring_trace.cpp`（`f14560665`、`1176f89a1`）；`bench/tools/ring_trace_check.py`；`lit/gpu/ring_trace_async.mim`、`ring_trace_tma.mim`；`gemm_tiled_wg_tma` 有 181 个事件，`gemm_tiled_wg_ws` 有 107 个 |
-| C6 | 变异评测：15 种变异 × 7 个 kernel，44 对改变了生成代码的组合全部被拒：类型/`check_sync` 6、有界模拟 `ring_safe` 1、Lean 37（其中 1 对是文本格式解析失败）；另有 7 对 `hold_slot` 只改擦除前的幽灵下标，生成代码不变，被类型检查拒（口径见 README §2），7 个基线全部接受 | `bench/tools/mutate.py`（`2ce447bc1`）；设计文档 §22 |
+| C6 | 变异评测：15 种变异 × 7 个 kernel，44 对改变了生成代码的组合全部被拒：类型/`check_sync` 8（含接上 `InFlight` 见证后的 `early_release` 2 对）、有界模拟 `ring_safe` 1、Lean 35（其中 1 对是文本格式解析失败）；另有 7 对 `hold_slot` 只改擦除前的幽灵下标，生成代码不变，被类型检查拒（口径见 README §2），7 个基线全部接受 | `bench/tools/mutate.py`（`2ce447bc1`）；设计文档 §22 |
 | C7 | 覆盖分类（哪些环落在模型前提内） | `f8385cf39`、`2942730ec`；`bench/tools/ring_coverage.py`；`lit/gpu/ring_fold_coverage.mim` |
 
 ### 3.2 信任链与缺口
@@ -125,11 +125,11 @@
 
 > 对基准中落在模型前提内的 7 个环（共 11 个），编译器在擦除令牌前的残余 IR 中，每个角色一个代表线程的同步事件序列，都被一个 Lean 中证明可靠的检查器接受。按 Lean 定理，在手写的 mbarrier/cp.async/WGMMA 硬件模型下，被接受的序列对任意一致的交错满足“读到本代”和“覆盖晚于上一代的最后一次读”。
 > 另外，类型层（线性令牌、环身份、两相状态）在前端拒绝一类协议库错误。
-> 15 种手写协议变异使 44 个（变异，kernel）组合的生成代码发生变化，全部被拒：类型层与 `check_sync` 6 个，有界协议模拟 1 个，Lean 检查器 37 个。
+> 15 种手写协议变异使 44 个（变异，kernel）组合的生成代码发生变化，全部被拒：类型层与 `check_sync` 8 个，有界协议模拟 1 个，Lean 检查器 35 个。
 
 **要避免的主张：**
 - “验证过的编译器”“端到端正确”“kernel 被证明无竞争”。原因：G1、G2、G4。
-- “类型系统保证同步安全”。原因：G6、G7；类型层只抓到改变代码的 44 对中的 6 对。
+- “类型系统保证同步安全”。原因：G6、G7；类型层只抓到改变代码的 44 对中的 8 对。
 - “检查任意 Hopper kernel”或“覆盖生产配置”。原因：G8，persistent 和 cluster 都不在内。
 - “0 漏报”而不加限定。原因：G9。
 - “首个给 mbarrier 定类型的系统”。新颖性检索不穷尽，只能写“据我们所知”。
