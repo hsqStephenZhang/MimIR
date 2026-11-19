@@ -697,24 +697,32 @@ codex 额度用完，由 Claude 子代理调研。结论：
 - **unchecked**：IR 变了，但这个环的模型还没有可执行检查器；
 - **MISSED**：IR 变了，检查器却接受。
 
-| 变异 | 含义 | 结果 |
-| --- | --- | --- |
-| `wait_pending` | cp.async 步少等一组 | 5 个 cp.async：lean |
-| `no_proxy_fence` | 异步代理读者缺 proxy fence | `attn_wg`：lean；其余 same |
-| `no_refill_barrier` | 补填前没有 CTA 屏障 | 5 个 cp.async：lean；合作 TMA：unchecked |
-| `refill_read_slot` | 补填写进正在读的槽 | 4 个 turns 环：lean；合作 TMA：unchecked |
-| `read_other_slot` | 读的槽不是 await 的槽 | 4 个 turns 环和合作 TMA：static（`check_sync`） |
-| `no_settle` | 结束时不等在途复制 | 5 个 cp.async：same；合作 TMA：unchecked |
-| `early_release` | lag 1 时在 MMA 退休前交还槽 | 合作 TMA、`ws_fold`：unchecked |
-| `prologue_slot` | 序言填错槽 | 5 个 cp.async：trace（读到没被填过的缓冲区）；合作 TMA：unchecked |
-| `hold_slot` | await 担保了错的槽 | 7 个全部：static（类型） |
-| `wgmma_wait` | WGMMA 批次多留一组在途 | `attn_wg`：trace；合作 TMA、`ws_fold`：unchecked |
-| `ws_release_current` | `ws_fold` 交还刚读的槽 | `ws_fold`：static（`check_sync`，令牌用两次） |
-| `full_parity` | full mbarrier 奇偶位错 | `ws_fold`：static（`tensor.mim` 的有界模拟）；合作 TMA：unchecked |
-| `empty_parity` | empty mbarrier 奇偶位错 | `ws_fold`：unchecked |
-| `refill_block` | 补填块号错 | 5 个 cp.async：lean；合作 TMA：unchecked |
-| `pending_formula` | `pipeline_plan.pending` 错 | 全部 same（warp fold 直接传 0） |
+| 变异 | 含义 | cp.async（5 个） | 合作 TMA | `ws_fold` |
+| --- | --- | --- | --- | --- |
+| `wait_pending` | cp.async 步少等一组 | lean ×5 | same | same |
+| `no_proxy_fence` | 异步代理读者缺 proxy fence | `attn_wg` lean，其余 same | same | same |
+| `no_refill_barrier` | 补填前没有 CTA 屏障 | lean ×5 | lean | same |
+| `refill_read_slot` | 补填写进正在读的槽 | lean ×4（`attn_wg` same） | lean | same |
+| `read_other_slot` | 读的槽不是 await 的槽 | static ×4（`attn_wg` same） | static | same |
+| `no_settle` | 结束时不等在途复制 | same | lean | same |
+| `early_release` | lag 1 时在 MMA 退休前交还槽 | same | lean | lean |
+| `prologue_slot` | 序言填错槽 | lean ×5 | lean | same |
+| `hold_slot` | await 担保了错的槽 | static ×5 | static | static |
+| `wgmma_wait` | WGMMA 批次多留一组在途 | `attn_wg` lean*，其余 same | lean | lean |
+| `ws_release_current` | `ws_fold` 交还刚读的槽 | same | same | static |
+| `full_parity` | full mbarrier 奇偶位错 | same | lean | static（有界模拟） |
+| `empty_parity` | empty mbarrier 奇偶位错 | same | same | lean |
+| `refill_block` | 补填块号错 | lean ×5 | lean | same |
+| `pending_formula` | `pipeline_plan.pending` 错 | same | same | same |
 
-- 生成代码变了或被拒的 51 个（变异，kernel）组合中，40 个被抓到：static 19、trace 7、lean 14。另 11 个都在合作 TMA 与 `ws_fold` 上，等可执行检查器。cp.async 环上没有 MISSED。
-- **类型层的明显短板是 `early_release`**：lag 1 时，槽在它的 MMA 退休之前就交还，这是真实可能的 bug，而类型层不管。`ring_fold` 的 `step` 不返回 `InFlight` 见证，`ws_fold` 拿到见证却丢弃，见证没有接到 `release` 上（§21.5）。把见证接上后，这个变异应该在类型层被拒。
+- 生成代码变了或被拒的 51 个（变异，kernel）组合全部被抓到：static 14，lean 37，**没有 MISSED，也没有 unchecked**。7 个基线 kernel 全部被接受。
+- 带 * 的一项是 Async 检查器的文本格式不接受非零的 `wgmma_wait` 而拒（退出码 2），不是语义规则拒的；Async 模型本来就要求步内等到 0。
+- 第一版统计（只有 cp.async 检查器时）误写成 static 19、trace 7、lean 14；实际 static 是 14。那一版的 `prologue_slot` 由提取器“读到没被填过的缓冲区”拒绝；槽改按环的初始位置命名后，改由 Lean 拒（`slot is not ticket % d`）。
+- **类型层只抓到 14 个**：`early_release` 这类时序错误只能靠 Lean 证书。把 `InFlight` 见证接到 `release` 上，才能让它在类型层就被拒（§21.5）。
 - `no_settle`、`pending_formula` 在 device 层等价：前者在之后的 phase 里另有等待，后者不在任何 benchmark 的路径上。
+
+### 22.1 TMA 环的证书检查
+
+- Lean（`82366ff0e`，子代理）：`Ring/TmaCode.lean`、`CoopCode.lean`、`WsCode.lean`，可执行文件 `ring_coop_check`、`ring_ws_check`。各角色程序被接受且时间表一致，就推出 `Cooperative`/`WarpSpecialized` 的 `Fold` 与 `ReadCode`，进而 T1/T2。假设：warpgroup 收敛（每组一个代表程序）；full 屏障每相对应一次已发布填充、empty 屏障每 8 次 arrival 一相。
+- 提取器：`-X gpu:ring-trace=N` 依次追踪线程 0、128、…（每个 warpgroup 一个，最后是生产者 warp）。线程身份原语（`leader`、`item_index`、`warp_rank`、`lane_id`）换成该线程的字面量，`gpu.bind` 循环跑该线程的那次迭代，谓词为假的操作不记。TMA fill 进入闭包记录 `expect_tx` 与 `tma_load`，每条加载的字节数取自 `buf_tensor_map` 的盒子尺寸。槽按 fold 循环初始状态里环数组的位置命名，屏障按 init 顺序命名。`ws_fold` 的 fill 不带票号，取票号等于块号（非 persistent 时 `nth i = i`）。
+- `gemm_tiled_wg_tma`（181 个事件）与 `gemm_tiled_wg_ws`（107 个事件）都被接受。至此 7 个原则覆盖的真实环全部经过证书检查。回归测试 `lit/gpu/ring_trace_tma.mim`。
