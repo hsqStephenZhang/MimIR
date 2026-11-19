@@ -515,3 +515,61 @@ MimIR 是编译器：用户写的是 PyTorch 模型（经 `mimir-frontend` 导�
 ## 19. 第 3 步：具体残余 fold 的验证
 
 单 CTA、单消费者的 TMA 实例已接到 Lean 的可执行 `Ring.fold`。56 个特化实例中，rolled 与 unrolled 逐对一致。28 个 `lag = 0` 实例都比模型少一次退出时的 `wait_group 0`，其余 28 个逐条相等。`LowerToMem` 生成的环可用 `-X tensor:ring-coverage=1` 分类，区域叠放由 NVPTX 的最终布局判定。事件对应、benchmark 计数和剩余证明义务见[验证报告](../proofs/ring/README.md#与残余-fold-对接)。
+
+## 19. 第 3 步结果与 agy 审阅（2026-11-19）
+
+### 19.1 第 3 步（codex，`9ef7aba65`、`f8385cf39`）
+
+- **翻译验证。** 用真实的 `gpu.ring_fold`、`tma_ring`、`tma_fill` 和 `wgmma_batch`，在令牌擦除前记录同步事件，再在主机上执行特化后的循环，与 Lean 的 `Ring.fold` 逐事件比较（`lit/gpu/ring_fold_trace.mim`）。
+  - 覆盖 `d ∈ {2,3,4}`、`count ∈ {0,1,d−1,d,2d+1}`、`lag ∈ {0,1}`、展开和轮转两种循环，共 56 个实例。
+  - 展开与轮转逐对一致；`lag = 1` 的实例与 Lean 逐事件相等；`lag = 0` 的实例都恰好少了模型在退出时追加的 `wait_group 0`，这是已知差异：非空循环已在最后一次提交后等待，空循环从未提交过组。
+- **覆盖统计。** 73 个 bench 里有 11 个环，**满足定理全部前提的为 0**（`bench/tools/ring_coverage.py`）：
+  - `cp.async` 5 个；
+  - 两个消费 warpgroup 的 TMA 2 个；
+  - cluster 2 个；
+  - `ws_fold` 1 个；
+  - persistent 1 个。
+
+  把普通 TMA GEMM 缩成单个消费 warpgroup 后，F32 输出的环满足前提；F16 输出的环因为 epilogue 与环槽叠放，仍被排除。
+
+### 19.2 agy（Gemini 4 Argon）审阅
+
+报告：`/tmp/claude-7076018/-home-chzh00001-workspaces-MimIR/acdcdd87-d117-42ff-af4a-7559329fd915/scratchpad/agy/review.md`，探针在 `/tmp/agy-review/`。下面的探针我都复现了。
+
+**仍被接受、本应拒绝的：**
+- F1：`has_slot` 不进 `Pi`，返回函数的转换绕过刚性比较，可以把 `idle`（`ff`）转成任意环、任意槽的活跃令牌（`pi_cast_probe`）。
+- F2：`calls_of`/`repeats` 只检查静态调用点两两互斥，不检查调用点所在的函数或循环是否会重复运行（`loop_curried_probe`）。
+- F3：三参数以上的柯里化在第一次部分应用处就停止追踪（`curried3_probe`）。
+- F4：`{rid depth}` 是隐式参数，漏写时 `rid` 成为未解的洞，两个环的洞会被合一（`implicit_rid_probe`）。
+- F5：面板元组 `«depth; P»` 不带 `rid`，可以用环 0 的令牌读环 1 的面板（`cross_ring_panel_read`）；同一槽连续两次 `await` 会得到两个活跃令牌（`double_await_same_slot`）。
+- F6：函数类型的洞或 `⊥`、类型索引里的洞、公开的 `gpu.in_flight`，以及 `GM`/`SharedBuf` 的洞和 `⊥`，都没有被拒。
+
+**被误拒的（F7）：**
+- `«2; Last»` 这种含依赖元组的数组（`arr_dep_sigma_fp2`）；
+- 经 `cps.cps2ds` 调用一次的持有令牌的 CPS 函数；
+- 元组里有两个函数、各调用一次；
+- `affine.For` 出口消费外层令牌（`for_exit_probe`）。
+
+**Lean 模型（F9）：**
+- `Cell.start` 没有让旧的 `visible` 失效；
+- `fill`/`mma` 在语义内部硬编码 `i % d`，表达不了“等了块 `i`，却读了错槽”；
+- 单 CTA 非 WS 环里起作用的 `bar.sync`、`wgmma.fence` 和 proxy fence 没有建模；
+- `count < d − 1` 时序言会越界填充。
+
+**架构判断：** 在“检查生成代码”的定位下，“PE 后检查 + 私有构造器 + 环身份 + Lean 协议证书”是对的总体结构。但要补两件事：
+- 面板句柄要与 `rid` 绑定；
+- 刚性比较要穿透 `Pi`、`Arr`、`Nom`，并检查类型索引里没有残留的洞。
+
+此外，残余验证应改用 Lean 已有的 `Ring.Code` 证书逐步检查，而不是要求与 `Ring.fold` 字面相等。
+
+### 19.3 下一轮
+
+1. **检查器（我）**：
+   - 刚性比较覆盖 `Pi`、按字面量展开 `Arr`；
+   - 类型索引里的洞和 `⊥` 一律拒绝；`gpu.in_flight` 改成 `priv`；
+   - `calls_of` 继续追踪柯里化，对每个调用点检查它所在的作用域是否会重复运行，识别 `cps2ds_dep` 和 `affine.For` 的出口；
+   - `rid` 改成显式参数；面板元组与 `rid` 绑定。
+2. **Lean 模型（codex）**：
+   - 修 F9；
+   - 扩到 `cp.async`（`async_ring`）和两个消费者，让 bench 里的主力环进入覆盖。
+3. **残余验证**：用 `Ring.Code` 证书逐步检查真实残余 fold。
