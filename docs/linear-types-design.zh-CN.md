@@ -573,3 +573,46 @@ MimIR 是编译器：用户写的是 PyTorch 模型（经 `mimir-frontend` 导�
    - 修 F9；
    - 扩到 `cp.async`（`async_ring`）和两个消费者，让 bench 里的主力环进入覆盖。
 3. **残余验证**：用 `Ring.Code` 证书逐步检查真实残余 fold。
+
+## 20. 第二轮：检查器修复与 Lean 扩展（2026-11-19）
+
+### 20.1 检查器（`3a36603f3`）
+
+按 §19.2 修复：
+- 刚性比较穿透函数类型（`mentions_slot`），按字面量下标展开 `Arr`（F1、F7①）。
+- 令牌类型里残留未解索引一律拒绝（F4）；函数类型的洞和 `⊥` 一律拒绝（F6）。
+- 闭包追踪：
+  - 柯里化时，部分应用继续往下追（F3）；
+  - 识别 `cps2ds_dep`（F7②）；
+  - 元组按位置区分，位置信息随返回值和参数传递（F7③）；
+  - `affine.For` 的出口只运行一次（F7④）；
+  - 每个调用点要求在闭包产生处与调用点之间没有会重复运行的 mutable（F2）。
+- 修掉一处未定义行为：读同一张哈希表的迭代器时又往表里插入，扩容后迭代器失效，导致检查结果时对时错。
+
+新增 lit 测试 9 个；73 个 bench 的设备 IR 不变。仍未处理：
+- 面板元组不带 `rid`（F5 的跨环读面板）；
+- 同一槽连续两次 `await`（需要 `RingState`）；
+- `gpu.in_flight` 仍公开（两个测试直接使用它）。
+
+### 20.2 Lean（codex，`db9aabb61` … `dbe26e329`）
+
+- **单消费者 TMA。**
+  - `Cell.start` 清掉旧数据；物理槽改为显式操作数。
+  - `live_read_race_free`：在任意可达状态，每个待提交或在途的读 `r` 都有 `visible = some r ∧ tx = none`。
+  - `wrong_panel_rejected`：等了正确的块、却读了错槽的程序拿不到证书。
+  - `prologue_extra_fill`：`count < d − 1` 时序言照源码无条件发 `d − 1` 次填充，并证明了多出的填充。
+- **`cp.async`（`Async.lean`）。** T1/T2：每线程独立提交，`pending = d − 2`，CTA 会合；WGMMA 路径带 proxy fence 和步内 `wait_group 0`。
+- **两个消费 warpgroup 的合作 TMA（`Cooperative.lean`）。** T1/T2：每个 warpgroup 各自 `wait_group 1`，`refilled` 里的 CTA 屏障保证 leader 补填晚于每个组的旧读退役。
+- **`ws_fold`（`WarpSpecialized.lean`、`EmptyBarrier.lean`）。** 单 CTA、两个消费组、`lag = 1` 下的 T1/T2：由 empty mbarrier 的计数和奇偶推出八个 warp leader 都已交还旧槽。
+- **覆盖。** 11 个 bench 环里，**7 个原则上满足模型前提**：5 个 `cp.async`、F32 的双消费者 `gemm_tiled_wg_tma`、`gemm_tiled_wg_ws`。
+  - 剩下 4 个：cluster 2 个、persistent 1 个、epilogue 叠放的 F16 双消费者 1 个。
+  - `LowerToMem` 的分类日志还没跟上，仍报告 0 个覆盖；README 写明了分类器应当怎样改。
+
+`lake build` 通过，主要定理只依赖 Lean 标准公理。
+
+### 20.3 下一步
+
+1. 按 README 更新分类器，并把 `cp.async` 环的布局字段打进日志。
+2. 面板句柄与 `rid` 绑定，引入线性 `RingState rid`，防止同槽重复 `await`。
+3. 用 Lean 的 `Code` 证书检查真实的残余 fold，而不只是合成夹具。
+4. cluster、persistent、叠放的模型扩展。
