@@ -645,3 +645,30 @@ MimIR 是编译器：用户写的是 PyTorch 模型（经 `mimir-frontend` 导�
 - **rolled 环与 `ws_fold` 仍直接读 `slots#0`**，没有经过 `read_slot`。它们每步轮转槽数组，第 0 位是物理槽 `block % depth` 这一点是循环不变量。要让句柄类型带上轮转量，`affine.For` 的状态类型就得依赖迭代号，与 RingState 是同一个阻碍（§17）。改为不轮转、按动态下标读，会改变设备 IR，所以暂不做。
 - **真实残余的证书检查（第 3 项）。** 单消费者 TMA 有可计算的 `Ring.fold`/`Code`，但 11 个真实环里没有单消费者 TMA。`Async`、`Cooperative`、`WarpSpecialized` 是以事件时间表陈述的 `Prop` 结构，没有可执行的检查器。要检查真实 kernel，需要先为每个模型写可计算的逐参与者事件检查器，并证明它蕴含相应的 `Fold`/`ReadCode`；再从 `gpu.erase_phases` 之前的残余里抽取逐线程（或逐 warpgroup）事件。后者可沿用 `ring_fold_trace` 的主机执行办法：把 `threadIdx` 当参数，枚举代表线程。
 - cluster、persistent、叠放的模型（第 4 项）。
+
+### 21.4 真实 kernel 的证书检查（§20.3 第 3 项，cp.async 部分）
+
+- **Lean 检查器**（`391a25ebd`，`Ring/AsyncCode.lean`）：可执行的 `accepts d count proxy P`，检查单个线程的 cp.async 环指令序列。`fold_of_accepted`、`readCode_of_accepted` 证明：每个线程都被接受，且时间表满足程序顺序、CTA 屏障和硬件规则时，就有 `Async.Fold` 和 `ReadCode`，因而 T1/T2 成立。可执行文件 `ring_async_check` 读文本格式。
+- **提取器**：`gpu.ring_trace`，默认流水线里紧跟 `check_sync`，只在 `-X gpu:ring-trace=1` 时工作。它是一个 `Rewriter`，借 `Lam::reduce` 代入并折叠算术，按代表线程解释残余：
+  - 循环按字面量边界展开，`gpu.bind` 循环只走第 0 次迭代；
+  - `mem.fresh` 换成新变量；
+  - `cps2ds_dep` 的调用被执行，结果代回；
+  - `ringFill` 记为一次 fill，不进入；
+  - `ringStep` 进入，统计其中的 WGMMA 批次。
+- **槽的命名**：按 fill 首次写到物理缓冲区的顺序编号。T1/T2 在槽的双射重命名下不变，两张票写进同一缓冲区、读到没被 fill 过的缓冲区，都会被拒。rolled 环直接读 `slots#0` 也能这样识别。
+- **结果**：5 个 cp.async 环（`attn_{law,roll,warp,wg}`、`fusion/attn_warps`）的真实事件序列全部被接受。`attn_law` 的序列与规范序列逐行相同。`bench/tools/ring_trace_check.py` 驱动检查，`lit/gpu/ring_trace_async.mim` 是回归测试。
+- **可信边界**：
+  - `ringFill` 只写它拿到的槽，`ringStep` 只读它拿到的面板。这两条现在由 `check_sync` 的令牌规则部分保证，没有单独检查。
+  - 步内 WGMMA 的效果分属几条 `mem.fresh` 链，在这一 phase 看不出先后。提取器只核对每步的 fence、commit、`wait_group 0` 个数相等，批次内的顺序由 `wgmma_batch` 的定义保证。
+  - 各线程写入区间不冲突、所有线程执行同一个 `bar.sync`、warpgroup 收敛，这些不在检查范围内。
+  - 解释的是 `check_sync` 时的残余，之后的 phase（`mem.add_mem`、`affine.lower_for`、后端）不在范围内。
+- **尚未覆盖**：合作 TMA 与 `ws_fold` 还没有可执行检查器；cluster、persistent 没有模型。
+
+### 21.5 RingState 的可行性（调研，`docs/reviews/ringstate_report.md`）
+
+codex 额度用完，由 Claude 子代理调研。结论：
+- **可行，但要分层。** 每个角色带一个擦除的两相位线性状态 `Ring rid depth {Ready, Got}`，由 `await` 和 `release` 推动。它在尾部、第一圈入口、两种 lag、rolled 和 `turns` 下都循环不变，不需要依赖迭代号的循环状态，设备 IR 不变。同一步两次 `await` 在核心类型检查里就被拒（探针 `tsdbl.mim`）。别名（同一个旧状态用两次）仍要 `check_sync` 的单次使用规则。
+- **相对坐标系的假设只部分成立。** 轮转后每步的局部状态确实一样，但“相对第 0 位 = 物理槽 `n % d`”仍是关于计数器的归纳不变量；屏障地址、奇偶、补填块号都按物理块号算。它要么由检查器内对循环做语法归纳（方案 F），要么交给 Lean 残余验证。
+- **排序**：D′（有限相位 typestate）+ E（残余验证）＞ F（检查器内的游标归纳）＞ B（依赖类型的循环组合子）＞ A（存在打包）＞ C（细化类型）。
+- **相关工作**：Async Graphene 的环迭代器类型不含游标，是相对坐标系的先例，但没有线性；CUTLASS `PipelineState` 在运行时持有 (index, phase)；Kuiper 按绝对迭代号索引屏障令牌；Tristan & Leroy（POPL'10）逐实例验证软件流水，是残余验证的先例。
+- **另两点发现**：`ws_fold` 拿到 `InFlight` 见证却丢弃，没接到 `release`；`ws_fold` 依赖 `persistent_fill i ≡ i (mod d)`（`tensor.mim:497`），目前无检查。
