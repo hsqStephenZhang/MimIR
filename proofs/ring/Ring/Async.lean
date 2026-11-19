@@ -15,6 +15,11 @@ structure Stream where
   proxyFence : Nat → Event
   settle : Event
 
+/-- The hardware wait tests the issuing thread's actual commits. If group
+    j+pending is already committed, group j must be complete at return. -/
+def Stream.WaitGroup (s : Stream) (pending : Nat) (wait : Event) : Prop :=
+  ∀ j t, wait = some t → By (s.commit (j+pending)) t → By (s.complete j) t
+
 /-- A read of shared memory returns with the load, or remains live until
     completion of its warpgroup batch. Several reads may name the same batch. -/
 inductive Reader where
@@ -62,8 +67,7 @@ structure Fold (c : CTA threads) (d count pending : Nat) (proxy : Bool) : Prop w
   -- Exactly d-1+i groups committed before this thread's wait. The
   -- wait does not test arrivals, bytes, or another thread's copy groups.
   priorCommit : ∀ l i, i < count → (c.writer l).commit (d - 2 + i) ≺ (c.writer l).waitGroup i
-  waitOld : ∀ l i j, i < count → j + pending < d - 1 + i →
-    (c.writer l).complete j ≺ (c.writer l).waitGroup i
+  waitRule : ∀ l i, i < count → (c.writer l).WaitGroup pending ((c.writer l).waitGroup i)
   publish : ∀ l i, i < count → proxy = true →
     (c.writer l).waitGroup i ≺ (c.writer l).proxyFence i
   arrive : ∀ l i, i < count →
@@ -72,18 +76,37 @@ structure Fold (c : CTA threads) (d count pending : Nat) (proxy : Bool) : Prop w
   -- async_wait at exit drains this issuing thread, including clamped tail copies.
   drain : ∀ l j, j < d - 1 + count → (c.writer l).complete j ≺ (c.writer l).settle
 
-/-- The host instruction order for one observed read. All lanes of one warpgroup name the same batch events. The next wait is present only on a non-final iteration. -/
+def afterStep (c : CTA threads) (count : Nat) (r : Read threads) : Event :=
+  if r.block+1 < count then (c.writer r.lane).waitGroup (r.block+1) else (c.writer r.lane).settle
+
+/-- Local program order for an observed read. Lanes of one warpgroup name
+    the same batch. The next wait exists only on a non-final iteration. -/
 structure ReadCode (c : CTA threads) (d count : Nat) (proxy : Bool) (r : Read threads) : Prop where
   bound : r.block < count
   operand : r.slot = r.block % d
   afterRefill : (c.writer r.lane).commit (r.block + (d - 1)) ≺ r.issue
   proxyAccess : ∀ b, r.reader = .wgmma b → proxy = true ∧ c.batchFence (c.warpgroup r.lane) b ≺ r.issue
   stepOrder : match r.reader with
-    | .load => r.block + 1 < count → r.issue ≺ (c.writer r.lane).waitGroup (r.block+1)
+    | .load => r.issue ≺ afterStep c count r
     | .wgmma b =>
-      r.issue ≺ c.batchCommit (c.warpgroup r.lane) b ∧ c.batchCommit (c.warpgroup r.lane) b ≺ c.batchDone (c.warpgroup r.lane) b ∧
+      r.issue ≺ c.batchCommit (c.warpgroup r.lane) b ∧
+      c.batchCommit (c.warpgroup r.lane) b ≺ c.batchDone (c.warpgroup r.lane) b ∧
       c.batchDone (c.warpgroup r.lane) b ≺ c.batchWait (c.warpgroup r.lane) b ∧
-      (r.block + 1 < count → c.batchWait (c.warpgroup r.lane) b ≺ (c.writer r.lane).waitGroup (r.block+1))
+      c.batchWait (c.warpgroup r.lane) b ≺ afterStep c count r
+
+/-- Recover the guaranteed completed prefix from the program's commit order
+    and the hardware rule, without an aggregate copy queue for the CTA. -/
+theorem Fold.completed (f : Fold c d count pending proxy) (hd : 2 ≤ d) (hi : i < count)
+    (early : j+pending < d-1+i) (waited : By ((c.writer l).waitGroup i) cut) :
+    By ((c.writer l).complete j) cut := by
+  obtain ⟨t, ht, le⟩ := waited
+  have prior := f.priorCommit l i hi
+  have edge : (c.writer l).commit (j+pending) ≺ (c.writer l).waitGroup i := by
+    rcases Nat.eq_or_lt_of_le (by omega : j+pending ≤ d-2+i) with eq | lt
+    · rwa [eq]
+    · exact (chain (n := d-1+count) (fun k hk => (f.commitOrder l k hk).trans
+        (f.issueCommit l (k+1))) lt (by omega)).trans prior
+  exact (f.waitRule l i hi j t ht (edge.byTime ⟨t, ht, by omega⟩)).mono le
 
 theorem Fold.waitFence (f : Fold c d count n proxy) (l) (hi : i < count) :
     (c.writer l).waitGroup i ≺ c.fence i := by
@@ -104,10 +127,10 @@ private theorem ReadCode.nextWait (h : ReadCode c d count proxy r) (bound : r.bl
     retired c r ≺ (c.writer r.lane).waitGroup (r.block+1) := by
   have order := h.stepOrder
   cases eq : r.reader with
-  | load => simp [eq, retired] at order ⊢; exact order bound
+  | load => simpa [eq, retired, afterStep, bound] using order
   | wgmma b =>
-    simp [eq, retired] at order ⊢
-    exact order.2.2.1.trans (order.2.2.2 bound)
+    simp [eq, retired, afterStep, bound] at order ⊢
+    exact order.2.2.1.trans order.2.2.2
 
 /-- T2 for every copy issuer and every reader (including different threads).
     The release of the CTA fence in the refill path joins their local orders. -/
@@ -136,29 +159,22 @@ theorem read_current_generation (f : Fold c d count (d-2) proxy) (hd : 2 ≤ d)
     (active : r.issue = some cut ∨ ¬ By (retired c r) cut) :
     (writes c d count l).Shows r.slot r.block r.block cut := by
   have bound := h.bound
-  have fence := ((f.refill r.lane r.block bound).trans
-    ((f.issueCommit r.lane _).trans h.afterRefill)).byTime issued
+  have readFence := (f.refill r.lane r.block bound).trans ((f.issueCommit r.lane _).trans h.afterRefill)
+  have waited := ((f.waitFence l bound).trans readFence).byTime issued
   have src : source d count r.block = r.block := by unfold source; split <;> omega
   have ticket : r.block < d - 1 + count := by omega
   apply Writes.shows_of_bounds _ ticket ((f.fillSlot l _ ticket).trans h.operand.symm)
     ((f.fillSource l _ ticket).trans src)
     ((f.issueCommit l _).trans (f.commitDone l _))
   · intro k le _
-    exact ((f.waitOld l r.block k bound (by omega)).trans (f.waitFence l bound)).byTime fence
-  · intro k later kb same started
-    have reuse := overwrite_after_last_read f hd h l kb later same
-    rcases active with atIssue | live
-    · have order := h.stepOrder
-      obtain ⟨t, ht, le⟩ := started
-      obtain ⟨u, hu, lt⟩ := reuse _ ht
-      cases eq : r.reader with
-      | load => simp [retired, eq, atIssue] at hu; omega
-      | wgmma b =>
-        simp [eq, retired] at hu order
-        obtain ⟨s, hs, _⟩ := (order.1.trans order.2.1) _ hu
-        rw [atIssue] at hs
-        cases hs
-        omega
-    · exact live (reuse.byTime started)
+    exact f.completed hd bound (by omega) waited
+  · intro k later kb same
+    apply before_overwrite _ (overwrite_after_last_read f hd h l kb later same) active
+    have order := h.stepOrder
+    cases eq : r.reader with
+    | load => exact Or.inl (by simp [retired, eq])
+    | wgmma b =>
+      simp [eq] at order
+      exact Or.inr (by simpa [retired, eq] using order.1.trans order.2.1)
 
 end Ring.Async

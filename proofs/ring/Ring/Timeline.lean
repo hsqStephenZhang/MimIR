@@ -13,6 +13,12 @@ def Edge (a b : Event) := ∀ t, b = some t → ∃ u, a = some u ∧ u < t
 
 infix:50 " ≺ " => Edge
 
+/-- A finite instruction family, enumerated in program order. -/
+def event (length index time : Nat) : Event := if index < length then some time else none
+
+@[simp] theorem event_edge : event m i a ≺ event n j b ↔ (j < n → i < m ∧ a < b) := by
+  by_cases h : j < n <;> by_cases h' : i < m <;> simp [event, Edge, h, h']
+
 theorem Edge.trans (ab : a ≺ b) (bc : b ≺ c) : a ≺ c := by
   intro t h
   obtain ⟨u, hu, ut⟩ := bc t h
@@ -27,6 +33,21 @@ theorem Edge.byTime (ab : a ≺ b) (hb : By b cut) : By a cut := by
 theorem By.mono (h : By e t) (le : t ≤ u) : By e u := by
   obtain ⟨s, hs, _⟩ := h
   exact ⟨s, hs, by omega⟩
+
+/-- A synchronous read retires at issue; an asynchronous read retires later.
+    In either case, a write ordered after retirement cannot have started at
+    the issue cut or while the read is still live. -/
+theorem before_overwrite {read done_ write : Event} (lifetime : read = done_ ∨ read ≺ done_)
+    (reuse : done_ ≺ write) (active : read = some cut ∨ ¬ By done_ cut) : ¬ By write cut := by
+  intro started
+  rcases active with atIssue | live
+  · have edge : read ≺ write := lifetime.elim (fun eq => eq ▸ reuse) (·.trans reuse)
+    obtain ⟨t, ht, le⟩ := started
+    obtain ⟨u, hu, ut⟩ := edge t ht
+    rw [atIssue] at hu
+    cases hu
+    omega
+  · exact live (reuse.byTime started)
 
 /-- Iterated per-participant or barrier order, restricted to the emitted prefix. -/
 theorem chain {f : Nat → Event} (next : ∀ k, k + 1 < n → f k ≺ f (k+1))

@@ -12,7 +12,7 @@ def occurred (e : Event) (cut : Nat) : Bool := e.any (· ≤ cut)
 theorem occurred_iff : occurred e cut = true ↔ By e cut := by
   cases e <;> simp [occurred, By]
 
-private theorem tally_prefix {p q : Nat → Bool} (hp : ∀ k, k < n →
+theorem tally_prefix {p q : Nat → Bool} (hp : ∀ k, k < n →
     (p k = true ↔ k < i ∧ q k = true)) : tally p n = tally q (min n i) := by
   induction n with
   | zero => simp [tally]
@@ -25,7 +25,7 @@ private theorem tally_prefix {p q : Nat → Bool} (hp : ∀ k, k < n →
     · have no : p n = false := by cases eq : p n <;> simp_all
       simp [tally, prev, no, Nat.min_eq_right (by omega : i ≤ n+1), Nat.min_eq_right (by omega : i ≤ n)]
 
-private theorem visits (hd : 0 < d) (hs : s < d) (n) :
+theorem visits (hd : 0 < d) (hs : s < d) (n) :
     tally (fun j => decide (j % d = s)) n = n/d + if s < n%d then 1 else 0 := by
   induction n with
   | zero => simp [tally]

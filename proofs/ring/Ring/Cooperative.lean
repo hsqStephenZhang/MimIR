@@ -139,14 +139,8 @@ theorem read_current_generation (f : Fold c d count) (hd : 2 ≤ d)
     · exact (poll_published f hd _ bound polled).mono le
     · obtain ⟨u, hu, _⟩ := f.pollOrder r.group earlier bound t polled
       exact (poll_published f hd _ (by omega) hu).mono (by omega)
-  · intro k later kb same started
-    have reuse := overwrite_after_last_read f hd h kb later same
-    rcases active with atIssue | live
-    · obtain ⟨u, hu, _⟩ := started
-      obtain ⟨v, hv, _⟩ := (h.committed.trans ((f.committed _ _).trans reuse)) u hu
-      rw [atIssue] at hv
-      cases hv
-      omega
-    · exact live (reuse.byTime started)
+  · intro k later kb same
+    exact before_overwrite (Or.inr (h.committed.trans (f.committed _ _)))
+      (overwrite_after_last_read f hd h kb later same) active
 
 end Ring.Cooperative
