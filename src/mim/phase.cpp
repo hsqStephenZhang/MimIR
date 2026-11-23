@@ -194,6 +194,7 @@ void RWPhase::start() {
     for (auto mut : old_world().externals().muts())
         rewrite_external(mut);
     finalize();
+    new_world().solve_levels();
     profile_count("rw.defs", new_world().curr_gid() - gid);
 
     swap(old_world(), new_world());
