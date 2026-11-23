@@ -68,7 +68,7 @@ const Def* LowerFor::rewrite_imm_App(const App* app) {
             auto bb_mem = mem::mem_var(bb);
             auto elems  = DefVec();
             for (auto phi : new_phis.view().subspan(1))
-                elems.emplace_back(Axm::isa<mem::M>(phi->type()) ? bb_mem : phi);
+                elems.emplace_back(phi == new_mem ? bb_mem : phi);
             return new_world().tuple(elems);
         };
 
