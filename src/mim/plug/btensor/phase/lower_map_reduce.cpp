@@ -80,31 +80,40 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     impl      = w.app(impl, {mr.Tis, mr.Tps});
 
     auto [mem, dst, inputs, post_inputs] = rewrite(app->arg())->projs<4>();
-    auto init_cell_ty = impl->type()->as<Pi>()->dom()->proj(3, 1)->as<Pi>();
-    Lam* run          = nullptr;
-    const Def* call   = nullptr;
-    const Def* init_cell = nullptr;
+    auto init_cell_ty                    = impl->type()->as<Pi>()->dom()->proj(3, 1)->as<Pi>();
+    Lam* run                             = nullptr;
+    const Def* call                      = nullptr;
+    const Def* init_cell                 = nullptr;
     if (Check::test_alpha(mr.init_type, mr.To)) {
-        auto callback            = w.mut_lam(init_cell_ty)->set("initScalar");
-        auto [m, _, done]        = callback->vars<3>();
+        auto callback     = w.mut_lam(init_cell_ty)->set("initScalar");
+        auto [m, _, done] = callback->vars<3>();
         callback->app(true, done, {m, mr.init});
         init_cell = callback;
     } else {
-        auto [bounds, map_init, outs] = mr.init->projs<3>();
-        std::tie(run, call) = ds_splice(w.tuple({mem, dst, inputs, post_inputs, outs}), rewrite(app->type()), "mapReduce");
-        auto runtime        = run->var(2, 0)->projs<5>();
-        mem                 = runtime[0];
-        dst                 = runtime[1];
-        inputs              = runtime[2];
-        post_inputs         = runtime[3];
-        outs                = runtime[4];
-        auto callback       = w.mut_lam(init_cell_ty)->set("initHeld");
+        // A Held seed reads the cell from `outs` unless `fresh` says no earlier fold wrote it, then it takes `seed`.
+        auto [bounds, map_init, outs, fresh, seed] = mr.init->projs<5>();
+        auto fresh_lit                             = Lit::isa<bool>(fresh);
+        std::tie(run, call)
+            = ds_splice(w.tuple({mem, dst, inputs, post_inputs, outs, fresh, seed}), rewrite(app->type()), "mapReduce");
+        auto runtime         = run->var(2, 0)->projs<7>();
+        mem                  = runtime[0];
+        dst                  = runtime[1];
+        inputs               = runtime[2];
+        post_inputs          = runtime[3];
+        outs                 = runtime[4];
+        fresh                = runtime[5];
+        seed                 = runtime[6];
+        auto callback        = w.mut_lam(init_cell_ty)->set("initHeld");
         auto [m, pref, done] = callback->vars<3>();
         auto rn              = ranks->nloops();
         DefVec indices(rn, [&](size_t d) { return w.call(core::conv::u, mr.Sr->proj(rn, d), pref->proj(rn, d)); });
         auto [mapped, coords] = op_affine_map(map_init, mr.Ro, mr.Rn, mr.Sr, bounds, w.tuple(indices), m)->projs<2>();
         auto [read, value]    = buffer::op_read(mapped, outs, *Shape(coords).fold(bounds))->projs<2>();
-        callback->app(true, done, {read, value});
+        // A select rather than a branch keeps the seeding straight-line; a fresh cell's read value is discarded.
+        if (fresh_lit && *fresh_lit)
+            callback->app(true, done, {m, seed});
+        else
+            callback->app(true, done, {read, w.extract(w.tuple({value, seed}), fresh)});
         init_cell = callback;
     }
     impl = w.app(impl, {mr.comb, init_cell, mr.post});

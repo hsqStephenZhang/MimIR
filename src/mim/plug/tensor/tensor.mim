@@ -1685,9 +1685,11 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
         let ins_m = ‹i: N; lm (o: IxN): «Ris_c#i; affine.Index» =
             let v = vs#i; (v#at) (v#q, o)›;
         let ins_b = ‹i: N; (vs#i)#data›;
-        let Held  = [«Ro; Nat», IxN → «Ro; affine.Index», D];
+        let Held  = [«Ro; Nat», IxN → «Ro; affine.Index», D, Bool, To];
+        let fresh = vec.fold.r @(Bool, Idx Rn) @Rn
+            (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (lo#d == 0, acc, ff))) (‹d: Rn; d›, tt);
         btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (So, size, btensor.mk_sched (vdim, 0))
-            @(Ts, Ris_c, Sis_c, (), (), ()) @Held (f, (So, out, dst), btensor.id @To) out (ins_m, ()) (m, dst, ins_b, ());
+            @(Ts, Ris_c, Sis_c, (), (), ()) @Held (f, (So, out, dst, fresh, init), btensor.id @To) out (ins_m, ()) (m, dst, ins_b, ());
 
     let split_serial = λ (dyn: Bool, d: Idx Rn, ts: Nat, k: Body): Body =
         λ (st: State): [mem.M 0, D] =
@@ -1756,7 +1758,7 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
                 let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Seq needs a positive tile size");
                 split_serial (tt, ax, ts, eval (n#body));
 
-    let (m, dst) = buffer.lit (Ro, So, To) (m, init);
+    let (m, dst) = buffer.alloc (Ro, So, To) m;
     let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, zero, levels_plain @Rn (Rs#i, slot_maps#i), xs0#i) inj LevelsView (Rn, Ts#i)›;
     eval sched (‹Rn; 0›, Sr, Sr, ‹Rn; ff›, vs0, m, dst);
 ///
