@@ -12,7 +12,13 @@ static void reg_phases(Flags2Phases& phases) {
     Phase::hook<btensor::lower_map_reduce, btensor::phase::LowerMapReduce>(phases);
 }
 
+static constexpr PluginArg known_args[] = {
+    {"registers=<n>", "Maximum output cells kept in SSA registers in a blocked leaf (default `64`)."},
+};
+
 MIM_PLUGIN_ENTRY(btensor) {
     plugin.register_normalizers = btensor::register_normalizers;
     plugin.register_phases      = reg_phases;
+    plugin.args                 = known_args;
+    plugin.num_args             = std::size(known_args);
 }

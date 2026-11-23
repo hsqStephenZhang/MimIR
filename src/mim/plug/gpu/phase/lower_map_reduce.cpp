@@ -5,6 +5,7 @@
 #include <fe/log.h>
 #include <fe/vector.h>
 
+#include <mim/check.h>
 #include <mim/driver.h>
 #include <mim/lam.h>
 #include <mim/rewrite.h>
@@ -316,13 +317,17 @@ const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
 
 const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto& w        = new_world();
-    auto mr        = btensor::MapRedPost::of(rewrite(app->callee())->as<App>());
+    auto mr        = btensor::MapRedPost::of_btensor(rewrite(app->callee())->as<App>());
     auto Sr        = mr.Sr;
     auto result_ty = rewrite(app->type());
 
     auto ranks = mr.ranks();
     if (!ranks) {
         log().w("{} doesn't have lowering-time known rank counts (nis/nps/Ro/Rn)", app);
+        return Super::rewrite_imm_App(app);
+    }
+    if (!Check::test_alpha(mr.init_type, mr.To)) {
+        log().w("{} seeds its cells from memory, which the GPU lowering does not support", app);
         return Super::rewrite_imm_App(app);
     }
     auto [nis_n, nps_n, ro, rr] = *ranks;
