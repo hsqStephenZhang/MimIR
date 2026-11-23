@@ -40,7 +40,9 @@ const Def* normalize_map_reduce(const Def*, const Def* c, const Def* arg) {
 
 const Def* normalize_register_budget(const Def*, const Def* c, const Def*) {
     auto& w = c->world();
-    return w.lit_nat(w.driver().arg_nat("btensor", "registers").value_or(64));
+    auto vr = vec_regs(w.driver());
+    // A quarter of the register file stays free for the operands of the FMAs.
+    return w.lit_nat(w.driver().arg_nat("btensor", "registers").value_or(vr.bytes * vr.count * 3 / 4 / 4));
 }
 
 MIM_btensor_NORMALIZER_IMPL
