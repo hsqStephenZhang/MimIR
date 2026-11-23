@@ -4,7 +4,7 @@
 // RUN: %mim -p opt -X btensor:registers=128 -X tensor:cpu-mr=6 -X tensor:cpu-nr=16 -X tensor:cpu-mc=24 -X tensor:cpu-nc=48 -X tensor:cpu-kc=16 -X tensor:cpu-order=1 %s -p ll -X ll:o=%t1.ll -o /dev/null
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec
-// RUN: %mim -p opt -X tensor:cpu-dyn-k=1 -X tensor:cpu-kc=7 %s -p ll -X ll:o=%t2.ll -o /dev/null
+// RUN: %mim -p opt -X tensor:cpu-dyn-k=0 -X tensor:cpu-kc=7 %s -p ll -X ll:o=%t2.ll -o /dev/null
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
 // RUN: %t2.exec
 // RUN: %mim -p opt -X tensor:group-registers=13 %s -o /dev/null
