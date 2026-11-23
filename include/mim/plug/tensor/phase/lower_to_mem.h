@@ -28,6 +28,7 @@ private:
     const Def* buf_of(const Def*);
 
     const Def* lower_from_array(const App*);
+    const Def* uncurry(Lam*);
     const Def* lower_get(const App*);
     const Def* lower_set(const App*);
     const Def* lower_splat(const App*);
@@ -67,7 +68,8 @@ private:
     const Def* wrap_fresh_mem(const Def* body);
 
     flags_t tensor_key_ = 0;
-    bool tensors_seen_  = false;
+    LamSet shape_poly_;
+    bool tensors_seen_ = false;
     /// The continuations minted while the current lam's body is being rewritten, each with the request that
     /// jumps to it: `mem.fresh (0, k)`, or a call of an emitted CPS function such as a `scan`'s loop.
     fe::Vector<std::pair<Lam*, const Def*>> pending_;
