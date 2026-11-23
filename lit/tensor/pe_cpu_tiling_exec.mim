@@ -1,4 +1,4 @@
-// RUN: %mim -p opt -X tensor:cpu-mr=4 -X tensor:cpu-nr=8 -X tensor:cpu-mc=16 -X tensor:cpu-nc=32 -X tensor:cpu-kc=16 -X tensor:cpu-order=0 %s -p ll -X ll:o=%t0.ll -o /dev/null
+// RUN: %mim -p opt -X tensor:cpu-pack-b=1 -X tensor:cpu-mr=4 -X tensor:cpu-nr=8 -X tensor:cpu-mc=16 -X tensor:cpu-nc=32 -X tensor:cpu-kc=16 -X tensor:cpu-order=0 %s -p ll -X ll:o=%t0.ll -o /dev/null
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
 // RUN: %t0.exec
 // RUN: %mim -p opt -X btensor:registers=128 -X tensor:cpu-mr=6 -X tensor:cpu-nr=16 -X tensor:cpu-mc=24 -X tensor:cpu-nc=48 -X tensor:cpu-kc=16 -X tensor:cpu-order=1 %s -p ll -X ll:o=%t1.ll -o /dev/null

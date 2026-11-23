@@ -419,7 +419,7 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto plan = PeCpu{};
     if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
     log().i("tile the contraction over {} with tensor.run_levels", mr.Sr);
-    auto tree = w.app(w.app(w.annex<tensor::cpu_tree>(), mr.Rn), {w.lit_nat(plan.bytes), plan.dep});
+    auto tree = w.app(w.app(w.annex<tensor::cpu_tree>(), mr.Rn), {w.lit_nat(plan.bytes), plan.dep, mr.Sr});
 
     auto [is, post_is] = rewrite(app->arg())->projs<2>();
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
