@@ -1,10 +1,6 @@
 // RUN: %mim %s -o - 2>&1 | %FileCheck %s
 
-// Hand-written malformed SchedTrees are rejected while PE unfolds them:
-// 1. Par splitting B's 8-wide panels into thirds of 3.
-// 2. Seq with a zero tile size.
-// 3. Pack on an axis given a run-time extent by an enclosing Seq.
-// 4. Par on an axis given a run-time extent by an enclosing Seq.
+// Malformed hand-written SchedTrees are rejected while PE unfolds them.
 plugin tensor;
 plugin core;
 plugin math;
@@ -18,9 +14,10 @@ let tree_par = tensor.sched_pack @(2, 3) (1, 8, 1₂, dep#1₂,
     tensor.sched_par @(2, 3) ((0, 3, 0), tensor.sched_leaf @(2, 3) 0));
 let tree_seq0 = tensor.sched_seq @(2, 3) (2, 0, tensor.sched_leaf @(2, 3) 0);
 let tree_seq_pack = tensor.sched_seq @(2, 3) (0, 6,
-    tensor.sched_pack @(2, 3) (0, 4, 0₂, dep#0₂, tensor.sched_leaf @(2, 3) 0));
+    tensor.sched_pack @(2, 3) (0, 4, 0₂, dep#0₂, tensor.sched_leaf @(2, 3) 1));
+let tree_seq_leaf = tensor.sched_seq @(2, 3) (0, 6, tensor.sched_leaf @(2, 3) 0);
 let tree_seq_par = tensor.sched_seq @(2, 3) (0, 6,
-    tensor.sched_par @(2, 3) ((4, 0, 0), tensor.sched_leaf @(2, 3) 0));
+    tensor.sched_par @(2, 3) ((4, 0, 0), tensor.sched_leaf @(2, 3) 1));
 
 fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
 
@@ -62,4 +59,14 @@ lam probe_seq_par (m: mem.M 0, a: buffer.Buf (2, (10, 4), F32), b: buffer.Buf (2
         (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃))
         (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#2₃), λ (o: «3; affine.Index»): «2; affine.Index» = (o#2₃, o#1₃))
         tree_seq_par
+        (m, (a, b));
+
+// CHECK: SchedTree: a Leaf's register axes cannot have a run-time extent from an enclosing Seq
+lam probe_seq_leaf (m: mem.M 0, a: buffer.Buf (2, (10, 4), F32), b: buffer.Buf (2, (4, 8), F32)): [mem.M 0, buffer.Buf (2, (10, 8), F32)] =
+    tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((10, 4), (4, 8)))
+        ((10, 8), (10, 8, 4))
+        (mac, 0:F32)
+        (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃))
+        (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#2₃), λ (o: «3; affine.Index»): «2; affine.Index» = (o#2₃, o#1₃))
+        tree_seq_leaf
         (m, (a, b));
