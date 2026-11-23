@@ -7,6 +7,7 @@
 // RUN: %mim -p opt -X tensor:cpu-dyn-k=1 -X tensor:cpu-kc=7 %s -p ll -X ll:o=%t2.ll -o /dev/null
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
 // RUN: %t2.exec
+// RUN: %mim -p opt -X tensor:group-registers=13 %s -o /dev/null
 // RUN: %mim -VVV -p opt %s -o /dev/null 2>&1 | %FileCheck %s
 // RUN: %mim -VVV -p opt -X tensor:pe-cpu=0 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=OFF
 

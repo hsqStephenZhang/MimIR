@@ -1773,7 +1773,7 @@ anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»»): SchedTree (2,
     let lanes = vec_width (core.select (bytes < 16, 16 / bytes, 1));
     let nr1   = lanes * 4;
     let nc1   = nat_min (nr1 * lanes * 4) 256;
-    let mr    = nat_or mr_o (nat_min ((core.select (12 < regs, regs, 16) - 12) / 4) lanes);
+    let mr    = nat_or mr_o (nat_min ((core.select (15 < regs, regs, 16) - 12) / 4) lanes);
     let nr    = nat_or nr_o nr1;
     let nc    = nat_or nc_o nc1;
     let kc    = nat_or kc_o (core.select (cache < nc1 * bytes * 2, 1, nat_min (cache / (nc1 * bytes * 2)) 256));
