@@ -1669,12 +1669,12 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
     let Rp    = core.nat.add (Rn, 1);
     let IxN   = «Rn; affine.Index»;
     let Views = «i: N; LevelsView (Rn, Ts#i)»;
-    let State = [lo size cap: «Rn; Nat», views: Views, tok: mem.M 0, dst: D];
+    let State = [lo size cap: «Rn; Nat», dyn_ax: «Rn; Bool», views: Views, tok: mem.M 0, dst: D];
     let Body  = State → [mem.M 0, D];
     let zero  = ‹Rn; affine.lit 0›;
 
     let step_leaf = λ (vdim: Nat, st: State): [mem.M 0, D] =
-        let (lo, size, _, vs, m, dst) = st;
+        let (lo, size, _, _, vs, m, dst) = st;
         let out   = lm (o: IxN): «Ro; affine.Index» =
             map_out ‹d: Rn; affine.op.add (affine.lit (lo#d), o#d)›;
         let Ris_c = ‹i: N; (vs#i)#r›;
@@ -1688,14 +1688,16 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
 
     let split_serial = λ (dyn: Bool, d: Idx Rn, ts: Nat, k: Body): Body =
         λ (st: State): [mem.M 0, D] =
-            let (lo, size, cap, vs, m, dst) = st;
-            let n    = size#d;
+            let (lo, size, cap, dyn_ax, vs, m, dst) = st;
+            let was_dyn = dyn_ax#d;
+            let n    = refly.check ((tt, dyn)#was_dyn, size#d,
+                "SchedTree: a Par axis cannot have a run-time extent from an enclosing Seq");
             let full = core.nat.div (n, ts);
             let tail = core.nat.rem (n, ts);
             let Bufs = «i: N; buffer.Buf ((vs#i)#r, (vs#i)#s, Ts#i)»;
             let X    = [D, Bufs];
             let xs_i: Bufs = ‹i: N; (vs#i)#data›;
-            let tile = λ (t: Nat, ext bound: Nat, m: mem.M 0, dst: D, xs: Bufs): [mem.M 0, X] =
+            let tile = λ (k: Body, t: Nat, ext bound: Nat, is_dyn: Bool, m: mem.M 0, dst: D, xs: Bufs): [mem.M 0, X] =
                 let vs2 = levels_seq @N @Views (‹i: N; λ (acc: Views): Views =
                     let v  = vs#i;
                     let u  = (v#unit)#d;
@@ -1705,22 +1707,24 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
                 let lo2   = ‹e: Rn; (lo#e, core.nat.add (lo#e, core.nat.mul (t, ts)))#(core.icmp.e (e, d))›;
                 let size2 = ‹e: Rn; (size#e, ext)#(core.icmp.e (e, d))›;
                 let cap2  = ‹e: Rn; (cap#e, bound)#(core.icmp.e (e, d))›;
-                let (m, dst) = k (lo2, size2, cap2, vs2, m, dst);
+                let dyn2  = ‹e: Rn; (dyn_ax#e, is_dyn)#(core.icmp.e (e, d))›;
+                let (m, dst) = k (lo2, size2, cap2, dyn2, vs2, m, dst);
                 (m, (dst, xs));
-            let rest = λ (m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] =
-                (λ (_: []): [mem.M 0, X] = (m, (dst, xs)),
-                 λ (_: []): [mem.M 0, X] = tile (full, tail, tail, m, dst, xs))#(core.ncmp.ne (tail, 0)) ();
-            let static = λ (_: []): [mem.M 0, X] =
-                (λ (_: []): [mem.M 0, X] = rest (m, (dst, xs_i)),
-                 λ (_: []): [mem.M 0, X] = levels_steps @X full (m, (dst, xs_i))
-                     (λ (t: Nat, m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] = tile (t, ts, ts, m, dst, xs)) rest)#(core.ncmp.ne (full, 0)) ();
-            let dynamic = λ (_: []): [mem.M 0, X] =
+            let rest = λ (k: Body) (m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] =
+                (λ (_: Body): [mem.M 0, X] = (m, (dst, xs)),
+                 λ (k: Body): [mem.M 0, X] = tile (k, full, tail, tail, ff, m, dst, xs))#(core.ncmp.ne (tail, 0)) k;
+            let static = λ (k: Body): [mem.M 0, X] =
+                (λ (k: Body): [mem.M 0, X] = rest k (m, (dst, xs_i)),
+                 λ (k: Body): [mem.M 0, X] = levels_steps @X full (m, (dst, xs_i))
+                     (λ (t: Nat, m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] = tile (k, t, ts, ts, ff, m, dst, xs)) (rest k))#(core.ncmp.ne (full, 0)) k;
+            let dynamic = λ (k: Body): [mem.M 0, X] =
                 levels_steps @X (core.nat.add (full, (0, 1)#(core.ncmp.ne (tail, 0)))) (m, (dst, xs_i))
                     (λ (t: Nat, m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] =
                         let left = core.nat.sub (n, core.nat.mul (t, ts));
-                        tile (t, core.select (left < ts, left, ts), core.select (n < ts, n, ts), m, dst, xs))
+                        tile (k, t, core.select (left < ts, left, ts), core.select (cap#d < ts, cap#d, ts), tt, m, dst, xs))
                     (λ (s: [mem.M 0, X]): [mem.M 0, X] = s);
-            let (m, (dst, _)) = (static, dynamic)#dyn ();
+            let use_dyn = (dyn, tt)#was_dyn;
+            let (m, (dst, _)) = (static, dynamic)#use_dyn k;
             (m, dst);
 
     let step_par = λ (sizes: «Rn; Nat», k: Body): Body =
@@ -1729,8 +1733,9 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
 
     let step_pack = λ (d w: Nat, slot: Idx N, dep: «Rn; Bool», k: Body): Body =
         λ (st: State): [mem.M 0, D] =
-            let (_, size, cap, vs, m, _) = st;
+            let (_, size, cap, dyn_ax, vs, m, _) = st;
             let w    = refly.check (core.bit2.and 2 (d < Rn, 0 < w), w, "SchedTree: a Pack needs an axis below Rn and a positive width");
+            let w    = refly.check ((tt, ff)#(dyn_ax#(core.idx 0 Rn d)), w, "SchedTree: a Pack axis cannot have a run-time extent from an enclosing Seq");
             let v    = vs#slot;
             let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) (v#data) (d, w, dep, v#q, size, cap, m);
             let unit = ‹e: Rn; (1, w)#(core.idx2nat e == d)›;
@@ -1743,11 +1748,14 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
             | Leaf vdim => λ (st: State): [mem.M 0, D] = step_leaf (vdim, st)
             | Par  n    => step_par  (n#sizes, eval (n#body))
             | Pack n    => step_pack (n#d, n#w, n#slot, n#dep, eval (n#body))
-            | Seq  n    => split_serial (tt, core.idx 0 Rn (n#d), n#ts, eval (n#body));
+            | Seq  n    =>
+                let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Seq needs an axis below Rn");
+                let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Seq needs a positive tile size");
+                split_serial (tt, ax, ts, eval (n#body));
 
     let (m, dst) = buffer.lit (Ro, So, To) (m, init);
     let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, zero, levels_plain @Rn (Rs#i, slot_maps#i), xs0#i) inj LevelsView (Rn, Ts#i)›;
-    eval sched (‹Rn; 0›, Sr, Sr, vs0, m, dst);
+    eval sched (‹Rn; 0›, Sr, Sr, ‹Rn; ff›, vs0, m, dst);
 ///
 /// ### cpu_tree
 ///
