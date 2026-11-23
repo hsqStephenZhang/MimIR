@@ -25,6 +25,15 @@ static void reg_phases(Flags2Phases& phases) {
 static constexpr PluginArg known_args[] = {
     {"reassoc-max=<n>", "Longest matrix chain whose `Catalan(n − 1)` bracketings `tensor.reassoc` enumerates and, failing one that provably wins for every extent, dispatches over at run time (default `4`; below `3` switches the dispatch off)."},
     {"vec-width=<n>", "Vector lanes the target's registers hold (`1`, `4`, `8` or `16`, default `8`). It caps the block of independent accumulators a vectorized loop body jams into its registers, and `tensor.reassoc` charges each product's vector loop in units of it; `1` means no lane-sized blocking and plain multiplication counts. See `tensor.vec_width`."},
+    {"pe-cpu=<n>", "Lower static CPU contractions through the compositional `SchedTree` + `run_levels` PE interpreter (`1` on by default, `0` to fall back to `dot_schedule`)."},
+    {"group-registers=<n>", "Target vector register count for automatic CPU contraction block selection (default `32`)."},
+    {"group-cache=<n>", "Target cache budget in bytes for automatic CPU contraction block selection (default `262144`)."},
+    {"cpu-mr=<n>", "Override CPU micro-kernel row tile MR (`0` uses target default)."},
+    {"cpu-nr=<n>", "Override CPU micro-kernel column tile NR (`0` uses target default)."},
+    {"cpu-mc=<n>", "Override CPU cache block MC (`0` uses target default)."},
+    {"cpu-nc=<n>", "Override CPU outer cache block NC (`0` uses target default)."},
+    {"cpu-kc=<n>", "Override CPU reduction cache block KC (`0` uses target default)."},
+    {"cpu-order=<n>", "CPU BLIS loop order: `0` outer N / pack B then MC / pack A (default), `1` outer M / pack A then MC-on-N / pack B."},
 };
 // clang-format on
 
