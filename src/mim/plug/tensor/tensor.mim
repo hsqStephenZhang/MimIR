@@ -1674,7 +1674,10 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
     let zero  = ‹Rn; affine.lit 0›;
 
     let step_leaf = λ (vdim: Nat, st: State): [mem.M 0, D] =
-        let (lo, size, _, _, vs, m, dst) = st;
+        let (lo, size, _, dyn_ax, vs, m, dst) = st;
+        let blk   = λ (a: Nat): Bool = core.select (a < Rn, dyn_ax#(core.idx 0 Rn a), ff);
+        let size  = refly.check (core.select (blk vdim, ff, core.select (blk (vdim + 1), ff, tt)), size,
+            "SchedTree: a Leaf's register axes cannot have a run-time extent from an enclosing Seq");
         let out   = lm (o: IxN): «Ro; affine.Index» =
             map_out ‹d: Rn; affine.op.add (affine.lit (lo#d), o#d)›;
         let Ris_c = ‹i: N; (vs#i)#r›;
@@ -1781,7 +1784,7 @@ anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»»): SchedTree (2,
     let lanes = vec_width (core.select (bytes < 16, 16 / bytes, 1));
     let nr1   = lanes * 4;
     let nc1   = nat_min (nr1 * lanes * 4) 256;
-    let mr    = nat_or mr_o (nat_min ((core.select (15 < regs, regs, 16) - 12) / 4) (nat_min lanes 4));
+    let mr    = nat_or mr_o (nat_min ((core.select (15 < regs, regs, 16) - 12) / 4) (nat_min lanes (core.select (bytes < 4, 4, lanes))));
     let nr    = nat_or nr_o nr1;
     let nc    = nat_or nc_o nc1;
     let kc    = nat_or kc_o (core.select (cache < nc1 * bytes * 2, 1, nat_min (cache / (nc1 * bytes * 2)) 256));
