@@ -69,4 +69,21 @@ static void reg_phases(Flags2Phases& phases) {
     // clang-format on
 }
 
-MIM_PLUGIN_ENTRY(gpu) { plugin.register_phases = reg_phases; }
+// clang-format off
+static constexpr PluginArg known_args[] = {
+    {"pe-simt=<n>", "Lower static GPU contractions through the compositional SIMT PE combinators (`1` on by default, `0` to fall back to the 1-thread-per-output kernel)."},
+    {"bm=<n>", "Override GPU block row tile BM (`0` uses automatic selection)."},
+    {"bn=<n>", "Override GPU block column tile BN (`0` uses automatic selection)."},
+    {"bk=<n>", "Override GPU shared-memory reduction tile BK (`0` uses automatic selection)."},
+    {"tm=<n>", "Override GPU thread register row tile TM (`0` uses automatic selection)."},
+    {"tn=<n>", "Override GPU thread register column tile TN (`0` uses automatic selection)."},
+    {"pad=<n>", "Shared-memory row padding elements for bank-conflict avoidance (default `1`)."},
+    {"reduce-nt=<n>", "Override GPU parallel reduction block thread count (multiple of 32 in 32..1024; `0` uses automatic selection)."},
+};
+// clang-format on
+
+MIM_PLUGIN_ENTRY(gpu) {
+    plugin.register_phases = reg_phases;
+    plugin.args            = known_args;
+    plugin.num_args        = std::size(known_args);
+}

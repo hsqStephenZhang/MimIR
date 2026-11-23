@@ -1,0 +1,41 @@
+// RUN: rm -f %t.ll %t_dev.ll %t
+// RUN: %mim -VVV -p opt -p gpu %s -p nvptx -X nvptx:o=%t.ll -X nvptx:o-dev=%t_dev.ll 2>&1 | %FileCheck %s
+// RUN: %FileCheck %s --input-file=%t_dev.ll --check-prefix=DEV
+// RUN: %if system-linux && cuda %{ clang++ -O2 %S/pe_gpu_reduce_aux.cpp %t.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// CHECK-DAG: reduce (17, 513) on GPU with gpu.simt_reduce_kernel (OutN=17, RedK=513, NT=256)
+// CHECK-DAG: reduce (13, 37) on GPU with gpu.simt_reduce_kernel (OutN=13, RedK=37, NT=32)
+// CHECK-DAG: reduce (19, 130) on GPU with gpu.simt_reduce_kernel (OutN=19, RedK=130, NT=128)
+// CHECK-DAG: reduce (64, 1, 300) on GPU with gpu.simt_reduce_kernel (OutN=64, RedK=300, NT=256)
+// CHECK-DAG: reduce (23, 275) on GPU with gpu.simt_reduce_kernel (OutN=23, RedK=275, NT=256)
+
+// DEV: define ptx_kernel void @mapReduceSimtReduceKernel
+// DEV: call float @llvm.nvvm.shfl.sync.bfly.f32(i32 -1,
+// DEV: call i32 @llvm.nvvm.shfl.sync.bfly.i32(i32 -1,
+
+// Row sum (multi-warp), row max (single-warp, zero barriers), F64 row sum (64-bit split shuffle),
+// GEMV (M=64, N=1, K=300), and I16 row sum (sub-32-bit zext/trunc shuffle), executed on GPU.
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let F64 = math.F64;
+let fast = math.mode.fast;
+let R32: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+extern fun row_sum_f32 (x: tensor.Tensor 2 (17, 513) F32): tensor.Tensor 1 17 F32 =
+    return (tensor.reduce (math.arith.add fast, 0:F32) 1₂ x);
+
+extern fun row_max_f32 (x: tensor.Tensor 2 (13, 37) F32): tensor.Tensor 1 13 F32 =
+    return (tensor.reduce (math.extrema.fmax fast, math.neg_inf math.f32) 1₂ x);
+
+extern fun row_sum_f64 (x: tensor.Tensor 2 (19, 130) F64): tensor.Tensor 1 19 F64 =
+    return (tensor.reduce (math.arith.add fast, 0.0:F64) 1₂ x);
+
+extern fun gemv_f32 (a: tensor.Tensor 2 (64, 300) F32, x: tensor.Tensor 2 (300, 1) F32): tensor.Tensor 2 (64, 1) F32 =
+    return (tensor.product_2d R32 (a, x));
+
+extern fun row_sum_i16 (x: tensor.Tensor 2 (23, 275) I16): tensor.Tensor 1 23 I16 =
+    return (tensor.reduce (core.wrap.add 0, 0I16) 1₂ x);

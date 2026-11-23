@@ -1,0 +1,27 @@
+// RUN: rm -f %t.ll %t_dev.ll %t_ov.ll %t_ov_dev.ll %t_off.ll %t_off_dev.ll %t %t2
+// RUN: %mim -VVV -p opt -p gpu %S/../tensor/pe_cpu_tiling_exec.mim -p nvptx -X nvptx:o=%t.ll -X nvptx:o-dev=%t_dev.ll 2>&1 | %FileCheck %s
+// RUN: %FileCheck %s --input-file=%t_dev.ll --check-prefix=DEV
+// RUN: %if system-linux && cuda %{ clang++ -O2 %S/../tensor/pe_cpu_tiling_aux.cpp %t.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+// RUN: %mim -p opt -p gpu -X gpu:bm=16 -X gpu:bn=16 -X gpu:bk=8 -X gpu:tm=2 -X gpu:tn=2 -X gpu:pad=0 %S/../tensor/pe_cpu_tiling_exec.mim -p nvptx -X nvptx:o=%t_ov.ll -X nvptx:o-dev=%t_ov_dev.ll
+// RUN: %if system-linux && cuda %{ clang++ -O2 %S/../tensor/pe_cpu_tiling_aux.cpp %t_ov.ll -lcuda -o %t2 -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t2 %}
+// RUN: %mim -VVV -p opt -p gpu -X gpu:pe-simt=0 %S/../tensor/pe_cpu_tiling_exec.mim -p nvptx -X nvptx:o=%t_off.ll -X nvptx:o-dev=%t_off_dev.ll 2>&1 | %FileCheck %s --check-prefix=OFF
+
+// CHECK-DAG: tile the contraction over ‹3; 32› on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (19, 37, 29) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (1, 35, 23) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (13, 1, 23) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (3, 13, 21, 19) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (15, 21, 25) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (17, 19, 23) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (18, 22, 20) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (18, 17, 22) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (29, 19, 31) on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over (19, 35, 17) on GPU with gpu.simt_tiled_kernel
+// OFF-NOT: gpu.simt_tiled_kernel
+
+// DEV: internal addrspace(3) global
+// DEV: internal addrspace(3) global
+// DEV: define ptx_kernel void @mapReduceSimtKernel
+// DEV: call void @llvm.nvvm.barrier0()

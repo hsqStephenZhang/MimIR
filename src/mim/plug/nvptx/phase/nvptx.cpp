@@ -602,6 +602,44 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         emit_unsafe(sync_work_items->arg(2, 1));
         std::print(bb.body().emplace_back(), "call void @llvm.nvvm.barrier0()");
         return name;
+    } else if (auto shfl = Axm::isa<gpu::warp_shfl_xor>(def)) {
+        auto [m_def, val_def, off_def] = shfl->args<3>();
+        emit_unsafe(m_def);
+        auto val = emit(val_def);
+        auto off = emit(off_def);
+        auto ty  = convert(val_def->type());
+        if (ty == "float") {
+            declare("float @llvm.nvvm.shfl.sync.bfly.f32(i32, float, i32, i32)");
+            return bb.assign(name, "call float @llvm.nvvm.shfl.sync.bfly.f32(i32 -1, float {}, i32 {}, i32 31)", val,
+                             off);
+        } else if (ty == "i32") {
+            declare("i32 @llvm.nvvm.shfl.sync.bfly.i32(i32, i32, i32, i32)");
+            return bb.assign(name, "call i32 @llvm.nvvm.shfl.sync.bfly.i32(i32 -1, i32 {}, i32 {}, i32 31)", val, off);
+        } else if (ty == "double" || ty == "i64") {
+            declare("i32 @llvm.nvvm.shfl.sync.bfly.i32(i32, i32, i32, i32)");
+            auto bits  = ty == "double" ? bb.assign(name + ".bits", "bitcast double {} to i64", val) : val;
+            auto lo    = bb.assign(name + ".lo", "trunc i64 {} to i32", bits);
+            auto hi64  = bb.assign(name + ".hi64", "lshr i64 {}, 32", bits);
+            auto hi    = bb.assign(name + ".hi", "trunc i64 {} to i32", hi64);
+            auto slo   = bb.assign(name + ".slo",
+                                   "call i32 @llvm.nvvm.shfl.sync.bfly.i32(i32 -1, i32 {}, i32 {}, i32 31)", lo, off);
+            auto shi   = bb.assign(name + ".shi",
+                                   "call i32 @llvm.nvvm.shfl.sync.bfly.i32(i32 -1, i32 {}, i32 {}, i32 31)", hi, off);
+            auto zlo   = bb.assign(name + ".zlo", "zext i32 {} to i64", slo);
+            auto zhi   = bb.assign(name + ".zhi", "zext i32 {} to i64", shi);
+            auto shi64 = bb.assign(name + ".shi64", "shl i64 {}, 32", zhi);
+            auto comb  = bb.assign(name + ".comb", "or i64 {}, {}", shi64, zlo);
+            if (ty == "double") return bb.assign(name, "bitcast i64 {} to double", comb);
+            return comb;
+        } else if (ty == "i1" || ty == "i8" || ty == "i16") {
+            declare("i32 @llvm.nvvm.shfl.sync.bfly.i32(i32, i32, i32, i32)");
+            auto ext = bb.assign(name + ".ext", "zext {} {} to i32", ty, val);
+            auto sh  = bb.assign(name + ".sh", "call i32 @llvm.nvvm.shfl.sync.bfly.i32(i32 -1, i32 {}, i32 {}, i32 31)",
+                                 ext, off);
+            return bb.assign(name, "trunc i32 {} to {}", sh, ty);
+        } else {
+            fe::throwf(MIM_NVPTX_BE "`gpu.warp_shfl_xor` does not support type `{}`", ty);
+        }
     } else if (auto tri = Axm::isa<math::tri>(def)) {
         auto arg       = emit(tri->arg());
         auto type      = convert(tri->arg()->type());

@@ -1,0 +1,30 @@
+// RUN: %mim %s -o - 2>&1 | %FileCheck %s
+
+// Invalid SIMT tiling configurations are rejected at PE time by refly.check.
+plugin gpu;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+fun mac (m: gpu.GlobalM, acc: F32, (x y: F32))@tt: [gpu.GlobalM, F32] =
+    return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
+lam rd (m: gpu.GlobalM, _ _ _: Nat): [gpu.GlobalM, F32] = (m, 0:F32);
+lam wr (m: gpu.GlobalM, _ _ _: Nat, _: F32): gpu.GlobalM = m;
+
+// CHECK: gpu.simt_tiled_kernel: BM must be > 1
+lam probe_bm (m1: gpu.GlobalM, m3: gpu.SharedM, g t: Nat): [gpu.GlobalM, gpu.SharedM] =
+    gpu.simt_tiled_kernel @(F32, F32, F32) (1, 16, 16, 16, 1, 16, 8, 1, 2, 1) (0:F32, mac) (rd, rd, wr) (m1, m3, g, t);
+
+// CHECK: gpu.simt_tiled_kernel: TM must divide BM
+lam probe_tm (m1: gpu.GlobalM, m3: gpu.SharedM, g t: Nat): [gpu.GlobalM, gpu.SharedM] =
+    gpu.simt_tiled_kernel @(F32, F32, F32) (1, 16, 16, 16, 16, 16, 8, 3, 2, 1) (0:F32, mac) (rd, rd, wr) (m1, m3, g, t);
+
+// CHECK: gpu.simt_tiled_kernel: block thread count (BM/TM)*(BN/TN) exceeds 1024
+lam probe_nt (m1: gpu.GlobalM, m3: gpu.SharedM, g t: Nat): [gpu.GlobalM, gpu.SharedM] =
+    gpu.simt_tiled_kernel @(F32, F32, F32) (1, 64, 64, 16, 64, 64, 8, 1, 1, 1) (0:F32, mac) (rd, rd, wr) (m1, m3, g, t);
+
+fun add_f32 (m: gpu.GlobalM, a b: F32)@tt: [gpu.GlobalM, F32] = return (m, math.arith.add 0 (a, b));
+
+// CHECK: gpu.simt_group_reduce: NT must be a multiple of 32 in 32..1024
+lam probe_red_nt (m1: gpu.GlobalM, m3: gpu.SharedM, t: Nat, v: F32): [gpu.GlobalM, gpu.SharedM, F32] =
+    gpu.simt_group_reduce @F32 48 (0:F32, add_f32) (m1, m3, t, v);

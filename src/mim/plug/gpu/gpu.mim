@@ -9,6 +9,10 @@
 plugin core;
 plugin mem;
 plugin buffer;
+plugin affine;
+plugin cps;
+plugin refly;
+plugin vec;
 import compile;
 
 use core.ops.n;
@@ -224,6 +228,12 @@ axm launch: {n: Nat, Ts: «n; *»}
 /// Low-level operation to synchronize all work-items in the same work-group.
 axm sync_work_items: [GlobalM, SharedM] → [GlobalM, SharedM];
 ///
+/// #### warp_shfl_xor
+///
+/// Exchanges a scalar value with lane `lane_id ^ offset` across all 32 lanes of a warp (`shfl.sync.bfly`).
+/// Threads `GlobalM` so MimIR's scheduler keeps the convergent warp shuffle out of divergent branches.
+axm warp_shfl_xor: {T: *} → [GlobalM, T, I32] → [GlobalM, T];
+///
 /// #### synced_scope
 ///
 /// Runs `scope` bracketed by work-item synchronization: syncs, runs `scope`, and syncs again.
@@ -286,3 +296,274 @@ axm lower_btensor_map_reduce: compile.Phase;
 ///
 anx lam host_specific_phases () = host_malloc2gpualloc_repl;
 anx lam device_specific_phases () = remove_double_syncs;
+///
+/// ## SIMT Multi-Level Tiling Combinators
+///
+/// Open, typed PE combinators for static-shape GPU contractions (`B × M × N × K`).
+/// Each combinator owns a single level and threads only the state that level needs:
+/// - `simt_stage_tile`: cooperative work-group global→shared tile staging with static bounds elision.
+/// - `simt_k_loop`: serial reduction loop carrying thread-private register accumulators.
+/// - `simt_reg_mma`: thread-local `TM × TN` outer-product register micro-kernel over a shared slice.
+/// - `simt_store_tile`: in-register epilogue + coalesced global write-back with static bounds elision.
+/// - `simt_tiled_kernel`: composes the above over two static shared-memory slots (`mem.slot` in `addr_space_shared`).
+
+lam simt_unroll {S: *} (n: Nat) (s0: S) (body: [Idx n, S] → S): S =
+    vec.fold.l @(S, Idx n) @n (λ (s: S, i: Idx n): S = body (i, s)) (s0, ‹i: n; i›);
+
+lam simt_when {S: *} (cond: Bool, s: S, body: S → S): S =
+    fun guard (s: S)@tt: S =
+        (skip, run)#cond s
+        where
+            con skip (s: S) = return s;
+            con run  (s: S) = return (body s);
+        end;
+    cps.cps2ds guard s;
+
+/// Cooperatively loads an `H × W` slice from `read` into `smem` (`H_alloc × Wpad`) across `NT` threads.
+/// Out-of-bounds global coordinates are skipped; `row_div` / `col_div` statically elide bounds guards.
+anx lam simt_stage_tile {T: *} (H_alloc H W Wpad NT: Nat) (row_div col_div: Bool)
+    (m1: GlobalM, m3: SharedM, smem: SharedPtr «H_alloc; «Wpad; T»», tid: Nat,
+     base_r lim_r base_c lim_c: Nat,
+     read: [GlobalM, Nat, Nat] → [GlobalM, T])
+    : [GlobalM, SharedM] =
+    let total = H * W;
+    let trips = core.nat.div (core.nat.add (total, core.nat.sub (NT, 1)), NT);
+    let exact = core.nat.rem (total, NT) == 0;
+    simt_unroll @[GlobalM, SharedM] trips (m1, m3) (λ (s: Idx trips, (m1: GlobalM, m3: SharedM)): [GlobalM, SharedM] =
+        let idx     = core.nat.add (tid, core.nat.mul (core.idx2nat s, NT));
+        let in_tile = core.select (exact, tt, core.ncmp.l (idx, total));
+        simt_when @[GlobalM, SharedM] (in_tile, (m1, m3), λ (m1: GlobalM, m3: SharedM): [GlobalM, SharedM] =
+            let r    = core.nat.div (idx, W);
+            let c    = core.nat.rem (idx, W);
+            let gr   = core.nat.add (base_r, r);
+            let gc   = core.nat.add (base_c, c);
+            let ok_r = core.select (row_div, tt, core.ncmp.l (gr, lim_r));
+            let ok_c = core.select (col_div, tt, core.ncmp.l (gc, lim_c));
+            let ok   = core.bit2.and 2 (ok_r, ok_c);
+            simt_when @[GlobalM, SharedM] (ok, (m1, m3), λ (m1: GlobalM, m3: SharedM): [GlobalM, SharedM] =
+                let (m1, v) = read (m1, gr, gc);
+                let row_p   = mem.lea (smem, core.conv.u H_alloc (core.bitcast I64 r));
+                let cell_p  = mem.lea (row_p, core.conv.u Wpad (core.bitcast I64 c));
+                (m1, mem.store (m3, cell_p, v)))));
+
+/// Serial loop of `n_steps` iterations carrying `(GlobalM, SharedM, Acc)` in registers.
+anx lam simt_k_loop {Acc: *} (n_steps: Nat)
+    (m1: GlobalM, m3: SharedM, acc0: Acc)
+    (step: [Nat, GlobalM, SharedM, Acc] → [GlobalM, SharedM, Acc])
+    : [GlobalM, SharedM, Acc] =
+    fun run (s: [GlobalM, SharedM, Acc])@tt: [GlobalM, SharedM, Acc] =
+        affine.For @(0, 3, (GlobalM, SharedM, Acc)) body exit (0I64, core.bitcast I64 n_steps, 1I64, s)
+        where
+            con body (i: I64, s: [GlobalM, SharedM, Acc], yield: Cn [GlobalM, SharedM, Acc]) =
+                let (m1, m3, acc) = s;
+                yield (step (core.bitcast Nat i, m1, m3, acc));
+            con exit (s: [GlobalM, SharedM, Acc]) = return s;
+        end;
+    cps.cps2ds run (m1, m3, acc0);
+
+/// Thread-local `TM × TN` outer-product micro-kernel over `Klen` steps of shared-memory tiles `sa` and `sb`.
+anx lam simt_reg_mma {Ta Tb To: *} (BM BK BKpad BNpad TY TX TM TN Klen: Nat)
+    (comb: Fn [GlobalM, To, [Ta, Tb]] → [GlobalM, To])
+    (m1: GlobalM, m3: SharedM,
+     sa: SharedPtr «BM; «BKpad; Ta»», sb: SharedPtr «BK; «BNpad; Tb»»,
+     ty tx: Nat, acc0: «TM; «TN; To»»)
+    : [GlobalM, SharedM, «TM; «TN; To»»] =
+    let Regs = «TM; «TN; To»»;
+    simt_k_loop @Regs Klen (m1, m3, acc0) (λ (kk: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
+        let kk_a   = core.conv.u BKpad (core.bitcast I64 kk);
+        let kk_b   = core.conv.u BK (core.bitcast I64 kk);
+        let sb_row = mem.lea (sb, kk_b);
+        let (m3, a_frag) = simt_unroll @[SharedM, «TM; Ta»] TM (m3, ‹TM; ⊥:Ta›)
+            (λ (i: Idx TM, (m3: SharedM, af: «TM; Ta»)): [SharedM, «TM; Ta»] =
+                let r       = core.nat.add (ty, core.nat.mul (core.idx2nat i, TY));
+                let p       = mem.lea (mem.lea (sa, core.conv.u BM (core.bitcast I64 r)), kk_a);
+                let (m3, v) = mem.load (m3, p);
+                (m3, af#i ← v));
+        let (m3, b_frag) = simt_unroll @[SharedM, «TN; Tb»] TN (m3, ‹TN; ⊥:Tb›)
+            (λ (j: Idx TN, (m3: SharedM, bf: «TN; Tb»)): [SharedM, «TN; Tb»] =
+                let c       = core.nat.add (tx, core.nat.mul (core.idx2nat j, TX));
+                let p       = mem.lea (sb_row, core.conv.u BNpad (core.bitcast I64 c));
+                let (m3, v) = mem.load (m3, p);
+                (m3, bf#j ← v));
+        let (m1, acc) = simt_unroll @[GlobalM, Regs] TM (m1, acc)
+            (λ (i: Idx TM, (m1: GlobalM, acc: Regs)): [GlobalM, Regs] =
+                let av = a_frag#i;
+                simt_unroll @[GlobalM, Regs] TN (m1, acc)
+                    (λ (j: Idx TN, (m1: GlobalM, acc: Regs)): [GlobalM, Regs] =
+                        let (m1, nv) = cps.cps2ds comb (m1, acc#i#j, (av, b_frag#j));
+                        (m1, acc#i#j ← nv)));
+        (m1, m3, acc));
+
+/// Writes each thread's `TM × TN` register accumulators through `write` (which fuses any epilogue in registers).
+anx lam simt_store_tile {To: *} (M N BM BN TY TX TM TN: Nat)
+    (m1: GlobalM, block_m block_n ty tx: Nat, acc: «TM; «TN; To»»,
+     write: [GlobalM, Nat, Nat, To] → GlobalM)
+    : GlobalM =
+    let m_div = core.nat.rem (M, BM) == 0;
+    let n_div = core.nat.rem (N, BN) == 0;
+    simt_unroll @GlobalM TM m1 (λ (i: Idx TM, m1: GlobalM): GlobalM =
+        let gm   = core.nat.add (block_m, core.nat.add (ty, core.nat.mul (core.idx2nat i, TY)));
+        let ok_m = core.select (m_div, tt, core.ncmp.l (gm, M));
+        simt_when @GlobalM (ok_m, m1, λ (m1: GlobalM): GlobalM =
+            simt_unroll @GlobalM TN m1 (λ (j: Idx TN, m1: GlobalM): GlobalM =
+                let gn   = core.nat.add (block_n, core.nat.add (tx, core.nat.mul (core.idx2nat j, TX)));
+                let ok_n = core.select (n_div, tt, core.ncmp.l (gn, N));
+                simt_when @GlobalM (ok_n, m1, λ (m1: GlobalM): GlobalM =
+                    write (m1, gm, gn, acc#i#j)))));
+
+/// Full SIMT shared-memory + register-tiled contraction kernel body over `B × M × N × K`.
+anx lam simt_tiled_kernel {Ta Tb To: *}
+    (B M N K BM BN BK TM TN Pad: Nat)
+    (init: To, comb: Fn [GlobalM, To, [Ta, Tb]] → [GlobalM, To])
+    (read_a:  [GlobalM, Nat, Nat, Nat] → [GlobalM, Ta],
+     read_b:  [GlobalM, Nat, Nat, Nat] → [GlobalM, Tb],
+     write_c: [GlobalM, Nat, Nat, Nat, To] → GlobalM)
+    (m1: GlobalM, m3: SharedM, group_id item_id: Nat)
+    : [GlobalM, SharedM] =
+    let BM    = refly.check (1 < BM, BM, "gpu.simt_tiled_kernel: BM must be > 1");
+    let BN    = refly.check (1 < BN, BN, "gpu.simt_tiled_kernel: BN must be > 1");
+    let BK    = refly.check (1 < BK, BK, "gpu.simt_tiled_kernel: BK must be > 1");
+    let TM    = refly.check (core.bit2.and 2 (0 < TM, core.nat.rem (BM, TM) == 0), TM,
+        "gpu.simt_tiled_kernel: TM must divide BM");
+    let TN    = refly.check (core.bit2.and 2 (0 < TN, core.nat.rem (BN, TN) == 0), TN,
+        "gpu.simt_tiled_kernel: TN must divide BN");
+    let TY    = core.nat.div (BM, TM);
+    let TX    = core.nat.div (BN, TN);
+    let NT    = refly.check (TY * TX <= 1024, TY * TX,
+        "gpu.simt_tiled_kernel: block thread count (BM/TM)*(BN/TN) exceeds 1024");
+    let BKpad = core.nat.add (BK, Pad);
+    let BNpad = core.nat.add (BN, Pad);
+    let gm_blks = core.nat.div (core.nat.add (M, core.nat.sub (BM, 1)), BM);
+    let gn_blks = core.nat.div (core.nat.add (N, core.nat.sub (BN, 1)), BN);
+    let mn_blks = gm_blks * gn_blks;
+    let batch   = (0, core.nat.div (group_id, mn_blks))#(1 < B);
+    let blk_rem = (group_id, core.nat.rem (group_id, mn_blks))#(1 < B);
+    let bm_id   = core.nat.div (blk_rem, gn_blks);
+    let bn_id   = core.nat.rem (blk_rem, gn_blks);
+    let block_m = core.nat.mul (bm_id, BM);
+    let block_n = core.nat.mul (bn_id, BN);
+    let ty      = core.nat.div (item_id, TX);
+    let tx      = core.nat.rem (item_id, TX);
+    let m_div   = core.nat.rem (M, BM) == 0;
+    let n_div   = core.nat.rem (N, BN) == 0;
+    let full_k  = core.nat.div (K, BK);
+    let tail_k  = core.nat.rem (K, BK);
+    let Regs    = «TM; «TN; To»»;
+    let acc0    = ‹TM; ‹TN; init››;
+    let ra      = λ (m1: GlobalM, r c: Nat): [GlobalM, Ta] = read_a (m1, batch, r, c);
+    let rb      = λ (m1: GlobalM, r c: Nat): [GlobalM, Tb] = read_b (m1, batch, r, c);
+    let wc      = λ (m1: GlobalM, r c: Nat, v: To): GlobalM = write_c (m1, batch, r, c, v);
+    let StepFn  = [Nat, Nat, GlobalM, SharedM, Regs] → [GlobalM, SharedM, Regs];
+
+    fun body (m1: GlobalM, m3: SharedM)@tt: [GlobalM, SharedM] =
+        ret (m3, sa) = mem.slot («BM; «BKpad; Ta»», addr_space_shared) $ m3;
+        ret (m3, sb) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
+        let run_step = λ (Klen k_base: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
+            let (m1, m3) = simt_stage_tile @Ta (BM, BM, Klen, BKpad, NT) (m_div, tt)
+                (m1, m3, sa, item_id, block_m, M, k_base, K, ra);
+            let (m1, m3) = simt_stage_tile @Tb (BK, Klen, BN, BNpad, NT) (tt, n_div)
+                (m1, m3, sb, item_id, k_base, K, block_n, N, rb);
+            let (m1, m3) = sync_work_items (m1, m3);
+            let (m1, m3, acc) = simt_reg_mma @(Ta, Tb, To) (BM, BK, BKpad, BNpad, TY, TX, TM, TN, Klen)
+                comb (m1, m3, sa, sb, ty, tx, acc);
+            let (m1, m3) = sync_work_items (m1, m3);
+            (m1, m3, acc);
+        let do_full = λ (rs: StepFn): [GlobalM, SharedM, Regs] =
+            simt_k_loop @Regs full_k (m1, m3, acc0)
+                (λ (kt: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
+                    rs (BK, core.nat.mul (kt, BK), m1, m3, acc));
+        let (m1, m3, acc) = (λ (_: StepFn): [GlobalM, SharedM, Regs] = (m1, m3, acc0),
+                             do_full)#(core.ncmp.ne (full_k, 0)) run_step;
+        let do_tail = λ (rs: StepFn): [GlobalM, SharedM, Regs] =
+            rs (tail_k, core.nat.mul (full_k, BK), m1, m3, acc);
+        let (m1, m3, acc) = (λ (_: StepFn): [GlobalM, SharedM, Regs] = (m1, m3, acc),
+                             do_tail)#(core.ncmp.ne (tail_k, 0)) run_step;
+        let m1 = simt_store_tile @To (M, N, BM, BN, TY, TX, TM, TN) (m1, block_m, block_n, ty, tx, acc, wc);
+        return (m1, m3);
+    cps.cps2ds body (m1, m3);
+
+/// Butterfly warp reduction over `width` active lanes (`width` a power of 2 in `1..32`).
+/// Unrolls `log2(width)` `warp_shfl_xor` steps (`16, 8, 4, 2, 1` filtered by `< width`) at PE time.
+anx lam simt_warp_reduce {Acc: *} (width: Nat)
+    (merge: Fn [GlobalM, Acc, Acc] → [GlobalM, Acc])
+    (m1: GlobalM, val: Acc)
+    : [GlobalM, Acc] =
+    let width = refly.check (core.bit2.and 2 (0 < width, width <= 32), width,
+        "gpu.simt_warp_reduce: width must be in 1..32");
+    let step = λ (off: Nat, (m1: GlobalM, v: Acc)): [GlobalM, Acc] =
+        let do_step = λ (v: Acc): [GlobalM, Acc] =
+            let (m1, other) = warp_shfl_xor @Acc (m1, v, core.bitcast I32 off);
+            cps.cps2ds merge (m1, v, other);
+        (λ (v: Acc): [GlobalM, Acc] = (m1, v), do_step)#(off < width) v;
+    let s = step (16, (m1, val));
+    let s = step (8, s);
+    let s = step (4, s);
+    let s = step (2, s);
+    step (1, s);
+
+/// Work-group reduction across `NT` threads (`NT` a multiple of 32 in `32..1024`):
+/// 1. Each warp reduces its 32 lanes in registers via `simt_warp_reduce`.
+/// 2. When `NW = NT / 32 > 1`, lane 0 of each warp stores to an `NW`-element shared slot,
+///    syncs once, and warp 0 finishes the `NW`-way butterfly warp reduction.
+/// On return, thread 0 holds the full work-group reduced value.
+anx lam simt_group_reduce {Acc: *} (NT: Nat)
+    (init: Acc, merge: Fn [GlobalM, Acc, Acc] → [GlobalM, Acc])
+    (m1: GlobalM, m3: SharedM, tid: Nat, val: Acc)
+    : [GlobalM, SharedM, Acc] =
+    let NT = refly.check (core.bit2.and 2 (core.bit2.and 2 (32 <= NT, NT <= 1024), core.nat.rem (NT, 32) == 0), NT,
+        "gpu.simt_group_reduce: NT must be a multiple of 32 in 32..1024");
+    let NW       = core.nat.div (NT, 32);
+    let (m1, wv) = simt_warp_reduce @Acc 32 merge (m1, val);
+    let multi = λ (wv: Acc): [GlobalM, SharedM, Acc] =
+        let w2 = core.select (NW <= 2, 2, core.select (NW <= 4, 4, core.select (NW <= 8, 8, core.select (NW <= 16, 16, 32))));
+        fun body (m1: GlobalM, m3: SharedM)@tt: [GlobalM, SharedM, Acc] =
+            ret (m3, smem) = mem.slot («NW; Acc», addr_space_shared) $ m3;
+            let lane = core.nat.rem (tid, 32);
+            let warp = core.nat.div (tid, 32);
+            let m3 = simt_when @SharedM (core.ncmp.e (lane, 0), m3, λ (m3: SharedM): SharedM =
+                mem.store (m3, mem.lea (smem, core.conv.u NW (core.bitcast I64 warp)), wv));
+            let (m1, m3) = sync_work_items (m1, m3);
+            let (m1, m3, res) = simt_when @[GlobalM, SharedM, Acc] (core.ncmp.l (tid, 32), (m1, m3, wv),
+                λ (m1: GlobalM, m3: SharedM, _: Acc): [GlobalM, SharedM, Acc] =
+                    let (m3, lv) = simt_when @[SharedM, Acc] (core.ncmp.l (tid, NW), (m3, init),
+                        λ (m3: SharedM, _: Acc): [SharedM, Acc] =
+                            mem.load (m3, mem.lea (smem, core.conv.u NW (core.bitcast I64 tid))));
+                    let (m1, fin) = simt_warp_reduce @Acc w2 merge (m1, lv);
+                    (m1, m3, fin));
+            return (m1, m3, res);
+        cps.cps2ds body (m1, m3);
+    (λ (wv: Acc): [GlobalM, SharedM, Acc] = (m1, m3, wv), multi)#(1 < NW) wv;
+
+/// Parallel reduction kernel: one work-group of `NT` threads per output element `0..OutN-1`.
+/// Threads stride across `0..RedK-1` via `simt_k_loop`, merge partial accumulators with
+/// `simt_group_reduce`, and thread 0 writes the fused epilogue via `write_out`.
+anx lam simt_reduce_kernel {To: *} (OutN RedK NT: Nat)
+    (init: To, merge: Fn [GlobalM, To, To] → [GlobalM, To])
+    (step_elem: [GlobalM, Nat, Nat, To] → [GlobalM, To],
+     write_out: [GlobalM, Nat, To] → GlobalM)
+    (m1: GlobalM, m3: SharedM, group_id item_id: Nat)
+    : [GlobalM, SharedM] =
+    let NT     = refly.check (core.bit2.and 2 (core.bit2.and 2 (32 <= NT, NT <= 1024), core.nat.rem (NT, 32) == 0), NT,
+        "gpu.simt_reduce_kernel: NT must be a multiple of 32 in 32..1024");
+    let full   = core.nat.div (RedK, NT);
+    let tail   = core.nat.rem (RedK, NT);
+    let StepEl = [GlobalM, Nat, Nat, To] → [GlobalM, To];
+    let do_full = λ (st: StepEl): [GlobalM, SharedM, To] =
+        simt_k_loop @To full (m1, m3, init)
+            (λ (s: Nat, m1: GlobalM, m3: SharedM, acc: To): [GlobalM, SharedM, To] =
+                let rk       = core.nat.add (item_id, core.nat.mul (s, NT));
+                let (m1, nv) = st (m1, group_id, rk, acc);
+                (m1, m3, nv));
+    let (m1, m3, acc) = (λ (_: StepEl): [GlobalM, SharedM, To] = (m1, m3, init),
+                         do_full)#(core.ncmp.ne (full, 0)) step_elem;
+    let do_tail = λ (st: StepEl): [GlobalM, To] =
+        simt_when @[GlobalM, To] (core.ncmp.l (item_id, tail), (m1, acc),
+            λ (m1: GlobalM, acc: To): [GlobalM, To] =
+                let rk = core.nat.add (item_id, core.nat.mul (full, NT));
+                st (m1, group_id, rk, acc));
+    let (m1, acc) = (λ (_: StepEl): [GlobalM, To] = (m1, acc),
+                     do_tail)#(core.ncmp.ne (tail, 0)) step_elem;
+    let (m1, m3, total) = simt_group_reduce @To NT (init, merge) (m1, m3, item_id, acc);
+    let m1 = simt_when @GlobalM (core.ncmp.e (item_id, 0), m1, λ (m1: GlobalM): GlobalM =
+        write_out (m1, group_id, total));
+    (m1, m3);
