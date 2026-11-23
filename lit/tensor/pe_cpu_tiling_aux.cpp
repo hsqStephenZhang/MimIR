@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -13,6 +14,7 @@ float* gemm_nt(float*, float*);
 float* gemm_bias(float*, float*, float*);
 float* gemm_chain(float*, float*, float*);
 double* gemm_f64(double*, double*);
+int16_t* gemm_i16(int16_t*, int16_t*);
 }
 
 static std::vector<float> fill(size_t n, int p, int q) {
@@ -89,6 +91,12 @@ int main() {
         auto bf = fill(31 * 19, 11, 29);
         std::vector<double> a(af.begin(), af.end()), b(bf.begin(), bf.end());
         bad += check_gemm("f64", gemm_f64(a.data(), b.data()), a.data(), b.data(), 1, 29, 31, 19);
+    }
+    {
+        std::vector<int16_t> a(19 * 17), b(17 * 35);
+        for (size_t i = 0; i != a.size(); ++i) a[i] = int16_t(int(i % 7) - 3);
+        for (size_t i = 0; i != b.size(); ++i) b[i] = int16_t(int(i % 5) - 2);
+        bad += check_gemm("i16", gemm_i16(a.data(), b.data()), a.data(), b.data(), 1, 19, 17, 35);
     }
     return bad != 0;
 }

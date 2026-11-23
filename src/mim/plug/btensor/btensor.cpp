@@ -13,7 +13,7 @@ static void reg_phases(Flags2Phases& phases) {
 }
 
 static constexpr PluginArg known_args[] = {
-    {"registers=<n>", "Maximum output cells kept in SSA registers in a blocked leaf (default `64`)."},
+    {"registers=<n>", "Maximum 32-bit cell equivalents (×4 bytes) kept in SSA registers in a blocked leaf (default `64`, i.e. 256 bytes)."},
 };
 
 MIM_PLUGIN_ENTRY(btensor) {

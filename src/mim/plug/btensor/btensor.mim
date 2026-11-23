@@ -472,8 +472,9 @@ anx lam mr_nest (ro rr: Nat, Sr: «ro + rr; Nat», To U: *) (s: Sched)
                     (range_nest (r, Sr) U (vec_for @U, sd_c, ro) fill)) (pref, m, u, s1);
             (range_nest (r, Sr) U (novec_for @U, 0, pd_c) at_block) (‹r; 0I32›, m, u, done_panel);
 
+        let cell_bytes  = core.select (0 < core.trait.size To, core.trait.size To, 4);
         let register_ok = core.bit2.and 2 (block_ok,
-            Sr#(core.idx 0 r pd_c) * Sr#(core.idx 0 r sd_c) <= register_budget ());
+            Sr#(core.idx 0 r pd_c) * Sr#(core.idx 0 r sd_c) * cell_bytes <= register_budget () * 4);
         let Sp = (1, Sr#(core.idx 0 r pd_c))#register_ok;
         let Sv = (1, Sr#(core.idx 0 r sd_c))#register_ok;
         // Keep each row as a vector instead of one Sp*Sv-wide vector to prevent SIMD spills on e.g. 6x16.
