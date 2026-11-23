@@ -236,8 +236,14 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
 
 const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     auto& w = callee->world();
-    // `run_levels` tiles for a CPU; a GPU pipeline launches the contraction as a kernel instead.
-    if (!w.driver().arg_nat("tensor", "pe-cpu").value_or(1) || w.driver().is_loaded("gpu")) return w.lit_ff();
+    // `run_levels` tiles for a CPU; when the GPU plugin is loaded, keep the canonical contraction for
+    // `gpu.simt_tiled_kernel` (`plan == nullptr`) without letting CPU `run_levels` claim it (`plan != nullptr`).
+    bool gpu_loaded = w.driver().is_loaded("gpu");
+    if (gpu_loaded) {
+        if (plan != nullptr || !w.driver().arg_nat("gpu", "pe-simt").value_or(1)) return w.lit_ff();
+    } else if (!w.driver().arg_nat("tensor", "pe-cpu").value_or(1)) {
+        return w.lit_ff();
+    }
     auto mr    = btensor::MapRedPost::of(callee);
     auto ranks = mr.ranks();
     if (!ranks) return nullptr;
