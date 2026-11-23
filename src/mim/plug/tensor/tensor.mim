@@ -1414,8 +1414,8 @@ priv anx lam dot_product_impl
       let canonical = materialize t;
       let points    = vec.fold.r @(Nat, Nat) @n_loops (λ (e acc: Nat): Nat = e * acc) (s_full, 1);
       let use_pe    = if_static (points, pe_cpu_candidate canonical, ff);
-      (λ (): Tensor (vec.len s_out) s_out (R#T) = (go_n, go_kvec)#kvec (),
-       λ (): Tensor (vec.len s_out) s_out (R#T) = canonical)#use_pe ();
+      // A choice of tensors rather than of thunks, so a runtime-shaped one still bufferizes.
+      ((go_n, go_kvec)#kvec (), canonical)#use_pe;
 ///
 /// ### bmm_impl
 ///

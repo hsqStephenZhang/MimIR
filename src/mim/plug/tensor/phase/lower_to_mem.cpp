@@ -294,6 +294,13 @@ const Def* LowerToMem::uncurry(Lam* lam) {
     return seal(lam, new_lam);
 }
 
+const Def* LowerToMem::rewrite_imm_Extract(const Extract* extract) {
+    // A residualized choice among tensors lowers only the chosen one.
+    if (auto tuple = extract->tuple()->isa<Tuple>(); tuple && mentions_tensor(tuple->type()))
+        if (auto i = Lit::isa(rewrite(extract->index()))) return rewrite(tuple->op(*i));
+    return RWPhase::rewrite_imm_Extract(extract);
+}
+
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
     auto& w = new_world();
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
