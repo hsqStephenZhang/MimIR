@@ -84,7 +84,7 @@ const Nest::Node* Scheduler::smart(Def* curr_mut, const Def* def) {
 
     int depth = l->loop_depth();
     for (auto i = l; i != e;) {
-        i = i->inest();
+        i = i->idom() ? i->idom() : i->inest();
 
         if (i == nullptr) {
             world().log().e("no place found for {}", def);
