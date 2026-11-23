@@ -8,7 +8,7 @@
 // RUN: %if system-linux && cuda %{ %t2 %}
 // RUN: %mim -VVV -p opt -p gpu -X gpu:pe-simt=0 %S/../tensor/pe_cpu_tiling_exec.mim -p nvptx -X nvptx:o=%t_off.ll -X nvptx:o-dev=%t_off_dev.ll 2>&1 | %FileCheck %s --check-prefix=OFF
 
-// CHECK-DAG: tile the contraction over ‹3; 32› on GPU with gpu.simt_tiled_kernel
+// CHECK-DAG: tile the contraction over ‹3; 32› on GPU with gpu.simt_tiled_kernel_v4
 // CHECK-DAG: tile the contraction over (19, 37, 29) on GPU with gpu.simt_tiled_kernel
 // CHECK-DAG: tile the contraction over (1, 35, 23) on GPU with gpu.simt_tiled_kernel
 // CHECK-DAG: tile the contraction over (13, 1, 23) on GPU with gpu.simt_tiled_kernel
@@ -21,7 +21,11 @@
 // CHECK-DAG: tile the contraction over (19, 35, 17) on GPU with gpu.simt_tiled_kernel
 // OFF-NOT: gpu.simt_tiled_kernel
 
-// DEV: internal addrspace(3) global
-// DEV: internal addrspace(3) global
+// DEV: internal addrspace(3) global {{.*}} align 16
+// DEV: internal addrspace(3) global {{.*}} align 16
 // DEV: define ptx_kernel void @mapReduceSimtKernel
+// DEV: load <4 x float>, <4 x float> addrspace(1)* {{.*}}, align 16
+// DEV: store <4 x float> {{.*}}, <4 x float> addrspace(3)* {{.*}}, align 16
 // DEV: call void @llvm.nvvm.barrier0()
+// DEV: load <4 x float>, <4 x float> addrspace(3)* {{.*}}, align 16
+// DEV: store <4 x float> {{.*}}, <4 x float> addrspace(1)* {{.*}}, align 16

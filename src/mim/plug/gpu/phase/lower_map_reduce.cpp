@@ -275,7 +275,8 @@ Lam* build_kernel(World& w,
 
 struct SimtPlan {
     nat_t B, M, N, K;
-    nat_t BM, BN, BK, TM, TN, Pad;
+    nat_t BM, BN, BK, TM, TN, Pad, Dbuf;
+    bool vec4, a_v4, b_v4;
     Vector<nat_t> batch_dims;
 
     Grid grid() const {
@@ -350,7 +351,9 @@ std::optional<SimtPlan> plan_simt_contraction(World& w,
         return 1;
     };
 
-    nat_t bm_cap = 64;
+    // Use 128×128 (TM=8, TN=8: 16 FMAs per LDS.128) when the grid has enough blocks to saturate SMs;
+    // otherwise 64×128 (TM=4, TN=8) doubles block parallelism for medium matrices such as 1024×1024.
+    nat_t bm_cap = (bytes == 4 && M >= 128 && N >= 128 && B * (M / 128) * (N / 128) >= 256) ? 128 : 64;
     nat_t bn_cap = bytes > 4 ? 64 : 128;
     nat_t bm     = w.driver().arg_nat("gpu", "bm").value_or(0);
     nat_t bn     = w.driver().arg_nat("gpu", "bn").value_or(0);
@@ -358,13 +361,44 @@ std::optional<SimtPlan> plan_simt_contraction(World& w,
     nat_t tm     = w.driver().arg_nat("gpu", "tm").value_or(0);
     nat_t tn     = w.driver().arg_nat("gpu", "tn").value_or(0);
     nat_t pad    = w.driver().arg_nat("gpu", "pad").value_or(1);
+    nat_t dbuf   = w.driver().arg_nat("gpu", "dbuf").value_or(1);
+    bool want_v4 = w.driver().arg_nat("gpu", "vec4").value_or(1) != 0;
     if (bm == 0) bm = pick_b(M, bm_cap);
     if (bn == 0) bn = pick_b(N, bn_cap);
     if (bk == 0) bk = K >= 16 ? 16 : 8;
     if (tm == 0) tm = pick_t(bm);
     if (tn == 0) tn = pick_t(bn);
 
-    return SimtPlan{B, M, N, K, bm, bn, bk, tm, tn, pad, std::move(batch_dims)};
+    auto [Ta, Tb] = mr.Tis->projs<2>();
+    auto ba       = Lit::isa<nat_t>(w.app(w.annex(core::trait::size), Ta));
+    auto bb       = Lit::isa<nat_t>(w.app(w.annex(core::trait::size), Tb));
+    nat_t nt      = (bm / tm) * (bn / tn);
+    bool vec4     = want_v4 && bytes == 4 && ba == 4 && bb == 4 && (bm % 4 == 0) && (bn % 4 == 0) && (bk % 4 == 0)
+             && (tm % 4 == 0) && (tn % 4 == 0) && (N % 4 == 0) && (nt > 0) && ((bm * (bk / 4)) % nt == 0)
+             && ((bk * (bn / 4)) % nt == 0);
+
+    auto is_inner_contig = [&](size_t slot, size_t ax, nat_t ext) -> bool {
+        if (ext % 4 != 0) return false;
+        auto r_lit = Lit::isa<nat_t>(mr.Ris->proj(2, slot));
+        if (!r_lit || *r_lit == 0) return false;
+        auto r     = *r_lit;
+        auto s_in  = mr.Sis->proj(2, slot);
+        auto inner = Lit::isa<nat_t>(s_in->proj(r, r - 1));
+        if (!inner || *inner != ext) return false;
+        auto mapped = w.app(maps[slot], probe->var());
+        if (mapped->proj(r, r - 1) != vars[ax]) return false;
+        auto sub = vars;
+        sub[ax]  = w.call<affine::lit>(w.lit_nat_0());
+        auto m0  = w.app(maps[slot], w.tuple(sub));
+        for (nat_t d = 0; d + 1 < r; ++d)
+            if (!Check::test_alpha(mapped->proj(r, d), m0->proj(r, d))) return false;
+        return true;
+    };
+
+    bool a_v4 = vec4 && is_inner_contig(0, ro, K);
+    bool b_v4 = vec4 && is_inner_contig(1, n_ax, N);
+
+    return SimtPlan{B, M, N, K, bm, bn, bk, tm, tn, pad, dbuf, vec4, a_v4, b_v4, std::move(batch_dims)};
 }
 
 /// Builds a shared-memory + register-tiled SIMT contraction kernel via `gpu.simt_tiled_kernel`.
@@ -479,13 +513,97 @@ Lam* build_simt_kernel(World& w,
     auto group_nat = grid.n_groups == 1 ? w.lit_nat_0() : w.call<core::idx2nat>(group_id);
     auto item_nat  = grid.n_items == 1 ? w.lit_nat_0() : w.call<core::idx2nat>(item_id);
 
-    const Def* simt = w.annex<gpu::simt_tiled_kernel>();
-    simt            = w.app(simt, {Ta, Tb, To});
-    simt            = w.app(simt, {w.lit_nat(plan.B), m_lit, n_lit, k_lit, w.lit_nat(plan.BM), w.lit_nat(plan.BN),
-                                   w.lit_nat(plan.BK), w.lit_nat(plan.TM), w.lit_nat(plan.TN), w.lit_nat(plan.Pad)});
-    simt            = w.app(simt, {init, global_comb});
-    simt            = w.app(simt, {read_a, read_b, write_c});
-    auto [fin_global, fin_shared] = w.app(simt, {k_global, k_shared, group_nat, item_nat})->projs<2>();
+    const Def* fin_pair;
+    if (plan.vec4) {
+        auto global_as = w.annex<gpu::addr_space_global>();
+        auto make_reader4 = [&](size_t slot, const Def* elem_ty, bool is_a, bool contig, Lam* scalar_rd,
+                                const char* name) -> Lam* {
+            auto arr4 = w.arr(4, elem_ty);
+            auto lam  = w.mut_lam(Defs{global_ty, nat_ty, nat_ty, nat_ty}, w.sigma({global_ty, arr4}))->set(name);
+            auto [rm, rbatch, r0, r1] = lam->vars<4>();
+            if (contig) {
+                auto [bm, bcoords] = unflatten_index(w, w.call<core::bitcast>(i64_ty, rbatch), plan.batch_dims, rm);
+                DefVec iters_v     = bcoords;
+                if (is_a) {
+                    iters_v.push_back(to_idx(m_lit, r0));
+                    iters_v.push_back(w.lit_idx(plan.N, 0));
+                    iters_v.push_back(to_idx(k_lit, r1));
+                } else {
+                    iters_v.push_back(w.lit_idx(plan.M, 0));
+                    iters_v.push_back(to_idx(n_lit, r1));
+                    iters_v.push_back(to_idx(k_lit, r0));
+                }
+                auto [mc_mem, coords]
+                    = btensor::op_affine_map(ins.maps[slot], ins.rs[slot], n, Sr, ins.ss[slot], w.tuple(iters_v), bm)
+                          ->projs<2>();
+                auto base_ptr = mem::op_lea_tuple(k_dptrs[slot], *Shape(coords).fold(ins.ss[slot]));
+                auto vld      = w.app(w.app(w.annex<gpu::vload4>(), {elem_ty, global_as}), {mc_mem, base_ptr});
+                lam->set(true, vld);
+            } else {
+                const Def* cm = rm;
+                DefVec vals(4);
+                for (nat_t l = 0; l != 4; ++l) {
+                    auto c1        = l == 0 ? r1 : w.call(core::nat::add, Defs{r1, w.lit_nat(l)});
+                    auto [nm, val] = w.app(scalar_rd, Defs{cm, rbatch, r0, c1})->projs<2>();
+                    cm             = nm;
+                    vals[l]        = val;
+                }
+                lam->set(true, w.tuple({cm, w.tuple(vals)}));
+            }
+            return lam;
+        };
+
+        auto read_a4 = make_reader4(0, Ta, true, plan.a_v4, read_a, "readA4");
+        auto read_b4 = make_reader4(1, Tb, false, plan.b_v4, read_b, "readB4");
+
+        // Check whether global_post is the identity `return (m, acc)` so we can emit direct `vstore4`.
+        bool post_is_id = false;
+        if (nps == 0) {
+            if (auto pbody = global_post->body()->isa<App>(); pbody && pbody->callee() == global_post->var(2, 1)) {
+                auto [pm, pacc, _] = global_post->var(2, 0)->projs<3>();
+                auto [rm, rv]      = pbody->arg()->projs<2>();
+                post_is_id         = (rm == pm && rv == pacc);
+            }
+        }
+
+        auto arr4_o   = w.arr(4, To);
+        auto write_c4 = w.mut_lam(Defs{global_ty, nat_ty, nat_ty, nat_ty, arr4_o}, global_ty)->set("writeC4");
+        auto [wm4, wb4, wr4, wc0, wv4] = write_c4->vars<5>();
+        if (post_is_id) {
+            auto [wbm4, wbcoords4] = unflatten_index(w, w.call<core::bitcast>(i64_ty, wb4), plan.batch_dims, wm4);
+            DefVec wcoords4        = wbcoords4;
+            wcoords4.push_back(to_idx(m_lit, wr4));
+            wcoords4.push_back(to_idx(n_lit, wc0));
+            auto base_ptr = mem::op_lea_tuple(k_out_dptr, *Shape(w.tuple(wcoords4)).fold(So));
+            auto vst      = w.app(w.app(w.annex<gpu::vstore4>(), {To, global_as}), {wbm4, base_ptr, wv4});
+            write_c4->set(true, vst);
+        } else {
+            const Def* cm = wm4;
+            for (nat_t l = 0; l != 4; ++l) {
+                auto col = l == 0 ? wc0 : w.call(core::nat::add, Defs{wc0, w.lit_nat(l)});
+                cm       = w.app(write_c, Defs{cm, wb4, wr4, col, wv4->proj(4, l)});
+            }
+            write_c4->set(true, cm);
+        }
+
+        const Def* simt = w.annex<gpu::simt_tiled_kernel_v4>();
+        simt            = w.app(simt, {Ta, Tb, To});
+        simt = w.app(simt, {w.lit_nat(plan.B), m_lit, n_lit, k_lit, w.lit_nat(plan.BM), w.lit_nat(plan.BN),
+                            w.lit_nat(plan.BK), w.lit_nat(plan.TM), w.lit_nat(plan.TN), w.lit_nat(plan.Pad),
+                            w.lit_nat(plan.Dbuf)});
+        simt = w.app(simt, {init, global_comb});
+        simt = w.app(simt, {read_a4, read_b4, read_a, read_b, write_c4});
+        fin_pair = w.app(simt, {k_global, k_shared, group_nat, item_nat});
+    } else {
+        const Def* simt = w.annex<gpu::simt_tiled_kernel>();
+        simt            = w.app(simt, {Ta, Tb, To});
+        simt = w.app(simt, {w.lit_nat(plan.B), m_lit, n_lit, k_lit, w.lit_nat(plan.BM), w.lit_nat(plan.BN),
+                            w.lit_nat(plan.BK), w.lit_nat(plan.TM), w.lit_nat(plan.TN), w.lit_nat(plan.Pad)});
+        simt     = w.app(simt, {init, global_comb});
+        simt     = w.app(simt, {read_a, read_b, write_c});
+        fin_pair = w.app(simt, {k_global, k_shared, group_nat, item_nat});
+    }
+    auto [fin_global, fin_shared] = fin_pair->projs<2>();
 
     kernel->app(true, k_ret, Defs{fin_global, fin_shared, k_const, k_local});
     return kernel;
@@ -839,8 +957,8 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     Grid grid;
     Lam* kernel;
     if (auto plan = plan_simt_contraction(w, mr, nis_n, ro, rr, out_dims)) {
-        log().i("tile the contraction over {} on GPU with gpu.simt_tiled_kernel (BM={}, BN={}, BK={}, TM={}, TN={})",
-                Sr, plan->BM, plan->BN, plan->BK, plan->TM, plan->TN);
+        log().i("tile the contraction over {} on GPU with gpu.simt_tiled_kernel{} (BM={}, BN={}, BK={}, TM={}, TN={}, dbuf={})",
+                Sr, plan->vec4 ? "_v4" : "", plan->BM, plan->BN, plan->BK, plan->TM, plan->TN, plan->Dbuf);
         grid   = plan->grid();
         kernel = build_simt_kernel(w, *plan, mr.Ro, Sr, mr.So,
                                    Mapped{in_desc.rs, in_desc.ss, inputs.dptrs, in_desc.maps}, mr.Tis, mr.To, mr.init,

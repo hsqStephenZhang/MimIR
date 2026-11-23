@@ -234,6 +234,13 @@ axm sync_work_items: [GlobalM, SharedM] → [GlobalM, SharedM];
 /// Threads `GlobalM` so MimIR's scheduler keeps the convergent warp shuffle out of divergent branches.
 axm warp_shfl_xor: {T: *} → [GlobalM, T, I32] → [GlobalM, T];
 ///
+/// #### vload4 / vstore4
+///
+/// 16-byte aligned 4-element vector load and store (`ld.*.v4` / `st.*.v4`) in address space `a`.
+/// The caller guarantees 16-byte pointer alignment and 4 contiguous elements.
+axm vload4:  {T: *, a: Nat} → [mem.M a, mem.Ptr (T, a)] → [mem.M a, «4; T»];
+axm vstore4: {T: *, a: Nat} → [mem.M a, mem.Ptr (T, a), «4; T»] → mem.M a;
+///
 /// #### synced_scope
 ///
 /// Runs `scope` bracketed by work-item synchronization: syncs, runs `scope`, and syncs again.
@@ -567,3 +574,290 @@ anx lam simt_reduce_kernel {To: *} (OutN RedK NT: Nat)
     let m1 = simt_when @GlobalM (core.ncmp.e (item_id, 0), m1, λ (m1: GlobalM): GlobalM =
         write_out (m1, group_id, total));
     (m1, m3);
+
+/// ## Vectorized (`v4`) + Double-Buffered SIMT Contraction Combinators
+///
+/// Extends the SIMT PE library with 128-bit vector loads/stores (`vload4`/`vstore4`), transposed
+/// shared-memory `A` (`BK × BMpad`, 16-byte aligned for `LDS.128`), and register-prefetch ping-pong
+/// double buffering (1 `bar.sync` per K-tile, overlapping global `LDG.128` with `FFMA`).
+
+/// Prefetches an `H × W` tile (`4 | W`, `NT | (H * W / 4)`) in 4-wide chunks into registers.
+anx lam simt_prefetch_v4 {T: *} (H W NT: Nat) (row_div: Bool)
+    (m1: GlobalM, tid base_r lim_r base_c: Nat,
+     read4: [GlobalM, Nat, Nat] → [GlobalM, «4; T»])
+    : [GlobalM, «core.nat.div (H * core.nat.div (W, 4), NT); «4; T»»] =
+    let W4    = core.nat.div (W, 4);
+    let trips = core.nat.div (H * W4, NT);
+    let Buf   = «trips; «4; T»»;
+    simt_unroll @[GlobalM, Buf] trips (m1, ‹trips; ‹4; ⊥:T››)
+        (λ (s: Idx trips, (m1: GlobalM, buf: Buf)): [GlobalM, Buf] =
+            let idx  = core.nat.add (tid, core.nat.mul (core.idx2nat s, NT));
+            let r    = core.nat.div (idx, W4);
+            let c    = core.nat.mul (core.nat.rem (idx, W4), 4);
+            let gr   = core.nat.add (base_r, r);
+            let gc   = core.nat.add (base_c, c);
+            let ok_r = core.select (row_div, tt, core.ncmp.l (gr, lim_r));
+            simt_when @[GlobalM, Buf] (ok_r, (m1, buf), λ (m1: GlobalM, buf: Buf): [GlobalM, Buf] =
+                let (m1, v4) = read4 (m1, gr, gc);
+                (m1, buf#s ← v4)));
+
+/// Commits prefetched 4-wide chunks of `B` (`BK × BN`) directly into `sb` (`BK × BNpad`) via `vstore4`.
+anx lam simt_commit_v4 {T: *} (BK BN BNpad NT: Nat)
+    (m3: SharedM, sb: SharedPtr «BK; «BNpad; T»», tid: Nat,
+     buf: «core.nat.div (BK * core.nat.div (BN, 4), NT); «4; T»»)
+    : SharedM =
+    let W4    = core.nat.div (BN, 4);
+    let trips = core.nat.div (BK * W4, NT);
+    simt_unroll @SharedM trips m3 (λ (s: Idx trips, m3: SharedM): SharedM =
+        let idx = core.nat.add (tid, core.nat.mul (core.idx2nat s, NT));
+        let r   = core.nat.div (idx, W4);
+        let c   = core.nat.mul (core.nat.rem (idx, W4), 4);
+        let p   = mem.lea (mem.lea (sb, core.conv.u BK (core.bitcast I64 r)), core.conv.u BNpad (core.bitcast I64 c));
+        vstore4 @(T, addr_space_shared) (m3, p, buf#s));
+
+/// Commits prefetched 4-wide chunks of `A` (`BM × BK`) transposed into `sa` (`BK × BMpad`).
+anx lam simt_commit_t_v4 {T: *} (BM BK BMpad NT: Nat)
+    (m3: SharedM, sa: SharedPtr «BK; «BMpad; T»», tid: Nat,
+     buf: «core.nat.div (BM * core.nat.div (BK, 4), NT); «4; T»»)
+    : SharedM =
+    let W4    = core.nat.div (BK, 4);
+    let trips = core.nat.div (BM * W4, NT);
+    simt_unroll @SharedM trips m3 (λ (s: Idx trips, m3: SharedM): SharedM =
+        let idx = core.nat.add (tid, core.nat.mul (core.idx2nat s, NT));
+        let r   = core.nat.div (idx, W4);
+        let c0  = core.nat.mul (core.nat.rem (idx, W4), 4);
+        let v4  = buf#s;
+        let ri  = core.conv.u BMpad (core.bitcast I64 r);
+        simt_unroll @SharedM 4 m3 (λ (l: Idx 4, m3: SharedM): SharedM =
+            let ck = core.nat.add (c0, core.idx2nat l);
+            let p  = mem.lea (mem.lea (sa, core.conv.u BK (core.bitcast I64 ck)), ri);
+            mem.store (m3, p, v4#l)));
+
+/// Scalar cooperative staging of a transposed `H × W` slice of `A` into `sa` (`BK × BMpad`), used for `K % BK` tails.
+anx lam simt_stage_tile_t {T: *} (BK H W BMpad NT: Nat) (row_div: Bool)
+    (m1: GlobalM, m3: SharedM, sa: SharedPtr «BK; «BMpad; T»», tid: Nat,
+     base_r lim_r base_c: Nat,
+     read: [GlobalM, Nat, Nat] → [GlobalM, T])
+    : [GlobalM, SharedM] =
+    let total = H * W;
+    let trips = core.nat.div (core.nat.add (total, core.nat.sub (NT, 1)), NT);
+    let exact = core.nat.rem (total, NT) == 0;
+    simt_unroll @[GlobalM, SharedM] trips (m1, m3) (λ (s: Idx trips, (m1: GlobalM, m3: SharedM)): [GlobalM, SharedM] =
+        let idx     = core.nat.add (tid, core.nat.mul (core.idx2nat s, NT));
+        let in_tile = core.select (exact, tt, core.ncmp.l (idx, total));
+        simt_when @[GlobalM, SharedM] (in_tile, (m1, m3), λ (m1: GlobalM, m3: SharedM): [GlobalM, SharedM] =
+            let r    = core.nat.div (idx, W);
+            let c    = core.nat.rem (idx, W);
+            let gr   = core.nat.add (base_r, r);
+            let gc   = core.nat.add (base_c, c);
+            let ok_r = core.select (row_div, tt, core.ncmp.l (gr, lim_r));
+            simt_when @[GlobalM, SharedM] (ok_r, (m1, m3), λ (m1: GlobalM, m3: SharedM): [GlobalM, SharedM] =
+                let (m1, v) = read (m1, gr, gc);
+                let p       = mem.lea (mem.lea (sa, core.conv.u BK (core.bitcast I64 c)), core.conv.u BMpad (core.bitcast I64 r));
+                (m1, mem.store (m3, p, v)))));
+
+/// Thread-local `TM × TN` outer-product micro-kernel (`4 | TM`, `4 | TN`) loading 4-wide fragments
+/// from transposed `sa` (`BK × BMpad`) and `sb` (`BK × BNpad`) via `vload4` (`LDS.128`).
+anx lam simt_reg_mma_v4 {Ta Tb To: *} (BK BMpad BNpad TY TX TM TN Klen: Nat)
+    (comb: Fn [GlobalM, To, [Ta, Tb]] → [GlobalM, To])
+    (m1: GlobalM, m3: SharedM,
+     sa: SharedPtr «BK; «BMpad; Ta»», sb: SharedPtr «BK; «BNpad; Tb»»,
+     ty tx: Nat, acc0: «TM; «TN; To»»)
+    : [GlobalM, SharedM, «TM; «TN; To»»] =
+    let TM4  = core.nat.div (TM, 4);
+    let TN4  = core.nat.div (TN, 4);
+    let Regs = «TM; «TN; To»»;
+    simt_k_loop @Regs Klen (m1, m3, acc0) (λ (kk: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
+        let kki    = core.conv.u BK (core.bitcast I64 kk);
+        let sa_row = mem.lea (sa, kki);
+        let sb_row = mem.lea (sb, kki);
+        let (m3, a_frag) = simt_unroll @[SharedM, «TM4; «4; Ta»»] TM4 (m3, ‹TM4; ‹4; ⊥:Ta››)
+            (λ (ig: Idx TM4, (m3: SharedM, af: «TM4; «4; Ta»»)): [SharedM, «TM4; «4; Ta»»] =
+                let r0       = core.nat.mul (core.nat.add (ty, core.nat.mul (core.idx2nat ig, TY)), 4);
+                let p        = mem.lea (sa_row, core.conv.u BMpad (core.bitcast I64 r0));
+                let (m3, v4) = vload4 @(Ta, addr_space_shared) (m3, p);
+                (m3, af#ig ← v4));
+        let (m3, b_frag) = simt_unroll @[SharedM, «TN4; «4; Tb»»] TN4 (m3, ‹TN4; ‹4; ⊥:Tb››)
+            (λ (jg: Idx TN4, (m3: SharedM, bf: «TN4; «4; Tb»»)): [SharedM, «TN4; «4; Tb»»] =
+                let c0       = core.nat.mul (core.nat.add (tx, core.nat.mul (core.idx2nat jg, TX)), 4);
+                let p        = mem.lea (sb_row, core.conv.u BNpad (core.bitcast I64 c0));
+                let (m3, v4) = vload4 @(Tb, addr_space_shared) (m3, p);
+                (m3, bf#jg ← v4));
+        let (m1, acc) = simt_unroll @[GlobalM, Regs] TM4 (m1, acc)
+            (λ (ig: Idx TM4, (m1: GlobalM, acc: Regs)): [GlobalM, Regs] =
+                let av4 = a_frag#ig;
+                simt_unroll @[GlobalM, Regs] 4 (m1, acc)
+                    (λ (il: Idx 4, (m1: GlobalM, acc: Regs)): [GlobalM, Regs] =
+                        let ii = core.conv.u TM (core.bitcast I64 (core.nat.add (core.nat.mul (core.idx2nat ig, 4), core.idx2nat il)));
+                        let av = av4#il;
+                        simt_unroll @[GlobalM, Regs] TN4 (m1, acc)
+                            (λ (jg: Idx TN4, (m1: GlobalM, acc: Regs)): [GlobalM, Regs] =
+                                let bv4 = b_frag#jg;
+                                simt_unroll @[GlobalM, Regs] 4 (m1, acc)
+                                    (λ (jl: Idx 4, (m1: GlobalM, acc: Regs)): [GlobalM, Regs] =
+                                        let jj = core.conv.u TN (core.bitcast I64 (core.nat.add (core.nat.mul (core.idx2nat jg, 4), core.idx2nat jl)));
+                                        let (m1, nv) = cps.cps2ds comb (m1, acc#ii#jj, (av, bv4#jl));
+                                        (m1, acc#ii#jj ← nv)))));
+        (m1, m3, acc));
+
+/// Coalesced 4-wide write-back of each thread's `TM × TN` register tile (`4 | TM`, `4 | TN`, `4 | N`).
+anx lam simt_store_tile_v4 {To: *} (M N BM BN TY TX TM TN: Nat)
+    (m1: GlobalM, block_m block_n ty tx: Nat, acc: «TM; «TN; To»»,
+     write4: [GlobalM, Nat, Nat, «4; To»] → GlobalM)
+    : GlobalM =
+    let TM4   = core.nat.div (TM, 4);
+    let TN4   = core.nat.div (TN, 4);
+    let m_div = core.nat.rem (M, BM) == 0;
+    let n_div = core.nat.rem (N, BN) == 0;
+    simt_unroll @GlobalM TM4 m1 (λ (ig: Idx TM4, m1: GlobalM): GlobalM =
+        let r0 = core.nat.add (block_m, core.nat.mul (core.nat.add (ty, core.nat.mul (core.idx2nat ig, TY)), 4));
+        simt_unroll @GlobalM 4 m1 (λ (il: Idx 4, m1: GlobalM): GlobalM =
+            let gm   = core.nat.add (r0, core.idx2nat il);
+            let ok_m = core.select (m_div, tt, core.ncmp.l (gm, M));
+            let ii   = core.conv.u TM (core.bitcast I64 (core.nat.add (core.nat.mul (core.idx2nat ig, 4), core.idx2nat il)));
+            simt_when @GlobalM (ok_m, m1, λ (m1: GlobalM): GlobalM =
+                simt_unroll @GlobalM TN4 m1 (λ (jg: Idx TN4, m1: GlobalM): GlobalM =
+                    let gn0  = core.nat.add (block_n, core.nat.mul (core.nat.add (tx, core.nat.mul (core.idx2nat jg, TX)), 4));
+                    let ok_n = core.select (n_div, tt, core.ncmp.l (gn0, N));
+                    simt_when @GlobalM (ok_n, m1, λ (m1: GlobalM): GlobalM =
+                        let j0 = core.nat.mul (core.idx2nat jg, 4);
+                        let v4: «4; To» = ‹jl: 4; acc#ii#(core.conv.u TN (core.bitcast I64 (core.nat.add (j0, core.idx2nat jl))))›;
+                        write4 (m1, gm, gn0, v4))))));
+
+/// Vectorized + double-buffered SIMT contraction kernel body over `B × M × N × K`.
+/// Requires `4 | BM`, `4 | BN`, `4 | BK`, `4 | TM`, `4 | TN`, `4 | N`, `NT | (BM*BK/4)`, `NT | (BK*BN/4)`.
+anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
+    (B M N K BM BN BK TM TN Pad Dbuf: Nat)
+    (init: To, comb: Fn [GlobalM, To, [Ta, Tb]] → [GlobalM, To])
+    (read_a4:  [GlobalM, Nat, Nat, Nat] → [GlobalM, «4; Ta»],
+     read_b4:  [GlobalM, Nat, Nat, Nat] → [GlobalM, «4; Tb»],
+     read_a1:  [GlobalM, Nat, Nat, Nat] → [GlobalM, Ta],
+     read_b1:  [GlobalM, Nat, Nat, Nat] → [GlobalM, Tb],
+     write_c4: [GlobalM, Nat, Nat, Nat, «4; To»] → GlobalM)
+    (m1: GlobalM, m3: SharedM, group_id item_id: Nat)
+    : [GlobalM, SharedM] =
+    let TY    = core.nat.div (BM, TM);
+    let TX    = core.nat.div (BN, TN);
+    let NT    = TY * TX;
+    let pad4  = core.select (Pad == 0, 0, core.nat.mul (core.nat.div (core.nat.add (Pad, 3), 4), 4));
+    let BMpad = core.nat.add (BM, pad4);
+    let BNpad = core.nat.add (BN, pad4);
+    let gm_blks = core.nat.div (core.nat.add (M, core.nat.sub (BM, 1)), BM);
+    let gn_blks = core.nat.div (core.nat.add (N, core.nat.sub (BN, 1)), BN);
+    let mn_blks = gm_blks * gn_blks;
+    let batch   = (0, core.nat.div (group_id, mn_blks))#(1 < B);
+    let blk_rem = (group_id, core.nat.rem (group_id, mn_blks))#(1 < B);
+    let bm_id   = core.nat.div (blk_rem, gn_blks);
+    let bn_id   = core.nat.rem (blk_rem, gn_blks);
+    let block_m = core.nat.mul (bm_id, BM);
+    let block_n = core.nat.mul (bn_id, BN);
+    let ty      = core.nat.div (item_id, TX);
+    let tx      = core.nat.rem (item_id, TX);
+    let m_div   = core.nat.rem (M, BM) == 0;
+    let n_div   = core.nat.rem (N, BN) == 0;
+    let full_k  = core.nat.div (K, BK);
+    let tail_k  = core.nat.rem (K, BK);
+    let use_db  = core.bit2.and 2 (core.ncmp.ne (Dbuf, 0), 1 < full_k);
+    let Regs    = «TM; «TN; To»»;
+    let acc0    = ‹TM; ‹TN; init››;
+    let ra4     = λ (m1: GlobalM, r c: Nat): [GlobalM, «4; Ta»] = read_a4 (m1, batch, r, c);
+    let rb4     = λ (m1: GlobalM, r c: Nat): [GlobalM, «4; Tb»] = read_b4 (m1, batch, r, c);
+    let ra1     = λ (m1: GlobalM, r c: Nat): [GlobalM, Ta]      = read_a1 (m1, batch, r, c);
+    let rb1     = λ (m1: GlobalM, r c: Nat): [GlobalM, Tb]      = read_b1 (m1, batch, r, c);
+    let wc4     = λ (m1: GlobalM, r c: Nat, v: «4; To»): GlobalM = write_c4 (m1, batch, r, c, v);
+    let SaPtr   = SharedPtr «BK; «BMpad; Ta»»;
+    let SbPtr   = SharedPtr «BK; «BNpad; Tb»»;
+    let CompFn  = [GlobalM, SharedM, SaPtr, SbPtr, Regs] → [GlobalM, SharedM, Regs];
+
+    let run_single = λ (comp: CompFn): [GlobalM, SharedM] =
+        fun body (m1: GlobalM, m3: SharedM)@tt: [GlobalM, SharedM] =
+            ret (m3, sa) = mem.slot («BK; «BMpad; Ta»», addr_space_shared) $ m3;
+            ret (m3, sb) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
+            let do_full = λ (c: CompFn): [GlobalM, SharedM, Regs] =
+                simt_k_loop @Regs full_k (m1, m3, acc0)
+                    (λ (kt: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
+                        let kb        = core.nat.mul (kt, BK);
+                        let (m1, pa)  = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, kb, ra4);
+                        let (m1, pb)  = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, kb, K, block_n, rb4);
+                        let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa, item_id, pa);
+                        let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb, item_id, pb);
+                        let (m1, m3)  = sync_work_items (m1, m3);
+                        let (m1, m3, acc) = c (m1, m3, sa, sb, acc);
+                        let (m1, m3)  = sync_work_items (m1, m3);
+                        (m1, m3, acc));
+            let (m1, m3, acc) = (λ (_: CompFn): [GlobalM, SharedM, Regs] = (m1, m3, acc0),
+                                 do_full)#(core.ncmp.ne (full_k, 0)) comp;
+            let do_tail = λ (c: CompFn): [GlobalM, SharedM, Regs] =
+                let kb       = core.nat.mul (full_k, BK);
+                let (m1, m3) = simt_stage_tile_t @Ta (BK, BM, tail_k, BMpad, NT) m_div (m1, m3, sa, item_id, block_m, M, kb, ra1);
+                let (m1, m3) = simt_stage_tile   @Tb (BK, tail_k, BN, BNpad, NT) (tt, n_div) (m1, m3, sb, item_id, kb, K, block_n, N, rb1);
+                let (m1, m3) = sync_work_items (m1, m3);
+                simt_reg_mma_v4 @(Ta, Tb, To) (BK, BMpad, BNpad, TY, TX, TM, TN, tail_k) comb (m1, m3, sa, sb, ty, tx, acc);
+            let (m1, m3, acc) = (λ (_: CompFn): [GlobalM, SharedM, Regs] = (m1, m3, acc),
+                                 do_tail)#(core.ncmp.ne (tail_k, 0)) comp;
+            let m1 = simt_store_tile_v4 @To (M, N, BM, BN, TY, TX, TM, TN) (m1, block_m, block_n, ty, tx, acc, wc4);
+            return (m1, m3);
+        cps.cps2ds body (m1, m3);
+
+    let run_dbuf = λ (comp: CompFn): [GlobalM, SharedM] =
+        fun body (m1: GlobalM, m3: SharedM)@tt: [GlobalM, SharedM] =
+            ret (m3, sa0) = mem.slot («BK; «BMpad; Ta»», addr_space_shared) $ m3;
+            ret (m3, sa1) = mem.slot («BK; «BMpad; Ta»», addr_space_shared) $ m3;
+            ret (m3, sb0) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
+            ret (m3, sb1) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
+            // Prologue: stage tile 0 into buf0.
+            let (m1, pa0) = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, 0, ra4);
+            let (m1, pb0) = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, 0, K, block_n, rb4);
+            let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa0, item_id, pa0);
+            let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb0, item_id, pb0);
+            let (m1, m3)  = sync_work_items (m1, m3);
+            let rem_full  = core.nat.sub (full_k, 1);
+            let pairs     = core.nat.div (rem_full, 2);
+            let has_odd   = core.nat.rem (rem_full, 2) == 1;
+            let do_pairs  = λ (c: CompFn): [GlobalM, SharedM, Regs] =
+                simt_k_loop @Regs pairs (m1, m3, acc0)
+                    (λ (p: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
+                        let k1        = core.nat.mul (core.nat.add (core.nat.mul (p, 2), 1), BK);
+                        let (m1, pa1) = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, k1, ra4);
+                        let (m1, pb1) = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, k1, K, block_n, rb4);
+                        let (m1, m3, acc) = c (m1, m3, sa0, sb0, acc);
+                        let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa1, item_id, pa1);
+                        let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb1, item_id, pb1);
+                        let (m1, m3)  = sync_work_items (m1, m3);
+                        let k2        = core.nat.add (k1, BK);
+                        let (m1, pa2) = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, k2, ra4);
+                        let (m1, pb2) = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, k2, K, block_n, rb4);
+                        let (m1, m3, acc) = c (m1, m3, sa1, sb1, acc);
+                        let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa0, item_id, pa2);
+                        let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb0, item_id, pb2);
+                        let (m1, m3)  = sync_work_items (m1, m3);
+                        (m1, m3, acc));
+            let (m1, m3, acc) = (λ (_: CompFn): [GlobalM, SharedM, Regs] = (m1, m3, acc0),
+                                 do_pairs)#(core.ncmp.ne (pairs, 0)) comp;
+            let finish_even = λ (c: CompFn): [GlobalM, SharedM, Regs] = c (m1, m3, sa0, sb0, acc);
+            let finish_odd  = λ (c: CompFn): [GlobalM, SharedM, Regs] =
+                let kl        = core.nat.mul (rem_full, BK);
+                let (m1, pal) = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, kl, ra4);
+                let (m1, pbl) = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, kl, K, block_n, rb4);
+                let (m1, m3, acc) = c (m1, m3, sa0, sb0, acc);
+                let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa1, item_id, pal);
+                let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb1, item_id, pbl);
+                let (m1, m3)  = sync_work_items (m1, m3);
+                c (m1, m3, sa1, sb1, acc);
+            let (m1, m3, acc) = (finish_even, finish_odd)#has_odd comp;
+            let do_tail = λ (c: CompFn): [GlobalM, SharedM, Regs] =
+                let (m1, m3) = sync_work_items (m1, m3);
+                let kb       = core.nat.mul (full_k, BK);
+                let (m1, m3) = simt_stage_tile_t @Ta (BK, BM, tail_k, BMpad, NT) m_div (m1, m3, sa0, item_id, block_m, M, kb, ra1);
+                let (m1, m3) = simt_stage_tile   @Tb (BK, tail_k, BN, BNpad, NT) (tt, n_div) (m1, m3, sb0, item_id, kb, K, block_n, N, rb1);
+                let (m1, m3) = sync_work_items (m1, m3);
+                simt_reg_mma_v4 @(Ta, Tb, To) (BK, BMpad, BNpad, TY, TX, TM, TN, tail_k) comb (m1, m3, sa0, sb0, ty, tx, acc);
+            let (m1, m3, acc) = (λ (_: CompFn): [GlobalM, SharedM, Regs] = (m1, m3, acc),
+                                 do_tail)#(core.ncmp.ne (tail_k, 0)) comp;
+            let m1 = simt_store_tile_v4 @To (M, N, BM, BN, TY, TX, TM, TN) (m1, block_m, block_n, ty, tx, acc, wc4);
+            return (m1, m3);
+        cps.cps2ds body (m1, m3);
+
+    let comp: CompFn = λ (m1: GlobalM, m3: SharedM, sa: SaPtr, sb: SbPtr, acc: Regs): [GlobalM, SharedM, Regs] =
+        simt_reg_mma_v4 @(Ta, Tb, To) (BK, BMpad, BNpad, TY, TX, TM, TN, BK) comb (m1, m3, sa, sb, ty, tx, acc);
+    (run_single, run_dbuf)#use_db comp;

@@ -78,6 +78,8 @@ static constexpr PluginArg known_args[] = {
     {"tm=<n>", "Override GPU thread register row tile TM (`0` uses automatic selection)."},
     {"tn=<n>", "Override GPU thread register column tile TN (`0` uses automatic selection)."},
     {"pad=<n>", "Shared-memory row padding elements for bank-conflict avoidance (default `1`)."},
+    {"vec4=<n>", "Enable 128-bit vectorized loads/stores and transposed shared A tile (`1` on by default, `0` off)."},
+    {"dbuf=<n>", "Enable register-prefetch shared-memory double buffering on vectorized contractions (`1` on by default, `0` off)."},
     {"reduce-nt=<n>", "Override GPU parallel reduction block thread count (multiple of 32 in 32..1024; `0` uses automatic selection)."},
 };
 // clang-format on

@@ -85,7 +85,7 @@ private:
     /// Device slots live in a module-scope global in their requested address space, not on the stack.
     std::string emit_slot(ll::BB&, const App* app, const Def* pointee, const Def* addr_space) override {
         auto v_ptr = "@" + app->unique_name() + ".slot";
-        std::println(vars_decls_, "{} = internal addrspace({}) global {} undef", v_ptr, addr_space,
+        std::println(vars_decls_, "{} = internal addrspace({}) global {} undef, align 16", v_ptr, addr_space,
                      convert(pointee, false));
         return v_ptr;
     }
@@ -640,6 +640,47 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         } else {
             fe::throwf(MIM_NVPTX_BE "`gpu.warp_shfl_xor` does not support type `{}`", ty);
         }
+    } else if (auto vload = Axm::isa<gpu::vload4>(def)) {
+        auto [m_def, ptr_def] = vload->args<2>();
+        emit_unsafe(m_def);
+        auto v_ptr   = emit(ptr_def);
+        auto ptr_ty  = Axm::expect<mem::Ptr>(ptr_def->type(), "a `mem.Ptr`");
+        auto [T, as] = ptr_ty->args<2>();
+        auto t_elem  = convert(T, false);
+        auto t_ptr   = convert(ptr_ty);
+        auto as_lit  = Lit::expect(as, "an address space");
+        auto t_vptr  = std::format("<4 x {}> addrspace({})*", t_elem, as_lit);
+        auto vp      = bb.assign(name + ".vp", "bitcast {} {} to {}", t_ptr, v_ptr, t_vptr);
+        auto vec     = bb.assign(name + ".vec", "load <4 x {}>, {} {}, align 16", t_elem, t_vptr, vp);
+        auto arr_ty  = std::format("[4 x {}]", t_elem);
+        std::string cur = "undef";
+        for (int i = 0; i < 4; ++i) {
+            auto el  = bb.assign(std::format("{}.e{}", name, i), "extractelement <4 x {}> {}, i32 {}", t_elem, vec, i);
+            auto dst = i == 3 ? name : std::format("{}.a{}", name, i);
+            cur      = bb.assign(dst, "insertvalue {} {}, {} {}, {}", arr_ty, cur, t_elem, el, i);
+        }
+        return cur;
+    } else if (auto vstore = Axm::isa<gpu::vstore4>(def)) {
+        auto [m_def, ptr_def, val_def] = vstore->args<3>();
+        emit_unsafe(m_def);
+        auto v_ptr   = emit(ptr_def);
+        auto v_val   = emit(val_def);
+        auto ptr_ty  = Axm::expect<mem::Ptr>(ptr_def->type(), "a `mem.Ptr`");
+        auto [T, as] = ptr_ty->args<2>();
+        auto t_elem  = convert(T, false);
+        auto t_ptr   = convert(ptr_ty);
+        auto as_lit  = Lit::expect(as, "an address space");
+        auto arr_ty  = std::format("[4 x {}]", t_elem);
+        auto t_vptr  = std::format("<4 x {}> addrspace({})*", t_elem, as_lit);
+        std::string vec = "undef";
+        for (int i = 0; i < 4; ++i) {
+            auto el = bb.assign(std::format("{}.e{}", name, i), "extractvalue {} {}, {}", arr_ty, v_val, i);
+            vec     = bb.assign(std::format("{}.v{}", name, i), "insertelement <4 x {}> {}, {} {}, i32 {}", t_elem, vec,
+                                t_elem, el, i);
+        }
+        auto vp = bb.assign(name + ".vp", "bitcast {} {} to {}", t_ptr, v_ptr, t_vptr);
+        std::print(bb.body().emplace_back(), "store <4 x {}> {}, {} {}, align 16", t_elem, vec, t_vptr, vp);
+        return std::string();
     } else if (auto tri = Axm::isa<math::tri>(def)) {
         auto arg       = emit(tri->arg());
         auto type      = convert(tri->arg()->type());
