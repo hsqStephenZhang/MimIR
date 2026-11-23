@@ -452,7 +452,7 @@ std::string Emitter::emit_tuple(BB& bb, const std::string& name, const Def* tupl
     }
 
     // A closed element may still be computed by an instruction, e.g. a bitcast through a stack slot.
-    if (tuple->is_closed() && std::ranges::none_of(elems, [](const auto& e) { return e.second.starts_with('%'); })) {
+    if (tuple->is_closed() && std::ranges::none_of(elems, [](const auto& e) { return e.second.contains('%'); })) {
         bool is_array = tuple->type()->isa<Arr>();
         std::string s;
         s += vec ? "<" : is_array ? "[" : "{";
