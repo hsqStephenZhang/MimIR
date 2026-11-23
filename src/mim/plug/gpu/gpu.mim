@@ -582,12 +582,15 @@ anx lam simt_reduce_kernel {To: *} (OutN RedK NT: Nat)
 /// double buffering (1 `bar.sync` per K-tile, overlapping global `LDG.128` with `FFMA`).
 
 /// Prefetches an `H × W` tile (`4 | W`, `NT | (H * W / 4)`) in 4-wide chunks into registers.
-anx lam simt_prefetch_v4 {T: *} (H W NT: Nat) (row_div: Bool)
-    (m1: GlobalM, tid base_r lim_r base_c: Nat,
+/// A chunk starting at or beyond `lim_c` is skipped, so `4 | lim_c` keeps every read in bounds.
+anx lam simt_prefetch_v4 {T: *} (H W NT: Nat) (row_div col_div: Bool)
+    (m1: GlobalM, tid base_r lim_r base_c lim_c: Nat,
      read4: [GlobalM, Nat, Nat] → [GlobalM, «4; T»])
     : [GlobalM, «core.nat.div (H * core.nat.div (W, 4), NT); «4; T»»] =
     let W4    = core.nat.div (W, 4);
     let trips = core.nat.div (H * W4, NT);
+    let m1    = refly.check (core.nat.rem (W, 4) == 0, m1, "gpu.simt_prefetch_v4: 4 must divide W");
+    let m1    = refly.check (core.nat.rem (H * W4, NT) == 0, m1, "gpu.simt_prefetch_v4: NT must divide H * W / 4");
     let Buf   = «trips; «4; T»»;
     simt_unroll @[GlobalM, Buf] trips (m1, ‹trips; ‹4; ⊥:T››)
         (λ (s: Idx trips, (m1: GlobalM, buf: Buf)): [GlobalM, Buf] =
@@ -597,7 +600,8 @@ anx lam simt_prefetch_v4 {T: *} (H W NT: Nat) (row_div: Bool)
             let gr   = core.nat.add (base_r, r);
             let gc   = core.nat.add (base_c, c);
             let ok_r = core.select (row_div, tt, core.ncmp.l (gr, lim_r));
-            simt_when @[GlobalM, Buf] (ok_r, (m1, buf), λ (m1: GlobalM, buf: Buf): [GlobalM, Buf] =
+            let ok_c = core.select (col_div, tt, core.ncmp.l (gc, lim_c));
+            simt_when @[GlobalM, Buf] (core.bit2.and 2 (ok_r, ok_c), (m1, buf), λ (m1: GlobalM, buf: Buf): [GlobalM, Buf] =
                 let (m1, v4) = read4 (m1, gr, gc);
                 (m1, buf#s ← v4)));
 
@@ -725,7 +729,7 @@ anx lam simt_store_tile_v4 {To: *} (M N BM BN TY TX TM TN: Nat)
                         write4 (m1, gm, gn0, v4))))));
 
 /// Vectorized + double-buffered SIMT contraction kernel body over `B × M × N × K`.
-/// Requires `4 | BM`, `4 | BN`, `4 | BK`, `4 | TM`, `4 | TN`, `4 | N`, `NT | (BM*BK/4)`, `NT | (BK*BN/4)`.
+/// Requires `4 | BM`, `4 | BN`, `4 | BK`, `4 | TM`, `4 | TN`, `4 | N`, `NT | (BM*BK/4)`, `NT | (BK*BN/4)`; PE rejects anything else.
 anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
     (B M N K BM BN BK TM TN Pad Dbuf: Nat)
     (init: To, comb: Fn [GlobalM, To, [Ta, Tb]] → [GlobalM, To])
@@ -736,9 +740,17 @@ anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
      write_c4: [GlobalM, Nat, Nat, Nat, «4; To»] → GlobalM)
     (m1: GlobalM, m3: SharedM, group_id item_id: Nat)
     : [GlobalM, SharedM] =
+    let four  = λ (x: Nat): Bool = core.nat.rem (x, 4) == 0;
+    let TM    = refly.check (core.bit2.and 2 (core.bit2.and 2 (0 < TM, four TM), core.nat.rem (BM, TM) == 0), TM,
+        "gpu.simt_tiled_kernel_v4: TM must be a positive multiple of 4 that divides BM");
+    let TN    = refly.check (core.bit2.and 2 (core.bit2.and 2 (0 < TN, four TN), core.nat.rem (BN, TN) == 0), TN,
+        "gpu.simt_tiled_kernel_v4: TN must be a positive multiple of 4 that divides BN");
+    let BK    = refly.check (core.bit2.and 2 (0 < BK, four BK), BK, "gpu.simt_tiled_kernel_v4: BK must be a positive multiple of 4");
+    let N     = refly.check (four N, N, "gpu.simt_tiled_kernel_v4: 4 must divide N for 4-wide reads and writes of B and C");
     let TY    = core.nat.div (BM, TM);
     let TX    = core.nat.div (BN, TN);
-    let NT    = TY * TX;
+    let NT    = refly.check (TY * TX <= 1024, TY * TX,
+        "gpu.simt_tiled_kernel_v4: block thread count (BM/TM)*(BN/TN) exceeds 1024");
     let pad4  = core.select (Pad == 0, 0, core.nat.mul (core.nat.div (core.nat.add (Pad, 3), 4), 4));
     let BMpad = core.nat.add (BM, pad4);
     let BNpad = core.nat.add (BN, pad4);
@@ -777,8 +789,8 @@ anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
                 simt_k_loop @Regs full_k (m1, m3, acc0)
                     (λ (kt: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
                         let kb        = core.nat.mul (kt, BK);
-                        let (m1, pa)  = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, kb, ra4);
-                        let (m1, pb)  = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, kb, K, block_n, rb4);
+                        let (m1, pa)  = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, kb, K, ra4);
+                        let (m1, pb)  = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, kb, K, block_n, N, rb4);
                         let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa, item_id, pa);
                         let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb, item_id, pb);
                         let (m1, m3)  = sync_work_items (m1, m3);
@@ -806,8 +818,8 @@ anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
             ret (m3, sb0) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
             ret (m3, sb1) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
             // Prologue: stage tile 0 into buf0.
-            let (m1, pa0) = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, 0, ra4);
-            let (m1, pb0) = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, 0, K, block_n, rb4);
+            let (m1, pa0) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, 0, K, ra4);
+            let (m1, pb0) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, 0, K, block_n, N, rb4);
             let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa0, item_id, pa0);
             let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb0, item_id, pb0);
             let (m1, m3)  = sync_work_items (m1, m3);
@@ -818,15 +830,15 @@ anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
                 simt_k_loop @Regs pairs (m1, m3, acc0)
                     (λ (p: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
                         let k1        = core.nat.mul (core.nat.add (core.nat.mul (p, 2), 1), BK);
-                        let (m1, pa1) = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, k1, ra4);
-                        let (m1, pb1) = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, k1, K, block_n, rb4);
+                        let (m1, pa1) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, k1, K, ra4);
+                        let (m1, pb1) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, k1, K, block_n, N, rb4);
                         let (m1, m3, acc) = c (m1, m3, sa0, sb0, acc);
                         let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa1, item_id, pa1);
                         let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb1, item_id, pb1);
                         let (m1, m3)  = sync_work_items (m1, m3);
                         let k2        = core.nat.add (k1, BK);
-                        let (m1, pa2) = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, k2, ra4);
-                        let (m1, pb2) = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, k2, K, block_n, rb4);
+                        let (m1, pa2) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, k2, K, ra4);
+                        let (m1, pb2) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, k2, K, block_n, N, rb4);
                         let (m1, m3, acc) = c (m1, m3, sa1, sb1, acc);
                         let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa0, item_id, pa2);
                         let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb0, item_id, pb2);
@@ -837,8 +849,8 @@ anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
             let finish_even = λ (c: CompFn): [GlobalM, SharedM, Regs] = c (m1, m3, sa0, sb0, acc);
             let finish_odd  = λ (c: CompFn): [GlobalM, SharedM, Regs] =
                 let kl        = core.nat.mul (rem_full, BK);
-                let (m1, pal) = simt_prefetch_v4 @Ta (BM, BK, NT) m_div (m1, item_id, block_m, M, kl, ra4);
-                let (m1, pbl) = simt_prefetch_v4 @Tb (BK, BN, NT) tt    (m1, item_id, kl, K, block_n, rb4);
+                let (m1, pal) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, kl, K, ra4);
+                let (m1, pbl) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, kl, K, block_n, N, rb4);
                 let (m1, m3, acc) = c (m1, m3, sa0, sb0, acc);
                 let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa1, item_id, pal);
                 let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb1, item_id, pbl);

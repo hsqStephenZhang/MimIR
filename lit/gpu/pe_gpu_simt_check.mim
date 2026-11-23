@@ -28,3 +28,14 @@ fun add_f32 (m: gpu.GlobalM, a b: F32)@tt: [gpu.GlobalM, F32] = return (m, math.
 // CHECK: gpu.simt_group_reduce: NT must be a multiple of 32 in 32..1024
 lam probe_red_nt (m1: gpu.GlobalM, m3: gpu.SharedM, t: Nat, v: F32): [gpu.GlobalM, gpu.SharedM, F32] =
     gpu.simt_group_reduce @F32 48 (0:F32, add_f32) (m1, m3, t, v);
+
+lam rd4 (m: gpu.GlobalM, _ _ _: Nat): [gpu.GlobalM, «4; F32»] = (m, ‹4; 0:F32›);
+lam wr4 (m: gpu.GlobalM, _ _ _: Nat, _: «4; F32»): gpu.GlobalM = m;
+
+// CHECK: gpu.simt_tiled_kernel_v4: 4 must divide N for 4-wide reads and writes of B and C
+lam probe_v4_n (m1: gpu.GlobalM, m3: gpu.SharedM, g t: Nat): [gpu.GlobalM, gpu.SharedM] =
+    gpu.simt_tiled_kernel_v4 @(F32, F32, F32) (1, 16, 30, 16, 16, 16, 8, 4, 4, 1, 1) (0:F32, mac) (rd4, rd4, rd, rd, wr4) (m1, m3, g, t);
+
+// CHECK: gpu.simt_prefetch_v4: 4 must divide W
+lam probe_pf_w (m1: gpu.GlobalM, t: Nat): [gpu.GlobalM, «4; «4; F32»»] =
+    gpu.simt_prefetch_v4 @F32 (8, 6, 2) (tt, tt) (m1, t, 0, 8, 0, 6, lm (m: gpu.GlobalM, _ _: Nat): [gpu.GlobalM, «4; F32»] = (m, ‹4; 0:F32›));

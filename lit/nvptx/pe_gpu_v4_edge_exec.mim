@@ -1,0 +1,23 @@
+// RUN: rm -f %t.ll %t_dev.ll %t
+// RUN: %mim -VVV -p opt -p gpu %s -p nvptx -X nvptx:o=%t.ll -X nvptx:o-dev=%t_dev.ll 2>&1 | %FileCheck %s
+// RUN: %if system-linux && cuda %{ clang++ -O2 %S/pe_gpu_v4_edge_aux.cpp %t.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t | %FileCheck %s --check-prefix=EXEC %}
+
+// The 4-wide kernel with N a multiple of 4 but not of BN: the last N block's B chunks beyond N are skipped.
+
+// CHECK-DAG: tile the contraction over (64, 100, 64) on GPU with gpu.simt_tiled_kernel_v4 (BM=64, BN=64,
+// CHECK-DAG: tile the contraction over (70, 68, 36) on GPU with gpu.simt_tiled_kernel_v4
+// EXEC: all v4 edge shapes passed
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+extern fun gemm_n100 (a: tensor.Tensor 2 (64, 64) F32, b: tensor.Tensor 2 (64, 100) F32): tensor.Tensor 2 (64, 100) F32 =
+    return (tensor.product_2d R (a, b));
+
+extern fun gemm_odd (a: tensor.Tensor 2 (70, 36) F32, b: tensor.Tensor 2 (36, 68) F32): tensor.Tensor 2 (70, 68) F32 =
+    return (tensor.product_2d R (a, b));
