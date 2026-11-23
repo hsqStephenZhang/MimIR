@@ -1412,8 +1412,7 @@ priv anx lam dot_product_impl
           let sched = dot_schedule_kvec r_out t;
           reshape (sched#3_8) s_out (materialize sched);
       let canonical = materialize t;
-      let points    = vec.fold.r @(Nat, Nat) @n_loops (λ (e acc: Nat): Nat = e * acc) (s_full, 1);
-      let use_pe    = if_static (points, pe_cpu_candidate canonical, ff);
+      let use_pe    = pe_cpu_candidate canonical;
       // A choice of tensors rather than of thunks, so a runtime-shaped one still bufferizes.
       ((go_n, go_kvec)#kvec (), canonical)#use_pe;
 ///
@@ -1570,6 +1569,10 @@ axm lower_to_mem: compile.Phase;
 /// - `Par  sizes body`         : nested serial loops (`affine.For`) with peeled tails.
 /// - `Pack d w slot dep body`  : BLIS panel packing of `slot` along axis `d` with width `w`.
 /// - `Seq  d ts body`          : a serial loop over axis `d` in steps of `ts` whose tail extent is a run-time value, so `body` is unfolded once.
+/// - `Peel d ts body`          : like `Par` on a static extent; on a run-time one, a loop over whole tiles of the static extent `ts` followed by one edge tile with the run-time remainder, which may be empty.
+///
+/// `run_levels` takes each axis' static bound `cap0` and whether its extent is a run-time value `dyn0`.
+/// A run-time axis must be split by a `Seq` or `Peel` before a `Pack` or `Leaf` sizes anything by it; a `Leaf` with a run-time register extent computes an edge tile in a scratch tile.
 
 anx fun take {T: *} (_ x: T)@tt: T = return x;
 
@@ -1607,7 +1610,7 @@ fun levels_take_mem {T: *} (m: mem.M 0, _: T, x: T)@tt: [mem.M 0, T] = return (m
 /// CPU panel packing for one input: loop `d` in runs of `w`, other moving loops in order, lane last.
 lam levels_pack_one {T: *, Rn: Nat} (r: Nat) (s: «r; Nat»)
     (ix: [«Rn; affine.Index», «Rn; affine.Index»] → «r; affine.Index») (x: buffer.Buf (r, s, T))
-    (d w: Nat, dep: «Rn; Bool», q: «Rn; affine.Index», size cap: «Rn; Nat», m: mem.M 0)
+    (d w: Nat, dep: «Rn; Bool», q: «Rn; affine.Index», size cap: «Rn; Nat», dyn: Bool, m: mem.M 0)
     : [mem.M 0, sp: «core.nat.add (Rn, 1); Nat», buffer.Buf (core.nat.add (Rn, 1), sp, T),
        [«Rn; affine.Index», «Rn; affine.Index»] → «core.nat.add (Rn, 1); affine.Index»] =
     let Rp    = core.nat.add (Rn, 1);
@@ -1615,7 +1618,8 @@ lam levels_pack_one {T: *, Rn: Nat} (r: Nat) (s: «r; Nat»)
     let full  = core.nat.div (n, w);
     let tail  = core.nat.rem (n, w);
     let n_cap = cap#(core.idx 0 Rn d);
-    let count = core.nat.add (core.nat.div (n_cap, w), (0, 1)#(core.ncmp.ne (core.nat.rem (n_cap, w), 0)));
+    // A run-time extent gets a spare panel, since an empty edge tile still reads the panel after the last whole one.
+    let count = core.nat.add (core.nat.add (core.nat.div (n_cap, w), (0, 1)#(core.ncmp.ne (core.nat.rem (n_cap, w), 0))), (0, 1)#dyn);
     // The panel is sized by the static `cap`, so a run-time tail extent never reaches a buffer type.
     let sp    = ‹e: Rp; let k = core.idx2nat e;
         (w, ((1, cap#(core.idx 0 Rn k))#(dep#(core.idx 0 Rn k)), count)#(k == d))#(k < Rn)›;
@@ -1631,8 +1635,9 @@ lam levels_pack_one {T: *, Rn: Nat} (r: Nat) (s: «r; Nat»)
             (lm (c: «Rp; affine.Index»): «Rp; affine.Index» =
                 ‹e: Rp; (c#e, affine.op.add (c#e, affine.lit first))#(core.idx2nat e == d)›)
             (src first) (m, p, x))#0₂;
-    let m = (m, fill (0, full, w) m)#(core.ncmp.ne (full, 0));
-    let m = (m, fill (full, 1, tail) m)#(core.ncmp.ne (tail, 0));
+    // A run-time extent cannot select the memory to continue with; its empty fills just run no iterations.
+    let m = ((m, fill (0, full, w) m)#(core.ncmp.ne (full, 0)), fill (0, full, w) m)#dyn;
+    let m = ((m, fill (full, 1, tail) m)#(core.ncmp.ne (tail, 0)), fill (full, 1, tail) m)#dyn;
     let to = lm (q o: «Rn; affine.Index»): «Rp; affine.Index» =
         let od = o#(core.idx 0 Rn d);
         ‹e: Rp; let k = core.idx2nat e; let j = core.idx 0 Rn k;
@@ -1645,7 +1650,8 @@ anx nom SchedTree (N Rn: Nat) =
     | Leaf: Nat
     | Par:  [sizes: «Rn; Nat», body: SchedTree (N, Rn)]
     | Pack: [d w: Nat, slot: Idx N, dep: «Rn; Bool», body: SchedTree (N, Rn)]
-    | Seq:  [d ts: Nat, body: SchedTree (N, Rn)];
+    | Seq:  [d ts: Nat, body: SchedTree (N, Rn)]
+    | Peel: [d ts: Nat, body: SchedTree (N, Rn)];
 
 anx lam sched_leaf {N Rn: Nat} (vdim: Nat): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Leaf vdim;
@@ -1657,12 +1663,15 @@ anx lam sched_pack {N Rn: Nat} (d w: Nat, slot: Idx N, dep: «Rn; Bool», body: 
 anx lam sched_seq {N Rn: Nat} (d ts: Nat, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Seq (d, ts, body);
 
+anx lam sched_peel {N Rn: Nat} (d ts: Nat, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    (SchedTree (N, Rn))#Peel (d, ts, body);
+
 anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)
     (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
     (slot_maps: «i: N; («Rn; affine.Index» → «Rs#i; affine.Index»)»)
-    (sched: SchedTree (N, Rn))
+    (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
     let D     = buffer.Buf (Ro, So, To);
@@ -1674,10 +1683,8 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
     let zero  = ‹Rn; affine.lit 0›;
 
     let step_leaf = λ (vdim: Nat, st: State): [mem.M 0, D] =
-        let (lo, size, _, dyn_ax, vs, m, dst) = st;
+        let (lo, size, cap, dyn_ax, vs, m, dst) = st;
         let blk   = λ (a: Nat): Bool = core.select (a < Rn, dyn_ax#(core.idx 0 Rn a), ff);
-        let size  = refly.check (core.select (blk vdim, ff, core.select (blk (vdim + 1), ff, tt)), size,
-            "SchedTree: a Leaf's register axes cannot have a run-time extent from an enclosing Seq");
         let out   = lm (o: IxN): «Ro; affine.Index» =
             map_out ‹d: Rn; affine.op.add (affine.lit (lo#d), o#d)›;
         let Ris_c = ‹i: N; (vs#i)#r›;
@@ -1685,17 +1692,33 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
         let ins_m = ‹i: N; lm (o: IxN): «Ris_c#i; affine.Index» =
             let v = vs#i; (v#at) (v#q, o)›;
         let ins_b = ‹i: N; (vs#i)#data›;
-        let Held  = [«Ro; Nat», IxN → «Ro; affine.Index», D, Bool, To];
         let fresh = vec.fold.r @(Bool, Idx Rn) @Rn
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (lo#d == 0, acc, ff))) (‹d: Rn; d›, tt);
-        btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (So, size, btensor.mk_sched (vdim, 0))
-            @(Ts, Ris_c, Sis_c, (), (), ()) @Held (f, (So, out, dst, fresh, init), btensor.id @To) out (ins_m, ()) (m, dst, ins_b, ());
+        let run   = λ (S: «Ro; Nat», c: buffer.Buf (Ro, S, To), at: IxN → «Ro; affine.Index», sz: «Rn; Nat», m: mem.M 0)
+                      : [mem.M 0, buffer.Buf (Ro, S, To)] =
+            btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (S, sz, btensor.mk_sched (vdim, 0))
+                @(Ts, Ris_c, Sis_c, (), (), ()) @[«Ro; Nat», IxN → «Ro; affine.Index», buffer.Buf (Ro, S, To), Bool, To]
+                (f, (S, at, c, fresh, init), btensor.id @To) at (ins_m, ()) (m, c, ins_b, ());
+        // An edge tile computes in a scratch tile whose valid part is copied in and out; whole tiles come from `Peel` without one.
+        let edged = λ (_: []): [mem.M 0, D] =
+            let full_sz = ‹d: Rn; core.select (core.idx2nat d < Ro, cap#d, size#d)›;
+            let Sc      = ‹d: Ro; cap#(core.idx 0 Rn (core.idx2nat d))›;
+            let ext     = ‹d: Ro; size#(core.idx 0 Rn (core.idx2nat d))›;
+            let shift   = lm (o: «Ro; affine.Index»): «Ro; affine.Index» =
+                ‹d: Ro; affine.op.add (affine.lit (lo#(core.idx 0 Rn (core.idx2nat d))), o#d)›;
+            let ident   = lm (o: «Ro; affine.Index»): «Ro; affine.Index» = o;
+            let (m, sc) = buffer.alloc (Ro, Sc, To) m;
+            let (m, sc) = btensor.map_reduce @1 @(To, Ro, Ro) (Sc, ext) @(To, Ro, So) (levels_take_mem @To, ⊥:To) ident shift (m, sc, dst);
+            let (m, sc) = run (Sc, sc, map_out, full_sz, m);
+            let (m, dst) = btensor.map_reduce @1 @(To, Ro, Ro) (So, ext) @(To, Ro, Sc) (levels_take_mem @To, ⊥:To) shift ident (m, dst, sc);
+            (buffer.free (Ro, Sc, To) (m, sc), dst);
+        ((λ (_: []): [mem.M 0, D] = run (So, dst, out, size, m), edged)#(core.select (blk vdim, tt, blk (vdim + 1)))) ();
 
-    let split_serial = λ (dyn: Bool, d: Idx Rn, ts: Nat, k: Body): Body =
+    let split_serial = λ (dyn peel: Bool, d: Idx Rn, ts: Nat, k: Body): Body =
         λ (st: State): [mem.M 0, D] =
             let (lo, size, cap, dyn_ax, vs, m, dst) = st;
             let was_dyn = dyn_ax#d;
-            let n    = refly.check ((tt, dyn)#was_dyn, size#d,
+            let n    = refly.check ((tt, core.select (dyn, tt, peel))#was_dyn, size#d,
                 "SchedTree: a Par axis cannot have a run-time extent from an enclosing Seq");
             let full = core.nat.div (n, ts);
             let tail = core.nat.rem (n, ts);
@@ -1728,21 +1751,33 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
                         let left = core.nat.sub (n, core.nat.mul (t, ts));
                         tile (k, t, core.select (left < ts, left, ts), core.select (cap#d < ts, cap#d, ts), tt, m, dst, xs))
                     (λ (s: [mem.M 0, X]): [mem.M 0, X] = s);
+            let bound   = core.select (cap#d < ts, cap#d, ts);
+            let peeled  = λ (k: Body): [mem.M 0, X] =
+                levels_steps @X full (m, (dst, xs_i))
+                    (λ (t: Nat, m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] = tile (k, t, ts, ts, ff, m, dst, xs))
+                    (λ (m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] =
+                        fun edge (m: mem.M 0, dst: D)@tt: [mem.M 0, D] =
+                            con skip (m: mem.M 0)@tt = return (m, dst);
+                            con some (m: mem.M 0)@tt =
+                                let (m, (dst, _)) = tile (k, full, tail, bound, tt, m, dst, xs);
+                                return (m, dst);
+                            (skip, some)#(core.ncmp.ne (tail, 0)) m;
+                        let (m, dst) = cps.cps2ds edge (m, dst);
+                        (m, (dst, xs)));
             let use_dyn = (core.bit2.and 2 (dyn, core.bit2.and 2 (core.ncmp.ne (full, 0), core.ncmp.ne (tail, 0))), tt)#was_dyn;
-            let (m, (dst, _)) = (static, dynamic)#use_dyn k;
+            let (m, (dst, _)) = (((static, dynamic)#use_dyn, static)#peel, ((static, dynamic)#use_dyn, peeled)#peel)#was_dyn k;
             (m, dst);
 
     let step_par = λ (sizes: «Rn; Nat», k: Body): Body =
         vec.fold.r @(Body, Idx Rn) @Rn
-            (λ (d: Idx Rn, k: Body): Body = (k, split_serial (ff, d, sizes#d, k))#(core.ncmp.ne (sizes#d, 0))) (‹d: Rn; d›, k);
+            (λ (d: Idx Rn, k: Body): Body = (k, split_serial (ff, ff, d, sizes#d, k))#(core.ncmp.ne (sizes#d, 0))) (‹d: Rn; d›, k);
 
     let step_pack = λ (d w: Nat, slot: Idx N, dep: «Rn; Bool», k: Body): Body =
         λ (st: State): [mem.M 0, D] =
             let (_, size, cap, dyn_ax, vs, m, _) = st;
             let w    = refly.check (core.bit2.and 2 (d < Rn, 0 < w), w, "SchedTree: a Pack needs an axis below Rn and a positive width");
-            let w    = refly.check ((tt, ff)#(dyn_ax#(core.idx 0 Rn d)), w, "SchedTree: a Pack axis cannot have a run-time extent from an enclosing Seq");
             let v    = vs#slot;
-            let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) (v#data) (d, w, dep, v#q, size, cap, m);
+            let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) (v#data) (d, w, dep, v#q, size, cap, dyn_ax#(core.idx 0 Rn d), m);
             let unit = ‹e: Rn; (1, w)#(core.idx2nat e == d)›;
             let v2   = (Rp, sp, unit, zero, to, p) inj LevelsView (Rn, Ts#slot);
             let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
@@ -1756,11 +1791,18 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
             | Seq  n    =>
                 let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Seq needs an axis below Rn");
                 let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Seq needs a positive tile size");
-                split_serial (tt, ax, ts, eval (n#body));
+                split_serial (tt, ff, ax, ts, eval (n#body))
+            | Peel n    =>
+                let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Peel needs an axis below Rn");
+                let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Peel needs a positive tile size");
+                split_serial (ff, tt, ax, ts, eval (n#body));
 
-    let (m, dst) = buffer.alloc (Ro, So, To) m;
+    let red_dyn  = vec.fold.r @(Bool, Idx Rn) @Rn
+        (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (dyn0#d, tt, acc))) (‹d: Rn; d›, ff);
+    // A run-time reduction extent may be 0, so no leaf would seed the output.
+    let (m, dst) = (buffer.alloc (Ro, So, To) m, buffer.lit (Ro, So, To) (m, init))#red_dyn;
     let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, zero, levels_plain @Rn (Rs#i, slot_maps#i), xs0#i) inj LevelsView (Rn, Ts#i)›;
-    eval sched (‹Rn; 0›, Sr, Sr, ‹Rn; ff›, vs0, m, dst);
+    eval sched (‹Rn; 0›, Sr, cap0, dyn0, vs0, m, dst);
 ///
 /// ### cpu_tree
 ///
@@ -1778,7 +1820,7 @@ anx lam cpu_covers (Rn: Nat) (dep: «2; «Rn; Bool»»): Bool =
 /// The BLIS-style tree for a contraction over `Rn` loops whose operands have element size `bytes` and read the loops `dep`:
 /// outer `N` (`order = 1`: `M`), `K`, pack, cache `M` (`N`), pack, register tile.
 /// `dyn_k = 1` gives the `K` loop a run-time tail, which halves the code of a shape whose `K` leaves one at 1–3% speed (251×257×263, 1021×1031×1033).
-anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»», sizes: «Rn; Nat»): SchedTree (2, Rn) =
+anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»», sizes: «Rn; Nat», dyn: «Rn; Bool»): SchedTree (2, Rn) =
     let (vec_bytes, regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order, dyn_k, pack_b_o) = cpu_knobs ();
     let m_ax  = Rn - 3;
     let n_ax  = Rn - 2;
@@ -1800,14 +1842,19 @@ anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»», sizes: «Rn; N
     let b_size = sizes#(core.idx 0 Rn n_ax) * sizes#(core.idx 0 Rn k_ax) * bytes;
     // Packing B pays only when enough row blocks reuse a panel that stays cached (measured on Zen 5).
     let few    = core.select (m_ext < 4 * mr, tt, core.select (b_size <= cache, tt, core.select (m_ext < 8 * mr, 64 * cache < b_size, ff)));
-    let keep_b = core.select (swap, ff, core.select (pack_b_o == 0, few, pack_b_o == 2));
+    // An edge tile over a run-time extent reads whole panels, so B is packed whenever a shape is unknown.
+    let known  = core.select (dyn#(core.idx 0 Rn m_ax), ff, core.select (dyn#(core.idx 0 Rn n_ax), ff, core.select (dyn#(core.idx 0 Rn k_ax), ff, tt)));
+    let keep_b = core.select (swap, ff, core.select (known, core.select (pack_b_o == 0, few, pack_b_o == 2), ff));
     let pack_b = λ (b: T): T = (sched_pack @(2, Rn) (n_ax, nr, 1₂, dep#1₂, b), b)#keep_b;
-    let micro = ‹d: Rn; let i = core.idx2nat d; core.select (i == m_ax, mr, core.select (i == n_ax, nr, 0))›;
-    let outer = ‹d: Rn; let i = core.idx2nat d; core.select (i < m_ax, 1, core.select (i == core.select (swap, m_ax, n_ax), nc, 0))›;
-    let tree  = sched_par @(2, Rn) (micro, sched_leaf @(2, Rn) m_ax);
+    let split = λ (ax: Nat) (ts: Nat) (b: T): T =
+        (sched_par @(2, Rn) (on ax ts, b), sched_seq @(2, Rn) (ax, ts, b))#(dyn#(core.idx 0 Rn ax));
+    let peel  = λ (ax: Nat) (ts: Nat) (b: T): T =
+        (sched_par @(2, Rn) (on ax ts, b), sched_peel @(2, Rn) (ax, ts, b))#(dyn#(core.idx 0 Rn ax));
+    let tree  = peel m_ax mr (peel n_ax nr (sched_leaf @(2, Rn) m_ax));
     let tree  = ((pack_a, pack_b)#swap) tree;
-    let tree  = sched_par @(2, Rn) (on (core.select (swap, n_ax, m_ax)) mc, tree);
+    let tree  = split (core.select (swap, n_ax, m_ax)) mc tree;
     let tree  = ((pack_b, pack_a)#swap) tree;
     let tree  = ((λ (b: T): T = sched_par @(2, Rn) (on k_ax kc, b),
-                  λ (b: T): T = sched_seq @(2, Rn) (k_ax, kc, b))#(dyn_k == 1)) tree;
-    sched_par @(2, Rn) (outer, tree);
+                  λ (b: T): T = sched_seq @(2, Rn) (k_ax, kc, b))#(core.select (dyn_k == 1, tt, dyn#(core.idx 0 Rn k_ax)))) tree;
+    let tree  = split (core.select (swap, m_ax, n_ax)) nc tree;
+    vec.fold.r @(T, Idx Rn) @Rn (λ (d: Idx Rn, b: T): T = core.select (core.idx2nat d < m_ax, split (core.idx2nat d) 1 b, b)) (‹d: Rn; d›, tree);
