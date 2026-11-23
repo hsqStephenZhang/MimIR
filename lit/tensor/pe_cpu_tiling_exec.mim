@@ -4,6 +4,9 @@
 // RUN: %mim -p opt -X btensor:registers=128 -X tensor:cpu-mr=6 -X tensor:cpu-nr=16 -X tensor:cpu-mc=24 -X tensor:cpu-nc=48 -X tensor:cpu-kc=16 -X tensor:cpu-order=1 %s -p ll -X ll:o=%t1.ll -o /dev/null
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec
+// RUN: %mim -p opt -X tensor:cpu-dyn-k=1 -X tensor:cpu-kc=7 %s -p ll -X ll:o=%t2.ll -o /dev/null
+// RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
+// RUN: %t2.exec
 // RUN: %mim -VVV -p opt %s -o /dev/null 2>&1 | %FileCheck %s
 // RUN: %mim -VVV -p opt -X tensor:pe-cpu=0 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=OFF
 
@@ -16,6 +19,7 @@
 // CHECK-DAG: tile the contraction over (17, 19, 23) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (18, 22, 20) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (18, 17, 22) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (29, 19, 31) with tensor.run_levels
 // OFF-NOT: tensor.run_levels
 
 // Divisible, prime, M=1, N=1, batched, transposed, bias-fused and chained GEMMs, checked under ASan.
@@ -52,3 +56,6 @@ extern fun gemm_bias (a: tensor.Tensor 2 (17, 23) F32, b: tensor.Tensor 2 (23, 1
 
 extern fun gemm_chain (a: tensor.Tensor 2 (18, 20) F32, b: tensor.Tensor 2 (20, 22) F32, c: tensor.Tensor 2 (22, 17) F32): tensor.Tensor 2 (18, 17) F32 =
     return (tensor.product_2d R (tensor.product_2d R (a, b), c));
+
+extern fun gemm_f64 (a: tensor.Tensor 2 (29, 31) math.F64, b: tensor.Tensor 2 (31, 19) math.F64): tensor.Tensor 2 (29, 19) math.F64 =
+    return (tensor.product_2d (math.F64, 0.0:math.F64, math.arith.add math.mode.contract, math.arith.mul math.mode.contract) (a, b));

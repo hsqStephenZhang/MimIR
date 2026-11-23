@@ -12,6 +12,7 @@ float* gemm_bmm(float*, float*);
 float* gemm_nt(float*, float*);
 float* gemm_bias(float*, float*, float*);
 float* gemm_chain(float*, float*, float*);
+double* gemm_f64(double*, double*);
 }
 
 static std::vector<float> fill(size_t n, int p, int q) {
@@ -20,8 +21,9 @@ static std::vector<float> fill(size_t n, int p, int q) {
     return v;
 }
 
-static int check_gemm(const char* name, float* out, const float* a, const float* b, int B, int M, int K, int N,
-                      bool trans_b = false, const float* bias = nullptr) {
+template<class T>
+static int check_gemm(const char* name, T* out, const T* a, const T* b, int B, int M, int K, int N,
+                      bool trans_b = false, const T* bias = nullptr) {
     int bad = 0;
     for (int bi = 0; bi != B; ++bi)
         for (int i = 0; i != M; ++i)
@@ -81,6 +83,12 @@ int main() {
                 ab[i * 22 + j] = float(s);
             }
         bad += check_gemm("chain", gemm_chain(a.data(), b.data(), c.data()), ab.data(), c.data(), 1, 18, 22, 17);
+    }
+    {
+        auto af = fill(29 * 31, 7, 23);
+        auto bf = fill(31 * 19, 11, 29);
+        std::vector<double> a(af.begin(), af.end()), b(bf.begin(), bf.end());
+        bad += check_gemm("f64", gemm_f64(a.data(), b.data()), a.data(), b.data(), 1, 29, 31, 19);
     }
     return bad != 0;
 }
