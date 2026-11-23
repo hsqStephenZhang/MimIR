@@ -66,7 +66,7 @@ const Def* LowerMapReduce::lower_buffer_lit(const App* app) {
 
 const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     auto& w    = new_world();
-    auto mr    = MapRedPost::of(rewrite(app->callee())->as<App>());
+    auto mr    = MapRedPost::of_btensor(rewrite(app->callee())->as<App>());
     auto ranks = mr.ranks();
     if (!ranks) {
         log().w("rank counts (nis/nps/Ro/Rn) of {} are not known at lowering time", app);
@@ -78,11 +78,47 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
     impl      = w.app(impl, {mr.To, mr.Tp, mr.Ro, w.lit_nat(ranks->rr)});
     impl      = w.app(impl, mr.shapes);
     impl      = w.app(impl, {mr.Tis, mr.Tps});
-    impl      = w.app(impl, {mr.comb, mr.init, mr.post});
-    impl      = w.app(impl, mr.map_out);
 
-    auto [mem, dst, inputs, post_inputs]                 = rewrite(app->arg())->projs<4>();
+    auto [mem, dst, inputs, post_inputs] = rewrite(app->arg())->projs<4>();
+    auto init_cell_ty = impl->type()->as<Pi>()->dom()->proj(3, 1)->as<Pi>();
+    Lam* run          = nullptr;
+    const Def* call   = nullptr;
+    const Def* init_cell = nullptr;
+    if (Check::test_alpha(mr.init_type, mr.To)) {
+        auto callback            = w.mut_lam(init_cell_ty)->set("initScalar");
+        auto [m, _, done]        = callback->vars<3>();
+        callback->app(true, done, {m, mr.init});
+        init_cell = callback;
+    } else {
+        auto [bounds, map_init, outs] = mr.init->projs<3>();
+        std::tie(run, call) = ds_splice(w.tuple({mem, dst, inputs, post_inputs, outs}), rewrite(app->type()), "mapReduce");
+        auto runtime        = run->var(2, 0)->projs<5>();
+        mem                 = runtime[0];
+        dst                 = runtime[1];
+        inputs              = runtime[2];
+        post_inputs         = runtime[3];
+        outs                = runtime[4];
+        auto callback       = w.mut_lam(init_cell_ty)->set("initHeld");
+        auto [m, pref, done] = callback->vars<3>();
+        auto rn              = ranks->nloops();
+        DefVec indices(rn, [&](size_t d) { return w.call(core::conv::u, mr.Sr->proj(rn, d), pref->proj(rn, d)); });
+        auto [mapped, coords] = op_affine_map(map_init, mr.Ro, mr.Rn, mr.Sr, bounds, w.tuple(indices), m)->projs<2>();
+        auto [read, value]    = buffer::op_read(mapped, outs, *Shape(coords).fold(bounds))->projs<2>();
+        callback->app(true, done, {read, value});
+        init_cell = callback;
+    }
+    impl = w.app(impl, {mr.comb, init_cell, mr.post});
+    impl = w.app(impl, mr.map_out);
+
     auto [read_inputs_ty, read_post_ty, write_output_ty] = impl->type()->as<Pi>()->dom()->projs<3>();
+    if (!run) {
+        std::tie(run, call) = ds_splice(w.tuple({mem, dst, inputs, post_inputs}), rewrite(app->type()), "mapReduce");
+        auto runtime        = run->var(2, 0)->projs<4>();
+        mem                 = runtime[0];
+        dst                 = runtime[1];
+        inputs              = runtime[2];
+        post_inputs         = runtime[3];
+    }
 
     // A `buffer.Buf` has its literal size-1 axes folded away, so the indices fold alike.
     auto reader = [&](const Def* type, const char* name, u64 num, const Def* rank, const Def* bounds, const Def* rs,
@@ -114,8 +150,10 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         write_output->app(true, ret, stored->proj(2, 0));
     }
 
-    impl = w.app(impl, {read_inputs, read_post, write_output});
-    return w.app(impl, {mem, dst});
+    impl        = w.app(impl, {read_inputs, read_post, write_output});
+    auto result = w.app(impl, {mem, dst});
+    run->app(true, run->ret_var(), result);
+    return call;
 }
 
 const Def* LowerMapReduce::lower_broadcast(const App* app) {

@@ -1,4 +1,5 @@
 #include <mim/def.h>
+#include <mim/driver.h>
 #include <mim/world.h>
 
 #include "mim/plug/btensor/btensor.h"
@@ -30,10 +31,16 @@ const Def* normalize_map_reduce(const Def*, const Def* c, const Def* arg) {
     op      = w.app(op, {To, To, Ro, Rn, sched->type()});
     op      = w.app(op, {So, Sr, sched});
     op      = w.app(op, {Tis, Ris, Sis, unit, unit, unit});
+    op      = w.app(op, To);
     op      = w.app(op, {comb, init, post});
     op      = w.app(op, map_out);
     op      = w.app(op, {maps, unit});
     return w.app(op, {mem, dst, is, unit});
+}
+
+const Def* normalize_register_budget(const Def*, const Def* c, const Def*) {
+    auto& w = c->world();
+    return w.lit_nat(w.driver().arg_nat("btensor", "registers").value_or(64));
 }
 
 MIM_btensor_NORMALIZER_IMPL

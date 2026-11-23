@@ -448,6 +448,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     op             = w.app(op, mr.meta);
     op             = w.app(op, mr.shapes);
     op             = w.app(op, mr.in_tys);
+    op             = w.app(op, mr.To);
     op             = w.app(op, w.tuple({memcomb, mr.init, mempost}));
     op             = w.app(op, mr.map_out);
     op             = w.app(op, mr.maps_all);
