@@ -292,7 +292,7 @@ const Def* normalize_cpu_knobs(const Def*, const Def* c, const Def*) {
     auto vr = btensor::vec_regs(w.driver());
     return w.tuple({w.lit_nat(vr.bytes), knob("group-registers", vr.count), knob("group-cache", 262144),
                     knob("cpu-mr", 0), knob("cpu-nr", 0), knob("cpu-mc", 0), knob("cpu-nc", 0), knob("cpu-kc", 0),
-                    knob("cpu-order", 0), knob("cpu-dyn-k", 0)});
+                    knob("cpu-order", 0), knob("cpu-dyn-k", 1)});
 }
 
 MIM_tensor_NORMALIZER_IMPL
