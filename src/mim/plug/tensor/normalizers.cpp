@@ -234,16 +234,11 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
     return w.lit_nat(*n);
 }
 
-const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
-    auto& w = callee->world();
-    // `run_levels` tiles for a CPU; when the GPU plugin is loaded, keep the canonical contraction for
-    // `gpu.simt_tiled_kernel` (`plan == nullptr`) without letting CPU `run_levels` claim it (`plan != nullptr`).
-    bool gpu_loaded = w.driver().is_loaded("gpu");
-    if (gpu_loaded) {
-        if (plan != nullptr || !w.driver().arg_nat("gpu", "pe-simt").value_or(1)) return w.lit_ff();
-    } else if (!w.driver().arg_nat("tensor", "pe-cpu").value_or(1)) {
-        return w.lit_ff();
-    }
+namespace {
+
+/// The structural facts of a contraction that both the CPU and the GPU tilings need.
+const Def* contraction_plan(const App* callee, PeCpu* plan) {
+    auto& w    = callee->world();
     auto mr    = btensor::MapRedPost::of(callee);
     auto ranks = mr.ranks();
     if (!ranks) return nullptr;
@@ -283,9 +278,23 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     return w.lit_tt();
 }
 
+} // namespace
+
+const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
+    auto& w = callee->world();
+    if (w.driver().is_loaded("gpu") || !w.driver().arg_nat("tensor", "pe-cpu").value_or(1)) return w.lit_ff();
+    return contraction_plan(callee, plan);
+}
+
 const Def* normalize_pe_cpu_candidate(const Def*, const Def*, const Def* producer) {
-    if (auto app = Axm::isa<tensor::map_reduce_post>(producer)) return pe_cpu_plan(app->callee()->as<App>());
-    return nullptr;
+    auto app = Axm::isa<tensor::map_reduce_post>(producer);
+    if (!app) return nullptr;
+    auto& w     = producer->world();
+    auto callee = app->callee()->as<App>();
+    // A GPU pipeline keeps the canonical contraction for `gpu.simt_tiled_kernel` instead.
+    if (w.driver().is_loaded("gpu"))
+        return w.driver().arg_nat("gpu", "pe-simt").value_or(1) ? contraction_plan(callee, nullptr) : w.lit_ff();
+    return pe_cpu_plan(callee);
 }
 
 const Def* normalize_cpu_knobs(const Def*, const Def* c, const Def*) {
