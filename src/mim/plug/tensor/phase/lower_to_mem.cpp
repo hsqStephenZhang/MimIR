@@ -426,7 +426,13 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto plan = PeCpu{};
     if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
     log().i("tile the contraction over {} with tensor.run_levels", mr.Sr);
-    auto tree = w.app(w.app(w.annex<tensor::cpu_tree>(), mr.Rn), {w.lit_nat(plan.bytes), plan.dep, mr.Sr});
+    // A run-time extent has no static bound until a `Seq` gives it one; the sentinel only loses every `min`.
+    u64 rn      = ranks->nloops();
+    auto extent = [&](size_t d) { return Lit::isa(mr.Sr->proj(rn, d)); };
+    auto sizes  = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
+    auto caps   = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(u64(1) << 40)); }));
+    auto dyn    = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_bool(!extent(d)); }));
+    auto tree   = w.app(w.app(w.annex<tensor::cpu_tree>(), mr.Rn), {w.lit_nat(plan.bytes), plan.dep, sizes, dyn});
 
     auto [is, post_is] = rewrite(app->arg())->projs<2>();
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
@@ -438,7 +444,7 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     run            = w.app(run, {memcomb, mr.init});
     run            = w.app(run, mr.map_out);
     run            = w.app(run, mr.maps);
-    run            = w.app(run, tree);
+    run            = w.app(run, {tree, caps, dyn});
     auto [m, out]  = w.app(run, {fresh_mem(), is})->projs<2>();
 
     auto nps = ranks->nps;

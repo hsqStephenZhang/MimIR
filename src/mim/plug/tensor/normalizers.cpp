@@ -242,16 +242,14 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     auto ranks = mr.ranks();
     if (!ranks) return nullptr;
     if (ranks->ro < 2 || ranks->rr != 1 || ranks->nis != 2) return w.lit_ff();
-    u64 ro     = ranks->ro;
-    u64 rn     = ranks->nloops();
-    auto sizes = lit_projs(mr.Sr, rn);
-    auto shape = lit_projs(mr.So, ro);
-    auto nr    = lit_projs(mr.Ris, 2);
-    if (!sizes || !shape || !nr) return nullptr;
-    if (!std::equal(shape->begin(), shape->end(), sizes->begin())) return w.lit_ff();
-    if (std::ranges::contains(*sizes, 0)) return w.lit_ff();
-    for (u64 i = 0; i != 2; ++i)
-        if (!lit_projs(mr.Sis->proj(2, i), (*nr)[i])) return nullptr;
+    u64 ro = ranks->ro;
+    u64 rn = ranks->nloops();
+    // Extents may be run-time values; `run_levels` splits those with `Seq` and computes edge tiles in scratch.
+    if (!lit_projs(mr.Ris, 2)) return nullptr;
+    for (u64 d = 0; d != ro; ++d)
+        if (mr.So->proj(ro, d) != mr.Sr->proj(rn, d)) return w.lit_ff();
+    for (u64 d = 0; d != rn; ++d)
+        if (Lit::isa(mr.Sr->proj(rn, d)) == 0) return w.lit_ff();
     if (mr.To == w.type_nat()) return w.lit_ff();
     auto bytes = Lit::isa(w.app(w.annex(core::trait::size), mr.To));
     if (!bytes) return mr.To->is_closed() ? w.lit_ff() : nullptr;
