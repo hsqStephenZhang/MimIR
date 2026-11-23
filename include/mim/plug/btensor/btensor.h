@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <optional>
 
+#include <mim/driver.h>
 #include <mim/lam.h>
 #include <mim/tuple.h>
 #include <mim/world.h>
@@ -16,6 +17,24 @@
 #include "mim/plug/btensor/autogen.h"
 
 namespace mim::plug::btensor {
+
+/// The target's SIMD register file: `-X btensor:vec-bytes=<n>` and `-X btensor:vregs=<n>`, else the host's, since the
+/// CPU backend emits for the host.
+struct VecRegs {
+    u64 bytes, count;
+};
+inline VecRegs vec_regs(Driver& driver) {
+    u64 bytes = 16, count = 16;
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    if (__builtin_cpu_supports("avx512f"))
+        bytes = 64, count = 32;
+    else if (__builtin_cpu_supports("avx2"))
+        bytes = 32;
+#elif defined(__aarch64__)
+    count = 32;
+#endif
+    return {driver.arg_nat("btensor", "vec-bytes").value_or(bytes), driver.arg_nat("btensor", "vregs").value_or(count)};
+}
 
 /// The curried meta arguments of a `tensor.map_reduce_post` (7 groups) or `btensor.map_reduce_post` (8 groups).
 struct MapRedPost {

@@ -147,7 +147,7 @@ anx lam mk_sched (s: Sched) (N: *) (mk: Sched → N): N = mk s;
 ///
 /// ### register_budget
 ///
-/// How many output cells a leaf keeps in SSA registers: `-X btensor:registers=<n>` (default 64).
+/// How many 4-byte output cells a leaf keeps in SSA registers: `-X btensor:registers=<n>` (default: three quarters of the vector register file).
 axm register_budget: [] → Nat, normalize_register_budget;
 ///
 /// ### proj_map

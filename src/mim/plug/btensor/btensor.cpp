@@ -13,7 +13,9 @@ static void reg_phases(Flags2Phases& phases) {
 }
 
 static constexpr PluginArg known_args[] = {
-    {"registers=<n>", "Maximum 32-bit cell equivalents (×4 bytes) kept in SSA registers in a blocked leaf (default `64`, i.e. 256 bytes)."},
+    {"registers=<n>", "Maximum 32-bit cell equivalents (×4 bytes) kept in SSA registers in a blocked leaf (default: three quarters of the vector register file)."},
+    {"vec-bytes=<n>", "Bytes per vector register of the target (default: the host's, `64` with AVX-512, `32` with AVX2, else `16`)."},
+    {"vregs=<n>", "Vector registers of the target (default: the host's, `32` with AVX-512 or on AArch64, else `16`)."},
 };
 
 MIM_PLUGIN_ENTRY(btensor) {

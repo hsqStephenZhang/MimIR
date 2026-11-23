@@ -1762,8 +1762,8 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
 ///
 /// ### cpu_tree
 ///
-/// The CPU blocking knobs `(registers, cache, mr, nr, mc, nc, kc, order, dyn_k)` from `-X tensor:group-registers`, `group-cache` and `cpu-{mr,nr,mc,nc,kc,order,dyn-k}`; a block size of `0` is derived.
-axm cpu_knobs: [] → «9; Nat», normalize_cpu_knobs;
+/// The CPU blocking knobs `(vec_bytes, registers, cache, mr, nr, mc, nc, kc, order, dyn_k)` from `-X btensor:vec-bytes`, `-X tensor:group-registers`, `group-cache` and `cpu-{mr,nr,mc,nc,kc,order,dyn-k}`; a block size of `0` is derived.
+axm cpu_knobs: [] → «10; Nat», normalize_cpu_knobs;
 
 lam nat_min (a: Nat) (b: Nat): Nat = core.select (a < b, a, b);
 lam nat_or (x: Nat) (d: Nat): Nat = core.select (x == 0, d, x);
@@ -1777,19 +1777,19 @@ anx lam cpu_covers (Rn: Nat) (dep: «2; «Rn; Bool»»): Bool =
 /// outer `N` (`order = 1`: `M`), `K`, pack, cache `M` (`N`), pack, register tile.
 /// `dyn_k = 1` gives the `K` loop a run-time tail, which halves the code of a shape whose `K` leaves one but slows small shapes (−18% at 251×257×263).
 anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»»): SchedTree (2, Rn) =
-    let (regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order, dyn_k) = cpu_knobs ();
+    let (vec_bytes, regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order, dyn_k) = cpu_knobs ();
     let m_ax  = Rn - 3;
     let n_ax  = Rn - 2;
     let k_ax  = Rn - 1;
-    let lanes = vec_width (core.select (bytes < 16, 16 / bytes, 1));
-    let nr1   = lanes * 4;
-    let nc1   = nat_min (nr1 * lanes * 4) 256;
-    let mr    = nat_or mr_o (nat_min ((core.select (15 < regs, regs, 16) - 12) / 4) (nat_min lanes (core.select (bytes < 4, 4, lanes))));
-    let nr    = nat_or nr_o nr1;
-    let nc    = nat_or nc_o nc1;
-    let kc    = nat_or kc_o (core.select (cache < nc1 * bytes * 2, 1, nat_min (cache / (nc1 * bytes * 2)) 256));
+    let lanes = vec_width (core.select (bytes < vec_bytes, vec_bytes / bytes, 1));
+    // Two vectors per row and up to eight rows, leaving four registers for the operands; 1 KB packed rows.
+    let nr    = nat_or nr_o (lanes * 2);
+    let mr    = nat_or mr_o (nat_min 8 (core.select (regs < 6, 1, (regs - 4) / 2)));
+    let kc    = nat_or kc_o (core.select (bytes < 1024, 1024 / bytes, 1));
     let mc_b  = cache / (kc * bytes * 2);
     let mc    = nat_or mc_o (core.select (mc_b < mr, mr, mc_b / mr * mr));
+    let nc_b  = 4 * cache / (kc * bytes);
+    let nc    = nat_or nc_o (core.select (nc_b < nr, nr, nc_b / nr * nr));
     let swap  = order == 1;
     let on    = λ (ax: Nat) (s: Nat): «Rn; Nat» = ‹d: Rn; core.select (core.idx2nat d == ax, s, 0)›;
     let T     = SchedTree (2, Rn);
