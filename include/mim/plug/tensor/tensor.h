@@ -148,6 +148,16 @@ inline const Def* isa_transpose_2d(const Def* def) {
     return nullptr;
 }
 
+/// The facts `tensor.cpu_tree` builds a contraction's `SchedTree` from.
+struct PeCpu {
+    u64 bytes;
+    const Def* dep; ///< `«2; «Rn; Bool»»`: whether each input reads each loop.
+};
+
+/// Whether `tensor.run_levels` covers the `tensor.map_reduce_post` with meta @p callee: `tt`, `ff`, or `nullptr` while
+/// undecided. On `tt`, @p plan receives the facts the lowering builds its `SchedTree` from.
+const Def* pe_cpu_plan(const App* callee, PeCpu* plan = nullptr);
+
 /// Counts the consumers of every def of @p world matched by @p pred.
 /// Tuples and packs are transparent argument wrappers, so a wrapped def is charged to the enclosing
 /// non-tuple consumer - a shared argument tuple charges each of its users, and a def used twice in one

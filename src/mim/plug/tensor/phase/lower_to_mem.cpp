@@ -3,7 +3,9 @@
 #include <fe/worklist.h>
 
 #include <mim/axm.h>
+#include <mim/check.h>
 #include <mim/def.h>
+#include <mim/driver.h>
 #include <mim/lam.h>
 
 #include <mim/plug/affine/affine.h>
@@ -294,6 +296,7 @@ const Def* LowerToMem::uncurry(Lam* lam) {
 const Def* LowerToMem::rewrite_imm_App(const App* app) {
     auto& w = new_world();
     if (Axm::isa<tensor::if_static>(app)) return rewrite(app->arg(3, 2));
+    if (Axm::isa<tensor::pe_cpu_candidate>(app)) return w.lit_ff();
     if (Axm::isa<tensor::from_array>(app)) return lower_from_array(app);
     if (Axm::isa<tensor::get>(app)) return lower_get(app);
     if (Axm::isa<tensor::set>(app)) return lower_set(app);
@@ -406,7 +409,59 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     return out;
 }
 
+const Def* LowerToMem::lower_pe_cpu(const App* app) {
+    auto& w     = new_world();
+    auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks  = old_mr.ranks();
+    if (!ranks) return nullptr;
+    auto c    = rewrite(app->callee())->as<App>();
+    auto mr   = btensor::MapRedPost::of(c);
+    auto plan = PeCpu{};
+    if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
+    log().i("tile the contraction over {} with tensor.run_levels", mr.Sr);
+    auto tree = w.app(w.app(w.annex<tensor::cpu_tree>(), mr.Rn), {w.lit_nat(plan.bytes), plan.dep});
+
+    auto [is, post_is] = rewrite(app->arg())->projs<2>();
+    auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+    auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
+
+    const Def* run = w.annex<tensor::run_levels>();
+    run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, mr.Sis});
+    run            = w.app(run, {mr.So, mr.Sr});
+    run            = w.app(run, {memcomb, mr.init});
+    run            = w.app(run, mr.map_out);
+    run            = w.app(run, mr.maps);
+    run            = w.app(run, tree);
+    auto [m, out]  = w.app(run, {fresh_mem(), is})->projs<2>();
+
+    auto nps = ranks->nps;
+    if (nps == 0 && Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return out;
+
+    // Apply fused epilogue as a pointwise pass (in-place when To == Tp).
+    auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+    auto mempost         = w.app(w.app(w.annex<btensor::lift_mem>(), {pTo, pexts_ty, mr.Tp}), mr.post);
+    auto take_fn         = w.app(w.annex<tensor::take>(), mr.To);
+    auto memtake         = w.app(w.app(w.annex<btensor::lift_mem>(), {mr.To, mr.To, mr.To}), take_fn);
+    auto each            = w.app(w.annex<affine::id>(), mr.Ro);
+    auto sched_e         = w.app(w.annex<btensor::mk_sched>(), w.tuple({mr.Ro, w.lit_nat_0()}));
+    bool same_ty         = Check::test_alpha(mr.To, mr.Tp);
+    const Def* dst_p     = out;
+    if (!same_ty) std::tie(m, dst_p) = buffer::op_alloc(mr.Ro, mr.So, mr.Tp, m)->projs<2>();
+
+    const Def* pass = w.annex<btensor::map_reduce_post>();
+    pass            = w.app(pass, {w.lit_nat_1(), mr.nps});
+    pass            = w.app(pass, {mr.To, mr.Tp, mr.Ro, mr.Ro, sched_e->type()});
+    pass            = w.app(pass, {mr.So, mr.So, sched_e});
+    pass            = w.app(pass, {mr.To, mr.Ro, mr.So, mr.Tps, mr.Rps, mr.Sps});
+    pass            = w.app(pass, mr.To);
+    pass            = w.app(pass, {memtake, mr.init, mempost});
+    pass            = w.app(pass, each);
+    pass            = w.app(pass, {each, mr.post_maps});
+    return w.app(pass, {m, dst_p, out, post_is})->proj(2, 1);
+}
+
 const Def* LowerToMem::lower_map_reduce(const App* app) {
+    if (auto pe = lower_pe_cpu(app)) return pe;
     // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
     // reusing the (rewritten) meta. The loop generation lives in the btensor plugin (`btensor.lower_map_reduce`).
     auto& w            = new_world();

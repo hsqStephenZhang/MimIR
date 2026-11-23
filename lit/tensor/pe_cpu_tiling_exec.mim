@@ -1,0 +1,54 @@
+// RUN: %mim -p opt -X tensor:cpu-mr=4 -X tensor:cpu-nr=8 -X tensor:cpu-mc=16 -X tensor:cpu-nc=32 -X tensor:cpu-kc=16 -X tensor:cpu-order=0 %s -p ll -X ll:o=%t0.ll -o /dev/null
+// RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
+// RUN: %t0.exec
+// RUN: %mim -p opt -X btensor:registers=128 -X tensor:cpu-mr=6 -X tensor:cpu-nr=16 -X tensor:cpu-mc=24 -X tensor:cpu-nc=48 -X tensor:cpu-kc=16 -X tensor:cpu-order=1 %s -p ll -X ll:o=%t1.ll -o /dev/null
+// RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
+// RUN: %t1.exec
+// RUN: %mim -VVV -p opt %s -o /dev/null 2>&1 | %FileCheck %s
+// RUN: %mim -VVV -p opt -X tensor:pe-cpu=0 %s -o /dev/null 2>&1 | %FileCheck %s --check-prefix=OFF
+
+// CHECK-DAG: tile the contraction over ‹3; 32› with tensor.run_levels
+// CHECK-DAG: tile the contraction over (19, 37, 29) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (1, 35, 23) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (13, 1, 23) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (3, 13, 21, 19) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (15, 21, 25) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (17, 19, 23) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (18, 22, 20) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (18, 17, 22) with tensor.run_levels
+// OFF-NOT: tensor.run_levels
+
+// Divisible, prime, M=1, N=1, batched, transposed, bias-fused and chained GEMMs, checked under ASan.
+
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+extern fun gemm_div (a: tensor.Tensor 2 (32, 32) F32, b: tensor.Tensor 2 (32, 32) F32): tensor.Tensor 2 (32, 32) F32 =
+    return (tensor.product_2d R (a, b));
+
+extern fun gemm_tail (a: tensor.Tensor 2 (19, 29) F32, b: tensor.Tensor 2 (29, 37) F32): tensor.Tensor 2 (19, 37) F32 =
+    return (tensor.product_2d R (a, b));
+
+extern fun gemm_m1 (a: tensor.Tensor 2 (1, 23) F32, b: tensor.Tensor 2 (23, 35) F32): tensor.Tensor 2 (1, 35) F32 =
+    return (tensor.product_2d R (a, b));
+
+extern fun gemm_n1 (a: tensor.Tensor 2 (13, 23) F32, b: tensor.Tensor 2 (23, 1) F32): tensor.Tensor 2 (13, 1) F32 =
+    return (tensor.product_2d R (a, b));
+
+extern fun gemm_bmm (a: tensor.Tensor 3 (3, 13, 19) F32, b: tensor.Tensor 3 (3, 19, 21) F32): tensor.Tensor 3 (3, 13, 21) F32 =
+    return (tensor.bmm R (a, b));
+
+extern fun gemm_nt (a: tensor.Tensor 2 (15, 25) F32, b: tensor.Tensor 2 (21, 25) F32): tensor.Tensor 2 (15, 21) F32 =
+    return (tensor.product_2d R (a, tensor.transpose_2d b));
+
+extern fun gemm_bias (a: tensor.Tensor 2 (17, 23) F32, b: tensor.Tensor 2 (23, 19) F32, bias: tensor.Tensor 1 19 F32): tensor.Tensor 2 (17, 19) F32 =
+    let p = tensor.product_2d R (a, b);
+    let b2 = tensor.broadcast ((1, 19), (17, 19), tensor.reshape 19 (1, 19) bias);
+    return (tensor.binary (math.arith.add math.mode.contract) (p, b2));
+
+extern fun gemm_chain (a: tensor.Tensor 2 (18, 20) F32, b: tensor.Tensor 2 (20, 22) F32, c: tensor.Tensor 2 (22, 17) F32): tensor.Tensor 2 (18, 17) F32 =
+    return (tensor.product_2d R (tensor.product_2d R (a, b), c));

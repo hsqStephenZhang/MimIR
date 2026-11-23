@@ -35,6 +35,7 @@ private:
     const Def* lower_generate(const App*);
     const Def* lower_broadcast(const App*);
     const Def* lower_map_reduce(const App*);
+    const Def* lower_pe_cpu(const App*);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
     const Def* lower_gather(const App*);

@@ -3,6 +3,7 @@
 
 #include <fe/format.h>
 
+#include <mim/check.h>
 #include <mim/def.h>
 #include <mim/driver.h>
 #include <mim/plugin.h>
@@ -10,6 +11,8 @@
 #include <mim/world.h>
 
 #include <mim/plug/affine/affine.h>
+#include <mim/plug/btensor/btensor.h>
+#include <mim/plug/core/core.h>
 
 #include "mim/plug/tensor/tensor.h"
 
@@ -229,6 +232,65 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
         return arg;
     }
     return w.lit_nat(*n);
+}
+
+const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
+    auto& w = callee->world();
+    // `run_levels` tiles for a CPU; a GPU pipeline launches the contraction as a kernel instead.
+    if (!w.driver().arg_nat("tensor", "pe-cpu").value_or(1) || w.driver().is_loaded("gpu")) return w.lit_ff();
+    auto mr    = btensor::MapRedPost::of(callee);
+    auto ranks = mr.ranks();
+    if (!ranks) return nullptr;
+    if (ranks->ro < 2 || ranks->rr != 1 || ranks->nis != 2) return w.lit_ff();
+    u64 ro     = ranks->ro;
+    u64 rn     = ranks->nloops();
+    auto sizes = lit_projs(mr.Sr, rn);
+    auto shape = lit_projs(mr.So, ro);
+    auto nr    = lit_projs(mr.Ris, 2);
+    if (!sizes || !shape || !nr) return nullptr;
+    if (!std::equal(shape->begin(), shape->end(), sizes->begin())) return w.lit_ff();
+    if (std::ranges::contains(*sizes, 0)) return w.lit_ff();
+    for (u64 i = 0; i != 2; ++i)
+        if (!lit_projs(mr.Sis->proj(2, i), (*nr)[i])) return nullptr;
+    if (mr.To == w.type_nat()) return w.lit_ff();
+    auto bytes = Lit::isa(w.app(w.annex(core::trait::size), mr.To));
+    if (!bytes) return mr.To->is_closed() ? w.lit_ff() : nullptr;
+    if (*bytes == 0 || !Check::test_alpha(mr.init->type(), mr.To)) return w.lit_ff();
+    if (!Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>())) return w.lit_ff();
+    // An explicit schedule such as `dot_schedule` stays.
+    if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), {mr.Rn, w.lit_nat_0()}))) return w.lit_ff();
+
+    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
+    auto probe  = w.mut_lam(domain, domain);
+    auto vars   = probe->var()->projs(rn);
+    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return w.lit_ff();
+
+    auto maps = mr.maps->projs<2>();
+    auto dep  = w.tuple(DefVec(2, [&](size_t i) {
+        auto base = w.app(maps[i], probe->var());
+        return w.tuple(DefVec(rn, [&](size_t d) {
+            auto sub = vars;
+            sub[d]   = w.call<affine::lit>(w.lit_nat_0());
+            return w.lit_bool(!Check::test_alpha(base, w.app(maps[i], w.tuple(sub))));
+        }));
+    }));
+    if (w.app(w.app(w.annex<tensor::cpu_covers>(), mr.Rn), dep) != w.lit_tt()) return w.lit_ff();
+    if (plan) *plan = {*bytes, dep};
+    return w.lit_tt();
+}
+
+const Def* normalize_pe_cpu_candidate(const Def*, const Def*, const Def* producer) {
+    if (auto app = Axm::isa<tensor::map_reduce_post>(producer)) return pe_cpu_plan(app->callee()->as<App>());
+    return nullptr;
+}
+
+const Def* normalize_cpu_knobs(const Def*, const Def* c, const Def*) {
+    auto& w   = c->world();
+    auto knob = [&](const char* name, u64 fallback) {
+        return w.lit_nat(w.driver().arg_nat("tensor", name).value_or(fallback));
+    };
+    return w.tuple({knob("group-registers", 32), knob("group-cache", 262144), knob("cpu-mr", 0), knob("cpu-nr", 0),
+                    knob("cpu-mc", 0), knob("cpu-nc", 0), knob("cpu-kc", 0), knob("cpu-order", 0)});
 }
 
 MIM_tensor_NORMALIZER_IMPL

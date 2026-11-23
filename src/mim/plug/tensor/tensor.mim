@@ -14,6 +14,7 @@
 plugin tuple;
 plugin refly;
 plugin core;
+plugin mem;
 import compile;
 plugin option;
 plugin vec;
@@ -1364,6 +1365,8 @@ pub lam dot_general_pick {n: Nat} {na nb nc: Nat} (a: «na; Idx n», b: «nb; Id
 ///   identity for the neutral split, and absorbed into the consumers' access maps by `fuse_tensor`'s
 ///   read-through in a fused graph.
 ///
+axm pe_cpu_candidate: {T: *} → T → Bool, normalize_pe_cpu_candidate;
+
 priv anx lam dot_product_impl
     (fastest_2: Nat)
     (R: Ring) (r1 r2: Nat) {nc nb: Nat}
@@ -1408,7 +1411,11 @@ priv anx lam dot_product_impl
       lam go_kvec (u: []): Tensor (vec.len s_out) s_out (R#T) =
           let sched = dot_schedule_kvec r_out t;
           reshape (sched#3_8) s_out (materialize sched);
-      (go_n, go_kvec)#kvec ();
+      let canonical = materialize t;
+      let points    = vec.fold.r @(Nat, Nat) @n_loops (λ (e acc: Nat): Nat = e * acc) (s_full, 1);
+      let use_pe    = if_static (points, pe_cpu_candidate canonical, ff);
+      (λ (): Tensor (vec.len s_out) s_out (R#T) = (go_n, go_kvec)#kvec (),
+       λ (): Tensor (vec.len s_out) s_out (R#T) = canonical)#use_pe ();
 ///
 /// ### bmm_impl
 ///
@@ -1553,3 +1560,217 @@ axm fuse_tensor: compile.Phase;
 /// afterwards to reach `mem.Ptr`.
 ///
 axm lower_to_mem: compile.Phase;
+///
+/// ## Compositional Schedule Tree (`SchedTree`) & CPU PE Interpreter (`run_levels`)
+///
+/// First-order schedule tree for multi-level CPU tiling and panel packing, interpreted by partial
+/// evaluation at bufferization (`tensor.lower_to_mem`):
+///
+/// - `Leaf vdim`               : emit leaf `btensor.map_reduce_post` accumulating into `dst`.
+/// - `Par  sizes body`         : nested serial loops (`affine.For`) with peeled tails.
+/// - `Pack d w slot dep body`  : BLIS panel packing of `slot` along axis `d` with width `w`.
+
+anx fun take {T: *} (_ x: T)@tt: T = return x;
+
+nom LevelsView (Rn: Nat, T: *) = [
+    r:    Nat,
+    s:    «r; Nat»,
+    unit: «Rn; Nat»,
+    q:    «Rn; affine.Index»,
+    at:   [«Rn; affine.Index», «Rn; affine.Index»] → «r; affine.Index»,
+    data: buffer.Buf (r, s, T),
+];
+
+lam levels_steps {X: *} (n: Nat) (m: mem.M 0, x: X)
+    (body: [Nat, mem.M 0, X] → [mem.M 0, X]) (after: [mem.M 0, X] → [mem.M 0, X])
+    : [mem.M 0, X] =
+    fun run (s: [mem.M 0, X])@tt: [mem.M 0, X] =
+        affine.For @(0, 2, (mem.M 0, X)) step exit (0I64, core.bitcast I64 n, 1I64, s)
+        where
+            con step (i: I64, s: [mem.M 0, X], yield: Cn [mem.M 0, X]) =
+                let (m, x) = s;
+                yield (body (core.bitcast Nat i, m, x));
+            con exit (s: [mem.M 0, X]) = return (after s);
+        end;
+    cps.cps2ds run (m, x);
+
+lam levels_seq {k: Nat} {A: *} (fs: «k; A → A», a0: A): A =
+    vec.fold.r @(A, A → A) @k (λ (f: A → A, a: A): A = f a) (fs, a0);
+
+lam levels_plain {Rn: Nat} (r: Nat, ix: «Rn; affine.Index» → «r; affine.Index»)@(core.pe.is_closed r)
+    : [«Rn; affine.Index», «Rn; affine.Index»] → «r; affine.Index» =
+    lm (q o: «Rn; affine.Index»): «r; affine.Index» = ix ‹e: Rn; affine.op.add (q#e, o#e)›;
+
+fun levels_take_mem {T: *} (m: mem.M 0, _: T, x: T)@tt: [mem.M 0, T] = return (m, x);
+
+/// CPU panel packing for one input: loop `d` in runs of `w`, other moving loops in order, lane last.
+lam levels_pack_one {T: *, Rn: Nat} (r: Nat) (s: «r; Nat»)
+    (ix: [«Rn; affine.Index», «Rn; affine.Index»] → «r; affine.Index») (x: buffer.Buf (r, s, T))
+    (d w: Nat, dep: «Rn; Bool», q: «Rn; affine.Index», size: «Rn; Nat», m: mem.M 0)
+    : [mem.M 0, sp: «core.nat.add (Rn, 1); Nat», buffer.Buf (core.nat.add (Rn, 1), sp, T),
+       [«Rn; affine.Index», «Rn; affine.Index»] → «core.nat.add (Rn, 1); affine.Index»] =
+    let Rp    = core.nat.add (Rn, 1);
+    let n     = size#(core.idx 0 Rn d);
+    let full  = core.nat.div (n, w);
+    let tail  = core.nat.rem (n, w);
+    let count = core.nat.add (full, (0, 1)#(core.ncmp.ne (tail, 0)));
+    let sp    = ‹e: Rp; let k = core.idx2nat e;
+        (w, ((1, size#(core.idx 0 Rn k))#(dep#(core.idx 0 Rn k)), count)#(k == d))#(k < Rn)›;
+    let (m, p) = buffer.alloc (Rp, sp, T) m;
+    let last   = core.idx 0 Rp Rn;
+    let src = λ (first: Nat) = lm (c: «Rp; affine.Index»): «r; affine.Index» =
+        ix (q, ‹e: Rn; let k = core.idx2nat e; let ce = c#(core.idx 0 Rp k);
+            (ce, affine.op.add (affine.semiop.mul (affine.op.add (ce, affine.lit first), w), c#last))#(k == d)›);
+    let fill = λ (first panels lanes: Nat) (m: mem.M 0): mem.M 0 =
+        let ext = ‹e: Rp; let k = core.idx2nat e; ((lanes, sp#e)#(k < Rn), panels)#(k == d)›;
+        (btensor.map_reduce @1 @(T, Rp, Rp) (sp, ext) @(T, r, s) (levels_take_mem @T, ⊥:T)
+            (lm (c: «Rp; affine.Index»): «Rp; affine.Index» =
+                ‹e: Rp; (c#e, affine.op.add (c#e, affine.lit first))#(core.idx2nat e == d)›)
+            (src first) (m, p, x))#0₂;
+    let m = (m, fill (0, full, w) m)#(core.ncmp.ne (full, 0));
+    let m = (m, fill (full, 1, tail) m)#(core.ncmp.ne (tail, 0));
+    let to = lm (q o: «Rn; affine.Index»): «Rp; affine.Index» =
+        let od = o#(core.idx 0 Rn d);
+        ‹e: Rp; let k = core.idx2nat e; let j = core.idx 0 Rn k;
+            (affine.semiop.rem (od, w),
+             ((affine.lit 0, affine.op.add (q#j, o#j))#(dep#j),
+              affine.op.add (q#j, affine.semiop.floordiv (od, w)))#(k == d))#(k < Rn)›;
+    (m, sp, p, to);
+
+anx nom SchedTree (N Rn: Nat) =
+    | Leaf: Nat
+    | Par:  [sizes: «Rn; Nat», body: SchedTree (N, Rn)]
+    | Pack: [d w: Nat, slot: Idx N, dep: «Rn; Bool», body: SchedTree (N, Rn)];
+
+anx lam sched_leaf {N Rn: Nat} (vdim: Nat): SchedTree (N, Rn) =
+    (SchedTree (N, Rn))#Leaf vdim;
+anx lam sched_par {N Rn: Nat} (sizes: «Rn; Nat», body: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    (SchedTree (N, Rn))#Par (sizes, body);
+anx lam sched_pack {N Rn: Nat} (d w: Nat, slot: Idx N, dep: «Rn; Bool», body: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    (SchedTree (N, Rn))#Pack (d, w, slot, dep, body);
+
+anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
+    (So: «Ro; Nat», Sr: «Rn; Nat»)
+    (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
+    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+    (slot_maps: «i: N; («Rn; affine.Index» → «Rs#i; affine.Index»)»)
+    (sched: SchedTree (N, Rn))
+    (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
+    : [mem.M 0, buffer.Buf (Ro, So, To)] =
+    let D     = buffer.Buf (Ro, So, To);
+    let Rp    = core.nat.add (Rn, 1);
+    let IxN   = «Rn; affine.Index»;
+    let Views = «i: N; LevelsView (Rn, Ts#i)»;
+    let State = [lo size: «Rn; Nat», views: Views, tok: mem.M 0, dst: D];
+    let Body  = State → [mem.M 0, D];
+    let zero  = ‹Rn; affine.lit 0›;
+
+    let step_leaf = λ (vdim: Nat, st: State): [mem.M 0, D] =
+        let (lo, size, vs, m, dst) = st;
+        let out   = lm (o: IxN): «Ro; affine.Index» =
+            map_out ‹d: Rn; affine.op.add (affine.lit (lo#d), o#d)›;
+        let Ris_c = ‹i: N; (vs#i)#r›;
+        let Sis_c = ‹i: N; (vs#i)#s›;
+        let ins_m = ‹i: N; lm (o: IxN): «Ris_c#i; affine.Index» =
+            let v = vs#i; (v#at) (v#q, o)›;
+        let ins_b = ‹i: N; (vs#i)#data›;
+        let Held  = [«Ro; Nat», IxN → «Ro; affine.Index», D];
+        btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (So, size, btensor.mk_sched (vdim, 0))
+            @(Ts, Ris_c, Sis_c, (), (), ()) @Held (f, (So, out, dst), btensor.id @To) out (ins_m, ()) (m, dst, ins_b, ());
+
+    let split_serial = λ (d: Idx Rn, ts: Nat, k: Body): Body =
+        λ (st: State): [mem.M 0, D] =
+            let (lo, size, vs, m, dst) = st;
+            let n    = size#d;
+            let full = core.nat.div (n, ts);
+            let tail = core.nat.rem (n, ts);
+            let Bufs = «i: N; buffer.Buf ((vs#i)#r, (vs#i)#s, Ts#i)»;
+            let X    = [D, Bufs];
+            let xs_i: Bufs = ‹i: N; (vs#i)#data›;
+            let tile = λ (t: Nat, ext: Nat, m: mem.M 0, dst: D, xs: Bufs): [mem.M 0, X] =
+                let vs2 = levels_seq @N @Views (‹i: N; λ (acc: Views): Views =
+                    let v  = vs#i;
+                    let u  = (v#unit)#d;
+                    let per = refly.check (core.nat.rem (ts, u) == 0, core.nat.div (ts, u), "SchedTree: a Par must split a packed axis into whole panels");
+                    let q2 = ‹e: Rn; ((v#q)#e, affine.op.add ((v#q)#e, affine.semiop.mul (affine.lit t, per)))#(core.icmp.e (e, d))›;
+                    acc#i ← (v#r, v#s, v#unit, q2, v#at, xs#i) inj LevelsView (Rn, Ts#i)›, vs);
+                let lo2   = ‹e: Rn; (lo#e, core.nat.add (lo#e, core.nat.mul (t, ts)))#(core.icmp.e (e, d))›;
+                let size2 = ‹e: Rn; (size#e, ext)#(core.icmp.e (e, d))›;
+                let (m, dst) = k (lo2, size2, vs2, m, dst);
+                (m, (dst, xs));
+            let rest = λ (m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] =
+                (λ (_: []): [mem.M 0, X] = (m, (dst, xs)),
+                 λ (_: []): [mem.M 0, X] = tile (full, tail, m, dst, xs))#(core.ncmp.ne (tail, 0)) ();
+            let (m, (dst, _)) =
+                (λ (_: []): [mem.M 0, X] = rest (m, (dst, xs_i)),
+                 λ (_: []): [mem.M 0, X] = levels_steps @X full (m, (dst, xs_i))
+                     (λ (t: Nat, m: mem.M 0, (dst: D, xs: Bufs)): [mem.M 0, X] = tile (t, ts, m, dst, xs)) rest)#(core.ncmp.ne (full, 0)) ();
+            (m, dst);
+
+    let step_par = λ (sizes: «Rn; Nat», k: Body): Body =
+        vec.fold.r @(Body, Idx Rn) @Rn
+            (λ (d: Idx Rn, k: Body): Body = (k, split_serial (d, sizes#d, k))#(core.ncmp.ne (sizes#d, 0))) (‹d: Rn; d›, k);
+
+    let step_pack = λ (d w: Nat, slot: Idx N, dep: «Rn; Bool», k: Body): Body =
+        λ (st: State): [mem.M 0, D] =
+            let (_, size, vs, m, _) = st;
+            let w    = refly.check (core.bit2.and 2 (d < Rn, 0 < w), w, "SchedTree: a Pack needs an axis below Rn and a positive width");
+            let v    = vs#slot;
+            let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) (v#data) (d, w, dep, v#q, size, m);
+            let unit = ‹e: Rn; (1, w)#(core.idx2nat e == d)›;
+            let v2   = (Rp, sp, unit, zero, to, p) inj LevelsView (Rn, Ts#slot);
+            let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
+            (buffer.free (Rp, sp, Ts#slot) (m, p), dst);
+
+    lam eval (node: SchedTree (N, Rn))@(core.pe.is_closed node): Body =
+        match node with
+            | Leaf vdim => λ (st: State): [mem.M 0, D] = step_leaf (vdim, st)
+            | Par  n    => step_par  (n#sizes, eval (n#body))
+            | Pack n    => step_pack (n#d, n#w, n#slot, n#dep, eval (n#body));
+
+    let (m, dst) = buffer.lit (Ro, So, To) (m, init);
+    let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, zero, levels_plain @Rn (Rs#i, slot_maps#i), xs0#i) inj LevelsView (Rn, Ts#i)›;
+    eval sched (‹Rn; 0›, Sr, vs0, m, dst);
+///
+/// ### cpu_tree
+///
+/// The CPU blocking knobs `(registers, cache, mr, nr, mc, nc, kc, order)` from `-X tensor:group-registers`, `group-cache` and `cpu-{mr,nr,mc,nc,kc,order}`; a block size of `0` is derived.
+axm cpu_knobs: [] → «8; Nat», normalize_cpu_knobs;
+
+lam nat_min (a: Nat) (b: Nat): Nat = core.select (a < b, a, b);
+lam nat_or (x: Nat) (d: Nat): Nat = core.select (x == 0, d, x);
+
+/// Whether BLIS packing fits a contraction over `Rn` loops (`M`, `N`, `K` last): `A` must not read `N` and `B` must not read `M`.
+anx lam cpu_covers (Rn: Nat) (dep: «2; «Rn; Bool»»): Bool =
+    let reads = λ (slot: Idx 2) (ax: Nat): Bool = dep#slot#(core.idx 0 Rn ax);
+    core.select (reads 0₂ (Rn - 2), ff, core.select (reads 1₂ (Rn - 3), ff, tt));
+
+/// The BLIS-style tree for a contraction over `Rn` loops whose operands have element size `bytes` and read the loops `dep`:
+/// outer `N` (`order = 1`: `M`), `K`, pack, cache `M` (`N`), pack, register tile.
+anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»»): SchedTree (2, Rn) =
+    let (regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order) = cpu_knobs ();
+    let m_ax  = Rn - 3;
+    let n_ax  = Rn - 2;
+    let k_ax  = Rn - 1;
+    let lanes = vec_width 4;
+    let nr1   = lanes * 4;
+    let nc1   = nat_min (nr1 * lanes * 4) 256;
+    let mr    = nat_or mr_o (nat_min ((core.select (12 < regs, regs, 16) - 12) / 4) lanes);
+    let nr    = nat_or nr_o nr1;
+    let nc    = nat_or nc_o nc1;
+    let kc    = nat_or kc_o (core.select (cache < nc1 * bytes * 2, 1, nat_min (cache / (nc1 * bytes * 2)) 256));
+    let mc_b  = cache / (kc * bytes * 2);
+    let mc    = nat_or mc_o (core.select (mc_b < mr, mr, mc_b / mr * mr));
+    let swap  = order == 1;
+    let on    = λ (ax: Nat) (s: Nat): «Rn; Nat» = ‹d: Rn; core.select (core.idx2nat d == ax, s, 0)›;
+    let T     = SchedTree (2, Rn);
+    let pack_a = λ (b: T): T = sched_pack @(2, Rn) (m_ax, mr, 0₂, dep#0₂, b);
+    let pack_b = λ (b: T): T = sched_pack @(2, Rn) (n_ax, nr, 1₂, dep#1₂, b);
+    let micro = ‹d: Rn; let i = core.idx2nat d; core.select (i == m_ax, mr, core.select (i == n_ax, nr, 0))›;
+    let outer = ‹d: Rn; let i = core.idx2nat d; core.select (i < m_ax, 1, core.select (i == core.select (swap, m_ax, n_ax), nc, 0))›;
+    let tree  = sched_par @(2, Rn) (micro, sched_leaf @(2, Rn) m_ax);
+    let tree  = ((pack_a, pack_b)#swap) tree;
+    let tree  = sched_par @(2, Rn) (on (core.select (swap, n_ax, m_ax)) mc, tree);
+    let tree  = ((pack_b, pack_a)#swap) tree;
+    let tree  = sched_par @(2, Rn) (on k_ax kc, tree);
+    sched_par @(2, Rn) (outer, tree);
