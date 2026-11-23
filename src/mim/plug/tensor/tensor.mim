@@ -1723,7 +1723,7 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
                         let left = core.nat.sub (n, core.nat.mul (t, ts));
                         tile (k, t, core.select (left < ts, left, ts), core.select (cap#d < ts, cap#d, ts), tt, m, dst, xs))
                     (λ (s: [mem.M 0, X]): [mem.M 0, X] = s);
-            let use_dyn = (dyn, tt)#was_dyn;
+            let use_dyn = (core.bit2.and 2 (dyn, core.bit2.and 2 (core.ncmp.ne (full, 0), core.ncmp.ne (tail, 0))), tt)#was_dyn;
             let (m, (dst, _)) = (static, dynamic)#use_dyn k;
             (m, dst);
 
