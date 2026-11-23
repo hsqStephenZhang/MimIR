@@ -290,7 +290,8 @@ const Def* normalize_cpu_knobs(const Def*, const Def* c, const Def*) {
         return w.lit_nat(w.driver().arg_nat("tensor", name).value_or(fallback));
     };
     return w.tuple({knob("group-registers", 32), knob("group-cache", 262144), knob("cpu-mr", 0), knob("cpu-nr", 0),
-                    knob("cpu-mc", 0), knob("cpu-nc", 0), knob("cpu-kc", 0), knob("cpu-order", 0)});
+                    knob("cpu-mc", 0), knob("cpu-nc", 0), knob("cpu-kc", 0), knob("cpu-order", 0),
+                    knob("cpu-dyn-k", 0)});
 }
 
 MIM_tensor_NORMALIZER_IMPL

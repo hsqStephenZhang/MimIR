@@ -34,6 +34,7 @@ static constexpr PluginArg known_args[] = {
     {"cpu-nc=<n>", "Override CPU outer cache block NC (`0` uses target default)."},
     {"cpu-kc=<n>", "Override CPU reduction cache block KC (`0` uses target default)."},
     {"cpu-order=<n>", "CPU BLIS loop order: `0` outer N / pack B then MC / pack A (default), `1` outer M / pack A then MC-on-N / pack B."},
+    {"cpu-dyn-k=<n>", "`1` gives the CPU `K` loop a run-time tail (`tensor.sched_seq`): one unfolded body instead of two, at some speed on small shapes (default `0`)."},
 };
 // clang-format on
 
