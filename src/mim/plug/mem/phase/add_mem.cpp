@@ -203,8 +203,10 @@ const Def* AddMem::rewrite_imm_Tuple(const Tuple* tuple) {
 
     // Values advance the memory that the memory operands splice, and continuations run after both.
     auto rank = [](const Def* op) {
-        if (is_mem(op)) return 1;
-        return op->type() && Pi::isa_cn(op->type()) ? 2 : 0;
+        if (!op->type()) return 0; // Level has no type and is neither memory nor a continuation
+        if (Pi::isa_cn(op->type())) return 2;
+        // A `(mem, buf)` operand, even a whole memory op, must also follow its siblings' effects.
+        return has_mem_ty(op->type()) ? 1 : 0;
     };
 
     auto n       = tuple->num_ops();
