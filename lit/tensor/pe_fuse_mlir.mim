@@ -1,0 +1,140 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll -o %t.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_mlir_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+// RUN: %FileCheck %s --input-file=%t.ll --implicit-check-not='malloc(i64 2400)' --implicit-check-not='malloc(i64 1600)'
+
+// Static ports of mlir/test/Interfaces/TilingInterface/tile-and-fuse-using-interface.mlir with its tile sizes.
+// MLIR's `outs` accumulators become a zero init.
+// Only bands and tiles of the producers are allocated, never a whole 25×24 or 25×16 intermediate.
+
+// CHECK-LABEL: define {{.*}} @gemm_gemm(
+// CHECK:       malloc(i64 2800)
+// CHECK:       malloc(i64 960)
+// CHECK:       malloc(i64 480)
+// CHECK-LABEL: define {{.*}} @gemm_generic(
+// CHECK:       malloc(i64 2800)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK:       malloc(i64 800)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK:       malloc(i64 320)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK:       malloc(i64 400)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK:       malloc(i64 160)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK-LABEL: define {{.*}} @gemm_transpose(
+// CHECK:       malloc(i64 2800)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK:       malloc(i64 800)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK:       malloc(i64 320)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK:       malloc(i64 400)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK:       malloc(i64 160)
+// CHECK-NOT:   malloc(i64 2800)
+// CHECK-LABEL: define {{.*}} @matmul_sequence(
+// CHECK:       malloc(i64 2000)
+// CHECK:       malloc(i64 640)
+// CHECK:       malloc(i64 960)
+// CHECK:       malloc(i64 320)
+// CHECK:       malloc(i64 480)
+plugin tensor;
+plugin core;
+plugin math;
+plugin mem;
+plugin buffer;
+plugin btensor;
+plugin affine;
+
+let F32 = math.F32;
+let Ix  = affine.Index;
+let P   = tensor.Prod (3, F32);
+let P2  = tensor.Prod (2, F32);
+let ij3 = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃);
+let ik3 = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃);
+let kj3 = λ (o: «3; Ix»): «2; Ix» = (o#2₃, o#1₃);
+let ij2 = λ (o: «2; Ix»): «2; Ix» = o;
+
+fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
+fun add (m: mem.M 0, _: F32, (x b: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (x, b));
+
+// `A·B` for the rows `lo#0 ..` and columns `lo#1 ..` of the product, read from whole inputs.
+lam gemm_box {M K N: Nat} (a: buffer.Buf (2, (M, K), F32), b: buffer.Buf (2, (K, N), F32)) (lo ext: «2; Nat») (m: mem.M 0)
+    : [mem.M 0, buffer.Buf (2, ext, F32)] =
+    tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((M, K), (K, N)))
+        (ext, (ext#0₂, ext#1₂, K)) (mac, 0.0:F32) ij3
+        (λ (o: «3; Ix»): «2; Ix» = (affine.op.add (affine.lit (lo#0₂), o#0₃), o#2₃),
+         λ (o: «3; Ix»): «2; Ix» = (o#2₃, affine.op.add (affine.lit (lo#1₂), o#1₃)))
+        (tensor.sched_leaf @(2, 3) 1, (ext#0₂, ext#1₂, K), (ff, ff, ff))
+        (m, (a, b));
+
+// `x·b` for a row band of a producer `x` that is itself staged.
+lam chain_box {M K N: Nat} (x: [lo ext: «2; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (2, ext, F32)], b: buffer.Buf (2, (K, N), F32))
+    (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+    let src = (((1, 0, 0), (0, 0, 1)), (lo#0₂, 0)) inj tensor.Aff (3, 2);
+    let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
+    let (m, y) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (K, N)))
+        (ext, (ext#0₂, ext#1₂, K)) (mac, 0.0:F32) ij3
+        ((λ (o: «3; Ix»): «2; Ix» = (affine.op.add (affine.lit (lo#0₂), o#0₃), o#2₃),
+          λ (o: «3; Ix»): «2; Ix» = (o#2₃, affine.op.add (affine.lit (lo#1₂), o#1₃))),
+         (P#Fill (2, src, x), P#Plain))
+        (tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1), (ext#0₂, ext#1₂, K), (ff, ff, ff))
+        (m, (dummy, b));
+    (buffer.free (2, (2, 2), F32) (m, dummy), y);
+
+let ik = (((1, 0, 0), (0, 0, 1)), (0, 0)) inj tensor.Aff (3, 2);
+let id2 = (((1, 0), (0, 1)), (0, 0)) inj tensor.Aff (2, 2);
+
+// @gemm_gemm_fusion, tile_sizes [10]: each 10-row band of gemm0 is computed in the loop over gemm1's rows.
+extern fun gemm_gemm (m: mem.M 0, lhs0: buffer.Buf (2, (25, 12), F32), rhs0: buffer.Buf (2, (12, 24), F32),
+                      rhs1: buffer.Buf (2, (24, 28), F32)): [mem.M 0, buffer.Buf (2, (25, 28), F32)] =
+    let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
+    let (m, r) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (24, 28)))
+        ((25, 28), (25, 28, 24)) (mac, 0.0:F32) ij3
+        ((ik3, kj3), (P#Fill (2, ik, gemm_box (lhs0, rhs0)), P#Plain))
+        (tensor.sched_par @(2, 3) ((10, 0, 0), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1)),
+         (25, 28, 24), (ff, ff, ff))
+        (m, (dummy, rhs1));
+    return (buffer.free (2, (2, 2), F32) (m, dummy), r);
+
+// @matmul_sequence_fusion, tile_sizes [10] on the last matmul: both producers are fused recursively.
+extern fun matmul_sequence (m: mem.M 0, a: buffer.Buf (2, (25, 12), F32), b1: buffer.Buf (2, (12, 24), F32),
+                            b2: buffer.Buf (2, (24, 16), F32), b3: buffer.Buf (2, (16, 20), F32))
+    : [mem.M 0, buffer.Buf (2, (25, 20), F32)] =
+    let x2 = chain_box @(25, 24, 16) (gemm_box (a, b1), b2);
+    let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
+    let (m, r) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (16, 20)))
+        ((25, 20), (25, 20, 16)) (mac, 0.0:F32) ij3
+        ((ik3, kj3), (P#Fill (2, ik, x2), P#Plain))
+        (tensor.sched_par @(2, 3) ((10, 0, 0), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1)),
+         (25, 20, 16), (ff, ff, ff))
+        (m, (dummy, b3));
+    return (buffer.free (2, (2, 2), F32) (m, dummy), r);
+
+// @gemm_generic_fusion, tile_sizes [10, 20]: a 10×20 gemm tile per bias-add tile.
+extern fun gemm_generic (m: mem.M 0, a: buffer.Buf (2, (25, 12), F32), b: buffer.Buf (2, (12, 28), F32),
+                         bias: buffer.Buf (1, 28, F32)): [mem.M 0, buffer.Buf (2, (25, 28), F32)] =
+    let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
+    let (m, r) = tensor.run_levels_with @(2, F32, 2, 2, (F32, F32), (2, 1), ((2, 2), 28))
+        ((25, 28), (25, 28)) (add, 0.0:F32) ij2
+        ((ij2, λ (o: «2; Ix»): «1; Ix» = o#1₂),
+         (P2#Fill (2, id2, gemm_box (a, b)), P2#Plain))
+        (tensor.sched_par @(2, 2) ((10, 20), tensor.sched_stage @(2, 2) (0₂, tensor.sched_leaf @(2, 2) 1)),
+         (25, 28), (ff, ff))
+        (m, (dummy, bias));
+    return (buffer.free (2, (2, 2), F32) (m, dummy), r);
+
+fun take (m: mem.M 0, _: F32, x: F32)@tt: [mem.M 0, F32] = return (m, x);
+
+// @gemm_transpose_fusion, tile_sizes [10, 20]: a 10×20 gemm tile per tile of its transpose.
+extern fun gemm_transpose (m: mem.M 0, a: buffer.Buf (2, (25, 12), F32), b: buffer.Buf (2, (12, 28), F32))
+    : [mem.M 0, buffer.Buf (2, (28, 25), F32)] =
+    let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
+    let (m, r) = tensor.run_levels_with @(1, F32, 2, 2, F32, 2, (2, 2))
+        ((28, 25), (25, 28)) (take, 0.0:F32) (λ (o: «2; Ix»): «2; Ix» = (o#1₂, o#0₂))
+        (ij2, P2#Fill (2, id2, gemm_box (a, b)))
+        (tensor.sched_par @(1, 2) ((10, 20), tensor.sched_stage @(1, 2) (0₁, tensor.sched_leaf @(1, 2) 1)),
+         (25, 28), (ff, ff))
+        (m, dummy);
+    return (buffer.free (2, (2, 2), F32) (m, dummy), r);
