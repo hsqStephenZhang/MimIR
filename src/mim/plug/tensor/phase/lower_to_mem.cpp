@@ -170,6 +170,13 @@ void LowerToMem::start() {
     tensor_key_ = tensor_key(old_world());
     validate();
     if (!tensors_seen_) return;
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(old_world().externals().muts());
+    while (!wl.empty()) {
+        auto d = wl.pop();
+        for (auto op : d->ops())
+            if (op) ++uses_[op], wl.push(op);
+    }
     RWPhase::start();
     assert(pending_.empty());
 }
@@ -417,6 +424,78 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     return out;
 }
 
+const Def* LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
+    auto& w   = new_world();
+    auto papp = Axm::isa<tensor::map_reduce_post>(input);
+    if (!papp || uses_[input] != 1 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(0)) return nullptr;
+    if (w.app(w.app(w.annex<tensor::aff_boxable>(), {Rn, r}), map) != w.lit_tt()) return nullptr;
+    auto old_mr = btensor::MapRedPost::of(papp->callee()->as<App>());
+    auto ranks  = old_mr.ranks();
+    if (!ranks || ranks->nps != 0) return nullptr;
+    if (!Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return nullptr;
+    auto c    = rewrite(papp->callee())->as<App>();
+    auto mr   = btensor::MapRedPost::of(c);
+    auto plan = PeCpu{};
+    if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
+    // `fill_of` computes a box of the output from loops that start at its corner, so the output loops come first.
+    u64 ro = ranks->ro, rn = ranks->nloops();
+    for (u64 d = 0; d != rn; ++d)
+        if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
+    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
+    auto probe  = w.mut_lam(domain, domain);
+    auto vars   = probe->var()->projs(rn);
+    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return nullptr;
+
+    auto [is, post_is]          = papp->arg()->projs<2>();
+    auto [xs, sis, prods, fuse] = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a);
+    auto [cTo, ins_ty]          = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+    auto memcomb                = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
+    const Def* fill             = w.annex<tensor::fill_of>();
+    fill                        = w.app(fill, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
+    fill                        = w.app(fill, mr.Sr);
+    fill                        = w.app(fill, {memcomb, mr.init});
+    fill                        = w.app(fill, {plan.maps, prods});
+    auto tree_of                = w.app(w.app(w.annex<tensor::cpu_tree_at>(), {mr.Rn, mr.Ro}),
+                                        {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, fuse});
+    fill                        = w.app(fill, tree_of);
+    log().i("fuse the contraction over {} into its consumer", mr.Sr);
+    return w.app(fill, xs);
+}
+
+std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
+                                               const Def* Rn,
+                                               const Def* Ris,
+                                               const Def* Sis,
+                                               const Def* Tis,
+                                               const Def* maps,
+                                               const Def* a) {
+    auto& w     = new_world();
+    auto old_is = app->arg()->proj(2, 0);
+    auto ai     = Lit::as(a);
+    auto fills  = std::array<const Def*, 2>{};
+    // One staged slot per contraction: the policy bands the loop it reads, which the other slot's producer would not
+    // read.
+    for (auto s : {ai, 1 - ai})
+        if ((fills[s] = fuse_producer(old_is->proj(2, s), maps->proj(2, s), Rn, Ris->proj(2, s)))) break;
+    auto xs = DefVec(2), sis = DefVec(2), prods = DefVec(2), fuse = DefVec(2);
+    for (size_t i = 0; i != 2; ++i) {
+        auto r = Ris->proj(2, i), T = Tis->proj(2, i);
+        fuse[i] = w.lit_bool(fills[i]);
+        if (fills[i]) {
+            // The slot's buffer is never read; it only fills the call's signature.
+            auto shape = w.tuple(DefVec(*Lit::isa(r), [&](size_t) { return w.lit_nat(2); }));
+            xs[i]      = buffer::op_alloc(r, shape, T, fresh_mem())->proj(2, 1);
+            sis[i]     = shape;
+            prods[i]   = fills[i];
+        } else {
+            xs[i]    = rewrite(old_is->proj(2, i));
+            sis[i]   = Sis->proj(2, i);
+            prods[i] = w.app(w.annex<tensor::prod_plain>(), {r, T});
+        }
+    }
+    return {w.tuple(xs), w.tuple(sis), w.tuple(prods), w.tuple(fuse)};
+}
+
 const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto& w     = new_world();
     auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
@@ -433,21 +512,22 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto sizes  = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
     auto caps   = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(u64(1) << 40)); }));
     auto dyn    = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_bool(!extent(d)); }));
-    auto tree   = w.app(w.app(w.annex<tensor::cpu_tree>(), {mr.Rn, mr.Ro}),
-                        {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, sizes, dyn});
+    auto [xs, sis, prods, fuse] = pe_slots(app, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a);
+    auto tree                   = w.app(w.app(w.annex<tensor::cpu_tree>(), {mr.Rn, mr.Ro}),
+                                        {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, sizes, dyn, fuse});
 
-    auto [is, post_is] = rewrite(app->arg())->projs<2>();
+    auto post_is       = rewrite(app->arg()->proj(2, 1));
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
 
-    const Def* run = w.annex<tensor::run_levels>();
-    run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, mr.Sis});
+    const Def* run = w.annex<tensor::run_levels_with>();
+    run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
     run            = w.app(run, {mr.So, mr.Sr});
     run            = w.app(run, {memcomb, mr.init});
     run            = w.app(run, mr.map_out);
-    run            = w.app(run, plan.maps);
+    run            = w.app(run, {plan.maps, prods});
     run            = w.app(run, {tree, caps, dyn});
-    auto [m, out]  = w.app(run, {fresh_mem(), is})->projs<2>();
+    auto [m, out]  = w.app(run, {fresh_mem(), xs})->projs<2>();
 
     auto nps = ranks->nps;
     if (nps == 0 && Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return out;

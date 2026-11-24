@@ -1708,6 +1708,11 @@ anx lam aff_unit {n m: Nat} (f: Aff (n, m), d: Idx n): Bool =
             core.bit2.and 2 (acc, aff_coef (f#rows#i, d) == (0, 1)#(core.idx2nat i + 1 == m)))
         (‹i: m; i›, tt);
 
+/// Whether `aff_box` applies to `f`, i.e. no row divides or takes a modulus.
+anx lam aff_boxable {n m: Nat} (f: Aff (n, m)): Bool =
+    vec.fold.r @(Bool, Idx m) @m
+        (λ (i: Idx m, acc: Bool): Bool = core.bit2.and 2 (acc, (aff_span (f#rows#i, f#vals, ‹n; 0›, ‹n; 1›))#0₃)) (‹i: m; i›, tt);
+
 /// The box `f` maps the box `(lo, ext)` onto; only for affine rows.
 lam aff_box {n m: Nat} (f: Aff (n, m)) (lo ext: «n; Nat»): [«m; Nat», «m; Nat»] =
     let sp = ‹i: m; aff_span (f#rows#i, f#vals, lo, ext)›;
@@ -1718,6 +1723,7 @@ lam aff_box {n m: Nat} (f: Aff (n, m)) (lo ext: «n; Nat»): [«m; Nat», «m; N
 anx nom Prod (r: Nat, T: *) =
     | Plain: []
     | Fill:  [lo ext: «r; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (r, ext, T)];
+anx lam prod_plain (r: Nat, T: *): Prod (r, T) = (Prod (r, T))#Plain;
 
 /// A slot as the loops below a node see it; the rank is a field so that slots of different ranks share one type.
 nom LevelsView (Rn: Nat, T: *) = [
@@ -1807,8 +1813,9 @@ anx lam sched_stage {N Rn: Nat} (slot: Idx N, body: SchedTree (N, Rn)): SchedTre
     (SchedTree (N, Rn))#Stage (slot, body);
 
 /// `run_levels` whose slots may be producers: a `Stage slot` node computes only the box of the producer that the loops below it read.
-anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
-    (So: «Ro; Nat», Sr: «Rn; Nat»)
+/// `run_levels_with` over the loops starting at `origin`; the output is indexed from zero, so a producer computes a box of its result.
+anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
+    (So: «Ro; Nat», Sr origin: «Rn; Nat»)
     (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
     (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
@@ -1940,7 +1947,8 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
                 | Plain _ => λ (k: Body): [mem.M 0, D] = k st
                 | Fill make =>
                     λ (k: Body): [mem.M 0, D] =
-                        let (blo, bext) = aff_box (v#aff) (lo, refly.check (fixed, size, "SchedTree: a Stage cannot see a run-time extent"));
+                        let at = ‹d: Rn; core.nat.add (origin#d, lo#d)›;
+                        let (blo, bext) = aff_box (v#aff) (at, refly.check (fixed, size, "SchedTree: a Stage cannot see a run-time extent"));
                         let (m, t) = make (blo, bext) m;
                         // The box starts where the tile does, so the tile reads at the linear part of the map.
                         let rel = lm (q o: IxN): «v#r; affine.Index» =
@@ -1971,8 +1979,19 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
         (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (dyn0#d, tt, acc))) (‹d: Rn; d›, ff);
     // A run-time reduction extent may be 0, so no leaf would seed the output.
     let (m, dst) = (buffer.alloc (Ro, So, To) m, buffer.lit (Ro, So, To) (m, init))#red_dyn;
-    let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, zero, levels_plain @Rn (Rs#i, maps#i), xs0#i, maps#i, prods#i) inj LevelsView (Rn, Ts#i)›;
+    let q0 = ‹d: Rn; affine.lit (origin#d)›;
+    let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, q0, levels_plain @Rn (Rs#i, maps#i), xs0#i, maps#i, prods#i) inj LevelsView (Rn, Ts#i)›;
     eval sched (‹d: Rn; (0, Sr#d, cap0#d, dyn0#d)›, vs0, m, dst);
+
+anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
+    (So: «Ro; Nat», Sr: «Rn; Nat»)
+    (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
+    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+    (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
+    (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
+    (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
+    : [mem.M 0, buffer.Buf (Ro, So, To)] =
+    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
 
 anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -2002,8 +2021,9 @@ anx lam cpu_covers (Rn Ro: Nat) (a: Idx 2, dep: «2; «Rn; Bool»»): Bool =
 /// The BLIS-style tree for a contraction over `Rn` loops, `Ro` of them parallel, whose operands have element size `bytes` and read the loops `dep`:
 /// outer `N` (`order = 1`: `M`), `K`, pack, cache `M` (`N`), pack, register tile.
 /// `M` and `N` are the last two parallel loops and `K` the reduction loop; slot `a` reads `M` and the other slot `N` (at unit stride iff `unit_b`), and the loops before `M` run one at a time.
+/// `fuse#i` stages slot `i`'s producer, at most one of them.
 /// `dyn_k = 1` gives the `K` loop a run-time tail, which halves the code of a shape whose `K` leaves one at 1–3% speed (251×257×263, 1021×1031×1033).
-anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, sizes: «Rn; Nat», dyn: «Rn; Bool»): SchedTree (2, Rn) =
+anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, sizes: «Rn; Nat», dyn: «Rn; Bool», fuse: «2; Bool»): SchedTree (2, Rn) =
     let (vec_bytes, regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order, dyn_k, pack_b_o) = cpu_knobs ();
     let m_ax  = Ro - 2;
     let n_ax  = Ro - 1;
@@ -2047,4 +2067,28 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
     let tree  = ((λ (t: T): T = sched_par @(2, Rn) (on k_ax kc, t),
                   λ (t: T): T = sched_seq @(2, Rn) (k_ax, kc, t))#(core.select (dyn_k == 1, tt, dyn#(core.idx 0 Rn k_ax)))) tree;
     let tree  = split (core.select (swap, m_ax, n_ax)) nc tree;
+    // A fused producer is staged once per band of the loop its slot reads besides `K` (`M` for `a`, `N` for the other), outside
+    // every loop it does not read, so no tile of it is computed twice.
+    let staged = λ (ax ts: Nat, slot: Idx 2) (t: T): T = sched_par @(2, Rn) (on ax ts, sched_stage @(2, Rn) (slot, t));
+    let tree  = (((tree, staged (n_ax, nc, b) tree)#(fuse#b)), staged (m_ax, mc, a) tree)#(fuse#a);
     batch ff tree;
+
+/// `cpu_tree` for a box of the given sizes, all static.
+anx lam cpu_tree_at (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, fuse: «2; Bool») (sizes: «Rn; Nat»): SchedTree (2, Rn) =
+    cpu_tree (Rn, Ro) (bytes, a, dep, unit_b, sizes, ‹Rn; ff›, fuse);
+
+/// A map-reduce with output loops first (`map_out` the identity) as the producer of a slot: it computes the box `(lo, ext)`
+/// of its output with `run_levels` over the loops starting at `lo`, tiled by `tree_of` the box's sizes.
+anx lam fill_of {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
+    (Sr: «Rn; Nat»)
+    (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
+    (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
+    (tree_of: «Rn; Nat» → SchedTree (N, Rn))
+    (xs: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
+    : Prod (Ro, To) =
+    let out  = lm (o: «Rn; affine.Index»): «Ro; affine.Index» = ‹d: Ro; o#(core.idx 0 Rn (core.idx2nat d))›;
+    let make = λ (lo ext: «Ro; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (Ro, ext, To)] =
+        let size   = ‹d: Rn; let k = core.idx2nat d; core.select (k < Ro, ext#(core.idx 0 Ro k), Sr#d)›;
+        let origin = ‹d: Rn; let k = core.idx2nat d; core.select (k < Ro, lo#(core.idx 0 Ro k), 0)›;
+        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (ext, size, origin) (f, init) out (maps, prods) (tree_of size, size, ‹Rn; ff›) (m, xs);
+    (Prod (Ro, To))#Fill make;

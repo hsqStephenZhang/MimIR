@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include <mim/def.h>
 #include <mim/lam.h>
 #include <mim/phase.h>
@@ -37,6 +39,17 @@ private:
     const Def* lower_broadcast(const App*);
     const Def* lower_map_reduce(const App*);
     const Def* lower_pe_cpu(const App*);
+    /// The slots of the `run_levels_with` call for the old contraction @p app: `(xs, Sis, prods, fuse)`, where a
+    /// single-use contraction producing one input becomes a `tensor.fill_of` producer instead of a buffer.
+    std::array<const Def*, 4> pe_slots(const App* app,
+                                       const Def* Rn,
+                                       const Def* Ris,
+                                       const Def* Sis,
+                                       const Def* Tis,
+                                       const Def* maps,
+                                       const Def* a);
+    /// The `tensor.fill_of` producer for the old input @p input of a slot read through @p map, or `nullptr`.
+    const Def* fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
     const Def* lower_gather(const App*);
@@ -75,6 +88,8 @@ private:
     fe::Vector<Lam*> pending_;
     /// Per-lam memo for the ops that consume a fresh memory (see LowerToMem::rewrite).
     DefMap<const Def*> fresh_memo_;
+    /// How many old Def%s use each old Def; a producer used once can be fused into its consumer.
+    DefMap<size_t> uses_;
 };
 
 } // namespace mim::plug::tensor::phase
