@@ -435,20 +435,23 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
 namespace {
 
 /// A `tensor.SchedTree` as one indented node per line, e.g. `Par (8, 0, 7)` above `Stage 0` above `Leaf 1`.
-std::string show_tree(const Def* tree) {
-    static constexpr std::array names = {"Leaf", "Par", "Pack", "Seq", "Peel", "Stage"};
-    auto out                          = std::string();
-    for (size_t depth = 0;; ++depth) {
-        auto indent = std::string(2 * depth, ' ');
-        auto name   = tree->isa<Name>();
-        auto inj    = name ? name->op()->isa<Inj>() : nullptr;
-        if (!inj || inj->index() >= names.size()) return out + std::format("{}{}\n", indent, tree);
-        auto arg = inj->value();
-        if (inj->index() == 0) return out + std::format("{}Leaf {}\n", indent, arg);
+void show_tree(std::string& out, const Def* tree, size_t depth) {
+    static constexpr std::array names = {"Leaf", "Par", "Pack", "Seq", "Peel", "Stage", "Switch"};
+    auto indent                       = std::string(2 * depth, ' ');
+    auto name                         = tree->isa<Name>();
+    auto inj                          = name ? name->op()->isa<Inj>() : nullptr;
+    if (!inj || inj->index() >= names.size()) {
+        out += std::format("{}{}\n", indent, tree);
+    } else if (inj->index() == 0) {
+        out += std::format("{}Leaf {}\n", indent, inj->value());
+    } else {
+        auto arg  = inj->value();
         auto n    = arg->num_projs();
-        auto args = DefVec(n - 1, [&](size_t i) { return arg->proj(n, i); });
+        auto kids = inj->index() == names.size() - 1 ? 2_u64 : 1_u64;
+        auto args = DefVec(n - kids, [&](size_t i) { return arg->proj(n, i); });
         out += std::format("{}{} {}\n", indent, names[inj->index()], fe::Join(args, ", "));
-        tree = arg->proj(n, n - 1);
+        for (auto i = n - kids; i != n; ++i)
+            show_tree(out, arg->proj(n, i), depth + 1);
     }
 }
 
@@ -597,7 +600,11 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
         log().i("tile the contraction over {} at the levels {}", mr.Sr, levels);
     }
 
-    if (log().level() >= fe::Log::Level::Verbose) log().v("schedule tree:\n{}", show_tree(tree));
+    if (log().level() >= fe::Log::Level::Verbose) {
+        auto text = std::string();
+        show_tree(text, tree, 0);
+        log().v("schedule tree:\n{}", text);
+    }
     auto post_is       = rewrite(app->arg()->proj(2, 1));
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);

@@ -1814,7 +1814,8 @@ anx nom SchedTree (N Rn: Nat) =
     | Pack: [d w: Nat, slot: Idx N, dep: «Rn; Bool», body: SchedTree (N, Rn)]
     | Seq:  [d ts: Nat, body: SchedTree (N, Rn)]
     | Peel: [d ts: Nat, body: SchedTree (N, Rn)]
-    | Stage: [slot: Idx N, body: SchedTree (N, Rn)];
+    | Stage: [slot: Idx N, body: SchedTree (N, Rn)]
+    | Switch: [d c: Nat, small big: SchedTree (N, Rn)];
 
 anx lam sched_leaf {N Rn: Nat} (vdim: Nat): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Leaf vdim;
@@ -1831,6 +1832,9 @@ anx lam sched_peel {N Rn: Nat} (d ts: Nat, body: SchedTree (N, Rn)): SchedTree (
 
 anx lam sched_stage {N Rn: Nat} (slot: Idx N, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Stage (slot, body);
+/// Runs `small` where loop `d` has fewer than `c` iterations, `big` elsewhere, branching at run time only for a run-time extent.
+anx lam sched_switch {N Rn: Nat} (d c: Nat, small big: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    (SchedTree (N, Rn))#Switch (d, c, small, big);
 
 /// The tree of an IREE-style `lowering_config`: one `Par` per level, outermost first, each cutting every loop by its tile size
 /// (0 leaves a loop whole), over a `Leaf vdim`.
@@ -1986,6 +1990,22 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                         (buffer.free (v#r, bext, Ts#slot) (m, t), dst);
             arm k;
 
+    let step_switch = λ (d: Idx Rn, c: Nat, small big: Body): Body =
+        λ (st: State): [mem.M 0, D] =
+            let a   = st#axes#d;
+            // Below `c`, the small tree may size its scratch tiles by `c - 1`.
+            let lt  = st#axes#d ← (a#lo, a#size, core.select (a#cap < c, a#cap, core.nat.sub (c, 1)), a#dyn);
+            let cut = a#size < c;
+            // Each arm takes both trees so that PE unfolds only the chosen one.
+            let fixed  = λ (small big: Body): [mem.M 0, D] = ((big, small)#cut) ((st, lt)#cut);
+            let branch = λ (small big: Body): [mem.M 0, D] =
+                fun pick (m: mem.M 0, out: D)@tt: [mem.M 0, D] =
+                    con below (m: mem.M 0)@tt = return (small ((lt#tok ← m)#dst ← out));
+                    con above (m: mem.M 0)@tt = return (big ((st#tok ← m)#dst ← out));
+                    (above, below)#cut m;
+                cps.cps2ds pick (st#tok, st#dst);
+            ((fixed, branch)#(a#dyn)) (small, big);
+
     lam eval (node: SchedTree (N, Rn))@(core.pe.is_closed node): Body =
         match node with
             | Leaf vdim => λ (st: State): [mem.M 0, D] = step_leaf (vdim, st)
@@ -1999,7 +2019,11 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                 let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Peel needs an axis below Rn");
                 let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Peel needs a positive tile size");
                 split_serial (ff, tt, ax, ts, eval (n#body))
-            | Stage n   => step_stage (n#slot, eval (n#body));
+            | Stage n   => step_stage (n#slot, eval (n#body))
+            | Switch n  =>
+                let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Switch needs an axis below Rn");
+                let c  = refly.check (1 < n#c, n#c, "SchedTree: a Switch needs a threshold above 1");
+                step_switch (ax, c, eval (n#small), eval (n#big));
 
     let red_dyn  = vec.fold.r @(Bool, Idx Rn) @Rn
         (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (dyn0#d, tt, acc))) (‹d: Rn; d›, ff);
@@ -2076,28 +2100,33 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
     let known  = core.select (dyn#(core.idx 0 Rn m_ax), ff, core.select (dyn#(core.idx 0 Rn n_ax), ff, core.select (dyn#(core.idx 0 Rn k_ax), ff, tt)));
     // A strided read along `N` (a strided convolution's input) packs, so the gather happens once per panel.
     let keep_b = core.select (swap, ff, core.select (known, core.select (pack_b_o == 0, core.select (unit_b, few, ff), pack_b_o == 2), ff));
-    let pack_b = λ (t: T): T = (sched_pack @(2, Rn) (n_ax, nr, b, dep#b, t), t)#keep_b;
-    let split = λ (ax: Nat) (ts: Nat) (b: T): T =
-        (sched_par @(2, Rn) (on ax ts, b), sched_seq @(2, Rn) (ax, ts, b))#(dyn#(core.idx 0 Rn ax));
-    let peel  = λ (ax: Nat) (ts: Nat) (b: T): T =
-        (sched_par @(2, Rn) (on ax ts, b), sched_peel @(2, Rn) (ax, ts, b))#(dyn#(core.idx 0 Rn ax));
-    // The loops before `M` run one at a time; those slot `a` does not read run inside its pack, which they leave unchanged.
-    let batch = λ (inner: Bool) (t: T): T =
-        vec.fold.r @(T, Idx Rn) @Rn
-            (λ (d: Idx Rn, t: T): T = core.select (core.bit2.and 2 (core.idx2nat d < m_ax, (dep#a#d, (tt, ff)#(dep#a#d))#inner), split (core.idx2nat d) 1 t, t))
-            (‹d: Rn; d›, t);
-    let tree  = batch tt (peel m_ax mr (peel n_ax nr (sched_leaf @(2, Rn) m_ax)));
-    let tree  = ((pack_a, pack_b)#swap) tree;
-    let tree  = split (core.select (swap, n_ax, m_ax)) mc tree;
-    let tree  = ((pack_b, pack_a)#swap) tree;
-    let tree  = ((λ (t: T): T = sched_par @(2, Rn) (on k_ax kc, t),
-                  λ (t: T): T = sched_seq @(2, Rn) (k_ax, kc, t))#(core.select (dyn_k == 1, tt, dyn#(core.idx 0 Rn k_ax)))) tree;
-    let tree  = split (core.select (swap, m_ax, n_ax)) nc tree;
-    // A fused producer is staged once per band of the loop its slot reads besides `K` (`M` for `a`, `N` for the other), outside
-    // every loop it does not read, so no tile of it is computed twice.
-    let staged = λ (ax ts: Nat, slot: Idx 2) (t: T): T = sched_par @(2, Rn) (on ax ts, sched_stage @(2, Rn) (slot, t));
-    let tree  = (((tree, staged (n_ax, nc, b) tree)#(fuse#b)), staged (m_ax, mc, a) tree)#(fuse#a);
-    batch ff tree;
+    // With only `M` unknown, a few rows of `A` branch to an unpacked `B` at run time.
+    let m_dyn  = core.select (swap, ff, core.select (dyn#(core.idx 0 Rn n_ax), ff, core.select (dyn#(core.idx 0 Rn k_ax), ff,
+                 core.select (pack_b_o == 0, core.select (unit_b, core.select (b_size <= cache, ff, dyn#(core.idx 0 Rn m_ax)), ff), ff))));
+    let build  = λ (keep_b: Bool): T =
+        let pack_b = λ (t: T): T = (sched_pack @(2, Rn) (n_ax, nr, b, dep#b, t), t)#keep_b;
+        let split = λ (ax: Nat) (ts: Nat) (b: T): T =
+            (sched_par @(2, Rn) (on ax ts, b), sched_seq @(2, Rn) (ax, ts, b))#(dyn#(core.idx 0 Rn ax));
+        let peel  = λ (ax: Nat) (ts: Nat) (b: T): T =
+            (sched_par @(2, Rn) (on ax ts, b), sched_peel @(2, Rn) (ax, ts, b))#(dyn#(core.idx 0 Rn ax));
+        // The loops before `M` run one at a time; those slot `a` does not read run inside its pack, which they leave unchanged.
+        let batch = λ (inner: Bool) (t: T): T =
+            vec.fold.r @(T, Idx Rn) @Rn
+                (λ (d: Idx Rn, t: T): T = core.select (core.bit2.and 2 (core.idx2nat d < m_ax, (dep#a#d, (tt, ff)#(dep#a#d))#inner), split (core.idx2nat d) 1 t, t))
+                (‹d: Rn; d›, t);
+        let tree  = batch tt (peel m_ax mr (peel n_ax nr (sched_leaf @(2, Rn) m_ax)));
+        let tree  = ((pack_a, pack_b)#swap) tree;
+        let tree  = split (core.select (swap, n_ax, m_ax)) mc tree;
+        let tree  = ((pack_b, pack_a)#swap) tree;
+        let tree  = ((λ (t: T): T = sched_par @(2, Rn) (on k_ax kc, t),
+                      λ (t: T): T = sched_seq @(2, Rn) (k_ax, kc, t))#(core.select (dyn_k == 1, tt, dyn#(core.idx 0 Rn k_ax)))) tree;
+        let tree  = split (core.select (swap, m_ax, n_ax)) nc tree;
+        // A fused producer is staged once per band of the loop its slot reads besides `K` (`M` for `a`, `N` for the other), outside
+        // every loop it does not read, so no tile of it is computed twice.
+        let staged = λ (ax ts: Nat, slot: Idx 2) (t: T): T = sched_par @(2, Rn) (on ax ts, sched_stage @(2, Rn) (slot, t));
+        let tree  = (((tree, staged (n_ax, nc, b) tree)#(fuse#b)), staged (m_ax, mc, a) tree)#(fuse#a);
+        batch ff tree;
+    (build keep_b, sched_switch @(2, Rn) (m_ax, 4 * mr, build tt, build ff))#m_dyn;
 
 /// One leaf for a box of any sizes.
 anx lam leaf_at {N Rn: Nat} (vdim: Nat) (_: «Rn; Nat»): SchedTree (N, Rn) = sched_leaf @(N, Rn) vdim;

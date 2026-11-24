@@ -8,6 +8,7 @@ extern "C" {
 float* gemm_dyn(uint64_t, uint64_t, uint64_t, float*, float*);
 float* gemm_dyn_nt(uint64_t, uint64_t, uint64_t, float*, float*);
 float* gemm_dyn_bias(uint64_t, uint64_t, uint64_t, float*, float*, float*);
+float* gemm_dyn_m(uint64_t, float*, float*);
 }
 
 static std::vector<float> values(size_t n, size_t seed) {
@@ -43,6 +44,10 @@ int main() {
                 bad += check("nt", gemm_dyn_nt(m, k, n, a.data(), b.data()), m, k, n, a, b, true, nullptr);
                 bad += check("bias", gemm_dyn_bias(m, k, n, a.data(), b.data(), bias.data()), m, k, n, a, b, false, bias.data());
             }
+    for (auto m : ms) {
+        auto a = values(m * 33, 4), b = values(33 * 70, 5);
+        bad += check("m", gemm_dyn_m(m, a.data(), b.data()), m, 33, 70, a, b, false, nullptr);
+    }
     if (!bad) std::printf("dynamic GEMM: all shapes passed\n");
     return bad != 0;
 }

@@ -5,10 +5,19 @@
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_dynamic_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec | %FileCheck %s
 // RUN: %mim -VVV -p opt %s -o %t2.mim 2>&1 | %FileCheck %s --check-prefix=PE
+// RUN: %mim -VVVV -p opt -X tensor:group-cache=4096 %s -p ll -X ll:o=%t3.ll -o %t3.mim 2>&1 | %FileCheck %s --check-prefix=SWITCH
+// RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_dynamic_aux.cpp %t3.ll -o %t3.exec -Wno-override-module
+// RUN: %t3.exec | %FileCheck %s
 
 // Contractions with run-time extents are tiled by run_levels: `Seq` splits every run-time axis and edge tiles go through a scratch tile.
 
-// PE-COUNT-3: with tensor.run_levels
+// With only `M` unknown and `B` larger than the cache, a few rows branch at run time to a tree that does not pack `B`.
+
+// PE-COUNT-4: with tensor.run_levels
+// SWITCH:      Switch 0, 32
+// SWITCH-NOT:  Pack 1
+// SWITCH:      Leaf 0
+// SWITCH:      Pack 1
 // CHECK: dynamic GEMM: all shapes passed
 
 plugin tensor;
@@ -27,3 +36,6 @@ extern fun gemm_dyn_nt {m k n: Nat} (a: tensor.Tensor 2 (m, k) F32, b: tensor.Te
 extern fun gemm_dyn_bias {m k n: Nat} (a: tensor.Tensor 2 (m, k) F32, b: tensor.Tensor 2 (k, n) F32, bias: tensor.Tensor 1 n F32): tensor.Tensor 2 (m, n) F32 =
     let p = tensor.product_2d R (a, b);
     return (tensor.binary (math.arith.add math.mode.contract) (p, tensor.broadcast ((1, n), (m, n), tensor.reshape n (1, n) bias)));
+
+extern fun gemm_dyn_m {m: Nat} (a: tensor.Tensor 2 (m, 33) F32, b: tensor.Tensor 2 (33, 70) F32): tensor.Tensor 2 (m, 70) F32 =
+    return (tensor.product_2d R (a, b));
