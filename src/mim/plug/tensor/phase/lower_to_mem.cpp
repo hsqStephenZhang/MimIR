@@ -483,33 +483,34 @@ const Def* LowerToMem::cpu_levels(u64 rn) {
     return w.tuple(levels);
 }
 
-const Def* LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
+std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
     auto& w   = new_world();
     auto papp = Axm::isa<tensor::map_reduce_post>(input);
-    if (!papp || uses_[input] != 1 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(0)) return nullptr;
-    if (w.app(w.app(w.annex<tensor::aff_boxable>(), {Rn, r}), map) != w.lit_tt()) return nullptr;
+    if (!papp || uses_[input] != 1 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
+    if (w.app(w.app(w.annex<tensor::aff_boxable>(), {Rn, r}), map) != w.lit_tt()) return {};
     auto old_mr = btensor::MapRedPost::of(papp->callee()->as<App>());
     auto ranks  = old_mr.ranks();
-    if (!ranks || ranks->nps != 0) return nullptr;
-    if (!Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return nullptr;
+    if (!ranks || ranks->nps != 0) return {};
+    if (!Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return {};
     auto c  = rewrite(papp->callee())->as<App>();
     auto mr = btensor::MapRedPost::of(c);
     u64 ro = ranks->ro, rn = ranks->nloops(), nis = ranks->nis;
     // The consumer bounds the box of the output it asks for, but not the reduction.
     for (u64 d = ro; d != rn; ++d)
-        if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
+        if (!Lit::isa(mr.Sr->proj(rn, d))) return {};
     // `fill_of` computes a box of the output from loops that start at its corner, so the output loops come first.
     auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
     auto probe  = w.mut_lam(domain, domain);
     auto vars   = probe->var()->projs(rn);
-    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return nullptr;
+    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return {};
 
     // A contraction is tiled by `cpu_tree` and may fuse its own producer; any other map-reduce is one leaf over plain
     // inputs.
     const Def *maps, *xs, *sis, *prods, *tree_of;
-    auto plan = PeCpu{};
-    auto gen  = PeGeneric{};
-    if (pe_cpu_plan(c, &plan) == w.lit_tt()) {
+    auto plan        = PeCpu{};
+    auto gen         = PeGeneric{};
+    auto contraction = pe_cpu_plan(c, &plan) == w.lit_tt();
+    if (contraction) {
         const Def* fuse;
         std::tie(xs, sis, prods, fuse) = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, true);
         maps                           = plan.maps;
@@ -525,7 +526,7 @@ const Def* LowerToMem::fuse_producer(const Def* input, const Def* map, const Def
         }));
         tree_of     = w.app(w.app(w.annex<tensor::leaf_at>(), {mr.nis, mr.Rn}), w.lit_nat(gen.vdim));
     } else {
-        return nullptr;
+        return {};
     }
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
@@ -536,7 +537,7 @@ const Def* LowerToMem::fuse_producer(const Def* input, const Def* map, const Def
     fill               = w.app(fill, {maps, prods});
     fill               = w.app(fill, tree_of);
     log().i("fuse the map-reduce over {} into its consumer", mr.Sr);
-    return w.app(fill, xs);
+    return {w.app(fill, xs), contraction};
 }
 
 std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
@@ -551,14 +552,18 @@ std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
     auto old_is = app->arg()->proj(2, 0);
     auto ai     = Lit::as(a);
     auto fills  = std::array<const Def*, 2>{};
+    auto kinds  = std::array<bool, 2>{};
     // One staged slot per contraction: the policy bands the loop it reads, which the other slot's producer would not
     // read.
     for (auto s : {ai, 1 - ai})
-        if (may_fuse && (fills[s] = fuse_producer(old_is->proj(2, s), maps->proj(2, s), Rn, Ris->proj(2, s)))) break;
+        if (may_fuse) {
+            std::tie(fills[s], kinds[s]) = fuse_producer(old_is->proj(2, s), maps->proj(2, s), Rn, Ris->proj(2, s));
+            if (fills[s]) break;
+        }
     auto xs = DefVec(2), sis = DefVec(2), prods = DefVec(2), fuse = DefVec(2);
     for (size_t i = 0; i != 2; ++i) {
         auto r = Ris->proj(2, i), T = Tis->proj(2, i);
-        fuse[i] = w.lit_bool(fills[i]);
+        fuse[i] = w.lit_nat(fills[i] ? 1 + kinds[i] : 0);
         if (fills[i]) {
             // The slot's buffer is never read; it only fills the call's signature.
             auto shape = w.tuple(DefVec(*Lit::isa(r), [&](size_t) { return w.lit_nat(2); }));

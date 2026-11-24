@@ -2155,9 +2155,9 @@ anx lam cpu_covers (Rn Ro: Nat) (a: Idx 2, dep: «2; «Rn; Bool»»): Bool =
 /// The BLIS-style tree for a contraction over `Rn` loops, `Ro` of them parallel, whose operands have element size `bytes` and read the loops `dep`:
 /// outer `N` (`order = 1`: `M`), `K`, pack, cache `M` (`N`), pack, register tile.
 /// `M` and `N` are the last two parallel loops and `K` the reduction loop; slot `a` reads `M` and the other slot `N` (at unit stride iff `unit_b`), and the loops before `M` run one at a time.
-/// `fuse#i` stages slot `i`'s producer, at most one of them.
+/// `fuse#i` stages slot `i`'s producer, at most one of them: `1` one without a contraction, `2` a contraction.
 /// `dyn_k = 1` gives the `K` loop a run-time tail, which halves the code of a shape whose `K` leaves one at 1–3% speed (251×257×263, 1021×1031×1033).
-anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, sizes: «Rn; Nat», dyn: «Rn; Bool», fuse: «2; Bool»): SchedTree (2, Rn) =
+anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, sizes: «Rn; Nat», dyn: «Rn; Bool», fuse: «2; Nat»): SchedTree (2, Rn) =
     let (vec_bytes, regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order, dyn_k, pack_b_o) = cpu_knobs ();
     let m_ax  = Ro - 2;
     let n_ax  = Ro - 1;
@@ -2207,8 +2207,13 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
         let tree  = split (core.select (swap, m_ax, n_ax)) nc tree;
         // A fused producer is staged once per band of the loop its slot reads besides `K` (`M` for `a`, `N` for the other), outside
         // every loop it does not read, so no tile of it is computed twice.
-        let staged = λ (ax ts: Nat, slot: Idx 2) (t: T): T = split ax ts (sched_stage @(2, Rn) (slot, t));
-        let tree  = (((tree, staged (n_ax, nc, b) tree)#(fuse#b)), staged (m_ax, mc, a) tree)#(fuse#a);
+        // A contraction's band spans all of `K`, and one of twice the cache or more costs more than its round trip saves
+        // (measured on Zen 5), so it is staged once at the root.
+        let staged = λ (ax ts: Nat, slot: Idx 2) (t: T): T =
+            let band = nat_min ts (sizes#(core.idx 0 Rn ax)) * sizes#(core.idx 0 Rn k_ax) * bytes;
+            let root = core.select (fuse#(slot) == 2, core.select (band < 2 * cache, ff, tt), ff);
+            (split ax ts (sched_stage @(2, Rn) (slot, t)), sched_stage @(2, Rn) (slot, t))#root;
+        let tree  = (((tree, staged (n_ax, nc, b) tree)#(fuse#(b) != 0)), staged (m_ax, mc, a) tree)#(fuse#(a) != 0);
         batch ff tree;
     (build keep_b, sched_switch @(2, Rn) (m_ax, 4 * mr, build tt, build ff))#m_dyn;
 
@@ -2216,7 +2221,7 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
 anx lam leaf_at {N Rn: Nat} (vdim: Nat) (_: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) = sched_leaf @(N, Rn) vdim;
 
 /// `cpu_tree` for a box of the given sizes, `dyn` those known only at run time.
-anx lam cpu_tree_at (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, fuse: «2; Bool») (sizes: «Rn; Nat», dyn: «Rn; Bool»): SchedTree (2, Rn) =
+anx lam cpu_tree_at (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, fuse: «2; Nat») (sizes: «Rn; Nat», dyn: «Rn; Bool»): SchedTree (2, Rn) =
     cpu_tree (Rn, Ro) (bytes, a, dep, unit_b, sizes, dyn, fuse);
 
 /// A map-reduce with output loops first (`map_out` the identity) as the producer of a slot: it computes the box `(lo, ext)`

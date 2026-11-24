@@ -24,7 +24,7 @@
 // CHECK-DAG: tile the contraction over (3, 13, 21, 19) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (15, 21, 25) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (17, 19, 23) with tensor.run_levels
-// CHECK-DAG: tile the contraction over (18, 22, 20) with tensor.run_levels
+// CHECK-DAG: fuse the map-reduce over (18, 22, 20) into its consumer
 // CHECK-DAG: tile the contraction over (18, 17, 22) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (29, 19, 31) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (19, 35, 17) with tensor.run_levels
