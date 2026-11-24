@@ -1,0 +1,30 @@
+// RUN: %mim -VVV -p opt %s -p ll -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_affmap_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Access maps with floordiv, ceildiv and mod reach run_levels as tensor.Aff rows.
+// CHECK-COUNT-3: tile the contraction over (17, 19, 23) with tensor.run_levels
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F32 = math.F32;
+fun mac (acc: F32, (x y: F32))@tt: F32 = return (math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
+lam map_o (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam map_a (i _ k: affine.Index): «2; affine.Index» = (i, k);
+
+// B's row `k / 2`, rounded down.
+extern fun gemm_floor (a: tensor.Tensor 2 (17, 23) F32, b: tensor.Tensor 2 (12, 19) F32): tensor.Tensor 2 (17, 19) F32 =
+    return (tensor.map_reduce ((17, 19), (17, 19, 23)) (mac, 0:F32) map_o
+        (map_a, λ (_ j k: affine.Index): «2; affine.Index» = (affine.semiop.floordiv (k, 2), j)) (a, b));
+
+// B's row `k / 2`, rounded up.
+extern fun gemm_ceil (a: tensor.Tensor 2 (17, 23) F32, b: tensor.Tensor 2 (12, 19) F32): tensor.Tensor 2 (17, 19) F32 =
+    return (tensor.map_reduce ((17, 19), (17, 19, 23)) (mac, 0:F32) map_o
+        (map_a, λ (_ j k: affine.Index): «2; affine.Index» = (affine.semiop.ceildiv (k, 2), j)) (a, b));
+
+// B's row `(k + 3) mod 5`.
+extern fun gemm_mod (a: tensor.Tensor 2 (17, 23) F32, b: tensor.Tensor 2 (5, 19) F32): tensor.Tensor 2 (17, 19) F32 =
+    return (tensor.map_reduce ((17, 19), (17, 19, 23)) (mac, 0:F32) map_o
+        (map_a, λ (_ j k: affine.Index): «2; affine.Index» = (affine.semiop.rem (affine.op.add (k, affine.lit 3), 5), j)) (a, b));

@@ -322,15 +322,21 @@ std::optional<AffRow> aff_row(const Def* t, Defs xs) {
         per = *k;
         t   = l;
     }
-    if (auto div = Axm::isa(affine::semiop::floordiv, t); div && den == 1) {
+    u64 round = 0;
+    if (auto div = Axm::isa<affine::semiop>(t);
+        div && den == 1 && (div.id() == affine::semiop::floordiv || div.id() == affine::semiop::ceildiv)) {
         auto [l, c] = div->args<2>();
         auto k      = Lit::isa(c);
         if (!k || *k == 0) return {};
         den = *k;
-        t   = l;
+        // `ceil(y / d) = floor((y + d - 1) / d)`.
+        if (div.id() == affine::semiop::ceildiv) round = *k - 1;
+        t = l;
     }
-    if (auto lin = linear(t, xs)) return AffRow{*lin, den, per};
-    return {};
+    auto lin = linear(t, xs);
+    if (!lin) return {};
+    if (round) lin->b = t->world().call(core::nat::add, Defs{lin->b, t->world().lit_nat(round)});
+    return AffRow{*lin, den, per};
 }
 
 } // namespace
