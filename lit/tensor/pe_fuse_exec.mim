@@ -1,0 +1,64 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll -o %t.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// A `Stage` node computes only the tile of a producer that the loops below it read.
+plugin tensor;
+plugin core;
+plugin math;
+plugin mem;
+plugin buffer;
+plugin btensor;
+plugin affine;
+
+let F32  = math.F32;
+let Ix   = affine.Index;
+let Aff2 = tensor.Aff (3, 2);
+let ik = (((1, 0, 0), (0, 0, 1)), (0, 0)) inj Aff2;
+let kj      = λ (o: «3; Ix»): «2; Ix» = (o#2₃, o#1₃);
+let ij      = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃);
+
+fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
+fun relu (m: mem.M 0, _: F32, x: F32)@tt: [mem.M 0, F32] = return (m, math.extrema.fmax 0 (x, 0.0:F32));
+
+lam shift (lo: «2; Nat») (o: «2; Ix»): «2; Ix» = ‹i: 2; affine.op.add (affine.lit (lo#i), o#i)›;
+
+// E = (A·B)·D with the M×L product computed per (i, l) tile.
+extern fun chain (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.Buf (2, (20, 28), F32), d: buffer.Buf (2, (28, 12), F32))
+    : [mem.M 0, buffer.Buf (2, (26, 12), F32)] =
+    let fill = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+        let (m, p) = buffer.alloc (2, ext, F32) m;
+        btensor.map_reduce @2 @(F32, 2, 3) (ext, (ext#0₂, ext#1₂, 20)) @((F32, F32), (2, 2), ((26, 20), (20, 28)))
+            (mac, 0.0:F32) (λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃))
+            (λ (o: «3; Ix»): «2; Ix» = (affine.op.add (affine.lit (lo#0₂), o#0₃), o#2₃),
+             λ (o: «3; Ix»): «2; Ix» = (o#2₃, affine.op.add (affine.lit (lo#1₂), o#1₃)))
+            (m, p, (a, b));
+    let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
+    let tree = tensor.sched_par @(2, 3) ((8, 0, 7), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1));
+    let (m, e) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (28, 12)))
+        ((26, 12), (26, 12, 28))
+        (mac, 0.0:F32)
+        ij
+        ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
+         ((tensor.Prod (3, 2, F32))#Fill (ik, fill), (tensor.Prod (3, 2, F32))#Plain))
+        (tree, (26, 12, 28), (ff, ff, ff))
+        (m, (dummy, d));
+    return (buffer.free (2, (2, 2), F32) (m, dummy), e);
+
+// C = relu(A)·B with relu applied per (i, k) tile.
+extern fun relu_mm (m: mem.M 0, a: buffer.Buf (2, (19, 10), F32), b: buffer.Buf (2, (10, 9), F32))
+    : [mem.M 0, buffer.Buf (2, (19, 9), F32)] =
+    let fill = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+        let (m, t) = buffer.alloc (2, ext, F32) m;
+        btensor.map_reduce @1 @(F32, 2, 2) (ext, ext) @(F32, 2, (19, 10))
+            (relu, 0.0:F32) (λ (o: «2; Ix»): «2; Ix» = o) (shift lo) (m, t, a);
+    let tree = tensor.sched_par @(2, 3) ((4, 0, 3), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1));
+    let (m, c) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((19, 10), (10, 9)))
+        ((19, 9), (19, 9, 10))
+        (mac, 0.0:F32)
+        ij
+        ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
+         ((tensor.Prod (3, 2, F32))#Fill (ik, fill), (tensor.Prod (3, 2, F32))#Plain))
+        (tree, (19, 9, 10), (ff, ff, ff))
+        (m, (a, b));
+    return (m, c);

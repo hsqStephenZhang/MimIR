@@ -1569,6 +1569,7 @@ axm lower_to_mem: compile.Phase;
 /// - `Par  sizes body`         : nested serial loops (`affine.For`) with peeled tails.
 /// - `Pack d w slot dep body`  : BLIS panel packing of `slot` along axis `d` with width `w`.
 /// - `Seq  d ts body`          : a serial loop over axis `d` in steps of `ts` whose tail extent is a run-time value, so `body` is unfolded once.
+/// - `Stage slot body`         : compute the box of `slot`'s producer that `body` reads, through the producer's affine map.
 /// - `Peel d ts body`          : like `Par` on a static extent; on a run-time one, a loop over whole tiles of the static extent `ts` followed by one edge tile with the run-time remainder, which may be empty.
 ///
 /// `run_levels` takes each axis' static bound `cap0` and whether its extent is a run-time value `dyn0`.
@@ -1606,6 +1607,26 @@ lam levels_plain {Rn: Nat} (r: Nat, ix: «Rn; affine.Index» → «r; affine.Ind
     lm (q o: «Rn; affine.Index»): «r; affine.Index» = ix ‹e: Rn; affine.op.add (q#e, o#e)›;
 
 fun levels_take_mem {T: *} (m: mem.M 0, _: T, x: T)@tt: [mem.M 0, T] = return (m, x);
+
+/// `x ↦ a·x + b` from `n` loop coordinates to `m` buffer coordinates, kept as data so PE computes the boxes it touches.
+anx nom Aff (n m: Nat) = [a: «m; «n; Nat»», b: «m; Nat»];
+
+lam aff_lin {n m: Nat} (f: Aff (n, m)) (x: «n; affine.Index»): «m; affine.Index» =
+    ‹i: m; vec.fold.r @(affine.Index, Idx n) @n
+        (λ (j: Idx n, acc: affine.Index): affine.Index =
+            (affine.op.add (affine.semiop.mul (x#j, f#a#i#j), acc), acc)#(f#a#i#j == 0))
+        (‹j: n; j›, affine.lit 0)›;
+
+/// The box `f` maps the box `(lo, ext)` onto.
+lam aff_box {n m: Nat} (f: Aff (n, m)) (lo ext: «n; Nat»): [«m; Nat», «m; Nat»] =
+    let dot = λ (i: Idx m) (x: «n; Nat»): Nat =
+        vec.fold.r @(Nat, Idx n) @n (λ (j: Idx n, acc: Nat): Nat = core.nat.add (core.nat.mul (f#a#i#j, x#j), acc)) (‹j: n; j›, 0);
+    (‹i: m; core.nat.add (f#b#i, dot i lo)›, ‹i: m; core.nat.add (1, dot i ‹j: n; core.nat.sub (ext#j, 1)›)›);
+
+/// How a `run_levels` input slot gets its data: a buffer, or a producer that computes any box of it on demand.
+anx nom Prod (Rn r: Nat, T: *) =
+    | Plain: []
+    | Fill:  [src: Aff (Rn, r), make: [lo ext: «r; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (r, ext, T)]];
 
 /// CPU panel packing for one input: loop `d` in runs of `w`, other moving loops in order, lane last.
 lam levels_pack_one {T: *, Rn: Nat} (r: Nat) (s: «r; Nat»)
@@ -1651,7 +1672,8 @@ anx nom SchedTree (N Rn: Nat) =
     | Par:  [sizes: «Rn; Nat», body: SchedTree (N, Rn)]
     | Pack: [d w: Nat, slot: Idx N, dep: «Rn; Bool», body: SchedTree (N, Rn)]
     | Seq:  [d ts: Nat, body: SchedTree (N, Rn)]
-    | Peel: [d ts: Nat, body: SchedTree (N, Rn)];
+    | Peel: [d ts: Nat, body: SchedTree (N, Rn)]
+    | Stage: [slot: Idx N, body: SchedTree (N, Rn)];
 
 anx lam sched_leaf {N Rn: Nat} (vdim: Nat): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Leaf vdim;
@@ -1666,11 +1688,15 @@ anx lam sched_seq {N Rn: Nat} (d ts: Nat, body: SchedTree (N, Rn)): SchedTree (N
 anx lam sched_peel {N Rn: Nat} (d ts: Nat, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Peel (d, ts, body);
 
-anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
+anx lam sched_stage {N Rn: Nat} (slot: Idx N, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    (SchedTree (N, Rn))#Stage (slot, body);
+
+/// `run_levels` whose slots may be producers: a `Stage slot` node computes only the box of the producer that the loops below it read.
+anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)
     (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
-    (slot_maps: «i: N; («Rn; affine.Index» → «Rs#i; affine.Index»)»)
+    (slot_maps: «i: N; («Rn; affine.Index» → «Rs#i; affine.Index»)», prods: «i: N; Prod (Rn, Rs#i, Ts#i)»)
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
@@ -1783,6 +1809,22 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
             let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
             (buffer.free (Rp, sp, Ts#slot) (m, p), dst);
 
+    let step_stage = λ (slot: Idx N, k: Body): Body =
+        λ (st: State): [mem.M 0, D] =
+            let (lo, size, _, dyn_ax, vs, m, dst) = st;
+            let fixed = vec.fold.r @(Bool, Idx Rn) @Rn (λ (d: Idx Rn, acc: Bool): Bool = core.select (dyn_ax#d, ff, acc)) (‹d: Rn; d›, tt);
+            let staged = λ (p: [src: Aff (Rn, Rs#slot), make: [lo ext: «Rs#slot; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (Rs#slot, ext, Ts#slot)]]): [mem.M 0, D] =
+                let (blo, bext) = aff_box (p#src) (lo, refly.check (fixed, size, "SchedTree: a Stage cannot see a run-time extent"));
+                let (m, t) = (p#make) (blo, bext) m;
+                // The box starts where the tile does, so the tile reads at the linear part of the map.
+                let v  = (Rs#slot, bext, ‹Rn; 1›, zero, lm (q o: IxN): «Rs#slot; affine.Index» = aff_lin (p#src) ‹e: Rn; affine.op.add (q#e, o#e)›, t)
+                    inj LevelsView (Rn, Ts#slot);
+                let (m, dst) = k ((st#views#slot ← v)#tok ← m);
+                (buffer.free (Rs#slot, bext, Ts#slot) (m, t), dst);
+            match prods#slot with
+                | Plain _ => k st
+                | Fill p  => staged p;
+
     lam eval (node: SchedTree (N, Rn))@(core.pe.is_closed node): Body =
         match node with
             | Leaf vdim => λ (st: State): [mem.M 0, D] = step_leaf (vdim, st)
@@ -1795,7 +1837,8 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
             | Peel n    =>
                 let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Peel needs an axis below Rn");
                 let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Peel needs a positive tile size");
-                split_serial (ff, tt, ax, ts, eval (n#body));
+                split_serial (ff, tt, ax, ts, eval (n#body))
+            | Stage n   => step_stage (n#slot, eval (n#body));
 
     let red_dyn  = vec.fold.r @(Bool, Idx Rn) @Rn
         (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (dyn0#d, tt, acc))) (‹d: Rn; d›, ff);
@@ -1803,6 +1846,17 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
     let (m, dst) = (buffer.alloc (Ro, So, To) m, buffer.lit (Ro, So, To) (m, init))#red_dyn;
     let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, zero, levels_plain @Rn (Rs#i, slot_maps#i), xs0#i) inj LevelsView (Rn, Ts#i)›;
     eval sched (‹Rn; 0›, Sr, cap0, dyn0, vs0, m, dst);
+
+anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
+    (So: «Ro; Nat», Sr: «Rn; Nat»)
+    (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
+    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+    (slot_maps: «i: N; («Rn; affine.Index» → «Rs#i; affine.Index»)»)
+    (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
+    (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
+    : [mem.M 0, buffer.Buf (Ro, So, To)] =
+    run_levels_with @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr) (f, init) map_out
+        (slot_maps, ‹i: N; (Prod (Rn, Rs#i, Ts#i))#Plain›) (sched, cap0, dyn0) (m, xs0);
 ///
 /// ### cpu_tree
 ///
