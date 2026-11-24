@@ -72,6 +72,12 @@ const Def* AddMem::rewrite(const Def* old_def) {
     return Rewriter::rewrite(old_def);
 }
 
+const Def* AddMem::rewrite_imm_Axm(const Axm* axm) {
+    auto _  = fe::Restore(pinned_, true);
+    auto __ = fe::Restore<const Def*>(curr_mem_, nullptr);
+    return Rewriter::rewrite_imm_Axm(axm);
+}
+
 const Def* AddMem::rewrite_imm_Pi(const Pi* pi) {
     auto new_pi = Rewriter::rewrite_imm_Pi(pi)->as<Pi>();
     if (pinned_ || !Pi::isa_cn(pi) || has_mem(pi)) return new_pi;

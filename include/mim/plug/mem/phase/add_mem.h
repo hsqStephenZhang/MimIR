@@ -18,7 +18,7 @@ namespace mim::plug::mem::phase {
 /// An operation on a placeholder must be pure as a whole, as AddMem shares and hoists it.
 ///
 /// Direct-style functions keep their signature.
-/// So does everything reachable from an Axm's Lam arguments, as the Axm pins their type.
+/// So does everything reachable from an Axm's Lam arguments, as the Axm pins their type, and an Axm's own type.
 class AddMem : public RWPhase {
 public:
     using RWPhase::RWPhase;
@@ -30,6 +30,7 @@ private:
     const Def* rewrite_imm_App(const App*) override;
     const Def* rewrite_imm_Tuple(const Tuple*) override;
     const Def* rewrite_imm_Pi(const Pi*) override;
+    const Def* rewrite_imm_Axm(const Axm*) override;
 
     struct Frame {
         Lam* old_lam;

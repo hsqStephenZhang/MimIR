@@ -1,0 +1,21 @@
+// RUN: %mim -p opt %s -o - | %FileCheck %s
+
+// `add_mem` leaves an Axm's own type alone: `cps.cps2ds`'s `Cn [t: T, Cn U t]` shows no memory only because `T` is abstract.
+plugin core;
+plugin mem;
+plugin affine;
+plugin cps;
+plugin tensor;
+
+lam steps {X: *} (n: Nat) (m: mem.M 0, x: X) (body: [mem.M 0, X] → [mem.M 0, X]): [mem.M 0, X] =
+    fun run (s: [mem.M 0, X])@tt: [mem.M 0, X] =
+        affine.For @(0, 2, (mem.M 0, X)) step exit (0I64, core.bitcast I64 n, 1I64, s)
+        where
+            con step (_: I64, s: [mem.M 0, X], yield: Cn [mem.M 0, X]) = yield (body s);
+            con exit (s: [mem.M 0, X]) = return s;
+        end;
+    cps.cps2ds run (m, x);
+
+// CHECK: extern
+extern fun inc (m: mem.M 0, a: I32): [mem.M 0, I32] =
+    return (steps @I32 4 (m, a) (λ (m: mem.M 0, x: I32): [mem.M 0, I32] = (m, core.wrap.add 0 (x, 1I32))));
