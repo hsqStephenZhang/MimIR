@@ -594,8 +594,50 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     return w.app(pass, {m, dst_p, out, post_is})->proj(2, 1);
 }
 
+const Def* LowerToMem::lower_pe_generic(const App* app) {
+    auto& w = new_world();
+    if (!w.driver().arg_nat("tensor", "pe-generic").value_or(0)) return nullptr;
+    auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto ranks  = old_mr.ranks();
+    if (!ranks || ranks->nps != 0) return nullptr;
+    if (!Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return nullptr;
+    auto c    = rewrite(app->callee())->as<App>();
+    auto mr   = btensor::MapRedPost::of(c);
+    auto plan = PeGeneric{};
+    if (!pe_generic_plan(c, &plan)) return nullptr;
+
+    u64 rn      = ranks->nloops();
+    auto nis    = ranks->nis;
+    auto levels = cpu_levels(rn);
+    auto vdim   = w.lit_nat(plan.vdim);
+    auto N      = w.lit_nat(nis);
+    auto tree   = levels ? w.app(w.app(w.annex<tensor::sched_levels>(), {N, mr.Rn, w.lit_nat(levels->num_projs())}),
+                                 {levels, vdim})
+                         : w.app(w.app(w.annex<tensor::sched_leaf>(), {N, mr.Rn}), vdim);
+    log().i("tile the map-reduce over {} with tensor.run_levels{}", mr.Sr, levels ? " at the given levels" : "");
+
+    auto old_is        = app->arg()->proj(2, 0);
+    auto xs            = DefVec(nis, [&](size_t i) { return rewrite(old_is->proj(nis, i)); });
+    auto prods         = DefVec(nis, [&](size_t i) {
+        return w.app(w.annex<tensor::prod_plain>(), {mr.Ris->proj(nis, i), mr.Tis->proj(nis, i)});
+    });
+    auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+    auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
+    auto dyn           = w.tuple(DefVec(rn, [&](size_t) { return w.lit_ff(); }));
+
+    const Def* run = w.annex<tensor::run_levels_with>();
+    run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, mr.Sis});
+    run            = w.app(run, {mr.So, mr.Sr});
+    run            = w.app(run, {memcomb, mr.init});
+    run            = w.app(run, mr.map_out);
+    run            = w.app(run, {plan.maps, w.tuple(prods)});
+    run            = w.app(run, {tree, mr.Sr, dyn});
+    return w.app(run, {fresh_mem(), w.tuple(xs)})->proj(2, 1);
+}
+
 const Def* LowerToMem::lower_map_reduce(const App* app) {
     if (auto pe = lower_pe_cpu(app)) return pe;
+    if (auto pe = lower_pe_generic(app)) return pe;
     // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
     // reusing the (rewritten) meta. The loop generation lives in the btensor plugin (`btensor.lower_map_reduce`).
     auto& w            = new_world();

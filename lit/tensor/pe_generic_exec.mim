@@ -1,0 +1,40 @@
+// RUN: %mim -VVV -p opt -X tensor:pe-generic=1 %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_generic_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
+// RUN: %t0.exec
+// RUN: %mim -VVV -p opt -X tensor:pe-generic=1 -X "tensor:cpu-levels=8,16/2,8" %s -p ll -X ll:o=%t1.ll -o %t1.mim 2>&1 | %FileCheck %s --check-prefix=LEVELS
+// RUN: clang++ -O2 -fsanitize=address %S/pe_generic_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
+// RUN: %t1.exec
+
+// Map-reduces that are not contractions through run_levels: one leaf, or IREE-style levels for the two-loop ones.
+// CHECK-DAG: tile the map-reduce over (37, 53) with tensor.run_levels
+// CHECK-DAG: tile the map-reduce over (5, 7, 11) with tensor.run_levels
+// LEVELS-DAG: tile the map-reduce over (37, 53) with tensor.run_levels at the given levels
+// LEVELS-DAG: ignoring `-X tensor:cpu-levels=8,16/2,8` for a contraction over 3 loops
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F32 = math.F32;
+fun add (acc: F32, x: F32)@tt: F32 = return (math.arith.add 0 (acc, x));
+fun sum2 (_: F32, (x y: F32))@tt: F32 = return (math.arith.add 0 (x, y));
+
+// Row sums: the reduction loop is the unit-stride one, so the leaf vectorizes the reduction.
+extern fun row_sum (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 1 37 F32 =
+    return (tensor.map_reduce (37, (37, 53)) (add, 0:F32) (λ (i _: affine.Index): affine.Index = i)
+        (λ (i j: affine.Index): «2; affine.Index» = (i, j)) x);
+
+// Column sums: the output loop is the unit-stride one.
+extern fun col_sum (x: tensor.Tensor 2 (53, 37) F32): tensor.Tensor 1 37 F32 =
+    return (tensor.map_reduce (37, (37, 53)) (add, 0:F32) (λ (j _: affine.Index): affine.Index = j)
+        (λ (j i: affine.Index): «2; affine.Index» = (i, j)) x);
+
+// Elementwise, no reduction loop.
+extern fun add2 (x: tensor.Tensor 2 (37, 53) F32, y: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 2 (37, 53) F32 =
+    return (tensor.map_reduce ((37, 53), (37, 53)) (sum2, 0:F32) (λ (i j: affine.Index): «2; affine.Index» = (i, j))
+        (λ (i j: affine.Index): «2; affine.Index» = (i, j), λ (i j: affine.Index): «2; affine.Index» = (i, j)) (x, y));
+
+// Two reduction loops over a three-dimensional input.
+extern fun plane_sum (x: tensor.Tensor 3 (5, 7, 11) F32): tensor.Tensor 1 5 F32 =
+    return (tensor.map_reduce (5, (5, 7, 11)) (add, 0:F32) (λ (i _ _: affine.Index): affine.Index = i)
+        (λ (i j k: affine.Index): «3; affine.Index» = (i, j, k)) x);

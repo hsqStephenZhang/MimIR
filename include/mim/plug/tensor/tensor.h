@@ -157,6 +157,16 @@ struct PeCpu {
     const Def* maps;   ///< `«i: 2; tensor.Aff (Rn, Ris#i)»`: each input's access map as data.
 };
 
+/// The facts `tensor.run_levels` needs for a map-reduce that is not a contraction.
+struct PeGeneric {
+    const Def* maps; ///< `«i: nis; tensor.Aff (Rn, Ris#i)»`: each input's access map as data.
+    u64 vdim;        ///< The leaf's vector loop: the last output loop over a strided reduction, else none (`Rn`).
+};
+
+/// Whether `tensor.run_levels` covers any static `tensor.map_reduce_post` with meta @p callee whose output loops come
+/// first; on success, @p plan receives its facts.
+bool pe_generic_plan(const App* callee, PeGeneric* plan);
+
 /// Whether `tensor.run_levels` covers the `tensor.map_reduce_post` with meta @p callee: `tt`, `ff`, or `nullptr` while
 /// undecided. On `tt`, @p plan receives the facts the lowering builds its `SchedTree` from.
 const Def* pe_cpu_plan(const App* callee, PeCpu* plan = nullptr);

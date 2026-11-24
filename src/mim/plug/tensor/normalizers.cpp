@@ -426,6 +426,50 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     return w.lit_tt();
 }
 
+bool pe_generic_plan(const App* callee, PeGeneric* plan) {
+    auto& w    = callee->world();
+    auto mr    = btensor::MapRedPost::of(callee);
+    auto ranks = mr.ranks();
+    if (!ranks || ranks->ro < 1 || ranks->nis < 1) return false;
+    u64 ro = ranks->ro, rn = ranks->nloops(), nis = ranks->nis;
+    if (!lit_projs(mr.Ris, nis)) return false;
+    for (u64 d = 0; d != rn; ++d)
+        if (!Lit::isa(mr.Sr->proj(rn, d))) return false;
+    for (u64 d = 0; d != ro; ++d)
+        if (mr.So->proj(ro, d) != mr.Sr->proj(rn, d)) return false;
+    if (mr.To == w.type_nat() || !Check::test_alpha(mr.init->type(), mr.To)) return false;
+    if (!Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>())) return false;
+    if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), {mr.Rn, w.lit_nat_0()}))) return false;
+
+    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
+    auto probe  = w.mut_lam(domain, domain);
+    auto vars   = probe->var()->projs(rn);
+    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return false;
+
+    auto maps = mr.maps->projs(nis);
+    auto affs = DefVec(nis);
+    // Unit stride of every input along a loop: along the innermost one the plain nest is already contiguous; along the
+    // last output loop with a strided reduction inside, a row of accumulators makes it so.
+    auto unit = [&](size_t i, u64 d) {
+        auto aff_unit = w.app(w.annex<tensor::aff_unit>(), {mr.Rn, mr.Ris->proj(nis, i)});
+        return w.app(aff_unit, {affs[i], w.lit_idx(rn, d)}) == w.lit_tt();
+    };
+    bool red_unit = true, out_unit = true;
+    for (size_t i = 0; i != nis; ++i) {
+        auto r    = *Lit::isa(mr.Ris->proj(nis, i));
+        auto rows = w.app(maps[i], probe->var())->projs(r);
+        auto refl = AffReflect(w, mr.Rn, vars);
+        for (auto row : rows)
+            if (!refl.scan(row)) return false;
+        affs[i] = refl.map(rows);
+        red_unit &= unit(i, rn - 1);
+        out_unit &= unit(i, ro - 1);
+    }
+    bool row = ro < rn && !red_unit && out_unit;
+    if (plan) *plan = {w.tuple(affs), row ? ro - 1 : rn};
+    return true;
+}
+
 const Def* normalize_pe_cpu_candidate(const Def*, const Def*, const Def* producer) {
     if (auto app = Axm::isa<tensor::map_reduce_post>(producer)) return pe_cpu_plan(app->callee()->as<App>());
     return nullptr;

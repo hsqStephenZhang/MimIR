@@ -39,6 +39,7 @@ private:
     const Def* lower_broadcast(const App*);
     const Def* lower_map_reduce(const App*);
     const Def* lower_pe_cpu(const App*);
+    const Def* lower_pe_generic(const App*);
     /// The slots of the `run_levels_with` call for the old contraction @p app: `(xs, Sis, prods, fuse)`, where a
     /// single-use contraction producing one input becomes a `tensor.fill_of` producer instead of a buffer.
     std::array<const Def*, 4> pe_slots(const App* app,
