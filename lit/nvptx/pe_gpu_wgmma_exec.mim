@@ -1,0 +1,76 @@
+// RUN: rm -f %t.ll %t_dev.ll %t %t2.ll %t2_dev.ll %t2
+// RUN: %mim -VVV -p opt -p gpu %s -p nvptx -X nvptx:o=%t.ll -X nvptx:o-dev=%t_dev.ll 2>&1 | %FileCheck %s
+// RUN: %FileCheck %s --input-file=%t_dev.ll --check-prefix=DEV
+// RUN: %if system-linux && cuda %{ clang++ -O2 %S/pe_gpu_wgmma_aux.cpp %t.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+// RUN: %mim -VVV -p opt -p gpu -X gpu:bm=128 -X gpu:bn=128 %s -p nvptx -X nvptx:o=%t2.ll -X nvptx:o-dev=%t2_dev.ll 2>&1 | %FileCheck %s --check-prefix=WG2
+// RUN: %if system-linux && cuda %{ clang++ -O2 %S/pe_gpu_wgmma_aux.cpp %t2.ll -lcuda -o %t2 -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t2 %}
+
+// CHECK-DAG: tile the f16 contraction over ‹3; i8› on GPU with gpu.tc_wgmma_kernel (BM=64, BN=128, BK=64, Stages=3, b_k_major=0)
+// CHECK-DAG: tile the bf16 contraction over (128, 128, 192) on GPU with gpu.tc_wgmma_kernel (BM=64, BN=128, BK=64, Stages=3, b_k_major=0)
+// CHECK-DAG: tile the f16 contraction over ‹3; 128› on GPU with gpu.tc_wgmma_kernel (BM=64, BN=128, BK=64, Stages=2, b_k_major=1)
+// CHECK-DAG: tile the f16 contraction over (141, 152, 136) on GPU with gpu.tc_wgmma_kernel (BM=64, BN=128, BK=64, Stages=3, b_k_major=0)
+// CHECK-DAG: tile the f16 contraction over ‹3; 128› on GPU with gpu.tc_wgmma_kernel (BM=64, BN=128, BK=64, Stages=2, b_k_major=0)
+
+// WG2-DAG: tile the f16 contraction over ‹3; i8› on GPU with gpu.tc_wgmma_kernel (BM=128, BN=128, BK=64, Stages=3, b_k_major=0)
+// WG2-DAG: tile the bf16 contraction over (128, 128, 192) on GPU with gpu.tc_wgmma_kernel (BM=128, BN=128, BK=64, Stages=3, b_k_major=0)
+
+// DEV-DAG: define ptx_kernel void @mapReduceWgmmaKernel
+// DEV-DAG: external addrspace(3) global [0 x i8], align 1024
+// DEV-DAG: mbarrier.init.shared::cta.b64
+// DEV-DAG: mbarrier.arrive.expect_tx.shared::cta.b64
+// DEV-DAG: cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes
+// DEV-DAG: mbarrier.try_wait.parity.shared::cta.b64
+// DEV-DAG: call void @llvm.nvvm.wgmma.fence.sync.aligned()
+// DEV-DAG: wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16
+// DEV-DAG: wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16
+// DEV-DAG: call void @llvm.nvvm.wgmma.commit_group.sync.aligned()
+// DEV-DAG: call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 1)
+// DEV-DAG: call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 0)
+
+// Tests Hopper TMA + mbarrier + wgmma.m64n128k16 + >48 KiB dynamic shared arena across:
+// 1. F16xF16 -> F32 NN (256x256x256, Stages=4, 128 KiB dynamic shared memory)
+// 2. BF16xBF16 -> F32 NN (128x128x192, Stages=3, 96 KiB dynamic shared memory)
+// 3. F16xF16 -> F32 NT (128x128x128, B transposed / K-major, Stages=2, 64 KiB dynamic shared memory)
+// 4. Non-divisible M=141, N=152, K=136 (tests hardware TMA OOB zero-fill on M, N, and K tail)
+// 5. Fused bias epilogue (128x128x128 F16xF16 + bias -> F32)
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F16  = math.F16;
+let BF16 = math.BF16;
+let F32  = math.F32;
+
+fun mac_f16 (acc: F32, (a b: F16))@tt: F32 =
+    return (math.arith.add 0 (acc, math.arith.mul 0 (math.conv.f2f math.f32 a, math.conv.f2f math.f32 b)));
+
+fun mac_bf16 (acc: F32, (a b: BF16))@tt: F32 =
+    return (math.arith.add 0 (acc, math.arith.mul 0 (math.conv.f2f math.f32 a, math.conv.f2f math.f32 b)));
+
+fun add_bias (acc: F32, b: F32)@tt: F32 =
+    return (math.arith.add 0 (acc, b));
+
+lam map_a_2d (i j k: affine.Index): «2; affine.Index» = (i, k);
+lam map_b_nn (i j k: affine.Index): «2; affine.Index» = (k, j);
+lam map_b_nt (i j k: affine.Index): «2; affine.Index» = (j, k);
+lam map_o_2d (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam map_col  (i j: affine.Index): «1; affine.Index»   = j;
+
+extern fun wg_f16_nn (a: tensor.Tensor 2 (256, 256) F16, b: tensor.Tensor 2 (256, 256) F16): tensor.Tensor 2 (256, 256) F32 =
+    return (tensor.map_reduce ((256, 256), (256, 256, 256)) (mac_f16, 0:F32) map_o_2d (map_a_2d, map_b_nn) (a, b));
+
+extern fun wg_bf16_nn (a: tensor.Tensor 2 (128, 192) BF16, b: tensor.Tensor 2 (192, 128) BF16): tensor.Tensor 2 (128, 128) F32 =
+    return (tensor.map_reduce ((128, 128), (128, 128, 192)) (mac_bf16, 0:F32) map_o_2d (map_a_2d, map_b_nn) (a, b));
+
+extern fun wg_f16_nt (a: tensor.Tensor 2 (128, 128) F16, b: tensor.Tensor 2 (128, 128) F16): tensor.Tensor 2 (128, 128) F32 =
+    return (tensor.map_reduce ((128, 128), (128, 128, 128)) (mac_f16, 0:F32) map_o_2d (map_a_2d, map_b_nt) (a, b));
+
+extern fun wg_f16_odd (a: tensor.Tensor 2 (141, 136) F16, b: tensor.Tensor 2 (136, 152) F16): tensor.Tensor 2 (141, 152) F32 =
+    return (tensor.map_reduce ((141, 152), (141, 152, 136)) (mac_f16, 0:F32) map_o_2d (map_a_2d, map_b_nn) (a, b));
+
+extern fun wg_f16_bias (a: tensor.Tensor 2 (128, 128) F16, b: tensor.Tensor 2 (128, 128) F16, bias: tensor.Tensor 1 128 F32): tensor.Tensor 2 (128, 128) F32 =
+    return (tensor.map_reduce_post ((128, 128), (128, 128, 128), tensor.mk_sched (3, 0))
+            (mac_f16, 0:F32, add_bias) map_o_2d ((map_a_2d, map_b_nn), map_col) ((a, b), bias));

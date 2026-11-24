@@ -12,6 +12,7 @@
 
 #include <mim/plug/core/core.h>
 #include <mim/plug/gpu/gpu.h>
+#include <mim/plug/math/math.h>
 #include <mim/plug/mem/mem.h>
 
 #include "mim/plug/nvptx/nvptx.h"
@@ -29,9 +30,13 @@ class HostEmitter : public ll::Emitter {
 public:
     using Super = ll::Emitter;
 
-    HostEmitter(World& world, std::ostream& ostream, std::optional<std::string> device_fatbin_file)
+    HostEmitter(World& world,
+                std::ostream& ostream,
+                std::optional<std::string> device_fatbin_file,
+                std::map<std::string, u64> dynamic_shared)
         : Super(world, "llvm_nvptx_host_emitter", ostream)
-        , device_fatbin_file_(device_fatbin_file) {}
+        , device_fatbin_file_(device_fatbin_file)
+        , dynamic_shared_(std::move(dynamic_shared)) {}
 
     void start() final;
     void find_kernels(const Def*);
@@ -56,6 +61,7 @@ private:
     void emit_gpu_teardown(ll::BB&, const std::string& name);
 
     std::optional<std::string> device_fatbin_file_;
+    std::map<std::string, u64> dynamic_shared_;
     LamMap<int> kernel_ids_;
     bool cu_globals_declared_ = false;
 
@@ -80,20 +86,62 @@ public:
     std::optional<std::string> isa_targetspecific_intrinsic(ll::BB&, const Def*) final;
 
     bool is_using_libdevice() const { return uses_libdevice; }
+    bool is_using_wgmma() const { return uses_wgmma_; }
+    const std::map<std::string, u64>& dynamic_shared() const { return dynamic_shared_; }
     const std::string& get_extra_flags() const { return extra_flags; }
 
 private:
-    /// Device slots live in a module-scope global in their requested address space, not on the stack.
-    std::string emit_slot(ll::BB&, const App* app, const Def* pointee, const Def* addr_space) override {
+    /// Device slots live in a module-scope global (or the dynamic shared arena when > 48 KiB).
+    std::string emit_slot(ll::BB& bb, const App* app, const Def* pointee, const Def* addr_space) override {
+        auto as = Lit::as(addr_space);
+        if (as == 3) {
+            if (auto it = dynamic_slots_.find(app); it != dynamic_slots_.end()) {
+                auto name     = id(app);
+                auto byte_ptr = bb.assign(name + ".dyn",
+                                          "getelementptr inbounds [0 x i8], [0 x i8] addrspace(3)* {}, i64 0, i64 {}",
+                                          dynamic_array_, it->second);
+                return bb.assign(name + ".slot", "bitcast i8 addrspace(3)* {} to {} addrspace(3)*", byte_ptr,
+                                 convert(pointee, false));
+            }
+            auto size  = Lit::isa(core::op(core::trait::size, pointee)).value_or(0);
+            auto align = (kernel_uses_wgmma_ && size >= 1024) ? 1024 : 16;
+            auto v_ptr = "@" + app->unique_name() + ".slot";
+            std::println(vars_decls_, "{} = internal addrspace(3) global {} undef, align {}", v_ptr,
+                         convert(pointee, false), align);
+            return v_ptr;
+        }
         auto v_ptr = "@" + app->unique_name() + ".slot";
         std::println(vars_decls_, "{} = internal addrspace({}) global {} undef, align 16", v_ptr, addr_space,
                      convert(pointee, false));
         return v_ptr;
     }
 
-    LamSet kernels_;
+    static void
+    inline_asm(ll::BB& bb, std::string_view text, std::string_view constraints, const std::vector<std::string>& args) {
+        auto clobber = constraints.empty() ? "~{memory}"s : std::format("{},~{{memory}}", constraints);
+        std::print(bb.body().emplace_back(), "call void asm sideeffect \"{}\", \"{}\"({})", text, clobber,
+                   fe::Join(args, ", "));
+    }
 
-    bool uses_libdevice = false;
+    static void
+    leaf_paths(const Def* type, const std::string& prefix, std::vector<std::pair<std::string, const Def*>>& paths) {
+        if (auto arr = type->isa<Arr>(); arr && Lit::isa(arr->arity()))
+            for (u64 i = 0, e = Lit::as(arr->arity()); i != e; ++i)
+                leaf_paths(arr->elem(), std::format("{}, {}", prefix, i), paths);
+        else if (auto sigma = type->isa<Sigma>())
+            for (size_t i = 0; i != sigma->num_ops(); ++i)
+                leaf_paths(sigma->op(i), std::format("{}, {}", prefix, i), paths);
+        else
+            paths.emplace_back(prefix, type);
+    }
+
+    LamSet kernels_;
+    DefMap<u64> dynamic_slots_;
+    std::string dynamic_array_;
+    std::map<std::string, u64> dynamic_shared_;
+    bool kernel_uses_wgmma_ = false;
+    bool uses_wgmma_        = false;
+    bool uses_libdevice     = false;
     std::string extra_flags;
 };
 
@@ -172,6 +220,9 @@ constexpr auto Cu_Memcpy_Dtoh         = "cuMemcpyDtoH_v2";
 constexpr auto Cu_Memcpy_Dtoh_Async   = "cuMemcpyDtoHAsync_v2_ptsz";
 constexpr auto Cu_Module_Load_Fatbin  = "cuModuleLoadFatBinary";
 constexpr auto Cu_Module_Get_Function = "cuModuleGetFunction";
+constexpr auto Cu_Func_Set_Attribute  = "cuFuncSetAttribute";
+constexpr auto Cu_Max_Dynamic_Shared  = 8; // CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES
+constexpr auto Cu_Shared_Carveout     = 9; // CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT
 constexpr auto Cu_Module_Unload       = "cuModuleUnload";
 constexpr auto Cu_Stream_Create       = "cuStreamCreate";
 constexpr auto Cu_Stream_Destroy      = "cuStreamDestroy_v2";
@@ -246,6 +297,16 @@ void HostEmitter::emit_gpu_setup(ll::BB& bb, const std::string& name) {
         auto func_res = bb.assign(name + "_" + kname + "_getfuncres", "call i32 @{}(ptr {}, ptr {}, ptr {}{})",
                                   Cu_Module_Get_Function, func_ptr, mod_inner, kernel_name_prefix, kid);
         emit_cu_error_handling(bb, func_res);
+        if (auto bytes = dynamic_shared_.find(kname); bytes != dynamic_shared_.end()) {
+            declare("i32 @{}(ptr, i32, i32)", Cu_Func_Set_Attribute);
+            auto func = bb.assign(name + "_" + kname + "_func", "load ptr, ptr {}", func_ptr);
+            auto res  = bb.assign(name + "_" + kname + "_setattr", "call i32 @{}(ptr {}, i32 {}, i32 {})",
+                                  Cu_Func_Set_Attribute, func, Cu_Max_Dynamic_Shared, bytes->second);
+            emit_cu_error_handling(bb, res);
+            auto carveout = bb.assign(name + "_" + kname + "_carveout", "call i32 @{}(ptr {}, i32 {}, i32 100)",
+                                      Cu_Func_Set_Attribute, func, Cu_Shared_Carveout);
+            emit_cu_error_handling(bb, carveout);
+        }
     }
 }
 
@@ -341,6 +402,49 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
         auto res = bb.assign(name, "call i32 @{}(ptr {})", Cu_Stream_Sync, stream);
         emit_cu_error_handling(bb, res);
         return res;
+    } else if (auto dmap = Axm::isa<gpu::device_tensor_map>(def)) {
+        auto [m1, base, rows, cols, box_rows, box_cols] = dmap->args<6>();
+        emit_unsafe(m1);
+        auto elem  = dmap->decurry()->decurry()->arg();
+        auto dtype = math::isa_bf16(elem) ? 9 : math::isa_f(elem) == 16 ? 6 : math::isa_f(elem) == 32 ? 7 : -1;
+        if (dtype < 0) def->blame(MIM_NVPTX_BE "a tensor map of `{}` elements is not supported", elem).bail();
+        auto size    = Lit::as(core::op(core::trait::size, elem));
+        auto v_map   = bb.assign(name + ".host", "alloca [16 x i64], align 64");
+        auto dims    = bb.assign(name + ".dims", "alloca [2 x i64]");
+        auto strides = bb.assign(name + ".strides", "alloca i64");
+        auto box     = bb.assign(name + ".box", "alloca [2 x i32]");
+        auto unit    = bb.assign(name + ".unit", "alloca [2 x i32]");
+        auto at      = [&](const std::string& arr, std::string_view t, int i) {
+            return bb.assign(std::format("{}.{}", arr, i), "getelementptr [2 x {}], ptr {}, i64 0, i64 {}", t, arr, i);
+        };
+        auto store = [&](std::string_view t, const std::string& v, const std::string& ptr) {
+            std::print(bb.body().emplace_back(), "store {} {}, ptr {}", t, v, ptr);
+        };
+        auto v_cols = emit(cols), v_rows = emit(rows);
+        store("i64", v_cols, at(dims, "i64", 0));
+        store("i64", v_rows, at(dims, "i64", 1));
+        store("i64", bb.assign(name + ".stride", "mul i64 {}, {}", v_cols, size), strides);
+        store("i32", bb.assign(name + ".bc", "trunc i64 {} to i32", emit(box_cols)), at(box, "i32", 0));
+        store("i32", bb.assign(name + ".br", "trunc i64 {} to i32", emit(box_rows)), at(box, "i32", 1));
+        store("i32", "1", at(unit, "i32", 0));
+        store("i32", "1", at(unit, "i32", 1));
+        auto v_base = emit(base);
+        auto global
+            = convert(base->type()) == "i64" ? bb.assign(name + ".base", "inttoptr i64 {} to ptr", v_base) : v_base;
+        declare("i32 @cuTensorMapEncodeTiled(ptr, i32, i32, ptr, ptr, ptr, ptr, ptr, i32, i32, i32, i32)");
+        auto res = bb.assign(name + ".res",
+                             "call i32 @cuTensorMapEncodeTiled(ptr {}, i32 {}, i32 2, ptr {}, ptr {}, ptr {}, ptr {}, "
+                             "ptr {}, i32 0, i32 3, i32 2, i32 0)",
+                             v_map, dtype, global, dims, strides, box, unit);
+        emit_cu_error_handling(bb, res);
+        declare("i32 @{}(ptr, i64)", Cu_Mem_Alloc);
+        auto device = bb.assign(name + ".dev", "alloca i64");
+        emit_cu_error_handling(bb, bb.assign(name + ".alloc", "call i32 @{}(ptr {}, i64 128)", Cu_Mem_Alloc, device));
+        auto v_dev = bb.assign(name, "load i64, ptr {}", device);
+        declare("i32 @{}(i64, ptr, i64)", Cu_Memcpy_Htod);
+        emit_cu_error_handling(
+            bb, bb.assign(name + ".copy", "call i32 @{}(i64 {}, ptr {}, i64 128)", Cu_Memcpy_Htod, v_dev, v_map));
+        return v_dev;
     } else if (auto alloc = Axm::isa<gpu::alloc>(def)) {
         bool is_async;
         switch (alloc.id()) {
@@ -490,12 +594,14 @@ std::optional<std::string> HostEmitter::isa_targetspecific_intrinsic(ll::BB& bb,
         if (!kernel_ids_.contains(lam)) fe::throwf(MIM_NVPTX_BE "unknown kernel `{}`", lam);
         auto kid = kernel_ids_[lam];
 
-        auto shared_mem_bytes = 0;
+        u64 shared_mem_bytes = 0;
         if (auto smem_count = Lit::expect(m, "a shared-memory allocation count")) {
             if (smem_count != 1)
                 fe::throwf(MIM_NVPTX_BE "only one dynamic shared-memory allocation is allowed per kernel");
             shared_mem_bytes = Lit::expect(world().call(core::trait::size, MT), "a shared-memory size");
         }
+        if (auto it = dynamic_shared_.find(id(lam).substr(1)); it != dynamic_shared_.end())
+            shared_mem_bytes = std::max(shared_mem_bytes, it->second);
 
         emit_unsafe(mem);
         auto n_groups = emit(n_groups_def);
@@ -544,6 +650,45 @@ std::string DeviceEmitter::prepare() {
     std::print(func_impls_, "define ptx_kernel {} {}(", convert_ret_pi(kernel->type()->ret_pi()), id(kernel));
 
     auto [m1, m3, m4, m5, group_id, item_id, smem, arg, ret_lam] = kernel->vars<9>();
+
+    dynamic_slots_.clear();
+    kernel_uses_wgmma_ = false;
+    DefVec shared_slots;
+    DefSet seen;
+    for (DefVec todo{kernel}; !todo.empty();) {
+        auto d = todo.back();
+        todo.pop_back();
+        if (!seen.emplace(d).second) continue;
+        if (Axm::isa<gpu::wgmma_f16>(d) || Axm::isa<gpu::wgmma_bf16>(d) || Axm::isa<gpu::tma_load_if>(d)) {
+            kernel_uses_wgmma_ = true;
+            uses_wgmma_        = true;
+        }
+        if (auto mslot = Axm::isa<mem::mslot>(d)) {
+            auto [Ta, _]             = mslot->uncurry_args<2>();
+            auto [__, addr_space]    = Ta->projs<2>();
+            if (Lit::isa(addr_space) == 3) shared_slots.push_back(mslot);
+        }
+        for (auto dep : d->deps())
+            todo.push_back(dep);
+    }
+    u64 total_shared = 0;
+    for (auto slot : shared_slots) {
+        auto pointee = slot->as<App>()->uncurry_args<2>()[0]->proj(2, 0);
+        auto sz      = Lit::isa(core::op(core::trait::size, pointee)).value_or(0);
+        u64 align    = (kernel_uses_wgmma_ && sz >= 1024) ? 1024 : 16;
+        total_shared = (total_shared + align - 1) / align * align;
+        dynamic_slots_[slot] = total_shared;
+        total_shared += (sz + 15) / 16 * 16;
+    }
+    if (total_shared > 48 * 1024) {
+        auto kname             = id(kernel).substr(1);
+        dynamic_array_         = "@" + kname + "_dynamic_shared";
+        dynamic_shared_[kname] = total_shared;
+        std::println(vars_decls_, "{} = external addrspace(3) global [0 x i8], align {}", dynamic_array_,
+                     kernel_uses_wgmma_ ? 1024 : 16);
+    } else {
+        dynamic_slots_.clear();
+    }
 
     auto arg_name = id(arg);
     locals_[arg]  = arg_name;
@@ -811,6 +956,139 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
             value    = bb.assign(dst, "insertvalue [4 x float] {}, float {}, {}", value, f, i);
         }
         return value;
+    } else if (auto addr = Axm::isa<gpu::shared_addr>(def)) {
+        auto ptr   = addr->arg();
+        auto v_ptr = emit(ptr);
+        auto t_ptr = convert(ptr->type());
+        auto p3    = bb.assign(name + ".p3", "bitcast {} {} to i8 addrspace(3)*", t_ptr, v_ptr);
+        return bb.assign(name, "ptrtoint i8 addrspace(3)* {} to i32", p3);
+    } else if (auto mi = Axm::isa<gpu::mbar_init_if>(def)) {
+        auto [m1_def, m3_def, bar, count, issue] = mi->args<5>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb, "{ .reg .pred q; setp.ne.b32 q, $2, 0; @q mbarrier.init.shared::cta.b64 [$0], $1; }", "r,r,r",
+                   {"i32 " + emit(bar), "i32 " + emit(count), "i32 " + pred});
+        return name;
+    } else if (auto me = Axm::isa<gpu::mbar_expect_tx_if>(def)) {
+        auto [m1_def, m3_def, bar, bytes, issue] = me->args<5>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        auto pred = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(
+            bb, "{ .reg .pred q; setp.ne.b32 q, $2, 0; @q mbarrier.arrive.expect_tx.shared::cta.b64 _, [$0], $1; }",
+            "r,r,r", {"i32 " + emit(bar), "i32 " + emit(bytes), "i32 " + pred});
+        return name;
+    } else if (auto mw = Axm::isa<gpu::mbar_wait_at>(def)) {
+        auto [m1_def, m3_def, bar, parity] = mw->args<4>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        inline_asm(
+            bb, "{ .reg .pred p; W${:uid}: mbarrier.try_wait.parity.shared::cta.b64 p, [$0], $1; @!p bra W${:uid}; }",
+            "r,r", {"i32 " + emit(bar), "i32 " + emit(parity)});
+        return name;
+    } else if (auto tma = Axm::isa<gpu::tma_load_if>(def)) {
+        auto [m1_def, m3_def, dst, map, col, row, bar, issue] = tma->args<8>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        auto v_map = emit(map);
+        auto t_map = convert(map->type());
+        auto gm    = bb.assign(name + ".gm", "bitcast {} {} to i8 addrspace(1)*", t_map, v_map);
+        auto map_i = bb.assign(name + ".map", "ptrtoint i8 addrspace(1)* {} to i64", gm);
+        auto pred  = bb.assign(name + ".p", "zext i1 {} to i32", emit(issue));
+        inline_asm(bb,
+                   "{ .reg .pred q; setp.ne.b32 q, $5, 0; @q "
+                   "cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [$0], [$1, {$2, $3}], "
+                   "[$4]; }",
+                   "r,l,r,r,r,r",
+                   {"i32 " + emit(dst), "i64 " + map_i, "i32 " + emit(col), "i32 " + emit(row), "i32 " + emit(bar),
+                    "i32 " + pred});
+        return name;
+    } else if (auto wf = Axm::isa<gpu::wgmma_fence>(def)) {
+        emit_unsafe(wf->arg(2, 0));
+        emit_unsafe(wf->arg(2, 1));
+        declare("void @llvm.nvvm.wgmma.fence.sync.aligned()");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.fence.sync.aligned()");
+        return name;
+    } else if (auto wc = Axm::isa<gpu::wgmma_commit>(def)) {
+        emit_unsafe(wc->arg(2, 0));
+        emit_unsafe(wc->arg(2, 1));
+        declare("void @llvm.nvvm.wgmma.commit_group.sync.aligned()");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.commit_group.sync.aligned()");
+        return name;
+    } else if (Axm::isa<gpu::wgmma_f16>(def) || Axm::isa<gpu::wgmma_bf16>(def)) {
+        auto [nt, m1_def, m3_def, a, b, trans_b, acc] = def->as<App>()->args<7>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        bool bf    = Axm::isa<gpu::wgmma_bf16>(def) != nullptr;
+        auto n     = Lit::as(nt);
+        auto regs  = 4 * n;
+        auto v_a   = emit(a);
+        auto v_b   = emit(b);
+        auto v_acc = emit(acc);
+        auto t_acc = convert(acc->type());
+        auto ty    = bf ? "bf16"s : "f16"s;
+        std::vector<std::string> ins;
+        for (u64 j = 0; j != n; ++j)
+            for (u64 e = 0; e != 4; ++e)
+                ins.push_back("float "
+                              + bb.assign(std::format("{}.c{}_{}", name, j, e), "extractvalue {} {}, {}, {}", t_acc,
+                                          v_acc, j, e));
+        std::vector<std::string> outs;
+        for (u64 i = 0; i != regs; ++i)
+            outs.push_back(std::format("${}", i));
+        std::vector<std::string> constraints(regs, "=f");
+        for (u64 i = 0; i != regs; ++i)
+            constraints.push_back(std::to_string(i));
+        ins.push_back("i64 " + v_a);
+        constraints.push_back("l");
+        ins.push_back("i64 " + v_b);
+        constraints.push_back("l");
+        auto flags    = std::format("1, 1, 1, 0, {}", Lit::as<bool>(trans_b) ? 1 : 0);
+        auto asm_text = std::format("wgmma.mma_async.sync.aligned.m64n{}k16.f32.{}.{} {{{}}}, ${}, ${}, {};", 8 * n, ty,
+                                    ty, fe::Join(outs, ", "), 2 * regs, 2 * regs + 1, flags);
+        auto t_ret    = std::format("{{ {} }}", fe::Join(std::vector(regs, "float"s), ", "));
+        auto d        = bb.assign(name + ".d", "call {} asm sideeffect \"{}\", \"{}\"({})", t_ret, asm_text,
+                                  fe::Join(constraints, ","), fe::Join(ins, ", "));
+        std::string value = "undef";
+        for (u64 j = 0; j != n; ++j)
+            for (u64 e = 0; e != 4; ++e) {
+                auto f = bb.assign(std::format("{}.d{}_{}", name, j, e), "extractvalue {} {}, {}", t_ret, d, 4 * j + e);
+                value  = bb.assign(std::format("{}.v{}_{}", name, j, e), "insertvalue {} {}, float {}, {}, {}", t_acc,
+                                   value, f, j, e);
+            }
+        return bb.assign(name, "insertvalue {{ {} }} undef, {} {}, 0", t_acc, t_acc, value);
+    } else if (auto wwg = Axm::isa<gpu::wgmma_wait_group>(def)) {
+        auto [m1_def, m3_def, n_def] = wwg->args<3>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        declare("void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64)");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 {})",
+                   Lit::as(n_def));
+        return name;
+    } else if (auto ww = Axm::isa<gpu::wgmma_wait>(def)) {
+        auto [m1_def, m3_def, n_def, x] = ww->args<4>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        auto v_x = emit(x);
+        auto n   = Lit::as(n_def);
+        declare("void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64)");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.wgmma.wait_group.sync.aligned(i64 {})", n);
+        auto t_x = convert(x->type());
+        std::vector<std::pair<std::string, const Def*>> paths;
+        leaf_paths(x->type(), "", paths);
+        auto value = v_x;
+        for (size_t i = 0; i != paths.size(); ++i) {
+            auto& [path, leaf] = paths[i];
+            auto t             = convert(leaf);
+            auto reg           = t == "float" ? "f" : t == "double" ? "d" : t == "half" || t == "bfloat" ? "h" : "r";
+            auto f             = bb.assign(std::format("{}.w{}", name, i), "extractvalue {} {}{}", t_x, v_x, path);
+            auto g             = bb.assign(std::format("{}.f{}", name, i), "call {} asm sideeffect \"\", \"={},0\"({} {})",
+                                           t, reg, t, f);
+            value              = bb.assign(std::format("{}.x{}", name, i), "insertvalue {} {}, {} {}{}", t_x, value, t, g,
+                                           path);
+        }
+        return bb.assign(name, "insertvalue {{ {} }} undef, {} {}, 0", t_x, t_x, value);
     } else if (auto tri = Axm::isa<math::tri>(def)) {
         auto arg       = emit(tri->arg());
         auto type      = convert(tri->arg()->type());
@@ -865,8 +1143,12 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
     return std::nullopt;
 }
 
-void emit_host(World& world, std::ostream& ostream, std::optional<std::string> device_fatbin_file, ll::Emitter::Rt rt) {
-    HostEmitter emitter(world, ostream, device_fatbin_file);
+void emit_host(World& world,
+               std::ostream& ostream,
+               std::optional<std::string> device_fatbin_file,
+               std::map<std::string, u64> dynamic_shared,
+               ll::Emitter::Rt rt) {
+    HostEmitter emitter(world, ostream, device_fatbin_file, std::move(dynamic_shared));
     emitter.rt_mode(rt);
     // Same one-liner the `ll` backend uses; each backend just names its own runtime module.
     if (rt == ll::Emitter::Rt::embed) emitter.load_rt_module("nvptx_rt.ll");
@@ -879,6 +1161,8 @@ DeviceEmitFlags emit_device(World& world, std::ostream& ostream) {
 
     return DeviceEmitFlags{
         .uses_libdevice = emitter.is_using_libdevice(),
+        .uses_wgmma     = emitter.is_using_wgmma(),
+        .dynamic_shared = emitter.dynamic_shared(),
     };
 }
 

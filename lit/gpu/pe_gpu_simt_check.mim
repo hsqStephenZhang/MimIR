@@ -42,9 +42,9 @@ lam probe_pf_w (m1: gpu.GlobalM, t: Nat): [gpu.GlobalM, «4; «4; F32»»] =
 
 // CHECK: gpu.simt_pipe_n: Stages must be > 0
 lam probe_pipe0 (m1: gpu.GlobalM, m3: gpu.SharedM): [gpu.GlobalM, gpu.SharedM, F32] =
-    gpu.simt_pipe_n @([], [], F32) (0, 4) () (m1, m3, 0:F32)
+    gpu.simt_pipe_n @([], [], F32) (0, 4) tt () (m1, m3, 0:F32)
         (λ (_: Nat, m1: gpu.GlobalM, m3: gpu.SharedM, _: []): [gpu.GlobalM, gpu.SharedM, []] = (m1, m3, ()),
-         λ (_: Nat, m1: gpu.GlobalM, m3: gpu.SharedM, _: [], _: []): [gpu.GlobalM, gpu.SharedM] = (m1, m3),
+         λ (_ _: Nat, m1: gpu.GlobalM, m3: gpu.SharedM, _: [], _: []): [gpu.GlobalM, gpu.SharedM] = (m1, m3),
          λ (m1: gpu.GlobalM, m3: gpu.SharedM, _: [], a: F32): [gpu.GlobalM, gpu.SharedM, F32] = (m1, m3, a));
 
 let F16 = math.F16;

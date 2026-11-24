@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 
@@ -17,10 +18,16 @@ namespace plug::nvptx {
 namespace ll = mim::plug::ll;
 
 struct DeviceEmitFlags {
-    bool uses_libdevice;
+    bool uses_libdevice = false;
+    bool uses_wgmma     = false;
+    std::map<std::string, u64> dynamic_shared;
 };
 
-void emit_host(World&, std::ostream&, std::optional<std::string>, ll::Emitter::Rt rt = ll::Emitter::Rt::embed);
+void emit_host(World&,
+               std::ostream&,
+               std::optional<std::string>,
+               std::map<std::string, u64> dynamic_shared = {},
+               ll::Emitter::Rt rt                        = ll::Emitter::Rt::embed);
 DeviceEmitFlags emit_device(World&, std::ostream&);
 
 } // namespace plug::nvptx

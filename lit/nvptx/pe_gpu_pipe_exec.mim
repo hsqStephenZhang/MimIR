@@ -22,7 +22,7 @@ lam run_case (Stages n_steps: Nat): Fn [gpu.GlobalM, gpu.SharedM, Idx 4] → [gp
         let peer = core.idx 0 4 (core.nat.rem (core.nat.add (core.idx2nat tid, 1), 4));
         let issue = λ (k: Nat, m1: gpu.GlobalM, m3: gpu.SharedM, _: Slot): [gpu.GlobalM, gpu.SharedM, I32] =
             (m1, m3, core.conv.u i32 (core.bitcast I64 (core.nat.add (k, 1))));
-        let arrive = λ (_: Nat, m1: gpu.GlobalM, m3: gpu.SharedM, s: Slot, tok: I32): [gpu.GlobalM, gpu.SharedM] =
+        let arrive = λ (_ _: Nat, m1: gpu.GlobalM, m3: gpu.SharedM, s: Slot, tok: I32): [gpu.GlobalM, gpu.SharedM] =
             let m3 = mem.store (m3, mem.lea (s, tid), tok);
             gpu.sync_work_items (m1, m3);
         let compute = λ (m1: gpu.GlobalM, m3: gpu.SharedM, s: Slot, acc: I32): [gpu.GlobalM, gpu.SharedM, I32] =
@@ -31,7 +31,7 @@ lam run_case (Stages n_steps: Nat): Fn [gpu.GlobalM, gpu.SharedM, Idx 4] → [gp
             (m1, m3, nxt);
         return (gpu.simt_with_shared_ring @(«4; I32», [gpu.GlobalM, gpu.SharedM, I32]) Stages m3
             (λ (m3: gpu.SharedM, slots: «Stages; Slot»): [gpu.GlobalM, gpu.SharedM, I32] =
-                gpu.simt_pipe_n @(Slot, I32, I32) (Stages, n_steps) slots (m1, m3, 0I32) (issue, arrive, compute)));
+                gpu.simt_pipe_n @(Slot, I32, I32) (Stages, n_steps) tt slots (m1, m3, 0I32) (issue, arrive, compute)));
     go;
 
 con pipe_kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,

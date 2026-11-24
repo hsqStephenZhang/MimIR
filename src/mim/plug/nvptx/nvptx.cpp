@@ -117,13 +117,15 @@ void link_libdevice(const NvptxCompileArgs& c) {
                                      c.dev_bc_raw_name));
 }
 
-void optimize_bytecode(const NvptxCompileArgs& c) {
-    auto opt = fe::sys::require_cmd("opt");
-    fe::sys::require_run(std::format("{} {} {} -o {}", opt, c.opt_args, c.dev_bc_raw_name, c.dev_bc_opt_name));
+void optimize_bytecode(const NvptxCompileArgs& c, bool uses_libdevice) {
+    auto opt_input = uses_libdevice ? c.dev_bc_raw_name : c.dev_ll_name;
+    auto opt       = fe::sys::require_cmd("opt");
+    fe::sys::require_run(
+        std::format("{} -mtriple=nvptx64-nvidia-cuda {} {} -o {}", opt, c.opt_args, opt_input, c.dev_bc_opt_name));
 }
 
-void compile2ptx(const NvptxCompileArgs& c, bool uses_libdevice) {
-    auto compile_input = uses_libdevice ? c.dev_bc_opt_name : c.dev_ll_name;
+void compile2ptx(const NvptxCompileArgs& c, bool use_opt_bc) {
+    auto compile_input = use_opt_bc ? c.dev_bc_opt_name : c.dev_ll_name;
     auto llc           = fe::sys::require_cmd("llc");
     fe::sys::require_run(std::format("{} -march=nvptx64 -mcpu=sm_{} {} {} -o {}", llc, c.compute_cap, c.llc_args,
                                      compile_input, c.dev_ptx_name));
@@ -200,12 +202,14 @@ public:
                 fe::throwf(MIM_NVPTX_BE "embedding requested with no images (neither PTX nor CUBIN)");
             try {
                 if (c.compute_cap.empty()) c.compute_cap = get_compute_capability();
+                if (device_flags.uses_wgmma && c.compute_cap == "90") c.compute_cap = "90a";
+                bool run_opt = device_flags.uses_libdevice || device_flags.uses_wgmma;
                 if (device_flags.uses_libdevice) {
                     if (c.libdevice_path.empty()) c.libdevice_path = find_libdevice();
                     link_libdevice(c);
-                    optimize_bytecode(c);
                 }
-                compile2ptx(c, device_flags.uses_libdevice);
+                if (run_opt) optimize_bytecode(c, device_flags.uses_libdevice);
+                compile2ptx(c, run_opt);
                 compile2cubin(c);
                 compile2fatbin(c);
             } catch (const fe::sys::CmdNotFound& e) {
@@ -215,7 +219,7 @@ public:
         }
         auto device_fatbin_file = c.embed_device_code ? std::optional(c.dev_fatbin_name) : std::nullopt;
         auto host_out           = Out(c.host_ll_name);
-        emit_host(setup_phase->old_world(), *host_out.os(), device_fatbin_file, rt);
+        emit_host(setup_phase->old_world(), *host_out.os(), device_fatbin_file, device_flags.dynamic_shared, rt);
 
         if (c.embed_device_code) {
             std::println(std::cout, "Unified (Fat) LLVM IR written to {}", c.host_ll_name);

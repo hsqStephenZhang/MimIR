@@ -601,6 +601,219 @@ Lam* build_tc_kernel(World& w,
     return kernel;
 }
 
+struct WgmmaPlan {
+    nat_t M, N, K;
+    nat_t BM, BN, Stages;
+    bool is_bf16, b_k_major;
+
+    Grid grid() const {
+        nat_t gm = (M + BM - 1) / BM;
+        nat_t gn = (N + BN - 1) / BN;
+        return {gm * gn, (BM / 64) * 128, M * N};
+    }
+};
+
+std::optional<WgmmaPlan> plan_wgmma_contraction(World& w,
+                                                const btensor::MapRedPost& mr,
+                                                nat_t nis,
+                                                nat_t ro,
+                                                nat_t rr,
+                                                const Vector<nat_t>& out_dims,
+                                                Lam* global_comb) {
+    auto reject = [&](const char* why) -> std::optional<WgmmaPlan> {
+        w.log().d("gpu.pe-wgmma skip {}: {}", mr.Sr, why);
+        return std::nullopt;
+    };
+    if (!w.driver().arg_nat("gpu", "pe-wgmma").value_or(1)) return reject("disabled");
+    if (nis != 2 || ro != 2 || rr != 1) return reject("ranks");
+
+    auto [Ta, Tb] = mr.Tis->projs<2>();
+    bool is_f16   = math::isa_f(Ta) == 16 && math::isa_f(Tb) == 16;
+    bool is_bf16  = math::isa_bf16(Ta) && math::isa_bf16(Tb);
+    if (!is_f16 && !is_bf16) return reject("input_dtype");
+    if (math::isa_f(mr.To) != 32) return reject("acc_dtype");
+    if (!is_canonical_f32_mac(global_comb, mr.init)) return reject("not_mac");
+
+    auto k_lit = Lit::isa<nat_t>(mr.Sr->proj(3, 2));
+    if (!k_lit || *k_lit < 64 || *k_lit % 8 != 0) return reject("k_lit");
+    nat_t M = out_dims[0], N = out_dims[1], K = *k_lit;
+    if (M < 128 || N < 128) return reject("too_small");
+    for (nat_t d = 0; d != 2; ++d) {
+        auto so_d = Lit::isa<nat_t>(mr.So->proj(2, d));
+        if (!so_d || *so_d != out_dims[d]) return reject("so_mismatch");
+    }
+
+    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
+    auto probe  = w.mut_lam(domain, domain);
+    auto vars   = probe->var()->projs<3>();
+    if (w.app(mr.map_out, probe->var()) != w.tuple({vars[0], vars[1]})) return reject("map_out");
+
+    auto [r_a, r_b] = mr.Ris->projs<2>();
+    if (Lit::isa<nat_t>(r_a) != 2 || Lit::isa<nat_t>(r_b) != 2) return reject("in_rank");
+    auto [s_a, s_b] = mr.Sis->projs<2>();
+    if (Lit::isa<nat_t>(s_a->proj(2, 0)) != M || Lit::isa<nat_t>(s_a->proj(2, 1)) != K) return reject("a_shape");
+
+    auto [map_a, map_b] = mr.maps->projs<2>();
+    if (w.app(map_a, probe->var()) != w.tuple({vars[0], vars[2]})) return reject("a_map");
+
+    auto b_mapped   = w.app(map_b, probe->var());
+    bool b_nn       = (b_mapped == w.tuple({vars[2], vars[1]})) && Lit::isa<nat_t>(s_b->proj(2, 0)) == K
+             && Lit::isa<nat_t>(s_b->proj(2, 1)) == N && (N % 8 == 0);
+    bool b_nt       = !b_nn && (b_mapped == w.tuple({vars[1], vars[2]})) && Lit::isa<nat_t>(s_b->proj(2, 0)) == N
+             && Lit::isa<nat_t>(s_b->proj(2, 1)) == K;
+    if (!b_nn && !b_nt) return reject("b_map_or_shape");
+
+    nat_t bm = w.driver().arg_nat("gpu", "bm").value_or(0);
+    nat_t bn = w.driver().arg_nat("gpu", "bn").value_or(0);
+    nat_t st = w.driver().arg_nat("gpu", "wgmma-stages").value_or(0);
+    if (bm == 0 && bn == 0) {
+        if (M >= 128 && N >= 256 && ((M + 127) / 128) * ((N + 255) / 256) >= 256) {
+            bm = 128; bn = 256;
+        } else if (M >= 128 && N >= 128 && ((M + 127) / 128) * ((N + 127) / 128) >= 128) {
+            bm = 128; bn = 128;
+        } else if (N >= 128) {
+            bm = 64; bn = 128;
+        } else {
+            bm = 64; bn = 64;
+        }
+    } else {
+        if (bm == 0) bm = M >= 128 ? 128 : 64;
+        if (bn == 0) bn = N >= 128 ? 128 : 64;
+    }
+    if (bm < 64 || bm % 64 != 0 || (bm / 64) * 128 > 1024) return reject("bm");
+    if (bn < 64 || bn > 256 || bn % 64 != 0) return reject("bn");
+
+    nat_t bytes_per_stage = (bm + bn) * 128 + 16;
+    nat_t max_stages      = std::max<nat_t>(1, (224 * 1024) / bytes_per_stage);
+    nat_t k_tiles         = (K + 63) / 64;
+    // Keep 2-3 CTAs/SM resident in H200's 228 KiB SMEM for <= 128x128 tiles; use 4 stages on 1-CTA/SM tiles.
+    nat_t pref_stages     = (bm + bn <= 256) ? 3 : 4;
+    if (st == 0) st = std::min<nat_t>({max_stages, k_tiles, pref_stages});
+    if (st == 0 || st * bytes_per_stage > 224 * 1024) return reject("smem_limit");
+
+    return WgmmaPlan{M, N, K, bm, bn, st, is_bf16, b_nt};
+}
+
+/// Builds a multi-stage Hopper `TMA + mbarrier + wgmma` contraction kernel via `gpu.tc_wgmma_kernel`.
+Lam* build_wgmma_kernel(World& w,
+                        const WgmmaPlan& plan,
+                        const Def* Ro,
+                        const Def* So,
+                        const Def* map_a_ty,
+                        const Def* map_b_ty,
+                        const Def* Ta,
+                        const Def* To,
+                        const Mapped& post_ins,
+                        Lam* global_post,
+                        const Def* out_dptr,
+                        const Grid& grid) {
+    auto nps       = post_ins.n();
+    auto global_ty = w.annex<gpu::GlobalM>();
+    auto shared_ty = w.annex<gpu::SharedM>();
+    auto const_ty  = w.annex<gpu::ConstM>();
+    auto local_ty  = w.annex<gpu::LocalM>();
+    auto nat_ty    = w.type_nat();
+    auto i64_ty    = w.type_i64();
+    auto global_as = w.annex<gpu::addr_space_global>();
+
+    DefVec arg_tys(2 + nps + 1);
+    arg_tys[0] = map_a_ty;
+    arg_tys[1] = map_b_ty;
+    for (size_t j = 0; j != nps; ++j)
+        arg_tys[2 + j] = post_ins.dptrs[j]->type();
+    arg_tys[2 + nps] = out_dptr->type();
+
+    auto kernel
+        = w.mut_con(Defs{global_ty, shared_ty, const_ty, local_ty, w.type_idx(grid.n_groups), w.type_idx(grid.n_items),
+                         w.sigma(Defs{}), w.sigma(arg_tys), w.cn({global_ty, shared_ty, const_ty, local_ty})})
+              ->set("mapReduceWgmmaKernel");
+    auto [k_global, k_shared, k_const, k_local, group_id, item_id, k_shared_ptrs, k_args, k_ret] = kernel->vars<9>();
+
+    auto k_map_a = k_args->proj(2 + nps + 1, 0);
+    auto k_map_b = k_args->proj(2 + nps + 1, 1);
+    DefVec k_post_dptrs(nps);
+    for (size_t j = 0; j != nps; ++j)
+        k_post_dptrs[j] = k_args->proj(2 + nps + 1, 2 + j);
+    auto k_out_dptr = k_args->proj(2 + nps + 1, 2 + nps);
+
+    auto m_lit  = w.lit_nat(plan.M);
+    auto n_lit  = w.lit_nat(plan.N);
+    auto k_lit  = w.lit_nat(plan.K);
+    auto to_idx = [&](const Def* size, const Def* nat_val) {
+        return w.call(core::conv::u, size, w.call<core::bitcast>(i64_ty, nat_val));
+    };
+
+    bool post_is_id = false;
+    if (nps == 0) {
+        if (auto pbody = global_post->body()->isa<App>(); pbody && pbody->callee() == global_post->var(2, 1)) {
+            auto [pm, pacc, _] = global_post->var(2, 0)->projs<3>();
+            auto [rm, rv]      = pbody->arg()->projs<2>();
+            post_is_id         = (rm == pm && rv == pacc);
+        }
+    }
+
+    auto write_c = w.mut_lam(Defs{global_ty, nat_ty, nat_ty, To}, global_ty)->set("writeCWgmma");
+    {
+        auto [wm, wm_nat, wn_nat, wacc] = write_c->vars<4>();
+        auto write_coords               = w.tuple({to_idx(m_lit, wm_nat), to_idx(n_lit, wn_nat)});
+        auto pcur                       = wm;
+        DefVec post_elems(nps);
+        for (size_t j = 0; j != nps; ++j) {
+            auto [pc_mem, pcoords]
+                = btensor::op_affine_map(post_ins.maps[j], post_ins.rs[j], Ro, So, post_ins.ss[j], write_coords, pcur)
+                      ->projs<2>();
+            auto [rd_mem, rd_val]
+                = w.call<mem::load>(Defs{pc_mem, mem::op_lea_tuple(k_post_dptrs[j], *Shape(pcoords).fold(post_ins.ss[j]))})
+                      ->projs<2>();
+            pcur          = rd_mem;
+            post_elems[j] = rd_val;
+        }
+        auto [post_mem, elem_post]
+            = w.app(cps::op_cps2ds_dep(global_post), w.tuple({pcur, wacc, w.tuple(post_elems)}))->projs<2>();
+        auto stored
+            = w.call<mem::store>(Defs{post_mem, mem::op_lea_tuple(k_out_dptr, *Shape(write_coords).fold(So)), elem_post});
+        write_c->set(true, stored);
+    }
+
+    auto arr2_o   = w.arr(2, To);
+    auto write_c2 = w.mut_lam(Defs{global_ty, nat_ty, nat_ty, arr2_o}, global_ty)->set("writeC2Wgmma");
+    auto [wm2, wr2, wc0, wv2] = write_c2->vars<4>();
+    if (post_is_id && plan.N % 2 == 0) {
+        auto base_ptr = mem::op_lea_tuple(k_out_dptr, *Shape(w.tuple({to_idx(m_lit, wr2), to_idx(n_lit, wc0)})).fold(So));
+        auto vst      = w.app(w.app(w.annex<gpu::vstore2>(), {To, global_as}), {wm2, base_ptr, wv2});
+        write_c2->set(true, vst);
+    } else {
+        auto cm  = w.app(write_c, Defs{wm2, wr2, wc0, wv2->proj(2, 0)});
+        auto c1  = w.call(core::nat::add, Defs{wc0, w.lit_nat_1()});
+        auto ok1 = w.call(core::ncmp::l, Defs{c1, n_lit});
+        if (plan.N % 2 == 0) {
+            cm = w.app(write_c, Defs{cm, wr2, c1, wv2->proj(2, 1)});
+        } else {
+            auto guard_f = w.mut_lam(global_ty, global_ty)->set("writeC2WgmmaOdd");
+            guard_f->set(true, w.app(write_c, Defs{guard_f->var(), wr2, c1, wv2->proj(2, 1)}));
+            auto skip_f = w.mut_lam(global_ty, global_ty)->set("writeC2WgmmaSkip");
+            skip_f->set(true, skip_f->var());
+            cm = w.app(w.extract(w.tuple({skip_f, guard_f}), ok1), cm);
+        }
+        write_c2->set(true, cm);
+    }
+
+    auto group_nat = grid.n_groups == 1 ? w.lit_nat_0() : w.call<core::idx2nat>(group_id);
+    auto item_nat  = grid.n_items == 1 ? w.lit_nat_0() : w.call<core::idx2nat>(item_id);
+
+    const Def* wgmma_op = plan.is_bf16 ? w.annex<gpu::wgmma_bf16>() : w.annex<gpu::wgmma_f16>();
+    const Def* wg       = w.annex<gpu::tc_wgmma_kernel>();
+    wg                  = w.app(wg, Ta);
+    wg = w.app(wg, {m_lit, n_lit, k_lit, w.lit_nat(plan.BM), w.lit_nat(plan.BN), w.lit_nat(plan.Stages)});
+    wg = w.app(wg, w.lit_bool(plan.b_k_major));
+    wg = w.app(wg, wgmma_op);
+    wg = w.app(wg, {k_map_a, k_map_b, write_c2});
+    auto [fin_global, fin_shared] = w.app(wg, {k_global, k_shared, group_nat, item_nat})->projs<2>();
+
+    kernel->app(true, k_ret, Defs{fin_global, fin_shared, k_const, k_local});
+    return kernel;
+}
+
 struct SimtPlan {
     nat_t B, M, N, K;
     nat_t BM, BN, BK, TM, TN, Pad, Dbuf;
@@ -1284,7 +1497,36 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
 
     Grid grid;
     Lam* kernel;
-    if (auto tc_plan = plan_tc_contraction(w, mr, nis_n, ro, rr, out_dims, global_comb)) {
+    DefVec kernel_in_args = inputs.dptrs;
+    DefVec free_dptrs     = inputs.dptrs;
+    if (auto wg_plan = plan_wgmma_contraction(w, mr, nis_n, ro, rr, out_dims, global_comb)) {
+        log().i("tile the {} contraction over {} on GPU with gpu.tc_wgmma_kernel (BM={}, BN={}, BK=64, Stages={}, b_k_major={})",
+                wg_plan->is_bf16 ? "bf16" : "f16", Sr, wg_plan->BM, wg_plan->BN, wg_plan->Stages,
+                wg_plan->b_k_major ? 1 : 0);
+        auto Ta      = mr.Tis->proj(2, 0);
+        auto a_point = Axm::expect<mem::Ptr>(inputs.dptrs[0]->type(), "a `mem.Ptr`")->arg(2, 0);
+        auto b_point = Axm::expect<mem::Ptr>(inputs.dptrs[1]->type(), "a `mem.Ptr`")->arg(2, 0);
+        auto [g1, map_a]
+            = w.app(w.app(w.app(w.annex<gpu::device_tensor_map>(), Ta), a_point),
+                    {out_global, inputs.dptrs[0], w.lit_nat(wg_plan->M), w.lit_nat(wg_plan->K), w.lit_nat(wg_plan->BM),
+                     w.lit_nat(64)})
+                  ->projs<2>();
+        nat_t b_rows     = wg_plan->b_k_major ? wg_plan->N : wg_plan->K;
+        nat_t b_cols     = wg_plan->b_k_major ? wg_plan->K : wg_plan->N;
+        nat_t b_box_rows = wg_plan->b_k_major ? wg_plan->BN : 64;
+        auto [g2, map_b]
+            = w.app(w.app(w.app(w.annex<gpu::device_tensor_map>(), Ta), b_point),
+                    {g1, inputs.dptrs[1], w.lit_nat(b_rows), w.lit_nat(b_cols), w.lit_nat(b_box_rows), w.lit_nat(64)})
+                  ->projs<2>();
+        out_global     = g2;
+        kernel_in_args = {map_a, map_b};
+        free_dptrs.push_back(map_a);
+        free_dptrs.push_back(map_b);
+        grid   = wg_plan->grid();
+        kernel = build_wgmma_kernel(w, *wg_plan, mr.Ro, mr.So, map_a->type(), map_b->type(), Ta, mr.To,
+                                    Mapped{post_desc.rs, post_desc.ss, post_inputs.dptrs, post_desc.maps}, global_post,
+                                    out_dptr, grid);
+    } else if (auto tc_plan = plan_tc_contraction(w, mr, nis_n, ro, rr, out_dims, global_comb)) {
         log().i("tile the {} contraction over {} on GPU with gpu.tc_tiled_kernel_m16n8k16 (BM={}, BN={}, BK={}, WY={}, WX={}, Stages={}, b_k_major={})",
                 tc_plan->is_bf16 ? "bf16" : "f16", Sr, tc_plan->BM, tc_plan->BN, tc_plan->BK, tc_plan->WY, tc_plan->WX,
                 tc_plan->Stages, tc_plan->b_k_major ? 1 : 0);
@@ -1318,19 +1560,19 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
                               global_post, mr.Tp, out_dptr, grid);
     }
 
-    DefVec kernel_args = inputs.dptrs;
+    DefVec kernel_args = kernel_in_args;
     kernel_args.insert(kernel_args.end(), post_inputs.dptrs.begin(), post_inputs.dptrs.end());
     kernel_args.push_back(out_dptr);
     DefVec kernel_arg_tys(kernel_args.size(), [&](size_t i) { return kernel_args[i]->type(); });
 
-    auto launch = w.app(w.annex<gpu::launch>(), Defs{w.lit_nat(nis_n + nps_n + 1), w.tuple(kernel_arg_tys)});
+    auto launch = w.app(w.annex<gpu::launch>(), Defs{w.lit_nat(kernel_args.size()), w.tuple(kernel_arg_tys)});
     launch      = w.app(launch, Defs{w.lit_nat(grid.n_groups), w.lit_nat(grid.n_items), w.annex<gpu::default_stream>(),
                                      w.lit_ff(), w.tuple()});
     launch      = w.app(launch, kernel);
     launch      = w.app(launch, kernel_args);
 
     auto after_launch
-        = build_teardown(w, mr.Ro, mr.So, mr.Tp, inputs.dptrs, post_inputs.dptrs, out_dptr, host_buf, cont);
+        = build_teardown(w, mr.Ro, mr.So, mr.Tp, free_dptrs, post_inputs.dptrs, out_dptr, host_buf, cont);
     auto launch_call = w.app(launch, Defs{w.tuple({post_inputs.mem, out_global, h_const}), after_launch});
     fun->set(true, launch_call);
 

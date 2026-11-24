@@ -82,6 +82,8 @@ static constexpr PluginArg known_args[] = {
     {"dbuf=<n>", "Enable register-prefetch shared-memory double buffering on vectorized contractions (`1` on by default, `0` off)."},
     {"pe-tc=<n>", "Lower static F16/BF16 GPU contractions through Tensor Core mma.sync + cp.async PE combinators (`1` on by default, `0` off)."},
     {"tc-stages=<n>", "Override Tensor Core cp.async pipeline stages (`0` uses automatic selection)."},
+    {"pe-wgmma=<n>", "Lower large static F16/BF16 GPU contractions through Hopper TMA + mbarrier + wgmma PE combinators (`1` on by default, `0` off)."},
+    {"wgmma-stages=<n>", "Override Hopper TMA + wgmma pipeline stages (`0` uses automatic selection)."},
     {"reduce-nt=<n>", "Override GPU parallel reduction block thread count (multiple of 32 in 32..1024; `0` uses automatic selection)."},
 };
 // clang-format on
