@@ -1,8 +1,11 @@
 // RUN: %mim -p opt %s -p ll -X ll:o=%t.ll -o %t.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
+// RUN: %mim -p opt %s -o %t.quiet.mim 2>&1 | %FileCheck %s --check-prefix=QUIET --allow-empty
 
 // A `Stage` node computes only the tile of a producer that the loops below it read.
+// QUIET-NOT: SchedTree:
+// QUIET-NOT: Aff:
 plugin tensor;
 plugin core;
 plugin math;

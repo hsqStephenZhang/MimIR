@@ -2,6 +2,7 @@
 // RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_mlir_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 // RUN: %FileCheck %s --input-file=%t.ll --implicit-check-not='malloc(i64 2400)' --implicit-check-not='malloc(i64 1600)'
+// RUN: %mim -p opt %s -o %t.quiet.mim 2>&1 | %FileCheck %s --check-prefix=QUIET --allow-empty
 
 // Static ports of mlir/test/Interfaces/TilingInterface/tile-and-fuse-using-interface.mlir with its tile sizes.
 // MLIR's `outs` accumulators become a zero init.
@@ -39,6 +40,8 @@
 // CHECK:       malloc(i64 960)
 // CHECK:       malloc(i64 320)
 // CHECK:       malloc(i64 480)
+// QUIET-NOT: SchedTree:
+// QUIET-NOT: Aff:
 plugin tensor;
 plugin core;
 plugin math;

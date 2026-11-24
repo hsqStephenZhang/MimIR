@@ -60,3 +60,24 @@ lam probe_stage_div (m: mem.M 0, a: buffer.Buf (2, (2, 2), F32), b: buffer.Buf (
         ((half, tensor.aff_proj @(3, 2) (2₃, 1₃)), ((tensor.Prod (2, F32))#Fill make, (tensor.Prod (2, F32))#Plain))
         (tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 0), (4, 16, 4), (ff, ff, ff))
         (m, (a, b));
+
+// A producer slot read without a Stage above the reader.
+let fill_any = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] = buffer.alloc (2, ext, F32) m;
+let ik = tensor.aff_proj @(3, 2) (0₃, 2₃);
+let kj = tensor.aff_proj @(3, 2) (2₃, 1₃);
+
+// CHECK: SchedTree: a Leaf reads a producer slot that no Stage above it computes
+lam probe_leaf_fill (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
+        ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃))
+        ((ik, kj), ((tensor.Prod (2, F32))#Fill fill_any, (tensor.Prod (2, F32))#Plain))
+        (tensor.sched_leaf @(2, 3) 0, (4, 16, 4), (ff, ff, ff))
+        (m, (a, b));
+
+// CHECK: SchedTree: a Pack reads a producer slot that no Stage above it computes
+lam probe_pack_fill (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
+        ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃))
+        ((ik, kj), ((tensor.Prod (2, F32))#Fill fill_any, (tensor.Prod (2, F32))#Plain))
+        (tensor.sched_pack @(2, 3) (0, 2, 0₂, (tt, ff, tt), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 0)), (4, 16, 4), (ff, ff, ff))
+        (m, (a, b));

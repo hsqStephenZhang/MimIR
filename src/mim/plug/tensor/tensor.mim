@@ -1731,6 +1731,12 @@ nom LevelsView (Rn: Nat, T: *) = [
     prod: Prod (r, T),
 ];
 
+/// Whether a slot holds its data, i.e. is not a producer still waiting for a `Stage`.
+lam levels_ready {r: Nat, T: *} (p: Prod (r, T)): Bool =
+    match p with
+        | Plain _ => tt
+        | Fill _  => ff;
+
 lam levels_plain {Rn: Nat} (r: Nat, f: Aff (Rn, r))@(core.pe.is_closed r)
     : [«Rn; affine.Index», «Rn; affine.Index»] → «r; affine.Index» =
     lm (q o: «Rn; affine.Index»): «r; affine.Index» =
@@ -1830,7 +1836,8 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
         let Sis_c = ‹i: N; (vs#i)#s›;
         let ins_m = ‹i: N; lm (o: IxN): «Ris_c#i; affine.Index» =
             let v = vs#i; (v#at) (v#q, o)›;
-        let ins_b = ‹i: N; (vs#i)#data›;
+        let ready = vec.fold.r @(Bool, Idx N) @N (λ (i: Idx N, acc: Bool): Bool = core.bit2.and 2 (acc, levels_ready ((vs#i)#prod))) (‹i: N; i›, tt);
+        let ins_b = refly.check (ready, ‹i: N; (vs#i)#data›, "SchedTree: a Leaf reads a producer slot that no Stage above it computes");
         let fresh = vec.fold.r @(Bool, Idx Rn) @Rn
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (lo#d == 0, acc, ff))) (‹d: Rn; d›, tt);
         let run   = λ (S: «Ro; Nat», c: buffer.Buf (Ro, S, To), at: IxN → «Ro; affine.Index», sz: «Rn; Nat», m: mem.M 0)
@@ -1914,7 +1921,8 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
             let (_, size, cap, dyn_ax) = cols axes;
             let w    = refly.check (core.bit2.and 2 (d < Rn, 0 < w), w, "SchedTree: a Pack needs an axis below Rn and a positive width");
             let v    = vs#slot;
-            let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) (v#data) (d, w, dep, v#q, size, cap, dyn_ax#(core.idx 0 Rn d), m);
+            let data = refly.check (levels_ready (v#prod), v#data, "SchedTree: a Pack reads a producer slot that no Stage above it computes");
+            let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) data (d, w, dep, v#q, size, cap, dyn_ax#(core.idx 0 Rn d), m);
             let unit = ‹e: Rn; (1, w)#(core.idx2nat e == d)›;
             let none = aff_map @(Rn, Rp, 0) ((), ‹Rp; aff_lit @(Rn, 0) 0›);
             let v2   = (Rp, sp, unit, zero, to, p, none, (Prod (Rp, Ts#slot))#Plain) inj LevelsView (Rn, Ts#slot);
@@ -1927,19 +1935,22 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
             let (lo, size, _, dyn_ax) = cols axes;
             let v     = vs#slot;
             let fixed = vec.fold.r @(Bool, Idx Rn) @Rn (λ (d: Idx Rn, acc: Bool): Bool = core.select (dyn_ax#d, ff, acc)) (‹d: Rn; d›, tt);
-            match v#prod with
-                | Plain _ => k st
+            // Both arms are built, so each takes `k` and PE unfolds the body only in the chosen one.
+            let arm = match v#prod with
+                | Plain _ => λ (k: Body): [mem.M 0, D] = k st
                 | Fill make =>
-                    let (blo, bext) = aff_box (v#aff) (lo, refly.check (fixed, size, "SchedTree: a Stage cannot see a run-time extent"));
-                    let (m, t) = make (blo, bext) m;
-                    // The box starts where the tile does, so the tile reads at the linear part of the map.
-                    let rel = lm (q o: IxN): «v#r; affine.Index» =
-                        let x = ‹e: Rn; affine.op.add (q#e, o#e)›;
-                        ‹i: v#r; let (h, t) = aff_rel ((v#aff)#rows#i, x); (affine.lit 0, t)#h›;
-                    let v2 = (v#r, bext, ‹Rn; 1›, zero, rel,
-                              t, v#aff, (Prod (v#r, Ts#slot))#Plain) inj LevelsView (Rn, Ts#slot);
-                    let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
-                    (buffer.free (v#r, bext, Ts#slot) (m, t), dst);
+                    λ (k: Body): [mem.M 0, D] =
+                        let (blo, bext) = aff_box (v#aff) (lo, refly.check (fixed, size, "SchedTree: a Stage cannot see a run-time extent"));
+                        let (m, t) = make (blo, bext) m;
+                        // The box starts where the tile does, so the tile reads at the linear part of the map.
+                        let rel = lm (q o: IxN): «v#r; affine.Index» =
+                            let x = ‹e: Rn; affine.op.add (q#e, o#e)›;
+                            ‹i: v#r; let (h, t) = aff_rel ((v#aff)#rows#i, x); (affine.lit 0, t)#h›;
+                        let v2 = (v#r, bext, ‹Rn; 1›, zero, rel,
+                                  t, v#aff, (Prod (v#r, Ts#slot))#Plain) inj LevelsView (Rn, Ts#slot);
+                        let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
+                        (buffer.free (v#r, bext, Ts#slot) (m, t), dst);
+            arm k;
 
     lam eval (node: SchedTree (N, Rn))@(core.pe.is_closed node): Body =
         match node with
