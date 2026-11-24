@@ -444,7 +444,7 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     run            = w.app(run, {mr.So, mr.Sr});
     run            = w.app(run, {memcomb, mr.init});
     run            = w.app(run, mr.map_out);
-    run            = w.app(run, mr.maps);
+    run            = w.app(run, plan.maps);
     run            = w.app(run, {tree, caps, dyn});
     auto [m, out]  = w.app(run, {fresh_mem(), is})->projs<2>();
 

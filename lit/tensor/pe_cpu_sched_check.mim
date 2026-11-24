@@ -24,7 +24,7 @@ lam probe_par (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4,
         ((4, 16), (4, 16, 4))
         (mac, 0:F32)
         (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃))
-        (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#2₃), λ (o: «3; affine.Index»): «2; affine.Index» = (o#2₃, o#1₃))
+        (tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (0, 0)), tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, 0)))
         (tree_par, (4, 16, 4), (ff, ff, ff))
         (m, (a, b));
 
@@ -34,7 +34,7 @@ lam probe_seq0 (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4
         ((4, 16), (4, 16, 4))
         (mac, 0:F32)
         (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃))
-        (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#2₃), λ (o: «3; affine.Index»): «2; affine.Index» = (o#2₃, o#1₃))
+        (tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (0, 0)), tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, 0)))
         (tree_seq0, (4, 16, 4), (ff, ff, ff))
         (m, (a, b));
 
@@ -45,6 +45,18 @@ lam probe_seq_par (m: mem.M 0, a: buffer.Buf (2, (10, 4), F32), b: buffer.Buf (2
         ((10, 8), (10, 8, 4))
         (mac, 0:F32)
         (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃))
-        (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#2₃), λ (o: «3; affine.Index»): «2; affine.Index» = (o#2₃, o#1₃))
+        (tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (0, 0)), tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, 0)))
         (tree_seq_par, (10, 8, 4), (ff, ff, ff))
+        (m, (a, b));
+
+// CHECK: Aff: a box needs a map without floordiv or mod
+lam probe_stage_div (m: mem.M 0, a: buffer.Buf (2, (2, 2), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    let half = tensor.aff_of @(3, 2) (((1, 0, 0), (0, 0, 1)), (0, 0), (2, 1), (0, 0));
+    let make = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] = buffer.alloc (2, ext, F32) m;
+    tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (4, 16)))
+        ((4, 16), (4, 16, 4))
+        (mac, 0:F32)
+        (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃))
+        ((half, tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, 0))), ((tensor.Prod (2, F32))#Fill make, (tensor.Prod (2, F32))#Plain))
+        (tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 0), (4, 16, 4), (ff, ff, ff))
         (m, (a, b));

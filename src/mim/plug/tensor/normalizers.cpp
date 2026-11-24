@@ -234,6 +234,107 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
     return w.lit_nat(*n);
 }
 
+namespace {
+
+/// `a·x + b` over the loop variables `xs`; `b` is a `Nat`.
+struct Lin {
+    std::vector<u64> a;
+    const Def* b;
+};
+
+std::optional<Lin> linear(const Def* t, Defs xs) {
+    auto& w = t->world();
+    auto n  = xs.size();
+    if (auto lit = Axm::isa<affine::lit>(t)) return Lin{std::vector<u64>(n), lit->arg()};
+    for (size_t j = 0; j != n; ++j)
+        if (t == xs[j]) {
+            auto a = std::vector<u64>(n);
+            a[j]   = 1;
+            return Lin{a, w.lit_nat_0()};
+        }
+    if (auto add = Axm::isa(affine::op::add, t)) {
+        auto [l, r] = add->args<2>();
+        auto x = linear(l, xs), y = linear(r, xs);
+        if (!x || !y) return {};
+        for (size_t j = 0; j != n; ++j)
+            x->a[j] += y->a[j];
+        x->b = w.call(core::nat::add, Defs{x->b, y->b});
+        return x;
+    }
+    if (auto mul = Axm::isa(affine::semiop::mul, t)) {
+        auto [l, c] = mul->args<2>();
+        auto k      = Lit::isa(c);
+        auto x      = linear(l, xs);
+        if (!k || !x) return {};
+        for (auto& a : x->a)
+            a *= *k;
+        x->b = w.call(core::nat::mul, Defs{x->b, c});
+        return x;
+    }
+    if (auto lin = Axm::isa<affine::linearize>(t)) {
+        auto [idxs, s] = lin->args<2>();
+        auto r         = Lit::isa(s->arity());
+        if (!r) return {};
+        auto acc   = Lin{std::vector<u64>(n), w.lit_nat_0()};
+        u64 stride = 1;
+        for (size_t k = *r; k-- != 0;) {
+            auto x  = linear(idxs->proj(*r, k), xs);
+            auto sk = Lit::isa(s->proj(*r, k));
+            if (!x || !sk) return {};
+            for (size_t j = 0; j != n; ++j)
+                acc.a[j] += stride * x->a[j];
+            acc.b = w.call(core::nat::add, Defs{acc.b, w.call(core::nat::mul, Defs{w.lit_nat(stride), x->b})});
+            stride *= *sk;
+        }
+        return acc;
+    }
+    return {};
+}
+
+/// One row of a `tensor.Aff`: `((a·x + b) floordiv den) mod per`.
+struct AffRow {
+    Lin lin;
+    u64 den = 1, per = 0;
+};
+
+std::optional<AffRow> aff_row(const Def* t, Defs xs) {
+    u64 den = 1, per = 0;
+    if (auto ex = t->isa<Extract>())
+        if (auto del = Axm::isa<affine::delinearize>(ex->tuple())) {
+            auto [l, s] = del->args<2>();
+            auto m      = Lit::isa(s->arity());
+            auto k      = Lit::isa(ex->index());
+            if (!m || !k) return {};
+            for (size_t j = *k + 1; j != *m; ++j)
+                if (auto sj = Lit::isa(s->proj(*m, j)))
+                    den *= *sj;
+                else
+                    return {};
+            auto sk = Lit::isa(s->proj(*m, *k));
+            if (!sk) return {};
+            per = *sk;
+            t   = l;
+        }
+    if (auto rem = Axm::isa(affine::semiop::rem, t); rem && per == 0 && den == 1) {
+        auto [l, c] = rem->args<2>();
+        auto k      = Lit::isa(c);
+        if (!k || *k == 0) return {};
+        per = *k;
+        t   = l;
+    }
+    if (auto div = Axm::isa(affine::semiop::floordiv, t); div && den == 1) {
+        auto [l, c] = div->args<2>();
+        auto k      = Lit::isa(c);
+        if (!k || *k == 0) return {};
+        den = *k;
+        t   = l;
+    }
+    if (auto lin = linear(t, xs)) return AffRow{*lin, den, per};
+    return {};
+}
+
+} // namespace
+
 const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     auto& w = callee->world();
     // `run_levels` tiles for a CPU; a GPU pipeline launches the contraction as a kernel instead.
@@ -273,7 +374,24 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
         }));
     }));
     if (w.app(w.app(w.annex<tensor::cpu_covers>(), mr.Rn), dep) != w.lit_tt()) return w.lit_ff();
-    if (plan) *plan = {*bytes, dep};
+
+    auto affs = DefVec(2);
+    for (size_t i = 0; i != 2; ++i) {
+        auto r  = *Lit::isa(mr.Ris->proj(2, i));
+        auto at = w.app(maps[i], probe->var());
+        auto a = DefVec(r), b = DefVec(r), den = DefVec(r), per = DefVec(r);
+        for (size_t k = 0; k != r; ++k) {
+            auto row = aff_row(at->proj(r, k), vars);
+            if (!row) return w.lit_ff();
+            a[k]   = w.tuple(DefVec(rn, [&](size_t j) { return w.lit_nat(row->lin.a[j]); }));
+            b[k]   = row->lin.b;
+            den[k] = w.lit_nat(row->den);
+            per[k] = w.lit_nat(row->per);
+        }
+        auto of = w.app(w.annex<tensor::aff_of>(), {mr.Rn, w.lit_nat(r)});
+        affs[i] = w.app(of, {w.tuple(a), w.tuple(b), w.tuple(den), w.tuple(per)});
+    }
+    if (plan) *plan = {*bytes, dep, w.tuple(affs)};
     return w.lit_tt();
 }
 

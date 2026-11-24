@@ -13,10 +13,10 @@ plugin affine;
 
 let F32  = math.F32;
 let Ix   = affine.Index;
-let Aff2 = tensor.Aff (3, 2);
-let ik = (((1, 0, 0), (0, 0, 1)), (0, 0)) inj Aff2;
-let kj      = λ (o: «3; Ix»): «2; Ix» = (o#2₃, o#1₃);
-let ij      = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃);
+let P  = tensor.Prod (2, F32);
+let ik = tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (0, 0));
+let kj = tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, 0));
+let ij = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃);
 
 fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
 fun relu (m: mem.M 0, _: F32, x: F32)@tt: [mem.M 0, F32] = return (m, math.extrema.fmax 0 (x, 0.0:F32));
@@ -39,8 +39,7 @@ extern fun chain (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.Buf (2
         ((26, 12), (26, 12, 28))
         (mac, 0.0:F32)
         ij
-        ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
-         ((tensor.Prod (3, 2, F32))#Fill (ik, fill), (tensor.Prod (3, 2, F32))#Plain))
+        ((ik, kj), (P#Fill fill, P#Plain))
         (tree, (26, 12, 28), (ff, ff, ff))
         (m, (dummy, d));
     return (buffer.free (2, (2, 2), F32) (m, dummy), e);
@@ -57,8 +56,7 @@ extern fun relu_mm (m: mem.M 0, a: buffer.Buf (2, (19, 10), F32), b: buffer.Buf 
         ((19, 9), (19, 9, 10))
         (mac, 0.0:F32)
         ij
-        ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
-         ((tensor.Prod (3, 2, F32))#Fill (ik, fill), (tensor.Prod (3, 2, F32))#Plain))
+        ((ik, kj), (P#Fill fill, P#Plain))
         (tree, (19, 9, 10), (ff, ff, ff))
         (m, (a, b));
     return (m, c);
@@ -71,16 +69,14 @@ extern fun chain_relu (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.B
         btensor.map_reduce @1 @(F32, 2, 2) (ext, ext) @(F32, 2, (26, 20))
             (relu, 0.0:F32) (λ (o: «2; Ix»): «2; Ix» = o) (shift lo) (m, t, a);
     let fill_p = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
-        let ik_lo = (((1, 0, 0), (0, 0, 1)), (lo#0₂, 0)) inj Aff2;
         let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
         let tree = tensor.sched_par @(2, 3) ((4, 0, 5), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1));
         let (m, p) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (20, 28)))
             (ext, (ext#0₂, ext#1₂, 20))
             (mac, 0.0:F32)
             ij
-            ((λ (o: «3; Ix»): «2; Ix» = (affine.op.add (affine.lit (lo#0₂), o#0₃), o#2₃),
-              λ (o: «3; Ix»): «2; Ix» = (o#2₃, affine.op.add (affine.lit (lo#1₂), o#1₃))),
-             ((tensor.Prod (3, 2, F32))#Fill (ik_lo, relu_a), (tensor.Prod (3, 2, F32))#Plain))
+            ((tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (lo#0₂, 0)), tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, lo#1₂))),
+             (P#Fill relu_a, P#Plain))
             (tree, (ext#0₂, ext#1₂, 20), (ff, ff, ff))
             (m, (dummy, b));
         (buffer.free (2, (2, 2), F32) (m, dummy), p);
@@ -90,8 +86,7 @@ extern fun chain_relu (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.B
         ((26, 12), (26, 12, 28))
         (mac, 0.0:F32)
         ij
-        ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
-         ((tensor.Prod (3, 2, F32))#Fill (ik, fill_p), (tensor.Prod (3, 2, F32))#Plain))
+        ((ik, kj), (P#Fill fill_p, P#Plain))
         (tree, (26, 12, 28), (ff, ff, ff))
         (m, (dummy, d));
     return (buffer.free (2, (2, 2), F32) (m, dummy), e);

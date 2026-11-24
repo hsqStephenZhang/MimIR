@@ -49,12 +49,16 @@ plugin affine;
 
 let F32 = math.F32;
 let Ix  = affine.Index;
-let P   = tensor.Prod (3, 2, F32);
-let P2  = tensor.Prod (2, 2, F32);
+let P   = tensor.Prod (2, F32);
 let ij3 = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃);
-let ik3 = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃);
-let kj3 = λ (o: «3; Ix»): «2; Ix» = (o#2₃, o#1₃);
 let ij2 = λ (o: «2; Ix»): «2; Ix» = o;
+let ik  = tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (0, 0));
+let kj  = tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, 0));
+let id2 = tensor.aff_linear @(2, 2) (((1, 0), (0, 1)), (0, 0));
+
+// The maps of `x·b` for the rows `lo#0 ..` and columns `lo#1 ..` of the product.
+lam box_maps (lo: «2; Nat»): «2; tensor.Aff (3, 2)» =
+    (tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (lo#0₂, 0)), tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, lo#1₂)));
 
 fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
 fun add (m: mem.M 0, _: F32, (x b: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (x, b));
@@ -63,28 +67,21 @@ fun add (m: mem.M 0, _: F32, (x b: F32))@tt: [mem.M 0, F32] = return (m, math.ar
 lam gemm_box {M K N: Nat} (a: buffer.Buf (2, (M, K), F32), b: buffer.Buf (2, (K, N), F32)) (lo ext: «2; Nat») (m: mem.M 0)
     : [mem.M 0, buffer.Buf (2, ext, F32)] =
     tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((M, K), (K, N)))
-        (ext, (ext#0₂, ext#1₂, K)) (mac, 0.0:F32) ij3
-        (λ (o: «3; Ix»): «2; Ix» = (affine.op.add (affine.lit (lo#0₂), o#0₃), o#2₃),
-         λ (o: «3; Ix»): «2; Ix» = (o#2₃, affine.op.add (affine.lit (lo#1₂), o#1₃)))
+        (ext, (ext#0₂, ext#1₂, K)) (mac, 0.0:F32) ij3 (box_maps lo)
         (tensor.sched_leaf @(2, 3) 1, (ext#0₂, ext#1₂, K), (ff, ff, ff))
         (m, (a, b));
 
 // `x·b` for a row band of a producer `x` that is itself staged.
 lam chain_box {M K N: Nat} (x: [lo ext: «2; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (2, ext, F32)], b: buffer.Buf (2, (K, N), F32))
     (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
-    let src = (((1, 0, 0), (0, 0, 1)), (lo#0₂, 0)) inj tensor.Aff (3, 2);
     let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
     let (m, y) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (K, N)))
         (ext, (ext#0₂, ext#1₂, K)) (mac, 0.0:F32) ij3
-        ((λ (o: «3; Ix»): «2; Ix» = (affine.op.add (affine.lit (lo#0₂), o#0₃), o#2₃),
-          λ (o: «3; Ix»): «2; Ix» = (o#2₃, affine.op.add (affine.lit (lo#1₂), o#1₃))),
-         (P#Fill (src, x), P#Plain))
+        (box_maps lo, (P#Fill x, P#Plain))
         (tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1), (ext#0₂, ext#1₂, K), (ff, ff, ff))
         (m, (dummy, b));
     (buffer.free (2, (2, 2), F32) (m, dummy), y);
 
-let ik = (((1, 0, 0), (0, 0, 1)), (0, 0)) inj tensor.Aff (3, 2);
-let id2 = (((1, 0), (0, 1)), (0, 0)) inj tensor.Aff (2, 2);
 
 // @gemm_gemm_fusion, tile_sizes [10]: each 10-row band of gemm0 is computed in the loop over gemm1's rows.
 extern fun gemm_gemm (m: mem.M 0, lhs0: buffer.Buf (2, (25, 12), F32), rhs0: buffer.Buf (2, (12, 24), F32),
@@ -92,7 +89,7 @@ extern fun gemm_gemm (m: mem.M 0, lhs0: buffer.Buf (2, (25, 12), F32), rhs0: buf
     let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
     let (m, r) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (24, 28)))
         ((25, 28), (25, 28, 24)) (mac, 0.0:F32) ij3
-        ((ik3, kj3), (P#Fill (ik, gemm_box (lhs0, rhs0)), P#Plain))
+        ((ik, kj), (P#Fill (gemm_box (lhs0, rhs0)), P#Plain))
         (tensor.sched_par @(2, 3) ((10, 0, 0), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1)),
          (25, 28, 24), (ff, ff, ff))
         (m, (dummy, rhs1));
@@ -106,7 +103,7 @@ extern fun matmul_sequence (m: mem.M 0, a: buffer.Buf (2, (25, 12), F32), b1: bu
     let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
     let (m, r) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (16, 20)))
         ((25, 20), (25, 20, 16)) (mac, 0.0:F32) ij3
-        ((ik3, kj3), (P#Fill (ik, x2), P#Plain))
+        ((ik, kj), (P#Fill x2, P#Plain))
         (tensor.sched_par @(2, 3) ((10, 0, 0), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1)),
          (25, 20, 16), (ff, ff, ff))
         (m, (dummy, b3));
@@ -118,8 +115,7 @@ extern fun gemm_generic (m: mem.M 0, a: buffer.Buf (2, (25, 12), F32), b: buffer
     let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
     let (m, r) = tensor.run_levels_with @(2, F32, 2, 2, (F32, F32), (2, 1), ((2, 2), 28))
         ((25, 28), (25, 28)) (add, 0.0:F32) ij2
-        ((ij2, λ (o: «2; Ix»): «1; Ix» = o#1₂),
-         (P2#Fill (id2, gemm_box (a, b)), (tensor.Prod (2, 1, F32))#Plain))
+        ((id2, tensor.aff_linear @(2, 1) ((0, 1), 0)), (P#Fill (gemm_box (a, b)), (tensor.Prod (1, F32))#Plain))
         (tensor.sched_par @(2, 2) ((10, 20), tensor.sched_stage @(2, 2) (0₂, tensor.sched_leaf @(2, 2) 1)),
          (25, 28), (ff, ff))
         (m, (dummy, bias));
@@ -133,7 +129,7 @@ extern fun gemm_transpose (m: mem.M 0, a: buffer.Buf (2, (25, 12), F32), b: buff
     let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
     let (m, r) = tensor.run_levels_with @(1, F32, 2, 2, F32, 2, (2, 2))
         ((28, 25), (25, 28)) (take, 0.0:F32) (λ (o: «2; Ix»): «2; Ix» = (o#1₂, o#0₂))
-        (ij2, P2#Fill (id2, gemm_box (a, b)))
+        (id2, P#Fill (gemm_box (a, b)))
         (tensor.sched_par @(1, 2) ((10, 20), tensor.sched_stage @(1, 2) (0₁, tensor.sched_leaf @(1, 2) 1)),
          (25, 28), (ff, ff))
         (m, dummy);

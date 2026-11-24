@@ -151,7 +151,8 @@ inline const Def* isa_transpose_2d(const Def* def) {
 /// The facts `tensor.cpu_tree` builds a contraction's `SchedTree` from.
 struct PeCpu {
     u64 bytes;
-    const Def* dep; ///< `«2; «Rn; Bool»»`: whether each input reads each loop.
+    const Def* dep;  ///< `«2; «Rn; Bool»»`: whether each input reads each loop.
+    const Def* maps; ///< `«i: 2; tensor.Aff (Rn, Ris#i)»`: each input's access map as data.
 };
 
 /// Whether `tensor.run_levels` covers the `tensor.map_reduce_post` with meta @p callee: `tt`, `ff`, or `nullptr` while
