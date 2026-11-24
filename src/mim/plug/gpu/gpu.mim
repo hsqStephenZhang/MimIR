@@ -7,6 +7,7 @@
 /// ## Dependencies
 ///
 plugin core;
+plugin math;
 plugin mem;
 plugin buffer;
 plugin affine;
@@ -241,6 +242,34 @@ axm warp_shfl_xor: {T: *} → [GlobalM, T, I32] → [GlobalM, T];
 axm vload4:  {T: *, a: Nat} → [mem.M a, mem.Ptr (T, a)] → [mem.M a, «4; T»];
 axm vstore4: {T: *, a: Nat} → [mem.M a, mem.Ptr (T, a), «4; T»] → mem.M a;
 ///
+/// #### vstore2
+///
+/// 8-byte aligned 2-element vector store (`st.*.v2`) in address space `a`.
+axm vstore2: {T: *, a: Nat} → [mem.M a, mem.Ptr (T, a), «2; T»] → mem.M a;
+///
+/// #### cp_async_cg_16 / cp_async_zero_16 / cp_async_commit / cp_async_wait_group
+///
+/// Asynchronous 16-byte global→shared copy (`cp.async.cg.shared.global.16`), 16-byte shared zero-fill,
+/// group commit (`cp.async.commit_group`), and static wait (`cp.async.wait_group N`).
+axm cp_async_cg_16:      {Td Ts: *} → [GlobalM, SharedM, SharedPtr Td, GlobalPtr Ts] → [GlobalM, SharedM];
+axm cp_async_zero_16:    {T: *} → [SharedM, SharedPtr T] → SharedM;
+axm cp_async_commit:     [GlobalM, SharedM] → [GlobalM, SharedM];
+axm cp_async_wait_group: Nat → [GlobalM, SharedM] → [GlobalM, SharedM];
+///
+/// #### ldmatrix_b16
+///
+/// Warp-collective shared→register load of `n` 8×8 matrices of 16-bit elements `T`
+/// (`ldmatrix.sync.aligned.m8n8.x{n}{.trans}.b16`). Threads `GlobalM` and `SharedM` to keep
+/// warp convergence and shared-memory ordering intact.
+axm ldmatrix_b16: {T PtrT: *} → [n: Nat, trans: Bool, GlobalM, SharedM, SharedPtr PtrT] → [GlobalM, SharedM, «n; «2; T»»];
+///
+/// #### mma_m16n8k16_f16 / mma_m16n8k16_bf16
+///
+/// Warp-collective Tensor Core MMA (`mma.sync.aligned.m16n8k16.row.col.f32.{f16,bf16}.{f16,bf16}.f32`).
+/// Threads `GlobalM` so MimIR's scheduler keeps convergent warp MMA out of divergent branches.
+axm mma_m16n8k16_f16:  [GlobalM, «4; «2; math.F16»»,  «2; «2; math.F16»»,  «4; math.F32»] → [GlobalM, «4; math.F32»];
+axm mma_m16n8k16_bf16: [GlobalM, «4; «2; math.BF16»», «2; «2; math.BF16»», «4; math.F32»] → [GlobalM, «4; math.F32»];
+///
 /// #### synced_scope
 ///
 /// Runs `scope` bracketed by work-item synchronization: syncs, runs `scope`, and syncs again.
@@ -323,6 +352,15 @@ lam simt_when {S: *} (cond: Bool, s: S, body: S → S): S =
         where
             con skip (s: S) = return s;
             con run  (s: S) = return (body s);
+        end;
+    cps.cps2ds guard s;
+
+lam simt_if_else {S: *} (cond: Bool, s: S, then_b else_b: S → S): S =
+    fun guard (s: S)@tt: S =
+        (run_e, run_t)#cond s
+        where
+            con run_e (s: S) = return (else_b s);
+            con run_t (s: S) = return (then_b s);
         end;
     cps.cps2ds guard s;
 
@@ -728,7 +766,128 @@ anx lam simt_store_tile_v4 {To: *} (M N BM BN TY TX TM TN: Nat)
                         let v4: «4; To» = ‹jl: 4; acc#ii#(core.conv.u TN (core.bitcast I64 (core.nat.add (j0, core.idx2nat jl))))›;
                         write4 (m1, gm, gn0, v4))))));
 
-/// Vectorized + double-buffered SIMT contraction kernel body over `B × M × N × K`.
+/// Allocate a `Stages`-slot shared-memory ring of `T` in CPS and pass `[m3, slots]` to `body`.
+/// Anchoring every `mem.slot` in CPS before `body` guarantees disjoint `addrspace(3)` allocations
+/// that LLVM's alias analysis proves non-aliasing and `cps::Conv` never duplicates into inner loops.
+anx lam simt_with_shared_ring {T Res: *} (Stages: Nat) (m3: SharedM)
+    (body: [SharedM, «Stages; SharedPtr T»] → Res): Res =
+    fun go (m3: SharedM)@tt: Res =
+        let K = Cn [SharedM, «Stages; SharedPtr T»];
+        con finish (m3: SharedM, ps: «Stages; SharedPtr T») = return (body (m3, ps));
+        let chain: K = simt_unroll @K Stages finish
+            (λ (st: Idx Stages, next: K): K =
+                con slot_st (m3: SharedM, ps: «Stages; SharedPtr T») =
+                    ret (m3, p) = mem.slot (T, addr_space_shared) $ m3;
+                    next (m3, ps#st ← p);
+                slot_st);
+        chain (m3, ‹Stages; ⊥:(SharedPtr T)›);
+    cps.cps2ds go m3;
+
+/// Generic `Stages`-stage static-ring software pipeline (`Stages >= 1`) over `n_steps` iterations.
+/// Polymorphic in:
+/// - `Slot`: per-stage shared-memory handle (e.g. `[SaPtr, SbPtr]`).
+/// - `Tok`:  in-flight handle between `issue` and `arrive` (e.g. `[PrefA, PrefB]` for register-prefetch
+///           double-buffering, or `[]` for hardware `cp.async` / TMA rings).
+/// - `Acc`:  loop-carried register accumulator.
+///
+/// The main loop steps by `Stages` and statically unrolls `0..Stages-1` via `simt_unroll`, so every
+/// `slots#u` index folds to a compile-time constant with zero runtime modulo or dynamic slot lookup.
+anx lam simt_pipe_n {Slot Tok Acc: *} (Stages n_steps: Nat)
+    (slots: «Stages; Slot»)
+    (m1: GlobalM, m3: SharedM, acc0: Acc)
+    (issue:   [Nat, GlobalM, SharedM, Slot] → [GlobalM, SharedM, Tok],
+     arrive:  [Nat, GlobalM, SharedM, Slot, Tok] → [GlobalM, SharedM],
+     compute: [GlobalM, SharedM, Slot, Acc] → [GlobalM, SharedM, Acc])
+    : [GlobalM, SharedM, Acc] =
+    let ok_stages = refly.check (0 < Stages, 0 < Stages, "gpu.simt_pipe_n: Stages must be > 0");
+    let State     = [GlobalM, SharedM, Acc];
+    let run_single = λ (comp: [GlobalM, SharedM, Slot, Acc] → State): State =
+        let s0 = slots#(core.idx 0 Stages 0);
+        simt_k_loop @Acc n_steps (m1, m3, acc0)
+            (λ (k: Nat, m1: GlobalM, m3: SharedM, acc: Acc): State =
+                let (m1, m3, tok) = issue (k, m1, m3, s0);
+                let (m1, m3)      = arrive (0, m1, m3, s0, tok);
+                let (m1, m3, acc) = comp (m1, m3, s0, acc);
+                let (m1, m3)      = sync_work_items (m1, m3);
+                (m1, m3, acc));
+    let run_multi = λ (comp: [GlobalM, SharedM, Slot, Acc] → State): State =
+        let raw_d  = core.select (core.nat.sub (Stages, 1) < n_steps, core.nat.sub (Stages, 1), n_steps);
+        let D      = core.select (core.bit2.and 2 (1 < Stages, 0 < n_steps), raw_d, 1);
+        let Q      = core.nat.sub (D, 1);
+        let Q1     = core.select (0 < Q, Q, 1);
+        let body   = core.nat.sub (n_steps, D);
+        let chunks = core.nat.div (body, Stages);
+        let rem    = core.nat.rem (body, Stages);
+        let run_pipe = λ {Toks: *} (m1: GlobalM, m3: SharedM, toks0: Toks,
+                                    step_tok: [Toks, Tok] → [Tok, Toks],
+                                    get_tok:  [Toks, Idx Q] → Tok): State =
+            let LoopSt = [Acc, Toks];
+            let step_u = λ (k u: Nat, m1: GlobalM, m3: SharedM, acc: Acc, toks: Toks): [GlobalM, SharedM, LoopSt] =
+                let cur           = slots#(core.idx 0 Stages u);
+                let nxt_i         = slots#(core.idx 0 Stages (core.nat.rem (core.nat.add (u, D), Stages)));
+                let nxt_a         = slots#(core.idx 0 Stages (core.nat.rem (core.nat.add (u, 1), Stages)));
+                let (m1, m3, nt)  = issue (core.nat.add (k, D), m1, m3, nxt_i);
+                let (m1, m3, acc) = comp (m1, m3, cur, acc);
+                let (arr_tok, ts) = step_tok (toks, nt);
+                let (m1, m3)      = arrive (Q, m1, m3, nxt_a, arr_tok);
+                (m1, m3, (acc, ts));
+            let do_chunks = λ (c: [GlobalM, SharedM, Slot, Acc] → State): [GlobalM, SharedM, LoopSt] =
+                simt_k_loop @LoopSt chunks (m1, m3, (acc0, toks0))
+                    (λ (ch: Nat, m1: GlobalM, m3: SharedM, (acc: Acc, toks: Toks)): [GlobalM, SharedM, LoopSt] =
+                        let base = core.nat.mul (ch, Stages);
+                        simt_unroll @[GlobalM, SharedM, LoopSt] Stages (m1, m3, (acc, toks))
+                            (λ (u: Idx Stages, (m1: GlobalM, m3: SharedM, (acc: Acc, toks: Toks))): [GlobalM, SharedM, LoopSt] =
+                                let ui = core.idx2nat u;
+                                step_u (core.nat.add (base, ui), ui, m1, m3, acc, toks)));
+            let (m1, m3, (acc, toks)) = (λ (_: [GlobalM, SharedM, Slot, Acc] → State): [GlobalM, SharedM, LoopSt] = (m1, m3, (acc0, toks0)),
+                                         do_chunks)#(core.ncmp.ne (chunks, 0)) comp;
+            let do_rem = λ (c: [GlobalM, SharedM, Slot, Acc] → State): [GlobalM, SharedM, LoopSt] =
+                let base = core.nat.mul (chunks, Stages);
+                simt_unroll @[GlobalM, SharedM, LoopSt] rem (m1, m3, (acc, toks))
+                    (λ (u: Idx rem, (m1: GlobalM, m3: SharedM, (acc: Acc, toks: Toks))): [GlobalM, SharedM, LoopSt] =
+                        let ui = core.idx2nat u;
+                        step_u (core.nat.add (base, ui), ui, m1, m3, acc, toks));
+            let (m1, m3, (acc, toks)) = (λ (_: [GlobalM, SharedM, Slot, Acc] → State): [GlobalM, SharedM, LoopSt] = (m1, m3, (acc, toks)),
+                                         do_rem)#(core.ncmp.ne (rem, 0)) comp;
+            let cur0          = slots#(core.idx 0 Stages (core.nat.rem (body, Stages)));
+            let (m1, m3, acc) = comp (m1, m3, cur0, acc);
+            simt_unroll @State Q (m1, m3, acc)
+                (λ (e: Idx Q, (m1: GlobalM, m3: SharedM, acc: Acc)): State =
+                    let ei       = core.idx2nat e;
+                    let slot_i   = core.nat.rem (core.nat.add (core.nat.add (body, 1), ei), Stages);
+                    let cur      = slots#(core.idx 0 Stages slot_i);
+                    let rem_wait = core.nat.sub (core.nat.sub (Q, 1), ei);
+                    let (m1, m3) = arrive (rem_wait, m1, m3, cur, get_tok (toks, e));
+                    comp (m1, m3, cur, acc));
+        let s0             = slots#(core.idx 0 Stages 0);
+        let (m1, m3, tok0) = issue (0, m1, m3, s0);
+        let run_q0 = λ (_: [GlobalM, SharedM, Slot, Acc] → State): State =
+            let (m1, m3) = arrive (0, m1, m3, s0, tok0);
+            run_pipe @[] (m1, m3, (),
+                λ (_: [], nt: Tok): [Tok, []] = (nt, ()),
+                λ (_: [], _: Idx Q): Tok = ⊥:Tok);
+        let run_qn = λ (_: [GlobalM, SharedM, Slot, Acc] → State): State =
+            let ToksQ = «Q1; Tok»;
+            let (m1, m3, toks0) = simt_unroll @[GlobalM, SharedM, ToksQ] Q (m1, m3, ‹Q1; ⊥:Tok›)
+                (λ (q: Idx Q, (m1: GlobalM, m3: SharedM, ts: ToksQ)): [GlobalM, SharedM, ToksQ] =
+                    let qi            = core.nat.add (core.idx2nat q, 1);
+                    let (m1, m3, tok) = issue (qi, m1, m3, slots#(core.idx 0 Stages qi));
+                    (m1, m3, ts#(core.idx 0 Q1 (core.idx2nat q)) ← tok));
+            let (m1, m3) = arrive (Q, m1, m3, s0, tok0);
+            let step_q = λ (ts: ToksQ, nt: Tok): [Tok, ToksQ] =
+                let head = ts#(core.idx 0 Q1 0);
+                let nxt: ToksQ = ‹j: Q1; (ts#(core.idx 0 Q1 (core.nat.add (core.idx2nat j, 1))), nt)#(core.idx2nat j == core.nat.sub (Q1, 1))›;
+                (head, nxt);
+            run_pipe @ToksQ (m1, m3, toks0, step_q,
+                λ (ts: ToksQ, e: Idx Q): Tok = ts#(core.idx 0 Q1 (core.idx2nat e)));
+        (run_q0, run_qn)#(0 < Q) comp;
+    let do_any = λ (c: [GlobalM, SharedM, Slot, Acc] → State): State =
+        (run_single, run_multi)#(1 < Stages) c;
+    (λ (_: [GlobalM, SharedM, Slot, Acc] → State): State = (m1, m3, acc0),
+     do_any)#(core.bit2.and 2 (ok_stages, core.ncmp.ne (n_steps, 0))) compute;
+
+/// Vectorized + pipelined SIMT contraction kernel body over `B × M × N × K`.
+/// Uses `simt_with_shared_ring` + `simt_pipe_n` and grouped L2 CTA swizzling.
 /// Requires `4 | BM`, `4 | BN`, `4 | BK`, `4 | TM`, `4 | TN`, `4 | N`, `NT | (BM*BK/4)`, `NT | (BK*BN/4)`; PE rejects anything else.
 anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
     (B M N K BM BN BK TM TN Pad Dbuf: Nat)
@@ -759,8 +918,15 @@ anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
     let mn_blks = gm_blks * gn_blks;
     let batch   = (0, core.nat.div (group_id, mn_blks))#(1 < B);
     let blk_rem = (group_id, core.nat.rem (group_id, mn_blks))#(1 < B);
-    let bm_id   = core.nat.div (blk_rem, gn_blks);
-    let bn_id   = core.nat.rem (blk_rem, gn_blks);
+    let sw_m    = core.select (gm_blks < 8, gm_blks, 8);
+    let grp_sz  = sw_m * gn_blks;
+    let grp_id  = core.nat.div (blk_rem, grp_sz);
+    let first_m = core.nat.mul (grp_id, sw_m);
+    let rem_m   = core.nat.sub (gm_blks, first_m);
+    let grp_m   = core.select (rem_m < sw_m, rem_m, sw_m);
+    let in_grp  = core.nat.rem (blk_rem, grp_sz);
+    let bm_id   = core.nat.add (first_m, core.nat.rem (in_grp, grp_m));
+    let bn_id   = core.nat.div (in_grp, grp_m);
     let block_m = core.nat.mul (bm_id, BM);
     let block_n = core.nat.mul (bn_id, BN);
     let ty      = core.nat.div (item_id, TX);
@@ -769,7 +935,7 @@ anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
     let n_div   = core.nat.rem (N, BN) == 0;
     let full_k  = core.nat.div (K, BK);
     let tail_k  = core.nat.rem (K, BK);
-    let use_db  = core.bit2.and 2 (core.ncmp.ne (Dbuf, 0), 1 < full_k);
+    let stages  = core.select (core.bit2.and 2 (core.ncmp.ne (Dbuf, 0), 1 < full_k), 2, 1);
     let Regs    = «TM; «TN; To»»;
     let acc0    = ‹TM; ‹TN; init››;
     let ra4     = λ (m1: GlobalM, r c: Nat): [GlobalM, «4; Ta»] = read_a4 (m1, batch, r, c);
@@ -779,97 +945,325 @@ anx lam simt_tiled_kernel_v4 {Ta Tb To: *}
     let wc4     = λ (m1: GlobalM, r c: Nat, v: «4; To»): GlobalM = write_c4 (m1, batch, r, c, v);
     let SaPtr   = SharedPtr «BK; «BMpad; Ta»»;
     let SbPtr   = SharedPtr «BK; «BNpad; Tb»»;
-    let CompFn  = [GlobalM, SharedM, SaPtr, SbPtr, Regs] → [GlobalM, SharedM, Regs];
+    let Slot    = [SaPtr, SbPtr];
+    let PrefA   = «core.nat.div (BM * core.nat.div (BK, 4), NT); «4; Ta»»;
+    let PrefB   = «core.nat.div (BK * core.nat.div (BN, 4), NT); «4; Tb»»;
+    let Pref    = [PrefA, PrefB];
 
-    let run_single = λ (comp: CompFn): [GlobalM, SharedM] =
-        fun body (m1: GlobalM, m3: SharedM)@tt: [GlobalM, SharedM] =
-            ret (m3, sa) = mem.slot («BK; «BMpad; Ta»», addr_space_shared) $ m3;
-            ret (m3, sb) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
-            let do_full = λ (c: CompFn): [GlobalM, SharedM, Regs] =
-                simt_k_loop @Regs full_k (m1, m3, acc0)
-                    (λ (kt: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
-                        let kb        = core.nat.mul (kt, BK);
-                        let (m1, pa)  = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, kb, K, ra4);
-                        let (m1, pb)  = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, kb, K, block_n, N, rb4);
-                        let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa, item_id, pa);
-                        let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb, item_id, pb);
-                        let (m1, m3)  = sync_work_items (m1, m3);
-                        let (m1, m3, acc) = c (m1, m3, sa, sb, acc);
-                        let (m1, m3)  = sync_work_items (m1, m3);
-                        (m1, m3, acc));
-            let (m1, m3, acc) = (λ (_: CompFn): [GlobalM, SharedM, Regs] = (m1, m3, acc0),
-                                 do_full)#(core.ncmp.ne (full_k, 0)) comp;
-            let do_tail = λ (c: CompFn): [GlobalM, SharedM, Regs] =
-                let kb       = core.nat.mul (full_k, BK);
-                let (m1, m3) = simt_stage_tile_t @Ta (BK, BM, tail_k, BMpad, NT) m_div (m1, m3, sa, item_id, block_m, M, kb, ra1);
-                let (m1, m3) = simt_stage_tile   @Tb (BK, tail_k, BN, BNpad, NT) (tt, n_div) (m1, m3, sb, item_id, kb, K, block_n, N, rb1);
-                let (m1, m3) = sync_work_items (m1, m3);
-                simt_reg_mma_v4 @(Ta, Tb, To) (BK, BMpad, BNpad, TY, TX, TM, TN, tail_k) comb (m1, m3, sa, sb, ty, tx, acc);
-            let (m1, m3, acc) = (λ (_: CompFn): [GlobalM, SharedM, Regs] = (m1, m3, acc),
-                                 do_tail)#(core.ncmp.ne (tail_k, 0)) comp;
-            let m1 = simt_store_tile_v4 @To (M, N, BM, BN, TY, TX, TM, TN) (m1, block_m, block_n, ty, tx, acc, wc4);
-            return (m1, m3);
-        cps.cps2ds body (m1, m3);
+    simt_with_shared_ring @(«BK; «BMpad; Ta»», [GlobalM, SharedM]) stages m3
+        (λ (m3: SharedM, sa_slots: «stages; SaPtr»): [GlobalM, SharedM] =
+            simt_with_shared_ring @(«BK; «BNpad; Tb»», [GlobalM, SharedM]) stages m3
+                (λ (m3: SharedM, sb_slots: «stages; SbPtr»): [GlobalM, SharedM] =
+                    let slots: «stages; Slot» = ‹st: stages; (sa_slots#st, sb_slots#st)›;
+                    let issue = λ (kt: Nat, m1: GlobalM, m3: SharedM, _: Slot): [GlobalM, SharedM, Pref] =
+                        let kb       = core.nat.mul (kt, BK);
+                        let (m1, pa) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, kb, K, ra4);
+                        let (m1, pb) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, kb, K, block_n, N, rb4);
+                        (m1, m3, (pa, pb));
+                    let arrive = λ (_: Nat, m1: GlobalM, m3: SharedM, (sa: SaPtr, sb: SbPtr), (pa: PrefA, pb: PrefB)): [GlobalM, SharedM] =
+                        let m3 = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa, item_id, pa);
+                        let m3 = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb, item_id, pb);
+                        sync_work_items (m1, m3);
+                    let compute = λ (m1: GlobalM, m3: SharedM, (sa: SaPtr, sb: SbPtr), acc: Regs): [GlobalM, SharedM, Regs] =
+                        simt_reg_mma_v4 @(Ta, Tb, To) (BK, BMpad, BNpad, TY, TX, TM, TN, BK) comb (m1, m3, sa, sb, ty, tx, acc);
+                    let (m1, m3, acc) = simt_pipe_n @(Slot, Pref, Regs) (stages, full_k) slots (m1, m3, acc0) (issue, arrive, compute);
+                    let do_tail = λ (st: Slot): [GlobalM, SharedM, Regs] =
+                        let (sa0, sb0) = st;
+                        let (m1, m3)   = (λ (s: [GlobalM, SharedM]): [GlobalM, SharedM] = s,
+                                          sync_work_items)#(1 < stages) (m1, m3);
+                        let kb         = core.nat.mul (full_k, BK);
+                        let (m1, m3)   = simt_stage_tile_t @Ta (BK, BM, tail_k, BMpad, NT) m_div (m1, m3, sa0, item_id, block_m, M, kb, ra1);
+                        let (m1, m3)   = simt_stage_tile   @Tb (BK, tail_k, BN, BNpad, NT) (tt, n_div) (m1, m3, sb0, item_id, kb, K, block_n, N, rb1);
+                        let (m1, m3)   = sync_work_items (m1, m3);
+                        simt_reg_mma_v4 @(Ta, Tb, To) (BK, BMpad, BNpad, TY, TX, TM, TN, tail_k) comb (m1, m3, sa0, sb0, ty, tx, acc);
+                    let (m1, m3, acc) = (λ (_: Slot): [GlobalM, SharedM, Regs] = (m1, m3, acc),
+                                         do_tail)#(core.ncmp.ne (tail_k, 0)) (slots#(core.idx 0 stages 0));
+                    let m1 = simt_store_tile_v4 @To (M, N, BM, BN, TY, TX, TM, TN) (m1, block_m, block_n, ty, tx, acc, wc4);
+                    (m1, m3)));
 
-    let run_dbuf = λ (comp: CompFn): [GlobalM, SharedM] =
-        fun body (m1: GlobalM, m3: SharedM)@tt: [GlobalM, SharedM] =
-            ret (m3, sa0) = mem.slot («BK; «BMpad; Ta»», addr_space_shared) $ m3;
-            ret (m3, sa1) = mem.slot («BK; «BMpad; Ta»», addr_space_shared) $ m3;
-            ret (m3, sb0) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
-            ret (m3, sb1) = mem.slot («BK; «BNpad; Tb»», addr_space_shared) $ m3;
-            // Prologue: stage tile 0 into buf0.
-            let (m1, pa0) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, 0, K, ra4);
-            let (m1, pb0) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, 0, K, block_n, N, rb4);
-            let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa0, item_id, pa0);
-            let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb0, item_id, pb0);
-            let (m1, m3)  = sync_work_items (m1, m3);
-            let rem_full  = core.nat.sub (full_k, 1);
-            let pairs     = core.nat.div (rem_full, 2);
-            let has_odd   = core.nat.rem (rem_full, 2) == 1;
-            let do_pairs  = λ (c: CompFn): [GlobalM, SharedM, Regs] =
-                simt_k_loop @Regs pairs (m1, m3, acc0)
-                    (λ (p: Nat, m1: GlobalM, m3: SharedM, acc: Regs): [GlobalM, SharedM, Regs] =
-                        let k1        = core.nat.mul (core.nat.add (core.nat.mul (p, 2), 1), BK);
-                        let (m1, pa1) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, k1, K, ra4);
-                        let (m1, pb1) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, k1, K, block_n, N, rb4);
-                        let (m1, m3, acc) = c (m1, m3, sa0, sb0, acc);
-                        let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa1, item_id, pa1);
-                        let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb1, item_id, pb1);
-                        let (m1, m3)  = sync_work_items (m1, m3);
-                        let k2        = core.nat.add (k1, BK);
-                        let (m1, pa2) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, k2, K, ra4);
-                        let (m1, pb2) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, k2, K, block_n, N, rb4);
-                        let (m1, m3, acc) = c (m1, m3, sa1, sb1, acc);
-                        let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa0, item_id, pa2);
-                        let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb0, item_id, pb2);
-                        let (m1, m3)  = sync_work_items (m1, m3);
-                        (m1, m3, acc));
-            let (m1, m3, acc) = (λ (_: CompFn): [GlobalM, SharedM, Regs] = (m1, m3, acc0),
-                                 do_pairs)#(core.ncmp.ne (pairs, 0)) comp;
-            let finish_even = λ (c: CompFn): [GlobalM, SharedM, Regs] = c (m1, m3, sa0, sb0, acc);
-            let finish_odd  = λ (c: CompFn): [GlobalM, SharedM, Regs] =
-                let kl        = core.nat.mul (rem_full, BK);
-                let (m1, pal) = simt_prefetch_v4 @Ta (BM, BK, NT) (m_div, tt) (m1, item_id, block_m, M, kl, K, ra4);
-                let (m1, pbl) = simt_prefetch_v4 @Tb (BK, BN, NT) (tt, n_div) (m1, item_id, kl, K, block_n, N, rb4);
-                let (m1, m3, acc) = c (m1, m3, sa0, sb0, acc);
-                let m3        = simt_commit_t_v4 @Ta (BM, BK, BMpad, NT) (m3, sa1, item_id, pal);
-                let m3        = simt_commit_v4   @Tb (BK, BN, BNpad, NT) (m3, sb1, item_id, pbl);
-                let (m1, m3)  = sync_work_items (m1, m3);
-                c (m1, m3, sa1, sb1, acc);
-            let (m1, m3, acc) = (finish_even, finish_odd)#has_odd comp;
-            let do_tail = λ (c: CompFn): [GlobalM, SharedM, Regs] =
-                let (m1, m3) = sync_work_items (m1, m3);
-                let kb       = core.nat.mul (full_k, BK);
-                let (m1, m3) = simt_stage_tile_t @Ta (BK, BM, tail_k, BMpad, NT) m_div (m1, m3, sa0, item_id, block_m, M, kb, ra1);
-                let (m1, m3) = simt_stage_tile   @Tb (BK, tail_k, BN, BNpad, NT) (tt, n_div) (m1, m3, sb0, item_id, kb, K, block_n, N, rb1);
-                let (m1, m3) = sync_work_items (m1, m3);
-                simt_reg_mma_v4 @(Ta, Tb, To) (BK, BMpad, BNpad, TY, TX, TM, TN, tail_k) comb (m1, m3, sa0, sb0, ty, tx, acc);
-            let (m1, m3, acc) = (λ (_: CompFn): [GlobalM, SharedM, Regs] = (m1, m3, acc),
-                                 do_tail)#(core.ncmp.ne (tail_k, 0)) comp;
-            let m1 = simt_store_tile_v4 @To (M, N, BM, BN, TY, TX, TM, TN) (m1, block_m, block_n, ty, tx, acc, wc4);
-            return (m1, m3);
-        cps.cps2ds body (m1, m3);
+/// ## PE-Erased CuTe-Style Layout, Fragment & Tensor Core (`mma.sync.m16n8k16` + `cp.async`) Combinators
+///
+/// Compile-time-erased layouts and warp-collective Tensor Core fragments over 16-byte (`«8; T»`) chunks:
+/// - `cu_swizzle_chunk` / `cu_smem_chunk_ptr`: bank-conflict-free 64B (`Swizzle<2,3,2>`) and 128B+ (`Swizzle<3,3,3>`) XOR layouts.
+/// - `cu_mma_m16n8k16_*`: PTX ISA `m16n8k16` coordinate maps for `C`, `A` (`ldmatrix.x4`), and `B` (both `NN` via `.trans` and `NT`).
+/// - `cu_mma_frag_row_reduce` / `cu_mma_frag_c2_to_a`: composable register-fragment algebra (row reductions, C→A in-register recast).
+/// - `cu_copy_tile_cp_async` / `cu_warp_mma_m16n8k16` / `cu_store_mma_c` / `tc_tiled_kernel_m16n8k16`: multi-stage async Tensor Core GEMM.
 
-    let comp: CompFn = λ (m1: GlobalM, m3: SharedM, sa: SaPtr, sb: SbPtr, acc: Regs): [GlobalM, SharedM, Regs] =
-        simt_reg_mma_v4 @(Ta, Tb, To) (BK, BMpad, BNpad, TY, TX, TM, TN, BK) comb (m1, m3, sa, sb, ty, tx, acc);
-    (run_single, run_dbuf)#use_db comp;
+/// Bank-conflict-free XOR swizzle on 16-byte (`«8; T»`) column chunk index `c8` of row `r`:
+/// - `8 | Cols8` (128B+ row stride): `c8 ^ (r & 7)` (`Swizzle<3,3,3>`, 0 bank conflicts on both `cp.async` and `ldmatrix.x4`).
+/// - `Cols8 % 8 == 4` (64B row stride): `c8 ^ ((r >> 1) & 3)` (`Swizzle<2,3,2>`, 0 bank conflicts across 8 consecutive rows).
+/// - otherwise: identity `c8`.
+anx lam cu_swizzle_chunk (Cols8: Nat) (r c8: Nat): Nat =
+    let is_128 = core.nat.rem (Cols8, 8) == 0;
+    let is_64  = core.nat.rem (Cols8, 8) == 4;
+    let mask   = core.select (is_128, core.nat.rem (r, 8),
+                 core.select (is_64,  core.nat.rem (core.nat.div (r, 2), 4), 0));
+    core.bitcast Nat (core.bit2.xor 0 (core.bitcast I64 c8, core.bitcast I64 mask));
+
+/// Typed pointer to swizzled 16-byte chunk `(r, c8)` inside a `Rows × Cols8` shared tile of `«8; T»`.
+anx lam cu_smem_chunk_ptr {T: *} (Rows Cols8: Nat)
+    (smem: SharedPtr «Rows; «Cols8; «8; T»»», r c8: Nat): SharedPtr «8; T» =
+    let c8_sw = cu_swizzle_chunk Cols8 (r, c8);
+    mem.lea (mem.lea (smem, core.idx 0 Rows r), core.idx 0 Cols8 c8_sw);
+
+/// PTX ISA `mma.sync.m16n8k16` C-fragment element `(row, col)` in `16 × 8` held by `(lane, reg)`.
+anx lam cu_mma_m16n8k16_c_coord (lane: Nat, reg: Idx 4): [Nat, Nat] =
+    let j = core.idx2nat reg;
+    (core.nat.add (core.nat.div (lane, 4), core.nat.mul (8, core.nat.div (j, 2))),
+     core.nat.add (core.nat.mul (2, core.nat.rem (lane, 4)), core.nat.rem (j, 2)));
+
+/// Row-major `A` (`16 × 16`) chunk address `[row, k8]` for `ldmatrix.sync.aligned.m8n8.x4.b16`.
+anx lam cu_mma_m16n8k16_a_addr (lane: Nat): [Nat, Nat] =
+    (core.nat.rem (lane, 16), core.nat.div (lane, 16));
+
+/// Row-major `B` (`16 × 16` covering two `16 × 8` N-tiles) chunk address `[k, n8]` for `ldmatrix.x4.trans`.
+anx lam cu_mma_m16n8k16_b_addr_rn (lane: Nat): [Nat, Nat] =
+    (core.nat.rem (lane, 16), core.nat.div (lane, 16));
+
+/// K-major `B` (`16 × 16` stored as `N × K`, covering two `16 × 8` N-tiles) chunk address `[n, k8]` for `ldmatrix.x4`.
+anx lam cu_mma_m16n8k16_b_addr_rk (lane: Nat): [Nat, Nat] =
+    (core.nat.add (core.nat.rem (lane, 8), core.nat.mul (8, core.nat.div (lane, 16))),
+     core.nat.rem (core.nat.div (lane, 8), 2));
+
+/// PE-erased register-fragment row reduction over a warp's `WM × WN` grid of `m16n8k16` F32 C-fragments.
+/// Reduces all `8 * WN` columns of each logical row in registers + 4-lane quad `warp_shfl_xor` (offsets 2, 1),
+/// returning `«WM; «2; F32»»` (the upper `r0` and lower `r0 + 8` row results for this lane).
+anx lam cu_mma_frag_row_reduce (WM WN: Nat)
+    (init: math.F32, merge: Fn [GlobalM, math.F32, math.F32] → [GlobalM, math.F32])
+    (m1: GlobalM, acc: «WM; «WN; «4; math.F32»»»): [GlobalM, «WM; «2; math.F32»»] =
+    let Out = «WM; «2; math.F32»»;
+    simt_unroll @[GlobalM, Out] WM (m1, ‹WM; ‹2; init››)
+        (λ (mi: Idx WM, (m1: GlobalM, out: Out)): [GlobalM, Out] =
+            let (m1, r0, r1) = simt_unroll @[GlobalM, math.F32, math.F32] WN (m1, init, init)
+                (λ (ni: Idx WN, (m1: GlobalM, v0 v1: math.F32)): [GlobalM, math.F32, math.F32] =
+                    let c = acc#mi#ni;
+                    let (m1, v0) = cps.cps2ds merge (m1, v0, c#(core.idx 0 4 0));
+                    let (m1, v0) = cps.cps2ds merge (m1, v0, c#(core.idx 0 4 1));
+                    let (m1, v1) = cps.cps2ds merge (m1, v1, c#(core.idx 0 4 2));
+                    let (m1, v1) = cps.cps2ds merge (m1, v1, c#(core.idx 0 4 3));
+                    (m1, v0, v1));
+            let (m1, r0) = simt_warp_reduce @math.F32 4 merge (m1, r0);
+            let (m1, r1) = simt_warp_reduce @math.F32 4 merge (m1, r1);
+            (m1, out#mi ← (r0, r1)));
+
+/// PE-erased zero-smem register conversion of two side-by-side `16 × 8` F32 C-fragments into one `16 × 16` A-fragment.
+anx lam cu_mma_frag_c2_to_a {T: *} (down: math.F32 → T) (c0 c1: «4; math.F32»): «4; «2; T»» =
+    let cs: «2; «4; math.F32»» = (c0, c1);
+    ‹reg: 4; ‹h: 2;
+        let r = core.idx2nat reg;
+        down (cs#(core.idx 0 2 (core.nat.div (r, 2)))#(core.idx 0 4 (core.nat.add (core.nat.mul (2, core.nat.rem (r, 2)), core.idx2nat h))))››;
+
+/// Cooperative 16-byte (`«8; T»`) `cp.async.cg.16` global→shared tile copy with swizzled destination layout.
+/// Out-of-bounds chunks zero-fill shared memory via `cp_async_zero_16`; `r_div` / `c_div` statically elide bounds checks.
+anx lam cu_copy_tile_cp_async {T: *} (Rows Cols NT: Nat) (r_div c_div: Bool)
+    (m1: GlobalM, m3: SharedM, smem: SharedPtr «Rows; «core.nat.div (Cols, 8); «8; T»»», tid: Nat,
+     base_r lim_r base_c lim_c: Nat,
+     ptr_g: [GlobalM, Nat, Nat] → [GlobalM, GlobalPtr T])
+    : [GlobalM, SharedM] =
+    let Cols8 = core.nat.div (Cols, 8);
+    let total = Rows * Cols8;
+    let steps = refly.check (core.nat.rem (total, NT) == 0, core.nat.div (total, NT),
+        "gpu.cu_copy_tile_cp_async: NT must divide Rows*(Cols/8)");
+    simt_unroll @[GlobalM, SharedM] steps (m1, m3)
+        (λ (s: Idx steps, (m1: GlobalM, m3: SharedM)): [GlobalM, SharedM] =
+            let idx  = core.nat.add (tid, core.nat.mul (core.idx2nat s, NT));
+            let r    = core.nat.div (idx, Cols8);
+            let c8   = core.nat.rem (idx, Cols8);
+            let gr   = core.nat.add (base_r, r);
+            let gc   = core.nat.add (base_c, core.nat.mul (c8, 8));
+            let ok   = core.bit2.and 2 (core.select (r_div, tt, core.ncmp.l (gr, lim_r)),
+                                        core.select (c_div, tt, core.ncmp.l (gc, lim_c)));
+            let sptr = cu_smem_chunk_ptr @T (Rows, Cols8) (smem, r, c8);
+            simt_if_else @[GlobalM, SharedM] (ok, (m1, m3),
+                λ ((m1: GlobalM, m3: SharedM)): [GlobalM, SharedM] =
+                    let (m1, gptr) = ptr_g (m1, gr, gc);
+                    cp_async_cg_16 @(«8; T», T) (m1, m3, sptr, gptr),
+                λ ((m1: GlobalM, m3: SharedM)): [GlobalM, SharedM] =
+                    (m1, cp_async_zero_16 @«8; T» (m3, sptr))));
+
+/// Warp-level `mma.sync.m16n8k16` micro-kernel over swizzled shared A (`BM × BK`) and B (`BK × BN` or `BN × BK`).
+/// Uses `ldmatrix.x4` for A and `ldmatrix.x4{.trans}` for pairs of N-tiles of B.
+anx lam cu_warp_mma_m16n8k16 {T: *} (BM BN BK WY WX: Nat) (b_k_major: Bool)
+    (mma_op: [GlobalM, «4; «2; T»», «2; «2; T»», «4; math.F32»] → [GlobalM, «4; math.F32»])
+    (m1: GlobalM, m3: SharedM,
+     sa: SharedPtr «BM; «core.nat.div (BK, 8); «8; T»»»,
+     sb: SharedPtr «core.select (b_k_major, BN, BK); «core.nat.div (core.select (b_k_major, BK, BN), 8); «8; T»»»,
+     wy wx lane: Nat,
+     acc0: «core.nat.div (core.nat.div (BM, WY), 16); «core.nat.div (core.nat.div (BN, WX), 8); «4; math.F32»»»)
+    : [GlobalM, SharedM, «core.nat.div (core.nat.div (BM, WY), 16); «core.nat.div (core.nat.div (BN, WX), 8); «4; math.F32»»»] =
+    let BK8    = core.nat.div (BK, 8);
+    let Brows  = core.select (b_k_major, BN, BK);
+    let Bcols  = core.select (b_k_major, BK, BN);
+    let Bcols8 = core.nat.div (Bcols, 8);
+    let WM     = core.nat.div (core.nat.div (BM, WY), 16);
+    let WN     = core.nat.div (core.nat.div (BN, WX), 8);
+    let WN2    = core.nat.div (WN, 2);
+    let KS     = core.nat.div (BK, 16);
+    let Acc    = «WM; «WN; «4; math.F32»»»;
+    let FragA  = «4; «2; T»»;
+    let FragB  = «2; «2; T»»;
+    let AFrags = «WM; FragA»;
+    let BFrags = «WN; FragB»;
+    let wm_off = core.nat.mul (wy, core.nat.mul (WM, 16));
+    let wn_off = core.nat.mul (wx, core.nat.mul (WN, 8));
+    let wn8_off = core.nat.div (wn_off, 8);
+    let (da_r, da_k8)  = cu_mma_m16n8k16_a_addr lane;
+    let (db_kr, db_n8) = cu_mma_m16n8k16_b_addr_rn lane;
+    let (db_nr, db_k8) = cu_mma_m16n8k16_b_addr_rk lane;
+    let b_trans        = core.select (b_k_major, ff, tt);
+
+    simt_unroll @[GlobalM, SharedM, Acc] KS (m1, m3, acc0)
+        (λ (ks: Idx KS, (m1: GlobalM, m3: SharedM, acc: Acc)): [GlobalM, SharedM, Acc] =
+            let k_base  = core.nat.mul (core.idx2nat ks, 16);
+            let k8_base = core.nat.mul (core.idx2nat ks, 2);
+            // Load WM A fragments via ldmatrix.x4.
+            let (m1, m3, a_frags) = simt_unroll @[GlobalM, SharedM, AFrags] WM (m1, m3, ‹WM; ⊥:FragA›)
+                (λ (mi: Idx WM, (m1: GlobalM, m3: SharedM, af: AFrags)): [GlobalM, SharedM, AFrags] =
+                    let sr   = core.nat.add (wm_off, core.nat.add (core.nat.mul (core.idx2nat mi, 16), da_r));
+                    let sc8  = core.nat.add (k8_base, da_k8);
+                    let sptr = cu_smem_chunk_ptr @T (BM, BK8) (sa, sr, sc8);
+                    let (m1, m3, a4) = ldmatrix_b16 @(T, «8; T») (4, ff, m1, m3, sptr);
+                    (m1, m3, af#mi ← a4));
+            // Load WN = 2*WN2 B fragments via WN2 calls to ldmatrix.x4{.trans}.
+            let (m1, m3, b_frags) = simt_unroll @[GlobalM, SharedM, BFrags] WN2 (m1, m3, ‹WN; ⊥:FragB›)
+                (λ (ni2: Idx WN2, (m1: GlobalM, m3: SharedM, bf: BFrags)): [GlobalM, SharedM, BFrags] =
+                    let n_pair = core.nat.mul (core.idx2nat ni2, 2);
+                    let sb_r   = core.select (b_k_major,
+                                     core.nat.add (wn_off, core.nat.add (core.nat.mul (n_pair, 8), db_nr)),
+                                     core.nat.add (k_base, db_kr));
+                    let sb_c8  = core.select (b_k_major,
+                                     core.nat.add (k8_base, db_k8),
+                                     core.nat.add (wn8_off, core.nat.add (n_pair, db_n8)));
+                    let sptr   = cu_smem_chunk_ptr @T (Brows, Bcols8) (sb, sb_r, sb_c8);
+                    let (m1, m3, b4) = ldmatrix_b16 @(T, «8; T») (4, b_trans, m1, m3, sptr);
+                    let b_lo: FragB = (b4#(core.idx 0 4 0), b4#(core.idx 0 4 1));
+                    let b_hi: FragB = (b4#(core.idx 0 4 2), b4#(core.idx 0 4 3));
+                    let bf = bf#(core.idx 0 WN n_pair) ← b_lo;
+                    let bf = bf#(core.idx 0 WN (core.nat.add (n_pair, 1))) ← b_hi;
+                    (m1, m3, bf));
+            // Outer-product MMA over WM × WN tiles.
+            let (m1, acc) = simt_unroll @[GlobalM, Acc] WM (m1, acc)
+                (λ (mi: Idx WM, (m1: GlobalM, acc: Acc)): [GlobalM, Acc] =
+                    let am = a_frags#mi;
+                    simt_unroll @[GlobalM, Acc] WN (m1, acc)
+                        (λ (ni: Idx WN, (m1: GlobalM, acc: Acc)): [GlobalM, Acc] =
+                            let row = acc#mi;
+                            let (m1, d) = mma_op (m1, am, b_frags#ni, row#ni);
+                            (m1, acc#mi ← (row#ni ← d))));
+            (m1, m3, acc));
+
+/// Coalesced global write-back of a warp's `WM × WN` `m16n8k16` F32 accumulator fragments via 2-wide stores.
+anx lam cu_store_mma_c (M N BM BN WY WX: Nat)
+    (m1: GlobalM, block_m block_n wy wx lane: Nat,
+     acc: «core.nat.div (core.nat.div (BM, WY), 16); «core.nat.div (core.nat.div (BN, WX), 8); «4; math.F32»»»,
+     write2: [GlobalM, Nat, Nat, «2; math.F32»] → GlobalM): GlobalM =
+    let WM     = core.nat.div (core.nat.div (BM, WY), 16);
+    let WN     = core.nat.div (core.nat.div (BN, WX), 8);
+    let m_div  = core.nat.rem (M, BM) == 0;
+    let n_div  = core.nat.rem (N, BN) == 0;
+    let wm_off = core.nat.add (block_m, core.nat.mul (wy, core.nat.mul (WM, 16)));
+    let wn_off = core.nat.add (block_n, core.nat.mul (wx, core.nat.mul (WN, 8)));
+    let (dr0, dc0) = cu_mma_m16n8k16_c_coord (lane, core.idx 0 4 0);
+    let (dr1, _)   = cu_mma_m16n8k16_c_coord (lane, core.idx 0 4 2);
+    simt_unroll @GlobalM WM m1 (λ (mi: Idx WM, m1: GlobalM): GlobalM =
+        let m_base = core.nat.add (wm_off, core.nat.mul (core.idx2nat mi, 16));
+        let gm0    = core.nat.add (m_base, dr0);
+        let gm1    = core.nat.add (m_base, dr1);
+        let ok_m0  = core.select (m_div, tt, core.ncmp.l (gm0, M));
+        let ok_m1  = core.select (m_div, tt, core.ncmp.l (gm1, M));
+        simt_unroll @GlobalM WN m1 (λ (ni: Idx WN, m1: GlobalM): GlobalM =
+            let gn   = core.nat.add (wn_off, core.nat.add (core.nat.mul (core.idx2nat ni, 8), dc0));
+            let ok_n = core.select (n_div, tt, core.ncmp.l (gn, N));
+            let c    = acc#mi#ni;
+            let v0: «2; math.F32» = (c#(core.idx 0 4 0), c#(core.idx 0 4 1));
+            let v1: «2; math.F32» = (c#(core.idx 0 4 2), c#(core.idx 0 4 3));
+            let m1 = simt_when @GlobalM (core.bit2.and 2 (ok_m0, ok_n), m1,
+                         λ (m1: GlobalM): GlobalM = write2 (m1, gm0, gn, v0));
+            simt_when @GlobalM (core.bit2.and 2 (ok_m1, ok_n), m1,
+                λ (m1: GlobalM): GlobalM = write2 (m1, gm1, gn, v1))));
+
+/// Multi-stage asynchronous Tensor Core (`mma.sync.m16n8k16` + `cp.async.cg.16` + `ldmatrix.x4`) contraction kernel.
+/// Composes grouped L2 CTA swizzle, `simt_with_shared_ring`, `simt_pipe_n @(Slot, [], Acc)`, swizzled shared tiles,
+/// `cu_warp_mma_m16n8k16`, and coalesced `cu_store_mma_c`. Supports both `NN` (`b_k_major = ff`) and `NT` (`b_k_major = tt`).
+anx lam tc_tiled_kernel_m16n8k16 {T: *}
+    (B M N K BM BN BK WY WX Stages: Nat) (b_k_major: Bool)
+    (mma_op: [GlobalM, «4; «2; T»», «2; «2; T»», «4; math.F32»] → [GlobalM, «4; math.F32»])
+    (ptr_a:    [GlobalM, Nat, Nat, Nat] → [GlobalM, GlobalPtr T],
+     ptr_b:    [GlobalM, Nat, Nat, Nat] → [GlobalM, GlobalPtr T],
+     write_c2: [GlobalM, Nat, Nat, Nat, «2; math.F32»] → GlobalM)
+    (m1: GlobalM, m3: SharedM, group_id item_id: Nat)
+    : [GlobalM, SharedM] =
+    let WY     = refly.check (core.bit2.and 2 (0 < WY, core.nat.rem (BM, core.nat.mul (WY, 16)) == 0), WY,
+        "gpu.tc_tiled_kernel_m16n8k16: WY*16 must divide BM");
+    let WX     = refly.check (core.bit2.and 2 (0 < WX, core.nat.rem (BN, core.nat.mul (WX, 16)) == 0), WX,
+        "gpu.tc_tiled_kernel_m16n8k16: WX*16 must divide BN");
+    let BK     = refly.check (core.bit2.and 2 (0 < BK, core.nat.rem (BK, 16) == 0), BK,
+        "gpu.tc_tiled_kernel_m16n8k16: BK must be a positive multiple of 16");
+    let NT     = refly.check (core.nat.mul (core.nat.mul (WY, WX), 32) <= 1024, core.nat.mul (core.nat.mul (WY, WX), 32),
+        "gpu.tc_tiled_kernel_m16n8k16: block thread count WY*WX*32 exceeds 1024");
+    let BK8    = core.nat.div (BK, 8);
+    let Brows  = core.select (b_k_major, BN, BK);
+    let Bcols  = core.select (b_k_major, BK, BN);
+    let Bcols8 = core.nat.div (Bcols, 8);
+    let WM     = core.nat.div (core.nat.div (BM, WY), 16);
+    let WN     = core.nat.div (core.nat.div (BN, WX), 8);
+    let gm_blks = core.nat.div (core.nat.add (M, core.nat.sub (BM, 1)), BM);
+    let gn_blks = core.nat.div (core.nat.add (N, core.nat.sub (BN, 1)), BN);
+    let mn_blks = gm_blks * gn_blks;
+    let batch   = (0, core.nat.div (group_id, mn_blks))#(1 < B);
+    let blk_rem = (group_id, core.nat.rem (group_id, mn_blks))#(1 < B);
+    let sw_m    = core.select (gm_blks < 8, gm_blks, 8);
+    let grp_sz  = sw_m * gn_blks;
+    let grp_id  = core.nat.div (blk_rem, grp_sz);
+    let first_m = core.nat.mul (grp_id, sw_m);
+    let rem_m   = core.nat.sub (gm_blks, first_m);
+    let grp_m   = core.select (rem_m < sw_m, rem_m, sw_m);
+    let in_grp  = core.nat.rem (blk_rem, grp_sz);
+    let bm_id   = core.nat.add (first_m, core.nat.rem (in_grp, grp_m));
+    let bn_id   = core.nat.div (in_grp, grp_m);
+    let block_m = core.nat.mul (bm_id, BM);
+    let block_n = core.nat.mul (bn_id, BN);
+    let warp_id = core.nat.div (item_id, 32);
+    let lane    = core.nat.rem (item_id, 32);
+    let wy      = core.nat.div (warp_id, WX);
+    let wx      = core.nat.rem (warp_id, WX);
+    let m_div   = core.nat.rem (M, BM) == 0;
+    let n_div   = core.nat.rem (N, BN) == 0;
+    let k_div   = core.nat.rem (K, BK) == 0;
+    let k_tiles = core.nat.div (core.nat.add (K, core.nat.sub (BK, 1)), BK);
+    let SaTile  = «BM; «BK8; «8; T»»»;
+    let SbTile  = «Brows; «Bcols8; «8; T»»»;
+    let SaPtr   = SharedPtr SaTile;
+    let SbPtr   = SharedPtr SbTile;
+    let Slot    = [SaPtr, SbPtr];
+    let Acc     = «WM; «WN; «4; math.F32»»»;
+    let acc0    = ‹WM; ‹WN; ‹4; 0:math.F32›››;
+    let pa      = λ (m1: GlobalM, r c: Nat): [GlobalM, GlobalPtr T] = ptr_a (m1, batch, r, c);
+    let pb      = λ (m1: GlobalM, r c: Nat): [GlobalM, GlobalPtr T] = ptr_b (m1, batch, r, c);
+    let wc2     = λ (m1: GlobalM, r c: Nat, v: «2; math.F32»): GlobalM = write_c2 (m1, batch, r, c, v);
+
+    simt_with_shared_ring @(SaTile, [GlobalM, SharedM]) Stages m3
+        (λ (m3: SharedM, sa_slots: «Stages; SaPtr»): [GlobalM, SharedM] =
+            simt_with_shared_ring @(SbTile, [GlobalM, SharedM]) Stages m3
+                (λ (m3: SharedM, sb_slots: «Stages; SbPtr»): [GlobalM, SharedM] =
+                    let slots: «Stages; Slot» = ‹st: Stages; (sa_slots#st, sb_slots#st)›;
+                    let issue = λ (kt: Nat, m1: GlobalM, m3: SharedM, (sa: SaPtr, sb: SbPtr)): [GlobalM, SharedM, []] =
+                        let kb       = core.nat.mul (kt, BK);
+                        let (m1, m3) = cu_copy_tile_cp_async @T (BM, BK, NT) (m_div, k_div) (m1, m3, sa, item_id, block_m, M, kb, K, pa);
+                        let b_r_div  = core.select (b_k_major, n_div, k_div);
+                        let b_c_div  = core.select (b_k_major, k_div, n_div);
+                        let b_br     = core.select (b_k_major, block_n, kb);
+                        let b_lr     = core.select (b_k_major, N, K);
+                        let b_bc     = core.select (b_k_major, kb, block_n);
+                        let b_lc     = core.select (b_k_major, K, N);
+                        let (m1, m3) = cu_copy_tile_cp_async @T (Brows, Bcols, NT) (b_r_div, b_c_div) (m1, m3, sb, item_id, b_br, b_lr, b_bc, b_lc, pb);
+                        let (m1, m3) = cp_async_commit (m1, m3);
+                        (m1, m3, ());
+                    let arrive = λ (rem_wait: Nat, m1: GlobalM, m3: SharedM, _: Slot, _: []): [GlobalM, SharedM] =
+                        let (m1, m3) = cp_async_wait_group rem_wait (m1, m3);
+                        sync_work_items (m1, m3);
+                    let compute = λ (m1: GlobalM, m3: SharedM, (sa: SaPtr, sb: SbPtr), acc: Acc): [GlobalM, SharedM, Acc] =
+                        cu_warp_mma_m16n8k16 @T (BM, BN, BK, WY, WX) b_k_major mma_op (m1, m3, sa, sb, wy, wx, lane, acc);
+                    let (m1, m3, acc) = simt_pipe_n @(Slot, [], Acc) (Stages, k_tiles) slots (m1, m3, acc0) (issue, arrive, compute);
+                    let m1 = cu_store_mma_c (M, N, BM, BN, WY, WX) (m1, block_m, block_n, wy, wx, lane, acc, wc2);
+                    (m1, m3)));

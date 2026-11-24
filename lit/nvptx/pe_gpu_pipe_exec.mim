@@ -1,0 +1,70 @@
+// RUN: rm -f %t.ll %t_dev.ll %t
+// RUN: %mim %s -p opt -p nvptx -X nvptx:o=%t.ll -X nvptx:o-dev=%t_dev.ll
+// RUN: %FileCheck %s --input-file=%t_dev.ll --check-prefix=DEV
+// RUN: %if system-linux && cuda %{ clang %t.ll -o %t -lcuda -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// Exercises gpu.simt_with_shared_ring and gpu.simt_pipe_n across Stages = 1, 2, 3, 4 and
+// n_steps = 1, 2, 5, 7 (covering n_steps < Stages-1, body == 0, rem == 0, rem > 0, and
+// multi-entry FIFO token shifting with Q = 0, 1, 2) using a non-commutative recurrence
+// acc = acc * 3 + (k + 1) with cross-thread shared-memory reads.
+
+// DEV: define ptx_kernel void @pipe_kernel
+// DEV: call void @llvm.nvvm.barrier0()
+
+plugin core;
+plugin gpu;
+plugin mem;
+
+lam run_case (Stages n_steps: Nat): Fn [gpu.GlobalM, gpu.SharedM, Idx 4] → [gpu.GlobalM, gpu.SharedM, I32] =
+    fun go (m1: gpu.GlobalM, m3: gpu.SharedM, tid: Idx 4)@tt: [gpu.GlobalM, gpu.SharedM, I32] =
+        let Slot = gpu.SharedPtr «4; I32»;
+        let peer = core.idx 0 4 (core.nat.rem (core.nat.add (core.idx2nat tid, 1), 4));
+        let issue = λ (k: Nat, m1: gpu.GlobalM, m3: gpu.SharedM, _: Slot): [gpu.GlobalM, gpu.SharedM, I32] =
+            (m1, m3, core.conv.u i32 (core.bitcast I64 (core.nat.add (k, 1))));
+        let arrive = λ (_: Nat, m1: gpu.GlobalM, m3: gpu.SharedM, s: Slot, tok: I32): [gpu.GlobalM, gpu.SharedM] =
+            let m3 = mem.store (m3, mem.lea (s, tid), tok);
+            gpu.sync_work_items (m1, m3);
+        let compute = λ (m1: gpu.GlobalM, m3: gpu.SharedM, s: Slot, acc: I32): [gpu.GlobalM, gpu.SharedM, I32] =
+            let (m3, v) = mem.load (m3, mem.lea (s, peer));
+            let nxt     = core.wrap.add 0 (core.wrap.mul 0 (acc, 3I32), v);
+            (m1, m3, nxt);
+        return (gpu.simt_with_shared_ring @(«4; I32», [gpu.GlobalM, gpu.SharedM, I32]) Stages m3
+            (λ (m3: gpu.SharedM, slots: «Stages; Slot»): [gpu.GlobalM, gpu.SharedM, I32] =
+                gpu.simt_pipe_n @(Slot, I32, I32) (Stages, n_steps) slots (m1, m3, 0I32) (issue, arrive, compute)));
+    go;
+
+con pipe_kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+                 _ : Idx 1, tid: Idx 4, (), out: gpu.GlobalPtr I32,
+                 return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    ret (m1, m3, r0) = run_case (1, 5) $ (m1, m3, tid);
+    ret (m1, m3, r1) = run_case (2, 5) $ (m1, m3, tid);
+    ret (m1, m3, r2) = run_case (3, 1) $ (m1, m3, tid);
+    ret (m1, m3, r3) = run_case (3, 2) $ (m1, m3, tid);
+    ret (m1, m3, r4) = run_case (3, 5) $ (m1, m3, tid);
+    ret (m1, m3, r5) = run_case (3, 7) $ (m1, m3, tid);
+    ret (m1, m3, r6) = run_case (4, 7) $ (m1, m3, tid);
+    let chk = λ (got exp: I32): I32 = core.select (core.icmp.e (got, exp), 0I32, 1I32);
+    let errs = core.wrap.add 0 (chk (r0, 179I32),
+               core.wrap.add 0 (chk (r1, 179I32),
+               core.wrap.add 0 (chk (r2, 1I32),
+               core.wrap.add 0 (chk (r3, 5I32),
+               core.wrap.add 0 (chk (r4, 179I32),
+               core.wrap.add 0 (chk (r5, 1636I32),
+                                chk (r6, 1636I32)))))));
+    let m1 = mem.store (m1, out, errs);
+    return (m1, m3, m4, m5);
+
+extern fun main (m0: mem.M 0, _: I32, _: mem.Ptr0 (mem.Ptr0 mem.Char)): [mem.M 0, I32] =
+    let (m0, ptr)      = mem.alloc (I32, 0) m0;
+    let m0             = mem.store (m0, ptr, 99I32);
+    let (m0, m1, m4)   = gpu.init m0;
+    let (m1, d_ptr)    = mem.alloc (I32, 1) m1;
+    let (m0, m1)       = gpu.copy_to_device.block (m0, m1, ptr, d_ptr);
+    ret (m0, m1, m4)   = gpu.launch (1, 4, gpu.default_stream, ff, ()) pipe_kernel d_ptr $ (m0, m1, m4);
+    let (m0, m1)       = gpu.copy_to_host.block (m0, m1, d_ptr, ptr);
+    let m1             = mem.free (m1, d_ptr);
+    let m0             = gpu.deinit (m0, m1, m4);
+    let (m0, val)      = mem.load (m0, ptr);
+    let m0             = mem.free (m0, ptr);
+    return (m0, val);

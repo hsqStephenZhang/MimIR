@@ -80,6 +80,8 @@ static constexpr PluginArg known_args[] = {
     {"pad=<n>", "Shared-memory row padding elements for bank-conflict avoidance (default `1`)."},
     {"vec4=<n>", "Enable 128-bit vectorized loads/stores and transposed shared A tile (`1` on by default, `0` off)."},
     {"dbuf=<n>", "Enable register-prefetch shared-memory double buffering on vectorized contractions (`1` on by default, `0` off)."},
+    {"pe-tc=<n>", "Lower static F16/BF16 GPU contractions through Tensor Core mma.sync + cp.async PE combinators (`1` on by default, `0` off)."},
+    {"tc-stages=<n>", "Override Tensor Core cp.async pipeline stages (`0` uses automatic selection)."},
     {"reduce-nt=<n>", "Override GPU parallel reduction block thread count (multiple of 32 in 32..1024; `0` uses automatic selection)."},
 };
 // clang-format on

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <format>
 
+#include <fe/format.h>
 #include <fe/log.h>
 #include <fe/sys.h>
 
@@ -681,6 +682,135 @@ std::optional<std::string> DeviceEmitter::isa_targetspecific_intrinsic(ll::BB& b
         auto vp = bb.assign(name + ".vp", "bitcast {} {} to {}", t_ptr, v_ptr, t_vptr);
         std::print(bb.body().emplace_back(), "store <4 x {}> {}, {} {}, align 16", t_elem, vec, t_vptr, vp);
         return std::string();
+    } else if (auto vstore2 = Axm::isa<gpu::vstore2>(def)) {
+        auto [m_def, ptr_def, val_def] = vstore2->args<3>();
+        emit_unsafe(m_def);
+        auto v_ptr   = emit(ptr_def);
+        auto v_val   = emit(val_def);
+        auto ptr_ty  = Axm::expect<mem::Ptr>(ptr_def->type(), "a `mem.Ptr`");
+        auto [T, as] = ptr_ty->args<2>();
+        auto t_elem  = convert(T, false);
+        auto t_ptr   = convert(ptr_ty);
+        auto as_lit  = Lit::expect(as, "an address space");
+        auto arr_ty  = std::format("[2 x {}]", t_elem);
+        auto t_vptr  = std::format("<2 x {}> addrspace({})*", t_elem, as_lit);
+        std::string vec = "undef";
+        for (int i = 0; i < 2; ++i) {
+            auto el = bb.assign(std::format("{}.e{}", name, i), "extractvalue {} {}, {}", arr_ty, v_val, i);
+            vec     = bb.assign(std::format("{}.v{}", name, i), "insertelement <2 x {}> {}, {} {}, i32 {}", t_elem, vec,
+                                t_elem, el, i);
+        }
+        auto vp = bb.assign(name + ".vp", "bitcast {} {} to {}", t_ptr, v_ptr, t_vptr);
+        std::print(bb.body().emplace_back(), "store <2 x {}> {}, {} {}, align 8", t_elem, vec, t_vptr, vp);
+        return std::string();
+    } else if (auto cp = Axm::isa<gpu::cp_async_cg_16>(def)) {
+        auto [m1_def, m3_def, dst_def, src_def] = cp->args<4>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        auto v_dst = emit(dst_def);
+        auto v_src = emit(src_def);
+        auto t_dst = convert(dst_def->type());
+        auto t_src = convert(src_def->type());
+        auto p3    = bb.assign(name + ".p3", "bitcast {} {} to i8 addrspace(3)*", t_dst, v_dst);
+        auto p1    = bb.assign(name + ".p1", "bitcast {} {} to i8 addrspace(1)*", t_src, v_src);
+        declare("void @llvm.nvvm.cp.async.cg.shared.global.16(i8 addrspace(3)*, i8 addrspace(1)*)");
+        std::print(bb.body().emplace_back(),
+                   "call void @llvm.nvvm.cp.async.cg.shared.global.16(i8 addrspace(3)* {}, i8 addrspace(1)* {})", p3,
+                   p1);
+        return name;
+    } else if (auto z16 = Axm::isa<gpu::cp_async_zero_16>(def)) {
+        auto [m3_def, dst_def] = z16->args<2>();
+        emit_unsafe(m3_def);
+        auto v_dst = emit(dst_def);
+        auto t_dst = convert(dst_def->type());
+        auto vp    = bb.assign(name + ".vp", "bitcast {} {} to <4 x i32> addrspace(3)*", t_dst, v_dst);
+        std::print(bb.body().emplace_back(),
+                   "store <4 x i32> zeroinitializer, <4 x i32> addrspace(3)* {}, align 16", vp);
+        return std::string();
+    } else if (auto commit = Axm::isa<gpu::cp_async_commit>(def)) {
+        emit_unsafe(commit->arg(2, 0));
+        emit_unsafe(commit->arg(2, 1));
+        declare("void @llvm.nvvm.cp.async.commit.group()");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.cp.async.commit.group()");
+        return name;
+    } else if (auto wait = Axm::isa<gpu::cp_async_wait_group>(def)) {
+        emit_unsafe(wait->arg(2, 0));
+        emit_unsafe(wait->arg(2, 1));
+        auto n_pending = Lit::expect(wait->decurry()->arg(), "a static cp.async wait count");
+        declare("void @llvm.nvvm.cp.async.wait.group(i32)");
+        std::print(bb.body().emplace_back(), "call void @llvm.nvvm.cp.async.wait.group(i32 {})", n_pending);
+        return name;
+    } else if (auto ld = Axm::isa<gpu::ldmatrix_b16>(def)) {
+        auto [n_def, trans_def, m1_def, m3_def, ptr_def] = ld->args<5>();
+        emit_unsafe(m1_def);
+        emit_unsafe(m3_def);
+        auto count     = Lit::expect(n_def, "a static ldmatrix count");
+        auto trans     = Lit::as<bool>(trans_def);
+        auto v_ptr     = emit(ptr_def);
+        auto t_ptr     = convert(ptr_def->type());
+        auto elem      = convert(ld->decurry()->arg(2, 0), false);
+        auto p3        = bb.assign(name + ".ptr", "bitcast {} {} to i8 addrspace(3)*", t_ptr, v_ptr);
+        auto regs      = count == 1 ? "i32"s : std::format("{{ {} }}", fe::Join(std::vector(count, "i32"s), ", "));
+        auto intrinsic = std::format("llvm.nvvm.ldmatrix.sync.aligned.m8n8.x{}{}.b16.p3", count, trans ? ".trans" : "");
+        declare("{} @{}(i8 addrspace(3)*)", regs, intrinsic);
+        auto loaded = bb.assign(name + ".r", "call {} @{}(i8 addrspace(3)* {})", regs, intrinsic, p3);
+        auto t_val  = count == 1 ? std::format("[2 x {}]", elem) : std::format("[{} x [2 x {}]]", count, elem);
+        std::string value = "undef";
+        for (u64 i = 0; i != count; ++i) {
+            auto reg  = count == 1
+                          ? loaded
+                          : bb.assign(std::format("{}.i{}", name, i), "extractvalue {} {}, {}", regs, loaded, i);
+            auto pair = bb.assign(std::format("{}.p{}", name, i), "bitcast i32 {} to <2 x {}>", reg, elem);
+            for (u64 h = 0; h != 2; ++h) {
+                auto x   = bb.assign(std::format("{}.e{}_{}", name, i, h), "extractelement <2 x {}> {}, i32 {}", elem,
+                                     pair, h);
+                auto dst = std::format("{}.v{}_{}", name, i, h);
+                value = count == 1 ? bb.assign(dst, "insertvalue {} {}, {} {}, {}", t_val, value, elem, x, h)
+                                   : bb.assign(dst, "insertvalue {} {}, {} {}, {}, {}", t_val, value, elem, x, i, h);
+            }
+        }
+        return bb.assign(name, "insertvalue {{ {} }} undef, {} {}, 0", t_val, t_val, value);
+    } else if (Axm::isa<gpu::mma_m16n8k16_f16>(def) || Axm::isa<gpu::mma_m16n8k16_bf16>(def)) {
+        bool bf              = Axm::isa<gpu::mma_m16n8k16_bf16>(def) != nullptr;
+        auto [m1_def, a, b, c] = def->as<App>()->args<4>();
+        emit_unsafe(m1_def);
+        auto v_a  = emit(a), v_b = emit(b), v_c = emit(c);
+        auto elem = bf ? "bfloat"s : "half"s;
+        auto pack_pairs = [&](const std::string& v, u64 n, std::string_view tag) {
+            std::vector<std::string> res;
+            for (u64 i = 0; i != n; ++i) {
+                std::string pair = std::format("<2 x {}> poison", elem);
+                for (u64 j = 0; j != 2; ++j) {
+                    auto x = bb.assign(std::format("{}.{}{}_{}", name, tag, i, j),
+                                       "extractvalue [{} x [2 x {}]] {}, {}, {}", n, elem, v, i, j);
+                    pair   = std::format("<2 x {}> ", elem)
+                           + bb.assign(std::format("{}.{}{}v{}", name, tag, i, j), "insertelement {}, {} {}, i32 {}",
+                                       pair, elem, x, j);
+                }
+                if (bf) pair = "i32 " + bb.assign(std::format("{}.{}{}i", name, tag, i), "bitcast {} to i32", pair);
+                res.push_back(pair);
+            }
+            return res;
+        };
+        auto operands = pack_pairs(v_a, 4, "a");
+        for (auto&& op : pack_pairs(v_b, 2, "b"))
+            operands.push_back(op);
+        for (u64 i = 0; i != 4; ++i)
+            operands.push_back("float "
+                               + bb.assign(std::format("{}.c{}", name, i), "extractvalue [4 x float] {}, {}", v_c, i));
+        auto regs   = "{ float, float, float, float }"s;
+        auto intr   = bf ? "llvm.nvvm.mma.m16n8k16.row.col.bf16"s : "llvm.nvvm.mma.m16n8k16.row.col.f32.f32"s;
+        auto reg_ty = bf ? "i32"s : "<2 x half>"s;
+        declare("{} @{}({}, {}, {}, {}, {}, {}, float, float, float, float)", regs, intr, reg_ty, reg_ty, reg_ty,
+                reg_ty, reg_ty, reg_ty);
+        auto d            = bb.assign(name + ".d", "call {} @{}({})", regs, intr, fe::Join(operands, ", "));
+        std::string value = "undef";
+        for (u64 i = 0; i != 4; ++i) {
+            auto f   = bb.assign(std::format("{}.d{}", name, i), "extractvalue {} {}, {}", regs, d, i);
+            auto dst = i == 3 ? name : std::format("{}.v{}", name, i);
+            value    = bb.assign(dst, "insertvalue [4 x float] {}, float {}, {}", value, f, i);
+        }
+        return value;
     } else if (auto tri = Axm::isa<math::tri>(def)) {
         auto arg       = emit(tri->arg());
         auto type      = convert(tri->arg()->type());

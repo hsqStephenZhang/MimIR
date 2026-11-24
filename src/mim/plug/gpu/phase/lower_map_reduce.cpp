@@ -273,6 +273,334 @@ Lam* build_kernel(World& w,
     return kernel;
 }
 
+struct TcPlan {
+    nat_t B, M, N, K;
+    nat_t BM, BN, BK, WY, WX, Stages;
+    bool is_bf16, b_k_major;
+    Vector<nat_t> batch_dims;
+
+    Grid grid() const {
+        nat_t gm = (M + BM - 1) / BM;
+        nat_t gn = (N + BN - 1) / BN;
+        return {B * gm * gn, WY * WX * 32, B * M * N};
+    }
+};
+
+/// Whether `global_comb` is a canonical multiply-accumulate `return (m, acc + up(a) * up(b))` with zero `init`.
+bool is_canonical_f32_mac(Lam* global_comb, const Def* init) {
+    auto init_bits = Lit::isa<u64>(init);
+    if (!init_bits || (*init_bits != 0 && *init_bits != 0x80000000ULL)) return false;
+
+    auto body = global_comb->body()->isa<App>();
+    if (!body || body->callee() != global_comb->var(2, 1)) return false;
+    auto [m_var, acc_var, ins_var] = global_comb->var(2, 0)->projs<3>();
+    auto [res_m, res_val]          = body->arg()->projs<2>();
+    if (res_m != m_var) return false;
+
+    auto add = Axm::isa<math::arith>(res_val);
+    if (!add || add.id() != math::arith::add) return false;
+    auto [a0, a1]   = add->args<2>();
+    const Def* prod = nullptr;
+    if (a0 == acc_var)
+        prod = a1;
+    else if (a1 == acc_var)
+        prod = a0;
+    else
+        return false;
+
+    auto mul = Axm::isa<math::arith>(prod);
+    if (!mul || mul.id() != math::arith::mul) return false;
+    auto peel = [](const Def* d) -> const Def* {
+        if (auto cv = Axm::isa<math::conv>(d); cv && cv.id() == math::conv::f2f) return cv->arg();
+        return d;
+    };
+    auto [p0, p1] = mul->args<2>();
+    auto u0       = peel(p0);
+    auto u1       = peel(p1);
+    auto in0      = ins_var->proj(2, 0);
+    auto in1      = ins_var->proj(2, 1);
+    return (u0 == in0 && u1 == in1) || (u0 == in1 && u1 == in0);
+}
+
+std::optional<TcPlan> plan_tc_contraction(World& w,
+                                          const btensor::MapRedPost& mr,
+                                          nat_t nis,
+                                          nat_t ro,
+                                          nat_t rr,
+                                          const Vector<nat_t>& out_dims,
+                                          Lam* global_comb) {
+    auto reject = [&](const char* why) -> std::optional<TcPlan> {
+        w.log().d("gpu.pe-tc skip {}: {}", mr.Sr, why);
+        return std::nullopt;
+    };
+    if (!w.driver().arg_nat("gpu", "pe-tc").value_or(1)) return reject("disabled");
+    if (nis != 2 || ro < 2 || rr != 1) return reject("ranks");
+    auto [Ta, Tb] = mr.Tis->projs<2>();
+    bool is_f16   = math::isa_f(Ta) == 16 && math::isa_f(Tb) == 16;
+    bool is_bf16  = math::isa_bf16(Ta) && math::isa_bf16(Tb);
+    if (!is_f16 && !is_bf16) return reject("input_dtype");
+    if (math::isa_f(mr.To) != 32) return reject("acc_dtype");
+    if (!is_canonical_f32_mac(global_comb, mr.init)) return reject("not_mac");
+
+    auto rn    = ro + rr;
+    auto k_lit = Lit::isa<nat_t>(mr.Sr->proj(rn, ro));
+    if (!k_lit || *k_lit == 0 || *k_lit % 8 != 0) return reject("k_lit");
+    for (nat_t d = 0; d != ro; ++d) {
+        auto so_d = Lit::isa<nat_t>(mr.So->proj(ro, d));
+        if (!so_d || *so_d != out_dims[d]) return reject("so_mismatch");
+    }
+
+    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
+    auto probe  = w.mut_lam(domain, domain);
+    auto vars   = probe->var()->projs(rn);
+    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return reject("map_out");
+
+    auto maps  = mr.maps->projs<2>();
+    auto reads = [&](size_t slot, size_t ax) {
+        auto base = w.app(maps[slot], probe->var());
+        auto sub  = vars;
+        sub[ax]   = w.call<affine::lit>(w.lit_nat_0());
+        return !Check::test_alpha(base, w.app(maps[slot], w.tuple(sub)));
+    };
+    auto m_ax = ro - 2;
+    auto n_ax = ro - 1;
+    if (reads(0, n_ax) || reads(1, m_ax)) return reject("dep");
+
+    Vector<nat_t> batch_dims(out_dims.begin(), out_dims.begin() + m_ax);
+    nat_t B = 1;
+    for (auto d : batch_dims)
+        B *= d;
+    nat_t M = out_dims[m_ax];
+    nat_t N = out_dims[n_ax];
+    nat_t K = *k_lit;
+    if (M < 16 || N < 16 || K < 16) return reject("too_small");
+
+    auto is_inner_contig8 = [&](size_t slot, size_t ax, nat_t ext) -> bool {
+        if (ext % 8 != 0) return false;
+        auto r_lit = Lit::isa<nat_t>(mr.Ris->proj(2, slot));
+        if (!r_lit || *r_lit == 0) return false;
+        auto r     = *r_lit;
+        auto s_in  = mr.Sis->proj(2, slot);
+        auto inner = Lit::isa<nat_t>(s_in->proj(r, r - 1));
+        if (!inner || *inner != ext) return false;
+        auto mapped = w.app(maps[slot], probe->var());
+        if (mapped->proj(r, r - 1) != vars[ax]) return false;
+        auto sub = vars;
+        sub[ax]  = w.call<affine::lit>(w.lit_nat_0());
+        auto m0  = w.app(maps[slot], w.tuple(sub));
+        for (nat_t d = 0; d + 1 < r; ++d)
+            if (!Check::test_alpha(mapped->proj(r, d), m0->proj(r, d))) return false;
+        return true;
+    };
+
+    if (!is_inner_contig8(0, ro, K)) return reject("a_not_k_contig8");
+    bool b_n_contig = is_inner_contig8(1, n_ax, N);
+    bool b_k_contig = !b_n_contig && is_inner_contig8(1, ro, K);
+    if (!b_n_contig && !b_k_contig) return reject("b_not_contig8");
+
+    nat_t bm = w.driver().arg_nat("gpu", "bm").value_or(0);
+    nat_t bn = w.driver().arg_nat("gpu", "bn").value_or(0);
+    nat_t bk = w.driver().arg_nat("gpu", "bk").value_or(0);
+    nat_t st = w.driver().arg_nat("gpu", "tc-stages").value_or(0);
+
+    nat_t wy, wx;
+    if (bm == 0 && bn == 0) {
+        if (M >= 128 && N >= 128 && K >= 32 && B * (M / 128) * (N / 128) >= 128) {
+            bm = 128; bn = 128; wy = 2; wx = 4;
+        } else if (M >= 64 && N >= 128 && K >= 32) {
+            bm = 64; bn = 128; wy = 2; wx = 4;
+        } else if (M >= 64 && N >= 64 && K >= 32) {
+            bm = 64; bn = 64; wy = 2; wx = 2;
+        } else {
+            bm = 32; bn = 32; wy = 1; wx = 2;
+        }
+    } else {
+        if (bm == 0) bm = M >= 128 ? 128 : (M >= 64 ? 64 : 32);
+        if (bn == 0) bn = N >= 128 ? 128 : (N >= 64 ? 64 : 32);
+        wy = (bm >= 64) ? 2 : 1;
+        wx = (bn >= 128) ? 4 : 2;
+    }
+    if (bk == 0) bk = (bm >= 64 && bn >= 64 && K >= 32) ? 32 : 16;
+
+    nat_t nt = wy * wx * 32;
+    if (bm % (wy * 16) != 0 || bn % (wx * 16) != 0 || bk % 16 != 0) return reject("tile_div");
+    if ((bm * (bk / 8)) % nt != 0 || (bn * (bk / 8)) % nt != 0) return reject("copy_div");
+
+    nat_t bytes_per_stage = (bm * bk + bk * bn) * 2;
+    nat_t max_stages      = std::max<nat_t>(1, 49152 / bytes_per_stage);
+    nat_t k_tiles         = (K + bk - 1) / bk;
+    if (st == 0) st = std::min<nat_t>({max_stages, k_tiles, 4});
+    if (st == 0 || st * bytes_per_stage > 49152) return reject("smem_limit");
+
+    return TcPlan{B, M, N, K, bm, bn, bk, wy, wx, st, is_bf16, b_k_contig, std::move(batch_dims)};
+}
+
+/// Builds a multi-stage async Tensor Core contraction kernel via `gpu.tc_tiled_kernel_m16n8k16`.
+Lam* build_tc_kernel(World& w,
+                     const TcPlan& plan,
+                     const Def* Ro,
+                     const Def* Sr,
+                     const Def* So,
+                     const Mapped& ins,
+                     const Def* Tis,
+                     const Def* To,
+                     const Mapped& post_ins,
+                     Lam* global_post,
+                     const Def* out_dptr,
+                     const Grid& grid) {
+    auto nis        = ins.n();
+    auto nps        = post_ins.n();
+    auto ro         = plan.batch_dims.size() + 2;
+    auto nloops_nat = ro + 1;
+    auto n          = w.lit_nat(nloops_nat);
+
+    auto global_ty = w.annex<gpu::GlobalM>();
+    auto shared_ty = w.annex<gpu::SharedM>();
+    auto const_ty  = w.annex<gpu::ConstM>();
+    auto local_ty  = w.annex<gpu::LocalM>();
+    auto nat_ty    = w.type_nat();
+    auto i64_ty    = w.type_i64();
+    auto global_as = w.annex<gpu::addr_space_global>();
+    auto Ta        = Tis->proj(2, 0);
+
+    DefVec arg_tys(nis + nps + 1);
+    for (size_t i = 0; i != nis; ++i)
+        arg_tys[i] = ins.dptrs[i]->type();
+    for (size_t j = 0; j != nps; ++j)
+        arg_tys[nis + j] = post_ins.dptrs[j]->type();
+    arg_tys[nis + nps] = out_dptr->type();
+
+    auto kernel
+        = w.mut_con(Defs{global_ty, shared_ty, const_ty, local_ty, w.type_idx(grid.n_groups), w.type_idx(grid.n_items),
+                         w.sigma(Defs{}), w.sigma(arg_tys), w.cn({global_ty, shared_ty, const_ty, local_ty})})
+              ->set("mapReduceTcKernel");
+    auto [k_global, k_shared, k_const, k_local, group_id, item_id, k_shared_ptrs, k_args, k_ret] = kernel->vars<9>();
+
+    DefVec k_dptrs(nis);
+    for (size_t i = 0; i != nis; ++i)
+        k_dptrs[i] = k_args->proj(nis + nps + 1, i);
+    DefVec k_post_dptrs(nps);
+    for (size_t j = 0; j != nps; ++j)
+        k_post_dptrs[j] = k_args->proj(nis + nps + 1, nis + j);
+    auto k_out_dptr = k_args->proj(nis + nps + 1, nis + nps);
+
+    auto m_lit  = w.lit_nat(plan.M);
+    auto n_lit  = w.lit_nat(plan.N);
+    auto k_lit  = w.lit_nat(plan.K);
+    auto to_idx = [&](const Def* size, const Def* nat_val) {
+        return w.call(core::conv::u, size, w.call<core::bitcast>(i64_ty, nat_val));
+    };
+
+    auto gptr_ty = w.app(w.annex<gpu::GlobalPtr>(), Ta);
+    auto make_ptr = [&](size_t slot, bool is_a, const char* name) -> Lam* {
+        auto lam = w.mut_lam(Defs{global_ty, nat_ty, nat_ty, nat_ty}, w.sigma({global_ty, gptr_ty}))->set(name);
+        auto [rm, rbatch, r0, r1] = lam->vars<4>();
+        auto [bm, bcoords]        = unflatten_index(w, w.call<core::bitcast>(i64_ty, rbatch), plan.batch_dims, rm);
+        DefVec iters_v            = bcoords;
+        if (is_a) {
+            iters_v.push_back(to_idx(m_lit, r0));
+            iters_v.push_back(w.lit_idx(plan.N, 0));
+            iters_v.push_back(to_idx(k_lit, r1));
+        } else if (plan.b_k_major) {
+            iters_v.push_back(w.lit_idx(plan.M, 0));
+            iters_v.push_back(to_idx(n_lit, r0));
+            iters_v.push_back(to_idx(k_lit, r1));
+        } else {
+            iters_v.push_back(w.lit_idx(plan.M, 0));
+            iters_v.push_back(to_idx(n_lit, r1));
+            iters_v.push_back(to_idx(k_lit, r0));
+        }
+        auto [mc_mem, coords]
+            = btensor::op_affine_map(ins.maps[slot], ins.rs[slot], n, Sr, ins.ss[slot], w.tuple(iters_v), bm)
+                  ->projs<2>();
+        auto ptr = mem::op_lea_tuple(k_dptrs[slot], *Shape(coords).fold(ins.ss[slot]));
+        lam->set(true, w.tuple({mc_mem, ptr}));
+        return lam;
+    };
+
+    auto ptr_a = make_ptr(0, true, "ptrA");
+    auto ptr_b = make_ptr(1, false, "ptrB");
+
+    bool post_is_id = false;
+    if (nps == 0) {
+        if (auto pbody = global_post->body()->isa<App>(); pbody && pbody->callee() == global_post->var(2, 1)) {
+            auto [pm, pacc, _] = global_post->var(2, 0)->projs<3>();
+            auto [rm, rv]      = pbody->arg()->projs<2>();
+            post_is_id         = (rm == pm && rv == pacc);
+        }
+    }
+
+    auto write_c = w.mut_lam(Defs{global_ty, nat_ty, nat_ty, nat_ty, To}, global_ty)->set("writeCTc");
+    {
+        auto [wm, wbatch, wm_nat, wn_nat, wacc] = write_c->vars<5>();
+        auto [wbm, wbcoords] = unflatten_index(w, w.call<core::bitcast>(i64_ty, wbatch), plan.batch_dims, wm);
+        DefVec wcoords_v     = wbcoords;
+        wcoords_v.push_back(to_idx(m_lit, wm_nat));
+        wcoords_v.push_back(to_idx(n_lit, wn_nat));
+        auto write_coords = w.tuple(wcoords_v);
+        auto pcur         = wbm;
+        DefVec post_elems(nps);
+        for (size_t j = 0; j != nps; ++j) {
+            auto [pc_mem, pcoords]
+                = btensor::op_affine_map(post_ins.maps[j], post_ins.rs[j], Ro, So, post_ins.ss[j], write_coords, pcur)
+                      ->projs<2>();
+            auto [rd_mem, rd_val]
+                = w.call<mem::load>(Defs{pc_mem, mem::op_lea_tuple(k_post_dptrs[j], *Shape(pcoords).fold(post_ins.ss[j]))})
+                      ->projs<2>();
+            pcur          = rd_mem;
+            post_elems[j] = rd_val;
+        }
+        auto [post_mem, elem_post]
+            = w.app(cps::op_cps2ds_dep(global_post), w.tuple({pcur, wacc, w.tuple(post_elems)}))->projs<2>();
+        auto stored
+            = w.call<mem::store>(Defs{post_mem, mem::op_lea_tuple(k_out_dptr, *Shape(write_coords).fold(So)), elem_post});
+        write_c->set(true, stored);
+    }
+
+    auto arr2_o   = w.arr(2, To);
+    auto write_c2 = w.mut_lam(Defs{global_ty, nat_ty, nat_ty, nat_ty, arr2_o}, global_ty)->set("writeC2Tc");
+    auto [wm2, wb2, wr2, wc0, wv2] = write_c2->vars<5>();
+    if (post_is_id && plan.N % 2 == 0) {
+        auto [wbm2, wbcoords2] = unflatten_index(w, w.call<core::bitcast>(i64_ty, wb2), plan.batch_dims, wm2);
+        DefVec wcoords2        = wbcoords2;
+        wcoords2.push_back(to_idx(m_lit, wr2));
+        wcoords2.push_back(to_idx(n_lit, wc0));
+        auto base_ptr = mem::op_lea_tuple(k_out_dptr, *Shape(w.tuple(wcoords2)).fold(So));
+        auto vst      = w.app(w.app(w.annex<gpu::vstore2>(), {To, global_as}), {wbm2, base_ptr, wv2});
+        write_c2->set(true, vst);
+    } else {
+        auto cm = w.app(write_c, Defs{wm2, wb2, wr2, wc0, wv2->proj(2, 0)});
+        auto c1 = w.call(core::nat::add, Defs{wc0, w.lit_nat_1()});
+        auto ok1 = w.call(core::ncmp::l, Defs{c1, n_lit});
+        if (plan.N % 2 == 0) {
+            cm = w.app(write_c, Defs{cm, wb2, wr2, c1, wv2->proj(2, 1)});
+        } else {
+            auto guard_f = w.mut_lam(global_ty, global_ty)->set("writeC2Odd");
+            guard_f->set(true, w.app(write_c, Defs{guard_f->var(), wb2, wr2, c1, wv2->proj(2, 1)}));
+            auto skip_f = w.mut_lam(global_ty, global_ty)->set("writeC2Skip");
+            skip_f->set(true, skip_f->var());
+            cm = w.app(w.extract(w.tuple({skip_f, guard_f}), ok1), cm);
+        }
+        write_c2->set(true, cm);
+    }
+
+    auto group_nat = grid.n_groups == 1 ? w.lit_nat_0() : w.call<core::idx2nat>(group_id);
+    auto item_nat  = grid.n_items == 1 ? w.lit_nat_0() : w.call<core::idx2nat>(item_id);
+
+    const Def* mma_op = plan.is_bf16 ? w.annex<gpu::mma_m16n8k16_bf16>() : w.annex<gpu::mma_m16n8k16_f16>();
+    const Def* tc     = w.annex<gpu::tc_tiled_kernel_m16n8k16>();
+    tc                = w.app(tc, Ta);
+    tc = w.app(tc, {w.lit_nat(plan.B), m_lit, n_lit, k_lit, w.lit_nat(plan.BM), w.lit_nat(plan.BN), w.lit_nat(plan.BK),
+                    w.lit_nat(plan.WY), w.lit_nat(plan.WX), w.lit_nat(plan.Stages)});
+    tc = w.app(tc, w.lit_bool(plan.b_k_major));
+    tc = w.app(tc, mma_op);
+    tc = w.app(tc, {ptr_a, ptr_b, write_c2});
+    auto [fin_global, fin_shared] = w.app(tc, {k_global, k_shared, group_nat, item_nat})->projs<2>();
+
+    kernel->app(true, k_ret, Defs{fin_global, fin_shared, k_const, k_local});
+    return kernel;
+}
+
 struct SimtPlan {
     nat_t B, M, N, K;
     nat_t BM, BN, BK, TM, TN, Pad, Dbuf;
@@ -956,7 +1284,16 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
 
     Grid grid;
     Lam* kernel;
-    if (auto plan = plan_simt_contraction(w, mr, nis_n, ro, rr, out_dims)) {
+    if (auto tc_plan = plan_tc_contraction(w, mr, nis_n, ro, rr, out_dims, global_comb)) {
+        log().i("tile the {} contraction over {} on GPU with gpu.tc_tiled_kernel_m16n8k16 (BM={}, BN={}, BK={}, WY={}, WX={}, Stages={}, b_k_major={})",
+                tc_plan->is_bf16 ? "bf16" : "f16", Sr, tc_plan->BM, tc_plan->BN, tc_plan->BK, tc_plan->WY, tc_plan->WX,
+                tc_plan->Stages, tc_plan->b_k_major ? 1 : 0);
+        grid   = tc_plan->grid();
+        kernel = build_tc_kernel(w, *tc_plan, mr.Ro, Sr, mr.So,
+                                 Mapped{in_desc.rs, in_desc.ss, inputs.dptrs, in_desc.maps}, mr.Tis, mr.To,
+                                 Mapped{post_desc.rs, post_desc.ss, post_inputs.dptrs, post_desc.maps}, global_post,
+                                 out_dptr, grid);
+    } else if (auto plan = plan_simt_contraction(w, mr, nis_n, ro, rr, out_dims)) {
         log().i("tile the contraction over {} on GPU with gpu.simt_tiled_kernel{} (BM={}, BN={}, BK={}, TM={}, TN={}, dbuf={})",
                 Sr, plan->vec4 ? "_v4" : "", plan->BM, plan->BN, plan->BK, plan->TM, plan->TN, plan->Dbuf);
         grid   = plan->grid();

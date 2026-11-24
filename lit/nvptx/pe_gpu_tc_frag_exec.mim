@@ -1,0 +1,72 @@
+// RUN: rm -f %t.ll %t_dev.ll %t
+// RUN: %mim %s -p opt -p nvptx -X nvptx:o=%t.ll -X nvptx:o-dev=%t_dev.ll
+// RUN: %FileCheck %s --input-file=%t_dev.ll --check-prefix=DEV
+// RUN: %if system-linux && cuda %{ clang %t.ll -o %t -lcuda -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// Exercises PE-erased CuTe Fragment algebra in registers (FlashAttention-style multi-MMA fusion):
+//   1. S = Q (16x16 F16) @ K^T (16x16 F16) -> 1x2 grid of m16n8k16 F32 C-fragments (in registers)
+//   2. row_sum = cu_mma_frag_row_reduce (4-lane quad warp_shfl_xor, zero smem!)
+//   3. P_frag  = cu_mma_frag_c2_to_a (zero-smem in-register C->A recast to F16!)
+//   4. O = P_frag @ V (16x8 F16) -> second MMA directly in registers!
+// Checks exact values for both `row_sum` and `O` on GPU.
+
+// DEV: define ptx_kernel void @frag_kernel
+// DEV: call { float, float, float, float } @llvm.nvvm.mma.m16n8k16.row.col.f32.f32
+// DEV: call float @llvm.nvvm.shfl.sync.bfly.f32(i32 -1, float {{.*}}, i32 2, i32 31)
+// DEV: call float @llvm.nvvm.shfl.sync.bfly.f32(i32 -1, float {{.*}}, i32 1, i32 31)
+
+plugin core;
+plugin gpu;
+plugin math;
+plugin mem;
+
+let F16 = math.F16;
+let F32 = math.F32;
+
+fun add_f32 (m: gpu.GlobalM, a b: F32)@tt: [gpu.GlobalM, F32] =
+    return (m, math.arith.add 0 (a, b));
+
+// All-ones Q (16x16), K (16x16), V (16x8):
+// - S = Q @ K^T -> every entry = 16.0
+// - row_sum(S)  -> every row sum = 16 * 16.0 = 256.0
+// - P = f16(S) (every entry 16.0) via cu_mma_frag_c2_to_a -> zero smem!
+// - O = P @ V   -> every entry = 16 * 16.0 = 256.0
+con frag_kernel (m1: gpu.GlobalM, m3: gpu.SharedM, m4: gpu.ConstM, m5: gpu.LocalM,
+                 _: Idx 1, tid: Idx 32, (), out: gpu.GlobalPtr I32,
+                 return: Cn [gpu.GlobalM, gpu.SharedM, gpu.ConstM, gpu.LocalM]) =
+    let one16 = math.conv.f2f math.f16 1.0:F32;
+    let a_frag: «4; «2; F16»» = ‹4; ‹2; one16››;
+    let b_frag: «2; «2; F16»» = ‹2; ‹2; one16››;
+    let c0:     «4; F32»      = ‹4; 0:F32›;
+    let (m1, s0) = gpu.mma_m16n8k16_f16 (m1, a_frag, b_frag, c0);
+    let (m1, s1) = gpu.mma_m16n8k16_f16 (m1, a_frag, b_frag, c0);
+    let s_grid: «1; «2; «4; F32»»» = ‹1; (s0, s1)›;
+    let (m1, rsums) = gpu.cu_mma_frag_row_reduce (1, 2) (0:F32, add_f32) (m1, s_grid);
+    let p_a = gpu.cu_mma_frag_c2_to_a @F16 (λ (x: F32): F16 = math.conv.f2f math.f16 x) (s0, s1);
+    let (m1, o0) = gpu.mma_m16n8k16_f16 (m1, p_a, b_frag, c0);
+    let r0 = rsums#(core.idx 0 1 0)#(core.idx 0 2 0);
+    let r1 = rsums#(core.idx 0 1 0)#(core.idx 0 2 1);
+    let chk = λ (v exp: F32): I32 = core.select (math.cmp.e 0 (v, exp), 0I32, 1I32);
+    let errs = core.wrap.add 0 (chk (r0, 256.0:F32),
+               core.wrap.add 0 (chk (r1, 256.0:F32),
+               core.wrap.add 0 (chk (o0#(core.idx 0 4 0), 256.0:F32),
+               core.wrap.add 0 (chk (o0#(core.idx 0 4 1), 256.0:F32),
+               core.wrap.add 0 (chk (o0#(core.idx 0 4 2), 256.0:F32),
+                                chk (o0#(core.idx 0 4 3), 256.0:F32))))));
+    let m1 = mem.store (m1, out, errs);
+    return (m1, m3, m4, m5);
+
+extern fun main (m0: mem.M 0, _: I32, _: mem.Ptr0 (mem.Ptr0 mem.Char)): [mem.M 0, I32] =
+    let (m0, ptr)      = mem.alloc (I32, 0) m0;
+    let m0             = mem.store (m0, ptr, 99I32);
+    let (m0, m1, m4)   = gpu.init m0;
+    let (m1, d_ptr)    = mem.alloc (I32, 1) m1;
+    let (m0, m1)       = gpu.copy_to_device.block (m0, m1, ptr, d_ptr);
+    ret (m0, m1, m4)   = gpu.launch (1, 32, gpu.default_stream, ff, ()) frag_kernel d_ptr $ (m0, m1, m4);
+    let (m0, m1)       = gpu.copy_to_host.block (m0, m1, d_ptr, ptr);
+    let m1             = mem.free (m1, d_ptr);
+    let m0             = gpu.deinit (m0, m1, m4);
+    let (m0, val)      = mem.load (m0, ptr);
+    let m0             = mem.free (m0, ptr);
+    return (m0, val);

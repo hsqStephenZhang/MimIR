@@ -1,0 +1,74 @@
+// RUN: rm -f %t.ll %t_dev.ll %t
+// RUN: %mim -VVV -p opt -p gpu %s -p nvptx -X nvptx:o=%t.ll -X nvptx:o-dev=%t_dev.ll 2>&1 | %FileCheck %s
+// RUN: %FileCheck %s --input-file=%t_dev.ll --check-prefix=DEV
+// RUN: %if system-linux && cuda %{ clang++ -O2 %S/pe_gpu_tc_aux.cpp %t.ll -lcuda -o %t -Wno-override-module %}
+// RUN: %if system-linux && cuda %{ %t %}
+
+// CHECK-DAG: tile the f16 contraction over (128, 128, 64) on GPU with gpu.tc_tiled_kernel_m16n8k16 (BM=64, BN=128, BK=32, WY=2, WX=4, Stages=2, b_k_major=0)
+// CHECK-DAG: tile the bf16 contraction over (128, 128, 96) on GPU with gpu.tc_tiled_kernel_m16n8k16 (BM=64, BN=128, BK=32, WY=2, WX=4, Stages=3, b_k_major=0)
+// CHECK-DAG: tile the f16 contraction over ‹3; 64› on GPU with gpu.tc_tiled_kernel_m16n8k16 (BM=64, BN=64, BK=32, WY=2, WX=2, Stages=2, b_k_major=1)
+// CHECK-DAG: tile the f16 contraction over (53, 72, 40) on GPU with gpu.tc_tiled_kernel_m16n8k16 (BM=32, BN=32, BK=16, WY=1, WX=2, Stages=3, b_k_major=0)
+// CHECK-DAG: tile the f16 contraction over (3, 32, 32, 32) on GPU with gpu.tc_tiled_kernel_m16n8k16 (BM=32, BN=32, BK=16, WY=1, WX=2, Stages=2, b_k_major=0)
+
+// DEV-DAG: define ptx_kernel void @mapReduceTcKernel
+// DEV-DAG: call void @llvm.nvvm.cp.async.cg.shared.global.16
+// DEV-DAG: call void @llvm.nvvm.cp.async.commit.group()
+// DEV-DAG: call void @llvm.nvvm.cp.async.wait.group(i32
+// DEV-DAG: call { i32, i32, i32, i32 } @llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.b16.p3
+// DEV-DAG: call { i32, i32, i32, i32 } @llvm.nvvm.ldmatrix.sync.aligned.m8n8.x4.trans.b16.p3
+// DEV-DAG: call { float, float, float, float } @llvm.nvvm.mma.m16n8k16.row.col.f32.f32
+// DEV-DAG: call { float, float, float, float } @llvm.nvvm.mma.m16n8k16.row.col.bf16
+
+// Tests Tensor Core mma.sync.m16n8k16 + cp.async + swizzled shared ring across:
+// 1. F16xF16 -> F32 NN (128x128x64, Stages=2)
+// 2. BF16xBF16 -> F32 NN (128x128x96, Stages=3)
+// 3. F16xF16 -> F32 NT (64x64x64, B transposed / K-major)
+// 4. Non-divisible M=53, N=72, K=40 (tests cp_async_zero_16 on M, N, and K tail)
+// 5. Batched F16 GEMM (3x32x32x32)
+// 6. Fused bias epilogue (64x64x32 F16xF16 + bias -> F32)
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F16  = math.F16;
+let BF16 = math.BF16;
+let F32  = math.F32;
+
+fun mac_f16 (acc: F32, (a b: F16))@tt: F32 =
+    return (math.arith.add 0 (acc, math.arith.mul 0 (math.conv.f2f math.f32 a, math.conv.f2f math.f32 b)));
+
+fun mac_bf16 (acc: F32, (a b: BF16))@tt: F32 =
+    return (math.arith.add 0 (acc, math.arith.mul 0 (math.conv.f2f math.f32 a, math.conv.f2f math.f32 b)));
+
+fun add_bias (acc: F32, b: F32)@tt: F32 =
+    return (math.arith.add 0 (acc, b));
+
+lam map_a_2d (i j k: affine.Index): «2; affine.Index» = (i, k);
+lam map_b_nn (i j k: affine.Index): «2; affine.Index» = (k, j);
+lam map_b_nt (i j k: affine.Index): «2; affine.Index» = (j, k);
+lam map_o_2d (i j _: affine.Index): «2; affine.Index» = (i, j);
+lam map_col  (i j: affine.Index): «1; affine.Index»   = j;
+
+extern fun gemm_f16_nn (a: tensor.Tensor 2 (128, 64) F16, b: tensor.Tensor 2 (64, 128) F16): tensor.Tensor 2 (128, 128) F32 =
+    return (tensor.map_reduce ((128, 128), (128, 128, 64)) (mac_f16, 0:F32) map_o_2d (map_a_2d, map_b_nn) (a, b));
+
+extern fun gemm_bf16_nn (a: tensor.Tensor 2 (128, 96) BF16, b: tensor.Tensor 2 (96, 128) BF16): tensor.Tensor 2 (128, 128) F32 =
+    return (tensor.map_reduce ((128, 128), (128, 128, 96)) (mac_bf16, 0:F32) map_o_2d (map_a_2d, map_b_nn) (a, b));
+
+extern fun gemm_f16_nt (a: tensor.Tensor 2 (64, 64) F16, b: tensor.Tensor 2 (64, 64) F16): tensor.Tensor 2 (64, 64) F32 =
+    return (tensor.map_reduce ((64, 64), (64, 64, 64)) (mac_f16, 0:F32) map_o_2d (map_a_2d, map_b_nt) (a, b));
+
+extern fun gemm_f16_odd (a: tensor.Tensor 2 (53, 40) F16, b: tensor.Tensor 2 (40, 72) F16): tensor.Tensor 2 (53, 72) F32 =
+    return (tensor.map_reduce ((53, 72), (53, 72, 40)) (mac_f16, 0:F32) map_o_2d (map_a_2d, map_b_nn) (a, b));
+
+lam map_a_3d (b i j k: affine.Index): «3; affine.Index» = (b, i, k);
+lam map_b_3d (b i j k: affine.Index): «3; affine.Index» = (b, k, j);
+lam map_o_3d (b i j _: affine.Index): «3; affine.Index» = (b, i, j);
+
+extern fun gemm_f16_batched (a: tensor.Tensor 3 (3, 32, 32) F16, b: tensor.Tensor 3 (3, 32, 32) F16): tensor.Tensor 3 (3, 32, 32) F32 =
+    return (tensor.map_reduce ((3, 32, 32), (3, 32, 32, 32)) (mac_f16, 0:F32) map_o_3d (map_a_3d, map_b_3d) (a, b));
+
+extern fun gemm_f16_bias (a: tensor.Tensor 2 (64, 32) F16, b: tensor.Tensor 2 (32, 64) F16, bias: tensor.Tensor 1 64 F32): tensor.Tensor 2 (64, 64) F32 =
+    return (tensor.map_reduce_post ((64, 64), (64, 64, 32), tensor.mk_sched (3, 0))
+            (mac_f16, 0:F32, add_bias) map_o_2d ((map_a_2d, map_b_nn), map_col) ((a, b), bias));
