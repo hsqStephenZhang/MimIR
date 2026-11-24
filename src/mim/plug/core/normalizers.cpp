@@ -996,6 +996,8 @@ const Def* normalize_trait(const Def*, const Def*, const Def* type) {
         return world.lit_nat(8); // every backend lowers a Nat value to an I64
     } else if (auto size = Idx::isa_lit(type)) {
         return world.lit_nat(std::max(1_n, std::bit_ceil(Idx::size2bitwidth(*size)) / 8_n));
+    } else if (math::isa_bf16(type)) {
+        return world.lit_nat(2);
     } else if (auto w = math::isa_f(type)) {
         switch (*w) {
             case 16: return world.lit_nat(2);

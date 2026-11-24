@@ -63,6 +63,13 @@ inline std::optional<nat_t> isa_f(const Def* def) {
     return {};
 }
 
+inline bool isa_bf16(const Def* def) {
+    if (auto f_ty = Axm::isa<F>(def))
+        if (auto [p, e] = f_ty->arg()->projs<2>([](auto op) { return Lit::isa(op); }); p && e)
+            return *p == 7 && *e == 8;
+    return false;
+}
+
 // clang-format off
 const Lit* lit_f(World& w, std::floating_point auto val) {
     if      constexpr (sizeof(val) == 2) return w.lit(w.annex<F16>(), std::bit_cast<u16>(val));
