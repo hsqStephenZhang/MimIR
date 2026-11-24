@@ -1,0 +1,21 @@
+// RUN: %mim -VVVV -p opt -X btensor:vec-bytes=32 -X btensor:vregs=16 -X tensor:cpu-mr=4 -X tensor:cpu-nr=16 -X tensor:cpu-mc=64 -X tensor:cpu-nc=240 -X tensor:cpu-kc=128 -X tensor:cpu-pack-b=1 %s -o %t.mim 2>&1 | %FileCheck %s
+
+// The schedule tree run_levels interprets, one node per line at -VVVV.
+// CHECK:      schedule tree:
+// CHECK-NEXT: Par (0, 240, 0)
+// CHECK-NEXT:   Seq 2, 128
+// CHECK-NEXT:     Pack 1, 16, tt, (ff, tt, tt)
+// CHECK-NEXT:       Par (64, 0, 0)
+// CHECK-NEXT:         Pack 0, 4, ff, (tt, ff, tt)
+// CHECK-NEXT:           Par (4, 0, 0)
+// CHECK-NEXT:             Par (0, 16, 0)
+// CHECK-NEXT:               Leaf 0
+plugin tensor;
+plugin core;
+plugin math;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+extern fun g (a: tensor.Tensor 2 (300, 200) F32, b: tensor.Tensor 2 (200, 500) F32): tensor.Tensor 2 (300, 500) F32 =
+    return (tensor.product_2d R (a, b));

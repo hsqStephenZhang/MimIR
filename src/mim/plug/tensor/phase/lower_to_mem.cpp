@@ -2,6 +2,7 @@
 
 #include <charconv>
 
+#include <format>
 #include <ranges>
 
 #include <fe/worklist.h>
@@ -11,7 +12,9 @@
 #include <mim/def.h>
 #include <mim/driver.h>
 #include <mim/lam.h>
+#include <mim/nom.h>
 #include <mim/plugin.h>
+#include <mim/variant.h>
 
 #include <mim/plug/affine/affine.h>
 #include <mim/plug/btensor/btensor.h>
@@ -429,6 +432,28 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     return out;
 }
 
+namespace {
+
+/// A `tensor.SchedTree` as one indented node per line, e.g. `Par (8, 0, 7)` above `Stage 0` above `Leaf 1`.
+std::string show_tree(const Def* tree) {
+    static constexpr std::array names = {"Leaf", "Par", "Pack", "Seq", "Peel", "Stage"};
+    auto out                          = std::string();
+    for (size_t depth = 0;; ++depth) {
+        auto indent = std::string(2 * depth, ' ');
+        auto name   = tree->isa<Name>();
+        auto inj    = name ? name->op()->isa<Inj>() : nullptr;
+        if (!inj || inj->index() >= names.size()) return out + std::format("{}{}\n", indent, tree);
+        auto arg = inj->value();
+        if (inj->index() == 0) return out + std::format("{}Leaf {}\n", indent, arg);
+        auto n    = arg->num_projs();
+        auto args = DefVec(n - 1, [&](size_t i) { return arg->proj(n, i); });
+        out += std::format("{}{} {}\n", indent, names[inj->index()], fe::Join(args, ", "));
+        tree = arg->proj(n, n - 1);
+    }
+}
+
+} // namespace
+
 const Def* LowerToMem::cpu_levels(u64 rn) {
     auto& w   = new_world();
     auto text = arg_value(w.driver().args("tensor"), "cpu-levels");
@@ -572,6 +597,7 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
         log().i("tile the contraction over {} at the levels {}", mr.Sr, levels);
     }
 
+    if (log().level() >= fe::Log::Level::Verbose) log().v("schedule tree:\n{}", show_tree(tree));
     auto post_is       = rewrite(app->arg()->proj(2, 1));
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
