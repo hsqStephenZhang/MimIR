@@ -2178,8 +2178,11 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
     let pack_a = λ (t: T): T = sched_pack @(2, Rn) (m_ax, mr, a, dep#a, t);
     let m_ext  = sizes#(core.idx 0 Rn m_ax);
     let b_size = sizes#(core.idx 0 Rn n_ax) * sizes#(core.idx 0 Rn k_ax) * bytes;
-    // Packing B pays only when enough row blocks reuse a panel that stays cached (measured on Zen 5).
-    let few    = core.select (m_ext < 4 * mr, tt, core.select (b_size <= cache, tt, core.select (m_ext < 8 * mr, 64 * cache < b_size, ff)));
+    // Packing B pays only when enough row blocks reuse its panel, and below 64 of them only when the rows of B alias in the cache
+    // at a 4 KB stride (measured on Zen 5).
+    let n_ext  = sizes#(core.idx 0 Rn n_ax);
+    let alias  = core.nat.rem (n_ext * bytes, 4096) == 0;
+    let few    = core.select (m_ext <= 16 * mr, tt, core.select (b_size <= cache, tt, core.select (m_ext <= 64 * mr, core.select (alias, ff, tt), ff)));
     // An edge tile over a run-time extent reads whole panels, so B is packed whenever a shape is unknown.
     let known  = core.select (dyn#(core.idx 0 Rn m_ax), ff, core.select (dyn#(core.idx 0 Rn n_ax), ff, core.select (dyn#(core.idx 0 Rn k_ax), ff, tt)));
     // A strided read along `N` (a strided convolution's input) packs, so the gather happens once per panel.
@@ -2215,7 +2218,7 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
             (split ax ts (sched_stage @(2, Rn) (slot, t)), sched_stage @(2, Rn) (slot, t))#root;
         let tree  = (((tree, staged (n_ax, nc, b) tree)#(fuse#(b) != 0)), staged (m_ax, mc, a) tree)#(fuse#(a) != 0);
         batch ff tree;
-    (build keep_b, sched_switch @(2, Rn) (m_ax, 4 * mr, build tt, build ff))#m_dyn;
+    (build keep_b, sched_switch @(2, Rn) (m_ax, 16 * mr + 1, build tt, build ff))#m_dyn;
 
 /// One leaf for a box of any sizes.
 anx lam leaf_at {N Rn: Nat} (vdim: Nat) (_: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) = sched_leaf @(N, Rn) vdim;

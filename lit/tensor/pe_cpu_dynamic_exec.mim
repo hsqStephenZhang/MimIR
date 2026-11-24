@@ -14,7 +14,7 @@
 // With only `M` unknown and `B` larger than the cache, a few rows branch at run time to a tree that does not pack `B`.
 
 // PE-COUNT-4: with tensor.run_levels
-// SWITCH:      Switch 0, 32
+// SWITCH:      Switch 0, 129
 // SWITCH-NOT:  Pack 1
 // SWITCH:      Leaf 0
 // SWITCH:      Pack 1
