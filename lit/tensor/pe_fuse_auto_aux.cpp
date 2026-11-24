@@ -7,6 +7,7 @@
 extern "C" {
 float* chain2(float*, float*, float*);
 float* chain3(float*, float*, float*, float*);
+float* relu_mm(float*, float*);
 }
 
 using Mat = std::vector<double>;
@@ -45,5 +46,10 @@ int main() {
     auto a3 = fill(40 * 12, 7, 11), b1 = fill(12 * 24, 5, 13), b2 = fill(24 * 16, 3, 7), b3 = fill(16 * 20, 5, 9);
     bad += check("chain3", chain3(a3.data(), b1.data(), b2.data(), b3.data()),
                  mm(mm(mm(dbl(a3), dbl(b1), 40, 12, 24), dbl(b2), 40, 24, 16), dbl(b3), 40, 16, 20));
+    auto ra = fill(40 * 24, 7, 11), rb = fill(24 * 20, 5, 13);
+    Mat rd(ra.size());
+    for (size_t i = 0; i != ra.size(); ++i)
+        rd[i] = ra[i] < 0 ? 0.0 : double(ra[i]);
+    bad += check("relu_mm", relu_mm(ra.data(), rb.data()), mm(rd, dbl(rb), 40, 24, 20));
     return bad != 0;
 }

@@ -2079,6 +2079,9 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
     let tree  = (((tree, staged (n_ax, nc, b) tree)#(fuse#b)), staged (m_ax, mc, a) tree)#(fuse#a);
     batch ff tree;
 
+/// One leaf for a box of any sizes.
+anx lam leaf_at {N Rn: Nat} (vdim: Nat) (_: «Rn; Nat»): SchedTree (N, Rn) = sched_leaf @(N, Rn) vdim;
+
 /// `cpu_tree` for a box of the given sizes, all static.
 anx lam cpu_tree_at (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, fuse: «2; Bool») (sizes: «Rn; Nat»): SchedTree (2, Rn) =
     cpu_tree (Rn, Ro) (bytes, a, dep, unit_b, sizes, ‹Rn; ff›, fuse);

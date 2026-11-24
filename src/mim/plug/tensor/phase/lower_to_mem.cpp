@@ -464,32 +464,49 @@ const Def* LowerToMem::fuse_producer(const Def* input, const Def* map, const Def
     auto ranks  = old_mr.ranks();
     if (!ranks || ranks->nps != 0) return nullptr;
     if (!Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return nullptr;
-    auto c    = rewrite(papp->callee())->as<App>();
-    auto mr   = btensor::MapRedPost::of(c);
-    auto plan = PeCpu{};
-    if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
-    // `fill_of` computes a box of the output from loops that start at its corner, so the output loops come first.
-    u64 ro = ranks->ro, rn = ranks->nloops();
+    auto c  = rewrite(papp->callee())->as<App>();
+    auto mr = btensor::MapRedPost::of(c);
+    u64 ro = ranks->ro, rn = ranks->nloops(), nis = ranks->nis;
     for (u64 d = 0; d != rn; ++d)
         if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
+    // `fill_of` computes a box of the output from loops that start at its corner, so the output loops come first.
     auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
     auto probe  = w.mut_lam(domain, domain);
     auto vars   = probe->var()->projs(rn);
     if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return nullptr;
 
-    auto [is, post_is]          = papp->arg()->projs<2>();
-    auto [xs, sis, prods, fuse] = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, true);
-    auto [cTo, ins_ty]          = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
-    auto memcomb                = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
-    const Def* fill             = w.annex<tensor::fill_of>();
-    fill                        = w.app(fill, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
-    fill                        = w.app(fill, mr.Sr);
-    fill                        = w.app(fill, {memcomb, mr.init});
-    fill                        = w.app(fill, {plan.maps, prods});
-    auto tree_of                = w.app(w.app(w.annex<tensor::cpu_tree_at>(), {mr.Rn, mr.Ro}),
-                                        {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, fuse});
-    fill                        = w.app(fill, tree_of);
-    log().i("fuse the contraction over {} into its consumer", mr.Sr);
+    // A contraction is tiled by `cpu_tree` and may fuse its own producer; any other map-reduce is one leaf over plain
+    // inputs.
+    const Def *maps, *xs, *sis, *prods, *tree_of;
+    auto plan = PeCpu{};
+    auto gen  = PeGeneric{};
+    if (pe_cpu_plan(c, &plan) == w.lit_tt()) {
+        const Def* fuse;
+        std::tie(xs, sis, prods, fuse) = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, true);
+        maps                           = plan.maps;
+        tree_of                        = w.app(w.app(w.annex<tensor::cpu_tree_at>(), {mr.Rn, mr.Ro}),
+                                               {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, fuse});
+    } else if (pe_generic_plan(c, &gen)) {
+        auto old_is = papp->arg()->proj(2, 0);
+        maps        = gen.maps;
+        xs          = w.tuple(DefVec(nis, [&](size_t i) { return rewrite(old_is->proj(nis, i)); }));
+        sis         = mr.Sis;
+        prods       = w.tuple(DefVec(nis, [&](size_t i) {
+            return w.app(w.annex<tensor::prod_plain>(), {mr.Ris->proj(nis, i), mr.Tis->proj(nis, i)});
+        }));
+        tree_of     = w.app(w.app(w.annex<tensor::leaf_at>(), {mr.nis, mr.Rn}), w.lit_nat(gen.vdim));
+    } else {
+        return nullptr;
+    }
+    auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+    auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
+    const Def* fill    = w.annex<tensor::fill_of>();
+    fill               = w.app(fill, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
+    fill               = w.app(fill, mr.Sr);
+    fill               = w.app(fill, {memcomb, mr.init});
+    fill               = w.app(fill, {maps, prods});
+    fill               = w.app(fill, tree_of);
+    log().i("fuse the map-reduce over {} into its consumer", mr.Sr);
     return w.app(fill, xs);
 }
 
