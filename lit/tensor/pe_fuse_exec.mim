@@ -62,3 +62,36 @@ extern fun relu_mm (m: mem.M 0, a: buffer.Buf (2, (19, 10), F32), b: buffer.Buf 
         (tree, (19, 9, 10), (ff, ff, ff))
         (m, (a, b));
     return (m, c);
+
+// E = (relu(A)·B)·D: each P tile is itself a run_levels_with whose Stage computes the relu(A) rows it reads.
+extern fun chain_relu (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.Buf (2, (20, 28), F32), d: buffer.Buf (2, (28, 12), F32))
+    : [mem.M 0, buffer.Buf (2, (26, 12), F32)] =
+    let relu_a = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+        let (m, t) = buffer.alloc (2, ext, F32) m;
+        btensor.map_reduce @1 @(F32, 2, 2) (ext, ext) @(F32, 2, (26, 20))
+            (relu, 0.0:F32) (λ (o: «2; Ix»): «2; Ix» = o) (shift lo) (m, t, a);
+    let fill_p = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+        let ik_lo = (((1, 0, 0), (0, 0, 1)), (lo#0₂, 0)) inj Aff2;
+        let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
+        let tree = tensor.sched_par @(2, 3) ((4, 0, 5), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1));
+        let (m, p) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (20, 28)))
+            (ext, (ext#0₂, ext#1₂, 20))
+            (mac, 0.0:F32)
+            ij
+            ((λ (o: «3; Ix»): «2; Ix» = (affine.op.add (affine.lit (lo#0₂), o#0₃), o#2₃),
+              λ (o: «3; Ix»): «2; Ix» = (o#2₃, affine.op.add (affine.lit (lo#1₂), o#1₃))),
+             ((tensor.Prod (3, 2, F32))#Fill (ik_lo, relu_a), (tensor.Prod (3, 2, F32))#Plain))
+            (tree, (ext#0₂, ext#1₂, 20), (ff, ff, ff))
+            (m, (dummy, b));
+        (buffer.free (2, (2, 2), F32) (m, dummy), p);
+    let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
+    let tree = tensor.sched_par @(2, 3) ((8, 0, 7), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1));
+    let (m, e) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (28, 12)))
+        ((26, 12), (26, 12, 28))
+        (mac, 0.0:F32)
+        ij
+        ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
+         ((tensor.Prod (3, 2, F32))#Fill (ik, fill_p), (tensor.Prod (3, 2, F32))#Plain))
+        (tree, (26, 12, 28), (ff, ff, ff))
+        (m, (dummy, d));
+    return (buffer.free (2, (2, 2), F32) (m, dummy), e);
