@@ -47,7 +47,10 @@ private:
                                        const Def* Sis,
                                        const Def* Tis,
                                        const Def* maps,
-                                       const Def* a);
+                                       const Def* a,
+                                       bool may_fuse);
+    /// The levels of `-X tensor:cpu-levels=<sizes>/<sizes>/…` for a contraction over @p rn loops, or `nullptr`.
+    const Def* cpu_levels(u64 rn);
     /// The `tensor.fill_of` producer for the old input @p input of a slot read through @p map, or `nullptr`.
     const Def* fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r);
     const Def* lower_pad(const App*);

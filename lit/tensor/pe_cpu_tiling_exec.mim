@@ -13,6 +13,9 @@
 // RUN: %t3.exec
 // RUN: %mim -VVV -p opt %s -o %tf.mim 2>&1 | %FileCheck %s
 // RUN: %mim -VVV -p opt -X tensor:pe-cpu=0 %s -o %tg.mim 2>&1 | %FileCheck %s --check-prefix=OFF
+// RUN: %mim -VVV -p opt -X "tensor:cpu-levels=16,32,8/4,16,0" %s -p ll -X ll:o=%t4.ll -o %th.mim 2>&1 | %FileCheck %s --check-prefix=LEVELS
+// RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t4.ll -o %t4.exec -Wno-override-module
+// RUN: %t4.exec
 
 // CHECK-DAG: tile the contraction over ‹3; 32› with tensor.run_levels
 // CHECK-DAG: tile the contraction over (19, 37, 29) with tensor.run_levels
@@ -26,6 +29,8 @@
 // CHECK-DAG: tile the contraction over (29, 19, 31) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (19, 35, 17) with tensor.run_levels
 // OFF-NOT: tensor.run_levels
+// LEVELS-DAG: tile the contraction over (19, 37, 29) at the levels ((16, 32, 8), (4, 16, 0))
+// LEVELS-DAG: ignoring `-X tensor:cpu-levels=16,32,8/4,16,0` for a contraction over 4 loops
 
 // Divisible, prime, M=1, N=1, batched, transposed, bias-fused and chained GEMMs, checked under ASan.
 

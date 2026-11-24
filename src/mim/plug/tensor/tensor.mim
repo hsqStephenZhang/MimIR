@@ -1812,6 +1812,12 @@ anx lam sched_peel {N Rn: Nat} (d ts: Nat, body: SchedTree (N, Rn)): SchedTree (
 anx lam sched_stage {N Rn: Nat} (slot: Idx N, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Stage (slot, body);
 
+/// The tree of an IREE-style `lowering_config`: one `Par` per level, outermost first, each cutting every loop by its tile size
+/// (0 leaves a loop whole), over a `Leaf vdim`.
+anx lam sched_levels {N Rn L: Nat} (levels: «L; «Rn; Nat»», vdim: Nat): SchedTree (N, Rn) =
+    vec.fold.r @(SchedTree (N, Rn), «Rn; Nat») @L
+        (λ (sizes: «Rn; Nat», t: SchedTree (N, Rn)): SchedTree (N, Rn) = sched_par @(N, Rn) (sizes, t)) (levels, sched_leaf @(N, Rn) vdim);
+
 /// `run_levels` whose slots may be producers: a `Stage slot` node computes only the box of the producer that the loops below it read.
 /// `run_levels_with` over the loops starting at `origin`; the output is indexed from zero, so a producer computes a box of its result.
 anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}

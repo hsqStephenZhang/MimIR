@@ -1,5 +1,9 @@
 #include "mim/plug/tensor/phase/lower_to_mem.h"
 
+#include <charconv>
+
+#include <ranges>
+
 #include <fe/worklist.h>
 
 #include <mim/axm.h>
@@ -7,6 +11,7 @@
 #include <mim/def.h>
 #include <mim/driver.h>
 #include <mim/lam.h>
+#include <mim/plugin.h>
 
 #include <mim/plug/affine/affine.h>
 #include <mim/plug/btensor/btensor.h>
@@ -424,6 +429,32 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
     return out;
 }
 
+const Def* LowerToMem::cpu_levels(u64 rn) {
+    auto& w   = new_world();
+    auto text = arg_value(w.driver().args("tensor"), "cpu-levels");
+    if (!text) return nullptr;
+    auto levels = DefVec();
+    for (auto level : std::views::split(*text, '/')) {
+        auto sizes = DefVec();
+        for (auto size : std::views::split(level, ',')) {
+            auto n = u64(0);
+            auto v = std::string_view(size.begin(), size.end());
+            if (auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), n);
+                ec != std::errc() || ptr != v.data() + v.size()) {
+                log().w("ignoring `-X tensor:cpu-levels={}`: `{}` is not a number", *text, v);
+                return nullptr;
+            }
+            sizes.emplace_back(w.lit_nat(n));
+        }
+        if (sizes.size() != rn) {
+            log().w("ignoring `-X tensor:cpu-levels={}` for a contraction over {} loops", *text, rn);
+            return nullptr;
+        }
+        levels.emplace_back(w.tuple(sizes));
+    }
+    return w.tuple(levels);
+}
+
 const Def* LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
     auto& w   = new_world();
     auto papp = Axm::isa<tensor::map_reduce_post>(input);
@@ -447,7 +478,7 @@ const Def* LowerToMem::fuse_producer(const Def* input, const Def* map, const Def
     if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return nullptr;
 
     auto [is, post_is]          = papp->arg()->projs<2>();
-    auto [xs, sis, prods, fuse] = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a);
+    auto [xs, sis, prods, fuse] = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, true);
     auto [cTo, ins_ty]          = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb                = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
     const Def* fill             = w.annex<tensor::fill_of>();
@@ -468,7 +499,8 @@ std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
                                                const Def* Sis,
                                                const Def* Tis,
                                                const Def* maps,
-                                               const Def* a) {
+                                               const Def* a,
+                                               bool may_fuse) {
     auto& w     = new_world();
     auto old_is = app->arg()->proj(2, 0);
     auto ai     = Lit::as(a);
@@ -476,7 +508,7 @@ std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
     // One staged slot per contraction: the policy bands the loop it reads, which the other slot's producer would not
     // read.
     for (auto s : {ai, 1 - ai})
-        if ((fills[s] = fuse_producer(old_is->proj(2, s), maps->proj(2, s), Rn, Ris->proj(2, s)))) break;
+        if (may_fuse && (fills[s] = fuse_producer(old_is->proj(2, s), maps->proj(2, s), Rn, Ris->proj(2, s)))) break;
     auto xs = DefVec(2), sis = DefVec(2), prods = DefVec(2), fuse = DefVec(2);
     for (size_t i = 0; i != 2; ++i) {
         auto r = Ris->proj(2, i), T = Tis->proj(2, i);
@@ -512,9 +544,16 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto sizes  = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
     auto caps   = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(u64(1) << 40)); }));
     auto dyn    = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_bool(!extent(d)); }));
-    auto [xs, sis, prods, fuse] = pe_slots(app, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a);
+    auto levels = cpu_levels(rn);
+    auto [xs, sis, prods, fuse] = pe_slots(app, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, !levels);
     auto tree                   = w.app(w.app(w.annex<tensor::cpu_tree>(), {mr.Rn, mr.Ro}),
                                         {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, sizes, dyn, fuse});
+    if (levels) {
+        auto n = w.lit_nat(levels->num_projs());
+        tree   = w.app(w.app(w.annex<tensor::sched_levels>(), {w.lit_nat(2), mr.Rn, n}),
+                       {levels, w.lit_nat(ranks->ro - 2)});
+        log().i("tile the contraction over {} at the levels {}", mr.Sr, levels);
+    }
 
     auto post_is       = rewrite(app->arg()->proj(2, 1));
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
