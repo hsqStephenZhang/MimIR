@@ -8,6 +8,9 @@
 // CHECK-DAG: tile the contraction over (2, 12, 90, 16) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (1, 6, 168, 36) with tensor.run_levels
 // CHECK-DAG: tile the contraction over (2, 9, 36, 54) with tensor.run_levels
+// A grouped convolution is one implicit im2col per group, (n, g, oh, co, ow | ci·kh·kw).
+// CHECK-DAG: tile the contraction over (2, 2, 9, 6, 10, 36) with tensor.run_levels
+// CHECK-DAG: tile the contraction over (1, 4, 6, 2, 6, 36) with tensor.run_levels
 plugin core;
 plugin tensor;
 plugin math;
@@ -29,3 +32,9 @@ extern fun conv_dil (x: tensor.Tensor 4 (1, 4, 12, 14) F32, w: tensor.Tensor 4 (
 
 extern fun conv_s2 (x: tensor.Tensor 4 (2, 6, 11, 12) F32, w: tensor.Tensor 4 (9, 6, 3, 3) F32): tensor.Tensor 4 (2, 9, 6, 6) F32 =
     return (tensor.conv R ((2, 2), (1, 1), (1, 1)) (x, w));
+
+extern fun conv_g2 (x: tensor.Tensor 4 (2, 8, 9, 10) F32, w: tensor.Tensor 4 (12, 4, 3, 3) F32): tensor.Tensor 4 (2, 12, 9, 10) F32 =
+    return (tensor.conv_grouped R (2, (1, 1), (1, 1), (1, 1)) (x, w));
+
+extern fun conv_g4 (x: tensor.Tensor 4 (1, 16, 11, 12) F32, w: tensor.Tensor 4 (8, 4, 3, 3) F32): tensor.Tensor 4 (1, 8, 6, 6) F32 =
+    return (tensor.conv_grouped R (4, (2, 2), (1, 1), (1, 1)) (x, w));

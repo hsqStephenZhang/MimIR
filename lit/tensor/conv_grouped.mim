@@ -1,4 +1,4 @@
-// RUN: %mim -p opt %s -o %t
+// RUN: %mim -p opt -X tensor:pe-cpu=0 %s -o %t
 // RUN: cat %t | %FileCheck %s
 // RUN: cat %t | %FileCheck %s --check-prefix=GONE
 
