@@ -370,8 +370,6 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     u64 rn = ranks->nloops();
     // Extents may be run-time values; `run_levels` splits those with `Seq` and computes edge tiles in scratch.
     if (!lit_projs(mr.Ris, 2)) return nullptr;
-    for (u64 d = 0; d != ro; ++d)
-        if (mr.So->proj(ro, d) != mr.Sr->proj(rn, d)) return w.lit_ff();
     for (u64 d = 0; d != rn; ++d)
         if (Lit::isa(mr.Sr->proj(rn, d)) == 0) return w.lit_ff();
     if (mr.To == w.type_nat()) return w.lit_ff();
@@ -385,7 +383,20 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
     auto probe  = w.mut_lam(domain, domain);
     auto vars   = probe->var()->projs(rn);
-    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return w.lit_ff();
+    // The output is a permutation of the parallel loops; only the identity also handles run-time extents, so a
+    // permutation waits for literal ones.
+    auto out  = w.app(mr.map_out, probe->var())->projs(ro);
+    bool perm = false;
+    for (u64 k = 0; k != ro; ++k) {
+        auto it = std::ranges::find(vars, out[k]);
+        if (it == vars.end() || u64(it - vars.begin()) >= ro || std::ranges::count(out, out[k]) != 1) return w.lit_ff();
+        auto d = u64(it - vars.begin());
+        if (mr.So->proj(ro, k) != mr.Sr->proj(rn, d)) return w.lit_ff();
+        perm |= d != k;
+    }
+    if (perm)
+        for (u64 d = 0; d != rn; ++d)
+            if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
 
     auto maps = mr.maps->projs<2>();
     auto dep  = w.tuple(DefVec(2, [&](size_t i) {
@@ -396,7 +407,8 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
             return w.lit_bool(!Check::test_alpha(base, w.app(maps[i], w.tuple(sub))));
         }));
     }));
-    if (w.app(w.app(w.annex<tensor::cpu_covers>(), mr.Rn), dep) != w.lit_tt()) return w.lit_ff();
+    auto a    = w.lit_idx(2, dep->proj(2, 0)->proj(rn, ro - 2) == w.lit_tt() ? 0 : 1);
+    if (w.app(w.app(w.annex<tensor::cpu_covers>(), {mr.Rn, mr.Ro}), {a, dep}) != w.lit_tt()) return w.lit_ff();
 
     auto affs = DefVec(2);
     for (size_t i = 0; i != 2; ++i) {
@@ -407,7 +419,10 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
             if (!refl.scan(row)) return w.lit_ff();
         affs[i] = refl.map(rows);
     }
-    if (plan) *plan = {*bytes, dep, w.tuple(affs)};
+    auto b = 1 - Lit::as(a);
+    auto unit_b
+        = w.app(w.app(w.annex<tensor::aff_unit>(), {mr.Rn, mr.Ris->proj(2, b)}), {affs[b], w.lit_idx(rn, ro - 1)});
+    if (plan) *plan = {*bytes, a, dep, unit_b, w.tuple(affs)};
     return w.lit_tt();
 }
 

@@ -433,7 +433,8 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto sizes  = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
     auto caps   = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(u64(1) << 40)); }));
     auto dyn    = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_bool(!extent(d)); }));
-    auto tree   = w.app(w.app(w.annex<tensor::cpu_tree>(), mr.Rn), {w.lit_nat(plan.bytes), plan.dep, sizes, dyn});
+    auto tree   = w.app(w.app(w.annex<tensor::cpu_tree>(), {mr.Rn, mr.Ro}),
+                        {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, sizes, dyn});
 
     auto [is, post_is] = rewrite(app->arg())->projs<2>();
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();

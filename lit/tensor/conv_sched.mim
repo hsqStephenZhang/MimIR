@@ -1,6 +1,6 @@
-// RUN: %mim -p opt %s -o - | %FileCheck %s
+// RUN: %mim -p opt -X tensor:pe-cpu=0 %s -o - | %FileCheck %s
 
-// Schedule SELECTION for convolutions, decided in the IR from the op's parameters (the old
+// Schedule SELECTION for convolutions off the `run_levels` path, decided in the IR from the op's parameters (the old
 // lowering's heuristics, carried as the op's schedule operand). `ci`, `co` and `oh` are always
 // strip-mined (neutrally by 1, or by a real tile: `ci`/`co` when the window is POINTWISE, `oh` by
 // the largest dividing size ≤ 4 when rows BLOCK: vectorized, ow < 16, oh divisible), so the domain

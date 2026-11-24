@@ -1237,13 +1237,24 @@ priv anx lam reshape_impl {T: *, r_in r_out: Nat}
 ///
 /// Fused multiply-add over the ring `R`; `x` is the padded-input element, `w` the weight.
 fun conv_fun (R: Ring) (acc: R#T, (x w: R#T))@tt: R#T = return (R#add (acc, R#mul (x, w)));
+fun conv_fun_wx (R: Ring) (acc: R#T, (w x: R#T))@tt: R#T = return (R#add (acc, R#mul (x, w)));
 ///
+/// Whether `tensor.run_levels` lowers the contraction that produces its argument (`tensor::pe_cpu_plan`).
+axm pe_cpu_candidate: {T: *} → T → Bool, normalize_pe_cpu_candidate;
 /// ### conv2d_in_map
 ///
 /// The `«7; affine.Index»` loop vector is `o = (n, co, oh, ow, ci, kh, kw)`, so the weight read map
 /// `(co, ci, kh, kw)` and the output write map `(n, co, oh, ow)` are `proj_map` projections of it;
 /// only this padded-input read needs arithmetic:
 /// `(n, ci, stride#0·oh + dilation#0·kh, stride#1·ow + dilation#1·kw)`.
+/// `conv2d_in_map` over the loops `(n, oh, co, ow, r)` whose reduction `r` runs over `(ci, kh, kw)` row-major.
+lam conv2d_im2col_map (stride dilation: «2; Nat», kh kw: Nat) (o: «5; affine.Index»): «4; affine.Index» =
+    let r = o#4_5;
+    let i = affine.semiop.rem (affine.semiop.floordiv (r, kw), kh);
+    let j = affine.semiop.rem (r, kw);
+    (o#0_5, affine.semiop.floordiv (r, kh * kw),
+     affine.op.add (affine.semiop.mul (o#1_5, stride#0_2), affine.semiop.mul (i, dilation#0_2)),
+     affine.op.add (affine.semiop.mul (o#3_5, stride#1_2), affine.semiop.mul (j, dilation#1_2)));
 lam conv2d_in_map (stride dilation: «2; Nat») (o: «7; affine.Index»): «4; affine.Index» =
     let (n, _, oh, ow, ci, kh, kw) = o;
     (n, ci,
@@ -1271,16 +1282,29 @@ priv anx lam conv_impl (R: Ring) {n cin cout h w kh kw: Nat}
     // schedule may strip-mine `oh` (row blocking), packing the materialized tensor along that axis;
     // the row-major `reshape` restores `s_out` (an identity for the neutral split, and absorbed into
     // the consumers' access maps by `fuse_tensor`'s read-through in a fused graph).
-    let sched = conv_schedule (stride, dilation) (
-        mr_tileable @2 @(4, 3)
+    let t = mr_tileable @2 @(4, 3)
             ((n, cout, oh, ow), (0, 1, 2, 3), (n, cout, oh, ow, cin, kh, kw))
             @((R#T, R#T), (4, 4), (s_padded, (cout, cin, kh, kw)))
             (conv_fun R, R#_0, id @(R#T))
             (proj_map @(7, 4) (0, 1, 2, 3))
             (conv2d_in_map (stride, dilation), proj_map @(7, 4) (1, 4, 5, 6))
-            (padded, weight));
+            (padded, weight);
     // `sched#3_8` is the scheduled Tileable's (possibly packed) output shape `So`.
-    reshape (sched#3_8) s_out (materialize sched);
+    lam go (_: []): Tensor 4 s_out (R#T) =
+        let sched = conv_schedule (stride, dilation) t;
+        reshape (sched#3_8) s_out (materialize sched);
+    // For `run_levels`, an implicit im2col: the loops (n, oh, co, ow | r) with r = (ci, kh, kw) flattened, so the
+    // register tile `co` × `ow` (with `ow` as the vector loop) folds over a single reduction loop like a GEMM's.
+    let taps = kh * kw;
+    let pe   = mr_tileable @2 @(4, 1)
+            ((n, cout, oh, ow), (0, 2, 1, 3), (n, oh, cout, ow, cin * taps))
+            @((R#T, R#T), (2, 4), ((cout, cin * taps), s_padded))
+            (conv_fun_wx R, R#_0, id @(R#T))
+            (proj_map @(5, 4) (0, 2, 1, 3))
+            (proj_map @(5, 2) (2, 4), conv2d_im2col_map (stride, dilation, kh, kw))
+            (reshape (cout, cin, kh, kw) (cout, cin * taps) weight, padded);
+    let canonical = materialize pe;
+    (go (), canonical)#(pe_cpu_candidate canonical);
 ///
 /// ### conv_grouped_in_map
 ///
@@ -1365,7 +1389,6 @@ pub lam dot_general_pick {n: Nat} {na nb nc: Nat} (a: «na; Idx n», b: «nb; Id
 ///   identity for the neutral split, and absorbed into the consumers' access maps by `fuse_tensor`'s
 ///   read-through in a fused graph.
 ///
-axm pe_cpu_candidate: {T: *} → T → Bool, normalize_pe_cpu_candidate;
 
 priv anx lam dot_product_impl
     (fastest_2: Nat)
@@ -1666,6 +1689,25 @@ lam aff_span {n s: Nat} (e: AffE (n, s), vals: «s; Nat», lo ext: «n; Nat»)@(
         | CDiv _ => (ff, 0, 0)
         | Mod _  => (ff, 0, 0);
 
+/// The coefficient of loop `d` in `e`; `0` where `d` only occurs below a floordiv or mod.
+lam aff_coef {n s: Nat} (e: AffE (n, s), d: Idx n)@(core.pe.is_closed e): Nat =
+    match e with
+        | Dim j  => (0, 1)#(core.icmp.e (j, d))
+        | Add p  => core.nat.add (aff_coef (p#0₂, d), aff_coef (p#1₂, d))
+        | Mul p  => core.nat.mul (aff_coef (p#0₂, d), p#1₂)
+        | Sym _  => 0
+        | Lit _  => 0
+        | FDiv _ => 0
+        | CDiv _ => 0
+        | Mod _  => 0;
+
+/// Whether `f` reads along loop `d` at unit stride: `d` occurs only in the last row, with coefficient 1.
+anx lam aff_unit {n m: Nat} (f: Aff (n, m), d: Idx n): Bool =
+    vec.fold.r @(Bool, Idx m) @m
+        (λ (i: Idx m, acc: Bool): Bool =
+            core.bit2.and 2 (acc, aff_coef (f#rows#i, d) == (0, 1)#(core.idx2nat i + 1 == m)))
+        (‹i: m; i›, tt);
+
 /// The box `f` maps the box `(lo, ext)` onto; only for affine rows.
 lam aff_box {n m: Nat} (f: Aff (n, m)) (lo ext: «n; Nat»): [«m; Nat», «m; Nat»] =
     let sp = ‹i: m; aff_span (f#rows#i, f#vals, lo, ext)›;
@@ -1941,18 +1983,21 @@ lam nat_min (a: Nat) (b: Nat): Nat = core.select (a < b, a, b);
 lam nat_or (x: Nat) (d: Nat): Nat = core.select (x == 0, d, x);
 
 /// Whether BLIS packing fits a contraction over `Rn` loops (`M`, `N`, `K` last): `A` must not read `N` and `B` must not read `M`.
-anx lam cpu_covers (Rn: Nat) (dep: «2; «Rn; Bool»»): Bool =
+anx lam cpu_covers (Rn Ro: Nat) (a: Idx 2, dep: «2; «Rn; Bool»»): Bool =
+    let b     = (1₂, 0₂)#(core.idx2nat a == 1);
     let reads = λ (slot: Idx 2) (ax: Nat): Bool = dep#slot#(core.idx 0 Rn ax);
-    core.select (reads 0₂ (Rn - 2), ff, core.select (reads 1₂ (Rn - 3), ff, tt));
+    core.select (reads a (Ro - 1), ff, core.select (reads b (Ro - 2), ff, tt));
 
-/// The BLIS-style tree for a contraction over `Rn` loops whose operands have element size `bytes` and read the loops `dep`:
+/// The BLIS-style tree for a contraction over `Rn` loops, `Ro` of them parallel, whose operands have element size `bytes` and read the loops `dep`:
 /// outer `N` (`order = 1`: `M`), `K`, pack, cache `M` (`N`), pack, register tile.
+/// `M` and `N` are the last two parallel loops and `K` the reduction loop; slot `a` reads `M` and the other slot `N` (at unit stride iff `unit_b`), and the loops before `M` run one at a time.
 /// `dyn_k = 1` gives the `K` loop a run-time tail, which halves the code of a shape whose `K` leaves one at 1–3% speed (251×257×263, 1021×1031×1033).
-anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»», sizes: «Rn; Nat», dyn: «Rn; Bool»): SchedTree (2, Rn) =
+anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, sizes: «Rn; Nat», dyn: «Rn; Bool»): SchedTree (2, Rn) =
     let (vec_bytes, regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order, dyn_k, pack_b_o) = cpu_knobs ();
-    let m_ax  = Rn - 3;
-    let n_ax  = Rn - 2;
-    let k_ax  = Rn - 1;
+    let m_ax  = Ro - 2;
+    let n_ax  = Ro - 1;
+    let k_ax  = Ro;
+    let b     = (1₂, 0₂)#(core.idx2nat a == 1);
     let lanes = vec_width (core.select (bytes < vec_bytes, vec_bytes / bytes, 1));
     // Two vectors per row and up to eight rows, leaving four registers for the operands; 1 KB packed rows.
     let nr    = nat_or nr_o (lanes * 2);
@@ -1965,24 +2010,30 @@ anx lam cpu_tree (Rn: Nat) (bytes: Nat, dep: «2; «Rn; Bool»», sizes: «Rn; N
     let swap  = order == 1;
     let on    = λ (ax: Nat) (s: Nat): «Rn; Nat» = ‹d: Rn; core.select (core.idx2nat d == ax, s, 0)›;
     let T     = SchedTree (2, Rn);
-    let pack_a = λ (b: T): T = sched_pack @(2, Rn) (m_ax, mr, 0₂, dep#0₂, b);
+    let pack_a = λ (t: T): T = sched_pack @(2, Rn) (m_ax, mr, a, dep#a, t);
     let m_ext  = sizes#(core.idx 0 Rn m_ax);
     let b_size = sizes#(core.idx 0 Rn n_ax) * sizes#(core.idx 0 Rn k_ax) * bytes;
     // Packing B pays only when enough row blocks reuse a panel that stays cached (measured on Zen 5).
     let few    = core.select (m_ext < 4 * mr, tt, core.select (b_size <= cache, tt, core.select (m_ext < 8 * mr, 64 * cache < b_size, ff)));
     // An edge tile over a run-time extent reads whole panels, so B is packed whenever a shape is unknown.
     let known  = core.select (dyn#(core.idx 0 Rn m_ax), ff, core.select (dyn#(core.idx 0 Rn n_ax), ff, core.select (dyn#(core.idx 0 Rn k_ax), ff, tt)));
-    let keep_b = core.select (swap, ff, core.select (known, core.select (pack_b_o == 0, few, pack_b_o == 2), ff));
-    let pack_b = λ (b: T): T = (sched_pack @(2, Rn) (n_ax, nr, 1₂, dep#1₂, b), b)#keep_b;
+    // A strided read along `N` (a strided convolution's input) packs, so the gather happens once per panel.
+    let keep_b = core.select (swap, ff, core.select (known, core.select (pack_b_o == 0, core.select (unit_b, few, ff), pack_b_o == 2), ff));
+    let pack_b = λ (t: T): T = (sched_pack @(2, Rn) (n_ax, nr, b, dep#b, t), t)#keep_b;
     let split = λ (ax: Nat) (ts: Nat) (b: T): T =
         (sched_par @(2, Rn) (on ax ts, b), sched_seq @(2, Rn) (ax, ts, b))#(dyn#(core.idx 0 Rn ax));
     let peel  = λ (ax: Nat) (ts: Nat) (b: T): T =
         (sched_par @(2, Rn) (on ax ts, b), sched_peel @(2, Rn) (ax, ts, b))#(dyn#(core.idx 0 Rn ax));
-    let tree  = peel m_ax mr (peel n_ax nr (sched_leaf @(2, Rn) m_ax));
+    // The loops before `M` run one at a time; those slot `a` does not read run inside its pack, which they leave unchanged.
+    let batch = λ (inner: Bool) (t: T): T =
+        vec.fold.r @(T, Idx Rn) @Rn
+            (λ (d: Idx Rn, t: T): T = core.select (core.bit2.and 2 (core.idx2nat d < m_ax, (dep#a#d, (tt, ff)#(dep#a#d))#inner), split (core.idx2nat d) 1 t, t))
+            (‹d: Rn; d›, t);
+    let tree  = batch tt (peel m_ax mr (peel n_ax nr (sched_leaf @(2, Rn) m_ax)));
     let tree  = ((pack_a, pack_b)#swap) tree;
     let tree  = split (core.select (swap, n_ax, m_ax)) mc tree;
     let tree  = ((pack_b, pack_a)#swap) tree;
-    let tree  = ((λ (b: T): T = sched_par @(2, Rn) (on k_ax kc, b),
-                  λ (b: T): T = sched_seq @(2, Rn) (k_ax, kc, b))#(core.select (dyn_k == 1, tt, dyn#(core.idx 0 Rn k_ax)))) tree;
+    let tree  = ((λ (t: T): T = sched_par @(2, Rn) (on k_ax kc, t),
+                  λ (t: T): T = sched_seq @(2, Rn) (k_ax, kc, t))#(core.select (dyn_k == 1, tt, dyn#(core.idx 0 Rn k_ax)))) tree;
     let tree  = split (core.select (swap, m_ax, n_ax)) nc tree;
-    vec.fold.r @(T, Idx Rn) @Rn (λ (d: Idx Rn, b: T): T = core.select (core.idx2nat d < m_ax, split (core.idx2nat d) 1 b, b)) (‹d: Rn; d›, tree);
+    batch ff tree;
