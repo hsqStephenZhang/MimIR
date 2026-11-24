@@ -1862,6 +1862,67 @@ anx lam sched_levels {N Rn L: Nat} (levels: «L; «Rn; Nat»», vdim: Nat): Sche
     vec.fold.r @(SchedTree (N, Rn), «Rn; Nat») @L
         (λ (sizes: «Rn; Nat», t: SchedTree (N, Rn)): SchedTree (N, Rn) = sched_par @(N, Rn) (sizes, t)) (levels, sched_leaf @(N, Rn) vdim);
 
+
+/// One function per kind of `SchedTree` node in constructor order (`Leaf`, `Par`, `Pack`, `Seq`, `Peel`, `Stage`, `Switch`),
+/// each given its fields with the subtrees already folded into `R`.
+anx lam SchedAlg (N Rn: Nat, R: *): * =
+    [Nat → R, [«Rn; Nat», R] → R, [Nat, Nat, Idx N, «Rn; Bool», R] → R, [Nat, Nat, R] → R, [Nat, Nat, R] → R,
+     [Idx N, R] → R, [Nat, Nat, R, R] → R];
+
+/// Folds `t` bottom-up with `alg`.
+anx lam sched_fold {N Rn: Nat, R: *} (alg: SchedAlg (N, Rn, R)) (t: SchedTree (N, Rn))@(core.pe.is_closed t): R =
+    let (leaf, par, pack, seq, peel, stage, switch) = alg;
+    let go = λ (b: SchedTree (N, Rn)): R = sched_fold @(N, Rn, R) alg b;
+    match t with
+        | Leaf v   => leaf v
+        | Par n    => par (n#sizes, go (n#body))
+        | Pack n   => pack (n#d, n#w, n#slot, n#dep, go (n#body))
+        | Seq n    => seq (n#d, n#ts, go (n#body))
+        | Peel n   => peel (n#d, n#ts, go (n#body))
+        | Stage n  => stage (n#slot, go (n#body))
+        | Switch n => switch (n#d, n#c, go (n#small), go (n#big));
+
+/// The fold that rebuilds its tree; an edit replaces the functions of the nodes it changes.
+anx lam sched_rebuild {N Rn: Nat} (_: []): SchedAlg (N, Rn, SchedTree (N, Rn)) =
+    let T = SchedTree (N, Rn);
+    (λ (v: Nat): T = T#Leaf v,
+     λ (sizes: «Rn; Nat», b: T): T = T#Par (sizes, b),
+     λ (d w: Nat, slot: Idx N, dep: «Rn; Bool», b: T): T = T#Pack (d, w, slot, dep, b),
+     λ (d ts: Nat, b: T): T = T#Seq (d, ts, b),
+     λ (d ts: Nat, b: T): T = T#Peel (d, ts, b),
+     λ (slot: Idx N, b: T): T = T#Stage (slot, b),
+     λ (d c: Nat, small big: T): T = T#Switch (d, c, small, big));
+
+/// `t` without the packs of `slot`.
+anx lam sched_unpack {N Rn: Nat} (slot: Idx N) (t: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    let T = SchedTree (N, Rn);
+    let (leaf, par, pack, seq, peel, stage, switch) = sched_rebuild @(N, Rn) ();
+    let keep = λ (d w: Nat, s: Idx N, dep: «Rn; Bool», b: T): T = (pack (d, w, s, dep, b), b)#(core.icmp.e (s, slot));
+    sched_fold @(N, Rn, T) (leaf, par, keep, seq, peel, stage, switch) t;
+
+/// `t` with every split of loop `d` (`Par`, `Seq`, `Peel`) at tile size `ts`.
+anx lam sched_retile {N Rn: Nat} (d ts: Nat) (t: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    let T  = SchedTree (N, Rn);
+    let (leaf, par, pack, seq, peel, stage, switch) = sched_rebuild @(N, Rn) ();
+    let at = λ (e o: Nat): Nat = core.select (e == d, ts, o);
+    let par2  = λ (sizes: «Rn; Nat», b: T): T = par (‹e: Rn; core.select (sizes#e == 0, 0, at (core.idx2nat e, sizes#e))›, b);
+    let seq2  = λ (e o: Nat, b: T): T = seq (e, at (e, o), b);
+    let peel2 = λ (e o: Nat, b: T): T = peel (e, at (e, o), b);
+    sched_fold @(N, Rn, T) (leaf, par2, pack, seq2, peel2, stage, switch) t;
+
+/// `t` with each `Leaf vdim` replaced by `g vdim`, e.g. a register tile `Par` above it.
+anx lam sched_at_leaves {N Rn: Nat} (g: Nat → SchedTree (N, Rn)) (t: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    let (_, par, pack, seq, peel, stage, switch) = sched_rebuild @(N, Rn) ();
+    sched_fold @(N, Rn, SchedTree (N, Rn)) (g, par, pack, seq, peel, stage, switch) t;
+
+/// The number of nodes of `t`.
+anx lam sched_size {N Rn: Nat} (t: SchedTree (N, Rn)): Nat =
+    let one = λ (n: Nat): Nat = core.nat.add (n, 1);
+    sched_fold @(N, Rn, Nat)
+        (λ (_: Nat): Nat = 1, λ (_: «Rn; Nat», b: Nat): Nat = one b, λ (_: Nat, _: Nat, _: Idx N, _: «Rn; Bool», b: Nat): Nat = one b,
+         λ (_: Nat, _: Nat, b: Nat): Nat = one b, λ (_: Nat, _: Nat, b: Nat): Nat = one b, λ (_: Idx N, b: Nat): Nat = one b,
+         λ (_: Nat, _: Nat, a: Nat, b: Nat): Nat = one (core.nat.add (a, b))) t;
+
 /// `run_levels` whose slots may be producers: a `Stage slot` node computes only the box of the producer that the loops below it read.
 /// `run_levels_with` over the loops starting at `origin`; the output is indexed from zero, so a producer computes a box of its result.
 anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}

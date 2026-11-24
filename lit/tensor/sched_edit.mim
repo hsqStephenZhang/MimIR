@@ -1,0 +1,38 @@
+// RUN: %mim %s -o %t.mim
+
+// Schedule trees are edited by folds: each edit rebuilds the tree with the functions of the nodes it changes.
+// The edits run while the file is elaborated; a mismatch fails the RUN line.
+plugin tensor;
+plugin core;
+plugin refly;
+
+let dep  = ((tt, ff, tt), (ff, tt, tt));
+let T    = tensor.SchedTree (2, 3);
+// Each application of the nominal `SchedTree` is its own type, so a tree built outside an edit is rebuilt by the identity fold first.
+let canon = tensor.sched_fold @(2, 3, T) (tensor.sched_rebuild @(2, 3) ());
+let leaf = tensor.sched_leaf @(2, 3) 0;
+let reg  = tensor.sched_peel @(2, 3) (0, 4, leaf);
+let tree = tensor.sched_par @(2, 3) ((0, 16, 0), tensor.sched_pack @(2, 3) (1, 8, 1₂, dep#1₂,
+    tensor.sched_seq @(2, 3) (0, 4, tensor.sched_pack @(2, 3) (0, 4, 0₂, dep#0₂, reg))));
+
+extern lam unpack (): tensor.SchedTree (2, 3) =
+    refly.alpha.e (tensor.sched_unpack @(2, 3) 1₂ tree, canon (
+        tensor.sched_par @(2, 3) ((0, 16, 0), tensor.sched_seq @(2, 3) (0, 4, tensor.sched_pack @(2, 3) (0, 4, 0₂, dep#0₂, reg)))));
+
+extern lam retile (): tensor.SchedTree (2, 3) =
+    refly.alpha.e (tensor.sched_retile @(2, 3) (0, 8) tree, canon (
+        tensor.sched_par @(2, 3) ((0, 16, 0), tensor.sched_pack @(2, 3) (1, 8, 1₂, dep#1₂,
+            tensor.sched_seq @(2, 3) (0, 8, tensor.sched_pack @(2, 3) (0, 4, 0₂, dep#0₂, tensor.sched_peel @(2, 3) (0, 8, leaf)))))));
+
+// A `Par` keeps the loops it does not split.
+extern lam retile_par (): tensor.SchedTree (2, 3) =
+    refly.alpha.e (tensor.sched_retile @(2, 3) (1, 32) tree, canon (
+        tensor.sched_par @(2, 3) ((0, 32, 0), tensor.sched_pack @(2, 3) (1, 8, 1₂, dep#1₂,
+            tensor.sched_seq @(2, 3) (0, 4, tensor.sched_pack @(2, 3) (0, 4, 0₂, dep#0₂, reg))))));
+
+extern lam leaves (): tensor.SchedTree (2, 3) =
+    refly.alpha.e (canon (tensor.sched_at_leaves @(2, 3) (λ (v: Nat): T = tensor.sched_par @(2, 3) ((0, 0, 2), tensor.sched_leaf @(2, 3) v)) reg),
+        canon (tensor.sched_peel @(2, 3) (0, 4, tensor.sched_par @(2, 3) ((0, 0, 2), leaf))));
+
+extern lam size (): Nat =
+    refly.alpha.e (tensor.sched_size @(2, 3) (tensor.sched_switch @(2, 3) (0, 32, canon tree, canon leaf)), 8);
