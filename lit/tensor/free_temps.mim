@@ -1,7 +1,7 @@
 // REQUIRES: system-linux
 // RUN: rm -f %{s:stem}.ll
 // RUN: %mim -p opt %s -p ll
-// RUN: clang++ -std=c++23 %S/free_temps_aux.cpp %{s:stem}.ll -o %t -Wno-override-module -Wl,--wrap=malloc,--wrap=free
+// RUN: clang++ -std=c++23 %S/free_temps_aux.cpp %{s:stem}.ll -o %t -Wno-override-module -Wl,--wrap=malloc,--wrap=aligned_alloc,--wrap=free
 // RUN: %t
 
 // A bufferized function frees every buffer it allocates and does not hand out before it returns.

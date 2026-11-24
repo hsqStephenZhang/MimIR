@@ -6,6 +6,7 @@
 
 extern "C" {
 void* __real_malloc(size_t);
+void* __real_aligned_alloc(size_t, size_t);
 void __real_free(void*);
 float* lin(float*, float*, float*);
 
@@ -15,6 +16,11 @@ static int mallocs = 0, frees = 0;
 void* __wrap_malloc(size_t n) {
     if (counting) ++mallocs;
     return __real_malloc(n);
+}
+
+void* __wrap_aligned_alloc(size_t a, size_t n) {
+    if (counting) ++mallocs;
+    return __real_aligned_alloc(a, n);
 }
 
 void __wrap_free(void* p) {

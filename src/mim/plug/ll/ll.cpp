@@ -918,13 +918,19 @@ std::optional<std::string> Emitter::emit_mem(BB& bb, const std::string& name, co
         return bb.assign(name, "bitcast {} {} to {}", convert(p->type()), emit(p), convert(def->type()));
     } else if (auto malloc = Axm::isa<mem::malloc>(def)) {
         auto address_space = malloc->decurry()->arg(2, 1);
-        declare("i8* @malloc(i64)");
 
         auto [m, n] = malloc->args<2>();
         emit_unsafe(m);
-        auto size           = emit(n);
-        auto ptr_t          = convert(Axm::expect<mem::Ptr>(def->proj(2, 1)->type(), "a `mem.Ptr`"));
-        auto i8ptr          = bb.assign(name + "i8", "call i8* @malloc(i64 {})", size);
+        auto ptr_t = convert(Axm::expect<mem::Ptr>(def->proj(2, 1)->type(), "a `mem.Ptr`"));
+        auto i8ptr = std::string();
+        // A buffer of a page or more is what vector loops sweep, and a 512-bit load must not straddle cache lines.
+        if (auto bytes = Lit::isa(n); bytes && *bytes >= 4096) {
+            declare("i8* @aligned_alloc(i64, i64)");
+            i8ptr = bb.assign(name + "i8", "call i8* @aligned_alloc(i64 64, i64 {})", (*bytes + 63) / 64 * 64);
+        } else {
+            declare("i8* @malloc(i64)");
+            i8ptr = bb.assign(name + "i8", "call i8* @malloc(i64 {})", emit(n));
+        }
         std::string i8ptr_t = "i8*";
         if (Lit::expect(address_space, "an address space") != 0) {
             i8ptr_t = std::format("i8 addrspace({})*", address_space);
