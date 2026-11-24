@@ -1624,9 +1624,10 @@ lam aff_box {n m: Nat} (f: Aff (n, m)) (lo ext: «n; Nat»): [«m; Nat», «m; N
     (‹i: m; core.nat.add (f#b#i, dot i lo)›, ‹i: m; core.nat.add (1, dot i ‹j: n; core.nat.sub (ext#j, 1)›)›);
 
 /// How a `run_levels` input slot gets its data: a buffer, or a producer that computes any box of it on demand.
-anx nom Prod (Rn r: Nat, T: *) =
+/// The rank is a field, like in `LevelsView`, so that slots of different ranks share one type.
+anx nom Prod (Rn: Nat, T: *) =
     | Plain: []
-    | Fill:  [src: Aff (Rn, r), make: [lo ext: «r; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (r, ext, T)]];
+    | Fill:  [r: Nat, src: Aff (Rn, r), make: [lo ext: «r; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (r, ext, T)]];
 
 /// CPU panel packing for one input: loop `d` in runs of `w`, other moving loops in order, lane last.
 lam levels_pack_one {T: *, Rn: Nat} (r: Nat) (s: «r; Nat»)
@@ -1696,7 +1697,7 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
     (So: «Ro; Nat», Sr: «Rn; Nat»)
     (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
-    (slot_maps: «i: N; («Rn; affine.Index» → «Rs#i; affine.Index»)», prods: «i: N; Prod (Rn, Rs#i, Ts#i)»)
+    (slot_maps: «i: N; («Rn; affine.Index» → «Rs#i; affine.Index»)», prods: «i: N; Prod (Rn, Ts#i)»)
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
@@ -1813,17 +1814,17 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
         λ (st: State): [mem.M 0, D] =
             let (lo, size, _, dyn_ax, vs, m, dst) = st;
             let fixed = vec.fold.r @(Bool, Idx Rn) @Rn (λ (d: Idx Rn, acc: Bool): Bool = core.select (dyn_ax#d, ff, acc)) (‹d: Rn; d›, tt);
-            let staged = λ (p: [src: Aff (Rn, Rs#slot), make: [lo ext: «Rs#slot; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (Rs#slot, ext, Ts#slot)]]): [mem.M 0, D] =
-                let (blo, bext) = aff_box (p#src) (lo, refly.check (fixed, size, "SchedTree: a Stage cannot see a run-time extent"));
-                let (m, t) = (p#make) (blo, bext) m;
-                // The box starts where the tile does, so the tile reads at the linear part of the map.
-                let v  = (Rs#slot, bext, ‹Rn; 1›, zero, lm (q o: IxN): «Rs#slot; affine.Index» = aff_lin (p#src) ‹e: Rn; affine.op.add (q#e, o#e)›, t)
-                    inj LevelsView (Rn, Ts#slot);
-                let (m, dst) = k ((st#views#slot ← v)#tok ← m);
-                (buffer.free (Rs#slot, bext, Ts#slot) (m, t), dst);
             match prods#slot with
                 | Plain _ => k st
-                | Fill p  => staged p;
+                | Fill p  =>
+                    let r = p#r;
+                    let (blo, bext) = aff_box (p#src) (lo, refly.check (fixed, size, "SchedTree: a Stage cannot see a run-time extent"));
+                    let (m, t) = (p#make) (blo, bext) m;
+                    // The box starts where the tile does, so the tile reads at the linear part of the map.
+                    let v  = (r, bext, ‹Rn; 1›, zero, lm (q o: IxN): «r; affine.Index» = aff_lin (p#src) ‹e: Rn; affine.op.add (q#e, o#e)›, t)
+                        inj LevelsView (Rn, Ts#slot);
+                    let (m, dst) = k ((st#views#slot ← v)#tok ← m);
+                    (buffer.free (r, bext, Ts#slot) (m, t), dst);
 
     lam eval (node: SchedTree (N, Rn))@(core.pe.is_closed node): Body =
         match node with
@@ -1856,7 +1857,7 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
     run_levels_with @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr) (f, init) map_out
-        (slot_maps, ‹i: N; (Prod (Rn, Rs#i, Ts#i))#Plain›) (sched, cap0, dyn0) (m, xs0);
+        (slot_maps, ‹i: N; (Prod (Rn, Ts#i))#Plain›) (sched, cap0, dyn0) (m, xs0);
 ///
 /// ### cpu_tree
 ///
