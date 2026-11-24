@@ -415,8 +415,9 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
         auto r    = *Lit::isa(mr.Ris->proj(2, i));
         auto rows = w.app(maps[i], probe->var())->projs(r);
         auto refl = AffReflect(w, mr.Rn, vars);
+        // A map with symbolic parameters (a generic convolution's) may still become affine once they are literals.
         for (auto row : rows)
-            if (!refl.scan(row)) return w.lit_ff();
+            if (!refl.scan(row)) return maps[i]->is_closed() ? w.lit_ff() : nullptr;
         affs[i] = refl.map(rows);
     }
     auto b = 1 - Lit::as(a);
