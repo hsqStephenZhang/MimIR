@@ -29,7 +29,7 @@ lam shift (lo: «2; Nat») (o: «2; Ix»): «2; Ix» = ‹i: 2; affine.op.add (a
 // E = (A·B)·D with the M×L product computed per (i, l) tile.
 extern fun chain (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.Buf (2, (20, 28), F32), d: buffer.Buf (2, (28, 12), F32))
     : [mem.M 0, buffer.Buf (2, (26, 12), F32)] =
-    let fill = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+    let fill = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
         let (m, p) = buffer.alloc (2, ext, F32) m;
         btensor.map_reduce @2 @(F32, 2, 3) (ext, (ext#0₂, ext#1₂, 20)) @((F32, F32), (2, 2), ((26, 20), (20, 28)))
             (mac, 0.0:F32) (λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃))
@@ -50,7 +50,7 @@ extern fun chain (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.Buf (2
 // C = relu(A)·B with relu applied per (i, k) tile.
 extern fun relu_mm (m: mem.M 0, a: buffer.Buf (2, (19, 10), F32), b: buffer.Buf (2, (10, 9), F32))
     : [mem.M 0, buffer.Buf (2, (19, 9), F32)] =
-    let fill = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+    let fill = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
         let (m, t) = buffer.alloc (2, ext, F32) m;
         btensor.map_reduce @1 @(F32, 2, 2) (ext, ext) @(F32, 2, (19, 10))
             (relu, 0.0:F32) (λ (o: «2; Ix»): «2; Ix» = o) (shift lo) (m, t, a);
@@ -67,11 +67,11 @@ extern fun relu_mm (m: mem.M 0, a: buffer.Buf (2, (19, 10), F32), b: buffer.Buf 
 // E = (relu(A)·B)·D: each P tile is itself a run_levels_with whose Stage computes the relu(A) rows it reads.
 extern fun chain_relu (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.Buf (2, (20, 28), F32), d: buffer.Buf (2, (28, 12), F32))
     : [mem.M 0, buffer.Buf (2, (26, 12), F32)] =
-    let relu_a = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+    let relu_a = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
         let (m, t) = buffer.alloc (2, ext, F32) m;
         btensor.map_reduce @1 @(F32, 2, 2) (ext, ext) @(F32, 2, (26, 20))
             (relu, 0.0:F32) (λ (o: «2; Ix»): «2; Ix» = o) (shift lo) (m, t, a);
-    let fill_p = λ (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+    let fill_p = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
         let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
         let tree = tensor.sched_par @(2, 3) ((4, 0, 5), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 1));
         let (m, p) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (20, 28)))

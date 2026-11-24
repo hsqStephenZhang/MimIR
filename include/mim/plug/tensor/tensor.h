@@ -163,8 +163,8 @@ struct PeGeneric {
     u64 vdim;        ///< The leaf's vector loop: the last output loop over a strided reduction, else none (`Rn`).
 };
 
-/// Whether `tensor.run_levels` covers any static `tensor.map_reduce_post` with meta @p callee whose output loops come
-/// first; on success, @p plan receives its facts.
+/// Whether `tensor.run_levels` covers a `tensor.map_reduce_post` with meta @p callee whose output loops come first and
+/// whose reduction extents are static; on success, @p plan receives its facts.
 bool pe_generic_plan(const App* callee, PeGeneric* plan);
 
 /// Whether `tensor.run_levels` covers the `tensor.map_reduce_post` with meta @p callee: `tt`, `ff`, or `nullptr` while

@@ -495,7 +495,8 @@ const Def* LowerToMem::fuse_producer(const Def* input, const Def* map, const Def
     auto c  = rewrite(papp->callee())->as<App>();
     auto mr = btensor::MapRedPost::of(c);
     u64 ro = ranks->ro, rn = ranks->nloops(), nis = ranks->nis;
-    for (u64 d = 0; d != rn; ++d)
+    // The consumer bounds the box of the output it asks for, but not the reduction.
+    for (u64 d = ro; d != rn; ++d)
         if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
     // `fill_of` computes a box of the output from loops that start at its corner, so the output loops come first.
     auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
@@ -655,8 +656,11 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     auto mr   = btensor::MapRedPost::of(c);
     auto plan = PeGeneric{};
     if (!pe_generic_plan(c, &plan)) return nullptr;
+    u64 rn = ranks->nloops();
+    // A lone leaf would bound a run-time extent's scratch tile by nothing.
+    for (u64 d = 0; d != rn; ++d)
+        if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
 
-    u64 rn      = ranks->nloops();
     auto nis    = ranks->nis;
     auto levels = cpu_levels(rn);
     auto vdim   = w.lit_nat(plan.vdim);

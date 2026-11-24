@@ -1,0 +1,25 @@
+// RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 -X tensor:reassoc-max=2 %s -p ll -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_dyn_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec | %FileCheck %s --check-prefix=OUT
+
+// Producers fused into contractions with run-time extents: a staged box is as wide as the consumer's tile at run time.
+// `reassoc-max=2` keeps `chain` as written: a run-time dispatch over its bracketings does not bufferize yet.
+// CHECK-DAG: fuse the map-reduce over ({{_[0-9]+}}, {{_[0-9]+}}) into its consumer
+// CHECK-DAG: fuse the map-reduce over ({{_[0-9]+}}, 36, 24) into its consumer
+// OUT: dynamic fusion: all shapes passed
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+fun relu (_: F32, x: F32)@tt: F32 = return (math.extrema.fmax 0 (x, 0:F32));
+extern fun relu_mm {m k n: Nat} (a: tensor.Tensor 2 (m, k) F32, b: tensor.Tensor 2 (k, n) F32): tensor.Tensor 2 (m, n) F32 =
+    let r = tensor.map_reduce ((m, k), (m, k)) (relu, 0:F32) (λ (i j: affine.Index): «2; affine.Index» = (i, j))
+        (λ (i j: affine.Index): «2; affine.Index» = (i, j)) a;
+    return (tensor.product_2d R (r, b));
+
+extern fun chain {m: Nat} (a: tensor.Tensor 2 (m, 24) F32, b: tensor.Tensor 2 (24, 36) F32, d: tensor.Tensor 2 (36, 20) F32): tensor.Tensor 2 (m, 20) F32 =
+    return (tensor.product_2d R (tensor.product_2d R (a, b), d));

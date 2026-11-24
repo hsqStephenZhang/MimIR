@@ -437,7 +437,7 @@ bool pe_generic_plan(const App* callee, PeGeneric* plan) {
     if (!ris) return false;
     // `run_levels`' per-slot types `«i: nis; …(Ris#i)…»` do not check against slots of different ranks in general.
     if (std::ranges::any_of(*ris, [&](u64 r) { return r != ris->front(); })) return false;
-    for (u64 d = 0; d != rn; ++d)
+    for (u64 d = ro; d != rn; ++d)
         if (!Lit::isa(mr.Sr->proj(rn, d))) return false;
     for (u64 d = 0; d != ro; ++d)
         if (mr.So->proj(ro, d) != mr.Sr->proj(rn, d)) return false;

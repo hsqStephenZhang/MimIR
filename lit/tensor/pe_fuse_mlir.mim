@@ -67,7 +67,7 @@ fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.
 fun add (m: mem.M 0, _: F32, (x b: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (x, b));
 
 // `A·B` for the rows `lo#0 ..` and columns `lo#1 ..` of the product, read from whole inputs.
-lam gemm_box {M K N: Nat} (a: buffer.Buf (2, (M, K), F32), b: buffer.Buf (2, (K, N), F32)) (lo ext: «2; Nat») (m: mem.M 0)
+lam gemm_box {M K N: Nat} (a: buffer.Buf (2, (M, K), F32), b: buffer.Buf (2, (K, N), F32)) (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0)
     : [mem.M 0, buffer.Buf (2, ext, F32)] =
     tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((M, K), (K, N)))
         (ext, (ext#0₂, ext#1₂, K)) (mac, 0.0:F32) ij3 (box_maps lo)
@@ -75,8 +75,8 @@ lam gemm_box {M K N: Nat} (a: buffer.Buf (2, (M, K), F32), b: buffer.Buf (2, (K,
         (m, (a, b));
 
 // `x·b` for a row band of a producer `x` that is itself staged.
-lam chain_box {M K N: Nat} (x: [lo ext: «2; Nat»] → mem.M 0 → [mem.M 0, buffer.Buf (2, ext, F32)], b: buffer.Buf (2, (K, N), F32))
-    (lo ext: «2; Nat») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
+lam chain_box {M K N: Nat} (x: [lo ext cap: «2; Nat», dyn: «2; Bool»] → mem.M 0 → [mem.M 0, buffer.Buf (2, ext, F32)], b: buffer.Buf (2, (K, N), F32))
+    (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] =
     let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
     let (m, y) = tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (K, N)))
         (ext, (ext#0₂, ext#1₂, K)) (mac, 0.0:F32) ij3
