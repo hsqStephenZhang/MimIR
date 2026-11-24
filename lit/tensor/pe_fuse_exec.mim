@@ -40,7 +40,7 @@ extern fun chain (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.Buf (2
         (mac, 0.0:F32)
         ij
         ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
-         ((tensor.Prod (3, F32))#Fill (2, ik, fill), (tensor.Prod (3, F32))#Plain))
+         ((tensor.Prod (3, 2, F32))#Fill (ik, fill), (tensor.Prod (3, 2, F32))#Plain))
         (tree, (26, 12, 28), (ff, ff, ff))
         (m, (dummy, d));
     return (buffer.free (2, (2, 2), F32) (m, dummy), e);
@@ -58,7 +58,7 @@ extern fun relu_mm (m: mem.M 0, a: buffer.Buf (2, (19, 10), F32), b: buffer.Buf 
         (mac, 0.0:F32)
         ij
         ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
-         ((tensor.Prod (3, F32))#Fill (2, ik, fill), (tensor.Prod (3, F32))#Plain))
+         ((tensor.Prod (3, 2, F32))#Fill (ik, fill), (tensor.Prod (3, 2, F32))#Plain))
         (tree, (19, 9, 10), (ff, ff, ff))
         (m, (a, b));
     return (m, c);
@@ -80,7 +80,7 @@ extern fun chain_relu (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.B
             ij
             ((λ (o: «3; Ix»): «2; Ix» = (affine.op.add (affine.lit (lo#0₂), o#0₃), o#2₃),
               λ (o: «3; Ix»): «2; Ix» = (o#2₃, affine.op.add (affine.lit (lo#1₂), o#1₃))),
-             ((tensor.Prod (3, F32))#Fill (2, ik_lo, relu_a), (tensor.Prod (3, F32))#Plain))
+             ((tensor.Prod (3, 2, F32))#Fill (ik_lo, relu_a), (tensor.Prod (3, 2, F32))#Plain))
             (tree, (ext#0₂, ext#1₂, 20), (ff, ff, ff))
             (m, (dummy, b));
         (buffer.free (2, (2, 2), F32) (m, dummy), p);
@@ -91,7 +91,7 @@ extern fun chain_relu (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.B
         (mac, 0.0:F32)
         ij
         ((λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#2₃), kj),
-         ((tensor.Prod (3, F32))#Fill (2, ik, fill_p), (tensor.Prod (3, F32))#Plain))
+         ((tensor.Prod (3, 2, F32))#Fill (ik, fill_p), (tensor.Prod (3, 2, F32))#Plain))
         (tree, (26, 12, 28), (ff, ff, ff))
         (m, (dummy, d));
     return (buffer.free (2, (2, 2), F32) (m, dummy), e);
