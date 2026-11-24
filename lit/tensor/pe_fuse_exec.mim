@@ -14,8 +14,8 @@ plugin affine;
 let F32  = math.F32;
 let Ix   = affine.Index;
 let P  = tensor.Prod (2, F32);
-let ik = tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (0, 0));
-let kj = tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, 0));
+let ik = tensor.aff_proj @(3, 2) (0₃, 2₃);
+let kj = tensor.aff_proj @(3, 2) (2₃, 1₃);
 let ij = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃);
 
 fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
@@ -75,7 +75,7 @@ extern fun chain_relu (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.B
             (ext, (ext#0₂, ext#1₂, 20))
             (mac, 0.0:F32)
             ij
-            ((tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (lo#0₂, 0)), tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, lo#1₂))),
+            ((tensor.aff_offset @(3, 2) ((0₃, 2₃), (lo#0₂, 0)), tensor.aff_offset @(3, 2) ((2₃, 1₃), (0, lo#1₂))),
              (P#Fill relu_a, P#Plain))
             (tree, (ext#0₂, ext#1₂, 20), (ff, ff, ff))
             (m, (dummy, b));

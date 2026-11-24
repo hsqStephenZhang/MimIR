@@ -52,13 +52,13 @@ let Ix  = affine.Index;
 let P   = tensor.Prod (2, F32);
 let ij3 = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃);
 let ij2 = λ (o: «2; Ix»): «2; Ix» = o;
-let ik  = tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (0, 0));
-let kj  = tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, 0));
-let id2 = tensor.aff_linear @(2, 2) (((1, 0), (0, 1)), (0, 0));
+let ik  = tensor.aff_proj @(3, 2) (0₃, 2₃);
+let kj  = tensor.aff_proj @(3, 2) (2₃, 1₃);
+let id2 = tensor.aff_proj @(2, 2) (0₂, 1₂);
 
 // The maps of `x·b` for the rows `lo#0 ..` and columns `lo#1 ..` of the product.
 lam box_maps (lo: «2; Nat»): «2; tensor.Aff (3, 2)» =
-    (tensor.aff_linear @(3, 2) (((1, 0, 0), (0, 0, 1)), (lo#0₂, 0)), tensor.aff_linear @(3, 2) (((0, 0, 1), (0, 1, 0)), (0, lo#1₂)));
+    (tensor.aff_offset @(3, 2) ((0₃, 2₃), (lo#0₂, 0)), tensor.aff_offset @(3, 2) ((2₃, 1₃), (0, lo#1₂)));
 
 fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
 fun add (m: mem.M 0, _: F32, (x b: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (x, b));
@@ -115,7 +115,7 @@ extern fun gemm_generic (m: mem.M 0, a: buffer.Buf (2, (25, 12), F32), b: buffer
     let (m, dummy) = buffer.alloc (2, (2, 2), F32) m;
     let (m, r) = tensor.run_levels_with @(2, F32, 2, 2, (F32, F32), (2, 1), ((2, 2), 28))
         ((25, 28), (25, 28)) (add, 0.0:F32) ij2
-        ((id2, tensor.aff_linear @(2, 1) ((0, 1), 0)), (P#Fill (gemm_box (a, b)), (tensor.Prod (1, F32))#Plain))
+        ((id2, tensor.aff_proj @(2, 1) 1₂), (P#Fill (gemm_box (a, b)), (tensor.Prod (1, F32))#Plain))
         (tensor.sched_par @(2, 2) ((10, 20), tensor.sched_stage @(2, 2) (0₂, tensor.sched_leaf @(2, 2) 1)),
          (25, 28), (ff, ff))
         (m, (dummy, bias));

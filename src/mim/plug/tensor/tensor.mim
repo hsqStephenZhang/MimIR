@@ -1595,38 +1595,82 @@ lam levels_seq {k: Nat} {A: *} (fs: «k; A → A», a0: A): A =
 
 fun levels_take_mem {T: *} (m: mem.M 0, _: T, x: T)@tt: [mem.M 0, T] = return (m, x);
 
-/// Row `i` maps `n` loop coordinates `x` to `((a#i·x + b#i) floordiv den#i) mod per#i`, where `den = 1` and `per = 0` leave a row affine.
-/// Kept as data so that PE both evaluates a map and computes the boxes it touches; `a`, `den` and `per` are static, `b` may be a run-time offset.
-anx nom Aff (n m: Nat) = [a: «m; «n; Nat»», b den per: «m; Nat»];
+/// One coordinate of an access map over `n` loop coordinates and `s` run-time symbols; the constructors mirror `affine.*`.
+anx nom AffE (n s: Nat) =
+    | Dim:  Idx n
+    | Sym:  Idx s
+    | Lit:  Nat
+    | Add:  [AffE (n, s), AffE (n, s)]
+    | Mul:  [AffE (n, s), Nat]
+    | FDiv: [AffE (n, s), Nat]
+    | CDiv: [AffE (n, s), Nat]
+    | Mod:  [AffE (n, s), Nat];
 
-anx lam aff_of {n m: Nat} (a: «m; «n; Nat»», b den per: «m; Nat»): Aff (n, m) = (a, b, den, per) inj Aff (n, m);
+/// An access map from `n` loop coordinates to `m` buffer coordinates, kept as data so that PE both evaluates it and computes the boxes it touches.
+/// The trees are static; `vals` holds the run-time values of their symbols.
+anx nom Aff (n m: Nat) = [s: Nat, vals: «s; Nat», rows: «m; AffE (n, s)»];
 
-/// The affine map `x ↦ a·x + b`.
-anx lam aff_linear {n m: Nat} (a: «m; «n; Nat»», b: «m; Nat»): Aff (n, m) = aff_of @(n, m) (a, b, ‹m; 1›, ‹m; 0›);
+anx lam aff_dim  {n s: Nat} (d: Idx n): AffE (n, s) = (AffE (n, s))#Dim d;
+anx lam aff_sym  {n s: Nat} (k: Idx s): AffE (n, s) = (AffE (n, s))#Sym k;
+anx lam aff_lit  {n s: Nat} (c: Nat): AffE (n, s) = (AffE (n, s))#Lit c;
+anx lam aff_add  {n s: Nat} (x y: AffE (n, s)): AffE (n, s) = (AffE (n, s))#Add (x, y);
+anx lam aff_mul  {n s: Nat} (x: AffE (n, s), c: Nat): AffE (n, s) = (AffE (n, s))#Mul (x, c);
+anx lam aff_fdiv {n s: Nat} (x: AffE (n, s), c: Nat): AffE (n, s) = (AffE (n, s))#FDiv (x, c);
+anx lam aff_cdiv {n s: Nat} (x: AffE (n, s), c: Nat): AffE (n, s) = (AffE (n, s))#CDiv (x, c);
+anx lam aff_mod  {n s: Nat} (x: AffE (n, s), c: Nat): AffE (n, s) = (AffE (n, s))#Mod (x, c);
+anx lam aff_map  {n m s: Nat} (vals: «s; Nat», rows: «m; AffE (n, s)»): Aff (n, m) = (s, vals, rows) inj Aff (n, m);
+/// The projection onto the loop coordinates `dims`.
+anx lam aff_proj {n m: Nat} (dims: «m; Idx n»): Aff (n, m) = aff_map @(n, m, 0) ((), ‹i: m; aff_dim @(n, 0) (dims#i)›);
+/// The projection onto the loop coordinates `dims`, shifted by the run-time offsets `off`.
+anx lam aff_offset {n m: Nat} (dims: «m; Idx n», off: «m; Nat»): Aff (n, m) =
+    aff_map @(n, m, m) (off, ‹i: m; aff_add @(n, m) (aff_dim @(n, m) (dims#i), aff_sym @(n, m) i)›);
 
-/// `a·x` without terms for zero coefficients or multiplications by one.
-lam aff_lin {n m: Nat} (f: Aff (n, m)) (x: «n; affine.Index»): «m; affine.Index» =
-    ‹i: m; (vec.fold.r @([Bool, affine.Index], Idx n) @n
-        (λ (j: Idx n, acc: [Bool, affine.Index]): [Bool, affine.Index] =
-            let c = f#a#i#j;
-            let t = (affine.semiop.mul (x#j, c), x#j)#(c == 1);
-            (acc, (ff, (affine.op.add (t, acc#1₂), t)#(acc#0₂)))#(core.ncmp.ne (c, 0)))
-        (‹j: n; j›, (tt, affine.lit 0)))#1₂›;
+lam aff_eval {n s: Nat} (e: AffE (n, s), vals: «s; Nat», x: «n; affine.Index»)@(core.pe.is_closed e): affine.Index =
+    match e with
+        | Dim d  => x#d
+        | Sym k  => affine.lit (vals#k)
+        | Lit c  => affine.lit c
+        | Add p  => affine.op.add (aff_eval (p#0₂, vals, x), aff_eval (p#1₂, vals, x))
+        | Mul p  => affine.semiop.mul (aff_eval (p#0₂, vals, x), p#1₂)
+        | FDiv p => affine.semiop.floordiv (aff_eval (p#0₂, vals, x), p#1₂)
+        | CDiv p => affine.semiop.ceildiv (aff_eval (p#0₂, vals, x), p#1₂)
+        | Mod p  => affine.semiop.rem (aff_eval (p#0₂, vals, x), p#1₂);
 
-lam aff_apply {n m: Nat} (f: Aff (n, m)) (x: «n; affine.Index»): «m; affine.Index» =
-    let y = aff_lin f x;
-    ‹i: m; let y = (affine.op.add (y#i, affine.lit (f#b#i)), y#i)#(f#b#i == 0);
-        let y = (affine.semiop.floordiv (y, f#den#i), y)#(f#den#i == 1);
-        (affine.semiop.rem (y, f#per#i), y)#(f#per#i == 0)›;
+/// `e`'s terms in `x` without its constants, i.e. `e (lo + x) - e lo` for an affine `e`; the flag tells whether there is any.
+lam aff_rel {n s: Nat} (e: AffE (n, s), x: «n; affine.Index»)@(core.pe.is_closed e): [Bool, affine.Index] =
+    match e with
+        | Dim d  => (tt, x#d)
+        | Add p  =>
+            let (a, u) = aff_rel (p#0₂, x);
+            let (b, v) = aff_rel (p#1₂, x);
+            (((ff, affine.lit 0), (tt, v))#b, ((tt, u), (tt, affine.op.add (u, v)))#b)#a
+        | Mul p  => let (a, u) = aff_rel (p#0₂, x); (a, affine.semiop.mul (u, p#1₂))
+        | Sym _  => (ff, affine.lit 0)
+        | Lit _  => (ff, affine.lit 0)
+        | FDiv _ => (ff, affine.lit 0)
+        | CDiv _ => (ff, affine.lit 0)
+        | Mod _  => (ff, affine.lit 0);
+
+/// The interval `e` maps the box `(lo, ext)` onto as its start and static width, and whether `e` is affine so that the interval is exact.
+lam aff_span {n s: Nat} (e: AffE (n, s), vals: «s; Nat», lo ext: «n; Nat»)@(core.pe.is_closed e): [Bool, Nat, Nat] =
+    match e with
+        | Dim d  => (tt, lo#d, core.nat.sub (ext#d, 1))
+        | Sym k  => (tt, vals#k, 0)
+        | Lit c  => (tt, c, 0)
+        | Add p  =>
+            let (a, l, w) = aff_span (p#0₂, vals, lo, ext);
+            let (b, k, v) = aff_span (p#1₂, vals, lo, ext);
+            (core.bit2.and 2 (a, b), core.nat.add (l, k), core.nat.add (w, v))
+        | Mul p  => let (a, l, w) = aff_span (p#0₂, vals, lo, ext); (a, core.nat.mul (l, p#1₂), core.nat.mul (w, p#1₂))
+        | FDiv _ => (ff, 0, 0)
+        | CDiv _ => (ff, 0, 0)
+        | Mod _  => (ff, 0, 0);
 
 /// The box `f` maps the box `(lo, ext)` onto; only for affine rows.
 lam aff_box {n m: Nat} (f: Aff (n, m)) (lo ext: «n; Nat»): [«m; Nat», «m; Nat»] =
-    let affine = vec.fold.r @(Bool, Idx m) @m
-        (λ (i: Idx m, acc: Bool): Bool = core.bit2.and 2 (acc, core.bit2.and 2 (f#den#i == 1, f#per#i == 0))) (‹i: m; i›, tt);
-    let dot = λ (i: Idx m) (x: «n; Nat»): Nat =
-        vec.fold.r @(Nat, Idx n) @n (λ (j: Idx n, acc: Nat): Nat = core.nat.add (core.nat.mul (f#a#i#j, x#j), acc)) (‹j: n; j›, 0);
-    (‹i: m; core.nat.add (f#b#i, dot i lo)›,
-     refly.check (affine, ‹i: m; core.nat.add (1, dot i ‹j: n; core.nat.sub (ext#j, 1)›)›, "Aff: a box needs a map without floordiv or mod"));
+    let sp = ‹i: m; aff_span (f#rows#i, f#vals, lo, ext)›;
+    let ok = vec.fold.r @(Bool, Idx m) @m (λ (i: Idx m, acc: Bool): Bool = core.bit2.and 2 (acc, (sp#i)#0₃)) (‹i: m; i›, tt);
+    (‹i: m; (sp#i)#1₃›, refly.check (ok, ‹i: m; core.nat.add ((sp#i)#2₃, 1)›, "Aff: a box needs a map without floordiv or mod"));
 
 /// How a slot gets its data: the buffer itself, or a producer that computes any box `(lo, ext)` of it on demand.
 anx nom Prod (r: Nat, T: *) =
@@ -1647,7 +1691,9 @@ nom LevelsView (Rn: Nat, T: *) = [
 
 lam levels_plain {Rn: Nat} (r: Nat, f: Aff (Rn, r))@(core.pe.is_closed r)
     : [«Rn; affine.Index», «Rn; affine.Index»] → «r; affine.Index» =
-    lm (q o: «Rn; affine.Index»): «r; affine.Index» = aff_apply f ‹e: Rn; affine.op.add (q#e, o#e)›;
+    lm (q o: «Rn; affine.Index»): «r; affine.Index» =
+        let x = ‹e: Rn; affine.op.add (q#e, o#e)›;
+        ‹i: r; aff_eval (f#rows#i, f#vals, x)›;
 
 /// CPU panel packing for one input: loop `d` in runs of `w`, other moving loops in order, lane last.
 lam levels_pack_one {T: *, Rn: Nat} (r: Nat) (s: «r; Nat»)
@@ -1828,7 +1874,7 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
             let v    = vs#slot;
             let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) (v#data) (d, w, dep, v#q, size, cap, dyn_ax#(core.idx 0 Rn d), m);
             let unit = ‹e: Rn; (1, w)#(core.idx2nat e == d)›;
-            let none = aff_linear @(Rn, Rp) (‹Rp; ‹Rn; 0››, ‹Rp; 0›);
+            let none = aff_map @(Rn, Rp, 0) ((), ‹Rp; aff_lit @(Rn, 0) 0›);
             let v2   = (Rp, sp, unit, zero, to, p, none, (Prod (Rp, Ts#slot))#Plain) inj LevelsView (Rn, Ts#slot);
             let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
             (buffer.free (Rp, sp, Ts#slot) (m, p), dst);
@@ -1845,7 +1891,10 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
                     let (blo, bext) = aff_box (v#aff) (lo, refly.check (fixed, size, "SchedTree: a Stage cannot see a run-time extent"));
                     let (m, t) = make (blo, bext) m;
                     // The box starts where the tile does, so the tile reads at the linear part of the map.
-                    let v2 = (v#r, bext, ‹Rn; 1›, zero, lm (q o: IxN): «v#r; affine.Index» = aff_lin (v#aff) ‹e: Rn; affine.op.add (q#e, o#e)›,
+                    let rel = lm (q o: IxN): «v#r; affine.Index» =
+                        let x = ‹e: Rn; affine.op.add (q#e, o#e)›;
+                        ‹i: v#r; let (h, t) = aff_rel ((v#aff)#rows#i, x); (affine.lit 0, t)#h›;
+                    let v2 = (v#r, bext, ‹Rn; 1›, zero, rel,
                               t, v#aff, (Prod (v#r, Ts#slot))#Plain) inj LevelsView (Rn, Ts#slot);
                     let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
                     (buffer.free (v#r, bext, Ts#slot) (m, t), dst);

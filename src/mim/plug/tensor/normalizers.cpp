@@ -236,108 +236,125 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
 
 namespace {
 
-/// `a·x + b` over the loop variables `xs`; `b` is a `Nat`.
-struct Lin {
-    std::vector<u64> a;
-    const Def* b;
+/// Translates an access map's `affine.*` terms over the loop variables `xs` into `tensor.AffE` trees.
+/// `scan` checks a term and collects its run-time `affine.lit`s as symbols; `build` then emits the tree.
+class AffReflect {
+public:
+    AffReflect(World& w, const Def* n, Defs xs)
+        : w_(w)
+        , n_(n)
+        , xs_(xs) {}
+
+    bool scan(const Def* t) {
+        if (auto lit = Axm::isa<affine::lit>(t)) {
+            if (!Lit::isa(lit->arg()) && std::ranges::find(syms_, lit->arg()) == syms_.end())
+                syms_.emplace_back(lit->arg());
+            return true;
+        }
+        if (dim(t)) return true;
+        if (auto add = Axm::isa(affine::op::add, t)) {
+            auto [l, r] = add->args<2>();
+            return scan(l) && scan(r);
+        }
+        if (auto op = Axm::isa<affine::semiop>(t)) {
+            auto [l, c] = op->args<2>();
+            auto k      = Lit::isa(c);
+            return k && *k != 0 && scan(l);
+        }
+        if (auto lin = Axm::isa<affine::linearize>(t)) {
+            auto [idxs, s] = lin->args<2>();
+            auto r         = Lit::isa(s->arity());
+            if (!r || !lit_projs(s, *r)) return false;
+            for (size_t k = 0; k != *r; ++k)
+                if (!scan(idxs->proj(*r, k))) return false;
+            return true;
+        }
+        if (auto [l, s, k] = delinearize(t); l) return lit_projs(s, *Lit::isa(s->arity())) && scan(l);
+        return false;
+    }
+
+    const Def* build(const Def* t) {
+        if (auto lit = Axm::isa<affine::lit>(t)) {
+            if (Lit::isa(lit->arg())) return ctor<tensor::aff_lit>(lit->arg());
+            auto k = std::ranges::find(syms_, lit->arg()) - syms_.begin();
+            return ctor<tensor::aff_sym>(w_.lit_idx(syms_.size(), k));
+        }
+        if (auto j = dim(t)) return ctor<tensor::aff_dim>(w_.lit_idx(xs_.size(), *j));
+        if (auto add = Axm::isa(affine::op::add, t)) {
+            auto [l, r] = add->args<2>();
+            return ctor<tensor::aff_add>({build(l), build(r)});
+        }
+        if (auto op = Axm::isa<affine::semiop>(t)) {
+            auto [l, c] = op->args<2>();
+            auto x      = build(l);
+            switch (op.id()) {
+                case affine::semiop::mul: return ctor<tensor::aff_mul>({x, c});
+                case affine::semiop::floordiv: return ctor<tensor::aff_fdiv>({x, c});
+                case affine::semiop::ceildiv: return ctor<tensor::aff_cdiv>({x, c});
+                case affine::semiop::rem: return ctor<tensor::aff_mod>({x, c});
+            }
+        }
+        if (auto lin = Axm::isa<affine::linearize>(t)) {
+            auto [idxs, s] = lin->args<2>();
+            auto r         = *Lit::isa(s->arity());
+            const Def* sum = nullptr;
+            u64 stride     = 1;
+            for (size_t k = r; k-- != 0;) {
+                auto x = build(idxs->proj(r, k));
+                if (stride != 1) x = ctor<tensor::aff_mul>({x, w_.lit_nat(stride)});
+                sum = sum ? ctor<tensor::aff_add>({x, sum}) : x;
+                stride *= *Lit::isa(s->proj(r, k));
+            }
+            return sum;
+        }
+        auto [l, s, k] = delinearize(t);
+        auto m         = *Lit::isa(s->arity());
+        u64 stride     = 1;
+        for (size_t j = k + 1; j != m; ++j)
+            stride *= *Lit::isa(s->proj(m, j));
+        auto x = build(l);
+        if (stride != 1) x = ctor<tensor::aff_fdiv>({x, w_.lit_nat(stride)});
+        return ctor<tensor::aff_mod>({x, s->proj(m, k)});
+    }
+
+    /// The `tensor.Aff` with the rows `rows`, built after scanning them.
+    const Def* map(Defs rows) {
+        auto s   = w_.lit_nat(syms_.size());
+        auto map = w_.app(w_.annex<tensor::aff_map>(), {n_, w_.lit_nat(rows.size()), s});
+        return w_.app(map, {w_.tuple(syms_), w_.tuple(DefVec(rows.size(), [&](size_t i) { return build(rows[i]); }))});
+    }
+
+private:
+    std::optional<size_t> dim(const Def* t) const {
+        if (auto it = std::ranges::find(xs_, t); it != xs_.end()) return it - xs_.begin();
+        return {};
+    }
+
+    /// `delinearize (l, s) # k` as `(l, s, k)`, or `l == nullptr`.
+    static std::tuple<const Def*, const Def*, size_t> delinearize(const Def* t) {
+        if (auto ex = t->isa<Extract>())
+            if (auto del = Axm::isa<affine::delinearize>(ex->tuple()))
+                if (auto k = Lit::isa(ex->index()); k && Lit::isa(del->arg(2, 1)->arity())) {
+                    auto [l, s] = del->args<2>();
+                    return {l, s, *k};
+                }
+        return {nullptr, nullptr, 0};
+    }
+
+    template<class Id>
+    const Def* ctor(Defs args) {
+        return w_.app(w_.app(w_.annex<Id>(), {n_, w_.lit_nat(syms_.size())}), args);
+    }
+    template<class Id>
+    const Def* ctor(const Def* arg) {
+        return w_.app(w_.app(w_.annex<Id>(), {n_, w_.lit_nat(syms_.size())}), arg);
+    }
+
+    World& w_;
+    const Def* n_;
+    Defs xs_;
+    DefVec syms_;
 };
-
-std::optional<Lin> linear(const Def* t, Defs xs) {
-    auto& w = t->world();
-    auto n  = xs.size();
-    if (auto lit = Axm::isa<affine::lit>(t)) return Lin{std::vector<u64>(n), lit->arg()};
-    for (size_t j = 0; j != n; ++j)
-        if (t == xs[j]) {
-            auto a = std::vector<u64>(n);
-            a[j]   = 1;
-            return Lin{a, w.lit_nat_0()};
-        }
-    if (auto add = Axm::isa(affine::op::add, t)) {
-        auto [l, r] = add->args<2>();
-        auto x = linear(l, xs), y = linear(r, xs);
-        if (!x || !y) return {};
-        for (size_t j = 0; j != n; ++j)
-            x->a[j] += y->a[j];
-        x->b = w.call(core::nat::add, Defs{x->b, y->b});
-        return x;
-    }
-    if (auto mul = Axm::isa(affine::semiop::mul, t)) {
-        auto [l, c] = mul->args<2>();
-        auto k      = Lit::isa(c);
-        auto x      = linear(l, xs);
-        if (!k || !x) return {};
-        for (auto& a : x->a)
-            a *= *k;
-        x->b = w.call(core::nat::mul, Defs{x->b, c});
-        return x;
-    }
-    if (auto lin = Axm::isa<affine::linearize>(t)) {
-        auto [idxs, s] = lin->args<2>();
-        auto r         = Lit::isa(s->arity());
-        if (!r) return {};
-        auto acc   = Lin{std::vector<u64>(n), w.lit_nat_0()};
-        u64 stride = 1;
-        for (size_t k = *r; k-- != 0;) {
-            auto x  = linear(idxs->proj(*r, k), xs);
-            auto sk = Lit::isa(s->proj(*r, k));
-            if (!x || !sk) return {};
-            for (size_t j = 0; j != n; ++j)
-                acc.a[j] += stride * x->a[j];
-            acc.b = w.call(core::nat::add, Defs{acc.b, w.call(core::nat::mul, Defs{w.lit_nat(stride), x->b})});
-            stride *= *sk;
-        }
-        return acc;
-    }
-    return {};
-}
-
-/// One row of a `tensor.Aff`: `((a·x + b) floordiv den) mod per`.
-struct AffRow {
-    Lin lin;
-    u64 den = 1, per = 0;
-};
-
-std::optional<AffRow> aff_row(const Def* t, Defs xs) {
-    u64 den = 1, per = 0;
-    if (auto ex = t->isa<Extract>())
-        if (auto del = Axm::isa<affine::delinearize>(ex->tuple())) {
-            auto [l, s] = del->args<2>();
-            auto m      = Lit::isa(s->arity());
-            auto k      = Lit::isa(ex->index());
-            if (!m || !k) return {};
-            for (size_t j = *k + 1; j != *m; ++j)
-                if (auto sj = Lit::isa(s->proj(*m, j)))
-                    den *= *sj;
-                else
-                    return {};
-            auto sk = Lit::isa(s->proj(*m, *k));
-            if (!sk) return {};
-            per = *sk;
-            t   = l;
-        }
-    if (auto rem = Axm::isa(affine::semiop::rem, t); rem && per == 0 && den == 1) {
-        auto [l, c] = rem->args<2>();
-        auto k      = Lit::isa(c);
-        if (!k || *k == 0) return {};
-        per = *k;
-        t   = l;
-    }
-    u64 round = 0;
-    if (auto div = Axm::isa<affine::semiop>(t);
-        div && den == 1 && (div.id() == affine::semiop::floordiv || div.id() == affine::semiop::ceildiv)) {
-        auto [l, c] = div->args<2>();
-        auto k      = Lit::isa(c);
-        if (!k || *k == 0) return {};
-        den = *k;
-        // `ceil(y / d) = floor((y + d - 1) / d)`.
-        if (div.id() == affine::semiop::ceildiv) round = *k - 1;
-        t = l;
-    }
-    auto lin = linear(t, xs);
-    if (!lin) return {};
-    if (round) lin->b = t->world().call(core::nat::add, Defs{lin->b, t->world().lit_nat(round)});
-    return AffRow{*lin, den, per};
-}
 
 } // namespace
 
@@ -383,19 +400,12 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
 
     auto affs = DefVec(2);
     for (size_t i = 0; i != 2; ++i) {
-        auto r  = *Lit::isa(mr.Ris->proj(2, i));
-        auto at = w.app(maps[i], probe->var());
-        auto a = DefVec(r), b = DefVec(r), den = DefVec(r), per = DefVec(r);
-        for (size_t k = 0; k != r; ++k) {
-            auto row = aff_row(at->proj(r, k), vars);
-            if (!row) return w.lit_ff();
-            a[k]   = w.tuple(DefVec(rn, [&](size_t j) { return w.lit_nat(row->lin.a[j]); }));
-            b[k]   = row->lin.b;
-            den[k] = w.lit_nat(row->den);
-            per[k] = w.lit_nat(row->per);
-        }
-        auto of = w.app(w.annex<tensor::aff_of>(), {mr.Rn, w.lit_nat(r)});
-        affs[i] = w.app(of, {w.tuple(a), w.tuple(b), w.tuple(den), w.tuple(per)});
+        auto r    = *Lit::isa(mr.Ris->proj(2, i));
+        auto rows = w.app(maps[i], probe->var())->projs(r);
+        auto refl = AffReflect(w, mr.Rn, vars);
+        for (auto row : rows)
+            if (!refl.scan(row)) return w.lit_ff();
+        affs[i] = refl.map(rows);
     }
     if (plan) *plan = {*bytes, dep, w.tuple(affs)};
     return w.lit_tt();
