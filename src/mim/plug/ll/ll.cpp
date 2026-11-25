@@ -1069,7 +1069,7 @@ std::optional<std::string> Emitter::emit_math(BB& bb, const std::string& name, c
         auto t    = convert(exp->type());
         auto mode = Lit::isa(exp->uncurry_args<3>()[0]);
         if (exp.id() == math::exp::exp && t == "float" && mode && (*mode & std::to_underlying(math::Mode::afn)))
-            return fast_expf(bb, name, a);
+            return fast_expf(bb, name, a, static_cast<math::Mode>(*mode));
         std::string f = "llvm.";
         f += (exp.sub() & sub_t(math::exp::log)) ? "log" : "exp";
         f += (exp.sub() & sub_t(math::exp::bin)) ? "2" : (exp.sub() & sub_t(math::exp::dec)) ? "10" : "";
@@ -1232,7 +1232,7 @@ std::optional<std::string> Emitter::emit_vec(BB& bb, const std::string& name, co
 
 // Cephes' expf without branches, so that a loop around it vectorizes: 2^n · p(r) for x = n·ln 2 + r.
 // The reduction stays strict, since reassociating its two-part ln 2 loses the low bits of r.
-std::string Emitter::fast_expf(BB& bb, const std::string& name, const std::string& a) {
+std::string Emitter::fast_expf(BB& bb, const std::string& name, const std::string& a, math::Mode mode) {
     auto k = [](f32 v) { return std::format("0x{:016x}", std::bit_cast<u64>(f64(v))); };
     auto n = [&](std::string_view s) { return std::format("{}.{}", name, s); };
     // Below `lo` the result is no normal float and becomes 0; above `hi`, 2^n would overflow the exponent.
@@ -1255,17 +1255,28 @@ std::string Emitter::fast_expf(BB& bb, const std::string& name, const std::strin
         auto m = bb.assign(n(std::format("m{}", i)), "fmul fast float {}, {}", p, r);
         p      = bb.assign(n(std::format("p{}", i++)), "fadd fast float {}, {}", m, k(c));
     }
-    auto rr = bb.assign(n("rr"), "fmul fast float {}, {}", r, r);
-    auto y  = bb.assign(n("y1"), "fmul fast float {}, {}", p, rr);
-    y       = bb.assign(n("y2"), "fadd fast float {}, {}", y, r);
-    y       = bb.assign(n("y"), "fadd fast float {}, {}", y, k(1.0f));
-    auto e  = bb.assign(n("ni"), "fptosi float {} to i32", fl);
-    e       = bb.assign(n("eb"), "add i32 {}, 127", e);
-    e       = bb.assign(n("es"), "shl i32 {}, 23", e);
-    e       = bb.assign(n("pw"), "bitcast i32 {} to float", e);
-    y       = bb.assign(n("v"), "fmul fast float {}, {}", y, e);
-    auto u  = bb.assign(n("under"), "fcmp olt float {}, {}", a, lo);
-    return bb.assign(name, "select i1 {}, float 0.0, float {}", u, y);
+    auto rr  = bb.assign(n("rr"), "fmul fast float {}, {}", r, r);
+    auto y   = bb.assign(n("y1"), "fmul fast float {}, {}", p, rr);
+    y        = bb.assign(n("y2"), "fadd fast float {}, {}", y, r);
+    y        = bb.assign(n("y"), "fadd fast float {}, {}", y, k(1.0f));
+    auto e   = bb.assign(n("ni"), "fptosi float {} to i32", fl);
+    e        = bb.assign(n("eb"), "add i32 {}, 127", e);
+    e        = bb.assign(n("es"), "shl i32 {}, 23", e);
+    e        = bb.assign(n("pw"), "bitcast i32 {} to float", e);
+    y        = bb.assign(n("v"), "fmul fast float {}, {}", y, e);
+    auto has = [mode](math::Mode m) { return (std::to_underlying(mode) & std::to_underlying(m)) != 0; };
+    auto inf = !has(math::Mode::ninf), nan = !has(math::Mode::nnan);
+    auto u = bb.assign(n("under"), "fcmp olt float {}, {}", a, lo);
+    y      = bb.assign(inf || nan ? n("flush") : name, "select i1 {}, float 0.0, float {}", u, y);
+    if (inf) {
+        auto o = bb.assign(n("over"), "fcmp ogt float {}, {}", a, k(88.72284f));
+        y      = bb.assign(nan ? n("inf") : name, "select i1 {}, float 0x7ff0000000000000, float {}", o, y);
+    }
+    if (nan) {
+        auto q = bb.assign(n("nan"), "fcmp uno float {}, 0.0", a);
+        y      = bb.assign(name, "select i1 {}, float {}, float {}", q, a, y);
+    }
+    return y;
 }
 
 std::string Emitter::emit_bb_impl(BB& bb, const Def* def) {

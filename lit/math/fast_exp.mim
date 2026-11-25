@@ -4,6 +4,10 @@
 // RUN: %t.exec
 
 // `math.exp` with `afn` is a polynomial the loop vectorizer can widen; without it, `llvm.exp`.
+// Without `nnan` and `ninf` the polynomial keeps NaN and saturates to infinity.
+// CHECK-LABEL: define float @aexp(
+// CHECK-NOT: llvm.exp
+// CHECK: fcmp uno
 // CHECK-LABEL: define float @fexp(
 // CHECK-NOT: llvm.exp
 // CHECK: llvm.floor.f32
@@ -16,3 +20,5 @@ let F32 = math.F32;
 
 extern fun fexp (x: F32): F32 = return (math.exp.exp math.mode.fast x);
 extern fun sexp (x: F32): F32 = return (math.exp.exp 0 x);
+// nsz | arcp | contract | afn | reassoc
+extern fun aexp (x: F32): F32 = return (math.exp.exp 124 x);
