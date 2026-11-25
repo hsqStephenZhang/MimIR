@@ -1,5 +1,6 @@
 #include <fe/term.h>
 
+#include <mim/driver.h>
 #include <mim/tuple.h>
 #include <mim/world.h>
 
@@ -86,6 +87,7 @@ const Def* normalize_check(const Def* type, const Def*, const Def* arg) {
     if (cond == w.lit_ff()) {
         auto s = tuple2str(msg);
         if (s.empty()) s = "unknown error"s;
+        if (w.driver().arg_nat("refly", "strict").value_or(0)) arg->blame("{}", s).bail();
         w.log().e("{}", s);
     }
 

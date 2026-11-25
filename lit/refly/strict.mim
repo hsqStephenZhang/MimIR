@@ -1,0 +1,12 @@
+// RUN: %mim %s -o - 2>&1 | %FileCheck %s
+// RUN: %mim -X refly:strict=1 %s -o %t.mim > %t.log 2>&1; test $? -ne 0
+// RUN: %FileCheck %s --check-prefix=STRICT --input-file=%t.log
+
+// A failed `refly.check` logs its message and stays stuck; `-X refly:strict=1` makes it a compile error.
+// CHECK: the answer is not 42
+// CHECK: refly.check
+// STRICT: error: the answer is not 42
+plugin refly;
+plugin core;
+
+extern fun answer (x: Nat): Nat = return (refly.check (ff, x, "the answer is not 42"));
