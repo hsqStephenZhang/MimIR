@@ -11,6 +11,10 @@ float* layer_norm(float*);
 float* max_pool(float*);
 float* avg_pool(float*);
 float* transpose(float*);
+float* row_sum(float*);
+float* row_max(float*);
+float* short_mean(float*);
+float* plane_max(float*);
 }
 
 static std::vector<float> fill(size_t n, int p, int q) {
@@ -80,5 +84,20 @@ int main() {
         for (int j = 0; j != C; ++j)
             tr[j * R + i] = x[i * C + j];
     bad += check("transpose", transpose(x.data()), tr);
+    auto y = fill(R * 5, 3, 7), z = fill(5 * 7 * 48, 5, 13);
+    std::vector<double> rs(R), rm(R, -INFINITY), sm5(R), pm(5, -INFINITY);
+    for (int i = 0; i != R; ++i) {
+        for (int j = 0; j != C; ++j)
+            rs[i] += x[i * C + j], rm[i] = std::fmax(rm[i], x[i * C + j]);
+        for (int j = 0; j != 5; ++j)
+            sm5[i] += y[i * 5 + j] / 5.0;
+    }
+    for (int i = 0; i != 5; ++i)
+        for (int k = 0; k != 7 * 48; ++k)
+            pm[i] = std::fmax(pm[i], z[i * 336 + k]);
+    bad += check("row_sum", row_sum(x.data()), rs);
+    bad += check("row_max", row_max(x.data()), rm);
+    bad += check("short_mean", short_mean(y.data()), sm5);
+    bad += check("plane_max", plane_max(z.data()), pm);
     return bad != 0;
 }

@@ -4,12 +4,25 @@
 // RUN: %mim -p opt -X tensor:pe-generic=0 %s -p ll -X ll:o=%t1.ll -o %t1.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_reduce_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec
+// RUN: %mim -VVVV -p opt %s -o %t2.mim > %t2.log 2>&1
+// RUN: %FileCheck %s --check-prefix=TRANS --input-file=%t2.log
+// RUN: %FileCheck %s --check-prefix=RFAC --input-file=%t2.log
 
 // Reductions, normalizations, pooling and a transpose through run_levels by default; an epilogue runs within the leaves.
+// A reduction whose combiner reassociates keeps a vector of partial results along its contiguous loop and merges them.
 // CHECK-DAG: tile the map-reduce over (37, 53) with tensor.run_levels
 // CHECK-DAG: tile the map-reduce over (53, 37) with tensor.run_levels
 // CHECK-DAG: tile the map-reduce over (2, 3, 8, 9, 2, 2) with tensor.run_levels
 // CHECK-DAG: tile the map-reduce over (2, 3, 14, 16, 3, 3) with tensor.run_levels
+// The transpose tiles both contiguous loops; the reassociating sums and maxima vectorize their reduction loop.
+// TRANS: tile the map-reduce over (53, 37)
+// TRANS-NEXT: schedule tree:
+// TRANS-NEXT: Par ‹2; i8›
+// TRANS-NEXT:   Par ‹2; 8›
+// TRANS-NEXT:     Leaf 2
+// RFAC: tile the map-reduce over (5, 7, 48)
+// RFAC-NEXT: schedule tree:
+// RFAC-NEXT: Leaf 2
 plugin tensor;
 plugin core;
 plugin math;
@@ -19,6 +32,7 @@ let F32 = math.F32;
 lam add (x y: F32): F32 = math.arith.add 0 (x, y);
 lam mul (x y: F32): F32 = math.arith.mul 0 (x, y);
 lam fmax (x y: F32): F32 = math.extrema.fmax 0 (x, y);
+lam fadd (x y: F32): F32 = math.arith.add math.mode.fast (x, y);
 
 extern fun softmax (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 2 (37, 53) F32 =
     return (tensor.softmax 0 1_2 x);
@@ -44,3 +58,16 @@ extern fun avg_pool (x: tensor.Tensor 4 (2, 3, 16, 18) F32): tensor.Tensor 4 (2,
 
 extern fun transpose (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 2 (53, 37) F32 =
     return (tensor.transpose_2d x);
+
+extern fun row_sum (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 1 37 F32 =
+    return (tensor.reduce (fadd, 0:F32) 1_2 x);
+
+extern fun row_max (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 1 37 F32 =
+    return (tensor.reduce (fmax, math.neg_inf (23, 8)) 1_2 x);
+
+extern fun short_mean (x: tensor.Tensor 2 (37, 5) F32): tensor.Tensor 1 37 F32 =
+    return (tensor.unary (λ (v: F32): F32 = math.arith.div 0 (v, 5.0:F32)) (tensor.reduce (fadd, 0:F32) 1_2 x));
+
+extern fun plane_max (x: tensor.Tensor 3 (5, 7, 48) F32): tensor.Tensor 1 5 F32 =
+    return (tensor.map_reduce (5, (5, 7, 48)) (tensor.pool_fun fmax, math.neg_inf (23, 8)) (λ (i _ _: affine.Index): affine.Index = i)
+        (λ (i j k: affine.Index): «3; affine.Index» = (i, j, k)) x);

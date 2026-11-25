@@ -1657,6 +1657,11 @@ lam levels_seq {k: Nat} {A: *} (fs: «k; A → A», a0: A): A =
 
 fun levels_take_mem {T: *} (m: mem.M 0, _: T, x: T)@tt: [mem.M 0, T] = return (m, x);
 
+/// A binary operation as the combiner of two partial results.
+anx lam levels_merge {T: *} (op: [T, T] → T): Fn [mem.M 0, T, T] → [mem.M 0, T] =
+    fun merge (m: mem.M 0, a b: T)@tt: [mem.M 0, T] = return (m, op (a, b));
+    merge;
+
 /// One coordinate of an access map over `n` loop coordinates and `s` run-time symbols; the constructors mirror `affine.*`.
 anx nom AffE (n s: Nat) =
     | Dim:  Idx n
@@ -1944,6 +1949,7 @@ anx lam sched_size {N Rn: Nat} (t: SchedTree (N, Rn)): Nat =
 anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr origin: «Rn; Nat»)
     (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To, post: Fn [mem.M 0, To, []] → [mem.M 0, To])
+    (merge: Fn [mem.M 0, To, To] → [mem.M 0, To], lanes: Nat)
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
     (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
@@ -1979,7 +1985,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (size#d == Sr#d, acc, ff))) (‹d: Rn; d›, fresh);
         let run   = λ (S: «Ro; Nat», c: buffer.Buf (Ro, S, To), at: IxN → «Ro; affine.Index», sz: «Rn; Nat», m: mem.M 0)
                       : [mem.M 0, buffer.Buf (Ro, S, To)] =
-            btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (S, sz, btensor.mk_sched (vdim, 0))
+            btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (S, sz, btensor.mk_sched (core.select (Ro < vdim + 1, Rn, vdim), 0))
                 @(Ts, Ris_c, Sis_c, (), (), ()) @[«Ro; Nat», IxN → «Ro; affine.Index», buffer.Buf (Ro, S, To), Bool, To]
                 (f, (S, at, c, fresh, init), (btensor.id @To, post)#whole) at (ins_m, ()) (m, c, ins_b, ());
         // An edge tile computes in a scratch tile whose valid part is copied in and out; whole tiles come from `Peel` without one.
@@ -1995,7 +2001,48 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             let (m, sc) = run (Sc, sc, map_out, full_sz, m);
             let (m, dst) = btensor.map_reduce @1 @(To, Ro, Ro) (So, ext) @(To, Ro, Sc) (levels_take_mem @To, ⊥:To) shift ident (m, dst, sc);
             (buffer.free (Ro, Sc, To) (m, sc), dst);
-        ((λ (_: []): [mem.M 0, D] = run (So, dst, out, size, m), edged)#(core.select (blk vdim, tt, blk (vdim + 1)))) ();
+        // A reduction loop as `vdim` keeps `lanes` partial accumulators along it, which `merge` combines into the cells.
+        let rfactor = λ (_: []): [mem.M 0, D] =
+            let w    = lanes;
+            let n    = size#(core.idx 0 Rn vdim);
+            let full = core.nat.div (n, w);
+            let tail = core.nat.rem (n, w);
+            let Rq   = core.nat.add (Ro, 1);
+            let Rp   = core.nat.add (Rn, 1);
+            let IxP  = «Rp; affine.Index»;
+            let IxQ  = «Rq; affine.Index»;
+            let Sp   = ‹d: Rq; (w, size#(core.idx 0 Rn (core.idx2nat d)))#(core.idx2nat d < Ro)›;
+            let (m, p) = buffer.alloc (Rq, Sp, To) m;
+            // Loop `Ro` is the lane and loop `vdim + 1` counts groups of `w` from `base`.
+            let back = λ (base: Nat) = lm (c: IxP): IxN =
+                ‹e: Rn; let k = core.idx2nat e; let next = c#(core.idx 0 Rp (core.nat.add (k, 1)));
+                    ((next, affine.op.add (affine.lit base, affine.op.add (affine.semiop.mul (next, w), c#(core.idx 0 Rp Ro))))#(k == vdim),
+                     c#(core.idx 0 Rp k))#(k < Ro)›;
+            let lane = lm (c: IxP): IxQ = ‹d: Rq; c#(core.idx 0 Rp (core.idx2nat d))›;
+            let part = λ (base width groups: Nat, seed: Bool, m: mem.M 0): mem.M 0 =
+                let sz    = ‹e: Rp; let k = core.idx2nat e;
+                    (((size#(core.idx 0 Rn (core.nat.sub (k, 1))), groups)#(k == core.nat.add (vdim, 1)), width)#(k == Ro),
+                     size#(core.idx 0 Rn k))#(k < Ro)›;
+                let ins_p = ‹i: N; lm (c: IxP): «Ris_c#i; affine.Index» = let v = vs#i; (v#at) (v#q, back base c)›;
+                (btensor.map_reduce_post @(N, 0) @(To, To, Rq, Rp, btensor.SchedT) (Sp, sz, btensor.mk_sched (Ro, 0))
+                    @(Ts, Ris_c, Sis_c, (), (), ()) @[«Rq; Nat», IxP → IxQ, buffer.Buf (Rq, Sp, To), Bool, To]
+                    (f, (Sp, lane, p, seed, init), btensor.id @To) lane (ins_p, ()) (m, p, ins_b, ()))#0₂;
+            // Lanes start from the unit `init`; the tail joins the first `tail` lanes.
+            let m = ((λ (_: []): mem.M 0 = part (0, tail, 1, tt, m), λ (_: []): mem.M 0 = part (0, w, full, tt, m))#(core.ncmp.ne (full, 0))) ();
+            let m = ((λ (_: []): mem.M 0 = m, λ (_: []): mem.M 0 = part (core.nat.mul (full, w), tail, 1, ff, m))
+                     #(core.bit2.and 2 (core.ncmp.ne (full, 0), core.ncmp.ne (tail, 0)))) ();
+            let used  = core.select (full == 0, tail, w);
+            let cell  = lm (c: IxQ): «Ro; affine.Index» = out ‹d: Rn; (affine.lit 0, c#(core.idx 0 Rq (core.idx2nat d)))#(core.idx2nat d < Ro)›;
+            let read  = lm (c: IxQ): IxQ = c;
+            let (m, dst) = btensor.map_reduce_post @(1, 0) @(To, To, Ro, Rq, btensor.SchedT)
+                (So, ‹d: Rq; (used, size#(core.idx 0 Rn (core.idx2nat d)))#(core.idx2nat d < Ro)›, btensor.mk_sched (Rq, 0))
+                @(To, Rq, Sp, (), (), ()) @[«Ro; Nat», IxQ → «Ro; affine.Index», D, Bool, To]
+                (merge, (So, cell, dst, fresh, init), (btensor.id @To, post)#whole) cell (read, ()) (m, dst, p, ());
+            (buffer.free (Rq, Sp, To) (m, p), dst);
+        // Without a merge, a reduction loop stays sequential.
+        let red_v = core.select (Ro < vdim + 1, core.select (vdim < Rn, 1 < lanes, ff), ff);
+        let plain = (λ (_: []): [mem.M 0, D] = run (So, dst, out, size, m), edged)#(core.select (blk vdim, tt, blk (vdim + 1)));
+        ((plain, rfactor)#(core.select (red_v, core.select (blk vdim, ff, tt), ff))) ();
 
     // `rt_tail` lets a static axis count its tiles at run time; `peel` guards a run-time axis' tail by a branch.
     let split_serial = λ (rt_tail peel: Bool, d: Idx Rn, ts: Nat, k: Body): Body =
@@ -2144,12 +2191,15 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
-    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, btensor.id @To) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
+    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, btensor.id @To) (levels_take_mem @To, 0) map_out (maps, prods)
+        (sched, cap0, dyn0) (m, xs0);
 
 /// `run_levels_with` that maps each output cell by `post` after its reduction, within the leaves when `sched` never splits a reduction loop.
+/// A leaf that vectorizes a reduction loop combines its `lanes` partial accumulators by `merge`, for which `init` must be a unit.
 anx lam run_levels_post {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)
     (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To, post: Fn [mem.M 0, To, []] → [mem.M 0, To])
+    (merge: Fn [mem.M 0, To, To] → [mem.M 0, To], lanes: Nat)
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
     (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
@@ -2157,7 +2207,7 @@ anx lam run_levels_post {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
     let D    = buffer.Buf (Ro, So, To);
     let run  = λ (p: Fn [mem.M 0, To, []] → [mem.M 0, To]): [mem.M 0, D] =
-        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, p) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
+        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, p) (merge, lanes) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
     let each = lm (o: «Ro; affine.Index»): «Ro; affine.Index» = o;
     let late = λ (_: []): [mem.M 0, D] =
         let (m, out) = run (btensor.id @To);
@@ -2259,13 +2309,16 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
     (build keep_b, sched_switch @(2, Rn) (m_ax, 16 * mr + 1, build tt, build ff))#m_dyn;
 
 /// The tree for a map-reduce over `Rn` loops, `Ro` of them parallel, that is not a contraction; `red_unit` and `out_unit` tell whether every input reads the innermost and the last output loop at unit stride, and the output is contiguous along loop `wdim` while an input is along `rdim`.
-/// A leaf accumulates a row along the last output loop when only that one is contiguous or the reduction is a short window; a transpose cuts both contiguous loops into tiles (sizes measured on Zen 5).
-anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim: Nat) (sizes: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) =
+/// A leaf accumulates a row along the last output loop when only that one is contiguous or the reduction is a short window, and otherwise splits a contiguous reduction loop into `lanes` partial accumulators when its combiner has a merge (`lanes > 1`).
+/// A transpose cuts both contiguous loops into tiles (sizes measured on Zen 5).
+anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim lanes: Nat) (sizes: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) =
     let last   = core.nat.sub (Ro, 1);
     let window = vec.fold.r @(Nat, Idx Rn) @Rn
         (λ (d: Idx Rn, acc: Nat): Nat = core.select (core.idx2nat d < Ro, acc, core.nat.mul (acc, sizes#d))) (‹d: Rn; d›, 1);
     let row  = core.select (Ro < Rn, core.select (out_unit, core.select (red_unit, window < 16, tt), ff), ff);
-    let leaf = sched_leaf @(N, Rn) (core.select (row, last, Rn));
+    let inner = core.nat.sub (Rn, 1);
+    let split = core.select (row, ff, core.select (Ro < Rn, core.select (red_unit, core.select (1 < lanes, lanes - 1 < sizes#(core.idx 0 Rn inner), ff), ff), ff));
+    let leaf = sched_leaf @(N, Rn) (core.select (row, last, core.select (split, inner, Rn)));
     let cut  = λ (ts: Nat): «Rn; Nat» =
         ‹d: Rn; let e = core.idx2nat d; core.select (core.select (e == wdim, tt, e == rdim), ts, 0)›;
     (sched_par @(N, Rn) (cut 256, sched_par @(N, Rn) (cut 8, leaf)), leaf)#(wdim == rdim)
@@ -2291,5 +2344,6 @@ anx lam fill_of {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «
         let bound  = ‹d: Rn; core.select (out_d d, cap#(o d), Sr#d)›;
         let fresh  = ‹d: Rn; core.select (out_d d, dyn#(o d), ff)›;
         let origin = ‹d: Rn; core.select (out_d d, lo#(o d), 0)›;
-        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (ext, size, origin) (f, init, btensor.id @To) out (maps, prods) (tree_of (size, fresh), bound, fresh) (m, xs);
+        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (ext, size, origin) (f, init, btensor.id @To) (levels_take_mem @To, 0) out (maps, prods)
+            (tree_of (size, fresh), bound, fresh) (m, xs);
     (Prod (Ro, To))#Fill make;

@@ -13,6 +13,7 @@
 #include <mim/plug/affine/affine.h>
 #include <mim/plug/btensor/btensor.h>
 #include <mim/plug/core/core.h>
+#include <mim/plug/math/math.h>
 
 #include "mim/plug/tensor/tensor.h"
 
@@ -427,6 +428,60 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     return w.lit_tt();
 }
 
+namespace {
+
+// Whether `def` reaches `target` without passing `stop` or entering a mutable.
+bool reaches(const Def* def, const Def* target, const Def* stop) {
+    auto seen = DefSet();
+    auto todo = DefVec{def};
+    while (!todo.empty()) {
+        auto d = todo.back();
+        todo.pop_back();
+        if (d == target) return true;
+        if (d == stop || d->isa_mut() || !seen.emplace(d).second) continue;
+        for (auto op : d->deps())
+            todo.emplace_back(op);
+    }
+    return false;
+}
+
+// The operation `⊕` of a combiner `λ (acc, xs). acc ⊕ e` that reassociates exactly or by its math mode and has `init`
+// as its unit, or `nullptr`.
+const Def* reduce_monoid(const Def* comb, const Def* init) {
+    auto& w   = comb->world();
+    auto lam  = comb->isa_mut<Lam>();
+    auto body = Lam::isa_ret_arg(comb);
+    auto app  = body ? body->isa<App>() : nullptr;
+    if (!app || app->arg()->num_projs() != 2) return nullptr;
+    auto args = lam->var(2, 0);
+    auto acc = args->proj(2, 0), ins = args->proj(2, 1);
+    auto [a, b] = app->arg()->projs<2>();
+    auto e      = a == acc ? b : b == acc ? a : nullptr;
+    if (!e || reaches(e, acc, ins) || reaches(e, args, ins)) return nullptr;
+    auto unit = [&](f64 v) {
+        auto width = math::isa_f(init->type());
+        return width && init == math::lit_f(w, *width, v);
+    };
+    if (auto ar = Axm::isa<math::arith>(body)) {
+        auto mode = Lit::isa(ar->callee()->as<App>()->callee()->as<App>()->arg());
+        if (!mode || !(*mode & std::to_underlying(math::Mode::reassoc))) return nullptr;
+        if ((ar.id() == math::arith::add && unit(0.0)) || (ar.id() == math::arith::mul && unit(1.0)))
+            return app->callee();
+    } else if (auto ex = Axm::isa<math::extrema>(body)) {
+        bool max = ex.id() == math::extrema::iM || ex.id() == math::extrema::IM;
+        if (unit(max ? -std::numeric_limits<f64>::infinity() : std::numeric_limits<f64>::infinity()))
+            return app->callee();
+    } else if (auto wr = Axm::isa<core::wrap>(body)) {
+        auto mode = Lit::isa(wr->callee()->as<App>()->callee()->as<App>()->arg());
+        if (mode != 0) return nullptr;
+        if ((wr.id() == core::wrap::add && Lit::isa(init) == 0) || (wr.id() == core::wrap::mul && Lit::isa(init) == 1))
+            return app->callee();
+    }
+    return nullptr;
+}
+
+} // namespace
+
 bool pe_generic_plan(const App* callee, PeGeneric* plan) {
     auto& w    = callee->world();
     auto mr    = btensor::MapRedPost::of(callee);
@@ -481,7 +536,12 @@ bool pe_generic_plan(const App* callee, PeGeneric* plan) {
             for (u64 d = 0; d != ro; ++d)
                 if (unit(i, d)) rdim = d;
     }
-    if (plan) *plan = {w.tuple(affs), w.lit_bool(red_unit), w.lit_bool(out_unit), w.lit_nat(wdim), w.lit_nat(rdim)};
+    auto merge = reduce_monoid(mr.comb, mr.init);
+    auto bytes = Lit::isa(w.app(w.annex(core::trait::size), mr.To));
+    u64 lanes  = merge && bytes && *bytes != 0 ? btensor::vec_regs(w.driver()).bytes / *bytes : 0;
+    if (plan)
+        *plan = {w.tuple(affs), w.lit_bool(red_unit), w.lit_bool(out_unit), w.lit_nat(wdim), w.lit_nat(rdim),
+                 merge,         w.lit_nat(lanes)};
     return true;
 }
 
