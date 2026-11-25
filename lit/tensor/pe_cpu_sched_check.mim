@@ -1,6 +1,10 @@
 // RUN: %mim %s -o - 2>&1 | %FileCheck %s
+// RUN: %mim -X refly:strict=1 %s -o %t.mim > %t.log 2>&1; test $? -ne 0
+// RUN: %FileCheck %s --check-prefix=STRICT --input-file=%t.log
 
 // Malformed hand-written SchedTrees are rejected while PE unfolds them.
+// `-X refly:strict=1` turns the first rejection into a compile error at the offending call.
+// STRICT: error: SchedTree: a Par must split a packed axis into whole panels
 plugin tensor;
 plugin core;
 plugin math;
