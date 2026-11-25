@@ -271,8 +271,12 @@ bool Check::alpha_impl_(const Def* d1, const Def* d2) {
 
         if (mut1 && mut2 && mut1 == mut2) return true;
 
-        if (auto [i, ins] = bind(mut1, d2); !ins) return i->second == d2;
-        if (auto [i, ins] = bind(mut2, d1); !ins) return i->second == d1;
+        // A mutable may meet several copies of one mutable, e.g. the instances of `«i: N; Nom (Rs#i)»` at equal `Rs#i`.
+        if (auto [i, ins] = bind(mut1, d2); !ins) return i->second == d2 || test_alpha(i->second, d2);
+        if (auto [i, ins] = bind(mut2, d1); !ins) {
+            if (i->second == d1) return true;
+            if (!test_alpha(i->second, d1)) return fail<mode>();
+        }
 
         auto t1 = d1->type();
         auto t2 = d2->type();

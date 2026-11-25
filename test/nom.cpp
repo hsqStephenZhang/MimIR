@@ -74,6 +74,23 @@ TEST_CASE("Nom: instances of a generic nom") {
     CHECK(!Check::alpha(w.nom(1, w.type_nat()), w.nom(1, w.type_bool())));
 }
 
+TEST_CASE("Nom: copies of a dependent instance") {
+    Driver driver;
+    World& w = driver.world();
+
+    // [s: Nat, «s; Nat»] is mutable, so each copy is a mutable of its own.
+    auto mk = [&] {
+        auto sigma = w.mut_sigma(2)->set(0, w.type_nat());
+        sigma->set(1, w.arr(sigma->var(2, 0), w.type_nat()));
+        return w.nom(1, sigma);
+    };
+
+    auto a = mk(), b = mk(), c = mk();
+    CHECK(Check::alpha(w.sigma({b, c}), w.sigma({a, a})));
+    CHECK(Check::alpha(w.sigma({a, a}), w.sigma({b, c})));
+    CHECK(!Check::alpha(w.sigma({b, c}), w.sigma({a, w.nom(2, a->op())})));
+}
+
 TEST_CASE("NomErasure: nominals erase to what they wrap") {
     Driver driver;
     World& w = driver.world();
