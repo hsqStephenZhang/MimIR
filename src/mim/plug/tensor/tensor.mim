@@ -1745,6 +1745,22 @@ lam aff_coef {n s: Nat} (e: AffE (n, s), d: Idx n)@(core.pe.is_closed e): Nat =
         | CDiv _ => 0
         | Mod _  => 0;
 
+/// Whether `e` mentions loop `d`, also below a floordiv or mod.
+lam aff_mentions {n s: Nat} (e: AffE (n, s), d: Idx n)@(core.pe.is_closed e): Bool =
+    match e with
+        | Dim j  => core.icmp.e (j, d)
+        | Add p  => core.bit2.or 2 (aff_mentions (p#0₂, d), aff_mentions (p#1₂, d))
+        | Mul p  => aff_mentions (p#0₂, d)
+        | FDiv p => aff_mentions (p#0₂, d)
+        | CDiv p => aff_mentions (p#0₂, d)
+        | Mod p  => aff_mentions (p#0₂, d)
+        | Sym _  => ff
+        | Lit _  => ff;
+
+/// The loops `f` reads along.
+anx lam aff_reads {n m: Nat} (f: Aff (n, m)): «n; Bool» =
+    ‹d: n; vec.fold.r @(Bool, Idx m) @m (λ (i: Idx m, acc: Bool): Bool = core.bit2.or 2 (acc, aff_mentions (f#rows#i, d))) (‹i: m; i›, ff)›;
+
 /// Whether `f` reads along loop `d` at unit stride: `d` occurs only in the last row, with coefficient 1.
 anx lam aff_unit {n m: Nat} (f: Aff (n, m), d: Idx n): Bool =
     vec.fold.r @(Bool, Idx m) @m
@@ -1788,6 +1804,7 @@ nom LevelsView (Rn: Nat, T: *) = [
     data: buffer.Buf (r, s, T),
     aff:  Aff (Rn, r),
     prod: Prod (r, T),
+    reads: «Rn; Bool»,
 ];
 
 /// Whether a slot holds its data, i.e. is not a producer still waiting for a `Stage`.
@@ -1955,7 +1972,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
     let Rp    = core.nat.add (Rn, 1);
     let IxN   = «Rn; affine.Index»;
     let Views = «i: N; LevelsView (Rn, Ts#i)»;
-    // `part` tells statically that the axis is cut into tiles smaller than its whole extent.
+    // `part` tells statically that a split may have cut the axis into tiles smaller than its whole extent.
     let Axis  = [lo size cap: Nat, dyn part: Bool];
     let State = [axes: «Rn; Axis», views: Views, tok: mem.M 0, dst: D];
     let Body  = State → [mem.M 0, D];
@@ -2074,7 +2091,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                     let u  = (v#unit)#d;
                     let per = refly.check (core.nat.rem (ts, u) == 0, core.nat.div (ts, u), "SchedTree: a Par must split a packed axis into whole panels");
                     let q2 = ‹e: Rn; ((v#q)#e, affine.op.add ((v#q)#e, affine.semiop.mul (affine.lit t, per)))#(core.icmp.e (e, d))›;
-                    acc#i ← (v#r, v#s, v#unit, q2, v#at, xs#i, v#aff, v#prod) inj LevelsView (Rn, Ts#i)›, vs);
+                    acc#i ← (v#r, v#s, v#unit, q2, v#at, xs#i, v#aff, v#prod, v#reads) inj LevelsView (Rn, Ts#i)›, vs);
                 let (m, dst) = k (axes#d ← (core.nat.add (a#lo, core.nat.mul (t, ts)), ext, cap, dyn, part), vs2, m, dst);
                 (m, (dst, xs));
             let s0    = (m, (dst, ‹i: N; (vs#i)#data›));
@@ -2116,11 +2133,13 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             let (_, size, cap, dyn_ax) = cols axes;
             let w    = refly.check (core.bit2.and 2 (d < Rn, 0 < w), w, "SchedTree: a Pack needs an axis below Rn and a positive width");
             let v    = vs#slot;
+            let same = vec.fold.r @(Bool, Idx Rn) @Rn (λ (e: Idx Rn, acc: Bool): Bool = core.select (core.icmp.e (dep#e, (v#reads)#e), acc, ff)) (‹e: Rn; e›, tt);
+            let dep  = refly.check (same, dep, "SchedTree: a Pack's dep must be the loops its slot reads");
             let data = refly.check (levels_ready (v#prod), v#data, "SchedTree: a Pack reads a producer slot that no Stage above it computes");
             let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) data (d, w, dep, v#q, size, cap, dyn_ax#(core.idx 0 Rn d), m);
             let unit = ‹e: Rn; (1, w)#(core.idx2nat e == d)›;
             let none = aff_map @(Rn, Rp, 0) ((), ‹Rp; aff_lit @(Rn, 0) 0›);
-            let v2   = (Rp, sp, unit, zero, to, p, none, (Prod (Rp, Ts#slot))#Plain) inj LevelsView (Rn, Ts#slot);
+            let v2   = (Rp, sp, unit, zero, to, p, none, (Prod (Rp, Ts#slot))#Plain, v#reads) inj LevelsView (Rn, Ts#slot);
             let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
             (buffer.free (Rp, sp, Ts#slot) (m, p), dst);
 
@@ -2146,7 +2165,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                             let x = ‹e: Rn; affine.op.add (q#e, o#e)›;
                             ‹i: v#r; let (h, t) = aff_rel (rows#i, x); (affine.lit 0, t)#h›;
                         let v2 = (v#r, bext, ‹Rn; 1›, zero, rel,
-                                  t, v#aff, (Prod (v#r, Ts#slot))#Plain) inj LevelsView (Rn, Ts#slot);
+                                  t, v#aff, (Prod (v#r, Ts#slot))#Plain, v#reads) inj LevelsView (Rn, Ts#slot);
                         let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
                         (buffer.free (v#r, bext, Ts#slot) (m, t), dst);
             arm k;
@@ -2169,7 +2188,14 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
 
     lam eval (node: SchedTree (N, Rn))@(core.pe.is_closed node): Body =
         match node with
-            | Leaf vdim => λ (st: State): [mem.M 0, D] = step_leaf (vdim, st)
+            | Leaf vdim =>
+                let vdim = refly.check (vdim < Rn + 1, vdim, "SchedTree: a Leaf vectorizes a loop below Rn, or none with Rn");
+                λ (st: State): [mem.M 0, D] =
+                    // In order, only the first reduction loop may be split unless partial results merge.
+                    let ordered = vec.fold.r @(Bool, Idx Rn) @Rn
+                        (λ (d: Idx Rn, acc: Bool): Bool = core.select (Ro < core.idx2nat d, core.select ((st#axes#d)#part, ff, acc), acc)) (‹d: Rn; d›, tt);
+                    let ordered = core.select (0 < lanes, tt, ordered);
+                    step_leaf (vdim, refly.check (ordered, st, "SchedTree: only the first reduction loop may be split when the combiner has no merge"))
             | Par  n    => step_par  (n#sizes, eval (n#body))
             | Pack n    => step_pack (n#d, n#w, n#slot, n#dep, eval (n#body))
             | Seq  n    =>
@@ -2191,8 +2217,8 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
     // A run-time reduction extent may be 0, so no leaf would seed the output.
     let (m, dst) = (buffer.alloc (Ro, So, To) m, buffer.lit (Ro, So, To) (m, init))#red_dyn;
     let q0 = ‹d: Rn; affine.lit (origin#d)›;
-    let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, q0, levels_plain @Rn (Rs#i, maps#i), xs0#i, maps#i, prods#i) inj LevelsView (Rn, Ts#i)›;
-    eval sched (‹d: Rn; (0, Sr#d, cap0#d, dyn0#d, dyn0#d)›, vs0, m, dst);
+    let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, q0, levels_plain @Rn (Rs#i, maps#i), xs0#i, maps#i, prods#i, aff_reads @(Rn, Rs#i) (maps#i)) inj LevelsView (Rn, Ts#i)›;
+    eval sched (‹d: Rn; (0, Sr#d, cap0#d, dyn0#d, ff)›, vs0, m, dst);
 
 anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)

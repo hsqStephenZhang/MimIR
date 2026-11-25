@@ -85,3 +85,33 @@ lam probe_pack_fill (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (
         ((ik, kj), ((tensor.Prod (2, F32))#Fill fill_any, (tensor.Prod (2, F32))#Plain))
         (tensor.sched_pack @(2, 3) (0, 2, 0₂, (tt, ff, tt), tensor.sched_stage @(2, 3) (0₂, tensor.sched_leaf @(2, 3) 0)), (4, 16, 4), (ff, ff, ff))
         (m, (a, b));
+
+// CHECK: SchedTree: a Pack's dep must be the loops its slot reads
+lam probe_pack_dep (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
+        ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)
+        (tensor.sched_pack @(2, 3) (1, 8, 1₂, (tt, tt, tt), tensor.sched_leaf @(2, 3) 0), (4, 16, 4), (ff, ff, ff))
+        (m, (a, b));
+
+// CHECK: SchedTree: a Leaf vectorizes a loop below Rn, or none with Rn
+lam probe_leaf_vdim (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
+        ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)
+        (tensor.sched_leaf @(2, 3) 7, (4, 16, 4), (ff, ff, ff))
+        (m, (a, b));
+
+// Splitting the second of two reduction loops reorders a combiner without merge; splitting the first does not.
+fun add (m: mem.M 0, acc: F32, x: F32)@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, x));
+let ijk = tensor.aff_proj @(3, 3) (0₃, 1₃, 2₃);
+// CHECK: SchedTree: only the first reduction loop may be split when the combiner has no merge
+// CHECK-NOT: SchedTree:
+lam probe_order (m: mem.M 0, x: buffer.Buf (3, (4, 6, 8), F32)): [mem.M 0, buffer.Buf (1, 4, F32)] =
+    tensor.run_levels @(1, F32, 1, 3, F32, 3, (4, 6, 8))
+        (4, (4, 6, 8)) (add, 0:F32) (λ (o: «3; affine.Index»): affine.Index = o#0₃) ijk
+        (tensor.sched_par @(1, 3) ((0, 0, 4), tensor.sched_leaf @(1, 3) 3), (4, 6, 8), (ff, ff, ff))
+        (m, x);
+lam probe_order_first (m: mem.M 0, x: buffer.Buf (3, (4, 6, 8), F32)): [mem.M 0, buffer.Buf (1, 4, F32)] =
+    tensor.run_levels @(1, F32, 1, 3, F32, 3, (4, 6, 8))
+        (4, (4, 6, 8)) (add, 0:F32) (λ (o: «3; affine.Index»): affine.Index = o#0₃) ijk
+        (tensor.sched_par @(1, 3) ((0, 4, 0), tensor.sched_leaf @(1, 3) 3), (4, 6, 8), (ff, ff, ff))
+        (m, x);
