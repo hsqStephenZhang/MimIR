@@ -14,6 +14,13 @@ bool is_mem(const Def* def) { return def->type() && isa_mem(def); } // Level has
 
 bool has_mem(const Pi* pi) { return has_mem_ty(pi->dom()) || std::ranges::any_of(pi->doms(), has_mem_ty); }
 
+/// Whether threading memory leaves @p type as it is: each continuation in it already takes a memory.
+bool keeps(const Def* type) {
+    if (auto pi = Pi::isa_cn(type)) return has_mem(pi) && std::ranges::all_of(pi->doms(), keeps);
+    if (auto sigma = type->isa<Sigma>()) return std::ranges::all_of(sigma->ops(), keeps);
+    return true;
+}
+
 } // namespace
 
 bool AddMem::analyze() {
@@ -29,7 +36,7 @@ bool AddMem::analyze() {
         if (auto app = def->isa<App>();
             app && app->axm() && !Axm::isa<mem::fresh>(app) && !Axm::isa<mem::slot>(app) && !Axm::isa<mem::mslot>(app))
             for (auto arg : app->arg()->projs())
-                if (auto lam = arg->isa_mut<Lam>()) pins.push(lam);
+                if (auto lam = arg->isa_mut<Lam>(); lam && !keeps(lam->type())) pins.push(lam);
 
         for (auto d : def->deps())
             queue.push(d);

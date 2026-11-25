@@ -150,7 +150,8 @@ void LowerToMem::validate() {
                     if (!(d->isa<App>() && d->as<App>()->callee() == op))
                         sh->blame("cannot bufferize: partially applied shape-polymorphic function").bail();
             if (auto f = op->isa_mut<Lam>(); f && is_tensor_fn(f) && f->ret_pi() && !d->isa<Var>()
-                                             && !(d->isa<App>() && d->as<App>()->callee() == op))
+                                             && !(d->isa<App>() && d->as<App>()->callee() == op)
+                                             && !Axm::isa<cps::cps2ds_dep>(d))
                 f->blame("cannot bufferize: tensor-processing function used as a value").bail();
             wl.push(op);
         }

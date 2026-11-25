@@ -12,6 +12,8 @@
 #include <mim/util/types.h>
 
 #include <mim/plug/core/core.h>
+#include <mim/plug/cps/cps.h>
+#include <mim/plug/mem/mem.h>
 
 #include "mim/plug/tensor/tensor.h"
 
@@ -303,29 +305,33 @@ const Def* Reassoc::cost_expr(fe::View<Leaf> mats, Defs dims, const Splits& spli
 
 const Def*
 Reassoc::dispatch(const Def* head, const Def* res_ty, fe::View<Leaf> mats, Defs dims, fe::View<Splits> cands) {
-    auto& w = new_world();
-    auto n  = mats.size();
-    auto pi = w.pi(w.sigma(), res_ty);
+    auto& w  = new_world();
+    auto n   = mats.size();
+    auto M   = w.call<mem::M>(0);
+    auto fn  = w.mut_fun(M, {M, res_ty});
+    auto ret = fn->ret_var();
 
-    // Each bracketing goes behind a thunk so that only the selected one runs. The filter is `tt`, so once
-    // the comparison folds - a caller that knows the extents, `compile.lam_spec` - the winner inlines and
-    // the losers become unreachable.
+    // Each bracketing is a branch of a CPS function, so only the selected one runs and bufferization sees no
+    // tensor-valued function value. The filters are `tt`, so once the comparison folds - a caller that knows the
+    // extents, `compile.lam_spec` - the winner inlines and the losers become unreachable.
     const Def* best      = nullptr;
     const Def* best_cost = nullptr;
     for (const auto& cand : cands) {
-        auto thunk = w.mut_lam(pi)->set(true, build(head, mats, dims, split_table(cand, n), 0, n - 1));
-        auto cost  = cost_expr(mats, dims, cand);
+        auto arm = w.mut_con(M);
+        arm->app(true, ret, {arm->var(), build(head, mats, dims, split_table(cand, n), 0, n - 1)});
+        auto cost = cost_expr(mats, dims, cand);
 
         if (!best) {
-            best = thunk, best_cost = cost;
+            best = arm, best_cost = cost;
         } else {
             auto cheaper = w.app(w.annex(core::ncmp::l), {cost, best_cost});
-            best         = w.select(cheaper, thunk, best);
+            best         = w.select(cheaper, arm, best);
             best_cost    = w.select(cheaper, cost, best_cost);
         }
     }
 
-    return w.app(best, w.tuple());
+    fn->app(true, best, fn->var(2, 0));
+    return w.app(cps::op_cps2ds_dep(fn), w.bot(M))->proj(2, 1);
 }
 
 const Def* Reassoc::reassoc(const App* app) {

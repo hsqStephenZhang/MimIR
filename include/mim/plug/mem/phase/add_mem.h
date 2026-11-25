@@ -18,7 +18,7 @@ namespace mim::plug::mem::phase {
 /// An operation on a placeholder must be pure as a whole, as AddMem shares and hoists it.
 ///
 /// Direct-style functions keep their signature.
-/// So does everything reachable from an Axm's Lam arguments, as the Axm pins their type, and an Axm's own type.
+/// So does everything reachable from an Axm's Lam argument with a continuation that lacks a memory, as the Axm pins its type, and an Axm's own type.
 class AddMem : public RWPhase {
 public:
     using RWPhase::RWPhase;

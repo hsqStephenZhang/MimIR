@@ -66,13 +66,14 @@ extern fun low_rank {m: Nat} (x: tensor.Tensor 2 (m, 768) Nat, u: tensor.Tensor 
 // The same shape without a bottleneck has no single winner: contracting 784 first costs
 // 28224000 + 96000·m, 300 first 276256·m, 120 first 4339200 + 12544·m, and so on - small m prefers a
 // small constant, large m a small factor. Three of the five bracketings survive the domination test
-// (each wins for some m), so their costs are compared at run time and only the winner's thunk runs.
-// The two comparisons below are that tournament; the `()` is the selected thunk being forced.
+// (each wins for some m), so their costs are compared at run time and only the winner's branch runs.
+// The two comparisons below are that tournament; the selected branch receives the memory and returns through `cps.cps2ds_dep`.
 // CHECK-DAG: extern fun batch_dispatch
 // CHECK-DAG: core.nat.add (4339200, {{.*}})
 // CHECK-DAG: core.nat.add (576000, {{.*}})
 // CHECK-DAG: core.ncmp.gLe ({{.*}}, ({{.*}})#{{.*}})
-// CHECK-DAG: ({{.*}})#{{.*}} ();
+// CHECK-DAG: ({{.*}})#{{.*}} {{_[0-9]+}};
+// CHECK-DAG: cps.cps2ds_dep @ (core.M 0)
 // Capped at 2 the chain falls back to the static dynamic program, which cannot decide it either, so
 // it survives as written and no cost is computed at run time.
 // NODISP-DAG: tensor.product_2d (Nat, 0, core.nat.add, core.nat.mul) @ ({{.*}}, 784, 300)
@@ -130,7 +131,5 @@ extern fun qk64 (x: tensor.Tensor 2 (64, 8) Nat, wq wk: tensor.Tensor 2 (8, 8) N
 extern fun qk4 (x: tensor.Tensor 2 (4, 8) Nat, wq wk: tensor.Tensor 2 (8, 8) Nat): tensor.Tensor 2 (4, 4) Nat =
     return ((x * wq) * transpose_2d (x * wk));
 
-// `tensor.lower_to_mem` rejects a tensor-typed function *value*, which is what the dispatcher's
-// thunks are - and it cannot carry a symbolically shaped tensor across a function boundary either.
-// So this test stops after the reassociation it is about.
+// This test stops after the reassociation it is about; lit/tensor/pe_fuse_dyn_exec.mim runs a dispatch.
 extern lam _compile (): compile.Phase = reassoc;
