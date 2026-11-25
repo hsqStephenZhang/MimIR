@@ -55,6 +55,10 @@ private:
                                        const Def* maps,
                                        const Def* a,
                                        bool may_fuse);
+    /// The slots of the `run_levels_with` call for the old map-reduce @p app that is no contraction: `(xs, Sis, prods,
+    /// fuse)`, where a map-reduce producing an input becomes a `tensor.fill_of` producer and `fuse#i` is `1`.
+    std::array<const Def*, 4>
+    generic_slots(const App* app, const Def* Rn, const Def* Ris, const Def* Sis, const Def* Tis, const Def* maps);
     /// The levels of `-X tensor:cpu-levels=<sizes>/<sizes>/…` for a contraction over @p rn loops, or `nullptr`, and
     /// their number, since one level is no tuple of levels.
     std::pair<const Def*, u64> cpu_levels(u64 rn);

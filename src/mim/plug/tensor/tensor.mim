@@ -2310,8 +2310,8 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
 
 /// The tree for a map-reduce over `Rn` loops, `Ro` of them parallel, that is not a contraction; `red_unit` and `out_unit` tell whether every input reads the innermost and the last output loop at unit stride, and the output is contiguous along loop `wdim` while an input is along `rdim`.
 /// A leaf accumulates a row along the last output loop when only that one is contiguous or the reduction is a short window, and otherwise splits a contiguous reduction loop into `lanes` partial accumulators when its combiner has a merge (`lanes > 1`).
-/// A transpose cuts both contiguous loops into tiles (sizes measured on Zen 5).
-anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim lanes: Nat) (sizes: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) =
+/// A transpose cuts both contiguous loops into tiles (sizes measured on Zen 5), and the producers `fuse` marks are staged per band of the first loop.
+anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim lanes bytes: Nat, fuse: «N; Nat») (sizes: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) =
     let last   = core.nat.sub (Ro, 1);
     let window = vec.fold.r @(Nat, Idx Rn) @Rn
         (λ (d: Idx Rn, acc: Nat): Nat = core.select (core.idx2nat d < Ro, acc, core.nat.mul (acc, sizes#d))) (‹d: Rn; d›, 1);
@@ -2321,7 +2321,16 @@ anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim lanes: N
     let leaf = sched_leaf @(N, Rn) (core.select (row, last, core.select (split, inner, Rn)));
     let cut  = λ (ts: Nat): «Rn; Nat» =
         ‹d: Rn; let e = core.idx2nat d; core.select (core.select (e == wdim, tt, e == rdim), ts, 0)›;
-    (sched_par @(N, Rn) (cut 256, sched_par @(N, Rn) (cut 8, leaf)), leaf)#(wdim == rdim)
+    let base = (sched_par @(N, Rn) (cut 256, sched_par @(N, Rn) (cut 8, leaf)), leaf)#(wdim == rdim);
+    // Fused producers are staged per band of the first loop that fills half the cache, so their inputs stay in it.
+    let (_, _, cache, _, _, _, _, _, _, _, _) = cpu_knobs ();
+    let row    = vec.fold.r @(Nat, Idx Rn) @Rn
+        (λ (d: Idx Rn, acc: Nat): Nat = core.select (core.idx2nat d == 0, acc, core.nat.mul (acc, sizes#d))) (‹d: Rn; d›, nat_or bytes 4);
+    let band   = nat_or (core.nat.div (cache, core.nat.mul (2, row))) 1;
+    let staged = vec.fold.r @(SchedTree (N, Rn), Idx N) @N
+        (λ (i: Idx N, t: SchedTree (N, Rn)): SchedTree (N, Rn) = (t, sched_stage @(N, Rn) (i, t))#(core.ncmp.ne (fuse#i, 0))) (‹i: N; i›, base);
+    let any    = vec.fold.r @(Bool, Idx N) @N (λ (i: Idx N, acc: Bool): Bool = core.select (core.ncmp.ne (fuse#i, 0), tt, acc)) (‹i: N; i›, ff);
+    (base, sched_par @(N, Rn) (‹d: Rn; (0, band)#(core.idx2nat d == 0)›, staged))#any
 
 /// `cpu_tree` for a box of the given sizes, `dyn` those known only at run time.
 anx lam cpu_tree_at (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, fuse: «2; Nat») (sizes: «Rn; Nat», dyn: «Rn; Bool»): SchedTree (2, Rn) =

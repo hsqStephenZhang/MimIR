@@ -486,7 +486,8 @@ std::pair<const Def*, u64> LowerToMem::cpu_levels(u64 rn) {
 std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
     auto& w   = new_world();
     auto papp = Axm::isa<tensor::map_reduce_post>(input);
-    if (!papp || uses_[input] != 1 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
+    // A map-reduce read twice is computed in both consumers, unless it is a contraction.
+    if (!papp || uses_[input] > 2 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
     if (w.app(w.app(w.annex<tensor::aff_boxable>(), {Rn, r}), map) != w.lit_tt()) return {};
     auto old_mr = btensor::MapRedPost::of(papp->callee()->as<App>());
     auto ranks  = old_mr.ranks();
@@ -510,6 +511,7 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
     auto plan        = PeCpu{};
     auto gen         = PeGeneric{};
     auto contraction = pe_cpu_plan(c, &plan) == w.lit_tt();
+    if (contraction && uses_[input] != 1) return {};
     if (contraction) {
         const Def* fuse;
         std::tie(xs, sis, prods, fuse) = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, true);
@@ -517,15 +519,11 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
         tree_of                        = w.app(w.app(w.annex<tensor::cpu_tree_at>(), {mr.Rn, mr.Ro}),
                                                {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, fuse});
     } else if (pe_generic_plan(c, &gen)) {
-        auto old_is = papp->arg()->proj(2, 0);
-        maps        = gen.maps;
-        xs          = w.tuple(DefVec(nis, [&](size_t i) { return rewrite(old_is->proj(nis, i)); }));
-        sis         = mr.Sis;
-        prods       = w.tuple(DefVec(nis, [&](size_t i) {
-            return w.app(w.annex<tensor::prod_plain>(), {mr.Ris->proj(nis, i), mr.Tis->proj(nis, i)});
-        }));
-        tree_of     = w.app(w.app(w.annex<tensor::generic_tree>(), {mr.nis, mr.Rn, mr.Ro}),
-                            {gen.red_unit, gen.out_unit, gen.wdim, gen.rdim, w.lit_nat_0()});
+        const Def* fuse;
+        std::tie(xs, sis, prods, fuse) = generic_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, gen.maps);
+        maps                           = gen.maps;
+        tree_of = w.app(w.app(w.annex<tensor::generic_tree>(), {mr.nis, mr.Rn, mr.Ro}),
+                        {gen.red_unit, gen.out_unit, gen.wdim, gen.rdim, w.lit_nat_0(), gen.bytes, fuse});
     } else {
         return {};
     }
@@ -574,6 +572,35 @@ std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
         } else {
             xs[i]    = rewrite(old_is->proj(2, i));
             sis[i]   = Sis->proj(2, i);
+            prods[i] = w.app(w.annex<tensor::prod_plain>(), {r, T});
+        }
+    }
+    return {w.tuple(xs), w.tuple(sis), w.tuple(prods), w.tuple(fuse)};
+}
+
+std::array<const Def*, 4> LowerToMem::generic_slots(const App* app,
+                                                    const Def* Rn,
+                                                    const Def* Ris,
+                                                    const Def* Sis,
+                                                    const Def* Tis,
+                                                    const Def* maps) {
+    auto& w     = new_world();
+    auto old_is = app->arg()->proj(2, 0);
+    auto nis    = btensor::MapRedPost::of(app->callee()->as<App>()).ranks()->nis;
+    auto xs = DefVec(nis), sis = DefVec(nis), prods = DefVec(nis), fuse = DefVec(nis);
+    for (size_t i = 0; i != nis; ++i) {
+        auto r = Ris->proj(nis, i), T = Tis->proj(nis, i);
+        auto fill = fuse_producer(old_is->proj(nis, i), maps->proj(nis, i), Rn, r).first;
+        fuse[i]   = w.lit_nat(fill ? 1 : 0);
+        if (fill) {
+            // The slot's buffer is never read; it only fills the call's signature.
+            auto shape = w.tuple(DefVec(*Lit::isa(r), [&](size_t) { return w.lit_nat(2); }));
+            xs[i]      = buffer::op_alloc(r, shape, T, fresh_mem())->proj(2, 1);
+            sis[i]     = shape;
+            prods[i]   = fill;
+        } else {
+            xs[i]    = rewrite(old_is->proj(nis, i));
+            sis[i]   = Sis->proj(nis, i);
             prods[i] = w.app(w.annex<tensor::prod_plain>(), {r, T});
         }
     }
@@ -673,15 +700,16 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     for (u64 d = 0; d != rn; ++d)
         if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
 
-    auto nis               = ranks->nis;
-    auto [levels, nlevels] = cpu_levels(rn);
-    auto N                 = w.lit_nat(nis);
-    bool inner             = ranks->nps == 0 && Check::test_alpha(mr.To, mr.Tp);
-    auto lanes             = inner ? plan.lanes : w.lit_nat_0();
-    auto dyn               = w.tuple(DefVec(rn, [&](size_t) { return w.lit_ff(); }));
-    auto tree              = w.app(w.app(w.app(w.annex<tensor::generic_tree>(), {N, mr.Rn, mr.Ro}),
-                                         {plan.red_unit, plan.out_unit, plan.wdim, plan.rdim, lanes}),
-                                   {mr.Sr, dyn});
+    auto nis                    = ranks->nis;
+    auto [levels, nlevels]      = cpu_levels(rn);
+    auto N                      = w.lit_nat(nis);
+    auto [xs, sis, prods, fuse] = generic_slots(app, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps);
+    bool inner                  = ranks->nps == 0 && Check::test_alpha(mr.To, mr.Tp);
+    auto lanes                  = inner ? plan.lanes : w.lit_nat_0();
+    auto dyn                    = w.tuple(DefVec(rn, [&](size_t) { return w.lit_ff(); }));
+    auto tree = w.app(w.app(w.app(w.annex<tensor::generic_tree>(), {N, mr.Rn, mr.Ro}),
+                            {plan.red_unit, plan.out_unit, plan.wdim, plan.rdim, lanes, plan.bytes, fuse}),
+                      {mr.Sr, dyn});
     if (levels)
         tree = w.app(w.app(w.app(w.annex<tensor::sched_with_levels>(), {N, mr.Rn, w.lit_nat(nlevels)}), levels), tree);
     log().i("tile the map-reduce over {} with tensor.run_levels{}", mr.Sr, levels ? " at the given levels" : "");
@@ -691,11 +719,6 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
         log().v("schedule tree:\n{}", text);
     }
 
-    auto old_is        = app->arg()->proj(2, 0);
-    auto xs            = DefVec(nis, [&](size_t i) { return rewrite(old_is->proj(nis, i)); });
-    auto prods         = DefVec(nis, [&](size_t i) {
-        return w.app(w.annex<tensor::prod_plain>(), {mr.Ris->proj(nis, i), mr.Tis->proj(nis, i)});
-    });
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
 
@@ -705,7 +728,7 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
                            : w.app(w.app(w.annex<btensor::lift_mem>(), {mr.To, mr.To, mr.To}),
                                    w.app(w.annex<tensor::take>(), mr.To));
     const Def* run = inner ? w.annex<tensor::run_levels_post>() : w.annex<tensor::run_levels_with>();
-    run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, mr.Sis});
+    run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
     run            = w.app(run, {mr.So, mr.Sr});
     if (inner) {
         auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
@@ -716,9 +739,9 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
         run = w.app(run, {memcomb, mr.init});
     }
     run           = w.app(run, mr.map_out);
-    run           = w.app(run, {plan.maps, w.tuple(prods)});
+    run           = w.app(run, {plan.maps, prods});
     run           = w.app(run, {tree, mr.Sr, dyn});
-    auto [m, out] = w.app(run, {fresh_mem(), w.tuple(xs)})->projs<2>();
+    auto [m, out] = w.app(run, {fresh_mem(), xs})->projs<2>();
     return inner ? out : apply_post(app, m, out);
 }
 

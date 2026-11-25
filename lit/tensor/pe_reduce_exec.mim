@@ -7,6 +7,7 @@
 // RUN: %mim -VVVV -p opt %s -o %t2.mim > %t2.log 2>&1
 // RUN: %FileCheck %s --check-prefix=TRANS --input-file=%t2.log
 // RUN: %FileCheck %s --check-prefix=RFAC --input-file=%t2.log
+// RUN: %FileCheck %s --check-prefix=FUSE --input-file=%t2.log
 
 // Reductions, normalizations, pooling and a transpose through run_levels by default; an epilogue runs within the leaves.
 // A reduction whose combiner reassociates keeps a vector of partial results along its contiguous loop and merges them.
@@ -20,6 +21,14 @@
 // TRANS-NEXT: Par ‹2; i8›
 // TRANS-NEXT:   Par ‹2; 8›
 // TRANS-NEXT:     Leaf 2
+// Softmax stages its maximum, read twice and so computed in both consumers, and its sum per band of rows.
+// FUSE-COUNT-3: fuse the map-reduce over (37, 53) into its consumer
+// FUSE-NEXT: tile the map-reduce over (37, 53) with tensor.run_levels
+// FUSE-NEXT: schedule tree:
+// FUSE-NEXT: Par (618, 0)
+// FUSE-NEXT:   Stage 1₃
+// FUSE-NEXT:     Stage 2₃
+// FUSE-NEXT:       Leaf 2
 // RFAC: tile the map-reduce over (5, 7, 48)
 // RFAC-NEXT: schedule tree:
 // RFAC-NEXT: Leaf 2

@@ -540,8 +540,8 @@ bool pe_generic_plan(const App* callee, PeGeneric* plan) {
     auto bytes = Lit::isa(w.app(w.annex(core::trait::size), mr.To));
     u64 lanes  = merge && bytes && *bytes != 0 ? btensor::vec_regs(w.driver()).bytes / *bytes : 0;
     if (plan)
-        *plan = {w.tuple(affs), w.lit_bool(red_unit), w.lit_bool(out_unit), w.lit_nat(wdim), w.lit_nat(rdim),
-                 merge,         w.lit_nat(lanes)};
+        *plan = {w.tuple(affs), w.lit_bool(red_unit), w.lit_bool(out_unit),        w.lit_nat(wdim), w.lit_nat(rdim),
+                 merge,         w.lit_nat(lanes),     w.lit_nat(bytes.value_or(0))};
     return true;
 }
 

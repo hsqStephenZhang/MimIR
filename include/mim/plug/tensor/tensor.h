@@ -164,9 +164,9 @@ struct PeGeneric {
     const Def* out_unit; ///< Whether every input reads the last output loop at unit stride.
     const Def* wdim;     ///< The loop the output is contiguous along.
     const Def* rdim;     ///< The loop an input that reads `wdim` at a stride is contiguous along, else `wdim`.
-    const Def*
-        merge; ///< The combiner's operation `[To, To] → To` when partial results may be combined, else `nullptr`.
-    const Def* lanes; ///< How many partial results a vector register holds, `0` without `merge`.
+    const Def* merge;    ///< The combiner's `[To, To] → To` when partial results may be combined, else `nullptr`.
+    const Def* lanes;    ///< How many partial results a vector register holds, `0` without `merge`.
+    const Def* bytes;    ///< The size of an output element.
 };
 
 /// Whether `tensor.run_levels` covers a `tensor.map_reduce_post` with meta @p callee whose output is a permutation of
