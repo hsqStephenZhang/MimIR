@@ -484,7 +484,21 @@ std::pair<const Def*, u64> LowerToMem::cpu_levels(u64 rn) {
 }
 
 std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
-    auto& w   = new_world();
+    auto& w = new_world();
+    if (auto g = Axm::isa<tensor::gather>(input)) {
+        if (uses_[input] != 1 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
+        if (w.app(w.app(w.annex<tensor::aff_boxable>(), {Rn, r}), map) != w.lit_tt()) return {};
+        auto c                 = rewrite(g->callee())->as<App>();
+        auto [Tr, shapes, dim] = c->uncurry_args<3>();
+        auto [T, gr]           = Tr->projs<2>();
+        auto [s_src, s_idx]    = shapes->projs<2>();
+        if (!check_gather_shape_constraints(g, gr, dim, s_src, s_idx)) return {};
+        auto [old_input, old_index] = g->args<2>();
+        log().i("fuse the gather of {} into its consumer", s_idx);
+        auto fill = w.app(w.app(w.app(w.annex<tensor::gather_fill>(), {T, gr}), {s_src, s_idx, dim}),
+                          {rewrite(old_input), rewrite(old_index)});
+        return {fill, false};
+    }
     auto papp = Axm::isa<tensor::map_reduce_post>(input);
     // A map-reduce read twice is computed in both consumers, unless it is a contraction.
     if (!papp || uses_[input] > 2 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};

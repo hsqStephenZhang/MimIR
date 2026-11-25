@@ -41,6 +41,7 @@ const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (Axm::isa<btensor::concat>(app)) return lower_concat(app);
     if (Axm::isa<buffer::lit>(app)) return lower_buffer_lit(app);
     if (Axm::isa<btensor::gather>(app)) return lower_gather(app);
+    if (Axm::isa<btensor::gather_at>(app)) return lower_gather_at(app);
     if (Axm::isa<btensor::scatter>(app)) return lower_scatter(app);
     return RWPhase::rewrite_imm_App(app);
 }
@@ -269,6 +270,38 @@ const Def* LowerMapReduce::lower_concat(const App* app) {
     };
 
     return build_pointwise(result_ty, op_mem, dst, op_is, s_out, rn, "concat", compute);
+}
+
+const Def* LowerMapReduce::lower_gather_at(const App* app) {
+    auto& w = new_world();
+    auto c  = rewrite(app->callee())->as<App>();
+
+    auto [Tr, shapes, dim]         = c->uncurry_args<3>();
+    auto [T, r]                    = Tr->projs<2>();
+    auto [s_src, s_idx, s_out, lo] = shapes->projs<4>();
+    auto [op_mem, dst, input, idx] = rewrite(app->arg())->projs<4>();
+    auto result_ty                 = rewrite(app->type());
+
+    auto r_l   = Lit::isa<u64>(r);
+    auto dim_l = Lit::isa<u64>(dim);
+    if (!r_l || !dim_l) {
+        log().w("{} doesn't have lowering-time known rank/axis", app);
+        return RWPhase::rewrite_imm_App(app);
+    }
+
+    auto compute = [&](const DefVec& iters, const Def* ins, const Def* mem) -> std::pair<const Def*, const Def*> {
+        auto [in_buf, idx_buf]   = ins->projs<2>();
+        auto at                  = DefVec(*r_l, [&](size_t d) {
+            auto off = w.call<core::bitcast>(w.type_i64(), lo->proj(*r_l, d));
+            return w.call(core::wrap::add, core::Mode::none, Defs{iters[d], off});
+        });
+        auto [idx_mem, selected] = buffer::op_read(mem, idx_buf, folded_idx(s_idx, at))->projs<2>();
+        auto src                 = at;
+        src[*dim_l]              = w.call<core::bitcast>(w.type_i64(), selected);
+        auto [read_mem, val]     = buffer::op_read(idx_mem, in_buf, folded_idx(s_src, src))->projs<2>();
+        return {read_mem, val};
+    };
+    return build_pointwise(result_ty, op_mem, dst, w.tuple({input, idx}), s_out, *r_l, "gather_at", compute);
 }
 
 const Def* LowerMapReduce::lower_gather(const App* app) {

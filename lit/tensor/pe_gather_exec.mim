@@ -1,0 +1,35 @@
+// RUN: %mim -VVVV -p opt %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
+// RUN: %t0.exec
+// RUN: %mim -p opt -X tensor:pe-fuse=0 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
+// RUN: %t1.exec
+// RUN: %mim -p opt -X tensor:cpu-mc=8 -X tensor:group-cache=1024 %s -p ll -X ll:o=%t2.ll -o %t2.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
+// RUN: %t2.exec
+
+// A gather is a producer whose boxes read the source through the same box of the index, so a run_levels consumer stages its rows.
+// CHECK: tile the contraction over (37, 19, 24) with tensor.run_levels
+// CHECK-NEXT: fuse the gather of (37, 24) into its consumer
+// CHECK: Stage ff
+// CHECK: fuse the gather of (37, 24) into its consumer
+// CHECK-NEXT: tile the map-reduce over (37, 24) with tensor.run_levels
+// CHECK-NEXT: schedule tree:
+// CHECK-NEXT: Par (1365, 0)
+// CHECK-NEXT:   Stage 0₁
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+// An embedding lookup feeding a projection: the gathered rows are staged band by band.
+extern fun embed_proj (table: tensor.Tensor 2 (50, 24) F32, index: tensor.Tensor 2 (37, 24) (Idx 50), w: tensor.Tensor 2 (24, 19) F32)
+    : tensor.Tensor 2 (37, 19) F32 =
+    return (tensor.product_2d R (tensor.gather ((50, 24), (37, 24)) 0₂ (table, index), w));
+
+// A gather feeding an elementwise map.
+extern fun embed_relu (table: tensor.Tensor 2 (50, 24) F32, index: tensor.Tensor 2 (37, 24) (Idx 50)): tensor.Tensor 2 (37, 24) F32 =
+    return (tensor.unary (λ (v: F32): F32 = math.extrema.fmax 0 (v, 0.0:F32)) (tensor.gather ((50, 24), (37, 24)) 0₂ (table, index)));

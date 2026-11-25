@@ -24,6 +24,7 @@ private:
     const Def* lower_concat(const App*);
     const Def* lower_buffer_lit(const App*);
     const Def* lower_gather(const App*);
+    const Def* lower_gather_at(const App*);
     const Def* lower_scatter(const App*);
 };
 

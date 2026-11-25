@@ -1770,6 +1770,14 @@ anx nom Prod (r: Nat, T: *) =
     | Fill:  [lo ext cap: «r; Nat», dyn: «r; Bool»] → mem.M 0 → [mem.M 0, buffer.Buf (r, ext, T)];
 anx lam prod_plain (r: Nat, T: *): Prod (r, T) = (Prod (r, T))#Plain;
 
+/// A gather as a producer: a box of its result reads the source through the same box of `index`.
+anx lam gather_fill {T: *, r: Nat} (s_src s_idx: «r; Nat», dim: Idx r)
+    (input: buffer.Buf (r, s_src, T), index: buffer.Buf (r, s_idx, Idx (s_src#dim))): Prod (r, T) =
+    let make = λ (lo ext _: «r; Nat», _: «r; Bool») (m: mem.M 0): [mem.M 0, buffer.Buf (r, ext, T)] =
+        let (m, b) = buffer.alloc (r, ext, T) m;
+        btensor.gather_at @(T, r) (s_src, s_idx, ext, lo) dim (m, b, input, index);
+    (Prod (r, T))#Fill make;
+
 /// A slot as the loops below a node see it; the rank is a field so that slots of different ranks share one type.
 nom LevelsView (Rn: Nat, T: *) = [
     r:    Nat,

@@ -222,6 +222,20 @@ axm gather: {T: *, r: Nat}
              index: buffer.Buf (r, s_idx, Idx (s_src#dim))]
           → [mem.M 0, buffer.Buf (r, s_idx, T)];
 ///
+/// ### gather_at
+///
+/// The box of `gather`'s result that starts at `lo` and has the shape `s_out`: output coordinate `o` reads the source
+/// at `lo + o` with axis `dim` replaced by `index[lo + o]`.
+///
+axm gather_at: {T: *, r: Nat}
+             → [s_src s_idx s_out lo: «r; Nat»]
+             → [dim: Idx r]
+             → [mem.M 0,
+                dst: buffer.Buf (r, s_out, T),
+                input: buffer.Buf (r, s_src, T),
+                index: buffer.Buf (r, s_idx, Idx (s_src#dim))]
+             → [mem.M 0, buffer.Buf (r, s_out, T)];
+///
 /// ### scatter
 ///
 /// Copies `input` into `dst`, then applies updates in row-major index order; for duplicate
