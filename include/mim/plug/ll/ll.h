@@ -293,6 +293,7 @@ private:
     std::string convert_impl(const Def*, bool simd);
     void finalize_impl();
     void emit_epilogue_impl(Lam*);
+    std::string fast_expf(BB&, const std::string& name, const std::string& arg);
     std::string emit_bb_impl(BB&, const Def*);
 
     // Case groups of emit_bb_impl, split so one recursion level only pays the frame of the group it hits.

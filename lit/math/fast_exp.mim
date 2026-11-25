@@ -1,0 +1,18 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll -o %t.mim
+// RUN: %FileCheck %s --input-file=%t.ll
+// RUN: clang++ -O2 %S/fast_exp_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// `math.exp` with `afn` is a polynomial the loop vectorizer can widen; without it, `llvm.exp`.
+// CHECK-LABEL: define float @fexp(
+// CHECK-NOT: llvm.exp
+// CHECK: llvm.floor.f32
+// CHECK-LABEL: define float @sexp(
+// CHECK: llvm.exp.f32
+plugin math;
+plugin core;
+
+let F32 = math.F32;
+
+extern fun fexp (x: F32): F32 = return (math.exp.exp math.mode.fast x);
+extern fun sexp (x: F32): F32 = return (math.exp.exp 0 x);
