@@ -676,16 +676,28 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
 
-    const Def* run = w.annex<tensor::run_levels_with>();
+    // An epilogue without inputs that keeps the type runs in the leaf that ends a tile's reduction.
+    bool inner = ranks->nps == 0 && Check::test_alpha(mr.To, mr.Tp)
+              && !Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To));
+    if (inner) log().i("map the epilogue in the leaf that ends each tile's reduction");
+    const Def* run = inner ? w.annex<tensor::run_levels_post>() : w.annex<tensor::run_levels_with>();
     run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
     run            = w.app(run, {mr.So, mr.Sr});
-    run            = w.app(run, {memcomb, mr.init});
-    run            = w.app(run, mr.map_out);
-    run            = w.app(run, {plan.maps, prods});
-    run            = w.app(run, {tree, caps, dyn});
-    auto [m, out]  = w.app(run, {anchored_mem(), xs})->projs<2>();
-
-    return apply_post(app, m, out);
+    if (inner) {
+        auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+        auto take
+            = w.app(w.app(w.annex<btensor::lift_mem>(), {mr.To, mr.To, mr.To}), w.app(w.annex<tensor::take>(), mr.To));
+        run = w.app(run,
+                    {memcomb, mr.init, w.app(w.app(w.annex<btensor::lift_mem>(), {pTo, pexts_ty, mr.Tp}), mr.post)});
+        run = w.app(run, {take, w.lit_nat_0(), w.lit_tt()});
+    } else {
+        run = w.app(run, {memcomb, mr.init});
+    }
+    run           = w.app(run, mr.map_out);
+    run           = w.app(run, {plan.maps, prods});
+    run           = w.app(run, {tree, caps, dyn});
+    auto [m, out] = w.app(run, {anchored_mem(), xs})->projs<2>();
+    return inner ? out : apply_post(app, m, out);
 }
 
 const Def* LowerToMem::apply_post(const App* app, const Def* m, const Def* out) {
@@ -757,6 +769,8 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
 
     // The leaves, which may also merge partial results, run an epilogue without inputs that keeps the type.
+    auto old_mr    = btensor::MapRedPost::of(app->callee()->as<App>());
+    bool plain     = Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To));
     auto merge     = plan.merge ? w.app(w.annex<tensor::levels_merge>(), mr.To) : nullptr;
     merge          = merge ? w.app(merge, plan.merge)
                            : w.app(w.app(w.annex<btensor::lift_mem>(), {mr.To, mr.To, mr.To}),
@@ -768,7 +782,7 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
         auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
         run = w.app(run,
                     {memcomb, mr.init, w.app(w.app(w.annex<btensor::lift_mem>(), {pTo, pexts_ty, mr.Tp}), mr.post)});
-        run = w.app(run, {merge, lanes});
+        run = w.app(run, {merge, lanes, w.lit_bool(!plain)});
     } else {
         run = w.app(run, {memcomb, mr.init});
     }

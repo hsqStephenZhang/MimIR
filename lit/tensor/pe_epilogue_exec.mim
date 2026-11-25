@@ -1,0 +1,20 @@
+// RUN: %mim -VVV -p opt -X tensor:cpu-kc=16 %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_epilogue_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
+// RUN: %t0.exec
+// RUN: %mim -p opt -X tensor:cpu-kc=16 -X tensor:cpu-dyn-k=0 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_epilogue_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
+// RUN: %t1.exec
+
+// An elementwise epilogue of a contraction runs in the leaf that ends each tile's reduction, whose K is cut into several blocks and may end at run time.
+// CHECK: tile the contraction over (37, 29, 53) with tensor.run_levels
+// CHECK: map the epilogue in the leaf that ends each tile's reduction
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+extern fun relu_mm (a: tensor.Tensor 2 (37, 53) F32, b: tensor.Tensor 2 (53, 29) F32): tensor.Tensor 2 (37, 29) F32 =
+    return (tensor.unary (λ (v: F32): F32 = math.extrema.fmax 0 (math.arith.sub 0 (v, 1.0:F32), 0.0:F32)) (tensor.product_2d R (a, b)));
