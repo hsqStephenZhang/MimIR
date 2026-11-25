@@ -1,11 +1,12 @@
-// RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 -X tensor:reassoc-max=2 %s -p ll -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
 // RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_dyn_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec | %FileCheck %s --check-prefix=OUT
 
 // Producers fused into contractions with run-time extents: a staged box is as wide as the consumer's tile at run time.
-// `reassoc-max=2` keeps `chain` as written: a run-time dispatch over its bracketings does not bufferize yet.
 // CHECK-DAG: fuse the map-reduce over ({{_[0-9]+}}, {{_[0-9]+}}) into its consumer
-// CHECK-DAG: fuse the map-reduce over ({{_[0-9]+}}, 36, 24) into its consumer
+// `chain` dispatches at run time between (A·B)·D, which fuses A·B, and A·(B·D), which fuses B·D.
+// CHECK-DAG: fuse the map-reduce over ({{[a-z]*_[0-9]+}}, 36, 24) into its consumer
+// CHECK-DAG: fuse the map-reduce over (24, 20, 36) into its consumer
 // OUT: dynamic fusion: all shapes passed
 plugin tensor;
 plugin core;
