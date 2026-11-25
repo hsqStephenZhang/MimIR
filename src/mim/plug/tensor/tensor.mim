@@ -2066,7 +2066,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         fun finished (m: mem.M 0, dst: D)@tt: [mem.M 0, D] =
             con skip (m: mem.M 0)@tt = return (m, dst);
             con map (m: mem.M 0)@tt =
-                return (btensor.map_reduce_post @(1, 0) @(To, To, Ro, Ro, btensor.SchedT) (So, ext, btensor.mk_sched (core.nat.sub (Ro, 1), 0))
+                return (btensor.map_reduce_post @(1, 0) @(To, To, Ro, Ro, btensor.SchedT) (So, ext, btensor.mk_sched (Ro, 0))
                     @(To, Ro, So, (), (), ()) @To (levels_take_mem @To, ⊥:To, post) cells (cells, ()) (m, dst, dst, ()));
             (skip, map)#last m;
         ((λ (_: []): [mem.M 0, D] = (m, dst), λ (_: []): [mem.M 0, D] = cps.cps2ds finished (m, dst))#(core.select (whole, ff, finish))) ();
@@ -2218,7 +2218,18 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
     let (m, dst) = (buffer.alloc (Ro, So, To) m, buffer.lit (Ro, So, To) (m, init))#red_dyn;
     let q0 = ‹d: Rn; affine.lit (origin#d)›;
     let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, q0, levels_plain @Rn (Rs#i, maps#i), xs0#i, maps#i, prods#i, aff_reads @(Rn, Rs#i) (maps#i)) inj LevelsView (Rn, Ts#i)›;
-    eval sched (‹d: Rn; (0, Sr#d, cap0#d, dyn0#d, ff)›, vs0, m, dst);
+    let (m, dst) = eval sched (‹d: Rn; (0, Sr#d, cap0#d, dyn0#d, ff)›, vs0, m, dst);
+    // With a run-time reduction extent of 0 no leaf runs, so `post` maps the cells that still hold `init`.
+    let empty = vec.fold.r @(Bool, Idx Rn) @Rn
+        (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (Sr#d == 0, tt, acc))) (‹d: Rn; d›, ff);
+    let each  = lm (o: «Ro; affine.Index»): «Ro; affine.Index» = o;
+    fun unit (m: mem.M 0, dst: D)@tt: [mem.M 0, D] =
+        con skip (m: mem.M 0)@tt = return (m, dst);
+        con map (m: mem.M 0)@tt =
+            return (btensor.map_reduce_post @(1, 0) @(To, To, Ro, Ro, btensor.SchedT) (So, So, btensor.mk_sched (Ro, 0))
+                @(To, Ro, So, (), (), ()) @To (levels_take_mem @To, ⊥:To, post) each (each, ()) (m, dst, dst, ()));
+        (skip, map)#empty m;
+    ((λ (_: []): [mem.M 0, D] = (m, dst), λ (_: []): [mem.M 0, D] = cps.cps2ds unit (m, dst))#(core.select (red_dyn, finish, ff))) ();
 
 anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)

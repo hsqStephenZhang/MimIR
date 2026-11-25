@@ -1,10 +1,13 @@
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
+#include <initializer_list>
 #include <vector>
 
 extern "C" float* relu_mm(float*, float*);
+extern "C" float* affine_mm(uint64_t, uint64_t, uint64_t, float*, float*);
 
 int main() {
     const int M = 37, K = 53, N = 29;
@@ -24,5 +27,19 @@ int main() {
         }
     if (bad) std::printf("relu_mm: %d wrong\n", bad);
     std::free(c);
+    for (int k : {0, 1, 9, 40})
+        for (int m : {1, 7, 19})
+            for (int n : {3, 33}) {
+                auto d = affine_mm(m, k, n, a.data(), b.data());
+                for (int i = 0; i != m; ++i)
+                    for (int j = 0; j != n; ++j) {
+                        double s = 0;
+                        for (int l = 0; l != k; ++l)
+                            s += double(a[i * k + l]) * b[l * n + j];
+                        if (std::fabs(d[i * n + j] - (0.5 * s + 1.0)) > 1e-3) ++bad;
+                    }
+                std::free(d);
+            }
+    if (bad) std::printf("%d wrong\n", bad);
     return bad != 0;
 }
