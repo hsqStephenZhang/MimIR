@@ -159,12 +159,15 @@ struct PeCpu {
 
 /// The facts `tensor.run_levels` needs for a map-reduce that is not a contraction.
 struct PeGeneric {
-    const Def* maps; ///< `«i: nis; tensor.Aff (Rn, Ris#i)»`: each input's access map as data.
-    u64 vdim;        ///< The leaf's vector loop: the last output loop over a strided reduction, else none (`Rn`).
+    const Def* maps;     ///< `«i: nis; tensor.Aff (Rn, Ris#i)»`: each input's access map as data.
+    const Def* red_unit; ///< Whether every input reads the innermost loop at unit stride.
+    const Def* out_unit; ///< Whether every input reads the last output loop at unit stride.
+    const Def* wdim;     ///< The loop the output is contiguous along.
+    const Def* rdim;     ///< The loop an input that reads `wdim` at a stride is contiguous along, else `wdim`.
 };
 
-/// Whether `tensor.run_levels` covers a `tensor.map_reduce_post` with meta @p callee whose output loops come first and
-/// whose reduction extents are static; on success, @p plan receives its facts.
+/// Whether `tensor.run_levels` covers a `tensor.map_reduce_post` with meta @p callee whose output is a permutation of
+/// the leading loops and whose reduction extents are static; on success, @p plan receives its facts.
 bool pe_generic_plan(const App* callee, PeGeneric* plan);
 
 /// Whether `tensor.run_levels` covers the `tensor.map_reduce_post` with meta @p callee: `tt`, `ff`, or `nullptr` while

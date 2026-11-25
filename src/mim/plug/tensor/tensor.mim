@@ -1915,6 +1915,22 @@ anx lam sched_at_leaves {N Rn: Nat} (g: Nat → SchedTree (N, Rn)) (t: SchedTree
     let (_, par, pack, seq, peel, stage, switch) = sched_rebuild @(N, Rn) ();
     sched_fold @(N, Rn, SchedTree (N, Rn)) (g, par, pack, seq, peel, stage, switch) t;
 
+/// `t` with each leaf cut by the levels of `sched_levels` first.
+anx lam sched_with_levels {N Rn L: Nat} (levels: «L; «Rn; Nat»») (t: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    sched_at_leaves @(N, Rn) (λ (v: Nat): SchedTree (N, Rn) = sched_levels @(N, Rn, L) (levels, v)) t;
+
+/// Whether `t` splits any of the loops from `Ro` on.
+anx lam sched_splits {N Rn: Nat} (Ro: Nat) (t: SchedTree (N, Rn)): Bool =
+    let red = λ (d: Nat, b: Bool): Bool = core.select (Ro < core.nat.add (d, 1), tt, b);
+    sched_fold @(N, Rn, Bool)
+        (λ (_: Nat): Bool = ff,
+         λ (sizes: «Rn; Nat», b: Bool): Bool =
+            vec.fold.r @(Bool, Idx Rn) @Rn (λ (d: Idx Rn, acc: Bool): Bool =
+                core.select (core.select (core.idx2nat d < Ro, ff, core.ncmp.ne (sizes#d, 0)), tt, acc)) (‹d: Rn; d›, b),
+         λ (_: Nat, _: Nat, _: Idx N, _: «Rn; Bool», b: Bool): Bool = b,
+         λ (d _: Nat, b: Bool): Bool = red (d, b), λ (d _: Nat, b: Bool): Bool = red (d, b), λ (_: Idx N, b: Bool): Bool = b,
+         λ (d _: Nat, a b: Bool): Bool = red (d, core.bit2.or 2 (a, b))) t;
+
 /// The number of nodes of `t`.
 anx lam sched_size {N Rn: Nat} (t: SchedTree (N, Rn)): Nat =
     let one = λ (n: Nat): Nat = core.nat.add (n, 1);
@@ -1927,7 +1943,7 @@ anx lam sched_size {N Rn: Nat} (t: SchedTree (N, Rn)): Nat =
 /// `run_levels_with` over the loops starting at `origin`; the output is indexed from zero, so a producer computes a box of its result.
 anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr origin: «Rn; Nat»)
-    (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To)
+    (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To, post: Fn [mem.M 0, To, []] → [mem.M 0, To])
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
     (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
@@ -1958,11 +1974,14 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         let ins_b = refly.check (ready, ‹i: N; (vs#i)#data›, "SchedTree: a Leaf reads a producer slot that no Stage above it computes");
         let fresh = vec.fold.r @(Bool, Idx Rn) @Rn
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (lo#d == 0, acc, ff))) (‹d: Rn; d›, tt);
+        // Only a leaf over the whole reduction may finish its cells.
+        let whole = vec.fold.r @(Bool, Idx Rn) @Rn
+            (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (size#d == Sr#d, acc, ff))) (‹d: Rn; d›, fresh);
         let run   = λ (S: «Ro; Nat», c: buffer.Buf (Ro, S, To), at: IxN → «Ro; affine.Index», sz: «Rn; Nat», m: mem.M 0)
                       : [mem.M 0, buffer.Buf (Ro, S, To)] =
             btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (S, sz, btensor.mk_sched (vdim, 0))
                 @(Ts, Ris_c, Sis_c, (), (), ()) @[«Ro; Nat», IxN → «Ro; affine.Index», buffer.Buf (Ro, S, To), Bool, To]
-                (f, (S, at, c, fresh, init), btensor.id @To) at (ins_m, ()) (m, c, ins_b, ());
+                (f, (S, at, c, fresh, init), (btensor.id @To, post)#whole) at (ins_m, ()) (m, c, ins_b, ());
         // An edge tile computes in a scratch tile whose valid part is copied in and out; whole tiles come from `Peel` without one.
         let edged = λ (_: []): [mem.M 0, D] =
             let full_sz = ‹d: Rn; core.select (core.idx2nat d < Ro, cap#d, size#d)›;
@@ -2125,7 +2144,26 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
-    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
+    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, btensor.id @To) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
+
+/// `run_levels_with` that maps each output cell by `post` after its reduction, within the leaves when `sched` never splits a reduction loop.
+anx lam run_levels_post {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
+    (So: «Ro; Nat», Sr: «Rn; Nat»)
+    (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To, post: Fn [mem.M 0, To, []] → [mem.M 0, To])
+    (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
+    (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
+    (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
+    (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
+    : [mem.M 0, buffer.Buf (Ro, So, To)] =
+    let D    = buffer.Buf (Ro, So, To);
+    let run  = λ (p: Fn [mem.M 0, To, []] → [mem.M 0, To]): [mem.M 0, D] =
+        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, p) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
+    let each = lm (o: «Ro; affine.Index»): «Ro; affine.Index» = o;
+    let late = λ (_: []): [mem.M 0, D] =
+        let (m, out) = run (btensor.id @To);
+        btensor.map_reduce_post @(1, 0) @(To, To, Ro, Ro, btensor.SchedT) (So, So, btensor.mk_sched (Ro, 0))
+            @(To, Ro, So, (), (), ()) @To (levels_take_mem @To, ⊥:To, post) each (each, ()) (m, out, out, ());
+    ((λ (_: []): [mem.M 0, D] = run post, late)#(sched_splits Ro sched)) ();
 
 anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -2220,8 +2258,17 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
         batch ff tree;
     (build keep_b, sched_switch @(2, Rn) (m_ax, 16 * mr + 1, build tt, build ff))#m_dyn;
 
-/// One leaf for a box of any sizes.
-anx lam leaf_at {N Rn: Nat} (vdim: Nat) (_: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) = sched_leaf @(N, Rn) vdim;
+/// The tree for a map-reduce over `Rn` loops, `Ro` of them parallel, that is not a contraction; `red_unit` and `out_unit` tell whether every input reads the innermost and the last output loop at unit stride, and the output is contiguous along loop `wdim` while an input is along `rdim`.
+/// A leaf accumulates a row along the last output loop when only that one is contiguous or the reduction is a short window; a transpose cuts both contiguous loops into tiles (sizes measured on Zen 5).
+anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim: Nat) (sizes: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) =
+    let last   = core.nat.sub (Ro, 1);
+    let window = vec.fold.r @(Nat, Idx Rn) @Rn
+        (λ (d: Idx Rn, acc: Nat): Nat = core.select (core.idx2nat d < Ro, acc, core.nat.mul (acc, sizes#d))) (‹d: Rn; d›, 1);
+    let row  = core.select (Ro < Rn, core.select (out_unit, core.select (red_unit, window < 16, tt), ff), ff);
+    let leaf = sched_leaf @(N, Rn) (core.select (row, last, Rn));
+    let cut  = λ (ts: Nat): «Rn; Nat» =
+        ‹d: Rn; let e = core.idx2nat d; core.select (core.select (e == wdim, tt, e == rdim), ts, 0)›;
+    (sched_par @(N, Rn) (cut 256, sched_par @(N, Rn) (cut 8, leaf)), leaf)#(wdim == rdim)
 
 /// `cpu_tree` for a box of the given sizes, `dyn` those known only at run time.
 anx lam cpu_tree_at (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, fuse: «2; Nat») (sizes: «Rn; Nat», dyn: «Rn; Bool»): SchedTree (2, Rn) =
@@ -2244,5 +2291,5 @@ anx lam fill_of {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «
         let bound  = ‹d: Rn; core.select (out_d d, cap#(o d), Sr#d)›;
         let fresh  = ‹d: Rn; core.select (out_d d, dyn#(o d), ff)›;
         let origin = ‹d: Rn; core.select (out_d d, lo#(o d), 0)›;
-        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (ext, size, origin) (f, init) out (maps, prods) (tree_of (size, fresh), bound, fresh) (m, xs);
+        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (ext, size, origin) (f, init, btensor.id @To) out (maps, prods) (tree_of (size, fresh), bound, fresh) (m, xs);
     (Prod (Ro, To))#Fill make;

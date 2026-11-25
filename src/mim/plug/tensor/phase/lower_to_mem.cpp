@@ -457,10 +457,10 @@ void show_tree(std::string& out, const Def* tree, size_t depth) {
 
 } // namespace
 
-const Def* LowerToMem::cpu_levels(u64 rn) {
+std::pair<const Def*, u64> LowerToMem::cpu_levels(u64 rn) {
     auto& w   = new_world();
     auto text = arg_value(w.driver().args("tensor"), "cpu-levels");
-    if (!text) return nullptr;
+    if (!text) return {};
     auto levels = DefVec();
     for (auto level : std::views::split(*text, '/')) {
         auto sizes = DefVec();
@@ -470,17 +470,17 @@ const Def* LowerToMem::cpu_levels(u64 rn) {
             if (auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), n);
                 ec != std::errc() || ptr != v.data() + v.size()) {
                 log().w("ignoring `-X tensor:cpu-levels={}`: `{}` is not a number", *text, v);
-                return nullptr;
+                return {};
             }
             sizes.emplace_back(w.lit_nat(n));
         }
         if (sizes.size() != rn) {
             log().w("ignoring `-X tensor:cpu-levels={}` for a contraction over {} loops", *text, rn);
-            return nullptr;
+            return {};
         }
         levels.emplace_back(w.tuple(sizes));
     }
-    return w.tuple(levels);
+    return {w.tuple(levels), levels.size()};
 }
 
 std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
@@ -524,7 +524,8 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
         prods       = w.tuple(DefVec(nis, [&](size_t i) {
             return w.app(w.annex<tensor::prod_plain>(), {mr.Ris->proj(nis, i), mr.Tis->proj(nis, i)});
         }));
-        tree_of     = w.app(w.app(w.annex<tensor::leaf_at>(), {mr.nis, mr.Rn}), w.lit_nat(gen.vdim));
+        tree_of     = w.app(w.app(w.annex<tensor::generic_tree>(), {mr.nis, mr.Rn, mr.Ro}),
+                            {gen.red_unit, gen.out_unit, gen.wdim, gen.rdim});
     } else {
         return {};
     }
@@ -590,17 +591,17 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
     log().i("tile the contraction over {} with tensor.run_levels", mr.Sr);
     // A run-time extent has no static bound until a `Seq` gives it one; the sentinel only loses every `min`.
-    u64 rn      = ranks->nloops();
-    auto extent = [&](size_t d) { return Lit::isa(mr.Sr->proj(rn, d)); };
-    auto sizes  = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
-    auto caps   = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(u64(1) << 40)); }));
-    auto dyn    = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_bool(!extent(d)); }));
-    auto levels = cpu_levels(rn);
+    u64 rn                 = ranks->nloops();
+    auto extent            = [&](size_t d) { return Lit::isa(mr.Sr->proj(rn, d)); };
+    auto sizes             = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
+    auto caps              = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(u64(1) << 40)); }));
+    auto dyn               = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_bool(!extent(d)); }));
+    auto [levels, nlevels] = cpu_levels(rn);
     auto [xs, sis, prods, fuse] = pe_slots(app, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, !levels);
     auto tree                   = w.app(w.app(w.annex<tensor::cpu_tree>(), {mr.Rn, mr.Ro}),
                                         {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, sizes, dyn, fuse});
     if (levels) {
-        auto n = w.lit_nat(levels->num_projs());
+        auto n = w.lit_nat(nlevels);
         tree   = w.app(w.app(w.annex<tensor::sched_levels>(), {w.lit_nat(2), mr.Rn, n}),
                        {levels, w.lit_nat(ranks->ro - 2)});
         log().i("tile the contraction over {} at the levels {}", mr.Sr, levels);
@@ -611,7 +612,6 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
         show_tree(text, tree, 0);
         log().v("schedule tree:\n{}", text);
     }
-    auto post_is       = rewrite(app->arg()->proj(2, 1));
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
 
@@ -624,8 +624,17 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     run            = w.app(run, {tree, caps, dyn});
     auto [m, out]  = w.app(run, {fresh_mem(), xs})->projs<2>();
 
-    auto nps = ranks->nps;
-    if (nps == 0 && Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return out;
+    return apply_post(app, m, out);
+}
+
+const Def* LowerToMem::apply_post(const App* app, const Def* m, const Def* out) {
+    auto& w     = new_world();
+    auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    if (old_mr.ranks()->nps == 0
+        && Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To)))
+        return out;
+    auto mr      = btensor::MapRedPost::of(rewrite(app->callee())->as<App>());
+    auto post_is = rewrite(app->arg()->proj(2, 1));
 
     // Apply fused epilogue as a pointwise pass (in-place when To == Tp).
     auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
@@ -652,11 +661,9 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
 
 const Def* LowerToMem::lower_pe_generic(const App* app) {
     auto& w = new_world();
-    if (!w.driver().arg_nat("tensor", "pe-generic").value_or(0)) return nullptr;
-    auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
-    auto ranks  = old_mr.ranks();
-    if (!ranks || ranks->nps != 0) return nullptr;
-    if (!Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return nullptr;
+    if (!w.driver().arg_nat("tensor", "pe-generic").value_or(1)) return nullptr;
+    auto ranks = btensor::MapRedPost::of(app->callee()->as<App>()).ranks();
+    if (!ranks) return nullptr;
     auto c    = rewrite(app->callee())->as<App>();
     auto mr   = btensor::MapRedPost::of(c);
     auto plan = PeGeneric{};
@@ -666,13 +673,15 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     for (u64 d = 0; d != rn; ++d)
         if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
 
-    auto nis    = ranks->nis;
-    auto levels = cpu_levels(rn);
-    auto vdim   = w.lit_nat(plan.vdim);
-    auto N      = w.lit_nat(nis);
-    auto tree   = levels ? w.app(w.app(w.annex<tensor::sched_levels>(), {N, mr.Rn, w.lit_nat(levels->num_projs())}),
-                                 {levels, vdim})
-                         : w.app(w.app(w.annex<tensor::sched_leaf>(), {N, mr.Rn}), vdim);
+    auto nis               = ranks->nis;
+    auto [levels, nlevels] = cpu_levels(rn);
+    auto N                 = w.lit_nat(nis);
+    auto dyn               = w.tuple(DefVec(rn, [&](size_t) { return w.lit_ff(); }));
+    auto tree              = w.app(w.app(w.app(w.annex<tensor::generic_tree>(), {N, mr.Rn, mr.Ro}),
+                                         {plan.red_unit, plan.out_unit, plan.wdim, plan.rdim}),
+                                   {mr.Sr, dyn});
+    if (levels)
+        tree = w.app(w.app(w.app(w.annex<tensor::sched_with_levels>(), {N, mr.Rn, w.lit_nat(nlevels)}), levels), tree);
     log().i("tile the map-reduce over {} with tensor.run_levels{}", mr.Sr, levels ? " at the given levels" : "");
 
     auto old_is        = app->arg()->proj(2, 0);
@@ -682,16 +691,27 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     });
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
-    auto dyn           = w.tuple(DefVec(rn, [&](size_t) { return w.lit_ff(); }));
 
-    const Def* run = w.annex<tensor::run_levels_with>();
+    // An epilogue without inputs that keeps the type runs within the leaves.
+    auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    bool plain
+        = ranks->nps == 0 && Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To));
+    bool inner     = !plain && ranks->nps == 0 && Check::test_alpha(mr.To, mr.Tp);
+    const Def* run = inner ? w.annex<tensor::run_levels_post>() : w.annex<tensor::run_levels_with>();
     run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, mr.Sis});
     run            = w.app(run, {mr.So, mr.Sr});
-    run            = w.app(run, {memcomb, mr.init});
-    run            = w.app(run, mr.map_out);
-    run            = w.app(run, {plan.maps, w.tuple(prods)});
-    run            = w.app(run, {tree, mr.Sr, dyn});
-    return w.app(run, {fresh_mem(), w.tuple(xs)})->proj(2, 1);
+    if (inner) {
+        auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+        run = w.app(run,
+                    {memcomb, mr.init, w.app(w.app(w.annex<btensor::lift_mem>(), {pTo, pexts_ty, mr.Tp}), mr.post)});
+    } else {
+        run = w.app(run, {memcomb, mr.init});
+    }
+    run           = w.app(run, mr.map_out);
+    run           = w.app(run, {plan.maps, w.tuple(prods)});
+    run           = w.app(run, {tree, mr.Sr, dyn});
+    auto [m, out] = w.app(run, {fresh_mem(), w.tuple(xs)})->projs<2>();
+    return inner || plain ? out : apply_post(app, m, out);
 }
 
 const Def* LowerToMem::lower_map_reduce(const App* app) {

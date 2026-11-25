@@ -433,22 +433,27 @@ bool pe_generic_plan(const App* callee, PeGeneric* plan) {
     auto ranks = mr.ranks();
     if (!ranks || ranks->ro < 1 || ranks->nis < 1) return false;
     u64 ro = ranks->ro, rn = ranks->nloops(), nis = ranks->nis;
-    auto ris = lit_projs(mr.Ris, nis);
-    if (!ris) return false;
-    // `run_levels`' per-slot types `«i: nis; …(Ris#i)…»` do not check against slots of different ranks in general.
-    if (std::ranges::any_of(*ris, [&](u64 r) { return r != ris->front(); })) return false;
+    if (!lit_projs(mr.Ris, nis)) return false;
     for (u64 d = ro; d != rn; ++d)
         if (!Lit::isa(mr.Sr->proj(rn, d))) return false;
-    for (u64 d = 0; d != ro; ++d)
-        if (mr.So->proj(ro, d) != mr.Sr->proj(rn, d)) return false;
     if (mr.To == w.type_nat() || !Check::test_alpha(mr.init->type(), mr.To)) return false;
-    if (!Check::test_alpha(mr.TSched, w.annex<btensor::SchedT>())) return false;
-    if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), {mr.Rn, w.lit_nat_0()}))) return false;
 
     auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
     auto probe  = w.mut_lam(domain, domain);
     auto vars   = probe->var()->projs(rn);
-    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return false;
+    // The output is a permutation of the parallel loops, which only literal extents can tile.
+    auto out = w.app(mr.map_out, probe->var())->projs(ro);
+    u64 wdim = ro - 1;
+    for (u64 k = 0; k != ro; ++k) {
+        auto it = std::ranges::find(vars, out[k]);
+        if (it == vars.end() || u64(it - vars.begin()) >= ro || std::ranges::count(out, out[k]) != 1) return false;
+        auto d = u64(it - vars.begin());
+        if (mr.So->proj(ro, k) != mr.Sr->proj(rn, d)) return false;
+        if (d != k)
+            for (u64 e = 0; e != rn; ++e)
+                if (!Lit::isa(mr.Sr->proj(rn, e))) return false;
+        if (k == ro - 1) wdim = d;
+    }
 
     auto maps = mr.maps->projs(nis);
     auto affs = DefVec(nis);
@@ -459,6 +464,7 @@ bool pe_generic_plan(const App* callee, PeGeneric* plan) {
         return w.app(aff_unit, {affs[i], w.lit_idx(rn, d)}) == w.lit_tt();
     };
     bool red_unit = true, out_unit = true;
+    u64 rdim = wdim;
     for (size_t i = 0; i != nis; ++i) {
         auto r    = *Lit::isa(mr.Ris->proj(nis, i));
         auto rows = w.app(maps[i], probe->var())->projs(r);
@@ -468,9 +474,14 @@ bool pe_generic_plan(const App* callee, PeGeneric* plan) {
         affs[i] = refl.map(rows);
         red_unit &= unit(i, rn - 1);
         out_unit &= unit(i, ro - 1);
+        auto sub   = vars;
+        sub[wdim]  = w.call<affine::lit>(w.lit_nat_0());
+        bool reads = !Check::test_alpha(w.app(maps[i], probe->var()), w.app(maps[i], w.tuple(sub)));
+        if (rdim == wdim && reads && !unit(i, wdim))
+            for (u64 d = 0; d != ro; ++d)
+                if (unit(i, d)) rdim = d;
     }
-    bool row = ro < rn && !red_unit && out_unit;
-    if (plan) *plan = {w.tuple(affs), row ? ro - 1 : rn};
+    if (plan) *plan = {w.tuple(affs), w.lit_bool(red_unit), w.lit_bool(out_unit), w.lit_nat(wdim), w.lit_nat(rdim)};
     return true;
 }
 

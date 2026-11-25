@@ -36,7 +36,7 @@ static constexpr PluginArg known_args[] = {
     {"cpu-order=<n>", "CPU BLIS loop order: `0` outer N / pack B then MC / pack A (default), `1` outer M / pack A then MC-on-N / pack B."},
     {"cpu-dyn-k=<n>", "`1` gives the CPU `K` loop a run-time tail (`tensor.sched_seq`), which halves the code of a shape whose `K` leaves one at 1–3% speed; `0` peels it statically (default `1`)."},
     {"cpu-levels=<s>", "Tile with these levels instead of the BLIS tree, like an IREE `lowering_config`: one comma-separated tile size per loop (0 keeps it whole), levels separated by `/`, outermost first."},
-    {"pe-generic=<n>", "Also lower a static map-reduce that is not a contraction (elementwise, reductions) through `run_levels`, with one leaf or `cpu-levels` (`1`; off by default)."},
+    {"pe-generic=<n>", "Also lower a static map-reduce that is not a contraction (elementwise, reductions) through `run_levels`, with `generic_tree` or `cpu-levels` (default `1`; `0` keeps the plain loop nest)."},
     {"pe-fuse=<n>", "Stage a single-use map-reduce that produces an input of a `run_levels` contraction inside its consumer, band by band (default `1`; `0` keeps every intermediate whole)."},
     {"cpu-pack-b=<n>", "Whether the CPU tiling packs `B`: `0` decides by the number of rows and the size of `B` (default), `1` always, `2` never."},
 };

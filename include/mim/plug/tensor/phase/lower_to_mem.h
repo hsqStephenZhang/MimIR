@@ -41,6 +41,9 @@ private:
     const Def* lower_map_reduce(const App*);
     const Def* lower_pe_cpu(const App*);
     const Def* lower_pe_generic(const App*);
+    /// The result of the old map-reduce @p app whose accumulators `run_levels` left in @p out, with its epilogue
+    /// applied.
+    const Def* apply_post(const App* app, const Def* m, const Def* out);
     /// The slots of the `run_levels_with` call for the old contraction @p app: `(xs, Sis, prods, fuse)`, where a
     /// single-use map-reduce producing one input becomes a `tensor.fill_of` producer instead of a buffer.
     /// `fuse#i` is `0` for a buffer, `1` for a producer without a contraction, and `2` for a contraction.
@@ -52,8 +55,9 @@ private:
                                        const Def* maps,
                                        const Def* a,
                                        bool may_fuse);
-    /// The levels of `-X tensor:cpu-levels=<sizes>/<sizes>/…` for a contraction over @p rn loops, or `nullptr`.
-    const Def* cpu_levels(u64 rn);
+    /// The levels of `-X tensor:cpu-levels=<sizes>/<sizes>/…` for a contraction over @p rn loops, or `nullptr`, and
+    /// their number, since one level is no tuple of levels.
+    std::pair<const Def*, u64> cpu_levels(u64 rn);
     /// The `tensor.fill_of` producer for the old input @p input of a slot read through @p map, or `nullptr`, and
     /// whether that producer is a contraction.
     std::pair<const Def*, bool> fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r);

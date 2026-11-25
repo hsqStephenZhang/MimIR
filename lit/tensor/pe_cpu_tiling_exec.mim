@@ -12,7 +12,7 @@
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t3.ll -o %t3.exec -Wno-override-module
 // RUN: %t3.exec
 // RUN: %mim -VVV -p opt %s -o %tf.mim 2>&1 | %FileCheck %s
-// RUN: %mim -VVV -p opt -X tensor:pe-cpu=0 %s -o %tg.mim 2>&1 | %FileCheck %s --check-prefix=OFF
+// RUN: %mim -VVV -p opt -X tensor:pe-cpu=0 -X tensor:pe-generic=0 %s -o %tg.mim 2>&1 | %FileCheck %s --check-prefix=OFF
 // RUN: %mim -VVV -p opt -X "tensor:cpu-levels=16,32,8/4,16,0" %s -p ll -X ll:o=%t4.ll -o %th.mim 2>&1 | %FileCheck %s --check-prefix=LEVELS
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_tiling_aux.cpp %t4.ll -o %t4.exec -Wno-override-module
 // RUN: %t4.exec

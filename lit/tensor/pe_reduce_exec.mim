@@ -1,0 +1,46 @@
+// RUN: %mim -VVV -p opt %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_reduce_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
+// RUN: %t0.exec
+// RUN: %mim -p opt -X tensor:pe-generic=0 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_reduce_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
+// RUN: %t1.exec
+
+// Reductions, normalizations, pooling and a transpose through run_levels by default; an epilogue runs within the leaves.
+// CHECK-DAG: tile the map-reduce over (37, 53) with tensor.run_levels
+// CHECK-DAG: tile the map-reduce over (53, 37) with tensor.run_levels
+// CHECK-DAG: tile the map-reduce over (2, 3, 8, 9, 2, 2) with tensor.run_levels
+// CHECK-DAG: tile the map-reduce over (2, 3, 14, 16, 3, 3) with tensor.run_levels
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F32 = math.F32;
+lam add (x y: F32): F32 = math.arith.add 0 (x, y);
+lam mul (x y: F32): F32 = math.arith.mul 0 (x, y);
+lam fmax (x y: F32): F32 = math.extrema.fmax 0 (x, y);
+
+extern fun softmax (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 2 (37, 53) F32 =
+    return (tensor.softmax 0 1_2 x);
+
+extern fun row_mean (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 1 37 F32 =
+    let s = tensor.reduce (add, 0:F32) 1_2 x;
+    return (tensor.unary (λ (v: F32): F32 = math.arith.div 0 (v, 53.0:F32)) s);
+
+extern fun layer_norm (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 2 (37, 53) F32 =
+    let mean = tensor.unary (λ (v: F32): F32 = math.arith.div 0 (v, 53.0:F32)) (tensor.reduce (add, 0:F32) 1_2 x);
+    let d    = tensor.binary_ax (λ (u v: F32): F32 = math.arith.sub 0 (u, v)) 1_2 (x, mean);
+    let var  = tensor.unary (λ (v: F32): F32 = math.arith.div 0 (v, 53.0:F32))
+                   (tensor.reduce (add, 0:F32) 1_2 (tensor.binary mul (d, d)));
+    let rstd = tensor.unary (λ (v: F32): F32 = math.arith.div 0 (1.0:F32, math.rt.sq 0 (math.arith.add 0 (v, 0.00001:F32)))) var;
+    return (tensor.binary_ax mul 1_2 (d, rstd));
+
+extern fun max_pool (x: tensor.Tensor 4 (2, 3, 16, 18) F32): tensor.Tensor 4 (2, 3, 8, 9) F32 =
+    return (tensor.pool (fmax, math.neg_inf (23, 8)) ((2, 2), (2, 2), (1, 1), (0, 0), (8, 9)) x);
+
+extern fun avg_pool (x: tensor.Tensor 4 (2, 3, 16, 18) F32): tensor.Tensor 4 (2, 3, 14, 16) F32 =
+    let s = tensor.pool (add, 0:F32) ((3, 3), (1, 1), (1, 1), (0, 0), (14, 16)) x;
+    return (tensor.unary (λ (v: F32): F32 = math.arith.div 0 (v, 9.0:F32)) s);
+
+extern fun transpose (x: tensor.Tensor 2 (37, 53) F32): tensor.Tensor 2 (53, 37) F32 =
+    return (tensor.transpose_2d x);
