@@ -1,0 +1,40 @@
+// RUN: %mim -VVV -p opt -X tensor:group-cache=700 %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_divmod_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
+// RUN: %t0.exec
+// RUN: %mim -p opt -X tensor:pe-fuse=0 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_divmod_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
+// RUN: %t1.exec
+// RUN: %mim -p opt -X tensor:group-cache=224 %s -p ll -X ll:o=%t2.ll -o %t2.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_divmod_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
+// RUN: %t2.exec
+
+// Producers staged through rows that divide or take a modulus: the box is the exact hull of what a tile reads, whose start and extent depend on where the tile starts.
+// Bands of 1 or 3 rows meet a floordiv by 2 out of step, bands of 4 or 12 a ceildiv by 3 and a modulus by 5 that wraps; a convolution reads its producer through its implicit im2col.
+// CHECK-DAG: fuse the map-reduce over (11, 13) into its consumer
+// CHECK-DAG: fuse the map-reduce over (7, 5) into its consumer
+// CHECK-DAG: fuse the map-reduce over (7, 9) into its consumer
+// CHECK-DAG: fuse the map-reduce over (2, 5, 11, 13) into its consumer
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F32 = math.F32;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+lam relu (v: F32): F32 = math.extrema.fmax 0 (math.arith.sub 0 (v, 0.25:F32), 0.0:F32);
+fun take (_: F32, x: F32)@tt: F32 = return x;
+
+extern fun up2 (x: tensor.Tensor 2 (11, 13) F32): tensor.Tensor 2 (22, 26) F32 =
+    return (tensor.map_reduce ((22, 26), (22, 26)) (take, 0:F32) (λ (i j: affine.Index): «2; affine.Index» = (i, j))
+        (λ (i j: affine.Index): «2; affine.Index» = (affine.semiop.floordiv (i, 2), affine.semiop.floordiv (j, 2))) (tensor.unary relu x));
+
+extern fun wrap5 (x: tensor.Tensor 2 (7, 5) F32): tensor.Tensor 2 (23, 7) F32 =
+    return (tensor.map_reduce ((23, 7), (23, 7)) (take, 0:F32) (λ (j i: affine.Index): «2; affine.Index» = (j, i))
+        (λ (j i: affine.Index): «2; affine.Index» = (i, affine.semiop.rem (j, 5))) (tensor.unary relu x));
+
+extern fun ceil3 (x: tensor.Tensor 2 (7, 9) F32): tensor.Tensor 2 (25, 7) F32 =
+    return (tensor.map_reduce ((25, 7), (25, 7)) (take, 0:F32) (λ (j i: affine.Index): «2; affine.Index» = (j, i))
+        (λ (j i: affine.Index): «2; affine.Index» = (i, affine.semiop.ceildiv (j, 3))) (tensor.unary relu x));
+
+extern fun conv_relu (x: tensor.Tensor 4 (2, 5, 11, 13) F32, w: tensor.Tensor 4 (7, 5, 3, 3) F32): tensor.Tensor 4 (2, 7, 9, 11) F32 =
+    return (tensor.conv R ((1, 1), (1, 1), (0, 0)) (tensor.unary relu x, w));

@@ -503,7 +503,6 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
     auto _  = fe::Restore(fuse_depth_, fuse_depth_ + 1);
     if (auto g = Axm::isa<tensor::gather>(input)) {
         if (uses_[input] != 1 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
-        if (w.app(w.app(w.annex<tensor::aff_boxable>(), {Rn, r}), map) != w.lit_tt()) return {};
         auto c                 = rewrite(g->callee())->as<App>();
         auto [Tr, shapes, dim] = c->uncurry_args<3>();
         auto [T, gr]           = Tr->projs<2>();
@@ -520,7 +519,6 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
     auto papp = Axm::isa<tensor::map_reduce_post>(input);
     // A map-reduce read twice is computed in both consumers, unless it is a contraction.
     if (!papp || uses_[input] > 2 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
-    if (w.app(w.app(w.annex<tensor::aff_boxable>(), {Rn, r}), map) != w.lit_tt()) return {};
     auto old_mr = btensor::MapRedPost::of(papp->callee()->as<App>());
     auto ranks  = old_mr.ranks();
     if (!ranks || ranks->nps != 0) return {};
@@ -543,7 +541,10 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
     auto plan        = PeCpu{};
     auto gen         = PeGeneric{};
     auto contraction = pe_cpu_plan(c, &plan) == w.lit_tt();
-    if (contraction && uses_[input] != 1) return {};
+    // A contraction staged through a row that divides or takes a modulus would see run-time extents and lose its static
+    // tiling, so it stays whole.
+    if (contraction && (uses_[input] != 1 || w.app(w.app(w.annex<tensor::aff_linear>(), {Rn, r}), map) != w.lit_tt()))
+        return {};
     if (contraction) {
         const Def* fuse;
         std::tie(xs, sis, prods, fuse) = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, true);
@@ -652,12 +653,13 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
     log().i("tile the contraction over {} with tensor.run_levels", mr.Sr);
     // A run-time extent has no static bound until a `Seq` gives it one; the sentinel only loses every `min`.
-    u64 rn                 = ranks->nloops();
-    auto extent            = [&](size_t d) { return Lit::isa(mr.Sr->proj(rn, d)); };
-    auto sizes             = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
-    auto caps              = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(u64(1) << 40)); }));
-    auto dyn               = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_bool(!extent(d)); }));
-    auto [levels, nlevels] = cpu_levels(rn);
+    u64 rn      = ranks->nloops();
+    auto extent = [&](size_t d) { return Lit::isa(mr.Sr->proj(rn, d)); };
+    auto sizes  = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
+    auto caps   = w.tuple(
+        DefVec(rn, [&](size_t d) { return extent(d) ? w.lit_nat(*extent(d)) : w.annex<tensor::levels_unbounded>(); }));
+    auto dyn                    = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_bool(!extent(d)); }));
+    auto [levels, nlevels]      = cpu_levels(rn);
     auto [xs, sis, prods, fuse] = pe_slots(app, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, !levels);
     auto tree                   = w.app(w.app(w.annex<tensor::cpu_tree>(), {mr.Rn, mr.Ro}),
                                         {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, sizes, dyn, fuse});

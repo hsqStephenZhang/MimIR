@@ -1639,6 +1639,9 @@ axm lower_to_mem: compile.Phase;
 
 anx fun take {T: *} (_ x: T)@tt: T = return x;
 
+/// The `cap` of a run-time extent without a static bound; panels and edge tiles need a smaller one from a `Seq` or `Peel`.
+anx let levels_unbounded = 1099511627776;
+
 lam levels_steps {X: *} (n: Nat) (m: mem.M 0, x: X)
     (body: [Nat, mem.M 0, X] → [mem.M 0, X]) (after: [mem.M 0, X] → [mem.M 0, X])
     : [mem.M 0, X] =
@@ -1718,7 +1721,8 @@ lam aff_rel {n s: Nat} (e: AffE (n, s), x: «n; affine.Index»)@(core.pe.is_clos
         | CDiv _ => (ff, affine.lit 0)
         | Mod _  => (ff, affine.lit 0);
 
-/// The interval `e` maps the box `(lo, ext)` onto as its start and static width, and whether `e` is affine so that the interval is exact.
+/// The smallest interval holding what `e` maps the box `(lo, ext)` onto, as its start and width minus one, and whether `e` is affine so that a tile reads it at the linear part of `e`.
+/// Coefficients are naturals, so an inner expression is monotone and a floordiv or ceildiv maps its ends; a modulus wraps unless the inner interval fits one window.
 lam aff_span {n s: Nat} (e: AffE (n, s), vals: «s; Nat», lo ext: «n; Nat»)@(core.pe.is_closed e): [Bool, Nat, Nat] =
     match e with
         | Dim d  => (tt, lo#d, core.nat.sub (ext#d, 1))
@@ -1729,9 +1733,34 @@ lam aff_span {n s: Nat} (e: AffE (n, s), vals: «s; Nat», lo ext: «n; Nat»)@(
             let (b, k, v) = aff_span (p#1₂, vals, lo, ext);
             (core.bit2.and 2 (a, b), core.nat.add (l, k), core.nat.add (w, v))
         | Mul p  => let (a, l, w) = aff_span (p#0₂, vals, lo, ext); (a, core.nat.mul (l, p#1₂), core.nat.mul (w, p#1₂))
-        | FDiv _ => (ff, 0, 0)
-        | CDiv _ => (ff, 0, 0)
-        | Mod _  => (ff, 0, 0);
+        | FDiv p =>
+            let (_, l, w) = aff_span (p#0₂, vals, lo, ext);
+            let c = p#1₂;
+            let f = core.nat.div (l, c);
+            (ff, f, core.nat.sub (core.nat.div (core.nat.add (l, w), c), f))
+        | CDiv p =>
+            let (_, l, w) = aff_span (p#0₂, vals, lo, ext);
+            let c = p#1₂;
+            let up = λ (x: Nat): Nat = core.nat.div (core.nat.add (x, core.nat.sub (c, 1)), c);
+            (ff, up l, core.nat.sub (up (core.nat.add (l, w)), up l))
+        | Mod p  =>
+            let (_, l, w) = aff_span (p#0₂, vals, lo, ext);
+            let c = p#1₂;
+            let r = core.nat.rem (l, c);
+            let wraps = c < core.nat.add (core.nat.add (r, w), 1);
+            (ff, core.select (wraps, 0, r), core.select (wraps, core.nat.sub (c, 1), w));
+
+/// A static bound on the width minus one of `aff_span (e, _, lo, ext)` for any `lo`.
+lam aff_reach {n s: Nat} (e: AffE (n, s), ext: «n; Nat»)@(core.pe.is_closed e): Nat =
+    match e with
+        | Dim d  => core.nat.sub (ext#d, 1)
+        | Sym _  => 0
+        | Lit _  => 0
+        | Add p  => core.nat.add (aff_reach (p#0₂, ext), aff_reach (p#1₂, ext))
+        | Mul p  => core.nat.mul (aff_reach (p#0₂, ext), p#1₂)
+        | FDiv p => let w = aff_reach (p#0₂, ext); core.nat.div (core.nat.add (w, core.nat.sub (p#1₂, 1)), p#1₂)
+        | CDiv p => let w = aff_reach (p#0₂, ext); core.nat.div (core.nat.add (w, core.nat.sub (p#1₂, 1)), p#1₂)
+        | Mod p  => core.select (aff_reach (p#0₂, ext) == 0, 0, core.nat.sub (p#1₂, 1));
 
 /// The coefficient of loop `d` in `e`; `0` where `d` only occurs below a floordiv or mod.
 lam aff_coef {n s: Nat} (e: AffE (n, s), d: Idx n)@(core.pe.is_closed e): Nat =
@@ -1768,16 +1797,15 @@ anx lam aff_unit {n m: Nat} (f: Aff (n, m), d: Idx n): Bool =
             core.bit2.and 2 (acc, aff_coef (f#rows#i, d) == (0, 1)#(core.idx2nat i + 1 == m)))
         (‹i: m; i›, tt);
 
-/// Whether `aff_box` applies to `f`, i.e. no row divides or takes a modulus.
-anx lam aff_boxable {n m: Nat} (f: Aff (n, m)): Bool =
+/// Whether every row of `f` is affine, so that a tile reads a staged box at its linear part and the box's extents do not depend on where the tile starts.
+anx lam aff_linear {n m: Nat} (f: Aff (n, m)): Bool =
     vec.fold.r @(Bool, Idx m) @m
         (λ (i: Idx m, acc: Bool): Bool = core.bit2.and 2 (acc, (aff_span (f#rows#i, f#vals, ‹n; 0›, ‹n; 1›))#0₃)) (‹i: m; i›, tt);
 
-/// The box `f` maps the box `(lo, ext)` onto; only for affine rows.
-lam aff_box {n m: Nat} (f: Aff (n, m)) (lo ext: «n; Nat»): [«m; Nat», «m; Nat»] =
+/// The box `f` maps the box `(lo, ext)` onto, whose extents may be run-time values where a row divides or takes a modulus, and a static bound on them for extents up to `cap`.
+lam aff_box {n m: Nat} (f: Aff (n, m)) (lo ext cap: «n; Nat»): [«m; Nat», «m; Nat», «m; Nat»] =
     let sp = ‹i: m; aff_span (f#rows#i, f#vals, lo, ext)›;
-    let ok = vec.fold.r @(Bool, Idx m) @m (λ (i: Idx m, acc: Bool): Bool = core.bit2.and 2 (acc, (sp#i)#0₃)) (‹i: m; i›, tt);
-    (‹i: m; (sp#i)#1₃›, refly.check (ok, ‹i: m; core.nat.add ((sp#i)#2₃, 1)›, "Aff: a box needs a map without floordiv or mod"));
+    (‹i: m; (sp#i)#1₃›, ‹i: m; core.nat.add ((sp#i)#2₃, 1)›, ‹i: m; core.nat.add (aff_reach (f#rows#i, cap), 1)›);
 
 /// How a slot gets its data: the buffer itself, or a producer that computes any box `(lo, ext)` of it on demand.
 /// `cap` bounds `ext` and `dyn` marks its run-time extents, from which the producer picks its own tiling.
@@ -2056,7 +2084,11 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             (buffer.free (Rq, Sp, To) (m, p), dst);
         // Without a merge, a reduction loop stays sequential.
         let red_v = core.select (Ro < vdim + 1, core.select (vdim < Rn, 1 < lanes, ff), ff);
-        let plain = (λ (_: []): [mem.M 0, D] = run (So, dst, out, size, m), edged)#(core.select (blk vdim, tt, blk (vdim + 1)));
+        let edge  = core.select (blk vdim, tt, blk (vdim + 1));
+        let held  = vec.fold.r @(Bool, Idx Rn) @Rn
+            (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, core.select (cap#d < levels_unbounded, acc, ff), acc)) (‹d: Rn; d›, tt);
+        let edge  = refly.check (core.select (edge, held, tt), edge, "SchedTree: a Leaf computes an edge tile of a run-time extent that no Seq or Peel bounds");
+        let plain = (λ (_: []): [mem.M 0, D] = run (So, dst, out, size, m), edged)#edge;
         let (m, dst) = ((plain, rfactor)#(core.select (red_v, core.select (blk vdim, ff, tt), ff))) ();
         // The leaf that ends the reduction of its cells maps them by `post` while they are still in cache.
         let last  = vec.fold.r @(Bool, Idx Rn) @Rn
@@ -2136,6 +2168,9 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             let same = vec.fold.r @(Bool, Idx Rn) @Rn (λ (e: Idx Rn, acc: Bool): Bool = core.select (core.icmp.e (dep#e, (v#reads)#e), acc, ff)) (‹e: Rn; e›, tt);
             let dep  = refly.check (same, dep, "SchedTree: a Pack's dep must be the loops its slot reads");
             let data = refly.check (levels_ready (v#prod), v#data, "SchedTree: a Pack reads a producer slot that no Stage above it computes");
+            let held = vec.fold.r @(Bool, Idx Rn) @Rn
+                (λ (e: Idx Rn, acc: Bool): Bool = core.select (core.select (dep#e, tt, core.idx2nat e == d), core.select (cap#e < levels_unbounded, acc, ff), acc)) (‹e: Rn; e›, tt);
+            let cap  = refly.check (held, cap, "SchedTree: a Pack sizes its panel by a run-time extent that no Seq or Peel bounds");
             let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) data (d, w, dep, v#q, size, cap, dyn_ax#(core.idx 0 Rn d), m);
             let unit = ‹e: Rn; (1, w)#(core.idx2nat e == d)›;
             let none = aff_map @(Rn, Rp, 0) ((), ‹Rp; aff_lit @(Rn, 0) 0›);
@@ -2154,16 +2189,20 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                 | Fill make =>
                     λ (k: Body): [mem.M 0, D] =
                         let at   = ‹d: Rn; core.nat.add (origin#d, lo#d)›;
-                        let rows = (v#aff)#rows;
-                        let (blo, bext) = aff_box (v#aff) (at, size);
-                        let (_, bcap)   = aff_box (v#aff) (at, cap);
+                        let fa   = v#aff;
+                        let rows = fa#rows;
+                        let (blo, bext, bcap) = aff_box fa (at, size, cap);
+                        let linear = ‹i: v#r; (aff_span (rows#i, fa#vals, at, size))#0₃›;
+                        // A row that divides or takes a modulus spans a box whose extent depends on where the tile starts.
                         let bdyn = ‹i: v#r; vec.fold.r @(Bool, Idx Rn) @Rn
-                            (λ (d: Idx Rn, acc: Bool): Bool = core.select (dyn_ax#d, core.select (aff_coef (rows#i, d) == 0, acc, tt), acc)) (‹d: Rn; d›, ff)›;
+                            (λ (d: Idx Rn, acc: Bool): Bool = core.select (dyn_ax#d, core.select (aff_mentions (rows#i, d), tt, acc), acc)) (‹d: Rn; d›, core.select (linear#i, ff, tt))›;
                         let (m, t) = make (blo, bext, bcap, bdyn) m;
-                        // The box starts where the tile does, so the tile reads at the linear part of the map.
+                        // An affine row reads the box at its linear part; any other row at its value less the box's start.
                         let rel = lm (q o: IxN): «v#r; affine.Index» =
                             let x = ‹e: Rn; affine.op.add (q#e, o#e)›;
-                            ‹i: v#r; let (h, t) = aff_rel (rows#i, x); (affine.lit 0, t)#h›;
+                            let y = ‹e: Rn; affine.op.add (affine.lit (at#e), x#e)›;
+                            ‹i: v#r; let (h, t) = aff_rel (rows#i, x);
+                                (affine.op.sub (aff_eval (rows#i, fa#vals, y), affine.lit (blo#i)), (affine.lit 0, t)#h)#(linear#i)›;
                         let v2 = (v#r, bext, ‹Rn; 1›, zero, rel,
                                   t, v#aff, (Prod (v#r, Ts#slot))#Plain, v#reads) inj LevelsView (Rn, Ts#slot);
                         let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
