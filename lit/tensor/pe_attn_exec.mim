@@ -1,0 +1,29 @@
+// RUN: %mim -VVV -p opt %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_attn_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
+// RUN: %t0.exec
+// RUN: %mim -p opt -X tensor:cpu-mc=8 -X tensor:group-cache=1024 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_attn_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
+// RUN: %t1.exec
+// RUN: %mim -p opt -X tensor:pe-fuse=0 %s -p ll -X ll:o=%t2.ll -o %t2.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_attn_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
+// RUN: %t2.exec
+
+// Attention through run_levels: Q·Kᵀ once, before its softmax is staged band by band into the product with V.
+// CHECK: tile the contraction over (40, 16, 40) with tensor.run_levels
+// CHECK-NEXT: tile the contraction over (40, 40, 16) with tensor.run_levels
+// CHECK-COUNT-4: fuse the map-reduce over ‹2; 40› into its consumer
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+use tensor;
+
+let F32  = math.F32;
+let fast = math.mode.fast;
+let Ring = (F32, 0:F32, math.arith.add fast, math.arith.mul fast);
+
+let `* = product_2d Ring;
+
+extern fun attn (q: tensor.Tensor 2 (40, 16) F32, kt: tensor.Tensor 2 (16, 40) F32, v: tensor.Tensor 2 (40, 16) F32): tensor.Tensor 2 (40, 16) F32 =
+    return (softmax fast 1₂ (q * kt) * v);

@@ -219,6 +219,21 @@ const Def* LowerToMem::fresh_mem() {
     return k->var();
 }
 
+const Def* LowerToMem::anchored_mem() {
+    auto& w = new_world();
+    auto m  = fresh_mem();
+    for (auto x : std::exchange(anchors_, {})) {
+        auto [r, sh, T] = Axm::isa<buffer::Buf>(x->type())->args<3>();
+        auto rank       = Lit::isa(r);
+        if (!rank) continue;
+        auto ext = sh->projs(*rank);
+        if (std::ranges::any_of(ext, [](const Def* e) { return Lit::isa(e) == 0; })) continue;
+        m = buffer::op_read(m, x, btensor::folded_idx(sh, DefVec(*rank, [&](size_t) { return w.lit_i64(0); })))
+                ->proj(2, 0);
+    }
+    return m;
+}
+
 const Def* LowerToMem::wrap_fresh_mem(const Def* body) {
     auto& w = new_world();
     // The last-minted continuation carries the original body; the lam ends up requesting the first memory.
@@ -485,6 +500,7 @@ std::pair<const Def*, u64> LowerToMem::cpu_levels(u64 rn) {
 
 std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
     auto& w = new_world();
+    auto _  = fe::Restore(fuse_depth_, fuse_depth_ + 1);
     if (auto g = Axm::isa<tensor::gather>(input)) {
         if (uses_[input] != 1 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
         if (w.app(w.app(w.annex<tensor::aff_boxable>(), {Rn, r}), map) != w.lit_tt()) return {};
@@ -495,8 +511,10 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
         if (!check_gather_shape_constraints(g, gr, dim, s_src, s_idx)) return {};
         auto [old_input, old_index] = g->args<2>();
         log().i("fuse the gather of {} into its consumer", s_idx);
-        auto fill = w.app(w.app(w.app(w.annex<tensor::gather_fill>(), {T, gr}), {s_src, s_idx, dim}),
-                          {rewrite(old_input), rewrite(old_index)});
+        auto [src, idx] = std::pair{rewrite(old_input), rewrite(old_index)};
+        anchors_.emplace_back(src);
+        anchors_.emplace_back(idx);
+        auto fill = w.app(w.app(w.app(w.annex<tensor::gather_fill>(), {T, gr}), {s_src, s_idx, dim}), {src, idx});
         return {fill, false};
     }
     auto papp = Axm::isa<tensor::map_reduce_post>(input);
@@ -584,7 +602,8 @@ std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
             sis[i]     = shape;
             prods[i]   = fills[i];
         } else {
-            xs[i]    = rewrite(old_is->proj(2, i));
+            xs[i] = rewrite(old_is->proj(2, i));
+            if (fuse_depth_ != 0) anchors_.emplace_back(xs[i]);
             sis[i]   = Sis->proj(2, i);
             prods[i] = w.app(w.annex<tensor::prod_plain>(), {r, T});
         }
@@ -613,7 +632,8 @@ std::array<const Def*, 4> LowerToMem::generic_slots(const App* app,
             sis[i]     = shape;
             prods[i]   = fill;
         } else {
-            xs[i]    = rewrite(old_is->proj(nis, i));
+            xs[i] = rewrite(old_is->proj(nis, i));
+            if (fuse_depth_ != 0) anchors_.emplace_back(xs[i]);
             sis[i]   = Sis->proj(nis, i);
             prods[i] = w.app(w.annex<tensor::prod_plain>(), {r, T});
         }
@@ -663,7 +683,7 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     run            = w.app(run, mr.map_out);
     run            = w.app(run, {plan.maps, prods});
     run            = w.app(run, {tree, caps, dyn});
-    auto [m, out]  = w.app(run, {fresh_mem(), xs})->projs<2>();
+    auto [m, out]  = w.app(run, {anchored_mem(), xs})->projs<2>();
 
     return apply_post(app, m, out);
 }
@@ -755,7 +775,7 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     run           = w.app(run, mr.map_out);
     run           = w.app(run, {plan.maps, prods});
     run           = w.app(run, {tree, mr.Sr, dyn});
-    auto [m, out] = w.app(run, {fresh_mem(), xs})->projs<2>();
+    auto [m, out] = w.app(run, {anchored_mem(), xs})->projs<2>();
     return inner ? out : apply_post(app, m, out);
 }
 

@@ -105,6 +105,13 @@ private:
     DefMap<const Def*> fresh_memo_;
     /// How many old Def%s use each old Def; a producer used once can be fused into its consumer.
     DefMap<size_t> uses_;
+    /// The plain inputs of the fused producers of the consumer being lowered, and how deep the producers nest.
+    /// Only a fused producer reads them, within its consumer's loops, where `mem.add_mem` would compute them for each
+    /// tile.
+    DefVec anchors_;
+    size_t fuse_depth_ = 0;
+    /// A fresh memory after one read of each of the anchors_, so they are computed where the consumer is.
+    const Def* anchored_mem();
 };
 
 } // namespace mim::plug::tensor::phase
