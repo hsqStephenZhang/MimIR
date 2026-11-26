@@ -39,6 +39,7 @@ static constexpr PluginArg known_args[] = {
     {"pe-generic=<n>", "Also lower a static map-reduce that is not a contraction (elementwise, reductions) through `run_levels`, with `generic_tree` or `cpu-levels` (default `1`; `0` keeps the plain loop nest)."},
     {"pe-fuse=<n>", "Stage a single-use map-reduce that produces an input of a `run_levels` contraction inside its consumer, band by band (default `1`; `0` keeps every intermediate whole)."},
     {"cpu-pack-b=<n>", "Whether the CPU tiling packs `B`: `0` decides by the number of rows and the size of `B` (default), `1` always, `2` never."},
+    {"cpu-conv=<n>", "How the CPU lowers a convolution: `0` as an implicit im2col contraction through `run_levels` (default), `1` as a direct convolution over `(n, oh, co, ow | ci, kh, kw)` through `run_levels`."},
 };
 // clang-format on
 

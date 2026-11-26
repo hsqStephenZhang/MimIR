@@ -536,12 +536,26 @@ bool pe_generic_plan(const App* callee, PeGeneric* plan) {
             for (u64 d = 0; d != ro; ++d)
                 if (unit(i, d)) rdim = d;
     }
+    // An outer product: one input reads the second last output loop but not the last, the other the last at unit stride
+    // but not the second last.
+    bool outer = false;
+    if (nis == 2 && ro >= 2) {
+        auto reads = [&](size_t i, u64 d) {
+            auto sub = vars;
+            sub[d]   = w.call<affine::lit>(w.lit_nat_0());
+            return !Check::test_alpha(w.app(maps[i], probe->var()), w.app(maps[i], w.tuple(sub)));
+        };
+        for (size_t a = 0; a != 2; ++a) {
+            auto b = 1 - a;
+            outer |= reads(a, ro - 2) && !reads(a, ro - 1) && unit(b, ro - 1) && !reads(b, ro - 2);
+        }
+    }
     auto merge = reduce_monoid(mr.comb, mr.init);
     auto bytes = Lit::isa(w.app(w.annex(core::trait::size), mr.To));
     u64 lanes  = merge && bytes && *bytes != 0 ? btensor::vec_regs(w.driver()).bytes / *bytes : 0;
     if (plan)
-        *plan = {w.tuple(affs), w.lit_bool(red_unit), w.lit_bool(out_unit),        w.lit_nat(wdim), w.lit_nat(rdim),
-                 merge,         w.lit_nat(lanes),     w.lit_nat(bytes.value_or(0))};
+        *plan = {w.tuple(affs), w.lit_bool(red_unit), w.lit_bool(out_unit),         w.lit_nat(wdim),  w.lit_nat(rdim),
+                 merge,         w.lit_nat(lanes),     w.lit_nat(bytes.value_or(0)), w.lit_bool(outer)};
     return true;
 }
 
@@ -558,7 +572,7 @@ const Def* normalize_cpu_knobs(const Def*, const Def* c, const Def*) {
     auto vr = btensor::vec_regs(w.driver());
     return w.tuple({w.lit_nat(vr.bytes), knob("group-registers", vr.count), knob("group-cache", 262144),
                     knob("cpu-mr", 0), knob("cpu-nr", 0), knob("cpu-mc", 0), knob("cpu-nc", 0), knob("cpu-kc", 0),
-                    knob("cpu-order", 0), knob("cpu-dyn-k", 1), knob("cpu-pack-b", 0)});
+                    knob("cpu-order", 0), knob("cpu-dyn-k", 1), knob("cpu-pack-b", 0), knob("cpu-conv", 0)});
 }
 
 MIM_tensor_NORMALIZER_IMPL

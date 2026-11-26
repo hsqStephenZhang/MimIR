@@ -167,6 +167,8 @@ struct PeGeneric {
     const Def* merge;    ///< The combiner's `[To, To] → To` when partial results may be combined, else `nullptr`.
     const Def* lanes;    ///< How many partial results a vector register holds, `0` without `merge`.
     const Def* bytes;    ///< The size of an output element.
+    const Def* outer; ///< Whether one input reads the second last output loop but not the last, which the other reads
+                      ///< at unit stride.
 };
 
 /// Whether `tensor.run_levels` covers a `tensor.map_reduce_post` with meta @p callee whose output is a permutation of

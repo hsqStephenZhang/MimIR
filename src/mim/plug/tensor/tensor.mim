@@ -595,6 +595,11 @@ axm fastest_axis: {T: *} → [r: Nat, t: T] → Nat, normalize_fastest_axis;
 ///   runtime value.
 axm if_static: {T: *} → [k: Nat, s d: T] → T, normalize_if_static;
 ///
+/// ### cpu_knobs
+///
+/// The CPU blocking knobs `(vec_bytes, registers, cache, mr, nr, mc, nc, kc, order, dyn_k, pack_b, conv)` from `-X btensor:vec-bytes`, `-X tensor:group-registers`, `group-cache` and `cpu-{mr,nr,mc,nc,kc,order,dyn-k,pack-b,conv}`; a block size of `0` is derived.
+axm cpu_knobs: [] → «12; Nat», normalize_cpu_knobs;
+///
 /// ### vec_width
 ///
 /// Target reflection for schedule selectors: the machine's vector width, in elements of the schedule's fold type.
@@ -1324,7 +1329,17 @@ priv anx lam conv_impl (R: Ring) {n cin cout h w kh kw: Nat}
     let flat_c = materialize flat;
     let small  = ow < 32;
     let out    = (canonical, reshape (n, cout, oh * ow) s_out flat_c)#small;
-    (go (), out)#((pe_cpu_candidate canonical, pe_cpu_candidate flat_c)#small);
+    // A direct convolution keeps the window loops; `co` next to `ow` lets a register tile take the outer product of a weight column and an input row.
+    let direct = mr_tileable @2 @(4, 3)
+            ((n, cout, oh, ow), (0, 2, 1, 3), (n, oh, cout, ow, cin, kh, kw))
+            @((R#T, R#T), (4, 4), ((cout, cin, kh, kw), s_padded))
+            (conv_fun_wx R, R#_0, id @(R#T))
+            (proj_map @(7, 4) (0, 2, 1, 3))
+            (proj_map @(7, 4) (2, 4, 5, 6),
+             lm (o: «7; affine.Index»): «4; affine.Index» = conv2d_in_map (stride, dilation) (o#0_7, o#2_7, o#1_7, o#3_7, o#4_7, o#5_7, o#6_7))
+            (weight, padded);
+    let (_, _, _, _, _, _, _, _, _, _, _, how) = cpu_knobs ();
+    ((go (), out)#((pe_cpu_candidate canonical, pe_cpu_candidate flat_c)#small), materialize direct)#(how == 1);
 ///
 /// ### conv_grouped_in_map
 ///
@@ -2307,8 +2322,6 @@ anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss:
 ///
 /// ### cpu_tree
 ///
-/// The CPU blocking knobs `(vec_bytes, registers, cache, mr, nr, mc, nc, kc, order, dyn_k, pack_b)` from `-X btensor:vec-bytes`, `-X tensor:group-registers`, `group-cache` and `cpu-{mr,nr,mc,nc,kc,order,dyn-k,pack-b}`; a block size of `0` is derived.
-axm cpu_knobs: [] → «11; Nat», normalize_cpu_knobs;
 
 lam nat_min (a: Nat) (b: Nat): Nat = core.select (a < b, a, b);
 lam nat_or (x: Nat) (d: Nat): Nat = core.select (x == 0, d, x);
@@ -2325,7 +2338,7 @@ anx lam cpu_covers (Rn Ro: Nat) (a: Idx 2, dep: «2; «Rn; Bool»»): Bool =
 /// `fuse#i` stages slot `i`'s producer, at most one of them: `1` one without a contraction, `2` a contraction.
 /// `dyn_k = 1` gives the `K` loop a run-time tail, which halves the code of a shape whose `K` leaves one at 1–3% speed (251×257×263, 1021×1031×1033).
 anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», unit_b: Bool, sizes: «Rn; Nat», dyn: «Rn; Bool», fuse: «2; Nat»): SchedTree (2, Rn) =
-    let (vec_bytes, regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order, dyn_k, pack_b_o) = cpu_knobs ();
+    let (vec_bytes, regs, cache, mr_o, nr_o, mc_o, nc_o, kc_o, order, dyn_k, pack_b_o, _) = cpu_knobs ();
     let m_ax  = Ro - 2;
     let n_ax  = Ro - 1;
     let k_ax  = Ro;
@@ -2389,8 +2402,8 @@ anx lam cpu_tree (Rn Ro: Nat) (bytes: Nat, a: Idx 2, dep: «2; «Rn; Bool»», u
 
 /// The tree for a map-reduce over `Rn` loops, `Ro` of them parallel, that is not a contraction; `red_unit` and `out_unit` tell whether every input reads the innermost and the last output loop at unit stride, and the output is contiguous along loop `wdim` while an input is along `rdim`.
 /// A leaf accumulates a row along the last output loop when only that one is contiguous or the reduction is a short window, and otherwise splits a contiguous reduction loop into `lanes` partial accumulators when its combiner has a merge (`lanes > 1`).
-/// A transpose cuts both contiguous loops into tiles (sizes measured on Zen 5), and the producers `fuse` marks are staged per band of the first loop.
-anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim lanes bytes: Nat, fuse: «N; Nat») (sizes: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) =
+/// A transpose cuts both contiguous loops into tiles (sizes measured on Zen 5), an outer product over the last two output loops (`outer`) gets a register tile, and the producers `fuse` marks are staged per band of the first loop.
+anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim lanes bytes: Nat, outer: Bool, fuse: «N; Nat») (sizes: «Rn; Nat», _: «Rn; Bool»): SchedTree (N, Rn) =
     let last   = core.nat.sub (Ro, 1);
     let window = vec.fold.r @(Nat, Idx Rn) @Rn
         (λ (d: Idx Rn, acc: Nat): Nat = core.select (core.idx2nat d < Ro, acc, core.nat.mul (acc, sizes#d))) (‹d: Rn; d›, 1);
@@ -2401,8 +2414,16 @@ anx lam generic_tree (N Rn Ro: Nat) (red_unit out_unit: Bool, wdim rdim lanes by
     let cut  = λ (ts: Nat): «Rn; Nat» =
         ‹d: Rn; let e = core.idx2nat d; core.select (core.select (e == wdim, tt, e == rdim), ts, 0)›;
     let base = (sched_par @(N, Rn) (cut 256, sched_par @(N, Rn) (cut 8, leaf)), leaf)#(wdim == rdim);
+    // An outer product over the last two output loops (a direct convolution) gets a register tile like `cpu_tree`'s: rows of `mr` jammed, `nr` lanes wide.
+    // The outer-product tile is an experiment behind `-X tensor:cpu-conv=1`.
+    let (vec_bytes, regs, _, _, _, _, _, _, _, _, _, trial) = cpu_knobs ();
+    let vl   = core.select (nat_or bytes 4 < vec_bytes, vec_bytes / nat_or bytes 4, 1);
+    let mr   = nat_min 8 (core.nat.sub (regs, 4) / 2);
+    let rows = core.nat.sub (Ro, 2);
+    let tile = ‹d: Rn; let e = core.idx2nat d; core.select (e == rows, mr, core.select (e == last, 2 * vl, 0))›;
+    let base = (base, sched_par @(N, Rn) (tile, sched_leaf @(N, Rn) rows))#(core.select (core.select (outer, trial == 1, ff), 1 < Ro, ff));
     // Fused producers are staged per band of the first loop that fills half the cache, so their inputs stay in it.
-    let (_, _, cache, _, _, _, _, _, _, _, _) = cpu_knobs ();
+    let (vec_bytes, regs, cache, _, _, _, _, _, _, _, _, _) = cpu_knobs ();
     let row    = vec.fold.r @(Nat, Idx Rn) @Rn
         (λ (d: Idx Rn, acc: Nat): Nat = core.select (core.idx2nat d == 0, acc, core.nat.mul (acc, sizes#d))) (‹d: Rn; d›, nat_or bytes 4);
     let band   = nat_or (core.nat.div (cache, core.nat.mul (2, row))) 1;

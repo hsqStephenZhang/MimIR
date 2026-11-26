@@ -556,7 +556,7 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
         std::tie(xs, sis, prods, fuse) = generic_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, gen.maps);
         maps                           = gen.maps;
         tree_of = w.app(w.app(w.annex<tensor::generic_tree>(), {mr.nis, mr.Rn, mr.Ro}),
-                        {gen.red_unit, gen.out_unit, gen.wdim, gen.rdim, w.lit_nat_0(), gen.bytes, fuse});
+                        {gen.red_unit, gen.out_unit, gen.wdim, gen.rdim, w.lit_nat_0(), gen.bytes, gen.outer, fuse});
     } else {
         return {};
     }
@@ -756,7 +756,7 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     auto lanes                  = inner ? plan.lanes : w.lit_nat_0();
     auto dyn                    = w.tuple(DefVec(rn, [&](size_t) { return w.lit_ff(); }));
     auto tree = w.app(w.app(w.app(w.annex<tensor::generic_tree>(), {N, mr.Rn, mr.Ro}),
-                            {plan.red_unit, plan.out_unit, plan.wdim, plan.rdim, lanes, plan.bytes, fuse}),
+                            {plan.red_unit, plan.out_unit, plan.wdim, plan.rdim, lanes, plan.bytes, plan.outer, fuse}),
                       {mr.Sr, dyn});
     if (levels)
         tree = w.app(w.app(w.app(w.annex<tensor::sched_with_levels>(), {N, mr.Rn, w.lit_nat(nlevels)}), levels), tree);
