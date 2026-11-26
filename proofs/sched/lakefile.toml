@@ -1,0 +1,10 @@
+name = "mimir-sched"
+version = "0.1.0"
+defaultTargets = ["Sched", "sched_check"]
+
+[[lean_lib]]
+name = "Sched"
+
+[[lean_exe]]
+name = "sched_check"
+root = "Check"
