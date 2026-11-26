@@ -1,0 +1,49 @@
+// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll -o %t.mim
+// RUN: %FileCheck %s --input-file=%t.ll
+// RUN: %FileCheck %s --check-prefix=ONCE --input-file=%t.ll
+// RUN: clang++ -O2 -fsanitize=address %S/pe_alloc_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// An Alloc at the root holds both panels of a BLIS tree with tails in every loop, so the packs fill it instead of allocating.
+// CHECK-LABEL: define {{.*}} @alloc_mm(
+// CHECK-DAG:   alloca [64 x float]
+// CHECK-DAG:   alloca [128 x float]
+// CHECK-LABEL: define {{.*}} @plain_mm(
+// Without the Alloc, each pack would malloc and free its panel inside the loops.
+// ONCE-LABEL: define {{.*}} @alloc_mm(
+// ONCE-NOT:   @free(
+// ONCE-LABEL: define {{.*}} @plain_mm(
+
+plugin tensor;
+plugin core;
+plugin math;
+plugin mem;
+plugin buffer;
+plugin affine;
+
+let F32 = math.F32;
+let T   = tensor.SchedTree (2, 3);
+let dep = ((tt, ff, tt), (ff, tt, tt));
+let ik  = tensor.aff_proj @(3, 2) (0₃, 2₃);
+let kj  = tensor.aff_proj @(3, 2) (2₃, 1₃);
+let ij  = λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃);
+
+fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
+
+let reg  = tensor.sched_peel @(2, 3) (0, 4, tensor.sched_peel @(2, 3) (1, 8, tensor.sched_leaf @(2, 3) 0));
+let blis = tensor.sched_par @(2, 3) ((0, 16, 0), tensor.sched_seq @(2, 3) (2, 8,
+    tensor.sched_pack @(2, 3) (1, 8, 1₂, dep#1₂, tensor.sched_par @(2, 3) ((8, 0, 0),
+        tensor.sched_pack @(2, 3) (0, 4, 0₂, dep#0₂, reg)))));
+
+extern fun alloc_mm (m: mem.M 0, a: buffer.Buf (2, (19, 29), F32), b: buffer.Buf (2, (29, 37), F32))
+    : [mem.M 0, buffer.Buf (2, (19, 37), F32)] =
+    let tree = tensor.sched_alloc @(2, 3) (0₂, tensor.sched_alloc @(2, 3) (1₂, blis));
+    let (m, c) = tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((19, 29), (29, 37)))
+        ((19, 37), (19, 37, 29)) (mac, 0.0:F32) ij (ik, kj) (tree, (19, 37, 29), (ff, ff, ff)) (m, (a, b));
+    return (m, c);
+
+extern fun plain_mm (m: mem.M 0, a: buffer.Buf (2, (19, 29), F32), b: buffer.Buf (2, (29, 37), F32))
+    : [mem.M 0, buffer.Buf (2, (19, 37), F32)] =
+    let (m, c) = tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((19, 29), (29, 37)))
+        ((19, 37), (19, 37, 29)) (mac, 0.0:F32) ij (ik, kj) (tensor.sched_leaf @(2, 3) 3, (19, 37, 29), (ff, ff, ff)) (m, (a, b));
+    return (m, c);

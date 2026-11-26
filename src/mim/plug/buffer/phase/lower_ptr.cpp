@@ -53,6 +53,12 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
             if (Lit::isa(s->proj(n, i)) != 1) idx.emplace_back(off->proj(n, i));
         auto element = mem::op_lea_tuple(buf, w.tuple(idx));
         return w.call<core::bitcast>(buf->type(), element);
+    } else if (auto set_ax = Axm::isa<buffer::set>(app)) {
+        auto [r, s, T]       = set_ax->callee()->as<App>()->args<3>();
+        auto [mem, buf, val] = set_ax->args<3>([this](const Def* d) { return rewrite(d); });
+        return w.call<mem::store>(Defs{mem, buf, w.pack(rewrite(s), val)});
+    } else if (auto view_ax = Axm::isa<buffer::view>(app)) {
+        return w.call<core::bitcast>(rewrite(app->type()), rewrite(view_ax->arg(2, 1)));
     } else if (auto copy_ax = Axm::isa<buffer::copy>(app)) {
         auto [mem, dst, src] = copy_ax->args<3>();
         mem                  = rewrite(mem);

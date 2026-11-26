@@ -1,5 +1,5 @@
 // RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
-// RUN: %FileCheck %s --check-prefix=LL --input-file=%t.ll --implicit-check-not='malloc(i64 1920)' --implicit-check-not='malloc(i64 960)' --implicit-check-not='malloc(i64 3840)'
+// RUN: %FileCheck %s --check-prefix=LL --input-file=%t.ll --implicit-check-not='malloc(i64 1920)' --implicit-check-not='malloc(i64 960)' --implicit-check-not='malloc(i64 3840)' --implicit-check-not='alloca [480 x float]' --implicit-check-not='alloca [240 x float]' --implicit-check-not='alloca [960 x float]'
 // RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_auto_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 
@@ -13,13 +13,14 @@
 
 // Only bands of the intermediates are allocated (24×16 of B·D; 12×16 of the middle product, and its 8×16 bands inside),
 // never the whole 24×20 B·D or 12×20 middle product; relu(A) is computed 8 rows at a time, never as a whole 40×24.
+// Each band is allocated once outside the loops, so the small ones live on the stack.
 // LL-LABEL: define {{.*}} @chain2(
-// LL:       malloc(i64 1536)
+// LL:       alloca [384 x float]
 // LL-LABEL: define {{.*}} @chain3(
-// LL-DAG:   malloc(i64 768)
+// LL-DAG:   alloca [192 x float]
 // LL-DAG:   malloc(i64 512)
 // LL-LABEL: define {{.*}} @relu_mm(
-// LL:       malloc(i64 768)
+// LL:       alloca [192 x float]
 plugin tensor;
 plugin core;
 plugin math;

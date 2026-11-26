@@ -15,8 +15,9 @@
 // CHECK: fuse the gather of (37, 24) into its consumer
 // CHECK-NEXT: tile the map-reduce over (37, 24) with tensor.run_levels
 // CHECK-NEXT: schedule tree:
-// CHECK-NEXT: Split 0, 1365, Fixed
-// CHECK-NEXT:   Stage 0₁
+// CHECK-NEXT: Alloc 0₁
+// CHECK-NEXT:   Split 0, 1365, Fixed
+// CHECK-NEXT:     Stage 0₁
 plugin tensor;
 plugin core;
 plugin math;

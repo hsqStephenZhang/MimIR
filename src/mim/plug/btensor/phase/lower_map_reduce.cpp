@@ -40,6 +40,15 @@ const Def* LowerMapReduce::rewrite_imm_App(const App* app) {
     if (Axm::isa<btensor::pad>(app)) return lower_pad(app);
     if (Axm::isa<btensor::concat>(app)) return lower_concat(app);
     if (Axm::isa<buffer::lit>(app)) return lower_buffer_lit(app);
+    if (auto set = Axm::isa<buffer::set>(app)) {
+        auto [r, s, T] = set->callee()->as<App>()->args<3>();
+        if (auto rn = Lit::isa<u64>(rewrite(r))) {
+            auto [mem, buf, val] = rewrite(app->arg())->projs<3>();
+            auto ty              = new_world().sigma({mem->type(), buf->type()});
+            auto fill            = [](const DefVec&, const Def* ins, const Def* m) { return std::pair(m, ins); };
+            return build_pointwise(ty, mem, buf, val, rewrite(s), *rn, "constant_fill", fill)->proj(2, 0);
+        }
+    }
     if (Axm::isa<btensor::gather>(app)) return lower_gather(app);
     if (Axm::isa<btensor::gather_at>(app)) return lower_gather_at(app);
     if (Axm::isa<btensor::scatter>(app)) return lower_scatter(app);

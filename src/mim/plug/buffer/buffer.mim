@@ -63,6 +63,18 @@ axm init: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, val: «s; T»] → 
 ///
 axm lit: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, T] → [mem.M 0, Buf rsT];
 ///
+/// ### set
+///
+/// Sets every element of `buf` to a constant value.
+///
+axm set: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT, T] → mem.M 0;
+///
+/// ### view
+///
+/// The first elements of the flat buffer `store`, laid out as a buffer of shape `s`; `s` must not hold more than `n` elements.
+///
+axm view: [r: Nat, s: «r; Nat», T: *] as rsT → [n: Nat, store: Buf (1, n, T)] → Buf rsT;
+///
 /// ### shape
 ///
 /// Yields the size of the buffer along dimension `i` (resolved from the type).

@@ -27,10 +27,12 @@
 // FUSE-COUNT-3: fuse the map-reduce over (37, 53) into its consumer
 // FUSE-NEXT: tile the map-reduce over (37, 53) with tensor.run_levels
 // FUSE-NEXT: schedule tree:
-// FUSE-NEXT: Split 0, 618, Fixed
-// FUSE-NEXT:   Stage 1₃
-// FUSE-NEXT:     Stage 2₃
-// FUSE-NEXT:       Leaf 2
+// FUSE-NEXT: Alloc 1₃
+// FUSE-NEXT:   Alloc 2₃
+// FUSE-NEXT:     Split 0, 618, Fixed
+// FUSE-NEXT:       Stage 1₃
+// FUSE-NEXT:         Stage 2₃
+// FUSE-NEXT:           Leaf 2
 // RFAC: tile the map-reduce over (5, 7, 48)
 // RFAC-NEXT: schedule tree:
 // RFAC-NEXT: Reduce 2, 16

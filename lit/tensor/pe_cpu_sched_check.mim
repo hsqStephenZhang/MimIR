@@ -57,7 +57,7 @@ lam probe_seq_par (m: mem.M 0, a: buffer.Buf (2, (10, 4), F32), b: buffer.Buf (2
 // CHECK-NOT: Aff:
 lam probe_stage_div (m: mem.M 0, a: buffer.Buf (2, (2, 2), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
     let half = tensor.aff_map @(3, 2, 0) ((), (tensor.aff_fdiv @(3, 0) (tensor.aff_dim @(3, 0) 0₃, 2), tensor.aff_dim @(3, 0) 2₃));
-    let make = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] = buffer.alloc (2, ext, F32) m;
+    let make = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0, t: buffer.Buf (2, ext, F32)): [mem.M 0, buffer.Buf (2, ext, F32)] = (m, t);
     tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (4, 16)))
         ((4, 16), (4, 16, 4))
         (mac, 0:F32)
@@ -67,7 +67,7 @@ lam probe_stage_div (m: mem.M 0, a: buffer.Buf (2, (2, 2), F32), b: buffer.Buf (
         (m, (a, b));
 
 // A producer slot read without a Stage above the reader.
-let fill_any = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0): [mem.M 0, buffer.Buf (2, ext, F32)] = buffer.alloc (2, ext, F32) m;
+let fill_any = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0, t: buffer.Buf (2, ext, F32)): [mem.M 0, buffer.Buf (2, ext, F32)] = (m, t);
 let ik = tensor.aff_proj @(3, 2) (0₃, 2₃);
 let kj = tensor.aff_proj @(3, 2) (2₃, 1₃);
 
