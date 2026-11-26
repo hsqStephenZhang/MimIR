@@ -600,11 +600,11 @@ priv anx lam map_reduce_post_impl {nis nps: Nat}
     // Explicit runtime parameters keep upstream memory expressions outside the loop builders.
     fun run (m: mem.M 0, dst: Output)@tt: [mem.M 0, Output] =
         con cell (m: mem.M 0, acc: To, ivs: «Rn; I32», k: Cn [mem.M 0, To])@tt =
-            let indices = ‹d: Rn; core.idx core.mode.nuw (Sr#d) (core.idx2nat (ivs#d))›;
+            let indices = ‹d: Rn; core.conv.u (Sr#d) (ivs#d)›;
             con combine (m: mem.M 0, values: «i: nis; Tis#i»)@tt = f ((m, acc, values), k);
             read_inputs ((m, indices), combine);
         con wb (m: mem.M 0, output: Output, acc: To, ivs: «Rn; I32», k: Cn [mem.M 0, Output])@tt =
-            let indices = ‹d: Rn; core.idx core.mode.nuw (Sr#d) (core.idx2nat (ivs#d, 0I32)#(Ro <= core.bitcast Nat d))›;
+            let indices = ‹d: Rn; core.conv.u (Sr#d) (ivs#d, 0I32)#(Ro <= core.bitcast Nat d)›;
             let (m, coords) = affine.map @(Ro, Rn) @(Sr, So) map_out indices @0 m;
             con write (m: mem.M 0, value: Tp)@tt =
                 con written (m: mem.M 0)@tt = k (m, output);

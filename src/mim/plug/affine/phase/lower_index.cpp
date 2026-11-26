@@ -396,12 +396,7 @@ const Def* LowerIndex::rewrite_imm_App(const App* app) {
                 if (rw_idx_lam) return rw_idx_lam->reduce_body(idx_map_lam->var(2, 1));
                 return rewrite(f_lam->body());
             };
-            auto body = get_body();
-            auto n_o  = Lit::isa(body->type()->arity()).value_or(0);
-            auto& rs  = ranges_[f_lam][sin];
-            for (u64 j = 0; j != n_o; ++j)
-                rs.emplace_back(range_of(body->proj(n_o, j)));
-            idx_map_lam->set(true, w.tuple({mem_, body}))->set(f_lam->dbg_key());
+            idx_map_lam->set(true, w.tuple({mem_, get_body()}))->set(f_lam->dbg_key());
             pop();
         }
 
@@ -409,17 +404,8 @@ const Def* LowerIndex::rewrite_imm_App(const App* app) {
 
         auto sout_n   = rewrite(sout);
         auto n_out    = sout_n->num_projs();
-        auto& rs      = ranges_[f_lam][sin];
-        auto narrowed = w.tuple(DefVec(n_out, [&](size_t j) -> const Def* {
-            auto s = sout_n->proj(n_out, j);
-            auto x = out_idxs->proj(n_out, j);
-            // An index proven in range narrows without a modulus.
-            if (auto n = Lit::isa(s); n && *n != 0 && j < rs.size() && rs[j] && rs[j]->lo >= 0 && u64(rs[j]->hi) < *n) {
-                auto nuw = w.lit_nat(std::to_underlying(core::Mode::nuw));
-                return w.app(w.app(w.app(w.annex<core::idx>(), nuw), s), w.call<core::bitcast>(w.type_nat(), x));
-            }
-            return w.call(core::conv::u, s, x);
-        }));
+        auto narrowed = w.tuple(DefVec(
+            n_out, [&](size_t j) { return w.call(core::conv::u, sout_n->proj(n_out, j), out_idxs->proj(n_out, j)); }));
 
         return w.tuple({out_mem, narrowed});
     }
