@@ -1,7 +1,7 @@
-// RUN: %mim -VVV -p opt -X tensor:pe-generic=1 %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVV -p opt -X tensor:pe-generic=1 %s -p ll -X ll:asan=1 -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
 // RUN: clang++ -O2 -fsanitize=address %S/pe_generic_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
 // RUN: %t0.exec
-// RUN: %mim -VVV -p opt -X tensor:pe-generic=1 -X "tensor:cpu-levels=8,16/2,8" %s -p ll -X ll:o=%t1.ll -o %t1.mim 2>&1 | %FileCheck %s --check-prefix=LEVELS
+// RUN: %mim -VVV -p opt -X tensor:pe-generic=1 -X "tensor:cpu-levels=8,16/2,8" %s -p ll -X ll:asan=1 -X ll:o=%t1.ll -o %t1.mim 2>&1 | %FileCheck %s --check-prefix=LEVELS
 // RUN: clang++ -O2 -fsanitize=address %S/pe_generic_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec
 

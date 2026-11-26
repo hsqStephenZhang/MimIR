@@ -107,7 +107,7 @@ private:
     /// Per-lam memo for the ops that consume a fresh memory (see LowerToMem::rewrite).
     DefMap<const Def*> fresh_memo_;
     /// How many old Def%s use each old Def; a producer used once can be fused into its consumer.
-    DefMap<size_t> uses_;
+    DefMap<u64> uses_;
     /// The plain inputs of the fused producers of the consumer being lowered, and how deep the producers nest.
     /// Only a fused producer reads them, within its consumer's loops, where `mem.add_mem` would compute them for each
     /// tile.

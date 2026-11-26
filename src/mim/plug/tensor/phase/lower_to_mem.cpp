@@ -178,13 +178,9 @@ void LowerToMem::start() {
     tensor_key_ = tensor_key(old_world());
     validate();
     if (!tensors_seen_) return;
-    auto wl = fe::BFSWorklist<DefSet>();
-    wl.push(old_world().externals().muts());
-    while (!wl.empty()) {
-        auto d = wl.pop();
-        for (auto op : d->ops())
-            if (op) ++uses_[op], wl.push(op);
-    }
+    // A tuple of arguments that several consumers share charges each of them.
+    uses_ = count_consumers(
+        old_world(), [](const Def* d) { return Axm::isa<tensor::map_reduce_post>(d) || Axm::isa<tensor::gather>(d); });
     RWPhase::start();
     assert(pending_.empty());
 }
@@ -228,6 +224,7 @@ const Def* LowerToMem::anchored_mem() {
         if (!rank) continue;
         auto ext = sh->projs(*rank);
         if (std::ranges::any_of(ext, [](const Def* e) { return Lit::isa(e) == 0; })) continue;
+        // The read only orders the memory and is dead, so a run-time extent of 0 never executes it.
         m = buffer::op_read(m, x, btensor::folded_idx(sh, DefVec(*rank, [&](size_t) { return w.lit_i64(0); })))
                 ->proj(2, 0);
     }
@@ -468,7 +465,10 @@ void show_tree(std::string& out, const Def* tree, size_t depth) {
         for (size_t i = 0; i != n - kids; ++i) {
             auto field = arg->proj(n, i);
             auto mode  = field->isa<Name>() ? field->as<Name>()->op()->isa<Inj>() : nullptr;
-            args[i]    = mode && mode->index() < modes.size() ? modes[mode->index()] : std::format("{}", field);
+            auto lit   = Lit::isa(field);
+            args[i]    = mode && mode->index() < modes.size() ? std::string(modes[mode->index()])
+                       : lit                                  ? std::to_string(*lit)
+                                                              : std::format("{}", field);
         }
         out += std::format("{}{} {}\n", indent, names[inj->index()], fe::Join(args, ", "));
         for (auto i = n - kids; i != n; ++i)
@@ -541,8 +541,8 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
     auto vars   = probe->var()->projs(rn);
     if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return {};
 
-    // A contraction is tiled by `cpu_tree` and may fuse its own producer; any other map-reduce is one leaf over plain
-    // inputs.
+    // A contraction is tiled by `cpu_tree`, any other map-reduce by `generic_tree`; either may fuse producers of its
+    // own.
     const Def *maps, *xs, *sis, *prods, *tree_of;
     auto plan        = PeCpu{};
     auto gen         = PeGeneric{};

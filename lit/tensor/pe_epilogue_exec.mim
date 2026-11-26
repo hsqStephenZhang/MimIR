@@ -1,7 +1,7 @@
-// RUN: %mim -VVV -p opt -X tensor:cpu-kc=16 %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVV -p opt -X tensor:cpu-kc=16 %s -p ll -X ll:asan=1 -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
 // RUN: clang++ -O2 -fsanitize=address %S/pe_epilogue_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
 // RUN: %t0.exec
-// RUN: %mim -p opt -X tensor:cpu-kc=16 -X tensor:cpu-dyn-k=0 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: %mim -p opt -X tensor:cpu-kc=16 -X tensor:cpu-dyn-k=0 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:asan=1 -X ll:o=%t1.ll -o %t1.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_epilogue_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec
 

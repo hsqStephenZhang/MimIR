@@ -1,4 +1,4 @@
-// RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:asan=1 -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
 // RUN: %FileCheck %s --check-prefix=LL --input-file=%t.ll --implicit-check-not='malloc(i64 1920)' --implicit-check-not='malloc(i64 960)' --implicit-check-not='malloc(i64 3840)' --implicit-check-not='alloca [480 x float]' --implicit-check-not='alloca [240 x float]' --implicit-check-not='alloca [960 x float]'
 // RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_auto_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec

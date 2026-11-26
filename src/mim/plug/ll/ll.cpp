@@ -1235,8 +1235,8 @@ std::optional<std::string> Emitter::emit_vec(BB& bb, const std::string& name, co
 std::string Emitter::fast_expf(BB& bb, const std::string& name, const std::string& a, math::Mode mode) {
     auto k = [](f32 v) { return std::format("0x{:016x}", std::bit_cast<u64>(f64(v))); };
     auto n = [&](std::string_view s) { return std::format("{}.{}", name, s); };
-    // Below `lo` the result is no normal float and becomes 0; above `hi`, 2^n would overflow the exponent.
-    auto lo = k(-87.33654f), hi = k(88.02969f);
+    // Below `lo` the result is no normal float and becomes 0; above `hi`, ln of the largest float, it overflows.
+    auto lo = k(-87.33654f), hi = k(88.72284f);
     declare("float @llvm.minnum.f32(float, float)");
     declare("float @llvm.maxnum.f32(float, float)");
     declare("float @llvm.floor.f32(float)");
@@ -1255,15 +1255,16 @@ std::string Emitter::fast_expf(BB& bb, const std::string& name, const std::strin
         auto m = bb.assign(n(std::format("m{}", i)), "fmul fast float {}, {}", p, r);
         p      = bb.assign(n(std::format("p{}", i++)), "fadd fast float {}, {}", m, k(c));
     }
-    auto rr  = bb.assign(n("rr"), "fmul fast float {}, {}", r, r);
-    auto y   = bb.assign(n("y1"), "fmul fast float {}, {}", p, rr);
-    y        = bb.assign(n("y2"), "fadd fast float {}, {}", y, r);
-    y        = bb.assign(n("y"), "fadd fast float {}, {}", y, k(1.0f));
+    auto rr = bb.assign(n("rr"), "fmul fast float {}, {}", r, r);
+    auto y  = bb.assign(n("y1"), "fmul fast float {}, {}", p, rr);
+    y       = bb.assign(n("y2"), "fadd fast float {}, {}", y, r);
+    y       = bb.assign(n("y"), "fadd fast float {}, {}", y, k(1.0f));
+    // 2^n goes straight into the exponent of p(r), which is 126 or 127: at n = 128 then r ≤ 0, and at n = −126 r ≥ 0, so no result leaves the normal range.
     auto e   = bb.assign(n("ni"), "fptosi float {} to i32", fl);
-    e        = bb.assign(n("eb"), "add i32 {}, 127", e);
     e        = bb.assign(n("es"), "shl i32 {}, 23", e);
-    e        = bb.assign(n("pw"), "bitcast i32 {} to float", e);
-    y        = bb.assign(n("v"), "fmul fast float {}, {}", y, e);
+    auto yb  = bb.assign(n("yb"), "bitcast float {} to i32", y);
+    yb       = bb.assign(n("vb"), "add i32 {}, {}", yb, e);
+    y        = bb.assign(n("v"), "bitcast i32 {} to float", yb);
     auto has = [mode](math::Mode m) { return (std::to_underlying(mode) & std::to_underlying(m)) != 0; };
     auto inf = !has(math::Mode::ninf), nan = !has(math::Mode::nnan);
     auto u = bb.assign(n("under"), "fcmp olt float {}, {}", a, lo);
@@ -1314,6 +1315,7 @@ static void reg_phases(Flags2Phases& phases) {
 static constexpr PluginArg known_args[] = {
     {"o=<file>, output=<file>", "Writes the LLVM IR to `<file>` instead of the default `<world>.ll`/`a.ll`; `<file>` may be `-` for stdout."},
     {"rt=embed, rt=extern",     "How the C runtime wrappers reach the output: `embed` (default) splices their LLVM IR into the module; `extern` only `declare`s them and leaves linking to you."},
+    {"asan=<n>",                "`1` marks every generated function `sanitize_address`, so that `-fsanitize=address` checks its accesses too (default `0`)."},
 };
 // clang-format on
 

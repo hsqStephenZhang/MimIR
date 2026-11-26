@@ -537,7 +537,9 @@ inline std::string Emitter::prepare() {
         sep = ", ";
     }
 
-    std::println(func_impls_, ") {{");
+    // `-X ll:asan=1` lets AddressSanitizer instrument the generated code as well as the code it is linked with.
+    auto asan = world().driver().arg_nat("ll", "asan").value_or(0) != 0;
+    std::println(func_impls_, "){} {{", asan ? " sanitize_address" : "");
     return root()->unique_name();
 }
 

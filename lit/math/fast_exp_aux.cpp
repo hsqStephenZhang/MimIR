@@ -13,7 +13,7 @@ int main() {
         float got   = fexp(x);
         if (want < 1.2e-38) {
             if (x < -87.4f && got != 0.0f) ++bad;
-        } else if (want < 1.6e38 && std::fabs(got - want) > 5e-7 * want) {
+        } else if (want < 3.4028e38 && std::fabs(got - want) > 5e-7 * want) {
             ++bad;
         }
         if (std::fabs(sexp(x) - std::exp(x)) > 1e-6 * std::exp(x)) ++bad;

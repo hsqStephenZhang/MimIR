@@ -1,0 +1,49 @@
+// RUN: %mim -p opt %s -p ll -X ll:asan=1 -X ll:o=%t.ll -o %t.mim
+// RUN: clang++ -O1 -fsanitize=address %S/pe_edge_aux.cpp %t.ll -o %t.exec -Wno-override-module
+// RUN: %t.exec
+
+// Edge tiles of run-time extents read slots that hold no panel only within the extent, wherever the output loops land.
+
+plugin tensor;
+plugin core;
+plugin math;
+plugin mem;
+plugin buffer;
+plugin affine;
+plugin btensor;
+
+let F32 = math.F32;
+let ik  = tensor.aff_proj @(3, 2) (0₃, 2₃);
+let kj  = tensor.aff_proj @(3, 2) (2₃, 1₃);
+let ij  = λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃);
+let ji  = λ (o: «3; affine.Index»): «2; affine.Index» = (o#1₃, o#0₃);
+let P   = tensor.Prod (2, F32);
+
+fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
+fun inc (m: mem.M 0, x: F32, _: [])@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (x, 1.0:F32));
+fun take2 (m: mem.M 0, _: F32, x: F32)@tt: [mem.M 0, F32] = return (m, x);
+
+let peel = tensor.sched_peel @(2, 3) (0, 4, tensor.sched_leaf @(2, 3) 0);
+
+// A run-time M peeled into tiles of 4 rows, nothing packed: the edge tile reads A only up to M.
+extern fun peel_mm (r: Nat, m: mem.M 0, a: buffer.Buf (2, (r, 29), F32), b: buffer.Buf (2, (29, 37), F32))
+    : [mem.M 0, buffer.Buf (2, (r, 37), F32)] =
+    let (m, c) = tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((r, 29), (29, 37)))
+        ((r, 37), (r, 37, 29)) (mac, 0.0:F32) ij (ik, kj) (peel, (tensor.levels_unbounded, 37, 29), (tt, ff, ff)) (m, (a, b));
+    return (m, c);
+
+// The same product written transposed: the edge tile's scratch follows the loops, not the output's coordinates.
+extern fun peel_tr (r: Nat, m: mem.M 0, a: buffer.Buf (2, (r, 29), F32), b: buffer.Buf (2, (29, 37), F32))
+    : [mem.M 0, buffer.Buf (2, (37, r), F32)] =
+    let (m, c) = tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((r, 29), (29, 37)))
+        ((37, r), (r, 37, 29)) (mac, 0.0:F32) ji (ik, kj) (peel, (tensor.levels_unbounded, 37, 29), (tt, ff, ff)) (m, (a, b));
+    return (m, c);
+
+// A run-time K that no Split cuts, with an epilogue that adds 1: at K = 0 the cells hold 1, not 2.
+extern fun epi_mm (k: Nat, m: mem.M 0, a: buffer.Buf (2, (5, k), F32), b: buffer.Buf (2, (k, 7), F32))
+    : [mem.M 0, buffer.Buf (2, (5, 7), F32)] =
+    let epi = tensor.levels_epilogue @(F32, 2, (5, 7)) @(0, (), (), ()) (inc, (), ());
+    let (m, c) = tensor.run_levels_post @(2, F32, 2, 3, (F32, F32), (2, 2), ((5, k), (k, 7)))
+        ((5, 7), (5, 7, k)) (mac, 0.0:F32, btensor.id @F32) (take2, 0, tt) (epi, ff) ij ((ik, kj), (P#Plain, P#Plain))
+        (tensor.sched_leaf @(2, 3) 3, (5, 7, 64), (ff, ff, tt)) (m, (a, b));
+    return (m, c);

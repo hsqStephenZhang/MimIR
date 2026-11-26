@@ -1,7 +1,7 @@
-// RUN: %mim -VVV -p opt %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVV -p opt %s -p ll -X ll:asan=1 -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
 // RUN: clang++ -O2 -fsanitize=address %S/pe_reduce_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
 // RUN: %t0.exec
-// RUN: %mim -p opt -X tensor:pe-generic=0 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: %mim -p opt -X tensor:pe-generic=0 %s -p ll -X ll:asan=1 -X ll:o=%t1.ll -o %t1.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_reduce_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec
 // RUN: %mim -VVVV -p opt %s -o %t2.mim > %t2.log 2>&1
@@ -18,20 +18,20 @@
 // The transpose tiles both contiguous loops; the reassociating sums and maxima vectorize their reduction loop.
 // TRANS: tile the map-reduce over (53, 37)
 // TRANS-NEXT: schedule tree:
-// TRANS-NEXT: Split 0, i8, Fixed
-// TRANS-NEXT:   Split 1, i8, Fixed
-// TRANS-NEXT:     Split 0, 8, Fixed
-// TRANS-NEXT:       Split 1, 8, Fixed
+// TRANS-NEXT: Split 0, 256, Peel
+// TRANS-NEXT:   Split 1, 256, Peel
+// TRANS-NEXT:     Split 0, 8, Peel
+// TRANS-NEXT:       Split 1, 8, Peel
 // TRANS-NEXT:         Leaf 2
 // Softmax stages its maximum, read twice and so computed in both consumers, and its sum per band of rows.
 // FUSE-COUNT-3: fuse the map-reduce over (37, 53) into its consumer
 // FUSE-NEXT: tile the map-reduce over (37, 53) with tensor.run_levels
 // FUSE-NEXT: schedule tree:
-// FUSE-NEXT: Alloc 1₃
-// FUSE-NEXT:   Alloc 2₃
-// FUSE-NEXT:     Split 0, 618, Fixed
-// FUSE-NEXT:       Stage 1₃
-// FUSE-NEXT:         Stage 2₃
+// FUSE-NEXT: Alloc 1
+// FUSE-NEXT:   Alloc 2
+// FUSE-NEXT:     Split 0, 618, Peel
+// FUSE-NEXT:       Stage 1
+// FUSE-NEXT:         Stage 2
 // FUSE-NEXT:           Leaf 2
 // RFAC: tile the map-reduce over (5, 7, 48)
 // RFAC-NEXT: schedule tree:

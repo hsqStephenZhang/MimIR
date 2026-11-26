@@ -4,9 +4,9 @@
 // CHECK:      schedule tree:
 // CHECK-NEXT: Split 1, 240, Fixed
 // CHECK-NEXT:   Split 2, 128, Loop
-// CHECK-NEXT:     Pack 1, 16, tt, (ff, tt, tt)
+// CHECK-NEXT:     Pack 1, 16, 1, (ff, tt, tt)
 // CHECK-NEXT:       Split 0, 64, Fixed
-// CHECK-NEXT:         Pack 0, 4, ff, (tt, ff, tt)
+// CHECK-NEXT:         Pack 0, 4, 0, (tt, ff, tt)
 // CHECK-NEXT:           Split 0, 4, Fixed
 // CHECK-NEXT:             Split 1, 16, Fixed
 // CHECK-NEXT:               Leaf 0

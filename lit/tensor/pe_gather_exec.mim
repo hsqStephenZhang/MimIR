@@ -1,23 +1,23 @@
-// RUN: %mim -VVVV -p opt %s -p ll -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVVV -p opt %s -p ll -X ll:asan=1 -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
 // RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
 // RUN: %t0.exec
-// RUN: %mim -p opt -X tensor:pe-fuse=0 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: %mim -p opt -X tensor:pe-fuse=0 %s -p ll -X ll:asan=1 -X ll:o=%t1.ll -o %t1.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec
-// RUN: %mim -p opt -X tensor:cpu-mc=8 -X tensor:group-cache=1024 %s -p ll -X ll:o=%t2.ll -o %t2.mim
+// RUN: %mim -p opt -X tensor:cpu-mc=8 -X tensor:group-cache=1024 %s -p ll -X ll:asan=1 -X ll:o=%t2.ll -o %t2.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
 // RUN: %t2.exec
 
 // A gather is a producer whose boxes read the source through the same box of the index, so a run_levels consumer stages its rows.
 // CHECK: tile the contraction over (37, 19, 24) with tensor.run_levels
 // CHECK-NEXT: fuse the gather of (37, 24) into its consumer
-// CHECK: Stage ff
+// CHECK: Stage 0
 // CHECK: fuse the gather of (37, 24) into its consumer
 // CHECK-NEXT: tile the map-reduce over (37, 24) with tensor.run_levels
 // CHECK-NEXT: schedule tree:
-// CHECK-NEXT: Alloc 0₁
-// CHECK-NEXT:   Split 0, 1365, Fixed
-// CHECK-NEXT:     Stage 0₁
+// CHECK-NEXT: Alloc 0
+// CHECK-NEXT:   Split 0, 1365, Peel
+// CHECK-NEXT:     Stage 0
 plugin tensor;
 plugin core;
 plugin math;

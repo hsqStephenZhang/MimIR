@@ -369,7 +369,7 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     if (ranks->ro < 2 || ranks->rr != 1 || ranks->nis != 2) return w.lit_ff();
     u64 ro = ranks->ro;
     u64 rn = ranks->nloops();
-    // Extents may be run-time values; `run_levels` splits those with `Seq` and computes edge tiles in scratch.
+    // Extents may be run-time values; `run_levels` splits those with `Loop` or `Peel` and computes edge tiles in scratch.
     if (!lit_projs(mr.Ris, 2)) return nullptr;
     for (u64 d = 0; d != rn; ++d)
         if (Lit::isa(mr.Sr->proj(rn, d)) == 0) return w.lit_ff();

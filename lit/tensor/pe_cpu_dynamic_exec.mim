@@ -1,11 +1,11 @@
-// RUN: %mim -p opt %s -p ll -X ll:o=%t0.ll -o %t0.mim
+// RUN: %mim -p opt %s -p ll -X ll:asan=1 -X ll:o=%t0.ll -o %t0.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_dynamic_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
 // RUN: %t0.exec | %FileCheck %s
-// RUN: %mim -p opt -X tensor:cpu-mr=4 -X tensor:cpu-nr=8 -X tensor:cpu-mc=12 -X tensor:cpu-nc=24 -X tensor:cpu-kc=5 %s -p ll -X ll:o=%t1.ll -o %t1.mim
+// RUN: %mim -p opt -X tensor:cpu-mr=4 -X tensor:cpu-nr=8 -X tensor:cpu-mc=12 -X tensor:cpu-nc=24 -X tensor:cpu-kc=5 %s -p ll -X ll:asan=1 -X ll:o=%t1.ll -o %t1.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_dynamic_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec | %FileCheck %s
 // RUN: %mim -VVV -p opt %s -o %t2.mim 2>&1 | %FileCheck %s --check-prefix=PE
-// RUN: %mim -VVVV -p opt -X tensor:group-cache=4096 %s -p ll -X ll:o=%t3.ll -o %t3.mim 2>&1 | %FileCheck %s --check-prefix=SWITCH
+// RUN: %mim -VVVV -p opt -X tensor:group-cache=4096 %s -p ll -X ll:asan=1 -X ll:o=%t3.ll -o %t3.mim 2>&1 | %FileCheck %s --check-prefix=SWITCH
 // RUN: clang++ -O2 -fsanitize=address %S/pe_cpu_dynamic_aux.cpp %t3.ll -o %t3.exec -Wno-override-module
 // RUN: %t3.exec | %FileCheck %s
 

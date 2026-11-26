@@ -1,4 +1,4 @@
-// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll -o %t.mim
+// RUN: %mim -p opt %s -p ll -X ll:asan=1 -X ll:o=%t.ll -o %t.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_mlir_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
 // RUN: %FileCheck %s --input-file=%t.ll --implicit-check-not='malloc(i64 2400)' --implicit-check-not='malloc(i64 1600)'

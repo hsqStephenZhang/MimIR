@@ -1,4 +1,4 @@
-// RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:asan=1 -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
 // RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_dyn_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec | %FileCheck %s --check-prefix=OUT
 

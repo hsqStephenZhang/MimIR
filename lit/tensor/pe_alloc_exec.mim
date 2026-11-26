@@ -1,4 +1,4 @@
-// RUN: %mim -p opt %s -p ll -X ll:o=%t.ll -o %t.mim
+// RUN: %mim -p opt %s -p ll -X ll:asan=1 -X ll:o=%t.ll -o %t.mim
 // RUN: %FileCheck %s --input-file=%t.ll
 // RUN: %FileCheck %s --check-prefix=ONCE --input-file=%t.ll
 // RUN: clang++ -O2 -fsanitize=address %S/pe_alloc_aux.cpp %t.ll -o %t.exec -Wno-override-module
