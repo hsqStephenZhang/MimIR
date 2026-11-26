@@ -107,7 +107,12 @@ const Def* LowerMapReduce::lower_map_reduce_post(const App* app) {
         auto callback        = w.mut_lam(init_cell_ty)->set("initHeld");
         auto [m, pref, done] = callback->vars<3>();
         auto rn              = ranks->nloops();
-        DefVec indices(rn, [&](size_t d) { return w.call(core::conv::u, mr.Sr->proj(rn, d), pref->proj(rn, d)); });
+        // The loop counters stay below their extents.
+        auto nuw = w.lit_nat(std::to_underlying(core::Mode::nuw));
+        DefVec indices(rn, [&](size_t d) {
+            return w.app(w.app(w.app(w.annex<core::idx>(), nuw), mr.Sr->proj(rn, d)),
+                         w.call<core::idx2nat>(pref->proj(rn, d)));
+        });
         auto [mapped, coords] = op_affine_map(map_init, mr.Ro, mr.Rn, mr.Sr, bounds, w.tuple(indices), m)->projs<2>();
         auto [read, value]    = buffer::op_read(mapped, outs, *Shape(coords).fold(bounds))->projs<2>();
         // A select rather than a branch keeps the seeding straight-line; a fresh cell's read value is discarded.

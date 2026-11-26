@@ -127,6 +127,10 @@ const Def* LegalizeIdx::rewrite_imm_App(const App* app) {
         }
     }
 
+    // A no-wrap mode promises a value in range.
+    if (auto op = Axm::isa<idx>(app); op && Lit::isa(op->callee()->as<App>()->decurry()->arg()).value_or(0) != 0)
+        if (auto d = odd(app->type())) return narrow(w, *d, bits(w, rewrite(op->arg())));
+
     auto s = odd_op(app);
     if (!s) {
         // An op that keeps values of `Idx s` in range works on the widened operands as they are.

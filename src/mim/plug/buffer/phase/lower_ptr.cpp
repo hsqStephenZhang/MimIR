@@ -3,6 +3,7 @@
 #include <mim/axm.h>
 #include <mim/def.h>
 
+#include <mim/plug/core/core.h>
 #include <mim/plug/gpu/gpu.h>
 #include <mim/plug/mem/mem.h>
 
@@ -42,6 +43,16 @@ const Def* LowerPtr::rewrite_imm_App(const App* app) {
         auto element_ptr          = mem::op_lea_tuple(buf, idx);
         auto mem2                 = w.call<mem::store>(Defs{mem, element_ptr, val});
         return w.tuple({mem2, buf});
+    } else if (auto shift_ax = Axm::isa<buffer::shift>(app)) {
+        auto [r, s, T]  = shift_ax->callee()->as<App>()->args<3>();
+        auto [buf, off] = shift_ax->args<2>([this](const Def* d) { return rewrite(d); });
+        auto n          = Lit::as(r);
+        // The pointer type folds size-1 axes away, so their offsets, always 0, address nothing.
+        auto idx = DefVec();
+        for (u64 i = 0; i != n; ++i)
+            if (Lit::isa(s->proj(n, i)) != 1) idx.emplace_back(off->proj(n, i));
+        auto element = mem::op_lea_tuple(buf, w.tuple(idx));
+        return w.call<core::bitcast>(buf->type(), element);
     } else if (auto copy_ax = Axm::isa<buffer::copy>(app)) {
         auto [mem, dst, src] = copy_ax->args<3>();
         mem                  = rewrite(mem);

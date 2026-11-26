@@ -39,10 +39,9 @@ extern fun row_sum (input: tensor.Tensor 2 (3, 4) I32): tensor.Tensor 1 3 I32 =
 extern fun transpose (input: tensor.Tensor 2 (2, 3) I32): tensor.Tensor 2 (3, 2) I32 =
     return (tensor.map_reduce ((3, 2), (2, 3)) (copy, ⊥:I32) tr id2 input);
 
-// out[i] = input[3*i + 2]; the affine read index lowers to core arithmetic.
+// out[i] = input[3*i + 2]; the read starts at `input + 2`.
 // CHECK-DAG: extern con strided
-// CHECK-DAG: core.wrap.mul {{.*}}(3I64
-// CHECK-DAG: core.wrap.add {{.*}}(2I64
+// CHECK-DAG: mem.lea {{.*}}(input{{.*}}, 2₈)
 extern fun strided (input: tensor.Tensor 1 8 I32): tensor.Tensor 1 2 I32 =
     return (tensor.map_reduce (‹1; 2›, ‹1; 2›) (copy, ⊥:I32) id1 sl input);
 

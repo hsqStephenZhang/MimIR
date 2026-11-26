@@ -33,8 +33,8 @@ extern fun transpose (input: tensor.Tensor 2 (2, 3) I32): tensor.Tensor 2 (3, 2)
 
 // A strided slice via the affine input map: out[i] = input[3*i + 2].
 // CHECK-DAG: extern con strided
-// The affine read index `3*i + 2` lowers to core arithmetic:
+// The read starts at `input + 2` and steps by `3*i`:
+// CHECK-DAG: mem.lea {{.*}}(input{{.*}}, 2₈)
 // CHECK-DAG: core.wrap.mul {{.*}}(3I64
-// CHECK-DAG: core.wrap.add {{.*}}(2I64
 extern fun strided (input: tensor.Tensor 1 8 I32): tensor.Tensor 1 2 I32 =
     return (tensor.map_reduce (‹1; 2›, ‹1; 2›) (copy, ⊥:I32) id1 sl (input));

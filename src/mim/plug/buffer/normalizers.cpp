@@ -48,6 +48,16 @@ const Def* normalize_shape(const Def* type, const Def* callee, const Def* arg) {
     return type->world().extract(s, index);
 }
 
+/// `shift (buf, 0)` ↦ `buf`.
+const Def* normalize_shift(const Def*, const Def*, const Def* arg) {
+    auto [buf, off] = arg->projs<2>();
+    auto n          = Lit::isa(off->type()->arity());
+    if (!n) return {};
+    for (u64 i = 0; i != *n; ++i)
+        if (Lit::isa(off->proj(*n, i)) != 0) return {};
+    return buf;
+}
+
 MIM_buffer_NORMALIZER_IMPL
 
 } // namespace mim::plug::buffer

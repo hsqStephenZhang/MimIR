@@ -69,6 +69,13 @@ axm lit: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, T] → [mem.M 0, Buf
 ///
 axm shape: [r: Nat, s: «r; Nat», T: *] as rsT → [Buf rsT, i: Idx r] → Nat, normalize_shape;
 ///
+/// ### shift
+///
+/// The buffer that starts at element `off` of `buf`, with the same shape and strides: element `i` of the result is element `off + i` of `buf`.
+/// Only the elements that `buf` holds may be read through it.
+///
+axm shift: [r: Nat, s: «r; Nat», T: *] as rsT → [Buf rsT, off: «i: r; Idx s#i»] → Buf rsT, normalize_shift;
+///
 /// ### copy
 ///
 /// Copy the whole contents of `src` into `dst` and return the updated memory.
