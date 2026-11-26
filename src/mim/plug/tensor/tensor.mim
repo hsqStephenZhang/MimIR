@@ -2015,6 +2015,8 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
+    // An abstract machine: `axes` and `views` are its environment, `tok` and `dst` its store, and a `Body` the continuation.
+    // `exec_<node>` checks one instruction and runs it on the state it hands its continuation; `eval` only dispatches.
     let D     = buffer.Buf (Ro, So, To);
     let Rp    = core.nat.add (Rn, 1);
     let IxN   = «Rn; affine.Index»;
@@ -2027,7 +2029,12 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
     let cols  = λ (axes: «Rn; Axis»): [«Rn; Nat», «Rn; Nat», «Rn; Nat», «Rn; Bool»] =
         (‹d: Rn; (axes#d)#lo›, ‹d: Rn; (axes#d)#size›, ‹d: Rn; (axes#d)#cap›, ‹d: Rn; (axes#d)#dyn›);
 
-    let step_leaf = λ (vdim: Nat, st: State): [mem.M 0, D] =
+    let exec_leaf = λ (vdim: Nat, st: State): [mem.M 0, D] =
+        let vdim = refly.check (vdim < Rn + 1, vdim, "SchedTree: a Leaf vectorizes a loop below Rn, or none with Rn");
+        // In order, only the first reduction loop may be split unless partial results merge.
+        let ordered = vec.fold.r @(Bool, Idx Rn) @Rn
+            (λ (d: Idx Rn, acc: Bool): Bool = core.select (Ro < core.idx2nat d, core.select ((st#axes#d)#part, ff, acc), acc)) (‹d: Rn; d›, tt);
+        let st   = refly.check (core.select (0 < lanes, tt, ordered), st, "SchedTree: only the first reduction loop may be split when the combiner has no merge");
         let (axes, vs, m, dst) = st;
         let (lo, size, cap, dyn_ax) = cols axes;
         let blk   = λ (a: Nat): Bool = core.select (a < Rn, dyn_ax#(core.idx 0 Rn a), ff);
@@ -2045,13 +2052,13 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         // Statically, so that `post` stays inlinable; a leaf over part of the reduction leaves it to the one that ends it.
         let whole = vec.fold.r @(Bool, Idx Rn) @Rn
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select ((axes#d)#part, ff, acc))) (‹d: Rn; d›, tt);
-        let run   = λ (S: «Ro; Nat», c: buffer.Buf (Ro, S, To), at: IxN → «Ro; affine.Index», sz: «Rn; Nat», m: mem.M 0)
+        let kernel = λ (S: «Ro; Nat», c: buffer.Buf (Ro, S, To), at: IxN → «Ro; affine.Index», sz: «Rn; Nat», m: mem.M 0)
                       : [mem.M 0, buffer.Buf (Ro, S, To)] =
             btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (S, sz, btensor.mk_sched (core.select (Ro < vdim + 1, Rn, vdim), 0))
                 @(Ts, Ris_c, Sis_c, (), (), ()) @[«Ro; Nat», IxN → «Ro; affine.Index», buffer.Buf (Ro, S, To), Bool, To]
                 (f, (S, at, c, fresh, init), (btensor.id @To, post)#whole) at (ins_m, ()) (m, c, ins_b, ());
         // An edge tile computes in a scratch tile whose valid part is copied in and out; whole tiles come from `Peel` without one.
-        let edged = λ (_: []): [mem.M 0, D] =
+        let edge_tile = λ (_: []): [mem.M 0, D] =
             let full_sz = ‹d: Rn; core.select (core.idx2nat d < Ro, cap#d, size#d)›;
             let Sc      = ‹d: Ro; cap#(core.idx 0 Rn (core.idx2nat d))›;
             let ext     = ‹d: Ro; size#(core.idx 0 Rn (core.idx2nat d))›;
@@ -2060,7 +2067,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             let ident   = lm (o: «Ro; affine.Index»): «Ro; affine.Index» = o;
             let (m, sc) = buffer.alloc (Ro, Sc, To) m;
             let (m, sc) = btensor.map_reduce @1 @(To, Ro, Ro) (Sc, ext) @(To, Ro, So) (levels_take_mem @To, ⊥:To) ident shift (m, sc, dst);
-            let (m, sc) = run (Sc, sc, map_out, full_sz, m);
+            let (m, sc) = kernel (Sc, sc, map_out, full_sz, m);
             let (m, dst) = btensor.map_reduce @1 @(To, Ro, Ro) (So, ext) @(To, Ro, Sc) (levels_take_mem @To, ⊥:To) shift ident (m, dst, sc);
             (buffer.free (Ro, Sc, To) (m, sc), dst);
         // A reduction loop as `vdim` keeps `lanes` partial accumulators along it, which `merge` combines into the cells.
@@ -2107,7 +2114,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         let held  = vec.fold.r @(Bool, Idx Rn) @Rn
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, core.select (cap#d < levels_unbounded, acc, ff), acc)) (‹d: Rn; d›, tt);
         let edge  = refly.check (core.select (edge, held, tt), edge, "SchedTree: a Leaf computes an edge tile of a run-time extent that no Split bounds");
-        let plain = (λ (_: []): [mem.M 0, D] = run (So, dst, out, size, m), edged)#edge;
+        let plain = (λ (_: []): [mem.M 0, D] = kernel (So, dst, out, size, m), edge_tile)#edge;
         let (m, dst) = ((plain, rfactor)#(core.select (red_v, core.select (blk vdim, ff, tt), ff))) ();
         // The leaf that ends the reduction of its cells maps them by `post` while they are still in cache.
         let last  = vec.fold.r @(Bool, Idx Rn) @Rn
@@ -2123,7 +2130,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         ((λ (_: []): [mem.M 0, D] = (m, dst), λ (_: []): [mem.M 0, D] = cps.cps2ds finished (m, dst))#(core.select (whole, ff, finish))) ();
 
     // `rt_tail` lets a static axis count its tiles at run time; `peel` guards a run-time axis' tail by a branch.
-    let split_serial = λ (rt_tail peel: Bool, d: Idx Rn, ts: Nat, k: Body): Body =
+    let split_axis = λ (rt_tail peel: Bool, d: Idx Rn, ts: Nat, k: Body): Body =
         λ (st: State): [mem.M 0, D] =
             let (axes, vs, m, dst) = st;
             let a     = axes#d;
@@ -2174,7 +2181,16 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                                    λ (k: Body): [mem.M 0, X] = wholes (k, tail_branch k))#(a#dyn), counted)#count) k;
             (m, dst);
 
-    let step_pack = λ (d w: Nat, slot: Idx N, dep: «Rn; Bool», k: Body): Body =
+    let exec_split = λ (d ts: Nat, mode: SplitMode, k: Body): Body =
+        let ax = refly.check (d < Rn, core.idx 0 Rn d, "SchedTree: a Split needs an axis below Rn");
+        let ts = refly.check (0 < ts, ts, "SchedTree: a Split needs a positive tile size");
+        let (rt_tail, peel) = match mode with
+            | Fixed _ => (ff, ff)
+            | Loop _  => (tt, ff)
+            | Peel _  => (ff, tt);
+        split_axis (rt_tail, peel, ax, ts, k);
+
+    let exec_pack = λ (d w: Nat, slot: Idx N, dep: «Rn; Bool», k: Body): Body =
         λ (st: State): [mem.M 0, D] =
             let (axes, vs, m, _) = st;
             let (_, size, cap, dyn_ax) = cols axes;
@@ -2193,7 +2209,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             let (m, dst) = k ((st#views#slot ← v2)#tok ← m);
             (buffer.free (Rp, sp, Ts#slot) (m, p), dst);
 
-    let step_stage = λ (slot: Idx N, k: Body): Body =
+    let exec_stage = λ (slot: Idx N, k: Body): Body =
         λ (st: State): [mem.M 0, D] =
             let (axes, vs, m, dst) = st;
             let (lo, size, cap, dyn_ax) = cols axes;
@@ -2224,7 +2240,9 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                         (buffer.free (v#r, bext, Ts#slot) (m, t), dst);
             arm k;
 
-    let step_switch = λ (d: Idx Rn, c: Nat, small big: Body): Body =
+    let exec_switch = λ (d c: Nat, small big: Body): Body =
+        let d = refly.check (d < Rn, core.idx 0 Rn d, "SchedTree: a Switch needs an axis below Rn");
+        let c = refly.check (1 < c, c, "SchedTree: a Switch needs a threshold above 1");
         λ (st: State): [mem.M 0, D] =
             let a   = st#axes#d;
             // Below `c`, the small tree may size its scratch tiles by `c - 1`.
@@ -2242,28 +2260,11 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
 
     lam eval (node: SchedTree (N, Rn))@(core.pe.is_closed node): Body =
         match node with
-            | Leaf vdim =>
-                let vdim = refly.check (vdim < Rn + 1, vdim, "SchedTree: a Leaf vectorizes a loop below Rn, or none with Rn");
-                λ (st: State): [mem.M 0, D] =
-                    // In order, only the first reduction loop may be split unless partial results merge.
-                    let ordered = vec.fold.r @(Bool, Idx Rn) @Rn
-                        (λ (d: Idx Rn, acc: Bool): Bool = core.select (Ro < core.idx2nat d, core.select ((st#axes#d)#part, ff, acc), acc)) (‹d: Rn; d›, tt);
-                    let ordered = core.select (0 < lanes, tt, ordered);
-                    step_leaf (vdim, refly.check (ordered, st, "SchedTree: only the first reduction loop may be split when the combiner has no merge"))
-            | Split n   =>
-                let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Split needs an axis below Rn");
-                let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Split needs a positive tile size");
-                let (rt_tail, peel) = match n#mode with
-                    | Fixed _ => (ff, ff)
-                    | Loop _  => (tt, ff)
-                    | Peel _  => (ff, tt);
-                split_serial (rt_tail, peel, ax, ts, eval (n#body))
-            | Pack n    => step_pack (n#d, n#w, n#slot, n#dep, eval (n#body))
-            | Stage n   => step_stage (n#slot, eval (n#body))
-            | Switch n  =>
-                let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Switch needs an axis below Rn");
-                let c  = refly.check (1 < n#c, n#c, "SchedTree: a Switch needs a threshold above 1");
-                step_switch (ax, c, eval (n#small), eval (n#big));
+            | Leaf vdim => λ (st: State): [mem.M 0, D] = exec_leaf (vdim, st)
+            | Split n   => exec_split (n#d, n#ts, n#mode, eval (n#body))
+            | Pack n    => exec_pack (n#d, n#w, n#slot, n#dep, eval (n#body))
+            | Stage n   => exec_stage (n#slot, eval (n#body))
+            | Switch n  => exec_switch (n#d, n#c, eval (n#small), eval (n#big));
 
     let red_dyn  = vec.fold.r @(Bool, Idx Rn) @Rn
         (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (dyn0#d, tt, acc))) (‹d: Rn; d›, ff);
