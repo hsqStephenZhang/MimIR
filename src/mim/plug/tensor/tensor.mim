@@ -2004,12 +2004,25 @@ anx lam sched_size {N Rn: Nat} (t: SchedTree (N, Rn)): Nat =
          λ (_: Nat, _: Nat, _: Idx N, _: «Rn; Bool», b: Nat): Nat = one b, λ (_: Idx N, b: Nat): Nat = one b,
          λ (_: Nat, _: Nat, a: Nat, b: Nat): Nat = one (core.nat.add (a, b))) t;
 
+/// `post` with its epilogue inputs as a map over a tile of the result: the cells `cells` gives for the coordinates below `ext`.
+anx lam levels_epilogue {To: *, Ro: Nat, So: «Ro; Nat»} {nps: Nat, Tps: «nps; *», Rps: «j: nps; Nat», Sps: «j: nps; «Rps#j; Nat»»}
+    (post: Fn [mem.M 0, To, «j: nps; Tps#j»] → [mem.M 0, To], post_maps: «j: nps; «Ro; affine.Index» → «Rps#j; affine.Index»»,
+     post_is: «j: nps; buffer.Buf (Rps#j, Sps#j, Tps#j)»)
+    (m: mem.M 0, dst: buffer.Buf (Ro, So, To), cells: «Ro; affine.Index» → «Ro; affine.Index», ext: «Ro; Nat»): [mem.M 0, buffer.Buf (Ro, So, To)] =
+    btensor.map_reduce_post @(1, nps) @(To, To, Ro, Ro, btensor.SchedT) (So, ext, btensor.mk_sched (Ro, 0))
+        @(To, Ro, So, Tps, Rps, Sps) @To (levels_take_mem @To, ⊥:To, post) cells (cells, post_maps) (m, dst, dst, post_is);
+
+/// The epilogue that leaves every cell as it is.
+anx lam levels_no_epilogue {To: *, Ro: Nat, So: «Ro; Nat»}
+    (m: mem.M 0, dst: buffer.Buf (Ro, So, To), _: «Ro; affine.Index» → «Ro; affine.Index», _: «Ro; Nat»): [mem.M 0, buffer.Buf (Ro, So, To)] = (m, dst);
+
 /// `run_levels` whose slots may be producers: a `Stage slot` node computes only the box of the producer that the loops below it read.
 /// `run_levels_with` over the loops starting at `origin`; the output is indexed from zero, so a producer computes a box of its result.
 anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr origin: «Rn; Nat»)
     (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To, post: Fn [mem.M 0, To, []] → [mem.M 0, To])
     (merge: Fn [mem.M 0, To, To] → [mem.M 0, To], lanes: Nat, finish: Bool)
+    (epi: [mem.M 0, buffer.Buf (Ro, So, To), «Ro; affine.Index» → «Ro; affine.Index», «Ro; Nat»] → [mem.M 0, buffer.Buf (Ro, So, To)], eager: Bool)
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
     (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
@@ -2051,7 +2064,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         // Only a leaf over the whole reduction may finish its cells.
         // Statically, so that `post` stays inlinable; a leaf over part of the reduction leaves it to the one that ends it.
         let whole = vec.fold.r @(Bool, Idx Rn) @Rn
-            (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select ((axes#d)#part, ff, acc))) (‹d: Rn; d›, tt);
+            (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select ((axes#d)#part, ff, acc))) (‹d: Rn; d›, eager);
         let kernel = λ (S: «Ro; Nat», c: buffer.Buf (Ro, S, To), at: IxN → «Ro; affine.Index», sz: «Rn; Nat», m: mem.M 0)
                       : [mem.M 0, buffer.Buf (Ro, S, To)] =
             btensor.map_reduce_post @(N, 0) @(To, To, Ro, Rn, btensor.SchedT) (S, sz, btensor.mk_sched (core.select (Ro < vdim + 1, Rn, vdim), 0))
@@ -2116,16 +2129,14 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         let edge  = refly.check (core.select (edge, held, tt), edge, "SchedTree: a Leaf computes an edge tile of a run-time extent that no Split bounds");
         let plain = (λ (_: []): [mem.M 0, D] = kernel (So, dst, out, size, m), edge_tile)#edge;
         let (m, dst) = ((plain, rfactor)#(core.select (red_v, core.select (blk vdim, ff, tt), ff))) ();
-        // The leaf that ends the reduction of its cells maps them by `post` while they are still in cache.
+        // The leaf that ends the reduction of its cells maps them by `epi` while they are still in cache.
         let last  = vec.fold.r @(Bool, Idx Rn) @Rn
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (core.nat.add (lo#d, size#d) == Sr#d, acc, ff))) (‹d: Rn; d›, finish);
         let ext   = ‹d: Ro; size#(core.idx 0 Rn (core.idx2nat d))›;
         let cells = lm (o: «Ro; affine.Index»): «Ro; affine.Index» = out ‹d: Rn; (affine.lit 0, o#(core.idx 0 Ro (core.idx2nat d)))#(core.idx2nat d < Ro)›;
         fun finished (m: mem.M 0, dst: D)@tt: [mem.M 0, D] =
             con skip (m: mem.M 0)@tt = return (m, dst);
-            con map (m: mem.M 0)@tt =
-                return (btensor.map_reduce_post @(1, 0) @(To, To, Ro, Ro, btensor.SchedT) (So, ext, btensor.mk_sched (Ro, 0))
-                    @(To, Ro, So, (), (), ()) @To (levels_take_mem @To, ⊥:To, post) cells (cells, ()) (m, dst, dst, ()));
+            con map (m: mem.M 0)@tt = return (epi (m, dst, cells, ext));
             (skip, map)#last m;
         ((λ (_: []): [mem.M 0, D] = (m, dst), λ (_: []): [mem.M 0, D] = cps.cps2ds finished (m, dst))#(core.select (whole, ff, finish))) ();
 
@@ -2273,15 +2284,13 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
     let q0 = ‹d: Rn; affine.lit (origin#d)›;
     let vs0: Views = ‹i: N; (Rs#i, Ss#i, ‹Rn; 1›, q0, levels_plain @Rn (Rs#i, maps#i), xs0#i, maps#i, prods#i, aff_reads @(Rn, Rs#i) (maps#i)) inj LevelsView (Rn, Ts#i)›;
     let (m, dst) = eval sched (‹d: Rn; (0, Sr#d, cap0#d, dyn0#d, ff)›, vs0, m, dst);
-    // With a run-time reduction extent of 0 no leaf runs, so `post` maps the cells that still hold `init`.
+    // With a run-time reduction extent of 0 no leaf runs, so `epi` maps the cells that still hold `init`.
     let empty = vec.fold.r @(Bool, Idx Rn) @Rn
         (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, acc, core.select (Sr#d == 0, tt, acc))) (‹d: Rn; d›, ff);
     let each  = lm (o: «Ro; affine.Index»): «Ro; affine.Index» = o;
     fun unit (m: mem.M 0, dst: D)@tt: [mem.M 0, D] =
         con skip (m: mem.M 0)@tt = return (m, dst);
-        con map (m: mem.M 0)@tt =
-            return (btensor.map_reduce_post @(1, 0) @(To, To, Ro, Ro, btensor.SchedT) (So, So, btensor.mk_sched (Ro, 0))
-                @(To, Ro, So, (), (), ()) @To (levels_take_mem @To, ⊥:To, post) each (each, ()) (m, dst, dst, ()));
+        con map (m: mem.M 0)@tt = return (epi (m, dst, each, So));
         (skip, map)#empty m;
     ((λ (_: []): [mem.M 0, D] = (m, dst), λ (_: []): [mem.M 0, D] = cps.cps2ds unit (m, dst))#(core.select (red_dyn, finish, ff))) ();
 
@@ -2293,21 +2302,23 @@ anx lam run_levels_with {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat»
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
-    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, btensor.id @To) (levels_take_mem @To, 0, ff) map_out (maps, prods)
+    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, btensor.id @To) (levels_take_mem @To, 0, ff)
+        (levels_no_epilogue @(To, Ro, So), tt) map_out (maps, prods)
         (sched, cap0, dyn0) (m, xs0);
 
-/// `run_levels_with` that maps each output cell by `post`, within the leaf that ends its reduction if `finish`.
+/// `run_levels_with` that maps each output cell by `epi`, within the leaf that ends its reduction if `finish`, and by `post` within the leaf itself where it spans the reduction and `eager`.
 /// A leaf that vectorizes a reduction loop combines its `lanes` partial accumulators by `merge`, for which `init` must be a unit.
 anx lam run_levels_post {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)
     (f: Fn [mem.M 0, To, «i: N; Ts#i»] → [mem.M 0, To], init: To, post: Fn [mem.M 0, To, []] → [mem.M 0, To])
     (merge: Fn [mem.M 0, To, To] → [mem.M 0, To], lanes: Nat, finish: Bool)
+    (epi: [mem.M 0, buffer.Buf (Ro, So, To), «Ro; affine.Index» → «Ro; affine.Index», «Ro; Nat»] → [mem.M 0, buffer.Buf (Ro, So, To)], eager: Bool)
     (map_out: «Rn; affine.Index» → «Ro; affine.Index»)
     (maps: «i: N; Aff (Rn, Rs#i)», prods: «i: N; Prod (Rs#i, Ts#i)»)
     (sched: SchedTree (N, Rn), cap0: «Rn; Nat», dyn0: «Rn; Bool»)
     (m: mem.M 0, xs0: «i: N; buffer.Buf (Rs#i, Ss#i, Ts#i)»)
     : [mem.M 0, buffer.Buf (Ro, So, To)] =
-    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, post) (merge, lanes, finish) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
+    run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (So, Sr, ‹Rn; 0›) (f, init, post) (merge, lanes, finish) (epi, eager) map_out (maps, prods) (sched, cap0, dyn0) (m, xs0);
 
 anx lam run_levels {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «i: N; «Rs#i; Nat»»}
     (So: «Ro; Nat», Sr: «Rn; Nat»)
@@ -2453,6 +2464,6 @@ anx lam fill_of {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», Ss: «
         let bound  = ‹d: Rn; core.select (out_d d, cap#(o d), Sr#d)›;
         let fresh  = ‹d: Rn; core.select (out_d d, dyn#(o d), ff)›;
         let origin = ‹d: Rn; core.select (out_d d, lo#(o d), 0)›;
-        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (ext, size, origin) (f, init, btensor.id @To) (levels_take_mem @To, 0, ff) out (maps, prods)
+        run_levels_at @(N, To, Ro, Rn, Ts, Rs, Ss) (ext, size, origin) (f, init, btensor.id @To) (levels_take_mem @To, 0, ff) (levels_no_epilogue @(To, Ro, ext), tt) out (maps, prods)
             (tree_of (size, fresh), bound, fresh) (m, xs);
     (Prod (Ro, To))#Fill make;

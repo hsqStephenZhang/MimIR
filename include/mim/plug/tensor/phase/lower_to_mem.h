@@ -41,6 +41,9 @@ private:
     const Def* lower_map_reduce(const App*);
     const Def* lower_pe_cpu(const App*);
     const Def* lower_pe_generic(const App*);
+    /// The epilogue of the old map-reduce @p app for `tensor.run_levels_post`: the `post` a leaf may run, the
+    /// `tensor.levels_epilogue` over a tile, and whether the former applies.
+    std::array<const Def*, 3> epilogue(const App* app);
     /// The result of the old map-reduce @p app whose accumulators `run_levels` left in @p out, with its epilogue
     /// applied.
     const Def* apply_post(const App* app, const Def* m, const Def* out);

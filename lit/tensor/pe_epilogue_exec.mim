@@ -7,6 +7,7 @@
 
 // An elementwise epilogue of a contraction runs in the leaf that ends each tile's reduction, whose K is cut into several blocks and may end at run time.
 // With a run-time K of 0 no leaf runs, and the epilogue maps the initial cells.
+// An epilogue with inputs, a bias per column, runs there as well.
 // CHECK-DAG: tile the contraction over (37, 29, 53) with tensor.run_levels
 // CHECK-DAG: map the epilogue in the leaf that ends each tile's reduction
 plugin tensor;
@@ -22,3 +23,9 @@ extern fun relu_mm (a: tensor.Tensor 2 (37, 53) F32, b: tensor.Tensor 2 (53, 29)
 
 extern fun affine_mm {m k n: Nat} (a: tensor.Tensor 2 (m, k) F32, b: tensor.Tensor 2 (k, n) F32): tensor.Tensor 2 (m, n) F32 =
     return (tensor.unary (λ (v: F32): F32 = math.arith.add 0 (math.arith.mul 0 (v, 0.5:F32), 1.0:F32)) (tensor.product_2d R (a, b)));
+
+extern fun bias_mm (a: tensor.Tensor 2 (37, 53) F32, b: tensor.Tensor 2 (53, 29) F32, c: tensor.Tensor 1 29 F32): tensor.Tensor 2 (37, 29) F32 =
+    return (tensor.binary_ax (λ (u v: F32): F32 = math.extrema.fmax 0 (math.arith.add 0 (u, v), 0.0:F32)) 0₂ (tensor.product_2d R (a, b), c));
+
+extern fun bias_dyn {m k n: Nat} (a: tensor.Tensor 2 (m, k) F32, b: tensor.Tensor 2 (k, n) F32, c: tensor.Tensor 1 n F32): tensor.Tensor 2 (m, n) F32 =
+    return (tensor.binary_ax (λ (u v: F32): F32 = math.arith.add 0 (u, v)) 0₂ (tensor.product_2d R (a, b), c));
