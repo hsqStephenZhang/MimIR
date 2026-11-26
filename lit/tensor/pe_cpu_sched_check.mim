@@ -4,7 +4,7 @@
 
 // Malformed hand-written SchedTrees are rejected while PE unfolds them.
 // `-X refly:strict=1` turns the first rejection into a compile error at the offending call.
-// STRICT: error: SchedTree: a Par must split a packed axis into whole panels
+// STRICT: error: SchedTree: a Split must cut a packed axis into whole panels
 plugin tensor;
 plugin core;
 plugin math;
@@ -22,7 +22,7 @@ let tree_seq_par = tensor.sched_seq @(2, 3) (0, 6,
 
 fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
 
-// CHECK: SchedTree: a Par must split a packed axis into whole panels
+// CHECK: SchedTree: a Split must cut a packed axis into whole panels
 lam probe_par (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
     tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
         ((4, 16), (4, 16, 4))
@@ -32,7 +32,7 @@ lam probe_par (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4,
         (tree_par, (4, 16, 4), (ff, ff, ff))
         (m, (a, b));
 
-// CHECK: SchedTree: a Seq needs a positive tile size
+// CHECK: SchedTree: a Split needs a positive tile size
 lam probe_seq0 (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
     tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
         ((4, 16), (4, 16, 4))
@@ -43,7 +43,7 @@ lam probe_seq0 (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4
         (m, (a, b));
 
 
-// CHECK: SchedTree: a Par axis cannot have a run-time extent from an enclosing Seq
+// CHECK: SchedTree: a Fixed Split needs an axis with a static extent
 lam probe_seq_par (m: mem.M 0, a: buffer.Buf (2, (10, 4), F32), b: buffer.Buf (2, (4, 8), F32)): [mem.M 0, buffer.Buf (2, (10, 8), F32)] =
     tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((10, 4), (4, 8)))
         ((10, 8), (10, 8, 4))
@@ -118,13 +118,13 @@ lam probe_order_first (m: mem.M 0, x: buffer.Buf (3, (4, 6, 8), F32)): [mem.M 0,
         (m, x);
 
 // A run-time extent without a static bound sizes neither a panel nor an edge tile until a Seq or Peel splits it.
-// CHECK: SchedTree: a Pack sizes its panel by a run-time extent that no Seq or Peel bounds
+// CHECK: SchedTree: a Pack sizes its panel by a run-time extent that no Split bounds
 lam probe_pack_unbounded (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
     tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
         ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)
         (tensor.sched_pack @(2, 3) (0, 2, 0₂, (tt, ff, tt), tensor.sched_leaf @(2, 3) 3), (tensor.levels_unbounded, 16, 4), (tt, ff, ff))
         (m, (a, b));
-// CHECK: SchedTree: a Leaf computes an edge tile of a run-time extent that no Seq or Peel bounds
+// CHECK: SchedTree: a Leaf computes an edge tile of a run-time extent that no Split bounds
 lam probe_edge_unbounded (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
     tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
         ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)

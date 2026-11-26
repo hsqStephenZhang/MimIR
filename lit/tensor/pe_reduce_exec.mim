@@ -18,14 +18,16 @@
 // The transpose tiles both contiguous loops; the reassociating sums and maxima vectorize their reduction loop.
 // TRANS: tile the map-reduce over (53, 37)
 // TRANS-NEXT: schedule tree:
-// TRANS-NEXT: Par ‹2; i8›
-// TRANS-NEXT:   Par ‹2; 8›
-// TRANS-NEXT:     Leaf 2
+// TRANS-NEXT: Split 0, i8, Fixed
+// TRANS-NEXT:   Split 1, i8, Fixed
+// TRANS-NEXT:     Split 0, 8, Fixed
+// TRANS-NEXT:       Split 1, 8, Fixed
+// TRANS-NEXT:         Leaf 2
 // Softmax stages its maximum, read twice and so computed in both consumers, and its sum per band of rows.
 // FUSE-COUNT-3: fuse the map-reduce over (37, 53) into its consumer
 // FUSE-NEXT: tile the map-reduce over (37, 53) with tensor.run_levels
 // FUSE-NEXT: schedule tree:
-// FUSE-NEXT: Par (618, 0)
+// FUSE-NEXT: Split 0, 618, Fixed
 // FUSE-NEXT:   Stage 1₃
 // FUSE-NEXT:     Stage 2₃
 // FUSE-NEXT:       Leaf 2

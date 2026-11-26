@@ -1643,18 +1643,19 @@ axm lower_to_mem: compile.Phase;
 /// evaluation at bufferization (`tensor.lower_to_mem`):
 ///
 /// - `Leaf vdim`               : emit leaf `btensor.map_reduce_post` accumulating into `dst`.
-/// - `Par  sizes body`         : nested serial loops (`affine.For`) with peeled tails.
+/// - `Split d ts mode body`    : a serial loop (`affine.For`) over axis `d` in tiles of `ts`; `mode` says how the tail runs (`SplitMode`).
 /// - `Pack d w slot dep body`  : BLIS panel packing of `slot` along axis `d` with width `w`.
-/// - `Seq  d ts body`          : a serial loop over axis `d` in steps of `ts` whose tail extent is a run-time value, so `body` is unfolded once.
 /// - `Stage slot body`         : compute the box of `slot`'s producer that `body` reads, through the slot's `tensor.Aff` map.
-/// - `Peel d ts body`          : like `Par` on a static extent; on a run-time one, a loop over whole tiles of the static extent `ts` followed by one edge tile with the run-time remainder, which may be empty.
+/// - `Switch d c small big`    : `small` where axis `d` has fewer than `c` iterations, `big` elsewhere.
+///
+/// `sched_par`, `sched_seq` and `sched_peel` build splits; `sched_par` cuts several axes, the first outermost.
 ///
 /// `run_levels` takes each axis' static bound `cap0` and whether its extent is a run-time value `dyn0`.
-/// A run-time axis must be split by a `Seq` or `Peel` before a `Pack` or `Leaf` sizes anything by it; a `Leaf` with a run-time register extent computes an edge tile in a scratch tile.
+/// A run-time axis must be split by a `Loop` or `Peel` `Split` before a `Pack` or `Leaf` sizes anything by it; a `Leaf` with a run-time register extent computes an edge tile in a scratch tile.
 
 anx fun take {T: *} (_ x: T)@tt: T = return x;
 
-/// The `cap` of a run-time extent without a static bound; panels and edge tiles need a smaller one from a `Seq` or `Peel`.
+/// The `cap` of a run-time extent without a static bound; panels and edge tiles need a smaller one from a `Split`.
 anx let levels_unbounded = 1099511627776;
 
 lam levels_steps {X: *} (n: Nat) (m: mem.M 0, x: X)
@@ -1901,27 +1902,38 @@ lam levels_pack_one {T: *, Rn: Nat} (r: Nat) (s: «r; Nat»)
               affine.op.add (q#j, affine.semiop.floordiv (od, w)))#(k == d))#(k < Rn)›;
     (m, sp, p, to);
 
+/// How a `Split` runs the tail of its axis.
+/// `Fixed` needs a static extent and peels its tail statically; `Loop` counts the tiles at run time, so its body is unfolded once;
+/// `Peel` is `Fixed` on a static extent, and on a run-time one a loop over whole tiles followed by one edge tile, which may be empty.
+anx nom SplitMode =
+    | Fixed: []
+    | Loop:  []
+    | Peel:  [];
+
 anx nom SchedTree (N Rn: Nat) =
-    | Leaf: Nat
-    | Par:  [sizes: «Rn; Nat», body: SchedTree (N, Rn)]
-    | Pack: [d w: Nat, slot: Idx N, dep: «Rn; Bool», body: SchedTree (N, Rn)]
-    | Seq:  [d ts: Nat, body: SchedTree (N, Rn)]
-    | Peel: [d ts: Nat, body: SchedTree (N, Rn)]
-    | Stage: [slot: Idx N, body: SchedTree (N, Rn)]
+    | Leaf:   Nat
+    | Split:  [d ts: Nat, mode: SplitMode, body: SchedTree (N, Rn)]
+    | Pack:   [d w: Nat, slot: Idx N, dep: «Rn; Bool», body: SchedTree (N, Rn)]
+    | Stage:  [slot: Idx N, body: SchedTree (N, Rn)]
     | Switch: [d c: Nat, small big: SchedTree (N, Rn)];
 
 anx lam sched_leaf {N Rn: Nat} (vdim: Nat): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Leaf vdim;
+anx lam sched_split {N Rn: Nat} (d ts: Nat, mode: SplitMode, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
+    (SchedTree (N, Rn))#Split (d, ts, mode, body);
+/// Cuts every axis `d` with `sizes#d` other than 0 into tiles of that size, the first axis outermost.
 anx lam sched_par {N Rn: Nat} (sizes: «Rn; Nat», body: SchedTree (N, Rn)): SchedTree (N, Rn) =
-    (SchedTree (N, Rn))#Par (sizes, body);
+    vec.fold.r @(SchedTree (N, Rn), Idx Rn) @Rn
+        (λ (d: Idx Rn, t: SchedTree (N, Rn)): SchedTree (N, Rn) =
+            (t, sched_split @(N, Rn) (core.idx2nat d, sizes#d, SplitMode#Fixed, t))#(core.ncmp.ne (sizes#d, 0))) (‹d: Rn; d›, body);
 anx lam sched_pack {N Rn: Nat} (d w: Nat, slot: Idx N, dep: «Rn; Bool», body: SchedTree (N, Rn)): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Pack (d, w, slot, dep, body);
 
 anx lam sched_seq {N Rn: Nat} (d ts: Nat, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
-    (SchedTree (N, Rn))#Seq (d, ts, body);
+    sched_split @(N, Rn) (d, ts, SplitMode#Loop, body);
 
 anx lam sched_peel {N Rn: Nat} (d ts: Nat, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
-    (SchedTree (N, Rn))#Peel (d, ts, body);
+    sched_split @(N, Rn) (d, ts, SplitMode#Peel, body);
 
 anx lam sched_stage {N Rn: Nat} (slot: Idx N, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Stage (slot, body);
@@ -1929,29 +1941,26 @@ anx lam sched_stage {N Rn: Nat} (slot: Idx N, body: SchedTree (N, Rn)): SchedTre
 anx lam sched_switch {N Rn: Nat} (d c: Nat, small big: SchedTree (N, Rn)): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Switch (d, c, small, big);
 
-/// The tree of an IREE-style `lowering_config`: one `Par` per level, outermost first, each cutting every loop by its tile size
+/// The tree of an IREE-style `lowering_config`: one `sched_par` per level, outermost first, each cutting every loop by its tile size
 /// (0 leaves a loop whole), over a `Leaf vdim`.
 anx lam sched_levels {N Rn L: Nat} (levels: «L; «Rn; Nat»», vdim: Nat): SchedTree (N, Rn) =
     vec.fold.r @(SchedTree (N, Rn), «Rn; Nat») @L
         (λ (sizes: «Rn; Nat», t: SchedTree (N, Rn)): SchedTree (N, Rn) = sched_par @(N, Rn) (sizes, t)) (levels, sched_leaf @(N, Rn) vdim);
 
 
-/// One function per kind of `SchedTree` node in constructor order (`Leaf`, `Par`, `Pack`, `Seq`, `Peel`, `Stage`, `Switch`),
+/// One function per kind of `SchedTree` node in constructor order (`Leaf`, `Split`, `Pack`, `Stage`, `Switch`),
 /// each given its fields with the subtrees already folded into `R`.
 anx lam SchedAlg (N Rn: Nat, R: *): * =
-    [Nat → R, [«Rn; Nat», R] → R, [Nat, Nat, Idx N, «Rn; Bool», R] → R, [Nat, Nat, R] → R, [Nat, Nat, R] → R,
-     [Idx N, R] → R, [Nat, Nat, R, R] → R];
+    [Nat → R, [Nat, Nat, SplitMode, R] → R, [Nat, Nat, Idx N, «Rn; Bool», R] → R, [Idx N, R] → R, [Nat, Nat, R, R] → R];
 
 /// Folds `t` bottom-up with `alg`.
 anx lam sched_fold {N Rn: Nat, R: *} (alg: SchedAlg (N, Rn, R)) (t: SchedTree (N, Rn))@(core.pe.is_closed t): R =
-    let (leaf, par, pack, seq, peel, stage, switch) = alg;
+    let (leaf, split, pack, stage, switch) = alg;
     let go = λ (b: SchedTree (N, Rn)): R = sched_fold @(N, Rn, R) alg b;
     match t with
         | Leaf v   => leaf v
-        | Par n    => par (n#sizes, go (n#body))
+        | Split n  => split (n#d, n#ts, n#mode, go (n#body))
         | Pack n   => pack (n#d, n#w, n#slot, n#dep, go (n#body))
-        | Seq n    => seq (n#d, n#ts, go (n#body))
-        | Peel n   => peel (n#d, n#ts, go (n#body))
         | Stage n  => stage (n#slot, go (n#body))
         | Switch n => switch (n#d, n#c, go (n#small), go (n#big));
 
@@ -1959,34 +1968,29 @@ anx lam sched_fold {N Rn: Nat, R: *} (alg: SchedAlg (N, Rn, R)) (t: SchedTree (N
 anx lam sched_rebuild {N Rn: Nat} (_: []): SchedAlg (N, Rn, SchedTree (N, Rn)) =
     let T = SchedTree (N, Rn);
     (λ (v: Nat): T = T#Leaf v,
-     λ (sizes: «Rn; Nat», b: T): T = T#Par (sizes, b),
+     λ (d ts: Nat, mode: SplitMode, b: T): T = T#Split (d, ts, mode, b),
      λ (d w: Nat, slot: Idx N, dep: «Rn; Bool», b: T): T = T#Pack (d, w, slot, dep, b),
-     λ (d ts: Nat, b: T): T = T#Seq (d, ts, b),
-     λ (d ts: Nat, b: T): T = T#Peel (d, ts, b),
      λ (slot: Idx N, b: T): T = T#Stage (slot, b),
      λ (d c: Nat, small big: T): T = T#Switch (d, c, small, big));
 
 /// `t` without the packs of `slot`.
 anx lam sched_unpack {N Rn: Nat} (slot: Idx N) (t: SchedTree (N, Rn)): SchedTree (N, Rn) =
     let T = SchedTree (N, Rn);
-    let (leaf, par, pack, seq, peel, stage, switch) = sched_rebuild @(N, Rn) ();
+    let (leaf, split, pack, stage, switch) = sched_rebuild @(N, Rn) ();
     let keep = λ (d w: Nat, s: Idx N, dep: «Rn; Bool», b: T): T = (pack (d, w, s, dep, b), b)#(core.icmp.e (s, slot));
-    sched_fold @(N, Rn, T) (leaf, par, keep, seq, peel, stage, switch) t;
+    sched_fold @(N, Rn, T) (leaf, split, keep, stage, switch) t;
 
-/// `t` with every split of loop `d` (`Par`, `Seq`, `Peel`) at tile size `ts`.
+/// `t` with every split of loop `d` at tile size `ts`.
 anx lam sched_retile {N Rn: Nat} (d ts: Nat) (t: SchedTree (N, Rn)): SchedTree (N, Rn) =
     let T  = SchedTree (N, Rn);
-    let (leaf, par, pack, seq, peel, stage, switch) = sched_rebuild @(N, Rn) ();
-    let at = λ (e o: Nat): Nat = core.select (e == d, ts, o);
-    let par2  = λ (sizes: «Rn; Nat», b: T): T = par (‹e: Rn; core.select (sizes#e == 0, 0, at (core.idx2nat e, sizes#e))›, b);
-    let seq2  = λ (e o: Nat, b: T): T = seq (e, at (e, o), b);
-    let peel2 = λ (e o: Nat, b: T): T = peel (e, at (e, o), b);
-    sched_fold @(N, Rn, T) (leaf, par2, pack, seq2, peel2, stage, switch) t;
+    let (leaf, split, pack, stage, switch) = sched_rebuild @(N, Rn) ();
+    let split2 = λ (e o: Nat, mode: SplitMode, b: T): T = split (e, core.select (e == d, ts, o), mode, b);
+    sched_fold @(N, Rn, T) (leaf, split2, pack, stage, switch) t;
 
-/// `t` with each `Leaf vdim` replaced by `g vdim`, e.g. a register tile `Par` above it.
+/// `t` with each `Leaf vdim` replaced by `g vdim`, e.g. a register tile above it.
 anx lam sched_at_leaves {N Rn: Nat} (g: Nat → SchedTree (N, Rn)) (t: SchedTree (N, Rn)): SchedTree (N, Rn) =
-    let (_, par, pack, seq, peel, stage, switch) = sched_rebuild @(N, Rn) ();
-    sched_fold @(N, Rn, SchedTree (N, Rn)) (g, par, pack, seq, peel, stage, switch) t;
+    let (_, split, pack, stage, switch) = sched_rebuild @(N, Rn) ();
+    sched_fold @(N, Rn, SchedTree (N, Rn)) (g, split, pack, stage, switch) t;
 
 /// `t` with each leaf cut by the levels of `sched_levels` first.
 anx lam sched_with_levels {N Rn L: Nat} (levels: «L; «Rn; Nat»») (t: SchedTree (N, Rn)): SchedTree (N, Rn) =
@@ -1996,8 +2000,8 @@ anx lam sched_with_levels {N Rn L: Nat} (levels: «L; «Rn; Nat»») (t: SchedTr
 anx lam sched_size {N Rn: Nat} (t: SchedTree (N, Rn)): Nat =
     let one = λ (n: Nat): Nat = core.nat.add (n, 1);
     sched_fold @(N, Rn, Nat)
-        (λ (_: Nat): Nat = 1, λ (_: «Rn; Nat», b: Nat): Nat = one b, λ (_: Nat, _: Nat, _: Idx N, _: «Rn; Bool», b: Nat): Nat = one b,
-         λ (_: Nat, _: Nat, b: Nat): Nat = one b, λ (_: Nat, _: Nat, b: Nat): Nat = one b, λ (_: Idx N, b: Nat): Nat = one b,
+        (λ (_: Nat): Nat = 1, λ (_: Nat, _: Nat, _: SplitMode, b: Nat): Nat = one b,
+         λ (_: Nat, _: Nat, _: Idx N, _: «Rn; Bool», b: Nat): Nat = one b, λ (_: Idx N, b: Nat): Nat = one b,
          λ (_: Nat, _: Nat, a: Nat, b: Nat): Nat = one (core.nat.add (a, b))) t;
 
 /// `run_levels` whose slots may be producers: a `Stage slot` node computes only the box of the producer that the loops below it read.
@@ -2102,7 +2106,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         let edge  = core.select (blk vdim, tt, blk (vdim + 1));
         let held  = vec.fold.r @(Bool, Idx Rn) @Rn
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, core.select (cap#d < levels_unbounded, acc, ff), acc)) (‹d: Rn; d›, tt);
-        let edge  = refly.check (core.select (edge, held, tt), edge, "SchedTree: a Leaf computes an edge tile of a run-time extent that no Seq or Peel bounds");
+        let edge  = refly.check (core.select (edge, held, tt), edge, "SchedTree: a Leaf computes an edge tile of a run-time extent that no Split bounds");
         let plain = (λ (_: []): [mem.M 0, D] = run (So, dst, out, size, m), edged)#edge;
         let (m, dst) = ((plain, rfactor)#(core.select (red_v, core.select (blk vdim, ff, tt), ff))) ();
         // The leaf that ends the reduction of its cells maps them by `post` while they are still in cache.
@@ -2124,7 +2128,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             let (axes, vs, m, dst) = st;
             let a     = axes#d;
             let n     = refly.check ((tt, core.select (rt_tail, tt, peel))#(a#dyn), a#size,
-                "SchedTree: a Par axis cannot have a run-time extent from an enclosing Seq");
+                "SchedTree: a Fixed Split needs an axis with a static extent");
             let full  = core.nat.div (n, ts);
             let tail  = core.nat.rem (n, ts);
             let bound = core.select (a#cap < ts, a#cap, ts);
@@ -2136,7 +2140,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                 let vs2 = levels_seq @N @Views (‹i: N; λ (acc: Views): Views =
                     let v  = vs#i;
                     let u  = (v#unit)#d;
-                    let per = refly.check (core.nat.rem (ts, u) == 0, core.nat.div (ts, u), "SchedTree: a Par must split a packed axis into whole panels");
+                    let per = refly.check (core.nat.rem (ts, u) == 0, core.nat.div (ts, u), "SchedTree: a Split must cut a packed axis into whole panels");
                     let q2 = ‹e: Rn; ((v#q)#e, affine.op.add ((v#q)#e, affine.semiop.mul (affine.lit t, per)))#(core.icmp.e (e, d))›;
                     acc#i ← (v#r, v#s, v#unit, q2, v#at, xs#i, v#aff, v#prod, v#reads) inj LevelsView (Rn, Ts#i)›, vs);
                 let (m, dst) = k (axes#d ← (core.nat.add (a#lo, core.nat.mul (t, ts)), ext, cap, dyn, part), vs2, m, dst);
@@ -2164,15 +2168,11 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                         let left = core.nat.sub (n, core.nat.mul (t, ts));
                         tile (k, t, core.select (left < ts, left, ts), bound, tt) (m, x))
                     (λ (s: [mem.M 0, X]): [mem.M 0, X] = s);
-            // A run-time extent counts its tiles unless peeled; a static one only for a Seq with whole tiles and a tail.
+            // A run-time extent counts its tiles unless peeled; a static one only for a `Loop` with whole tiles and a tail.
             let count = (core.bit2.and 2 (rt_tail, core.bit2.and 2 (core.ncmp.ne (full, 0), core.ncmp.ne (tail, 0))), (tt, ff)#peel)#(a#dyn);
             let (m, (dst, _)) = (((λ (k: Body): [mem.M 0, X] = wholes (k, tail_static k),
                                    λ (k: Body): [mem.M 0, X] = wholes (k, tail_branch k))#(a#dyn), counted)#count) k;
             (m, dst);
-
-    let step_par = λ (sizes: «Rn; Nat», k: Body): Body =
-        vec.fold.r @(Body, Idx Rn) @Rn
-            (λ (d: Idx Rn, k: Body): Body = (k, split_serial (ff, ff, d, sizes#d, k))#(core.ncmp.ne (sizes#d, 0))) (‹d: Rn; d›, k);
 
     let step_pack = λ (d w: Nat, slot: Idx N, dep: «Rn; Bool», k: Body): Body =
         λ (st: State): [mem.M 0, D] =
@@ -2185,7 +2185,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             let data = refly.check (levels_ready (v#prod), v#data, "SchedTree: a Pack reads a producer slot that no Stage above it computes");
             let held = vec.fold.r @(Bool, Idx Rn) @Rn
                 (λ (e: Idx Rn, acc: Bool): Bool = core.select (core.select (dep#e, tt, core.idx2nat e == d), core.select (cap#e < levels_unbounded, acc, ff), acc)) (‹e: Rn; e›, tt);
-            let cap  = refly.check (held, cap, "SchedTree: a Pack sizes its panel by a run-time extent that no Seq or Peel bounds");
+            let cap  = refly.check (held, cap, "SchedTree: a Pack sizes its panel by a run-time extent that no Split bounds");
             let (m, sp, p, to) = levels_pack_one @(Ts#slot, Rn) (v#r) (v#s) (v#at) data (d, w, dep, v#q, size, cap, dyn_ax#(core.idx 0 Rn d), m);
             let unit = ‹e: Rn; (1, w)#(core.idx2nat e == d)›;
             let none = aff_map @(Rn, Rp, 0) ((), ‹Rp; aff_lit @(Rn, 0) 0›);
@@ -2250,16 +2250,15 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
                         (λ (d: Idx Rn, acc: Bool): Bool = core.select (Ro < core.idx2nat d, core.select ((st#axes#d)#part, ff, acc), acc)) (‹d: Rn; d›, tt);
                     let ordered = core.select (0 < lanes, tt, ordered);
                     step_leaf (vdim, refly.check (ordered, st, "SchedTree: only the first reduction loop may be split when the combiner has no merge"))
-            | Par  n    => step_par  (n#sizes, eval (n#body))
+            | Split n   =>
+                let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Split needs an axis below Rn");
+                let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Split needs a positive tile size");
+                let (rt_tail, peel) = match n#mode with
+                    | Fixed _ => (ff, ff)
+                    | Loop _  => (tt, ff)
+                    | Peel _  => (ff, tt);
+                split_serial (rt_tail, peel, ax, ts, eval (n#body))
             | Pack n    => step_pack (n#d, n#w, n#slot, n#dep, eval (n#body))
-            | Seq  n    =>
-                let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Seq needs an axis below Rn");
-                let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Seq needs a positive tile size");
-                split_serial (tt, ff, ax, ts, eval (n#body))
-            | Peel n    =>
-                let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Peel needs an axis below Rn");
-                let ts = refly.check (0 < n#ts, n#ts, "SchedTree: a Peel needs a positive tile size");
-                split_serial (ff, tt, ax, ts, eval (n#body))
             | Stage n   => step_stage (n#slot, eval (n#body))
             | Switch n  =>
                 let ax = refly.check (n#d < Rn, core.idx 0 Rn (n#d), "SchedTree: a Switch needs an axis below Rn");

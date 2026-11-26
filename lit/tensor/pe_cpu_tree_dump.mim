@@ -2,13 +2,13 @@
 
 // The schedule tree run_levels interprets, one node per line at -VVVV.
 // CHECK:      schedule tree:
-// CHECK-NEXT: Par (0, 240, 0)
-// CHECK-NEXT:   Seq 2, 128
+// CHECK-NEXT: Split 1, 240, Fixed
+// CHECK-NEXT:   Split 2, 128, Loop
 // CHECK-NEXT:     Pack 1, 16, tt, (ff, tt, tt)
-// CHECK-NEXT:       Par (64, 0, 0)
+// CHECK-NEXT:       Split 0, 64, Fixed
 // CHECK-NEXT:         Pack 0, 4, ff, (tt, ff, tt)
-// CHECK-NEXT:           Par (4, 0, 0)
-// CHECK-NEXT:             Par (0, 16, 0)
+// CHECK-NEXT:           Split 0, 4, Fixed
+// CHECK-NEXT:             Split 1, 16, Fixed
 // CHECK-NEXT:               Leaf 0
 plugin tensor;
 plugin core;

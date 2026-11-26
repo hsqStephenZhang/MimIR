@@ -449,9 +449,10 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
 
 namespace {
 
-/// A `tensor.SchedTree` as one indented node per line, e.g. `Par (8, 0, 7)` above `Stage 0` above `Leaf 1`.
+/// A `tensor.SchedTree` as one indented node per line, e.g. `Split 0, 8, Fixed` above `Stage 0` above `Leaf 1`.
 void show_tree(std::string& out, const Def* tree, size_t depth) {
-    static constexpr std::array names = {"Leaf", "Par", "Pack", "Seq", "Peel", "Stage", "Switch"};
+    static constexpr std::array names = {"Leaf", "Split", "Pack", "Stage", "Switch"};
+    static constexpr std::array modes = {"Fixed", "Loop", "Peel"};
     auto indent                       = std::string(2 * depth, ' ');
     auto name                         = tree->isa<Name>();
     auto inj                          = name ? name->op()->isa<Inj>() : nullptr;
@@ -463,7 +464,12 @@ void show_tree(std::string& out, const Def* tree, size_t depth) {
         auto arg  = inj->value();
         auto n    = arg->num_projs();
         auto kids = inj->index() == names.size() - 1 ? 2_u64 : 1_u64;
-        auto args = DefVec(n - kids, [&](size_t i) { return arg->proj(n, i); });
+        auto args = std::vector<std::string>(n - kids);
+        for (size_t i = 0; i != n - kids; ++i) {
+            auto field = arg->proj(n, i);
+            auto mode  = field->isa<Name>() ? field->as<Name>()->op()->isa<Inj>() : nullptr;
+            args[i]    = mode && mode->index() < modes.size() ? modes[mode->index()] : std::format("{}", field);
+        }
         out += std::format("{}{} {}\n", indent, names[inj->index()], fe::Join(args, ", "));
         for (auto i = n - kids; i != n; ++i)
             show_tree(out, arg->proj(n, i), depth + 1);
@@ -652,7 +658,7 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto plan = PeCpu{};
     if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
     log().i("tile the contraction over {} with tensor.run_levels", mr.Sr);
-    // A run-time extent has no static bound until a `Seq` gives it one; the sentinel only loses every `min`.
+    // A run-time extent has no static bound until a `Split` gives it one; the sentinel only loses every `min`.
     u64 rn      = ranks->nloops();
     auto extent = [&](size_t d) { return Lit::isa(mr.Sr->proj(rn, d)); };
     auto sizes  = w.tuple(DefVec(rn, [&](size_t d) { return w.lit_nat(extent(d).value_or(0)); }));
