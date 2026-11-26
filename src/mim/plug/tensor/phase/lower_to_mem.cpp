@@ -451,7 +451,7 @@ namespace {
 
 /// A `tensor.SchedTree` as one indented node per line, e.g. `Split 0, 8, Fixed` above `Stage 0` above `Leaf 1`.
 void show_tree(std::string& out, const Def* tree, size_t depth) {
-    static constexpr std::array names = {"Leaf", "Split", "Pack", "Stage", "Switch"};
+    static constexpr std::array names = {"Leaf", "Split", "Reduce", "Pack", "Stage", "Switch"};
     static constexpr std::array modes = {"Fixed", "Loop", "Peel"};
     auto indent                       = std::string(2 * depth, ' ');
     auto name                         = tree->isa<Name>();

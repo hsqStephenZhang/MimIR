@@ -130,3 +130,29 @@ lam probe_edge_unbounded (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.
         ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)
         (tensor.sched_leaf @(2, 3) 0, (tensor.levels_unbounded, 16, 4), (tt, ff, ff))
         (m, (a, b));
+
+// A Reduce keeps partial results along the reduction loop its Leaf vectorizes, which only a combiner with a merge joins.
+// CHECK: SchedTree: a Reduce needs a reduction loop
+lam probe_reduce_out (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
+        ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)
+        (tensor.sched_reduce @(2, 3) (0, 4, tensor.sched_leaf @(2, 3) 0), (4, 16, 4), (ff, ff, ff))
+        (m, (a, b));
+// CHECK: SchedTree: a Reduce needs at least two partial results
+lam probe_reduce_one (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
+        ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)
+        (tensor.sched_reduce @(2, 3) (2, 1, tensor.sched_leaf @(2, 3) 2), (4, 16, 4), (ff, ff, ff))
+        (m, (a, b));
+// CHECK: SchedTree: a Reduce must split the loop its Leaf vectorizes
+lam probe_reduce_vdim (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
+        ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)
+        (tensor.sched_reduce @(2, 3) (2, 4, tensor.sched_leaf @(2, 3) 1), (4, 16, 4), (ff, ff, ff))
+        (m, (a, b));
+// CHECK: SchedTree: a Reduce needs a combiner with a merge
+lam probe_reduce_merge (m: mem.M 0, a: buffer.Buf (2, (4, 4), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
+    tensor.run_levels @(2, F32, 2, 3, (F32, F32), (2, 2), ((4, 4), (4, 16)))
+        ((4, 16), (4, 16, 4)) (mac, 0:F32) (λ (o: «3; affine.Index»): «2; affine.Index» = (o#0₃, o#1₃)) (ik, kj)
+        (tensor.sched_reduce @(2, 3) (2, 4, tensor.sched_leaf @(2, 3) 2), (4, 16, 4), (ff, ff, ff))
+        (m, (a, b));

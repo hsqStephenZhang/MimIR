@@ -33,7 +33,8 @@
 // FUSE-NEXT:       Leaf 2
 // RFAC: tile the map-reduce over (5, 7, 48)
 // RFAC-NEXT: schedule tree:
-// RFAC-NEXT: Leaf 2
+// RFAC-NEXT: Reduce 2, 16
+// RFAC-NEXT:   Leaf 2
 plugin tensor;
 plugin core;
 plugin math;
