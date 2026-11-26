@@ -10,10 +10,10 @@
 
 // A gather is a producer whose boxes read the source through the same box of the index, so a run_levels consumer stages its rows.
 // CHECK: tile the contraction over (37, 19, 24) with tensor.run_levels
-// CHECK-NEXT: fuse the gather of (37, 24) into its consumer
+// CHECK: fuse the gather of (37, 24) into its consumer
 // CHECK: Stage 0
 // CHECK: fuse the gather of (37, 24) into its consumer
-// CHECK-NEXT: tile the map-reduce over (37, 24) with tensor.run_levels
+// CHECK: tile the map-reduce over (37, 24) with tensor.run_levels
 // CHECK-NEXT: schedule tree:
 // CHECK-NEXT: Alloc 0
 // CHECK-NEXT:   Split 0, 1365, Peel

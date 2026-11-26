@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 
 #include <fe/worklist.h>
 
@@ -210,5 +211,22 @@ DefMap<u64> count_consumers(const World& world, std::predicate<const Def*> auto 
 
     return counts;
 }
+
+/// A tuple by its elements, since a tuple of equal elements would print as a pack.
+std::string show_elems(const Def* def, size_t n);
+
+/// Appends a `tensor.SchedTree` as one indented node per line, e.g. `Split 0, 8, Fixed` above `Stage 0` above `Leaf 1`.
+void show_tree(std::string& out, const Def* tree, size_t depth);
+
+/// The state `tensor.run_levels` starts a tree in, as the line that `proofs/sched` checks the tree against.
+std::string show_root(const Def* ro,
+                      const Def* lanes,
+                      const Def* sizes,
+                      const Def* caps,
+                      const Def* dyn,
+                      const Def* fuse,
+                      const Def* reads,
+                      size_t rn,
+                      size_t nis);
 
 } // namespace mim::plug::tensor

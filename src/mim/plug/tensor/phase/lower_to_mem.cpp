@@ -446,34 +446,17 @@ const Def* LowerToMem::lower_broadcast(const App* app) {
 
 namespace {
 
-/// A `tensor.SchedTree` as one indented node per line, e.g. `Split 0, 8, Fixed` above `Stage 0` above `Leaf 1`.
-void show_tree(std::string& out, const Def* tree, size_t depth) {
-    static constexpr std::array names = {"Leaf", "Split", "Reduce", "Pack", "Stage", "Alloc", "Switch"};
-    static constexpr std::array modes = {"Fixed", "Loop", "Peel"};
-    auto indent                       = std::string(2 * depth, ' ');
-    auto name                         = tree->isa<Name>();
-    auto inj                          = name ? name->op()->isa<Inj>() : nullptr;
-    if (!inj || inj->index() >= names.size()) {
-        out += std::format("{}{}\n", indent, tree);
-    } else if (inj->index() == 0) {
-        out += std::format("{}Leaf {}\n", indent, inj->value());
-    } else {
-        auto arg  = inj->value();
-        auto n    = arg->num_projs();
-        auto kids = inj->index() == names.size() - 1 ? 2_u64 : 1_u64;
-        auto args = std::vector<std::string>(n - kids);
-        for (size_t i = 0; i != n - kids; ++i) {
-            auto field = arg->proj(n, i);
-            auto mode  = field->isa<Name>() ? field->as<Name>()->op()->isa<Inj>() : nullptr;
-            auto lit   = Lit::isa(field);
-            args[i]    = mode && mode->index() < modes.size() ? std::string(modes[mode->index()])
-                       : lit                                  ? std::to_string(*lit)
-                                                              : std::format("{}", field);
-        }
-        out += std::format("{}{} {}\n", indent, names[inj->index()], fe::Join(args, ", "));
-        for (auto i = n - kids; i != n; ++i)
-            show_tree(out, arg->proj(n, i), depth + 1);
-    }
+/// What each slot reads, by `tensor.aff_reads`.
+const Def* reads_of(World& w, const Def* Rn, const Def* Ris, const Def* maps, size_t nis) {
+    // Evaluating `aff_reads` would log between the lines that tests match in order.
+    auto& log  = w.driver().log();
+    auto level = log.level();
+    log.set(fe::Log::Level::Error);
+    auto reads = w.tuple(DefVec(nis, [&](size_t i) {
+        return w.app(w.app(w.annex<tensor::aff_reads>(), {Rn, Ris->proj(nis, i)}), maps->proj(nis, i));
+    }));
+    log.set(level);
+    return reads;
 }
 
 } // namespace
@@ -543,7 +526,7 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
 
     // A contraction is tiled by `cpu_tree`, any other map-reduce by `generic_tree`; either may fuse producers of its
     // own.
-    const Def *maps, *xs, *sis, *prods, *tree_of;
+    const Def *maps, *xs, *sis, *prods, *tree_of, *fuse;
     auto plan        = PeCpu{};
     auto gen         = PeGeneric{};
     auto contraction = pe_cpu_plan(c, &plan) == w.lit_tt();
@@ -552,19 +535,26 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
     if (contraction && (uses_[input] != 1 || w.app(w.app(w.annex<tensor::aff_linear>(), {Rn, r}), map) != w.lit_tt()))
         return {};
     if (contraction) {
-        const Def* fuse;
         std::tie(xs, sis, prods, fuse) = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, true);
         maps                           = plan.maps;
         tree_of                        = w.app(w.app(w.annex<tensor::cpu_tree_at>(), {mr.Rn, mr.Ro}),
                                                {w.lit_nat(plan.bytes), plan.a, plan.dep, plan.unit_b, fuse});
     } else if (pe_generic_plan(c, &gen)) {
-        const Def* fuse;
         std::tie(xs, sis, prods, fuse) = generic_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, gen.maps);
         maps                           = gen.maps;
         tree_of = w.app(w.app(w.annex<tensor::generic_tree>(), {mr.nis, mr.Rn, mr.Ro}),
                         {gen.red_unit, gen.out_unit, gen.wdim, gen.rdim, w.lit_nat_0(), gen.bytes, gen.outer, fuse});
     } else {
         return {};
+    }
+    // Only partial evaluation knows the box a `Stage` asks the producer for, so its tree shows itself there.
+    if (log().level() >= fe::Log::Level::Verbose) {
+        auto shown = w.mut_lam(tree_of->type()->as<Pi>())->set("tree_of");
+        auto show  = w.app(w.annex<tensor::sched_show>(), {mr.nis, mr.Rn});
+        auto tree  = w.app(tree_of, shown->var());
+        auto reads = reads_of(w, mr.Rn, mr.Ris, maps, nis);
+        shown->set(true, w.app(show, {mr.Ro, shown->var(2, 0), shown->var(2, 1), fuse, reads, tree}));
+        tree_of = shown;
     }
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
@@ -679,7 +669,10 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     if (log().level() >= fe::Log::Level::Verbose) {
         auto text = std::string();
         show_tree(text, tree, 0);
-        log().v("schedule tree:\n{}", text);
+        log().v(
+            "schedule tree: {}\n{}",
+            show_root(mr.Ro, w.lit_nat_0(), sizes, caps, dyn, fuse, reads_of(w, mr.Rn, mr.Ris, plan.maps, 2), rn, 2),
+            text);
     }
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
@@ -785,7 +778,9 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     if (log().level() >= fe::Log::Level::Verbose) {
         auto text = std::string();
         show_tree(text, tree, 0);
-        log().v("schedule tree:\n{}", text);
+        log().v("schedule tree: {}\n{}",
+                show_root(mr.Ro, lanes, mr.Sr, mr.Sr, dyn, fuse, reads_of(w, mr.Rn, mr.Ris, plan.maps, nis), rn, nis),
+                text);
     }
 
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();

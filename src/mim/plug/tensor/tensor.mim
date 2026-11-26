@@ -1930,6 +1930,11 @@ anx nom SchedTree (N Rn: Nat) =
     | Alloc:  [slot: Idx N, body: SchedTree (N, Rn)]
     | Switch: [d c: Nat, small big: SchedTree (N, Rn)];
 
+/// Yields `tree` once its root state is static, and logs it with that state.
+/// `LowerToMem` wraps the tree of a fused producer in it at `-VVVV`, where only partial evaluation knows the box.
+axm sched_show: {N Rn: Nat} → [ro: Nat, caps: «Rn; Nat», dyn: «Rn; Bool», fuse: «N; Nat», reads: «N; «Rn; Bool»», tree: SchedTree (N, Rn)]
+              → SchedTree (N, Rn), normalize_sched_show;
+
 anx lam sched_leaf {N Rn: Nat} (vdim: Nat): SchedTree (N, Rn) =
     (SchedTree (N, Rn))#Leaf vdim;
 anx lam sched_split {N Rn: Nat} (d ts: Nat, mode: SplitMode, body: SchedTree (N, Rn)): SchedTree (N, Rn) =
@@ -2194,6 +2199,14 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
         let held  = vec.fold.r @(Bool, Idx Rn) @Rn
             (λ (d: Idx Rn, acc: Bool): Bool = core.select (core.idx2nat d < Ro, core.select (cap#d < levels_unbounded, acc, ff), acc)) (‹d: Rn; d›, tt);
         let edge  = refly.check (core.select (edge, held, tt), edge, "SchedTree: a Leaf computes an edge tile of a run-time extent that no Split bounds");
+        // Without a slot's own buffer, an edge tile reads up to `cap` of its run-time output loops, which stays in the panel it starts in if that is as wide.
+        let owned = vec.fold.r @(Bool, Idx N) @N (λ (i: Idx N, acc: Bool): Bool = core.select ((vs#i)#own, tt, acc)) (‹i: N; i›, ff);
+        let wide  = vec.fold.r @(Bool, Idx N) @N
+            (λ (i: Idx N, acc: Bool): Bool = vec.fold.r @(Bool, Idx Rn) @Rn
+                (λ (d: Idx Rn, acc: Bool): Bool =
+                    core.select (core.select (core.idx2nat d < Ro, core.select (dyn_ax#d, ((vs#i)#reads)#d, ff), ff),
+                                 core.select (((vs#i)#unit)#d < cap#d, ff, acc), acc)) (‹d: Rn; d›, acc)) (‹i: N; i›, tt);
+        let edge  = refly.check (core.select (edge, core.select (owned, tt, wide), tt), edge, "SchedTree: a Leaf computes an edge tile wider than a panel of a slot it reads along a run-time loop");
         let plain = (λ (_: []): [mem.M 0, D] = kernel (tt, So, dst, out, size, m), edge_tile)#edge;
         let (m, dst) = ((plain, rfactor)#(core.select (red_v, core.select (blk vdim, ff, tt), ff))) ();
         // The leaf that ends the reduction of its cells maps them by `epi` while they are still in cache.
@@ -2282,6 +2295,7 @@ anx lam run_levels_at {N: Nat, To: *, Ro Rn: Nat, Ts: «N; *», Rs: «N; Nat», 
             let v    = vs#slot;
             let same = vec.fold.r @(Bool, Idx Rn) @Rn (λ (e: Idx Rn, acc: Bool): Bool = core.select (core.icmp.e (dep#e, (v#reads)#e), acc, ff)) (‹e: Rn; e›, tt);
             let dep  = refly.check (same, dep, "SchedTree: a Pack's dep must be the loops its slot reads");
+            let dep  = refly.check ((v#reads)#(core.idx 0 Rn d), dep, "SchedTree: a Pack needs a loop its slot reads");
             let data = refly.check (levels_ready (v#prod), v#data, "SchedTree: a Pack reads a producer slot that no Stage above it computes");
             let held = vec.fold.r @(Bool, Idx Rn) @Rn
                 (λ (e: Idx Rn, acc: Bool): Bool = core.select (core.select (dep#e, tt, core.idx2nat e == d), core.select (cap#e < levels_unbounded, acc, ff), acc)) (‹e: Rn; e›, tt);

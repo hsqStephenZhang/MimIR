@@ -25,7 +25,7 @@
 // TRANS-NEXT:         Leaf 2
 // Softmax stages its maximum, read twice and so computed in both consumers, and its sum per band of rows.
 // FUSE-COUNT-3: fuse the map-reduce over (37, 53) into its consumer
-// FUSE-NEXT: tile the map-reduce over (37, 53) with tensor.run_levels
+// FUSE: tile the map-reduce over (37, 53) with tensor.run_levels
 // FUSE-NEXT: schedule tree:
 // FUSE-NEXT: Alloc 1
 // FUSE-NEXT:   Alloc 2

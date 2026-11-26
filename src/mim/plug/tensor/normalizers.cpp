@@ -1,13 +1,18 @@
 #include <algorithm>
 #include <array>
+#include <format>
+#include <string>
+#include <vector>
 
 #include <fe/format.h>
 
 #include <mim/check.h>
 #include <mim/def.h>
 #include <mim/driver.h>
+#include <mim/nom.h>
 #include <mim/plugin.h>
 #include <mim/tuple.h>
+#include <mim/variant.h>
 #include <mim/world.h>
 
 #include <mim/plug/affine/affine.h>
@@ -369,7 +374,8 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     if (ranks->ro < 2 || ranks->rr != 1 || ranks->nis != 2) return w.lit_ff();
     u64 ro = ranks->ro;
     u64 rn = ranks->nloops();
-    // Extents may be run-time values; `run_levels` splits those with `Loop` or `Peel` and computes edge tiles in scratch.
+    // Extents may be run-time values; `run_levels` splits those with `Loop` or `Peel` and computes edge tiles in
+    // scratch.
     if (!lit_projs(mr.Ris, 2)) return nullptr;
     for (u64 d = 0; d != rn; ++d)
         if (Lit::isa(mr.Sr->proj(rn, d)) == 0) return w.lit_ff();
@@ -573,6 +579,75 @@ const Def* normalize_cpu_knobs(const Def*, const Def* c, const Def*) {
     return w.tuple({w.lit_nat(vr.bytes), knob("group-registers", vr.count), knob("group-cache", 262144),
                     knob("cpu-mr", 0), knob("cpu-nr", 0), knob("cpu-mc", 0), knob("cpu-nc", 0), knob("cpu-kc", 0),
                     knob("cpu-order", 0), knob("cpu-dyn-k", 1), knob("cpu-pack-b", 0), knob("cpu-conv", 0)});
+}
+
+/// A tuple by its elements, since a tuple of equal elements would print as a pack.
+std::string show_elems(const Def* def, size_t n) {
+    return std::format("({})", fe::Join(DefVec(n, [&](size_t i) { return def->proj(n, i); }), ", "));
+}
+
+/// A `tensor.SchedTree` as one indented node per line, e.g. `Split 0, 8, Fixed` above `Stage 0` above `Leaf 1`.
+void show_tree(std::string& out, const Def* tree, size_t depth) {
+    static constexpr std::array names = {"Leaf", "Split", "Reduce", "Pack", "Stage", "Alloc", "Switch"};
+    static constexpr std::array modes = {"Fixed", "Loop", "Peel"};
+    auto indent                       = std::string(2 * depth, ' ');
+    auto name                         = tree->isa<Name>();
+    auto inj                          = name ? name->op()->isa<Inj>() : nullptr;
+    if (!inj || inj->index() >= names.size()) {
+        out += std::format("{}{}\n", indent, tree);
+    } else if (inj->index() == 0) {
+        out += std::format("{}Leaf {}\n", indent, inj->value());
+    } else {
+        auto arg  = inj->value();
+        auto n    = arg->num_projs();
+        auto kids = inj->index() == names.size() - 1 ? 2_u64 : 1_u64;
+        auto args = std::vector<std::string>(n - kids);
+        for (size_t i = 0; i != n - kids; ++i) {
+            auto field = arg->proj(n, i);
+            auto mode  = field->isa<Name>() ? field->as<Name>()->op()->isa<Inj>() : nullptr;
+            auto lit   = Lit::isa(field);
+            auto elems = field->num_projs();
+            args[i]    = mode && mode->index() < modes.size() ? std::string(modes[mode->index()])
+                       : lit                                  ? std::to_string(*lit)
+                       : elems > 1                            ? show_elems(field, elems)
+                                                              : std::format("{}", field);
+        }
+        out += std::format("{}{} {}\n", indent, names[inj->index()], fe::Join(args, ", "));
+        for (auto i = n - kids; i != n; ++i)
+            show_tree(out, arg->proj(n, i), depth + 1);
+    }
+}
+
+std::string show_root(const Def* ro,
+                      const Def* lanes,
+                      const Def* sizes,
+                      const Def* caps,
+                      const Def* dyn,
+                      const Def* fuse,
+                      const Def* reads,
+                      size_t rn,
+                      size_t nis) {
+    auto slots = std::vector<std::string>(nis);
+    for (size_t i = 0; i != nis; ++i)
+        slots[i] = show_elems(reads->proj(nis, i), rn);
+    return std::format("ro {} lanes {} sizes {} caps {} dyn {} fuse {} reads {}", ro, lanes, show_elems(sizes, rn),
+                       show_elems(caps, rn), show_elems(dyn, rn), show_elems(fuse, nis), fe::Join(slots, " "));
+}
+
+const Def* normalize_sched_show(const Def*, const Def* callee, const Def* arg) {
+    auto& w                                 = arg->world();
+    auto [N, Rn]                            = callee->as<App>()->args<2>();
+    auto [ro, caps, dyn, fuse, reads, tree] = arg->projs<6>();
+    auto nis = Lit::isa(N), rn = Lit::isa(Rn);
+    if (!nis || !rn) return nullptr;
+    for (size_t d = 0; d != *rn; ++d)
+        if (!Lit::isa(caps->proj(*rn, d)) || !Lit::isa(dyn->proj(*rn, d))) return nullptr;
+    auto name = tree->isa<Name>();
+    if (!name || !name->op()->isa<Inj>()) return nullptr;
+    auto text = std::string();
+    show_tree(text, tree, 0);
+    w.log().v("schedule tree: {}\n{}", show_root(ro, w.lit_nat_0(), caps, caps, dyn, fuse, reads, *rn, *nis), text);
+    return tree;
 }
 
 MIM_tensor_NORMALIZER_IMPL
