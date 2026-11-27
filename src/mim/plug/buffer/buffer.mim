@@ -95,6 +95,12 @@ axm shift: [r: Nat, s: «r; Nat», T: *] as rsT → [Buf rsT, off: «i: r; Idx s
 axm copy: [r: Nat, s: «r; Nat», T: *] as rsT
         → [mem.M 0, dst src: Buf rsT] → mem.M 0;
 ///
+/// ### sync
+///
+/// `buf` once `m` holds what was written to it through another handle, so that whoever reads the result comes after those writes.
+///
+axm sync: [r: Nat, s: «r; Nat», T: *] as rsT → [mem.M 0, Buf rsT] → [mem.M 0, Buf rsT];
+///
 /// ### free
 ///
 /// Releases the buffer; the handle must not be used afterwards.

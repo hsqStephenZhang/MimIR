@@ -86,8 +86,9 @@ void FreeLocals::place(const Nest::Node* home, const Nest::Node* node, const Def
     if (deads.size() == chain.targets.size())
         frees_[chain.tail].emplace_back(alloc);
     else
+        // A function that returns is no edge: its return continuation is.
         for (auto target : deads)
-            edges_[chain.tail][target].emplace_back(alloc);
+            if (!Pi::isa_returning(target->type())) edges_[chain.tail][target].emplace_back(alloc);
 }
 
 bool FreeLocals::live(const Nest::Node* home, const Nest::Node* node, const Def* alloc) {

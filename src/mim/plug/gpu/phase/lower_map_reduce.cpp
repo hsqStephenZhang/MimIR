@@ -46,11 +46,17 @@ public:
     }
 
     const Def* rewrite(const Def* old_def) final {
-        if (auto mut = old_def->isa_mut(); mut && !old_lam_->nests(mut)) return mut;
+        // A function the body calls is moved as well if it takes the memory, which `mem.add_mem` may have added.
+        if (auto mut = old_def->isa_mut(); mut && !old_lam_->nests(mut) && !takes_mem(mut)) return mut;
         return Rewriter::rewrite(old_def);
     }
 
 private:
+    static bool takes_mem(const Def* mut) {
+        auto pi = Pi::isa_cn(mut->type());
+        return pi && std::ranges::any_of(pi->doms(), [](const Def* dom) { return mem::has_mem_ty(dom); });
+    }
+
     Lam* old_lam_;
 };
 
