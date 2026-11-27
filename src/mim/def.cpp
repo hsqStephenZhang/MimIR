@@ -525,14 +525,8 @@ Def::Cmp Def::cmp(const Def* a, const Def* b) {
 
     if (a->is_mutable()) return Cmp::U; // two distinct mutables of the same shape are incomparable
 
-    if (auto va = a->isa<Var>()) {
-        auto vb = b->as<Var>();
-        auto ma = va->binder();
-        auto mb = vb->binder();
-        if (ma->is_set() && ma->free_vars().contains(vb)) return Cmp::L;
-        if (mb->is_set() && mb->free_vars().contains(va)) return Cmp::G;
-        return Cmp::U;
-    }
+    // A Rewriter compares Vars of binders it is still filling, so nesting is read off creation order, not free_vars.
+    if (auto va = a->isa<Var>()) return va->binder()->gid() > b->as<Var>()->binder()->gid() ? Cmp::L : Cmp::G;
 
     // heuristic: iterate backwards as index (often a Lit) comes last and will faster find a solution
     for (size_t i = a->num_ops(); i-- != 0;)
