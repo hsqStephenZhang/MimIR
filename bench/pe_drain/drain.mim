@@ -1,0 +1,73 @@
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+use tensor;
+
+let F32 = math.F32;
+let M = 124;
+let Ix = affine.Index;
+let Ring = (F32, 0:F32, math.arith.add M, math.arith.mul M);
+let `* = product_2d Ring;
+lam add (x y: F32): F32 = math.arith.add M (x, y);
+lam mul (x y: F32): F32 = math.arith.mul M (x, y);
+lam fmax (x y: F32): F32 = math.extrema.fmax 0 (x, y);
+lam relu (x: F32): F32 = math.extrema.fmax 0 (x, 0:F32);
+fun mac (acc: F32, (x y: F32))@tt: F32 = return (math.arith.add M (acc, math.arith.mul M (x, y)));
+lam scale (c: F32) (v: F32): F32 = math.arith.mul M (v, c);
+
+// The row sums and column maxima of a product.
+extern fun mm_stats (a: Tensor 2 (1024, 512) F32, b: Tensor 2 (512, 1024) F32): [Tensor 1 1024 F32, Tensor 1 1024 F32] =
+    let p = a * b;
+    return (reduce (add, 0:F32) 1_2 p, reduce (fmax, math.neg_inf (23, 8)) 0_2 p);
+
+// Two elementwise consumers of one product.
+extern fun mm_two (a: Tensor 2 (1024, 512) F32, b: Tensor 2 (512, 1024) F32, bias: Tensor 2 (1024, 1024) F32)
+    : [Tensor 2 (1024, 1024) F32, Tensor 2 (1024, 1024) F32] =
+    let p = a * b;
+    return (unary relu p, binary add (p, bias));
+
+// A product and its row sums.
+extern fun mm_rowsum (a: Tensor 2 (1024, 512) F32, b: Tensor 2 (512, 1024) F32): [Tensor 2 (1024, 1024) F32, Tensor 1 1024 F32] =
+    let p = a * b;
+    return (p, reduce (add, 0:F32) 1_2 p);
+
+// Layer norm of a product.
+extern fun mm_ln (a: Tensor 2 (1024, 512) F32, b: Tensor 2 (512, 1024) F32): Tensor 2 (1024, 1024) F32 =
+    let x    = a * b;
+    let mean = unary (scale 0.0009765625:F32) (reduce (add, 0:F32) 1_2 x);
+    let d    = binary_ax (λ (u v: F32): F32 = math.arith.sub M (u, v)) 1_2 (x, mean);
+    let var  = unary (scale 0.0009765625:F32) (reduce (add, 0:F32) 1_2 (binary mul (d, d)));
+    let rstd = unary (λ (v: F32): F32 = math.arith.div M (1.0:F32, math.rt.sq M (math.arith.add M (v, 0.00001:F32)))) var;
+    return (binary_ax mul 1_2 (d, rstd));
+
+extern fun attention (q k v: Tensor 2 (2048, 64) F32): Tensor 2 (2048, 64) F32 =
+    return (softmax M 1₂ (unary (scale 0.125:F32) (q * transpose_2d k)) * v);
+
+// A short reduction: every micro tile ends its cells, so each one is drained.
+extern fun k64_rowsum (a: Tensor 2 (2048, 64) F32, b: Tensor 2 (64, 2048) F32): [Tensor 2 (2048, 2048) F32, Tensor 1 2048 F32] =
+    let p = a * b;
+    return (p, reduce (add, 0:F32) 1_2 p);
+extern fun k64_rowmax (a: Tensor 2 (2048, 64) F32, b: Tensor 2 (64, 2048) F32): [Tensor 2 (2048, 2048) F32, Tensor 1 2048 F32] =
+    let p = a * b;
+    return (p, reduce (math.extrema.fmax M, math.neg_inf (23, 8)) 1_2 p);
+
+// Producers that the consumer stages band by band (pe-fuse).
+extern fun pad_mm (a: Tensor 2 (1021, 509) F32, b: Tensor 2 (512, 1024) F32): Tensor 2 (1024, 1024) F32 =
+    return (pad (1021, 509) (0, (1, 1), (2, 2)) (a, 0:F32) * b);
+extern fun pad_relu (a: Tensor 2 (2045, 2045) F32): Tensor 2 (2048, 2048) F32 =
+    return (unary relu (pad (2045, 2045) (0, (1, 1), (2, 2)) (a, 0:F32)));
+extern fun relu_chain (a: Tensor 2 (1024, 512) F32, b: Tensor 2 (512, 512) F32, d: Tensor 2 (512, 1024) F32): Tensor 2 (1024, 1024) F32 =
+    return (unary relu (a * b) * d);
+extern fun perm_chain (a: Tensor 2 (512, 1024) F32, b: Tensor 2 (1024, 512) F32, d: Tensor 2 (512, 1024) F32): Tensor 2 (512, 1024) F32 =
+    let pt = map_reduce ((512, 512), (512, 512, 1024)) (mac, 0:F32)
+        (λ (i j _: Ix): «2; Ix» = (j, i)) (λ (i _ k: Ix): «2; Ix» = (i, k), λ (_ j k: Ix): «2; Ix» = (k, j)) (a, b);
+    return (pt * d);
+extern fun plain_chain (a: Tensor 2 (1024, 512) F32, b: Tensor 2 (512, 512) F32, d: Tensor 2 (512, 1024) F32): Tensor 2 (1024, 1024) F32 =
+    return ((a * b) * d);
+
+// An elementwise producer the contraction reads along a loop it ignores, and a gather.
+extern fun relu_mm (a: Tensor 2 (1024, 512) F32, b: Tensor 2 (512, 1024) F32): Tensor 2 (1024, 1024) F32 =
+    return (unary relu a * b);
+extern fun gather_mm (table: Tensor 2 (8192, 512) F32, index: Tensor 2 (1024, 512) (Idx 8192), b: Tensor 2 (512, 1024) F32): Tensor 2 (1024, 1024) F32 =
+    return (gather ((8192, 512), (1024, 512)) 0_2 (table, index) * b);
