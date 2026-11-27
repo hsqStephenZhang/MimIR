@@ -15,11 +15,11 @@ use core.ops.u.w;
 
 fun add  (x y: I32)@tt = return (x + y);
 fun copy (x y: I32)@tt = return y;
-lam id1 (i: affine.Index): «1; affine.Index» = i;
-lam id1i (i j: affine.Index): «1; affine.Index» = i;
-lam id2 (i j: affine.Index): «2; affine.Index» = (i, j);
-lam tr  (i j: affine.Index): «2; affine.Index» = (j, i);
-lam sl  (i: affine.Index): «1; affine.Index» = (affine.op.add (affine.semiop.mul (i, 3), affine.lit 2));
+let id1  = tensor.proj_map @(1, 1) 0;
+let id1i = tensor.proj_map @(2, 1) 0;
+let id2  = tensor.proj_map @(2, 2) (0, 1);
+let tr   = tensor.proj_map @(2, 2) (1, 0);
+let sl   = tensor.aff_map @(1, 1, 1) (3, tensor.affa (tensor.affm (tensor.affd @(1, 1) 0, 0), tensor.aff_lit @(1, 1) 2));
 
 // A reduction (`Ro = 1`, `Rn = 2`): out[i] = sum_j input[i][j], with a projection input access and the identity output map.
 // CHECK-DAG: extern con row_sum

@@ -24,7 +24,7 @@ let ij = λ (o: «3; Ix»): «2; Ix» = (o#0₃, o#1₃);
 fun mac (m: mem.M 0, acc: F32, (x y: F32))@tt: [mem.M 0, F32] = return (m, math.arith.add 0 (acc, math.arith.mul 0 (x, y)));
 fun relu (m: mem.M 0, _: F32, x: F32)@tt: [mem.M 0, F32] = return (m, math.extrema.fmax 0 (x, 0.0:F32));
 
-lam shift (lo: «2; Nat») (o: «2; Ix»): «2; Ix» = ‹i: 2; affine.op.add (affine.lit (lo#i), o#i)›;
+lam shift (lo: «2; Nat») (o: «2; Ix»): «2; Ix» = ‹i: 2; affine.op.add (affine.lit (lo#(i)), o#(i))›;
 
 // E = (A·B)·D with the M×L product computed per (i, l) tile.
 extern fun chain (m: mem.M 0, a: buffer.Buf (2, (26, 20), F32), b: buffer.Buf (2, (20, 28), F32), d: buffer.Buf (2, (28, 12), F32))

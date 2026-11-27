@@ -1,0 +1,21 @@
+// RUN: %mim %s -o -
+
+// `tensor.aff_compose (f, g)` reads `f` at the coordinates `g` gives, symbols of both included.
+plugin tensor;
+plugin affine;
+plugin refly;
+
+// A transpose read behind a strip-mined loop `i = 4·io + ii`, with the run-time offset 7 on `j` as a symbol.
+let _ = refly.struc.e ((tensor.aff_eval_map (tensor.aff_compose (tensor.aff_proj @(2, 2) (1₂, 0₂), tensor.aff_map @(3, 2, 1) (7, (tensor.aff_add @(3, 1) (tensor.aff_mul @(3, 1) (tensor.aff_dim @(3, 1) 0₃, tensor.aff_num @1 4), tensor.aff_dim @(3, 1) 1₃), tensor.aff_add @(3, 1) (tensor.aff_dim @(3, 1) 2₃, tensor.aff_sym @(3, 1) 0₁)))))) (affine.lit 2, affine.lit 3, affine.lit 5),
+                       (affine.op.add (affine.lit 5, affine.lit 7), affine.op.add (affine.semiop.mul (affine.lit 2, 4), affine.lit 3)));
+
+// Both maps have symbols: those of `f` (10 and 20) come first, then those of `g` (7).
+let _ = refly.struc.e ((tensor.aff_eval_map (tensor.aff_compose (tensor.aff_offset @(2, 2) ((1₂, 0₂), (10, 20)), tensor.aff_map @(3, 2, 1) (7, (tensor.aff_dim @(3, 1) 0₃, tensor.aff_add @(3, 1) (tensor.aff_dim @(3, 1) 2₃, tensor.aff_sym @(3, 1) 0₁)))))) (affine.lit 2, affine.lit 3, affine.lit 5),
+                       (affine.op.add (affine.op.add (affine.lit 5, affine.lit 7), affine.lit 10), affine.op.add (affine.lit 2, affine.lit 20)));
+
+// `tensor.aff_cat (f, g)` lists the rows of `f`, then those of `g`.
+let _ = refly.struc.e ((tensor.aff_eval_map (tensor.aff_cat (tensor.aff_proj @(2, 1) 1₂, tensor.aff_offset @(2, 2) ((0₂, 1₂), (10, 20))))) (affine.lit 2, affine.lit 3),
+                       (affine.lit 3, affine.op.add (affine.lit 2, affine.lit 10), affine.op.add (affine.lit 3, affine.lit 20)));
+
+// A projection evaluates to the coordinates it reads.
+let _ = refly.struc.e ((tensor.aff_eval_map @(2, 1) (tensor.aff_proj @(2, 1) 1₂)) (affine.lit 7, affine.lit 9), affine.lit 9);

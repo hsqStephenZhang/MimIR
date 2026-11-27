@@ -1,10 +1,10 @@
-// RUN: %mim -VVVV -p opt %s -p ll -X ll:asan=1 -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVVV -p opt -X tensor:pe-fuse=2 %s -p ll -X ll:asan=1 -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
 // RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
 // RUN: %t0.exec
 // RUN: %mim -p opt -X tensor:pe-fuse=0 %s -p ll -X ll:asan=1 -X ll:o=%t1.ll -o %t1.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
 // RUN: %t1.exec
-// RUN: %mim -p opt -X tensor:cpu-mc=8 -X tensor:group-cache=1024 %s -p ll -X ll:asan=1 -X ll:o=%t2.ll -o %t2.mim
+// RUN: %mim -p opt -X tensor:pe-fuse=2 -X tensor:cpu-mc=8 -X tensor:group-cache=1024 %s -p ll -X ll:asan=1 -X ll:o=%t2.ll -o %t2.mim
 // RUN: clang++ -O2 -fsanitize=address %S/pe_gather_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
 // RUN: %t2.exec
 

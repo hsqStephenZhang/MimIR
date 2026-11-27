@@ -4,6 +4,8 @@
 - `buffer.Buf` normalizes literal size-1 axes out of its shape, so an implicit that must hold a *logical* shape cannot be inferred from a `Buf` operand; `matrix.concat` and `matrix.map_reduce_aff` therefore stay manually curried in `lower_to_mem`.
 - Fusion is guarded by `reads_as_produced`: size-1 axes collapse in types, so a slot may declare another shape than produced.
 - The tensor lit tests take 5–12 s each; a "fast" run usually means the compile errored out.
+- A `tensor.Aff` keeps its rows static and every value, literal or run-time, in `vals`: `aff_eval`, `aff_subst`, and `aff_shift` unfold only closed rows, so a run-time `Num` would be lowered as data.
+  The analyses read it through `aff_canon`, which inlines the literal values.
 
 ## `reassoc`
 

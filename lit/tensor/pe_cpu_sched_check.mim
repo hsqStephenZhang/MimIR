@@ -56,7 +56,7 @@ lam probe_seq_par (m: mem.M 0, a: buffer.Buf (2, (10, 4), F32), b: buffer.Buf (2
 // A producer read through a floordiv is staged as the exact box its tiles read.
 // CHECK-NOT: Aff:
 lam probe_stage_div (m: mem.M 0, a: buffer.Buf (2, (2, 2), F32), b: buffer.Buf (2, (4, 16), F32)): [mem.M 0, buffer.Buf (2, (4, 16), F32)] =
-    let half = tensor.aff_map @(3, 2, 0) ((), (tensor.aff_fdiv @(3, 0) (tensor.aff_dim @(3, 0) 0₃, 2), tensor.aff_dim @(3, 0) 2₃));
+    let half = tensor.aff_map @(3, 2, 0) ((), (tensor.aff_fdiv @(3, 0) (tensor.aff_dim @(3, 0) 0₃, tensor.aff_num @0 2), tensor.aff_dim @(3, 0) 2₃));
     let make = λ (lo ext _: «2; Nat», _: «2; Bool») (m: mem.M 0, t: buffer.Buf (2, ext, F32)): [mem.M 0, buffer.Buf (2, ext, F32)] = (m, t);
     tensor.run_levels_with @(2, F32, 2, 3, (F32, F32), (2, 2), ((2, 2), (4, 16)))
         ((4, 16), (4, 16, 4))

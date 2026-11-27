@@ -179,8 +179,22 @@ void LowerToMem::start() {
     validate();
     if (!tensors_seen_) return;
     // A tuple of arguments that several consumers share charges each of them.
-    uses_ = count_consumers(
-        old_world(), [](const Def* d) { return Axm::isa<tensor::map_reduce_post>(d) || Axm::isa<tensor::gather>(d); });
+    uses_   = count_consumers(old_world(), [](const Def* d) {
+        return Axm::isa<tensor::map_reduce_post>(d) || Axm::isa<tensor::gather>(d) || Axm::isa<tensor::pad>(d);
+    });
+    auto wl = fe::BFSWorklist<DefSet>();
+    wl.push(old_world().externals().muts());
+    while (!wl.empty()) {
+        auto def = wl.pop();
+        if (auto app = Axm::isa<tensor::map_reduce_post>(def))
+            for (auto input : app->arg()->proj(2, 0)->projs())
+                if (Axm::isa<tensor::map_reduce_post>(input)) consumers_[input].emplace_back(app);
+        for (auto op : def->ops())
+            if (op) wl.push(op);
+        if (def->type()) wl.push(def->type());
+    }
+    for (auto& [_, consumers] : consumers_)
+        std::ranges::sort(consumers, GIDLt<const Def*>());
     RWPhase::start();
     assert(pending_.empty());
 }
@@ -261,6 +275,7 @@ const Def* LowerToMem::rewrite_mut_Lam(Lam* lam) {
     // their own requests (and their own per-lam op memo).
     auto _  = fe::Restore(pending_, {});
     auto __ = fe::Restore(fresh_memo_, {});
+    auto d_ = fe::Restore(drained_, {});
     if (shape_poly_.contains(lam)) return uncurry(lam);
     auto new_lam = new_world().mut_lam(rewrite(lam->type())->as<Pi>());
     map(lam, new_lam);
@@ -487,11 +502,19 @@ std::pair<const Def*, u64> LowerToMem::cpu_levels(u64 rn) {
     return {w.tuple(levels), levels.size()};
 }
 
-std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r) {
+bool LowerToMem::wants(u64 producer, u64 consumer) {
+    auto& w = new_world();
+    auto pe = w.driver().arg_nat("tensor", "pe-fuse").value_or(1);
+    return pe == 2
+        || (pe == 1 && w.app(w.annex<tensor::fuse_policy>(), {w.lit_nat(producer), w.lit_nat(consumer)}) == w.lit_tt());
+}
+
+std::pair<const Def*, bool>
+LowerToMem::fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r, u64 consumer) {
     auto& w = new_world();
     auto _  = fe::Restore(fuse_depth_, fuse_depth_ + 1);
     if (auto g = Axm::isa<tensor::gather>(input)) {
-        if (uses_[input] != 1 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
+        if (uses_[input] != 1 || !wants(4, consumer)) return {};
         auto c                 = rewrite(g->callee())->as<App>();
         auto [Tr, shapes, dim] = c->uncurry_args<3>();
         auto [T, gr]           = Tr->projs<2>();
@@ -505,24 +528,42 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
         auto fill = w.app(w.app(w.app(w.annex<tensor::gather_fill>(), {T, gr}), {s_src, s_idx, dim}), {src, idx});
         return {fill, false};
     }
+    if (auto p = Axm::isa<tensor::pad>(input)) {
+        if (uses_[input] != 1 || !wants(3, consumer)) return {};
+        auto c                  = rewrite(p->callee())->as<App>();
+        auto [Tr, s_in, params] = c->uncurry_args<3>();
+        auto [mode, lo, hi]     = params->projs<3>();
+        if (mode != w.lit_nat_0() || !Lit::isa(Tr->proj(2, 1))) return {};
+        log().i("fuse the pad of {} into its consumer", s_in);
+        auto [src, value] = rewrite(p->arg())->projs<2>();
+        anchors_.emplace_back(src);
+        auto fill = w.app(w.app(w.app(w.annex<tensor::pad_fill>(), Tr), {s_in, lo}), {src, value});
+        return {fill, false};
+    }
     auto papp = Axm::isa<tensor::map_reduce_post>(input);
     // A map-reduce read twice is computed in both consumers, unless it is a contraction.
     if (!papp || uses_[input] > 2 || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)) return {};
-    auto old_mr = btensor::MapRedPost::of(papp->callee()->as<App>());
+    // What its own producer's tiles fill is not computed again.
+    if (drained(papp)) return {};
+    auto old_mr = map_red(papp->callee()->as<App>());
     auto ranks  = old_mr.ranks();
     if (!ranks || ranks->nps != 0) return {};
-    if (!Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To))) return {};
     auto c  = rewrite(papp->callee())->as<App>();
-    auto mr = btensor::MapRedPost::of(c);
+    auto mr = map_red(c);
+    // An epilogue without inputs that keeps the type runs in the producer's own leaves.
+    bool plain = is_identity_post(old_mr.post);
+    if (!plain && !Check::test_alpha(mr.To, mr.Tp)) return {};
     u64 ro = ranks->ro, rn = ranks->nloops(), nis = ranks->nis;
     // The consumer bounds the box of the output it asks for, but not the reduction.
     for (u64 d = ro; d != rn; ++d)
         if (!Lit::isa(mr.Sr->proj(rn, d))) return {};
-    // `fill_of` computes a box of the output from loops that start at its corner, so the output loops come first.
-    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
-    auto probe  = w.mut_lam(domain, domain);
-    auto vars   = probe->var()->projs(rn);
-    if (w.app(mr.map_out, probe->var()) != w.tuple(Defs(vars.data(), ro))) return {};
+    // `fill_of` computes a box of the output from loops that start at its corner, so the output loops come first; the
+    // output may permute them.
+    auto loops = out_loops(btensor::MapRedPost::of(c).map_out, mr.Rn, mr.Ro);
+    if (!loops) return {};
+    auto inv = DefVec(ro);
+    for (u64 e = 0; e != ro; ++e)
+        inv[(*loops)[e]] = w.lit_nat(e);
 
     // A contraction is tiled by `cpu_tree`, any other map-reduce by `generic_tree`; either may fuse producers of its
     // own.
@@ -534,6 +575,7 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
     // tiling, so it stays whole.
     if (contraction && (uses_[input] != 1 || w.app(w.app(w.annex<tensor::aff_linear>(), {Rn, r}), map) != w.lit_tt()))
         return {};
+    if (!wants(contraction ? 2 : ro == rn ? 0 : 1, consumer)) return {};
     if (contraction) {
         std::tie(xs, sis, prods, fuse) = pe_slots(papp, mr.Rn, mr.Ris, mr.Sis, mr.Tis, plan.maps, plan.a, true);
         maps                           = plan.maps;
@@ -560,12 +602,141 @@ std::pair<const Def*, bool> LowerToMem::fuse_producer(const Def* input, const De
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
     const Def* fill    = w.annex<tensor::fill_of>();
     fill               = w.app(fill, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
-    fill               = w.app(fill, mr.Sr);
-    fill               = w.app(fill, {memcomb, mr.init});
-    fill               = w.app(fill, {maps, prods});
-    fill               = w.app(fill, tree_of);
+    auto post          = w.app(w.annex<btensor::id>(), mr.To);
+    if (!plain) {
+        auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+        post                 = w.app(w.app(w.annex<btensor::lift_mem>(), {pTo, pexts_ty, mr.Tp}), mr.post);
+    }
+    fill = w.app(fill, {mr.Sr, w.tuple(inv)});
+    fill = w.app(fill, {memcomb, mr.init});
+    fill = w.app(fill, {post, w.lit_bool(!plain)});
+    fill = w.app(fill, mr.map_out);
+    fill = w.app(fill, {maps, prods});
+    fill = w.app(fill, tree_of);
     log().i("fuse the map-reduce over {} into its consumer", mr.Sr);
     return {w.app(fill, xs), contraction};
+}
+
+const Def* LowerToMem::whole(const Def* old_def) {
+    auto _  = fe::Restore(anchors_, {});
+    auto __ = fe::Restore(fuse_depth_, size_t(0));
+    return rewrite(old_def);
+}
+
+bool LowerToMem::pushes(const App* app) {
+    auto& w = new_world();
+    if (!consumers_.contains(app) || !w.driver().arg_nat("tensor", "pe-fuse").value_or(1)
+        || !w.driver().arg_nat("tensor", "pe-drain").value_or(0))
+        return false;
+    // Any other map-reduce read twice is staged in both consumers.
+    auto plan = PeCpu{};
+    return uses_[app] > 2 || (uses_[app] == 2 && pe_cpu_plan(rewrite(app->callee())->as<App>(), &plan) == w.lit_tt());
+}
+
+namespace {
+
+bool reaches(const Def* def, const Def* target, DefSet& seen) {
+    if (def == target) return true;
+    if (def->isa_mut() || !seen.emplace(def).second) return false;
+    return std::ranges::any_of(def->ops(), [&](const Def* op) { return op && reaches(op, target, seen); });
+}
+
+} // namespace
+
+std::pair<const Def*, fe::Vector<std::pair<const App*, const Def*>>> LowerToMem::sinks_of(const App* app) {
+    auto& w   = new_world();
+    auto sunk = fe::Vector<std::pair<const App*, const Def*>>();
+    auto none = std::pair{(const Def*)nullptr, sunk};
+    if (!pushes(app)) return none;
+    auto old_mr = map_red(app->callee()->as<App>());
+    auto pr     = *old_mr.ranks();
+    auto mr     = map_red(rewrite(app->callee())->as<App>());
+    // The cells must end up in the result itself.
+    if (!Check::test_alpha(mr.To, mr.Tp) || pr.ro == 0) return none;
+    // Dimension `e` of the result is its output loop `loop_of[e]`.
+    auto out = out_loops(btensor::MapRedPost::of(rewrite(app->callee())->as<App>()).map_out, mr.Rn, mr.Ro);
+    if (!out) return none;
+    const auto& loop_of = *out;
+
+    const Def* drain = nullptr;
+    for (auto consumer : consumers_[app]) {
+        auto old_c = map_red(consumer->callee()->as<App>());
+        auto cr    = old_c.ranks();
+        if (!cr || drained_.contains(consumer)) continue;
+        auto old_is = consumer->arg()->proj(2, 0)->projs(cr->nis);
+        if (std::ranges::count(old_is, app) != 1) continue;
+        u64 slot  = std::ranges::find(old_is, app) - old_is.begin();
+        auto seen = DefSet();
+        auto rest = [&](const Def* def) { return def != app && reaches(def, app, seen); };
+        if (reaches(consumer->callee(), app, seen) || rest(consumer->arg()->proj(2, 1))
+            || std::ranges::any_of(old_is, rest))
+            continue;
+        auto cc   = rewrite(consumer->callee())->as<App>();
+        auto c    = map_red(cc);
+        auto plan = PeCpu{};
+        auto gen  = PeGeneric{};
+        if (pe_cpu_plan(cc, &plan) == w.lit_tt() || !pe_generic_plan(cc, &gen, true)) continue;
+        u64 rn = cr->nloops();
+        if (Lit::isa(c.Ris->proj(cr->nis, slot)) != pr.ro || !Check::test_alpha(c.Sis->proj(cr->nis, slot), mr.So)
+            || !Check::test_alpha(c.Tis->proj(cr->nis, slot), mr.To))
+            continue;
+        // Tie the loop of the consumer that reads each coordinate of the result to the tile; `levels_sink` checks it.
+        auto f_aff = gen.maps->proj(cr->nis, slot);
+        auto reads = lit_projs(w.app(w.app(w.annex<tensor::aff_perm>(), {c.Rn, mr.Ro}), f_aff)->proj(2, 1), pr.ro);
+        auto tied = DefVec(rn, w.lit_ff()), ploop = DefVec(rn, w.lit_nat_0());
+        bool ok = reads.has_value();
+        for (u64 e = 0; e != pr.ro && ok; ++e) {
+            u64 d = (*reads)[e];
+            if ((ok = d < rn && tied[d] == w.lit_ff())) tied[d] = w.lit_tt(), ploop[d] = w.lit_nat(loop_of[e]);
+        }
+        for (u64 d = 0; d != rn && ok; ++d)
+            ok = tied[d] == w.lit_tt() ? d <= cr->ro || Lit::isa(gen.lanes) != 0
+                                       : Lit::isa(c.Sr->proj(rn, d)).has_value();
+        if (!ok) continue;
+
+        log().i("drain the tiles of the map-reduce over {} into the one over {}", mr.Sr, c.Sr);
+        auto buf = buffer::type_buf(mr.Ro, mr.So, mr.To);
+        auto xs  = w.mut_lam(buf, w.sigma(DefVec(cr->nis, [&](size_t i) {
+            return buffer::type_buf(c.Ris->proj(cr->nis, i), c.Sis->proj(cr->nis, i), c.Tis->proj(cr->nis, i));
+        })));
+        auto ins = DefVec(cr->nis, [&](size_t i) {
+            if (i == slot) return xs->var();
+            auto x = whole(old_is[i]);
+            anchors_.emplace_back(x);
+            return x;
+        });
+        xs->set(true, w.tuple(ins));
+        auto out           = buffer::op_alloc(c.Ro, c.So, c.To, fresh_mem())->proj(2, 1);
+        auto [cTo, ins_ty] = c.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
+        auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), c.comb);
+        auto merge         = gen.merge ? w.app(w.app(w.annex<tensor::levels_merge>(), c.To), gen.merge)
+                                       : w.app(w.app(w.annex<btensor::lift_mem>(), {c.To, c.To, c.To}),
+                                               w.app(w.annex<tensor::take>(), c.To));
+        auto tree_of
+            = w.app(w.app(w.annex<tensor::sink_tree>(), {c.nis, c.Rn, c.Ro}), {gen.red_unit, gen.out_unit, gen.lanes});
+        auto dim_loop   = w.tuple(DefVec(pr.ro, [&](size_t e) { return w.lit_nat(loop_of[e]); }));
+        const Def* sink = w.app(w.annex<tensor::levels_sink>(), {mr.To, mr.Ro, mr.So});
+        sink            = w.app(sink, {c.nis, c.To, c.Ro, c.Rn, c.Tis, c.Ris, c.Sis});
+        sink            = w.app(sink, {c.So, c.Sr});
+        sink            = w.app(sink, {memcomb, c.init, merge, gen.lanes});
+        sink            = w.app(sink, {c.map_out, gen.maps, gen.maps->proj(cr->nis, slot)});
+        sink            = w.app(sink, {w.tuple(tied), w.tuple(ploop), dim_loop});
+        sink            = w.app(sink, tree_of);
+        sink            = w.app(sink, {out, xs});
+        auto both       = w.app(w.annex<tensor::levels_drain_both>(), {mr.To, mr.Ro, mr.So});
+        drain           = drain ? w.app(both, {drain, sink}) : sink;
+        sunk.emplace_back(consumer, out);
+    }
+    return {drain, sunk};
+}
+
+const Def* LowerToMem::drained(const App* app) {
+    auto ranks = map_red(app->callee()->as<App>()).ranks();
+    if (!ranks) return nullptr;
+    for (auto input : app->arg()->proj(2, 0)->projs(ranks->nis))
+        if (auto p = Axm::isa<tensor::map_reduce_post>(input); p && pushes(p)) whole(p);
+    auto filled = fe::lookup(drained_, app);
+    return filled ? apply_post(app, filled->proj(2, 0), filled->proj(2, 1)) : nullptr;
 }
 
 std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
@@ -585,7 +756,7 @@ std::array<const Def*, 4> LowerToMem::pe_slots(const App* app,
     // read.
     for (auto s : {ai, 1 - ai})
         if (may_fuse) {
-            std::tie(fills[s], kinds[s]) = fuse_producer(old_is->proj(2, s), maps->proj(2, s), Rn, Ris->proj(2, s));
+            std::tie(fills[s], kinds[s]) = fuse_producer(old_is->proj(2, s), maps->proj(2, s), Rn, Ris->proj(2, s), 2);
             if (fills[s]) break;
         }
     auto xs = DefVec(2), sis = DefVec(2), prods = DefVec(2), fuse = DefVec(2);
@@ -616,11 +787,13 @@ std::array<const Def*, 4> LowerToMem::generic_slots(const App* app,
                                                     const Def* maps) {
     auto& w     = new_world();
     auto old_is = app->arg()->proj(2, 0);
-    auto nis    = btensor::MapRedPost::of(app->callee()->as<App>()).ranks()->nis;
+    auto ranks  = *map_red(app->callee()->as<App>()).ranks();
+    auto nis    = ranks.nis;
+    u64 kind    = ranks.rr == 0 ? 0 : 1;
     auto xs = DefVec(nis), sis = DefVec(nis), prods = DefVec(nis), fuse = DefVec(nis);
     for (size_t i = 0; i != nis; ++i) {
         auto r = Ris->proj(nis, i), T = Tis->proj(nis, i);
-        auto fill = fuse_producer(old_is->proj(nis, i), maps->proj(nis, i), Rn, r).first;
+        auto fill = fuse_producer(old_is->proj(nis, i), maps->proj(nis, i), Rn, r, kind).first;
         fuse[i]   = w.lit_nat(fill ? 1 : 0);
         if (fill) {
             // The slot's buffer is never read; it only fills the call's signature.
@@ -640,11 +813,11 @@ std::array<const Def*, 4> LowerToMem::generic_slots(const App* app,
 
 const Def* LowerToMem::lower_pe_cpu(const App* app) {
     auto& w     = new_world();
-    auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto old_mr = map_red(app->callee()->as<App>());
     auto ranks  = old_mr.ranks();
     if (!ranks) return nullptr;
     auto c    = rewrite(app->callee())->as<App>();
-    auto mr   = btensor::MapRedPost::of(c);
+    auto mr   = map_red(c);
     auto plan = PeCpu{};
     if (pe_cpu_plan(c, &plan) != w.lit_tt()) return nullptr;
     log().i("tile the contraction over {} with tensor.run_levels", mr.Sr);
@@ -669,10 +842,9 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     if (log().level() >= fe::Log::Level::Verbose) {
         auto text = std::string();
         show_tree(text, tree, 0);
-        log().v(
-            "schedule tree: {}\n{}",
-            show_root(mr.Ro, w.lit_nat_0(), sizes, caps, dyn, fuse, reads_of(w, mr.Rn, mr.Ris, plan.maps, 2), rn, 2),
-            text);
+        auto root
+            = show_root(mr.Ro, w.lit_nat_0(), sizes, caps, dyn, fuse, reads_of(w, mr.Rn, mr.Ris, plan.maps, 2), rn, 2);
+        log().v("schedule tree: {} {}\n{}", root, show_maps(plan.maps, sis, mr.Ris, 2), text);
     }
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
@@ -680,18 +852,19 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     // An epilogue that keeps the type runs in the leaf that ends a tile's reduction.
     bool inner
         = Check::test_alpha(mr.To, mr.Tp)
-       && !(ranks->nps == 0 && Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To)));
+       && !(ranks->nps == 0 && is_identity_post(old_mr.post));
     if (inner) log().i("map the epilogue in the leaf that ends each tile's reduction");
-    const Def* run = inner ? w.annex<tensor::run_levels_post>() : w.annex<tensor::run_levels_with>();
-    run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
-    run            = w.app(run, {mr.So, mr.Sr});
-    if (inner) {
-        auto [post, epi, eager] = epilogue(app);
+    auto [drain, sunk] = sinks_of(app);
+    const Def* run     = inner || drain ? w.annex<tensor::run_levels_post>() : w.annex<tensor::run_levels_with>();
+    run                = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
+    run                = w.app(run, {mr.So, mr.Sr});
+    if (inner || drain) {
+        auto [post, epi, eager] = inner ? epilogue(app) : no_epilogue(mr.To, mr.Ro, mr.So);
         auto take
             = w.app(w.app(w.annex<btensor::lift_mem>(), {mr.To, mr.To, mr.To}), w.app(w.annex<tensor::take>(), mr.To));
         run = w.app(run, {memcomb, mr.init, post});
-        run = w.app(run, {take, w.lit_nat_0(), w.lit_tt()});
-        run = w.app(run, {epi, eager});
+        run = w.app(run, {take, w.lit_nat_0(), w.lit_bool(inner)});
+        run = w.app(run, {epi, eager, drain ? drain : no_drain(mr.To, mr.Ro, mr.So), w.lit_bool(drain)});
     } else {
         run = w.app(run, {memcomb, mr.init});
     }
@@ -699,12 +872,13 @@ const Def* LowerToMem::lower_pe_cpu(const App* app) {
     run           = w.app(run, {plan.maps, prods});
     run           = w.app(run, {tree, caps, dyn});
     auto [m, out] = w.app(run, {anchored_mem(), xs})->projs<2>();
+    fill(sunk, m);
     return inner ? out : apply_post(app, m, out);
 }
 
 std::array<const Def*, 3> LowerToMem::epilogue(const App* app) {
     auto& w              = new_world();
-    auto mr              = btensor::MapRedPost::of(rewrite(app->callee())->as<App>());
+    auto mr              = map_red(rewrite(app->callee())->as<App>());
     auto [pTo, pexts_ty] = mr.post->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto mempost         = w.app(w.app(w.annex<btensor::lift_mem>(), {pTo, pexts_ty, mr.Tp}), mr.post);
     auto post_is         = rewrite(app->arg()->proj(2, 1));
@@ -718,11 +892,11 @@ std::array<const Def*, 3> LowerToMem::epilogue(const App* app) {
 
 const Def* LowerToMem::apply_post(const App* app, const Def* m, const Def* out) {
     auto& w     = new_world();
-    auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto old_mr = map_red(app->callee()->as<App>());
     if (old_mr.ranks()->nps == 0
-        && Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To)))
+        && is_identity_post(old_mr.post))
         return out;
-    auto mr      = btensor::MapRedPost::of(rewrite(app->callee())->as<App>());
+    auto mr      = map_red(rewrite(app->callee())->as<App>());
     auto post_is = rewrite(app->arg()->proj(2, 1));
 
     // Apply fused epilogue as a pointwise pass (in-place when To == Tp).
@@ -751,10 +925,10 @@ const Def* LowerToMem::apply_post(const App* app, const Def* m, const Def* out) 
 const Def* LowerToMem::lower_pe_generic(const App* app) {
     auto& w = new_world();
     if (!w.driver().arg_nat("tensor", "pe-generic").value_or(1)) return nullptr;
-    auto ranks = btensor::MapRedPost::of(app->callee()->as<App>()).ranks();
+    auto ranks = map_red(app->callee()->as<App>()).ranks();
     if (!ranks) return nullptr;
     auto c    = rewrite(app->callee())->as<App>();
-    auto mr   = btensor::MapRedPost::of(c);
+    auto mr   = map_red(c);
     auto plan = PeGeneric{};
     if (!pe_generic_plan(c, &plan)) return nullptr;
     u64 rn = ranks->nloops();
@@ -778,30 +952,31 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     if (log().level() >= fe::Log::Level::Verbose) {
         auto text = std::string();
         show_tree(text, tree, 0);
-        log().v("schedule tree: {}\n{}",
-                show_root(mr.Ro, lanes, mr.Sr, mr.Sr, dyn, fuse, reads_of(w, mr.Rn, mr.Ris, plan.maps, nis), rn, nis),
-                text);
+        auto root
+            = show_root(mr.Ro, lanes, mr.Sr, mr.Sr, dyn, fuse, reads_of(w, mr.Rn, mr.Ris, plan.maps, nis), rn, nis);
+        log().v("schedule tree: {} {}\n{}", root, show_maps(plan.maps, sis, mr.Ris, nis), text);
     }
 
     auto [cTo, ins_ty] = mr.comb->type()->as<Pi>()->dom()->proj(2, 0)->projs<2>();
     auto memcomb       = w.app(w.app(w.annex<btensor::lift_mem>(), {cTo, ins_ty, cTo}), mr.comb);
 
     // The leaves, which may also merge partial results, run an epilogue that keeps the type.
-    auto old_mr = btensor::MapRedPost::of(app->callee()->as<App>());
+    auto old_mr = map_red(app->callee()->as<App>());
     bool plain
-        = ranks->nps == 0 && Check::alpha(old_mr.post, old_world().app(old_world().annex<tensor::id>(), old_mr.To));
-    auto merge     = plan.merge ? w.app(w.annex<tensor::levels_merge>(), mr.To) : nullptr;
-    merge          = merge ? w.app(merge, plan.merge)
-                           : w.app(w.app(w.annex<btensor::lift_mem>(), {mr.To, mr.To, mr.To}),
-                                   w.app(w.annex<tensor::take>(), mr.To));
-    const Def* run = inner ? w.annex<tensor::run_levels_post>() : w.annex<tensor::run_levels_with>();
-    run            = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
-    run            = w.app(run, {mr.So, mr.Sr});
-    if (inner) {
-        auto [post, epi, eager] = epilogue(app);
+        = ranks->nps == 0 && is_identity_post(old_mr.post);
+    auto merge         = plan.merge ? w.app(w.annex<tensor::levels_merge>(), mr.To) : nullptr;
+    merge              = merge ? w.app(merge, plan.merge)
+                               : w.app(w.app(w.annex<btensor::lift_mem>(), {mr.To, mr.To, mr.To}),
+                                       w.app(w.annex<tensor::take>(), mr.To));
+    auto [drain, sunk] = sinks_of(app);
+    const Def* run     = inner || drain ? w.annex<tensor::run_levels_post>() : w.annex<tensor::run_levels_with>();
+    run                = w.app(run, {mr.nis, mr.To, mr.Ro, mr.Rn, mr.Tis, mr.Ris, sis});
+    run                = w.app(run, {mr.So, mr.Sr});
+    if (inner || drain) {
+        auto [post, epi, eager] = inner ? epilogue(app) : no_epilogue(mr.To, mr.Ro, mr.So);
         run                     = w.app(run, {memcomb, mr.init, post});
-        run                     = w.app(run, {merge, lanes, w.lit_bool(!plain)});
-        run                     = w.app(run, {epi, eager});
+        run                     = w.app(run, {merge, lanes, w.lit_bool(inner && !plain)});
+        run = w.app(run, {epi, eager, drain ? drain : no_drain(mr.To, mr.Ro, mr.So), w.lit_bool(drain)});
     } else {
         run = w.app(run, {memcomb, mr.init});
     }
@@ -809,10 +984,29 @@ const Def* LowerToMem::lower_pe_generic(const App* app) {
     run           = w.app(run, {plan.maps, prods});
     run           = w.app(run, {tree, mr.Sr, dyn});
     auto [m, out] = w.app(run, {anchored_mem(), xs})->projs<2>();
+    fill(sunk, m);
     return inner ? out : apply_post(app, m, out);
 }
 
+std::array<const Def*, 3> LowerToMem::no_epilogue(const Def* To, const Def* Ro, const Def* So) {
+    auto& w = new_world();
+    return {w.app(w.annex<btensor::id>(), To), w.app(w.annex<tensor::levels_no_epilogue>(), {To, Ro, So}), w.lit_tt()};
+}
+
+const Def* LowerToMem::no_drain(const Def* To, const Def* Ro, const Def* So) {
+    return new_world().app(new_world().annex<tensor::levels_no_drain>(), {To, Ro, So});
+}
+
+void LowerToMem::fill(const fe::Vector<std::pair<const App*, const Def*>>& sunk, const Def* m) {
+    auto& w = new_world();
+    for (auto [consumer, out] : sunk) {
+        auto [r, s, T]     = Axm::isa<buffer::Buf>(out->type())->args<3>();
+        drained_[consumer] = w.app(w.app(w.annex<buffer::sync>(), {r, s, T}), {m, out});
+    }
+}
+
 const Def* LowerToMem::lower_map_reduce(const App* app) {
+    if (auto out = drained(app)) return out;
     if (auto pe = lower_pe_cpu(app)) return pe;
     if (auto pe = lower_pe_generic(app)) return pe;
     // Thin bufferization: map the SSA `tensor.map_reduce_post` onto the buffer-world `btensor.map_reduce_post`,
@@ -822,7 +1016,7 @@ const Def* LowerToMem::lower_map_reduce(const App* app) {
     auto args          = rewrite(app->arg()); // (is, post_is): the (bufferized) input buffers
     auto [is, post_is] = args->projs<2>();
 
-    auto mr = btensor::MapRedPost::of(c);
+    auto mr = map_red(c);
 
     // Wrap the pure tensor combiner `Fn [To, «nis; Tis»] → To` into the mem-threaded combiner
     // `Fn [mem.M 0, To, «nis; Tis»] → [mem.M 0, To]` that `btensor.map_reduce_post` expects.

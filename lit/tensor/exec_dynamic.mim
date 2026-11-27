@@ -6,8 +6,8 @@ plugin affine;
 plugin mem;
 
 fun add (x y: I32)@tt: I32 = return (core.wrap.add 0 (x, y));
-lam out_i (i j k: affine.Index): affine.Index = i;
-lam in_jk (i j k: affine.Index): «2; affine.Index» = (j, k);
+let out_i = tensor.proj_map @(3, 1) 0;
+let in_jk = tensor.proj_map @(3, 2) (1, 2);
 
 extern con main (m: mem.M 0, argc: I32, argv: mem.Ptr (mem.Ptr (I8, 0), 0), return: Cn [mem.M 0, I32]) =
     let n = core.nat.add (core.bitcast Nat argc, 4);

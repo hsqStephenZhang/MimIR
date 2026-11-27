@@ -37,6 +37,7 @@ extern lam _compile (): compile.Phase =
 // CHECK-DAG: {{mk_[0-9]+ \(4, 2\)}}
 // CHECK-DAG: {{mk_[0-9]+ \(4, 3\)}}
 // CHECK-DAG: {{mk_[0-9]+ \(10, 4\)}}
-// CHECK-DAG: affine.semiop.floordiv ({{.*}}, 3)
-// CHECK-DAG: affine.semiop.rem ({{.*}}, 3)
+// The input map of a group convolution divides and wraps the batch·group dim by its first value, `groups`, followed by the channels per group and the strides.
+// CHECK-DAG: {{\(3, 64, 1, 1, 1, 1[,)]}}
+// CHECK-DAG: {{\(3, 20, 1, 1, 1, 1[,)]}}
 // CHECK-NOT: if_static

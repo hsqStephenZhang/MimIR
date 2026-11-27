@@ -13,6 +13,8 @@
 #include <mim/tuple.h>
 #include <mim/world.h>
 
+#include <mim/plug/btensor/btensor.h>
+
 #include "mim/plug/tensor/autogen.h"
 
 namespace mim::plug::tensor {
@@ -62,31 +64,44 @@ inline const Def* op_set(const Def* tensor, const Def* index, const Def* value) 
     return w.app(w.app(w.annex<set>(), {r, s, T}), {tensor, index, value});
 }
 
-/// Is @p map the identity access map `λ x. x`?
-inline bool is_identity_map(const Def* map) {
-    auto lam = map->isa_mut<Lam>();
-    return lam && lam->is_set() && lam->body() == lam->var();
-}
+/// The map from `«n; affine.Index»` to `«m; affine.Index»` that the `tensor.Aff` @p f describes, as a function.
+const Def* aff_lam(const Def* f, const Def* n, const Def* m);
 
-/// Recognizes the (rebuilt) `tensor_copy` combiner `(acc, ys) ↦ ys#0`: the result is exactly the
-/// single input element, so a map_reduce built on it is a pure re-indexed read of that input.
-inline bool is_copy_comb(const Def* comb) {
-    auto ret = Lam::isa_ret_arg(comb);
-    return ret && ret == comb->as_mut<Lam>()->var(2, 0)->proj(2, 1)->proj(1, 0);
-}
+/// `aff` with the literal values in its rows and its run-time values as symbols, which the static analyses of an `Aff` expect, or `nullptr` if its rows do not decode.
+const Def* aff_canon(const Def* aff, const Def* n, const Def* m);
 
-/// Is `post` the (rebuilt) CPS identity `tensor.id`, i.e. a lam `(x, extras) ↦ x` that returns its
-/// first argument (and hence has no epilogue inputs)?
-inline bool is_identity_post(const Def* post) {
-    auto ret = Lam::isa_ret_arg(post);
-    return ret && ret == post->as_mut<Lam>()->var(2, 0)->proj(2, 0);
-}
+/// Whether the `tensor.Aff` @p aff is data with static rows; its symbols may be run-time values.
+bool aff_static(const Def* aff);
+
+/// The loop each coordinate of the output map @p map_out over @p Rn loops writes, if they are distinct ones of the
+/// first @p Ro.
+std::optional<fe::Vector<u64>> out_loops(const Def* map_out, const Def* Rn, const Def* Ro);
+
+/// Whether the `tensor.Aff` @p aff over @p n loops is the identity.
+bool aff_identity(const Def* aff, const Def* n, const Def* m);
+
+/// Whether the `tensor.Aff` @p aff over @p n loops reads every loop and each row one injectively, so that it reads each element at most once.
+bool aff_reads_once(const Def* aff, const Def* n, const Def* m);
+
+/// The loop the last row of the `tensor.Aff` @p aff is, if it is one.
+std::optional<u64> aff_last_dim(const Def* aff, const Def* n, const Def* m);
+
+/// The meta of a `tensor.map_reduce_post` with its access maps as functions, so that they can be applied and inspected.
+/// The maps stay `tensor.Aff` where the number of inputs is not a literal.
+btensor::MapRedPost map_red(const App* callee);
+
+/// Is @p comb `tensor.copy`, so that a map_reduce built on it is a pure re-indexed read of its input?
+inline bool is_copy_comb(const Def* comb) { return static_cast<bool>(Axm::isa<copy, 1>(comb)); }
+
+/// Is @p post the neutral epilogue `tensor.id`?
+inline bool is_identity_post(const Def* post) { return static_cast<bool>(Axm::isa<id, 1>(post)); }
 
 /// A pure re-indexed read: the source tensor, the access map into it (over the read's output
 /// coordinates), and the source's element type/rank/shape.
 struct PureRead {
     const Def* src = nullptr;
-    const Def* map = nullptr;
+    const Def* aff = nullptr;
+    const Def* n   = nullptr;
     const Def* T   = nullptr;
     const Def* R   = nullptr;
     const Def* S   = nullptr;
@@ -106,13 +121,13 @@ inline std::optional<PureRead> is_pure_read(const Def* value) {
     if (Lit::isa(nis) != 1 || Lit::isa(nps) != 0 || meta->proj(5, 2) != meta->proj(5, 3)) return {};
     auto [So, Sr, sched] = shapes->projs<3>();
     if (Sr != So) return {};
-    if (!is_identity_map(map_out)) return {};
+    auto Rn = meta->proj(5, 3);
+    if (!aff_identity(map_out, Rn, Rn)) return {};
     auto [comb, init, post] = comb_init->projs<3>();
     if (!is_copy_comb(comb) || !is_identity_post(post)) return {};
 
     auto sole = [](const Def* d, u64 n, u64 i) { return d->proj(n, i)->proj(1, 0); };
-    return PureRead{sole(is_all, 2, 0), sole(maps_all, 2, 0), sole(in_tys, 6, 0), sole(in_tys, 6, 1),
-                    sole(in_tys, 6, 2)};
+    return PureRead{sole(is_all, 2, 0), sole(maps_all, 2, 0), Rn, sole(in_tys, 6, 0), sole(in_tys, 6, 1), sole(in_tys, 6, 2)};
 }
 
 /// The literal values of @p def's @p n projections, or nothing if one of them is not a literal.
@@ -174,7 +189,8 @@ struct PeGeneric {
 
 /// Whether `tensor.run_levels` covers a `tensor.map_reduce_post` with meta @p callee whose output is a permutation of
 /// the leading loops and whose reduction extents are static; on success, @p plan receives its facts.
-bool pe_generic_plan(const App* callee, PeGeneric* plan);
+/// With @p bounded, run-time extents are fine, since whoever runs it bounds them.
+bool pe_generic_plan(const App* callee, PeGeneric* plan, bool bounded = false);
 
 /// Whether `tensor.run_levels` covers the `tensor.map_reduce_post` with meta @p callee: `tt`, `ff`, or `nullptr` while
 /// undecided. On `tt`, @p plan receives the facts the lowering builds its `SchedTree` from.
@@ -228,5 +244,8 @@ std::string show_root(const Def* ro,
                       const Def* reads,
                       size_t rn,
                       size_t nis);
+
+/// The access maps and the shapes of the slots' buffers in prefix notation, for the line of show_root().
+std::string show_maps(const Def* maps, const Def* shapes, const Def* Ris, size_t nis);
 
 } // namespace mim::plug::tensor

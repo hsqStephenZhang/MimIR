@@ -1,0 +1,13 @@
+// RUN: %mim %s -o -
+
+// `tensor.fastest_axis (r, t)` behind a pure re-indexed read is the loop its access map's last row is, else `r`.
+plugin tensor;
+plugin refly;
+
+lam reads (x: tensor.Tensor 2 (3, 4) I32): [] =
+    let copy = λ (map: tensor.Aff (2, 2)): tensor.Tensor 2 (4, 3) I32 =
+        tensor.map_reduce ((4, 3), (4, 3)) (tensor.copy, ⊥:I32) (tensor.aff_idn 2) (map,) x;
+    let _ = refly.struc.e (tensor.fastest_axis (2, copy (tensor.proj_map @(2, 2) (1, 0))), 0);
+    let _ = refly.struc.e (tensor.fastest_axis (2, copy (tensor.reshape_aff @(2, 2) ((3, 4), (4, 3)))), 2);
+    let _ = refly.struc.e (tensor.fastest_axis (2, x), 1);
+    ();

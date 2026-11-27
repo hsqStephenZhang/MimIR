@@ -17,8 +17,8 @@ plugin btensor;
 
 use core.ops.u.w;
 
-lam mo (i _ _: affine.Index): «1; affine.Index» = i;
-lam mi (i j k: affine.Index): «3; affine.Index» = (i, j, k);
+let mo = tensor.proj_map @(3, 1) 0;
+let mi = tensor.proj_map @(3, 3) (0, 1, 2);
 
 // out[i] = sum_{a, b} input[i][a][b], with `a` strip-mined by 4.
 extern fun sum_all (input: tensor.Tensor 3 (2, 8, 3) I32): tensor.Tensor 1 2 I32 =

@@ -37,7 +37,8 @@ static constexpr PluginArg known_args[] = {
     {"cpu-dyn-k=<n>", "`1` gives the CPU `K` loop a run-time tail (`tensor.sched_seq`), which halves the code of a shape whose `K` leaves one at 1–3% speed; `0` peels it statically (default `1`)."},
     {"cpu-levels=<s>", "Tile with these levels instead of the BLIS tree, like an IREE `lowering_config`: one comma-separated tile size per loop (0 keeps it whole), levels separated by `/`, outermost first."},
     {"pe-generic=<n>", "Also lower a static map-reduce that is not a contraction (elementwise, reductions) through `run_levels`, with `generic_tree` or `cpu-levels` (default `1`; `0` keeps the plain loop nest)."},
-    {"pe-fuse=<n>", "Stage a map-reduce or gather that produces an input of a `run_levels` map-reduce inside its consumer, band by band (default `1`; `0` keeps every intermediate whole)."},
+    {"pe-fuse=<n>", "Stage a map-reduce, gather or constant pad that produces an input of a `run_levels` map-reduce inside its consumer, band by band: `1` where `tensor.fuse_policy` says so (default), `2` wherever the mechanism can, `0` never."},
+    {"pe-drain=<n>", "With `pe-fuse`, hand the finished tiles of a map-reduce with several consumers to those that read it through a projection (default `0`, which stages or computes them on their own)."},
     {"cpu-pack-b=<n>", "Whether the CPU tiling packs `B`: `0` decides by the number of rows and the size of `B` (default), `1` always, `2` never."},
     {"cpu-conv=<n>", "How the CPU lowers a convolution: `0` as an implicit im2col contraction through `run_levels` (default), `1` as a direct convolution over `(n, oh, co, ow | ci, kh, kw)` through `run_levels`."},
 };

@@ -13,8 +13,8 @@ use core.ops.n;
 use tensor;
 
 fun add (x y: Nat)@tt: Nat = return (x + y);
-lam mo (a b _: affine.Index): «2; affine.Index» = (a, b);
-lam mi (o: «3; affine.Index»): «3; affine.Index» = o;
+let mo = tensor.proj_map @(3, 2) (0, 1);
+let mi = tensor.aff_idn 3;
 
 // out[i, j] = Σ_k in[i, j, k] over «2, 4, 8» with the reduction dim strip-mined by 2:
 // the domain becomes (2, 4, 4, 2) with two reduction dims.

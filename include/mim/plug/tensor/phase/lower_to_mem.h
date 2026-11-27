@@ -67,7 +67,23 @@ private:
     std::pair<const Def*, u64> cpu_levels(u64 rn);
     /// The `tensor.fill_of` producer for the old input @p input of a slot read through @p map, or `nullptr`, and
     /// whether that producer is a contraction.
-    std::pair<const Def*, bool> fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r);
+    /// Whether `tensor.fuse_policy` stages a producer of the kind @p producer in a consumer of the kind @p consumer.
+    bool wants(u64 producer, u64 consumer);
+    std::pair<const Def*, bool>
+    fuse_producer(const Def* input, const Def* map, const Def* Rn, const Def* r, u64 consumer);
+    /// @p old_def lowered on its own, outside the consumer being lowered.
+    const Def* whole(const Def* old_def);
+    /// Whether the consumers of the map-reduce @p app read it from its tiles rather than have it staged in theirs.
+    bool pushes(const App* app);
+    /// What reads the finished tiles of the map-reduce @p app, or `nullptr`, and the results it fills with their
+    /// consumers.
+    std::pair<const Def*, fe::Vector<std::pair<const App*, const Def*>>> sinks_of(const App* app);
+    std::array<const Def*, 3> no_epilogue(const Def* To, const Def* Ro, const Def* So);
+    const Def* no_drain(const Def* To, const Def* Ro, const Def* So);
+    /// Records the results in @p sunk as filled once the memory @p m holds them.
+    void fill(const fe::Vector<std::pair<const App*, const Def*>>& sunk, const Def* m);
+    /// The result of @p app if the lowering of one of its inputs filled it.
+    const Def* drained(const App* app);
     const Def* lower_pad(const App*);
     const Def* lower_concat(const App*);
     const Def* lower_gather(const App*);
@@ -108,6 +124,10 @@ private:
     DefMap<const Def*> fresh_memo_;
     /// How many old Def%s use each old Def; a producer used once can be fused into its consumer.
     DefMap<u64> uses_;
+    /// The map-reduces that read each old map-reduce.
+    DefMap<fe::Vector<const App*>> consumers_;
+    /// Per-lam: a consumer's memory and result that the lowering of its producer filled.
+    DefMap<const Def*> drained_;
     /// The plain inputs of the fused producers of the consumer being lowered, and how deep the producers nest.
     /// Only a fused producer reads them, within its consumer's loops, where `mem.add_mem` would compute them for each
     /// tile.

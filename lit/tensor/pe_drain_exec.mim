@@ -1,0 +1,65 @@
+// RUN: %mim -VVV -p opt -X tensor:pe-drain=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:asan=1 -X ll:o=%t0.ll -o %t0.mim 2>&1 | %FileCheck %s
+// RUN: clang++ -O2 -fsanitize=address %S/pe_drain_aux.cpp %t0.ll -o %t0.exec -Wno-override-module
+// RUN: %t0.exec
+// RUN: %mim -p opt -X tensor:pe-drain=1 %s -p ll -X ll:asan=1 -X ll:o=%t1.ll -o %t1.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_drain_aux.cpp %t1.ll -o %t1.exec -Wno-override-module
+// RUN: %t1.exec
+// RUN: %mim -p opt -X tensor:pe-fuse=0 %s -p ll -X ll:asan=1 -X ll:o=%t2.ll -o %t2.mim
+// RUN: clang++ -O2 -fsanitize=address %S/pe_drain_aux.cpp %t2.ll -o %t2.exec -Wno-override-module
+// RUN: %t2.exec
+
+// A map-reduce with several consumers hands them each tile as the leaf that ends its reduction finishes it.
+// CHECK-DAG: drain the tiles of the map-reduce over (40, 36, 24) into the one over (40, 36)
+// CHECK-DAG: drain the tiles of the map-reduce over (40, 36, 24) into the one over (36, 40)
+// CHECK-DAG: drain the tiles of the map-reduce over (40, 36, 24) into the one over (40, 7, 36)
+// CHECK-DAG: drain the tiles of the map-reduce over (40, 24, 5) into the one over (40, 24)
+// CHECK-DAG: drain the tiles of the map-reduce over ({{.*}}, 24) into the one over ({{.*_[0-9]+}})
+// CHECK-DAG: drain the tiles of the map-reduce over (40, 24, 5) into the one over (40, 24)
+plugin tensor;
+plugin core;
+plugin math;
+plugin affine;
+
+let F32 = math.F32;
+let Ix  = affine.Index;
+let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.mul math.mode.contract);
+
+lam relu (x: F32): F32 = math.extrema.fmax 0 (x, 0:F32);
+lam twice (x: F32): F32 = math.arith.mul 0 (x, 2.0:F32);
+fun add (acc x: F32)@tt: F32 = return (math.arith.add 0 (acc, x));
+fun max (acc x: F32)@tt: F32 = return (math.extrema.fmax 0 (acc, x));
+fun sub (_: F32, (x y: F32))@tt: F32 = return (math.arith.sub 0 (x, y));
+
+// Two elementwise consumers of one product.
+extern fun mm_two (a: tensor.Tensor 2 (40, 24) F32, b: tensor.Tensor 2 (24, 36) F32, bias: tensor.Tensor 2 (40, 36) F32)
+    : [tensor.Tensor 2 (40, 36) F32, tensor.Tensor 2 (40, 36) F32] =
+    let p = tensor.product_2d R (a, b);
+    return (tensor.unary relu p, tensor.binary (math.arith.add 0) (p, bias));
+
+// The row sums and the column maxima of a product: the reductions fold each tile into their cells.
+extern fun mm_stats (a: tensor.Tensor 2 (40, 24) F32, b: tensor.Tensor 2 (24, 36) F32)
+    : [tensor.Tensor 1 40 F32, tensor.Tensor 1 36 F32] =
+    let p    = tensor.product_2d R (a, b);
+    let rows = tensor.map_reduce (40, (40, 36)) (add, 0:F32) (tensor.proj_map 0) (tensor.proj_map (0, 1)) p;
+    let cols = tensor.map_reduce (36, (36, 40)) (max, -1000.0:F32) (tensor.proj_map 0) (tensor.proj_map (1, 0)) p;
+    return (rows, cols);
+
+// A reduction whose rows are centered: the centering reads the row sums and waits for them.
+extern fun center (a: tensor.Tensor 3 (40, 24, 5) F32): [tensor.Tensor 2 (40, 24) F32, tensor.Tensor 2 (40, 24) F32] =
+    let ident = tensor.proj_map (0, 1);
+    let p     = tensor.map_reduce ((40, 24), (40, 24, 5)) (add, 0:F32) (tensor.proj_map (0, 1)) (tensor.proj_map (0, 1, 2)) a;
+    let rows  = tensor.map_reduce (40, (40, 24)) (add, 0:F32) (tensor.proj_map 0) ident p;
+    let cent  = tensor.map_reduce ((40, 24), (40, 24)) @((F32, F32), (2, 1), ((40, 24), 40)) (sub, 0:F32) ident (ident, tensor.proj_map 0) (p, rows);
+    return (cent, tensor.unary twice p);
+
+// The product feeds the second of two reduction loops, whose partial results the tiles merge.
+extern fun mm_two_red (a: tensor.Tensor 2 (40, 24) F32, b: tensor.Tensor 2 (24, 36) F32): [tensor.Tensor 2 (40, 36) F32, tensor.Tensor 1 40 F32] =
+    let p = tensor.product_2d R (a, b);
+    let q = tensor.map_reduce (40, (40, 7, 36)) (tensor.pool_fun (math.arith.add math.mode.fast), 0:F32) (tensor.proj_map 0) (tensor.proj_map (0, 2)) p;
+    return (p, q);
+
+// Run-time extents: an edge tile is drained over its valid part.
+extern fun dyn_stats {m n: Nat} (a: tensor.Tensor 2 (m, 24) F32, b: tensor.Tensor 2 (24, n) F32): [tensor.Tensor 1 m F32, tensor.Tensor 2 (m, n) F32] =
+    let p    = tensor.product_2d R (a, b);
+    let rows = tensor.map_reduce (m, (m, n)) (add, 0:F32) (tensor.proj_map 0) (tensor.proj_map (0, 1)) p;
+    return (rows, tensor.unary relu p);

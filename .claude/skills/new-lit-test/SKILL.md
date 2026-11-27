@@ -11,7 +11,7 @@ Read `lit/AGENTS.md` first; it holds the traps this skill relies on.
 
 | Property under test | Shape | Model |
 | ------------------- | ----- | ----- |
-| construction-time normalization | `// RUN: %mim %s` plus `let _ = refly.equiv.struc_eq (lhs, rhs);` (or `struc_ne`, `refly.check_bot`), a `lam` around free variables | `lit/core/` normalizer tests |
+| construction-time normalization | `// RUN: %mim %s` plus `let _ = refly.struc.e (lhs, rhs);` (or `refly.struc.ne`, `refly.alpha.e` for functions, `refly.check_bot`), a `lam` around free variables | `lit/core/` normalizer tests |
 | a phase's result | `// RUN: %mim -p opt %s -o - \| %FileCheck %s` (or a local `_compile` with only the phases under test) | a test in the phase's directory |
 | a diagnostic | `// RUN: (! %mim %s 2>&1) \| %FileCheck %s`; if mim must exit 0: `lit/error/warn_decl_arg.mim` | `lit/error/` |
 | runtime behavior | `-p ll` leg: compile, `clang`, run, `test $? -eq N`; add the x86 leg below if the program is integer-only | `lit/fun_main_argv.mim` |
@@ -38,7 +38,7 @@ Keep `-p %native -X %native:o=` (or `-p x86 -X x86:o=` in `lit/x86/`) adjacent: 
 ## 3. Run and check it
 
 1. `scripts/lit.sh <path relative to lit/>` (it re-stages).
-2. Mutation check: flip one expectation (`struc_eq` ↔ `struc_ne`, the expected exit code, one CHECK line) and confirm the test fails; then restore it.
+2. Mutation check: flip one expectation (`struc.e` ↔ `struc.ne`, the expected exit code, one CHECK line) and confirm the test fails; then restore it.
    A refly test whose expected side is spelled with the axioms under test passes vacuously.
 3. For a regression test, confirm it fails without the fix (`scripts/oracle.sh rev`'s worktree under `${TMPDIR:-/tmp}/mim-oracle/wt-*` has a `HEAD` build).
 4. `cd lit && ./lit ../build/lit --param roundtrip=mim -a --filter <name>`; add `// UNSUPPORTED: roundtrip` only if the input needs RUN-line flags to compile.

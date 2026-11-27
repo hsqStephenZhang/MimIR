@@ -112,7 +112,7 @@ const Def* LowerMapReduce::lower_map_reduce(const App* app) {
     auto inputs = rewrite(app->arg());
     auto type   = rewrite(app->type());
 
-    auto mr = btensor::MapRedPost::of(c);
+    auto mr = map_red(c);
     auto Ro = mr.Ro, Sr = mr.Sr, So = mr.So;
 
     auto ranks = mr.ranks();

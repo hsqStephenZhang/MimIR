@@ -1,4 +1,4 @@
-// RUN: %mim -VVV -p opt -X tensor:pe-fuse=1 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:asan=1 -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
+// RUN: %mim -VVV -p opt -X tensor:pe-fuse=2 -X tensor:cpu-mc=8 -X tensor:cpu-nc=16 %s -p ll -X ll:asan=1 -X ll:o=%t.ll -o %t.mim 2>&1 | %FileCheck %s
 // RUN: %FileCheck %s --check-prefix=LL --input-file=%t.ll --implicit-check-not='malloc(i64 1920)' --implicit-check-not='malloc(i64 960)' --implicit-check-not='malloc(i64 3840)' --implicit-check-not='alloca [480 x float]' --implicit-check-not='alloca [240 x float]' --implicit-check-not='alloca [960 x float]'
 // RUN: clang++ -O2 -fsanitize=address %S/pe_fuse_auto_aux.cpp %t.ll -o %t.exec -Wno-override-module
 // RUN: %t.exec
@@ -41,6 +41,6 @@ extern fun chain3 (a: tensor.Tensor 2 (40, 12) F32, b1: tensor.Tensor 2 (12, 24)
 // An elementwise producer: relu(A) is one leaf per band of A's rows.
 fun relu (_: F32, x: F32)@tt: F32 = return (math.extrema.fmax 0 (x, 0:F32));
 extern fun relu_mm (a: tensor.Tensor 2 (40, 24) F32, b: tensor.Tensor 2 (24, 20) F32): tensor.Tensor 2 (40, 20) F32 =
-    let r = tensor.map_reduce ((40, 24), (40, 24)) (relu, 0:F32) (λ (i j: affine.Index): «2; affine.Index» = (i, j))
-        (λ (i j: affine.Index): «2; affine.Index» = (i, j)) a;
+    let r = tensor.map_reduce ((40, 24), (40, 24)) (relu, 0:F32) (tensor.proj_map (0, 1))
+        (tensor.proj_map (0, 1)) a;
     return (tensor.product_2d R (r, b));

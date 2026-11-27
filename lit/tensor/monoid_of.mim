@@ -1,0 +1,19 @@
+// RUN: %mim %s -o -
+
+// `tensor.monoid_of (op, unit)` tells whether a reduction by `op` from `unit` may merge partial results.
+plugin tensor;
+plugin math;
+plugin core;
+plugin refly;
+
+let F32 = math.F32;
+let _ = refly.struc.e (tensor.monoid_of (math.arith.add math.mode.fast, 0.0:F32), tt);
+let _ = refly.struc.e (tensor.monoid_of (math.arith.add math.mode.fast, 1.0:F32), ff);
+let _ = refly.struc.e (tensor.monoid_of (math.arith.add 0, 0.0:F32), ff);
+let _ = refly.struc.e (tensor.monoid_of (math.extrema.fmax 0, math.neg_inf (23, 8)), tt);
+let _ = refly.struc.e (tensor.monoid_of (core.wrap.add 0, 0I32), tt);
+let _ = refly.struc.e (tensor.monoid_of (core.wrap.sub 0, 0I32), ff);
+
+// Only a primitive operation states its laws: a function, even one that only applies a monoid, is none.
+lam fadd (x y: F32): F32 = math.arith.add math.mode.fast (x, y);
+let _ = refly.struc.e (tensor.monoid_of (fadd, 0.0:F32), ff);

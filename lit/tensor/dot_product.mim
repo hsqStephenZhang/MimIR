@@ -1,4 +1,5 @@
 // RUN: %mim -p opt %s -o - | %FileCheck %s --implicit-check-not='vec.' --implicit-check-not=if_static --implicit-check-not=tensor.dot_product --implicit-check-not=tensor.product_2d --implicit-check-not=tensor.bmm
+// RUN: %mim -p opt %s -o - | %FileCheck %s --check-prefix=ROW
 
 // The whole dot family lowers to one and the same operation: a tensor.map_reduce_post carrying the
 // SELECTED schedule. For these operands the contraction (extent 2, not divisible by 4) is
@@ -38,8 +39,8 @@ extern lam _compile (): compile.Phase =
 // CHECK-DAG: {{mk[_a-zA-Z0-9]* ‹2; 1›}}
 // CHECK-DAG: {{mk[_a-zA-Z0-9]* \(2, 1\)}}
 
-// The recombined contraction subscript `ko * 1 + ki`, folded down to plain affine arithmetic.
-// CHECK-DAG: affine.semiop.mul ({{[_a-zA-Z0-9]+}}, 1)
+// The recombined contraction subscript `ko * ts + ki`, a `tensor.Aff` row `Add (Mul (Dim 2, Var 0), Dim 3)` whose value `ts` is the tile.
+// ROW: #4 ((| _0: I2 {{[^)]*}})#0 2I2 inj AffE_{{[0-9]+}}, (| _0: Nat | _1: Idx 1)#1 0₁ inj tensor.AffK 1)
 
 // All four operations lower to the same shape, the rank-2 pair before the rank-3 pair.
 // CHECK: return (

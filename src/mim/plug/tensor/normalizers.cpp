@@ -1,3 +1,4 @@
+
 #include <algorithm>
 #include <array>
 #include <format>
@@ -196,12 +197,9 @@ const Def* normalize_if_static(const Def*, const Def*, const Def* arg) {
 }
 
 const Def* normalize_fastest_axis(const Def*, const Def*, const Def* arg) {
-    // `tensor.fastest_axis (r, t)` reflects which axis of `t` is the fastest-varying (unit-stride)
-    // axis of the tensor actually read once `fuse_tensor`'s read-through has absorbed a pure
-    // re-indexed read behind `t`: without one, `t`'s own last axis; behind one, found by evaluating
-    // the read's access map on distinct `affine.lit` markers — normalization folds the map's
-    // extracts over the marker tuple, and a last component that does not fold back to a marker
-    // (reshape arithmetic) stays unknown. Unknown answers the sentinel `r`.
+    // `tensor.fastest_axis (r, t)` names the fastest-varying (unit-stride) axis of the tensor actually read once `fuse_tensor`'s read-through has absorbed a pure re-indexed read behind `t`:
+    // without one, `t`'s own last axis; behind one, the loop the last row of the read's access map is, if it is one.
+    // Unknown answers the sentinel `r`.
     auto& w     = arg->world();
     auto [r, t] = arg->projs<2>();
     auto r_l    = Lit::isa<u64>(r);
@@ -210,19 +208,10 @@ const Def* normalize_fastest_axis(const Def*, const Def*, const Def* arg) {
     if (!pr) return w.lit_nat(*r_l - 1);
     // One level only: a source that is itself absorbed would need the composed analysis.
     if (is_pure_read(pr->src) || Axm::isa<tensor::broadcast>(pr->src)) return r;
-    auto r_src = Lit::isa<u64>(pr->map->type()->as<Pi>()->codom()->arity());
-    if (!r_src || *r_src == 0) return r;
-    // `r` is not type-coupled to `t`; a mismatched rank must answer unknown, not break the app below.
-    auto r_dom = Lit::isa<u64>(pr->map->type()->as<Pi>()->dom()->arity());
-    if (!r_dom || *r_dom != *r_l) return r;
-    // Markers start at 1: 0 is what a broadcast map's `o#d · 0` folds to, so it must not be one.
-    auto markers = DefVec(*r_l, [&](size_t i) { return w.call<affine::lit>(w.lit_nat(i + 1)); });
-    auto last    = w.app(pr->map, w.tuple(markers))->proj(*r_src, *r_src - 1);
-    auto c       = Axm::isa<affine::lit>(last);
-    if (!c) return r;
-    auto v = Lit::isa<u64>(c->arg());
-    if (!v || *v < 1 || *v > *r_l) return r;
-    return w.lit_nat(*v - 1);
+    // `r` is not type-coupled to `t`; a mismatched rank must answer unknown.
+    if (Lit::isa<u64>(pr->n) != r_l) return r;
+    auto d = aff_last_dim(pr->aff, pr->n, pr->R);
+    return d ? w.lit_nat(*d) : r;
 }
 
 /// The vector widths `-X tensor:vec-width` accepts.
@@ -242,110 +231,84 @@ const Def* normalize_vec_width(const Def*, const Def*, const Def* arg) {
 
 namespace {
 
-/// Translates an access map's `affine.*` terms over the loop variables `xs` into `tensor.AffE` trees.
-/// `scan` checks a term and collects its run-time `affine.lit`s as symbols; `build` then emits the tree.
-class AffReflect {
+/// Rebuilds an `Aff` with its literal values in its rows and its run-time values as symbols, in the order they first occur.
+class AffCanon {
 public:
-    AffReflect(World& w, const Def* n, Defs xs)
+    AffCanon(World& w, const Def* n, const Def* vals, size_t s)
         : w_(w)
         , n_(n)
-        , xs_(xs) {}
+        , vals_(vals)
+        , s_(s) {}
 
-    bool scan(const Def* t) {
-        if (auto lit = Axm::isa<affine::lit>(t)) {
-            if (!Lit::isa(lit->arg()) && std::ranges::find(syms_, lit->arg()) == syms_.end())
-                syms_.emplace_back(lit->arg());
-            return true;
-        }
-        if (dim(t)) return true;
-        if (auto add = Axm::isa(affine::op::add, t)) {
-            auto [l, r] = add->args<2>();
-            return scan(l) && scan(r);
-        }
-        if (auto op = Axm::isa<affine::semiop>(t)) {
-            auto [l, c] = op->args<2>();
-            auto k      = Lit::isa(c);
-            return k && *k != 0 && scan(l);
-        }
-        if (auto lin = Axm::isa<affine::linearize>(t)) {
-            auto [idxs, s] = lin->args<2>();
-            auto r         = Lit::isa(s->arity());
-            if (!r || !lit_projs(s, *r)) return false;
-            for (size_t k = 0; k != *r; ++k)
-                if (!scan(idxs->proj(*r, k))) return false;
-            return true;
-        }
-        if (auto [l, s, k] = delinearize(t); l) return lit_projs(s, *Lit::isa(s->arity())) && scan(l);
-        return false;
-    }
-
-    const Def* build(const Def* t) {
-        if (auto lit = Axm::isa<affine::lit>(t)) {
-            if (Lit::isa(lit->arg())) return ctor<tensor::aff_lit>(lit->arg());
-            auto k = std::ranges::find(syms_, lit->arg()) - syms_.begin();
-            return ctor<tensor::aff_sym>(w_.lit_idx(syms_.size(), k));
-        }
-        if (auto j = dim(t)) return ctor<tensor::aff_dim>(w_.lit_idx(xs_.size(), *j));
-        if (auto add = Axm::isa(affine::op::add, t)) {
-            auto [l, r] = add->args<2>();
-            return ctor<tensor::aff_add>({build(l), build(r)});
-        }
-        if (auto op = Axm::isa<affine::semiop>(t)) {
-            auto [l, c] = op->args<2>();
-            auto x      = build(l);
-            switch (op.id()) {
-                case affine::semiop::mul: return ctor<tensor::aff_mul>({x, c});
-                case affine::semiop::floordiv: return ctor<tensor::aff_fdiv>({x, c});
-                case affine::semiop::ceildiv: return ctor<tensor::aff_cdiv>({x, c});
-                case affine::semiop::rem: return ctor<tensor::aff_mod>({x, c});
+    bool scan(const Def* e) {
+        auto inj = decode(e);
+        if (!inj) return false;
+        auto v = inj->value();
+        switch (inj->index()) {
+            case 0: return true;
+            case 1:
+            case 2: return sym(value(inj)), true;
+            case 3:
+            case 8: return scan(v->proj(2, 0)) && scan(v->proj(2, 1));
+            default: {
+                auto k = decode(v->proj(2, 1));
+                if (!k) return false;
+                sym(value(k));
+                return scan(v->proj(2, 0));
             }
         }
-        if (auto lin = Axm::isa<affine::linearize>(t)) {
-            auto [idxs, s] = lin->args<2>();
-            auto r         = *Lit::isa(s->arity());
-            const Def* sum = nullptr;
-            u64 stride     = 1;
-            for (size_t k = r; k-- != 0;) {
-                auto x = build(idxs->proj(r, k));
-                if (stride != 1) x = ctor<tensor::aff_mul>({x, w_.lit_nat(stride)});
-                sum = sum ? ctor<tensor::aff_add>({x, sum}) : x;
-                stride *= *Lit::isa(s->proj(r, k));
-            }
-            return sum;
-        }
-        auto [l, s, k] = delinearize(t);
-        auto m         = *Lit::isa(s->arity());
-        u64 stride     = 1;
-        for (size_t j = k + 1; j != m; ++j)
-            stride *= *Lit::isa(s->proj(m, j));
-        auto x = build(l);
-        if (stride != 1) x = ctor<tensor::aff_fdiv>({x, w_.lit_nat(stride)});
-        return ctor<tensor::aff_mod>({x, s->proj(m, k)});
     }
 
-    /// The `tensor.Aff` with the rows `rows`, built after scanning them.
-    const Def* map(Defs rows) {
-        auto s   = w_.lit_nat(syms_.size());
-        auto map = w_.app(w_.annex<tensor::aff_map>(), {n_, w_.lit_nat(rows.size()), s});
-        return w_.app(map, {w_.tuple(syms_), w_.tuple(DefVec(rows.size(), [&](size_t i) { return build(rows[i]); }))});
+    const Def* build(const Def* e) {
+        auto inj = decode(e);
+        auto v   = inj->value();
+        switch (inj->index()) {
+            case 0: return ctor<tensor::aff_dim>(v);
+            case 1:
+            case 2: {
+                auto c = value(inj);
+                return Lit::isa(c) ? ctor<tensor::aff_lit>(c) : ctor<tensor::aff_sym>(idx(index(c)));
+            }
+            case 3: return ctor<tensor::aff_add>({build(v->proj(2, 0)), build(v->proj(2, 1))});
+            case 8: return ctor<tensor::aff_sub>({build(v->proj(2, 0)), build(v->proj(2, 1))});
+            default: {
+                auto c = value(decode(v->proj(2, 1)));
+                auto l = Lit::isa(c);
+                // `x · 0` reads index 0 along a broadcast axis; a factor or divisor 1 is no operation.
+                if (inj->index() == 4 && l == 0) return ctor<tensor::aff_lit>(w_.lit_nat_0());
+                auto x = build(v->proj(2, 0));
+                if (inj->index() < 7 && l == 1) return x;
+                auto s    = w_.lit_nat(syms_.size());
+                auto coef = l ? w_.app(w_.app(w_.annex<tensor::aff_num>(), s), c)
+                              : w_.app(w_.app(w_.annex<tensor::aff_var>(), s), idx(index(c)));
+                switch (inj->index()) {
+                    case 4: return ctor<tensor::aff_mul>({x, coef});
+                    case 5: return ctor<tensor::aff_fdiv>({x, coef});
+                    case 6: return ctor<tensor::aff_cdiv>({x, coef});
+                    default: return ctor<tensor::aff_mod>({x, coef});
+                }
+            }
+        }
     }
+
+    const DefVec& syms() const { return syms_; }
 
 private:
-    std::optional<size_t> dim(const Def* t) const {
-        if (auto it = std::ranges::find(xs_, t); it != xs_.end()) return it - xs_.begin();
-        return {};
+    static const Inj* decode(const Def* e) {
+        auto name = e->isa<Name>();
+        return name ? name->op()->isa<Inj>() : nullptr;
     }
-
-    /// `delinearize (l, s) # k` as `(l, s, k)`, or `l == nullptr`.
-    static std::tuple<const Def*, const Def*, size_t> delinearize(const Def* t) {
-        if (auto ex = t->isa<Extract>())
-            if (auto del = Axm::isa<affine::delinearize>(ex->tuple()))
-                if (auto k = Lit::isa(ex->index()); k && Lit::isa(del->arg(2, 1)->arity())) {
-                    auto [l, s] = del->args<2>();
-                    return {l, s, *k};
-                }
-        return {nullptr, nullptr, 0};
+    /// The value of a `Num`/`Lit` (index 0 resp. 2) or the value a `Var`/`Sym` refers to.
+    const Def* value(const Inj* k) const {
+        auto v = k->value();
+        if (k->index() == 0 || k->index() == 2) return v;
+        return vals_->proj(s_, *Lit::isa(v));
     }
+    void sym(const Def* v) {
+        if (!Lit::isa(v) && std::ranges::find(syms_, v) == syms_.end()) syms_.emplace_back(v);
+    }
+    size_t index(const Def* v) const { return std::ranges::find(syms_, v) - syms_.begin(); }
+    const Def* idx(size_t k) const { return w_.lit_idx(syms_.size(), k); }
 
     template<class Id>
     const Def* ctor(Defs args) {
@@ -358,7 +321,8 @@ private:
 
     World& w_;
     const Def* n_;
-    Defs xs_;
+    const Def* vals_;
+    size_t s_;
     DefVec syms_;
 };
 
@@ -368,7 +332,7 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     auto& w = callee->world();
     // `run_levels` tiles for a CPU; a GPU pipeline launches the contraction as a kernel instead.
     if (!w.driver().arg_nat("tensor", "pe-cpu").value_or(1) || w.driver().is_loaded("gpu")) return w.lit_ff();
-    auto mr    = btensor::MapRedPost::of(callee);
+    auto mr    = map_red(callee);
     auto ranks = mr.ranks();
     if (!ranks) return nullptr;
     if (ranks->ro < 2 || ranks->rr != 1 || ranks->nis != 2) return w.lit_ff();
@@ -387,182 +351,241 @@ const Def* pe_cpu_plan(const App* callee, PeCpu* plan) {
     // An explicit schedule such as `dot_schedule` stays.
     if (!Check::test_alpha(mr.sched, w.app(w.annex<btensor::mk_sched>(), {mr.Rn, w.lit_nat_0()}))) return w.lit_ff();
 
-    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
-    auto probe  = w.mut_lam(domain, domain);
-    auto vars   = probe->var()->projs(rn);
     // The output is a permutation of the parallel loops; only the identity also handles run-time extents, so a
     // permutation waits for literal ones.
-    auto out  = w.app(mr.map_out, probe->var())->projs(ro);
+    auto raw = btensor::MapRedPost::of(callee);
+    // Maps a generic impl builds from its parameters decide once they are literals.
+    for (auto aff : {raw.map_out, raw.maps->proj(2, 0), raw.maps->proj(2, 1)})
+        if (aff->isa<Name>() && !aff_static(aff)) return nullptr;
+    auto loops = out_loops(raw.map_out, mr.Rn, mr.Ro);
+    if (!loops) return w.lit_ff();
     bool perm = false;
     for (u64 k = 0; k != ro; ++k) {
-        auto it = std::ranges::find(vars, out[k]);
-        if (it == vars.end() || u64(it - vars.begin()) >= ro || std::ranges::count(out, out[k]) != 1) return w.lit_ff();
-        auto d = u64(it - vars.begin());
-        if (mr.So->proj(ro, k) != mr.Sr->proj(rn, d)) return w.lit_ff();
-        perm |= d != k;
+        if (mr.So->proj(ro, k) != mr.Sr->proj(rn, (*loops)[k])) return w.lit_ff();
+        perm |= (*loops)[k] != k;
     }
     if (perm)
         for (u64 d = 0; d != rn; ++d)
             if (!Lit::isa(mr.Sr->proj(rn, d))) return nullptr;
 
-    auto maps = mr.maps->projs<2>();
-    auto dep  = w.tuple(DefVec(2, [&](size_t i) {
-        auto base = w.app(maps[i], probe->var());
-        return w.tuple(DefVec(rn, [&](size_t d) {
-            auto sub = vars;
-            sub[d]   = w.call<affine::lit>(w.lit_nat_0());
-            return w.lit_bool(!Check::test_alpha(base, w.app(maps[i], w.tuple(sub))));
-        }));
-    }));
-    auto a    = w.lit_idx(2, dep->proj(2, 0)->proj(rn, ro - 2) == w.lit_tt() ? 0 : 1);
-    if (w.app(w.app(w.annex<tensor::cpu_covers>(), {mr.Rn, mr.Ro}), {a, dep}) != w.lit_tt()) return w.lit_ff();
-
-    auto affs = DefVec(2);
+    auto affs = raw.maps->projs<2>();
     for (size_t i = 0; i != 2; ++i) {
-        auto r    = *Lit::isa(mr.Ris->proj(2, i));
-        auto rows = w.app(maps[i], probe->var())->projs(r);
-        auto refl = AffReflect(w, mr.Rn, vars);
-        // A map with symbolic parameters (a generic convolution's) may still become affine once they are literals.
-        for (auto row : rows)
-            if (!refl.scan(row)) return maps[i]->is_closed() ? w.lit_ff() : nullptr;
-        affs[i] = refl.map(rows);
+        auto aff = aff_canon(affs[i], mr.Rn, mr.Ris->proj(2, i));
+        if (!aff) return affs[i]->is_closed() ? w.lit_ff() : nullptr;
+        affs[i] = aff;
     }
-    auto b = 1 - Lit::as(a);
-    auto unit_b
-        = w.app(w.app(w.annex<tensor::aff_unit>(), {mr.Rn, mr.Ris->proj(2, b)}), {affs[b], w.lit_idx(rn, ro - 1)});
-    if (plan) *plan = {*bytes, a, dep, unit_b, w.tuple(affs)};
+    auto facts = w.app(w.annex<tensor::cpu_facts>(), {mr.Rn, mr.Ro, mr.Ris->proj(2, 0), mr.Ris->proj(2, 1)});
+    auto [covers, a, dep, unit_b] = w.app(facts, {affs[0], affs[1]})->projs<4>();
+    if (covers != w.lit_tt()) return w.lit_ff();
+    if (plan) *plan = {*bytes, a, dep, unit_b, w.tuple({affs[0], affs[1]})};
     return w.lit_tt();
 }
 
 namespace {
 
-// Whether `def` reaches `target` without passing `stop` or entering a mutable.
-bool reaches(const Def* def, const Def* target, const Def* stop) {
-    auto seen = DefSet();
-    auto todo = DefVec{def};
-    while (!todo.empty()) {
-        auto d = todo.back();
-        todo.pop_back();
-        if (d == target) return true;
-        if (d == stop || d->isa_mut() || !seen.emplace(d).second) continue;
-        for (auto op : d->deps())
-            todo.emplace_back(op);
-    }
-    return false;
-}
-
-// The operation `⊕` of a combiner `λ (acc, xs). acc ⊕ e` that reassociates exactly or by its math mode and has `init`
-// as its unit, or `nullptr`.
-const Def* reduce_monoid(const Def* comb, const Def* init) {
-    auto& w   = comb->world();
-    auto lam  = comb->isa_mut<Lam>();
-    auto body = Lam::isa_ret_arg(comb);
-    auto app  = body ? body->isa<App>() : nullptr;
-    if (!app || app->arg()->num_projs() != 2) return nullptr;
-    auto args = lam->var(2, 0);
-    auto acc = args->proj(2, 0), ins = args->proj(2, 1);
-    auto [a, b] = app->arg()->projs<2>();
-    auto e      = a == acc ? b : b == acc ? a : nullptr;
-    if (!e || reaches(e, acc, ins) || reaches(e, args, ins)) return nullptr;
+// Whether `body`, an application of `⊕`, reassociates exactly or by its math mode and has `init` as its unit.
+bool monoid(const Def* body, const Def* init) {
+    auto& w   = body->world();
     auto unit = [&](f64 v) {
         auto width = math::isa_f(init->type());
         return width && init == math::lit_f(w, *width, v);
     };
     if (auto ar = Axm::isa<math::arith>(body)) {
         auto mode = Lit::isa(ar->callee()->as<App>()->callee()->as<App>()->arg());
-        if (!mode || !(*mode & std::to_underlying(math::Mode::reassoc))) return nullptr;
-        if ((ar.id() == math::arith::add && unit(0.0)) || (ar.id() == math::arith::mul && unit(1.0)))
-            return app->callee();
-    } else if (auto ex = Axm::isa<math::extrema>(body)) {
+        if (!mode || !(*mode & std::to_underlying(math::Mode::reassoc))) return false;
+        return (ar.id() == math::arith::add && unit(0.0)) || (ar.id() == math::arith::mul && unit(1.0));
+    }
+    if (auto ex = Axm::isa<math::extrema>(body)) {
         bool max = ex.id() == math::extrema::iM || ex.id() == math::extrema::IM;
-        if (unit(max ? -std::numeric_limits<f64>::infinity() : std::numeric_limits<f64>::infinity()))
-            return app->callee();
-    } else if (auto wr = Axm::isa<core::wrap>(body)) {
-        auto mode = Lit::isa(wr->callee()->as<App>()->callee()->as<App>()->arg());
-        if (mode != 0) return nullptr;
-        if ((wr.id() == core::wrap::add && Lit::isa(init) == 0) || (wr.id() == core::wrap::mul && Lit::isa(init) == 1))
-            return app->callee();
+        return unit(max ? -std::numeric_limits<f64>::infinity() : std::numeric_limits<f64>::infinity());
+    }
+    if (auto wr = Axm::isa<core::wrap>(body)) {
+        if (Lit::isa(wr->callee()->as<App>()->callee()->as<App>()->arg()) != 0) return false;
+        return (wr.id() == core::wrap::add && Lit::isa(init) == 0)
+            || (wr.id() == core::wrap::mul && Lit::isa(init) == 1);
+    }
+    return false;
+}
+
+// The operation `⊕` that a `tensor.fold_of` combiner keeps, if it is a monoid with unit `init`, or `nullptr`.
+const Def* reduce_monoid(const Def* comb, const Def* init) {
+    auto& w = comb->world();
+    if (Axm::isa<tensor::fold_of, 1>(comb)) {
+        auto [op, _] = comb->as<App>()->args<2>();
+        return w.app(w.app(w.annex<tensor::monoid_of>(), init->type()), {op, init}) == w.lit_tt() ? op : nullptr;
     }
     return nullptr;
 }
 
 } // namespace
 
-bool pe_generic_plan(const App* callee, PeGeneric* plan) {
+bool pe_generic_plan(const App* callee, PeGeneric* plan, bool bounded) {
     auto& w    = callee->world();
-    auto mr    = btensor::MapRedPost::of(callee);
+    auto mr    = map_red(callee);
     auto ranks = mr.ranks();
     if (!ranks || ranks->ro < 1 || ranks->nis < 1) return false;
     u64 ro = ranks->ro, rn = ranks->nloops(), nis = ranks->nis;
     if (!lit_projs(mr.Ris, nis)) return false;
-    for (u64 d = ro; d != rn; ++d)
+    for (u64 d = ro; d != rn && !bounded; ++d)
         if (!Lit::isa(mr.Sr->proj(rn, d))) return false;
     if (mr.To == w.type_nat() || !Check::test_alpha(mr.init->type(), mr.To)) return false;
 
-    auto domain = w.arr(mr.Rn, w.annex<affine::Index>());
-    auto probe  = w.mut_lam(domain, domain);
-    auto vars   = probe->var()->projs(rn);
     // The output is a permutation of the parallel loops, which only literal extents can tile.
-    auto out = w.app(mr.map_out, probe->var())->projs(ro);
+    auto raw   = btensor::MapRedPost::of(callee);
+    auto loops = out_loops(raw.map_out, mr.Rn, mr.Ro);
+    if (!loops) return false;
     u64 wdim = ro - 1;
     for (u64 k = 0; k != ro; ++k) {
-        auto it = std::ranges::find(vars, out[k]);
-        if (it == vars.end() || u64(it - vars.begin()) >= ro || std::ranges::count(out, out[k]) != 1) return false;
-        auto d = u64(it - vars.begin());
+        auto d = (*loops)[k];
         if (mr.So->proj(ro, k) != mr.Sr->proj(rn, d)) return false;
-        if (d != k)
+        if (d != k && !bounded)
             for (u64 e = 0; e != rn; ++e)
                 if (!Lit::isa(mr.Sr->proj(rn, e))) return false;
         if (k == ro - 1) wdim = d;
     }
 
-    auto maps = mr.maps->projs(nis);
-    auto affs = DefVec(nis);
-    // Unit stride of every input along a loop: along the innermost one the plain nest is already contiguous; along the
-    // last output loop with a strided reduction inside, a row of accumulators makes it so.
-    auto unit = [&](size_t i, u64 d) {
-        auto aff_unit = w.app(w.annex<tensor::aff_unit>(), {mr.Rn, mr.Ris->proj(nis, i)});
-        return w.app(aff_unit, {affs[i], w.lit_idx(rn, d)}) == w.lit_tt();
-    };
-    bool red_unit = true, out_unit = true;
-    u64 rdim = wdim;
+    auto affs = raw.maps->projs(nis);
+    for (size_t i = 0; i != nis; ++i)
+        if (!(affs[i] = aff_canon(affs[i], mr.Rn, mr.Ris->proj(nis, i)))) return false;
+    auto reads = DefVec(nis), units = DefVec(nis);
     for (size_t i = 0; i != nis; ++i) {
-        auto r    = *Lit::isa(mr.Ris->proj(nis, i));
-        auto rows = w.app(maps[i], probe->var())->projs(r);
-        auto refl = AffReflect(w, mr.Rn, vars);
-        for (auto row : rows)
-            if (!refl.scan(row)) return false;
-        affs[i] = refl.map(rows);
-        red_unit &= unit(i, rn - 1);
-        out_unit &= unit(i, ro - 1);
-        auto sub   = vars;
-        sub[wdim]  = w.call<affine::lit>(w.lit_nat_0());
-        bool reads = !Check::test_alpha(w.app(maps[i], probe->var()), w.app(maps[i], w.tuple(sub)));
-        if (rdim == wdim && reads && !unit(i, wdim))
-            for (u64 d = 0; d != ro; ++d)
-                if (unit(i, d)) rdim = d;
+        auto R    = mr.Ris->proj(nis, i);
+        reads[i]  = w.app(w.app(w.annex<tensor::aff_reads>(), {mr.Rn, R}), affs[i]);
+        auto unit = w.app(w.annex<tensor::aff_unit>(), {mr.Rn, R});
+        units[i]  = w.tuple(DefVec(rn, [&](size_t d) { return w.app(unit, {affs[i], w.lit_idx(rn, d)}); }));
     }
-    // An outer product: one input reads the second last output loop but not the last, the other the last at unit stride
-    // but not the second last.
-    bool outer = false;
-    if (nis == 2 && ro >= 2) {
-        auto reads = [&](size_t i, u64 d) {
-            auto sub = vars;
-            sub[d]   = w.call<affine::lit>(w.lit_nat_0());
-            return !Check::test_alpha(w.app(maps[i], probe->var()), w.app(maps[i], w.tuple(sub)));
-        };
-        for (size_t a = 0; a != 2; ++a) {
-            auto b = 1 - a;
-            outer |= reads(a, ro - 2) && !reads(a, ro - 1) && unit(b, ro - 1) && !reads(b, ro - 2);
-        }
-    }
+    auto facts = w.app(w.app(w.annex<tensor::generic_facts>(), {mr.nis, mr.Rn}),
+                       {mr.Ro, w.lit_nat(wdim), w.tuple(reads), w.tuple(units)});
+    auto [red_unit, out_unit, rdim, outer] = facts->projs<4>();
+    if (!Lit::isa(red_unit) || !Lit::isa(out_unit) || !Lit::isa(rdim) || !Lit::isa(outer)) return false;
     auto merge = reduce_monoid(mr.comb, mr.init);
     auto bytes = Lit::isa(w.app(w.annex(core::trait::size), mr.To));
     u64 lanes  = merge && bytes && *bytes != 0 ? btensor::vec_regs(w.driver()).bytes / *bytes : 0;
     if (plan)
-        *plan = {w.tuple(affs), w.lit_bool(red_unit), w.lit_bool(out_unit),         w.lit_nat(wdim),  w.lit_nat(rdim),
-                 merge,         w.lit_nat(lanes),     w.lit_nat(bytes.value_or(0)), w.lit_bool(outer)};
+        *plan = {w.tuple(affs), red_unit, out_unit, w.lit_nat(wdim), rdim, merge, w.lit_nat(lanes), w.lit_nat(bytes.value_or(0)), outer};
     return true;
+}
+
+const Def* aff_canon(const Def* aff, const Def* n, const Def* m) {
+    auto& w   = aff->world();
+    auto name = aff->isa<Name>();
+    auto r    = Lit::isa(m);
+    if (!name || !r || name->op()->num_projs() != 3) return aff;
+    auto [s, vals, rows] = name->op()->projs<3>();
+    auto ns              = Lit::isa(s);
+    if (!ns) return aff;
+    auto canon = AffCanon(w, n, vals, *ns);
+    for (size_t j = 0; j != *r; ++j)
+        if (!canon.scan(rows->proj(*r, j))) return nullptr;
+    auto new_rows = DefVec(*r, [&](size_t j) { return canon.build(rows->proj(*r, j)); });
+    auto map      = w.app(w.annex<tensor::aff_map>(), {n, m, w.lit_nat(canon.syms().size())});
+    return w.app(map, {w.tuple(canon.syms()), w.tuple(new_rows)});
+}
+
+bool aff_static(const Def* aff) {
+    auto name = aff->isa<Name>();
+    return name && name->op()->proj(3, 2)->is_closed();
+}
+
+std::optional<fe::Vector<u64>> out_loops(const Def* map_out, const Def* Rn, const Def* Ro) {
+    auto& w  = Rn->world();
+    auto aff = aff_canon(map_out, Rn, Ro);
+    auto ro  = Lit::isa(Ro);
+    if (!aff || !ro) return {};
+    auto [ok, loops] = w.app(w.app(w.annex<tensor::aff_perm>(), {Rn, Ro}), aff)->projs<2>();
+    if (ok != w.lit_tt()) return {};
+    return lit_projs(loops, *ro);
+}
+
+bool aff_identity(const Def* aff, const Def* n, const Def* m) {
+    auto rn = Lit::isa(n);
+    if (!rn || Lit::isa(m) != rn) return false;
+    auto loops = out_loops(aff, n, m);
+    if (!loops) return false;
+    for (u64 k = 0; k != *rn; ++k)
+        if ((*loops)[k] != k) return false;
+    return true;
+}
+
+bool aff_reads_once(const Def* aff, const Def* n, const Def* m) {
+    auto& w = n->world();
+    if (!Lit::isa(n) || !Lit::isa(m)) return false;
+    auto data = aff_canon(aff, n, m);
+    return data && w.app(w.app(w.annex<tensor::aff_injective>(), {n, m}), data) == w.lit_tt();
+}
+
+std::optional<u64> aff_last_dim(const Def* aff, const Def* n, const Def* m) {
+    auto r    = Lit::isa(m);
+    auto data = r && *r != 0 ? aff_canon(aff, n, m) : nullptr;
+    auto name = data ? data->isa<Name>() : nullptr;
+    auto row  = name ? name->op()->proj(3, 2)->proj(*r, *r - 1)->isa<Name>() : nullptr;
+    auto dim  = row ? row->op()->isa<Inj>() : nullptr;
+    if (!dim || dim->index() != 0) return {};
+    return Lit::isa(dim->value());
+}
+
+const Def* aff_lam(const Def* f, const Def* n, const Def* m) {
+    auto& w = f->world();
+    // `aff_eval` unfolds only static rows.
+    if (auto canon = aff_canon(f, n, m)) f = canon;
+    return w.app(w.app(w.annex<tensor::aff_eval_map>(), {n, m}), f);
+}
+
+btensor::MapRedPost map_red(const App* callee) {
+    auto mr  = btensor::MapRedPost::of(callee);
+    auto nis = Lit::isa(mr.nis), nps = Lit::isa(mr.nps);
+    if (!nis || !nps) return mr;
+    auto& w    = callee->world();
+    mr.map_out = aff_lam(mr.map_out, mr.Rn, mr.Ro);
+    mr.maps    = w.tuple(
+        DefVec(*nis, [&](size_t i) { return aff_lam(mr.maps->proj(*nis, i), mr.Rn, mr.Ris->proj(*nis, i)); }));
+    mr.post_maps = w.tuple(
+        DefVec(*nps, [&](size_t j) { return aff_lam(mr.post_maps->proj(*nps, j), mr.Ro, mr.Rps->proj(*nps, j)); }));
+    mr.maps_all = w.tuple({mr.maps, mr.post_maps});
+    return mr;
+}
+
+// Only a primitive operation states its laws; a function's body is not inspected.
+const Def* normalize_monoid_of(const Def*, const Def*, const Def* arg) {
+    auto& w         = arg->world();
+    auto [op, unit] = arg->projs<2>();
+    if (op->isa_mut<Lam>()) return w.lit_ff();
+    if (!op->is_closed()) return nullptr;
+    auto T     = unit->type();
+    auto probe = w.mut_lam(w.sigma({T, T}), T);
+    return w.lit_bool(monoid(w.app(op, probe->var()), unit));
+}
+
+const Def* normalize_id(const Def*, const Def*, const Def* arg) {
+    auto [data, ret] = arg->projs<2>();
+    return arg->world().app(ret, data->proj(2, 0));
+}
+
+const Def* normalize_copy(const Def*, const Def*, const Def* arg) {
+    auto [data, ret] = arg->projs<2>();
+    return arg->world().app(ret, data->proj(2, 1));
+}
+
+const Def* normalize_map_of(const Def*, const Def* c, const Def* arg) {
+    auto& w          = arg->world();
+    auto app         = c->as<App>()->arg();
+    auto [data, ret] = arg->projs<2>();
+    auto xs          = data->proj(2, 1);
+    auto lam         = app->isa_mut<Lam>();
+    return w.app(ret, lam && lam->is_set() ? lam->reduce_body(xs) : w.app(app, xs));
+}
+
+const Def* normalize_fold_of(const Def*, const Def* c, const Def* arg) {
+    auto& w          = arg->world();
+    auto [op, h]     = c->as<App>()->args<2>();
+    auto [data, ret] = arg->projs<2>();
+    auto [acc, xs]   = data->projs<2>();
+    // Like the body of a combiner, which inlines its operations.
+    auto apply = [&](const Def* f, const Def* x) {
+        auto lam = f->isa_mut<Lam>();
+        return lam && lam->is_set() ? lam->reduce_body(x) : w.app(f, x);
+    };
+    return w.app(ret, apply(op, w.tuple({acc, apply(h, xs)})));
 }
 
 const Def* normalize_pe_cpu_candidate(const Def*, const Def*, const Def* producer) {
@@ -632,6 +655,70 @@ std::string show_root(const Def* ro,
         slots[i] = show_elems(reads->proj(nis, i), rn);
     return std::format("ro {} lanes {} sizes {} caps {} dyn {} fuse {} reads {}", ro, lanes, show_elems(sizes, rn),
                        show_elems(caps, rn), show_elems(dyn, rn), show_elems(fuse, nis), fe::Join(slots, " "));
+}
+
+namespace {
+
+/// A `tensor.AffE` in prefix notation, e.g. `add dim 0 mul dim 2 3`; a symbol without a static value stays `sym`.
+void show_aff(std::string& out, const Def* e, const Def* vals, size_t s) {
+    static constexpr std::array ops = {"dim", "sym", "lit", "add", "mul", "fdiv", "cdiv", "mod", "sub"};
+    auto name                       = e->isa<Name>();
+    auto inj                        = name ? name->op()->isa<Inj>() : nullptr;
+    if (!inj || inj->index() >= ops.size()) {
+        out += " ?";
+        return;
+    }
+    auto i = inj->index();
+    auto v = inj->value();
+    if (i == 1) {
+        auto k   = Lit::isa(v);
+        auto val = k && *k < s ? Lit::isa(vals->proj(s, *k)) : std::nullopt;
+        out += val ? std::format(" lit {}", *val) : std::string(" sym");
+    } else if (i < 3) {
+        auto l = Lit::isa(v);
+        out += l ? std::format(" {} {}", ops[i], *l) : std::string(" ?");
+    } else {
+        out += std::format(" {}", ops[i]);
+        show_aff(out, v->proj(2, 0), vals, s);
+        if (i == 3 || i == 8) {
+            show_aff(out, v->proj(2, 1), vals, s);
+        } else {
+            auto k   = v->proj(2, 1)->isa<Name>();
+            auto num = k ? k->op()->isa<Inj>() : nullptr;
+            auto c   = num && num->index() == 0 ? Lit::isa(num->value()) : std::nullopt;
+            out += c ? std::format(" {}", *c) : std::string(" ?");
+        }
+    }
+}
+
+} // namespace
+
+std::string show_maps(const Def* maps, const Def* shapes, const Def* Ris, size_t nis) {
+    auto rows = std::string(), dims = std::string();
+    for (size_t i = 0; i != nis; ++i) {
+        auto r    = Lit::isa(Ris->proj(nis, i));
+        auto map  = maps->proj(nis, i);
+        auto name = map->isa<Name>();
+        auto body = name ? name->op() : map;
+        rows += " slot";
+        dims += " slot";
+        if (!r || body->num_projs() != 3) {
+            rows += " row ?";
+            continue;
+        }
+        auto [s, vals, es] = body->projs<3>();
+        auto ns            = Lit::isa(s);
+        for (size_t j = 0; j != *r; ++j) {
+            rows += " row";
+            if (ns)
+                show_aff(rows, es->proj(*r, j), vals, *ns);
+            else
+                rows += " ?";
+            auto n = Lit::isa(shapes->proj(nis, i)->proj(*r, j));
+            dims += n ? std::format(" {}", *n) : std::string(" ?");
+        }
+    }
+    return std::format("rows{} shapes{}", rows, dims);
 }
 
 const Def* normalize_sched_show(const Def*, const Def* callee, const Def* arg) {

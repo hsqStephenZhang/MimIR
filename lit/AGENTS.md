@@ -2,7 +2,7 @@
 
 - lit runs the copies staged into `build/lit/`; build `mim_lit_tests` after editing a `lit/*.mim`, or you test a stale file.
 - Run the suite with `scripts/lit.sh [FILTER...]`: it re-stages and caps memory, so a runaway `mim` dies with `std::bad_alloc` instead of taking the machine down.
-- A normalizer test asserts with `let _ = refly.equiv.struc_eq (lhs, rhs);` (or `struc_ne`, `refly.check_bot`) and a plain `// RUN: %mim %s`; FileCheck is only for phase results, diagnostics, and codegen.
+- A normalizer test asserts with `let _ = refly.struc.e (lhs, rhs);` (or `refly.struc.ne`, `refly.alpha.e` for functions, `refly.check_bot`) and a plain `// RUN: %mim %s`; FileCheck is only for phase results, diagnostics, and codegen.
   Spell the expected side without the axioms under test, or it re-normalizes and the check passes vacuously.
 - Top-level Lams dump in no portable order: use `CHECK-DAG` across Lams and tie a body to its header with a captured name, not `CHECK-NEXT`.
   The `eta_` prefix exists only in Debug builds: match it as `{{(eta_)?}}`.

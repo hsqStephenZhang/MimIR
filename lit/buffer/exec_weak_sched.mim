@@ -21,8 +21,8 @@ plugin cps;
 use core.ops.u.w;
 
 fun add (x y: I32)@tt = return (x + y);
-lam mo (i j k a: affine.Index): «3; affine.Index» = (i, j, k);
-lam mi (i j k a: affine.Index): «4; affine.Index» = (i, j, k, a);
+let mo = tensor.proj_map @(4, 3) (0, 1, 2);
+let mi = tensor.proj_map @(4, 4) (0, 1, 2, 3);
 
 // out[i,j,k] = sum_a input[i,j,k,a], scheduled with `sched`.
 lam sum_last (sched: tensor.SchedT)

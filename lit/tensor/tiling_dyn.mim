@@ -8,12 +8,12 @@ use tensor;
 
 let I32Ring = (I32, 0I32, core.wrap.add 0, core.wrap.mul 0);
 fun post (x: I32, _: [])@tt: I32 = return x;
-lam out_ij (i j k: affine.Index): «2; affine.Index» = (i, j);
-lam left_ik (i j k: affine.Index): «2; affine.Index» = (i, k);
-lam right_kj (i j k: affine.Index): «2; affine.Index» = (k, j);
+let out_ij = tensor.proj_map @(3, 2) (0, 1);
+let left_ik = tensor.proj_map @(3, 2) (0, 2);
+let right_kj = tensor.proj_map @(3, 2) (2, 1);
 
 lam mk_mm {n: Nat} (a: Tensor 2 (n, 4) I32, b: Tensor 2 (4, 4) I32) =
-    mr_tileable @2 @(2, 1) ((n, 4), (0, 1), (n, 4, 4))
+    mr_tileable @2 @(2, 1) ((n, 4), (0, 1), (n, 4, 4)) @((I32, I32), (2, 2), ((n, 4), (4, 4)))
         (dot_general_fun I32Ring, 0I32, post) out_ij (left_ik, right_kj) (a, b);
 
 extern fun rt_peel_main {n: Nat} (a: Tensor 2 (n, 4) I32, b: Tensor 2 (4, 4) I32)

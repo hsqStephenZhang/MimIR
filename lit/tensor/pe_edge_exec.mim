@@ -44,6 +44,6 @@ extern fun epi_mm (k: Nat, m: mem.M 0, a: buffer.Buf (2, (5, k), F32), b: buffer
     : [mem.M 0, buffer.Buf (2, (5, 7), F32)] =
     let epi = tensor.levels_epilogue @(F32, 2, (5, 7)) @(0, (), (), ()) (inc, (), ());
     let (m, c) = tensor.run_levels_post @(2, F32, 2, 3, (F32, F32), (2, 2), ((5, k), (k, 7)))
-        ((5, 7), (5, 7, k)) (mac, 0.0:F32, btensor.id @F32) (take2, 0, tt) (epi, ff) ij ((ik, kj), (P#Plain, P#Plain))
+        ((5, 7), (5, 7, k)) (mac, 0.0:F32, btensor.id @F32) (take2, 0, tt) (epi, ff, tensor.levels_no_drain @(F32, 2, (5, 7)), ff) ij ((ik, kj), (P#Plain, P#Plain))
         (tensor.sched_leaf @(2, 3) 3, (5, 7, 64), (ff, ff, tt)) (m, (a, b));
     return (m, c);

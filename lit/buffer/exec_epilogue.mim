@@ -22,8 +22,8 @@ plugin buffer;
 use core.ops.u.w;
 
 fun add (x y: I32)@tt = return (x + y);
-lam fst (i j: affine.Index): affine.Index = i;
-lam id  (i j: affine.Index): «2; affine.Index» = (i, j);
+let fst = tensor.proj_map @(2, 1) 0;
+let id = tensor.proj_map @(2, 2) (0, 1);
 
 // out[i] = (sum_j input[j][i]) + bias[i] + 1
 extern fun row_sum1 (input: tensor.Tensor 2 (4, 3) I32, bias: tensor.Tensor 1 3 I32): tensor.Tensor 1 3 I32 =

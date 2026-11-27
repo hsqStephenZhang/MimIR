@@ -1,0 +1,12 @@
+// RUN: %mim %s -o -
+
+// `tensor.fold_of (op, h)` is the combiner `(acc, xs) ↦ op (acc, h xs)`.
+plugin tensor;
+plugin core;
+plugin refly;
+
+lam mul (x y: Nat): Nat = core.nat.mul (x, y);
+let f = tensor.fold_of @(Nat, [Nat, Nat]) (core.nat.add, mul);
+fun g (acc x y: Nat)@tt: Nat = f ((acc, (x, y)), return);
+fun h (acc x y: Nat)@tt: Nat = return (core.nat.add (acc, mul (x, y)));
+let _ = refly.alpha.e (g, h);
